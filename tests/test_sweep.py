@@ -39,6 +39,30 @@ class DeterministicV4Test(unittest.TestCase):
         self.assertNotEqual(sweep.deterministic_v4("abc"), sweep.deterministic_v4("abd"))
 
 
+class DeriveCaptureTest(unittest.TestCase):
+    """#14's "title verbatim" rule, plus the two edges #24 found."""
+
+    def test_title_passes_through_verbatim(self):
+        self.assertEqual(
+            sweep.derive_capture("  call the vet  ", " before Thursday "),
+            ("  call the vet  ", "before Thursday"),
+        )
+
+    def test_empty_title_promotes_first_notes_line(self):
+        # The plausible real case: a dictation that landed entirely in notes.
+        title, description = sweep.derive_capture("", "\n\n  ring mum  \nabout the car\n")
+        self.assertEqual(title, "ring mum")
+        # Nothing is dropped -- the whole note still becomes the description.
+        self.assertEqual(description, "ring mum  \nabout the car")
+
+    def test_whitespace_only_title_counts_as_empty(self):
+        self.assertEqual(sweep.derive_capture("   ", "buy milk"), ("buy milk", "buy milk"))
+
+    def test_nothing_at_all_is_none(self):
+        for title, notes in (("", ""), (None, None), ("  ", "\n \n"), (None, "")):
+            self.assertIsNone(sweep.derive_capture(title, notes))
+
+
 CFG = sweep.Config(
     google_client_id="cid",
     google_client_secret="secret",
@@ -60,9 +84,10 @@ TASKS = {
 class FakeHttp:
     """Records every call; answers reads, and whatever the test scripts."""
 
-    def __init__(self, linear_responses=None):
+    def __init__(self, linear_responses=None, tasks=None):
         self.calls = []
         self.linear_responses = list(linear_responses or [])
+        self.tasks = tasks if tasks is not None else TASKS
 
     def __call__(self, url, method="GET", headers=None, body=None):
         self.calls.append({"url": url, "method": method, "headers": headers, "body": body})
@@ -75,7 +100,7 @@ class FakeHttp:
         if "/users/@me/lists" in url:
             return dict(LISTS)
         if url.endswith("maxResults=100") and "/tasks?" in url:
-            return dict(TASKS)
+            return dict(self.tasks)
         if method == "PATCH":
             return {"status": "completed"}
         raise AssertionError("unexpected request: %s %s" % (method, url))
@@ -99,16 +124,20 @@ class SweepFlowTest(unittest.TestCase):
         sweep.http_json = fake
         return sweep.run_sweep(CFG, dry_run)
 
+    def patched_tasks(self, fake):
+        return [c["url"] for c in fake.mutating() if c["method"] == "PATCH"]
+
     def test_dry_run_mutates_nothing(self):
         fake = FakeHttp()
-        ok, failures = self.run_with(fake, dry_run=True)
+        ok, failures, notes = self.run_with(fake, dry_run=True)
         self.assertTrue(ok)
         self.assertEqual(failures, [])
+        self.assertEqual(notes, [])
         self.assertEqual(fake.mutating(), [])
 
     def test_live_run_creates_then_patches_per_item(self):
         fake = FakeHttp()
-        ok, failures = self.run_with(fake)
+        ok, failures, _ = self.run_with(fake)
         self.assertTrue(ok)
         self.assertEqual(failures, [])
 
@@ -151,12 +180,16 @@ class SweepFlowTest(unittest.TestCase):
             ],
         }
         fake = FakeHttp(linear_responses=[exists, exists])
-        ok, failures = self.run_with(fake)
+        ok, failures, _ = self.run_with(fake)
         self.assertTrue(ok)
         self.assertEqual(failures, [])
-        self.assertEqual(len([c for c in fake.mutating() if c["method"] == "PATCH"]), 2)
+        self.assertEqual(len(self.patched_tasks(fake)), 2)
 
-    def test_other_error_skips_patch_and_fails_the_run(self):
+    def test_unparseable_error_skips_patch_and_fails_the_run(self):
+        # Deliberately still a hard failure. This payload names no offending
+        # property, so the sweeper cannot tell a junk row from a broken
+        # sweeper -- and an unrecognized shape must fail loud rather than
+        # quietly quarantine. Quarantine has to earn itself; see #24.
         broken = {
             "_status": 400,
             "errors": [
@@ -168,15 +201,15 @@ class SweepFlowTest(unittest.TestCase):
         }
         good = {"data": {"issueCreate": {"success": True, "issue": {"id": "x"}}}}
         fake = FakeHttp(linear_responses=[broken, good])
-        ok, failures = self.run_with(fake)
+        ok, failures, _ = self.run_with(fake)
 
         self.assertFalse(ok)
         self.assertEqual(len(failures), 1)
         self.assertIn("task-1", failures[0])
 
-        patches = [c for c in fake.mutating() if c["method"] == "PATCH"]
+        patches = self.patched_tasks(fake)
         self.assertEqual(len(patches), 1)  # task-1 stays incomplete for the retry
-        self.assertIn("task-2", patches[0]["url"])
+        self.assertIn("task-2", patches[0])
 
     def test_denylisted_list_is_skipped(self):
         import json
@@ -189,12 +222,148 @@ class SweepFlowTest(unittest.TestCase):
 
         fake = FakeHttp()
         sweep.http_json = fake
-        ok, failures = sweep.run_sweep(cfg, False)
+        ok, failures, _ = sweep.run_sweep(cfg, False)
 
         self.assertTrue(ok)
         self.assertEqual(failures, [])
         self.assertEqual(fake.mutating(), [])
         self.assertFalse(any("/tasks?" in call["url"] for call in fake.calls))
+
+
+def validation_error(prop, constraint, message="Argument Validation Error"):
+    """Linear's INVALID_INPUT shape, as observed live in the #24 incident."""
+    return {
+        "_status": 400,
+        "errors": [
+            {
+                "message": message,
+                "extensions": {
+                    "code": "INVALID_INPUT",
+                    "userError": True,
+                    "userPresentableMessage": constraint,
+                    "children": [
+                        {
+                            "property": "input",
+                            "children": [
+                                {"property": prop, "constraints": {"minLength": constraint}}
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+
+class TerminalFailureTest(unittest.TestCase):
+    """#24: no single item may hold the dead-man's switch red forever.
+
+    A permanently-red alarm is indistinguishable from a working one, so a
+    failure that can never clear must not be retried into one.
+    """
+
+    GOOD = {"data": {"issueCreate": {"success": True, "issue": {"id": "x"}}}}
+    BLANK_TITLE = "title must be longer than or equal to 1 characters"
+
+    def setUp(self):
+        self.real_http = sweep.http_json
+
+    def tearDown(self):
+        sweep.http_json = self.real_http
+
+    def run_with(self, fake):
+        sweep.http_json = fake
+        return sweep.run_sweep(CFG, False)
+
+    def patched_tasks(self, fake):
+        return [c["url"] for c in fake.mutating() if c["method"] == "PATCH"]
+
+    def test_blank_row_is_skipped_before_linear_is_called(self):
+        # The literal #24 incident: rows made by pressing Enter in the Tasks
+        # app. They carry no information, so there is nothing to lose.
+        fake = FakeHttp(
+            tasks={
+                "items": [
+                    {"id": "blank-1", "title": "", "notes": None},
+                    {"id": "task-1", "title": "call the vet", "notes": ""},
+                ]
+            }
+        )
+        ok, failures, notes = self.run_with(fake)
+
+        self.assertTrue(ok, "a blank row must never fail the run")
+        self.assertEqual(failures, [])
+        self.assertIn("1 empty captures skipped (no title, no notes)", notes)
+
+        # Never offered to Linear, and never disposed of in Tasks either --
+        # it stays visible for a human to delete.
+        creates = [c for c in fake.mutating() if c["url"] == sweep.LINEAR_URL]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(creates[0]["body"]["variables"]["input"]["title"], "call the vet")
+        patches = self.patched_tasks(fake)
+        self.assertEqual(len(patches), 1)
+        self.assertIn("task-1", patches[0])
+
+    def test_notes_only_row_is_captured_under_its_first_line(self):
+        fake = FakeHttp(
+            tasks={"items": [{"id": "n-1", "title": "", "notes": "ring mum\nabout the car"}]}
+        )
+        ok, failures, _ = self.run_with(fake)
+
+        self.assertTrue(ok)
+        self.assertEqual(failures, [])
+        created = fake.mutating()[0]["body"]["variables"]["input"]
+        self.assertEqual(created["title"], "ring mum")
+        self.assertEqual(created["description"], "ring mum\nabout the car")
+        self.assertEqual(len(self.patched_tasks(fake)), 1)  # and disposed of normally
+
+    def test_content_rejection_is_quarantined_not_retried(self):
+        # Belt to the skip's braces: whatever else Linear one day refuses on
+        # title or description gets set aside rather than wedging the alarm.
+        fake = FakeHttp(
+            linear_responses=[validation_error("title", self.BLANK_TITLE), self.GOOD]
+        )
+        ok, failures, notes = self.run_with(fake)
+
+        self.assertTrue(ok, "a content rejection must not fail the run")
+        self.assertEqual(failures, [])
+        self.assertTrue(any("1 quarantined" in line for line in notes))
+        self.assertTrue(any("task-1" in line for line in notes))
+
+        patches = self.patched_tasks(fake)
+        self.assertEqual(len(patches), 1, "the quarantined row stays visible in Tasks")
+        self.assertIn("task-2", patches[0])
+
+    def test_rejection_on_a_non_content_field_still_fails_the_run(self):
+        # The systematic case -- a wrong stateId or teamId breaks every
+        # capture, and must keep ringing the alarm exactly as before.
+        fake = FakeHttp(
+            linear_responses=[
+                validation_error("stateId", "stateId must be a UUID"),
+                self.GOOD,
+            ]
+        )
+        ok, failures, _ = self.run_with(fake)
+
+        self.assertFalse(ok)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("task-1", failures[0])
+
+    def test_quarantine_limit_is_a_backstop(self):
+        count = sweep.QUARANTINE_LIMIT + 1
+        fake = FakeHttp(
+            linear_responses=[validation_error("title", self.BLANK_TITLE)] * count,
+            tasks={
+                "items": [
+                    {"id": "t-%d" % n, "title": "junk %d" % n, "notes": ""}
+                    for n in range(count)
+                ]
+            },
+        )
+        ok, failures, _ = self.run_with(fake)
+
+        self.assertFalse(ok, "wholesale quarantine is a broken sweeper, not bad input")
+        self.assertTrue(any("systematic" in line for line in failures))
 
 
 class PingSecrecyTest(unittest.TestCase):
