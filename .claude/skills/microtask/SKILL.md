@@ -16,9 +16,26 @@ All Linear reads/writes go through `scripts/linear.sh` (in this skill's director
 
 ## Invocation
 
-`/microtask <issue-id>` (e.g. `ION-10`), or on an issue already in conversation context
-(handed off from `next-up-personal` or `/to-actions`). Resolve it with `linear.sh get`
-immediately.
+`/microtask <issue-id> [grain]` (e.g. `ION-10`, `ION-10 3`), or on an issue already in
+conversation context (handed off from `next-up-personal` or `/to-actions`). Resolve it
+with `linear.sh get` immediately. `grain` is an optional `1`–`3` (default **2**) — see
+Grain below.
+
+## Grain
+
+How finely to slice, calibrated on a real trial (ION-19):
+
+1. **Coarse** — each step one concrete action, but a gather may ride along with its use
+   ("find the environment URL and copy it"). A message-sending action ≈ 8 steps.
+2. **Default** — every gather, compose, and send is its own tick; no step bundles two
+   moves (locate ≠ copy ≠ paste, compose ≠ send). The same action ≈ 15 steps. This split
+   kills the stall where you open the chat and realize you don't have the link handy.
+3. **Max** — one physical/mental move per tick ("click the search bar and type his
+   name", "hit send"). The same action ≈ 23 steps. The floor: individual keystrokes
+   never get ticks.
+
+At grain 3, steps run well under the 2-minute floor — that's the point; the ~2–5-minute
+guidance applies at grains 1–2. The trivial first step survives every grain.
 
 ## Read first, ask at most once
 
