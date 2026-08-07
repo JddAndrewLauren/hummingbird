@@ -1,0 +1,3 @@
+{
+  "_comment": "Google Tasks lists the sweeper must never touch, keyed by list id with the human-readable title as the value (ids are rename-proof; titles alone break silently). Seed the real entries from `./sweep.py --dry-run` output, which logs `list id=<id> title='<title>'` for every list. An unknown or stale id fails open: that list gets swept, never skipped."
+}

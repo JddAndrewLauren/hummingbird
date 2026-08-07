@@ -3,6 +3,14 @@
 Personal GTD-style task system on Linear (org `twinion`, team `ION`). See `CONTEXT.md`
 for the domain glossary.
 
+## The sweeper
+
+`sweep.py` is the one-way Google Tasks → Linear Triage sweeper — the only built
+artifact of v0 capture. Stdlib-only Python, one-shot, fired every 15 minutes by
+supercronic in a Fly worker. Its invariants (frozen `NAMESPACE`, Linear-first
+ordering, no Actions `schedule:`, no `[http_service]`) are load-bearing and
+decided upstream; read `docs/sweeper.md` before touching any of them.
+
 ## Agent skills
 
 ### Issue tracker

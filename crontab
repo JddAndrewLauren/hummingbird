@@ -1,0 +1,3 @@
+# supercronic reads this inside the container. One line, deliberately: the
+# cadence is the cheapest decision in the system to reverse.
+*/15 * * * * /app/sweep
