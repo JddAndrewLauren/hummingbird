@@ -1,0 +1,13 @@
+# A plain always-on worker. There is deliberately no [http_service], no
+# [[services]], and no health checks: any of those would let Fly's autostop
+# machinery suspend the machine between sweeps, and Fly health checks restart
+# rather than notify (liveness is healthchecks.io's job, not Fly's).
+
+app = "hummingbird-sweeper"
+primary_region = "sjc"
+
+[build]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
