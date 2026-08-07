@@ -246,6 +246,15 @@ def _brief(payload):
     return text if len(text) <= 500 else text[:500] + "..."
 
 
+def _redact(value):
+    """Strip the path off any url in a string, keeping the host.
+
+    urllib's exception text does not normally carry the url, but "normally" is
+    not a property to bet a secret on: the ping url's path *is* the credential.
+    """
+    return re.sub(r"(https?://[^/\s]+)/\S*", r"\1/<redacted>", str(value))
+
+
 # --- healthchecks.io ---------------------------------------------------------
 
 
@@ -258,6 +267,10 @@ def ping_failure(url, body):
 
 
 def _ping(url, method, body):
+    # Never log the url. HEALTHCHECK_URL is a bearer secret -- anyone holding it
+    # can forge a success ping and silence the dead-man's switch -- and these
+    # lines go to stdout, which means the Fly log stream.
+    label = "fail" if method == "POST" else "success"
     try:
         http_json(
             url,
@@ -265,9 +278,9 @@ def _ping(url, method, body):
             {"Content-Type": "text/plain"},
             body.encode("utf-8") if body else None,
         )
-        log("healthcheck ping %s" % url)
+        log("healthcheck %s ping sent" % label)
     except Exception as exc:  # a dead-man's switch must never kill the run
-        log("WARN healthcheck ping failed: %s" % exc)
+        log("WARN healthcheck %s ping failed: %s" % (label, _redact(exc)))
 
 
 # --- the sweep ---------------------------------------------------------------

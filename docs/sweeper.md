@@ -108,6 +108,14 @@ its own try/except and can never fail a run.
 Fly health checks are explicitly *not* the mechanism: they restart, they don't
 notify. Structural backstop: unswept items visibly accumulate in the Tasks app.
 
+**The ping URL is a bearer secret and is never logged.** Its path *is* the
+credential — anyone holding it can forge a success ping and silence the alarm —
+and sweeper stdout is the Fly log stream. The log lines say `healthcheck
+success ping sent` / `healthcheck fail ping sent`, and exception text is passed
+through `_redact()` before printing. A test asserts this. If it ever leaks,
+healthchecks.io cannot rotate a ping URL in place: create a replacement check
+and `flyctl secrets set HEALTHCHECK_URL=...`.
+
 ## Secrets
 
 Set with `flyctl secrets set`; nothing on-device, nothing committed.
