@@ -192,7 +192,9 @@ queries/day. Nothing binds at this cadence.
 
 ## Human setup checklist
 
-None of this is done yet — the code is built, the provisioning is not.
+Provisioned and live since 2026-08-07; every step below is done. The list stays
+as the rebuild runbook — what to redo if the Fly app, the OAuth client, or the
+healthchecks check ever has to be recreated from scratch.
 
 1. **Fly app.** `flyctl apps create hummingbird-sweeper --org personal` (same
    account/billing as `twinion-api`). Then `flyctl tokens create deploy` and
@@ -212,6 +214,9 @@ None of this is done yet — the code is built, the provisioning is not.
    landing in Triage.
 
 ## Acceptance (post-provisioning)
+
+All five verified live on 2026-08-07; the record is on map
+[#35](https://github.com/JddAndrewLauren/hummingbird/issues/35).
 
 - A dictated capture (phone/watch/speaker → Gemini → Tasks) appears in Linear
   Triage within ~15 minutes and is marked completed in Tasks.
