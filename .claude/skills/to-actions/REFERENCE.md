@@ -78,6 +78,10 @@ mutation { issueUpdate(id: "<issueId>", input: {stateId: "<canceledStateId>"}) {
     success } }
 ```
 
+Marking an issue a duplicate instead: the **Duplicate state requires a `duplicate`
+relation first** (`issueRelationCreate` with `type: duplicate`, issueId = the dup,
+relatedIssueId = the canonical issue) — moving state without one is rejected.
+
 ## Refresh the Route
 
 The Route lives in the project's **`content`** field (long-form markdown body).

@@ -34,7 +34,9 @@ is "a handful" of questions total.
    open question that blocks defining it.
 3. **Definition test** per candidate segment — "could you start this with no more
    decisions? what does done look like?" Startable within one `size` label (`deep` is
-   the ceiling) → action. Bigger → sub-route. Not startable → fog.
+   the ceiling) → action. Bigger → sub-route. Needs more decisions → fog. (A segment
+   that's fully defined but waiting on an upstream action is *not* fog — it gets minted
+   with a `blocked by` relation.)
 
 Exit when every definable segment is captured and the Route is written. If the project
 itself is foggy enough to need real stress-testing, say so and punt to `/grilling` (or
@@ -43,8 +45,9 @@ the Grilling state) — do **not** impersonate a full grilling session.
 ## Minting
 
 - Mint **every definable segment** — startable or not — in **one confirmed batch**:
-  preview all titles + proposed labels, get one confirm/correct pass, then create.
-  No per-issue prompting.
+  preview all titles + proposed labels + the `blocked by` edges + the new/updated Route
+  (project description), get one confirm/correct pass, then create. No per-issue
+  prompting — everything the run will write is in that one preview.
 - Proposed labels: context (`@home`, `@computer`, …) is usually inferrable; `energy` and
   `size` are guesses the human corrects — say so in the preview.
 - All minted actions land in **Ready**. Never propose the `agent` label by default —
