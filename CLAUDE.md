@@ -16,6 +16,11 @@ Default vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-f
 `wontfix`, plus the non-triage `plan` role. All exist on the tracker.
 See `docs/agents/triage-labels.md`.
 
+### Microtasking
+
+`/microtask <issue-id>` breaks one already-selected, stalled Linear issue into a checklist of
+~2–5-minute Steps written into its body. See `.claude/skills/microtask/SKILL.md`.
+
 ### Domain docs
 
 Single-context — root `CONTEXT.md` glossary plus `docs/adr/`.
