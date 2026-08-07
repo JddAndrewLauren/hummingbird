@@ -197,5 +197,51 @@ class SweepFlowTest(unittest.TestCase):
         self.assertFalse(any("/tasks?" in call["url"] for call in fake.calls))
 
 
+class PingSecrecyTest(unittest.TestCase):
+    """HEALTHCHECK_URL is a bearer secret: holding it lets anyone forge a
+    success ping and silence the dead-man's switch. It must never reach stdout,
+    which on Fly is the log stream."""
+
+    SECRET = "https://hc-ping.com/6bd23d5f-1c8e-43a6-8dd4-697c9db72ce7"
+
+    def setUp(self):
+        self.real_http = sweep.http_json
+
+    def tearDown(self):
+        sweep.http_json = self.real_http
+
+    def _capture(self, call):
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            call()
+        return buffer.getvalue()
+
+    def test_success_ping_logs_no_url(self):
+        sweep.http_json = lambda *a, **k: {}
+        output = self._capture(lambda: sweep.ping_success(self.SECRET))
+        self.assertNotIn("hc-ping.com", output)
+        self.assertNotIn("6bd23d5f", output)
+        self.assertIn("healthcheck success ping sent", output)
+
+    def test_failed_ping_logs_no_url(self):
+        def boom(*args, **kwargs):
+            raise RuntimeError("connection refused to %s/fail" % self.SECRET)
+
+        sweep.http_json = boom
+        output = self._capture(lambda: sweep.ping_failure(self.SECRET, "why"))
+        self.assertNotIn("6bd23d5f", output)
+        self.assertIn("<redacted>", output)
+
+    def test_ping_failure_never_raises(self):
+        def boom(*args, **kwargs):
+            raise RuntimeError("down")
+
+        sweep.http_json = boom
+        self._capture(lambda: sweep.ping_failure(self.SECRET, "why"))  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()
