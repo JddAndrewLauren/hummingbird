@@ -36,7 +36,7 @@ Resolve IDs at runtime — don't hardcode them:
 
 ```graphql
 { projects(filter: {name: {containsIgnoreCase: "<name>"}}) {
-    nodes { id name description } } }
+    nodes { id name content } } }
 ```
 
 Create (only after an explicit yes):
@@ -80,10 +80,13 @@ mutation { issueUpdate(id: "<issueId>", input: {stateId: "<canceledStateId>"}) {
 
 ## Refresh the Route
 
+The Route lives in the project's **`content`** field (long-form markdown body).
+`description` is a separate 255-char summary line — the Route does not fit there.
+
 ```graphql
-mutation { projectUpdate(id: "<projectId>", input: {description: "<markdown>"}) {
+mutation { projectUpdate(id: "<projectId>", input: {content: "<markdown>"}) {
     success } }
 ```
 
-Fetch the current description first and rebuild the full four-section template —
-`projectUpdate` replaces the whole description.
+Fetch the current content first and rebuild the full four-section template —
+`projectUpdate` replaces the whole body.
