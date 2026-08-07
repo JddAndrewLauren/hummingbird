@@ -99,7 +99,8 @@ derived from each issue's `project.name` instead.
     "dueDate": null, "createdAt": "…",
     "state": "Ready", "project": "Update Acumatica",
     "labels": ["@computer", "quick", "low"],
-    "agent": false, "overdue": false, "dueToday": false, "blockers": []
+    "agent": false, "overdue": false, "dueToday": false, "dueSoon": false,
+    "blockers": []
   }],
   "blocked":  [{ "…": "same shape", "blockers": ["ION-15", "ION-14"] }],
   "health":   { "triage": 3, "grilling": 0 },
@@ -107,9 +108,10 @@ derived from each issue's `project.name` instead.
 }
 ```
 
-`candidates` = Ready + In Progress + anything overdue or due today in any non-shut state,
-minus the two mechanical exclusions (shut, and open-blocked). The open-blocked ones that
-were dropped land in `blocked`, so the skill can explain a short list.
+`candidates` = Ready + In Progress + anything overdue, due today, or due within the next
+seven calendar days in any non-shut state, minus the mechanical exclusions: externally
+`Blocked` issues and issues with an open `blocked by` relation. The relation-blocked ones
+that were dropped land in `blocked`, so the skill can explain a short list.
 
 `fog` is the **verbatim** text of the project's `## Fog` section from the project's
 `content` field (`description` is a separate 255-char summary and never holds the Route),

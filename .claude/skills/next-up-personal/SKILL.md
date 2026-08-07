@@ -23,6 +23,10 @@ All Linear reads/writes go through `scripts/linear.sh` (in this skill's director
 The script owns the mechanical filters. **Everything below the survey — ranking, context
 narrowing, the fog reading — is judgment, and stays here in prose.**
 
+The survey includes Ready and In Progress work plus non-frontier work that is overdue, due
+today, or due within the next seven calendar days. Issues in the `Blocked` state are waiting
+on the external world and never enter the actionable candidates.
+
 ## Preflight
 
 Missing key file → the script prints one provisioning line and exits non-zero. Relay that

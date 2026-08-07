@@ -8,6 +8,7 @@
 set -euo pipefail
 
 TEAM_KEY="${LINEAR_TEAM_KEY:-ION}"
+DUE_SOON_DAYS=7
 KEY_PATH="${LINEAR_API_KEY_PATH:-$HOME/.config/linear/api-key}"
 if [[ ! -f "$KEY_PATH" ]]; then
   echo "linear.sh: no Linear API key at $KEY_PATH — create one at https://linear.app/settings/account/security and save it to that path" >&2
@@ -52,9 +53,14 @@ case "$cmd" in
       projects(first:50){ pageInfo{hasNextPage} nodes{name content} }
     }'
     payload=$(jq -n --arg q "$q" --arg team "$TEAM_KEY" '{query:$q,variables:{team:$team}}')
-    gql "$payload" | jq --arg today "$(date +%F)" '
+    gql "$payload" | jq --arg today "$(date +%F)" --argjson dueSoonDays "$DUE_SOON_DAYS" '
       # completed / canceled / duplicate are all "shut" — for issues and for blockers alike.
       def shut($t): $t=="completed" or $t=="canceled" or $t=="duplicate";
+      def dayEpoch($d): ($d + "T00:00:00Z" | fromdateiso8601);
+      def dueSoon:
+        .dueDate != null
+        and .dueDate > $today
+        and dayEpoch(.dueDate) <= (dayEpoch($today) + ($dueSoonDays * 86400));
       def rec: {
         identifier, title, url, priority, priorityLabel, dueDate, createdAt,
         state: .state.name,
@@ -63,6 +69,7 @@ case "$cmd" in
         agent: ([.labels.nodes[].name] | index("agent") != null),
         overdue: (.dueDate != null and .dueDate < $today),
         dueToday: (.dueDate == $today),
+        dueSoon: dueSoon,
         blockers: .openBlockers
       };
       def fog($content):
@@ -87,10 +94,14 @@ case "$cmd" in
                                  | select(.type == "blocks")
                                  | select(shut(.issue.state.type) | not)
                                  | .issue.identifier ]} ] as $open
-      # Candidates: Ready + In Progress, plus anything overdue/due-today in any open state.
-      | [ $open[] | select(.state.name == "Ready"
-                           or .state.name == "In Progress"
-                           or (.dueDate != null and .dueDate <= $today)) ] as $cand
+      # Externally Blocked work is not actionable. Otherwise include the normal frontier,
+      # plus overdue and due-soon work from non-frontier states.
+      | [ $open[]
+          | select(.state.name != "Blocked")
+          | select(.state.name == "Ready"
+                   or .state.name == "In Progress"
+                   or (.dueDate != null and .dueDate <= $today)
+                   or dueSoon) ] as $cand
       | {
           today: $today,
           truncated: ($d.issues.pageInfo.hasNextPage or $d.projects.pageInfo.hasNextPage),
