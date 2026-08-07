@@ -229,6 +229,29 @@ class SweepFlowTest(unittest.TestCase):
         self.assertEqual(fake.mutating(), [])
         self.assertFalse(any("/tasks?" in call["url"] for call in fake.calls))
 
+    def test_unknown_denylist_id_fails_open(self):
+        """A stale or unknown key skips nothing -- noise in Triage, never a lost
+        capture. The `_comment` key the real denylist.json carries is itself such
+        a key, so this is the shape in production, not a hypothetical. Inverting
+        this to fail closed would silently drop every capture in the list."""
+        import json
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump({"_comment": "not a list id", "list-gone": "Renamed away"}, handle)
+            path = handle.name
+        cfg = CFG._replace(denylist_path=path)
+
+        fake = FakeHttp()
+        sweep.http_json = fake
+        ok, failures, _ = sweep.run_sweep(cfg, False)
+
+        self.assertTrue(ok)
+        self.assertEqual(failures, [])
+        self.assertTrue(any("/tasks?" in call["url"] for call in fake.calls))
+        creates = [c for c in fake.mutating() if c["url"] == sweep.LINEAR_URL]
+        self.assertEqual(len(creates), 2)  # both TASKS items swept
+
 
 def validation_error(prop, constraint, message="Argument Validation Error"):
     """Linear's INVALID_INPUT shape, as observed live in the #24 incident."""
