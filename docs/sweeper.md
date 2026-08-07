@@ -27,7 +27,7 @@ supercronic fires `/app/sweep` every 15 minutes. The sweeper stays a one-shot
 script — no `while true; sleep 900` — so it is equally runnable locally and by
 hand: `fly ssh console -C /app/sweep`. Every run logs `sweep start`, a line per
 list, a line per item, and `sweep finish ok=… created=… existed=… completed=…
-failed=… duration=…`.
+failed=… skipped=… quarantined=… duration=…`.
 
 A `fcntl.flock` on `$SWEEP_LOCK` (default `/tmp/sweep.lock`) is taken *inside*
 the script rather than by a `flock -n` wrapper in the crontab, so it covers
@@ -41,14 +41,18 @@ Exit codes: 0 = success, dry run, or lock contention; 1 = any failure.
 
 For each list not in the denylist, for each incomplete task:
 
-1. `id = deterministic_v4(task.id)`
-2. `issueCreate` in Linear with that client-supplied id
-3. only on success → `PATCH` the Tasks item to `status: completed`
-4. on any other error → log it, **leave the task incomplete** (the next sweep
-   retries), mark the sweep failed, continue to the next item
-5. after all items: no failures → ping the healthchecks success URL
+1. `derive_capture(title, notes)` — skip the item entirely if it carries neither
+2. `id = deterministic_v4(task.id)`
+3. `issueCreate` in Linear with that client-supplied id
+4. only on success → `PATCH` the Tasks item to `status: completed`
+5. on a **transient** error → log it, **leave the task incomplete** (the next
+   sweep retries), mark the sweep failed, continue to the next item
+6. on a **terminal** error → log `QUARANTINE`, leave the task incomplete, and
+   continue **without** failing the sweep (see Liveness)
+7. after all items: no failures → ping the healthchecks success URL, carrying
+   any quarantined/skipped summary as its body
 
-**Create-in-Linear-first is load-bearing.** A crash between steps 2 and 3 can
+**Create-in-Linear-first is load-bearing.** A crash between steps 3 and 4 can
 only produce a visible duplicate attempt, never a silent loss — and the
 deterministic id turns that retry into an "already exists" success.
 
@@ -74,6 +78,17 @@ the task id), and the completed Tasks item is the audit trail.
 
 - **Title → title, verbatim.** No cleanup, truncation, or prefix.
 - **Non-empty notes → description.** Empty notes → no `description` field.
+- **Empty title, notes present → the first non-blank line of notes becomes the
+  title**, and the full notes still become the description. Linear rejects an
+  empty title outright (`minLength`), and the plausible real case is a
+  dictation that landed entirely in the notes. Nothing is dropped; the first
+  line is simply repeated as the handle.
+- **Empty title *and* empty notes → skipped**, with a `WARN` line and a
+  `skipped` count. These are the rows you get by pressing Enter in the Tasks
+  app; they carry no information, so there is nothing to lose. The row is
+  deliberately **not** marked complete — it stays visible for a human to
+  delete, and re-warns every sweep until they do. Decided in
+  [#24](https://github.com/JddAndrewLauren/hummingbird/issues/24).
 - **Due date → dropped.** A Gemini-inferred date is a scheduling decision made
   by a transcription engine. The phrase ("Thursday") survives in the title, and
   a real date gets set deliberately during triage.
@@ -107,6 +122,43 @@ its own try/except and can never fail a run.
 
 Fly health checks are explicitly *not* the mechanism: they restart, they don't
 notify. Structural backstop: unswept items visibly accumulate in the Tasks app.
+
+### No single item may hold the switch red forever
+
+The invariant [#24](https://github.com/JddAndrewLauren/hummingbird/issues/24)
+added, after two blank Tasks rows pinned the check red indefinitely: **a
+permanently-red alarm is indistinguishable from a working one.** Retry-and-fail
+is right only for failures that might clear, so failures are classified:
+
+- **Transient** — 5xx, timeouts, a dead token, a Google `PATCH` failure, a list
+  that won't enumerate. The next sweep might succeed. Behaviour is unchanged:
+  leave the item, fail the run, `/fail`.
+- **Terminal** — Linear refuses this capture's own content. The item is
+  **quarantined**: logged as `QUARANTINE`, counted, left visible in Tasks, and
+  the run still succeeds.
+
+A rejection is terminal iff its status isn't 5xx and **every error it carries**
+is a validation error (`INVALID_INPUT`, or an `INPUT_ERROR` that isn't
+already-exists) naming only properties in `CONTENT_FIELDS` (`title`,
+`description`). Each error has to earn quarantine separately — one recognized
+`title` violation doesn't cover for a sibling error that explains nothing — and
+a 5xx is transient whatever its body says, because a server that failed to
+answer has told us nothing about the capture. The property test is the
+guardrail: a bad capture can only be rejected on its own content, whereas a
+wrong `teamId` or `stateId` — a broken sweeper, not a bad row — is rejected on
+*that* field and stays transient. Anything unrecognized, including an error
+naming no property, is transient too: fail loud is the default, and quarantine
+has to earn itself.
+
+`QUARANTINE_LIMIT` (10) is the backstop for shapes the rule can't read. Junk
+rows arrive in ones and twos; more than ten in a single sweep means the
+classification has stopped being trustworthy, so the run fails regardless.
+
+Quarantine nobody can see would just be the original bug inverted, so
+`skipped=` and `quarantined=` join the `sweep finish` line, and when a
+successful sweep set anything aside its summary rides along as the **body of
+the success ping**. The check reads green — capture is working — while its page
+shows the junk accumulating.
 
 **The ping URL is a bearer secret and is never logged.** Its path *is* the
 credential — anyone holding it can forge a success ping and silence the alarm —
@@ -167,6 +219,9 @@ None of this is done yet — the code is built, the provisioning is not.
   produces no duplicate issue and completes the task.
 - Three consecutive failed or missed sweeps produce a healthchecks alert.
 - A denylisted list is never touched; an unknown list id is swept.
+- A blank Tasks row (no title, no notes) leaves the check **green**, stays put
+  in Tasks, and logs one `WARN skipping empty capture` line per sweep; a
+  notes-only row lands in Triage titled with its first line.
 
 ## Changing things
 

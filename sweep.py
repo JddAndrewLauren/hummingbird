@@ -13,6 +13,13 @@ A crash between the two can only produce a visible duplicate attempt on the
 next sweep -- which the deterministic id turns into an "already exists"
 success -- never a silently lost capture.
 
+Failures split in two (#24). Transient ones -- 5xx, timeouts, a dead token --
+leave the task incomplete, fail the run, and trip the alarm; the next sweep
+retries. Terminal ones, where Linear refuses the capture's own content, are
+quarantined instead: logged loudly, left visible in Tasks, counted on the
+success ping, but never failing the run. Retrying those forever is what pinned
+the dead-man's switch red, and an alarm that is always ringing is no alarm.
+
 Environment:
   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, LINEAR_API_KEY
   HEALTHCHECK_URL   (required for live runs; unused in --dry-run)
@@ -53,6 +60,18 @@ TASKS_URL = "https://tasks.googleapis.com/tasks/v1"
 HTTP_TIMEOUT = 30
 PAGE_SIZE = 100
 
+# Linear rejects some inputs permanently -- a blank capture is the case that
+# found this (#24). Those are quarantined rather than retried, so one junk row
+# cannot hold the dead-man's switch red forever. But quarantine is only safe
+# while it stays rare: past this many in a single sweep, the classification is
+# being trusted further than it has earned, so fail the run instead.
+QUARANTINE_LIMIT = 10
+
+# The only fields a *capture* can be rejected on. A validation error naming
+# anything else (teamId, stateId) is a broken sweeper, not a bad row -- that
+# stays a hard failure and rings the alarm.
+CONTENT_FIELDS = frozenset(("title", "description"))
+
 ISSUE_CREATE = (
     "mutation IssueCreate($input: IssueCreateInput!) {"
     " issueCreate(input: $input) { success issue { id identifier } } }"
@@ -72,6 +91,15 @@ Config = namedtuple(
 
 class SweepError(Exception):
     """Anything that should fail one item, or the run, without a traceback."""
+
+
+class TerminalRejection(SweepError):
+    """Linear refuses this input. Retrying is guaranteed to fail identically.
+
+    Distinct from every other error precisely because the standard remedy --
+    leave the task incomplete, fail the run, let the next sweep retry -- is
+    wrong here. Retrying forever is what pinned the alarm red in #24.
+    """
 
 
 # --- plumbing ----------------------------------------------------------------
@@ -135,6 +163,29 @@ def deterministic_v4(task_id):
     return "-".join(
         (hexed[0:8], hexed[8:12], hexed[12:16], hexed[16:20], hexed[20:32])
     )
+
+
+def derive_capture(title, notes):
+    """(title, description) for one capture, or None if it carries nothing.
+
+    The rule from #14 is unchanged for every real capture: title verbatim, no
+    cleanup, no truncation, no prefix. #24 added the two edges it never
+    contemplated, because Linear rejects an empty title outright:
+
+    - title empty, notes present -- the plausible case is a dictation that
+      landed entirely in the notes, so its first non-blank line becomes the
+      handle. The full notes still become the description; nothing is dropped.
+    - both empty -- a row made by pressing Enter in the Tasks app. There is no
+      information to lose, so it is skipped rather than disposed of.
+    """
+    title = title or ""
+    notes = (notes or "").strip()
+    if title.strip():
+        return title, notes  # verbatim: only the emptiness test strips
+    if notes:
+        first = next(line.strip() for line in notes.splitlines() if line.strip())
+        return first, notes
+    return None
 
 
 # --- Google Tasks ------------------------------------------------------------
@@ -234,11 +285,71 @@ def linear_create_issue(api_key, issue_id, title, description):
             return "existed"
 
     if payload.get("errors") or "_status" in payload:
+        if _is_terminal(payload):
+            raise TerminalRejection(
+                "issueCreate %s rejected on content -> %s" % (issue_id, _brief(payload))
+            )
         raise SweepError("issueCreate %s -> %s" % (issue_id, _brief(payload)))
     result = (payload.get("data") or {}).get("issueCreate") or {}
     if not result.get("success"):
         raise SweepError("issueCreate %s not successful: %s" % (issue_id, _brief(payload)))
     return "created"
+
+
+def _is_terminal(payload):
+    """Would this rejection recur identically on every future sweep?
+
+    Two conditions, both required. The error must be a validation error, and
+    every field it names must be one this *capture* supplied. Linear reports
+    the offending field ("property": "title" in the live #24 error), which is
+    what separates a junk row from a broken sweeper: a bad capture can only be
+    rejected on its own content, while a wrong teamId or stateId is rejected on
+    that field and must keep ringing the alarm.
+
+    Anything unrecognized -- an unparseable shape, an error naming no field at
+    all -- returns False. Fail loud is the safe default; quarantine is the
+    exception that has to earn itself. So *every* error has to earn it
+    separately: one recognized `title` violation does not cover for a sibling
+    error naming nothing, or the unexplained half would be quarantined too.
+
+    A 5xx is never terminal whatever its body says, per the classification in
+    docs/sweeper.md: the server failing to answer says nothing about the
+    capture, and the next sweep might well succeed.
+    """
+    if payload.get("_status", 0) >= 500:
+        return False
+
+    errors = payload.get("errors") or []
+    if not errors:
+        return False
+
+    for error in errors:
+        code = (error.get("extensions") or {}).get("code")
+        if code not in ("INVALID_INPUT", "INPUT_ERROR"):
+            return False
+        properties = set()
+        _collect_properties(error, properties)
+        if not properties or not properties <= CONTENT_FIELDS:
+            return False
+    return True
+
+
+def _collect_properties(node, found):
+    """Every field named by a constraint violation, at any nesting depth.
+
+    Linear nests them under an `input` wrapper whose own node carries no
+    `constraints`, so requiring `constraints` picks the real leaves and skips
+    the wrapper.
+    """
+    if isinstance(node, dict):
+        name = node.get("property")
+        if isinstance(name, str) and node.get("constraints"):
+            found.add(name)
+        for value in node.values():
+            _collect_properties(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_properties(value, found)
 
 
 def _brief(payload):
@@ -258,19 +369,21 @@ def _redact(value):
 # --- healthchecks.io ---------------------------------------------------------
 
 
-def ping_success(url):
-    _ping(url, "GET", None)
+def ping_success(url, body=None):
+    # A body is sent when the sweep set something aside. healthchecks.io keeps
+    # it on the check page, so quarantined and skipped items stay visible
+    # without the run having to fail to show them.
+    _ping(url, "POST" if body else "GET", body, "success")
 
 
 def ping_failure(url, body):
-    _ping(url.rstrip("/") + "/fail", "POST", body)
+    _ping(url.rstrip("/") + "/fail", "POST", body, "fail")
 
 
-def _ping(url, method, body):
+def _ping(url, method, body, label):
     # Never log the url. HEALTHCHECK_URL is a bearer secret -- anyone holding it
     # can forge a success ping and silence the dead-man's switch -- and these
     # lines go to stdout, which means the Fly log stream.
-    label = "fail" if method == "POST" else "success"
     try:
         http_json(
             url,
@@ -299,10 +412,19 @@ def load_denylist(path):
 
 
 def run_sweep(cfg, dry_run):
-    """Run one sweep. Returns (ok, failure_lines)."""
+    """Run one sweep. Returns (ok, failure_lines, notes_lines).
+
+    `notes_lines` describes what the sweep set aside -- quarantined and
+    skipped items. They do not fail the run, so they ride along on the success
+    ping instead: green means capture is working, and the check page still
+    shows the junk accumulating. Quarantine nobody can see is just the bug
+    this fixed, pointed the other way.
+    """
     started = time.time()
     failures = []
-    stats = {"created": 0, "existed": 0, "completed": 0, "failed": 0}
+    quarantined = []
+    stats = {"created": 0, "existed": 0, "completed": 0, "failed": 0,
+             "skipped": 0, "quarantined": 0}
     log("sweep start dry_run=%d" % int(dry_run))
 
     denylist = load_denylist(cfg.denylist_path)
@@ -327,8 +449,19 @@ def run_sweep(cfg, dry_run):
 
         for task in tasks:
             task_id = task.get("id")
-            title = task.get("title") or ""
-            notes = (task.get("notes") or "").strip()
+            capture = derive_capture(task.get("title"), task.get("notes"))
+            if capture is None:
+                # Nothing to capture, so nothing to lose. Left incomplete on
+                # purpose: the row stays visible in Tasks for a human to
+                # delete, rather than being disposed of silently. It will
+                # re-warn every sweep until then, and never touches the alarm.
+                stats["skipped"] += 1
+                log(
+                    "WARN skipping empty capture task=%s list=%s (no title, no notes)"
+                    % (task_id, list_id)
+                )
+                continue
+            title, notes = capture
             issue_id = deterministic_v4(task_id)
             try:
                 if dry_run:
@@ -344,25 +477,59 @@ def run_sweep(cfg, dry_run):
                 complete_task(token, list_id, task_id)
                 stats["completed"] += 1
                 log("completed task %s in list %s" % (task_id, list_id))
+            except TerminalRejection as exc:
+                # Retrying cannot help, so retrying is all cost: it would pin
+                # the dead-man's switch red until a human intervened, and a
+                # permanently-red alarm is indistinguishable from a working
+                # one. Leave the row visible in Tasks and keep the run honest.
+                stats["quarantined"] += 1
+                quarantined.append("task %s in list %s: %s" % (task_id, list_id, exc))
+                log(
+                    "QUARANTINE task %s in list %s title='%s': %s"
+                    % (task_id, list_id, title, exc)
+                )
             except Exception as exc:
                 # Leave the task incomplete; the next sweep retries it.
                 stats["failed"] += 1
                 failures.append("task %s in list %s: %s" % (task_id, list_id, exc))
                 log("ERROR task %s in list %s: %s" % (task_id, list_id, exc))
 
+    if stats["quarantined"] > QUARANTINE_LIMIT:
+        # Junk rows arrive in ones and twos. This many at once is not bad
+        # input, it is a sweeper whose classification has stopped being
+        # trustworthy -- so stop trusting it and ring the alarm.
+        failures.append(
+            "%d items quarantined in one sweep (limit %d); treating as systematic"
+            % (stats["quarantined"], QUARANTINE_LIMIT)
+        )
+
     ok = not failures
     log(
-        "sweep finish ok=%d created=%d existed=%d completed=%d failed=%d duration=%.1fs"
+        "sweep finish ok=%d created=%d existed=%d completed=%d failed=%d "
+        "skipped=%d quarantined=%d duration=%.1fs"
         % (
             int(ok),
             stats["created"],
             stats["existed"],
             stats["completed"],
             stats["failed"],
+            stats["skipped"],
+            stats["quarantined"],
             time.time() - started,
         )
     )
-    return ok, failures
+
+    set_aside = []
+    if stats["quarantined"]:
+        set_aside.append(
+            "%d quarantined (Linear refused the content):" % stats["quarantined"]
+        )
+        set_aside.extend(quarantined)
+    if stats["skipped"]:
+        set_aside.append(
+            "%d empty captures skipped (no title, no notes)" % stats["skipped"]
+        )
+    return ok, failures, set_aside
 
 
 def config_from_env(env, dry_run):
@@ -416,9 +583,10 @@ def main(argv=None):
 
     cfg = None
     failures = []
+    notes = []
     try:
         cfg = config_from_env(os.environ, args.dry_run)
-        ok, failures = run_sweep(cfg, args.dry_run)
+        ok, failures, notes = run_sweep(cfg, args.dry_run)
     except Exception as exc:
         ok = False
         failures = failures or []
@@ -429,7 +597,7 @@ def main(argv=None):
     healthcheck = cfg.healthcheck_url if cfg else os.environ.get("HEALTHCHECK_URL", "")
     if not args.dry_run and healthcheck:
         if ok:
-            ping_success(healthcheck)
+            ping_success(healthcheck, "\n".join(notes) if notes else None)
         else:
             ping_failure(healthcheck, "\n".join(failures))
 
