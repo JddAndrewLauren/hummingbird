@@ -52,7 +52,7 @@ For each list not in the denylist, for each incomplete task:
 7. after all items: no failures → ping the healthchecks success URL, carrying
    any quarantined/skipped summary as its body
 
-**Create-in-Linear-first is load-bearing.** A crash between steps 2 and 3 can
+**Create-in-Linear-first is load-bearing.** A crash between steps 3 and 4 can
 only produce a visible duplicate attempt, never a silent loss — and the
 deterministic id turns that retry into an "already exists" success.
 
@@ -137,14 +137,18 @@ is right only for failures that might clear, so failures are classified:
   **quarantined**: logged as `QUARANTINE`, counted, left visible in Tasks, and
   the run still succeeds.
 
-A rejection is terminal iff it is a validation error (`INVALID_INPUT`, or an
-`INPUT_ERROR` that isn't already-exists) **and** every property it names is in
-`CONTENT_FIELDS` (`title`, `description`). That second half is the guardrail: a
-bad capture can only be rejected on its own content, whereas a wrong `teamId`
-or `stateId` — a broken sweeper, not a bad row — is rejected on *that* field
-and stays transient. Anything unrecognized, including an error naming no
-property, is transient too: fail loud is the default, and quarantine has to
-earn itself.
+A rejection is terminal iff its status isn't 5xx and **every error it carries**
+is a validation error (`INVALID_INPUT`, or an `INPUT_ERROR` that isn't
+already-exists) naming only properties in `CONTENT_FIELDS` (`title`,
+`description`). Each error has to earn quarantine separately — one recognized
+`title` violation doesn't cover for a sibling error that explains nothing — and
+a 5xx is transient whatever its body says, because a server that failed to
+answer has told us nothing about the capture. The property test is the
+guardrail: a bad capture can only be rejected on its own content, whereas a
+wrong `teamId` or `stateId` — a broken sweeper, not a bad row — is rejected on
+*that* field and stays transient. Anything unrecognized, including an error
+naming no property, is transient too: fail loud is the default, and quarantine
+has to earn itself.
 
 `QUARANTINE_LIMIT` (10) is the backstop for shapes the rule can't read. Junk
 rows arrive in ones and twos; more than ten in a single sweep means the

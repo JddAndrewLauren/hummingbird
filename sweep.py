@@ -308,17 +308,30 @@ def _is_terminal(payload):
 
     Anything unrecognized -- an unparseable shape, an error naming no field at
     all -- returns False. Fail loud is the safe default; quarantine is the
-    exception that has to earn itself.
+    exception that has to earn itself. So *every* error has to earn it
+    separately: one recognized `title` violation does not cover for a sibling
+    error naming nothing, or the unexplained half would be quarantined too.
+
+    A 5xx is never terminal whatever its body says, per the classification in
+    docs/sweeper.md: the server failing to answer says nothing about the
+    capture, and the next sweep might well succeed.
     """
-    codes = set()
-    for error in payload.get("errors") or []:
-        codes.add((error.get("extensions") or {}).get("code"))
-    if not codes or not codes <= {"INVALID_INPUT", "INPUT_ERROR"}:
+    if payload.get("_status", 0) >= 500:
         return False
 
-    properties = set()
-    _collect_properties(payload.get("errors"), properties)
-    return bool(properties) and properties <= CONTENT_FIELDS
+    errors = payload.get("errors") or []
+    if not errors:
+        return False
+
+    for error in errors:
+        code = (error.get("extensions") or {}).get("code")
+        if code not in ("INVALID_INPUT", "INPUT_ERROR"):
+            return False
+        properties = set()
+        _collect_properties(error, properties)
+        if not properties or not properties <= CONTENT_FIELDS:
+            return False
+    return True
 
 
 def _collect_properties(node, found):

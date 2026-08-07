@@ -349,6 +349,33 @@ class TerminalFailureTest(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("task-1", failures[0])
 
+    def test_an_unexplained_sibling_error_keeps_the_whole_rejection_transient(self):
+        # Every error has to earn quarantine on its own. A recognized title
+        # violation must not cover for a sibling naming no field at all --
+        # that half is unexplained, and unexplained fails loud.
+        rejection = validation_error("title", self.BLANK_TITLE)
+        rejection["errors"].append(
+            {"message": "Something else", "extensions": {"code": "INVALID_INPUT"}}
+        )
+        fake = FakeHttp(linear_responses=[rejection, self.GOOD])
+        ok, failures, _ = self.run_with(fake)
+
+        self.assertFalse(ok)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("task-1", failures[0])
+
+    def test_a_5xx_is_transient_whatever_its_body_says(self):
+        # The server failing to answer says nothing about the capture, so the
+        # status is checked before the body is believed.
+        rejection = validation_error("title", self.BLANK_TITLE)
+        rejection["_status"] = 503
+        fake = FakeHttp(linear_responses=[rejection, self.GOOD])
+        ok, failures, _ = self.run_with(fake)
+
+        self.assertFalse(ok, "a 5xx must stay retryable, not be quarantined")
+        self.assertEqual(len(failures), 1)
+        self.assertIn("task-1", failures[0])
+
     def test_quarantine_limit_is_a_backstop(self):
         count = sweep.QUARANTINE_LIMIT + 1
         fake = FakeHttp(
