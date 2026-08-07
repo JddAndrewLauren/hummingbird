@@ -1,0 +1,24 @@
+{"id": "ph-01", "parse": {"title": "Email Dana the Q3 roadmap draft", "notes": "Before Thursday standup.", "due": "2026-08-13", "label": {"context": "@computer", "size": "quick"}}}
+{"id": "ph-02", "parse": {"title": "Call the dentist to reschedule the cleaning", "notes": "Also: grab the prescription while out that way; maybe pick up milk.", "due": null, "label": {"context": "@phone", "size": "quick"}}}
+{"id": "ph-03", "parse": {"title": "The thing with the Fly deploy token", "notes": "Fragment — no action stated; kept verbatim.", "due": null, "label": {"context": "@computer"}}}
+{"id": "ph-04", "parse": {"title": "Water the plants", "due": null, "label": {"context": "@home", "energy": "low", "size": "quick"}}}
+{"id": "ph-05", "parse": {"title": "Buy a birthday card for mom", "notes": "Also: book the oil change; cancel the gym trial before it charges me.", "due": null}}
+{"id": "ph-06", "parse": {"title": "Quarterly taxes", "due": null}}
+{"id": "ph-07", "parse": {"title": "Send the invoice to the landscaping people", "notes": "The one from last month.", "due": null, "label": {"context": "@computer", "size": "quick"}}}
+{"id": "ph-08", "parse": {"title": "Draft the ADR for the runner endpoint", "notes": "Separate Fly app, not on the sweeper; single bearer token; revisit after the bake-off.", "due": null, "label": {"context": "@computer", "size": "deep"}}}
+{"id": "ph-09", "parse": {"title": "Take the trash out", "notes": "It's recycling week.", "due": "2026-08-07", "label": {"context": "@home", "energy": "low", "size": "quick"}}}
+{"id": "ph-10", "parse": {"title": "Renew the passport", "notes": "We leave in October, so there's a window.", "due": null, "label": {"context": "@errands", "size": "deep"}}}
+{"id": "ph-11", "parse": {"title": "Dentist", "due": null}}
+{"id": "ph-12", "parse": {"title": "Pick up the dry cleaning", "notes": "Also: call the plumber about the leak under the sink; we're out of coffee.", "due": null}}
+{"id": "ph-13", "parse": {"title": "Read the Foundation Models guided-generation docs", "notes": "Before starting the iPad prototype.", "due": null, "label": {"context": "@computer", "size": "medium"}}}
+{"id": "ph-14", "parse": {"title": "Book flights for", "notes": "Truncated capture — destination missing; kept verbatim.", "due": null}}
+{"id": "ph-15", "parse": {"title": "Reschedule the 1:1 with Sam", "notes": "To Friday afternoon.", "due": "2026-08-14", "label": {"context": "@computer", "size": "quick"}}}
+{"id": "ph-16", "parse": {"title": "Send Grandma a thank-you note for the sweater", "due": null, "label": {"context": "@home", "energy": "low", "size": "quick"}}}
+{"id": "ph-17", "parse": {"title": "Leak under the bathroom sink getting worse", "notes": "No verb stated; kept close to raw rather than inventing an action.", "due": null, "label": {"context": "@home"}}}
+{"id": "ph-18", "parse": {"title": "Submit the reimbursement for the conference hotel", "notes": "By end of month.", "due": "2026-08-31", "label": {"context": "@computer", "size": "quick"}}}
+{"id": "ph-19", "parse": {"title": "Transfer $500 to savings", "notes": "Also: set up autopay for the electric bill.", "due": null, "label": {"context": "@phone", "size": "quick"}}}
+{"id": "ph-20", "parse": {"title": "Milk, eggs, bread, coffee filters", "notes": "Shopping list — no verb; items kept in the title.", "due": null, "label": {"context": "@errands", "size": "quick"}}}
+{"id": "ph-21", "parse": {"title": "Follow up with the recruiter", "notes": "She said she'd have an update by Wednesday.", "due": null, "label": {"context": "@phone", "size": "quick"}}}
+{"id": "ph-22", "parse": {"title": "Car registration", "notes": "Also: the smog check (likely a prerequisite).", "due": null, "label": {"context": "@errands"}}}
+{"id": "ph-23", "parse": {"title": "Idea: raw-text fallback for capture-parse that never loses the utterance", "notes": "\"Couldn't parse, kept verbatim.\"", "due": null, "label": {"context": "@computer", "size": "medium"}}}
+{"id": "ph-24", "parse": {"title": "Book the dog sitter for the trip", "notes": "Also: confirm the rental car; pay the cabin deposit (due the 15th).", "due": null}}

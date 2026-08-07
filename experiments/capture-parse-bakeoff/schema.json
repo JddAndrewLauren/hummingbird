@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/JddAndrewLauren/hummingbird/experiments/capture-parse-bakeoff/schema.json",
+  "title": "capture-parse",
+  "description": "The parse target: one raw capture -> the local store's task-field schema. Core is title+notes (what the sweeper already does). The `due` and `label` fields are STRETCH probes -- the places a small model is most likely to fail -- and are optional by design so the bake-off can measure them separately without penalising a title+notes-only parse.",
+  "type": "object",
+  "required": ["title"],
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The single actionable line, found within the raw capture. On a clean typed capture this is verbatim; on messy dictation the parser must LOCATE it. Never invent content that isn't in the raw."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Everything else worth keeping -- the remainder after the title is lifted out. Omit the field entirely when there is no remainder (do not emit an empty string). Nothing from the raw may be silently dropped: content that isn't the title belongs here."
+    },
+    "due": {
+      "description": "STRETCH. An inferred due date, only when the raw carries an explicit temporal phrase (\"by Thursday\", \"the 15th\", \"tonight\"). ISO-8601 date (YYYY-MM-DD) if resolvable, else the verbatim phrase. null when nothing temporal is present -- do NOT guess. The sweeper deliberately drops due dates; this field exists to measure whether on-device inference is safe enough to change that.",
+      "type": ["string", "null"]
+    },
+    "label": {
+      "description": "STRETCH. Coarse GTD hints, each optional; omit any dimension not clearly implied by the raw. Probes whether a small model can add structure or only hallucinates it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "type": "string",
+          "description": "Where/with-what the action happens, e.g. @home, @errands, @phone, @computer.",
+          "enum": ["@home", "@errands", "@phone", "@computer", "@work", "@anywhere"]
+        },
+        "energy": {
+          "type": "string",
+          "description": "Rough energy the action demands.",
+          "enum": ["low", "medium", "high"]
+        },
+        "size": {
+          "type": "string",
+          "description": "Rough size; `deep` is the action ceiling (see CONTEXT.md).",
+          "enum": ["quick", "medium", "deep"]
+        }
+      }
+    }
+  }
+}
