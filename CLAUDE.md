@@ -29,6 +29,12 @@ See `docs/agents/triage-labels.md`.
 `/microtask <issue-id>` breaks one already-selected, stalled Linear issue into a checklist of
 ~2–5-minute Steps written into its body. See `.claude/skills/microtask/SKILL.md`.
 
+### next-up-personal
+
+`/next-up-personal` picks what to do right now from the Linear workspace — one ranked top
+pick plus a health footer — and `/next-up-personal <issue-id>` hands one `agent`-labelled
+issue to an agent. See `.claude/skills/next-up-personal/SKILL.md`.
+
 ### Domain docs
 
 Single-context — root `CONTEXT.md` glossary plus `docs/adr/`.
