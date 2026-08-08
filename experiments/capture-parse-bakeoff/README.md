@@ -16,8 +16,8 @@ whether to infer more.
 Same corpus, same `prompt.md`, same `schema.json`, two parsers — scored against a blind
 human ground truth on:
 
-- **Structured-field accuracy** — `title` fidelity, `notes` capture, and (stretch)
-  inferred `due` / `label` correctness, per field.
+- **Structured-field accuracy** — `title` fidelity, `notes` capture, `items` completeness
+  on multi-action captures, and (stretch) inferred `due` / `label` correctness, per field.
 - **Failure-mode tally** — dropped content, hallucinated fields, garbled dictation, wrong
   title/notes split, multi-item captures collapsed. Tags defined in `scoring.md`.
 
@@ -27,7 +27,7 @@ A few dozen captures, one table a human reads in a minute. A prototype, not a be
 
 | file | what it is |
 | --- | --- |
-| `schema.json` | The parse target. Core `title`+`notes`; `due` and `label` are clearly-optional **stretch** probes — the places a small model is most likely to fail. Real JSON Schema, usable for schema-constrained output. |
+| `schema.json` | The parse target. Core `title`+`notes`, plus `items` for multi-action captures; `due` and `label` are clearly-optional **stretch** probes — the places a small model is most likely to fail. Real JSON Schema, usable for schema-constrained output. |
 | `prompt.md` | The single shared parse prompt given to **both** parsers verbatim. Identical wording is the point. |
 | `corpus.jsonl` | The captures, one JSON object per line: `{"id","raw","source"}` (real entries also carry `origin`). `ph-*` are placeholders, `real-*` are genuine Triage captures — see below. |
 | `run_hosted.py` | Stdlib-only runner. `--emit-prompts` builds the per-capture prompts to send the hosted model; `--merge` validates the replies against `schema.json` and writes `hosted_results.jsonl`. No API key, no network — the hosted-runner service from #41 doesn't exist yet, so it reads replies from a file/stdin. |
@@ -67,6 +67,34 @@ corpus grows again. Then re-run the hosted side (steps 1–3 below) for the new 
 
 **Due-date caveat:** relative phrases resolve against the *run* date — 2026-08-07 for
 `ph-*` / `real-01…05`, 2026-08-08 for `real-06…28`. Score each row against its own date.
+
+## Multi-item captures — why `items` exists
+
+Seven of the 28 real captures hold more than one action. Under the original rules those
+parsed to one `title` plus an "Also: …" prose blob in `notes` — nothing lost, but the 2nd
+and 3rd actions became text inside a text field: no state, not completable, invisible to
+`/next-up-personal`. Lossless-looking and functionally lossy, on **a quarter of real
+dictated input**.
+
+`items` keeps them discrete and countable instead. Two rules follow from it:
+
+- **`title` is the first action stated**, not the "clearest" one. Clearest is an opinion;
+  two parsers picking different actions would both be right by that rule, turning `title✓`
+  into a coin flip. First is a fact about the utterance, so the comparison stays mechanical.
+- **`items[0]` repeats the title's action.** Redundant on purpose — scoring never has to
+  special-case the promoted one, and `items✓` is a set comparison rather than a reading
+  exercise.
+
+**One capture is still one task.** `items` does not mint several; it surfaces them for the
+human who is already reviewing Triage. Whether three actions become three issues is a
+triage judgment, and pushing it onto a 3B-parameter model running offline is exactly the
+kind of unforced error this bake-off exists to avoid. That also keeps the sync contract in
+[ADR-0003](../../docs/adr/) untouched — the store still sees one task per capture.
+
+This is a call on [#41](https://github.com/JddAndrewLauren/hummingbird/issues/41)'s open
+question 3 (the parse schema), made here because #42 is explicitly chartered to flag where
+the schema needs changing — and made *before* the blind labelling, since ground truth has
+to be written in whatever shape the sheet scores.
 
 ## How to run
 

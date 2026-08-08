@@ -46,7 +46,23 @@ and the whole bake-off rests on these labels being independent.
 For each capture, write the parse YOU would want in the local store:
 
   title  -- the one actionable line, filler stripped, short and imperative.
-  notes  -- everything else worth keeping. Blank if there is no remainder.
+            If the capture holds SEVERAL actions, the title is the FIRST one
+            stated -- not the most important. First is a fact; "clearest" is
+            an opinion, and no two labellers agree on it.
+  items  -- ONLY for captures with more than one action. One action per line,
+            in the order spoken, each indented by two spaces and starting
+            with "- ". Repeat the title's own action as the first entry --
+            the redundancy is deliberate. Blank for single-action captures;
+            never write a one-item list. Example:
+
+              items:
+                - Pick up milk
+                - Replace the air filter
+                - Call the plumber
+
+  notes  -- everything else worth keeping that ISN'T an action: qualifiers,
+            hedges ("maybe"), incomplete clauses, a note about a suspected
+            mis-transcription. Blank if there is no remainder.
   due    -- only if the raw carries an explicit temporal phrase. A date
             (YYYY-MM-DD) if you can resolve it against that row's `spoken`
             date, else the phrase verbatim. Blank otherwise. Never guess.
@@ -58,8 +74,11 @@ For each capture, write the parse YOU would want in the local store:
 
 Two rules that decide the hard rows:
 
-  multi-item   -- clearest single action becomes the title; the rest goes
-                  into notes, near-verbatim. Nothing may be lost.
+  multi-item   -- every action goes in `items`, in the order spoken; the
+                  first one is also the title. Nothing may be lost. This
+                  does NOT mean the capture becomes three tasks -- it stays
+                  one task, and whether to split it is a Triage decision you
+                  make later, not a labelling decision you make now.
   unparseable  -- put the whole raw text in title, leave the rest blank.
                   Kept beats clever.
 
@@ -79,6 +98,7 @@ raw:    {raw}
 source: {source}   spoken: {spoken}
 
 title:
+items:
 notes:
 due:
 label:
@@ -122,7 +142,7 @@ def main():
 
     if os.path.exists(args.out):
         with open(args.out, encoding="utf-8") as fh:
-            if re.search(r"^(title|notes|due|label):\s*\S", fh.read(), re.M):
+            if re.search(r"^(title|items|notes|due|label):\s*\S|^ +- \S", fh.read(), re.M):
                 sys.exit(f"{args.out} already has answers in it -- refusing to overwrite. "
                          "Move it aside first if you really want a fresh worksheet.")
 

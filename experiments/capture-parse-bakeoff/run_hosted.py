@@ -59,7 +59,8 @@ def read_jsonl(path):
 
 # --- minimal JSON Schema check ------------------------------------------------
 # Covers exactly the keywords schema.json uses: type (incl. union list), required,
-# properties, additionalProperties:false, enum, minLength. Not a general validator.
+# properties, additionalProperties:false, enum, minLength, and for arrays minItems
+# plus a single `items` subschema. Not a general validator.
 
 def validate(node, schema, path, errs):
     t = schema.get("type")
@@ -73,6 +74,12 @@ def validate(node, schema, path, errs):
     if isinstance(node, str) and "minLength" in schema:
         if len(node) < schema["minLength"]:
             errs.append(f"{path}: shorter than minLength {schema['minLength']}")
+    if isinstance(node, list):
+        if len(node) < schema.get("minItems", 0):
+            errs.append(f"{path}: fewer than minItems {schema['minItems']}")
+        if isinstance(schema.get("items"), dict):
+            for i, el in enumerate(node):
+                validate(el, schema["items"], f"{path}[{i}]", errs)
     if isinstance(node, dict) and schema.get("type") == "object":
         for req in schema.get("required", []):
             if req not in node:

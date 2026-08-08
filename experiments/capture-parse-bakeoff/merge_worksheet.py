@@ -33,14 +33,33 @@ SCORING = os.path.join(HERE, "scoring.md")
 WORKSHEET = os.path.join(HERE, "ground_truth_worksheet.txt")
 OUT = os.path.join(HERE, "ground_truth.jsonl")
 
-FIELDS = ("title", "notes", "due", "label")
+FIELDS = ("title", "items", "notes", "due", "label")
+
+
+def text(b, field):
+    """A plain-string field: inline value plus any continuation lines, joined."""
+    return " ".join(p for p in b.get(field, []) if p).strip()
+
+
+def bullets(b, field, cid, errs):
+    """A list field: `- ` bullets, one per continuation line."""
+    out = []
+    for p in (p for p in b.get(field, []) if p):
+        if p.startswith("- ") and p[2:].strip():
+            out.append(p[2:].strip())
+        else:
+            errs.append(f"{cid}: {field} entry {p!r} must be a non-empty '- ' bullet "
+                        "on its own indented line")
+    return out
 
 
 def parse_worksheet(path):
-    """-> {id: {field: text}}. Continuation lines are indented by two spaces."""
+    """-> {id: {field: [line, ...]}} -- each field's inline value plus its indented
+    continuation lines, in order. Assembly is field-specific: `items` reads them as a
+    bullet list, every other field joins them into one string."""
     blocks, cur, field = {}, None, None
     with open(path, encoding="utf-8") as fh:
-        for n, line in enumerate(fh, 1):
+        for line in fh:
             # `== id ==` with real whitespace and a `=`-free id, so the header's
             # ==== rule line isn't mistaken for a block.
             head = re.match(r"^== +([^=\s]+) +==\s*$", line)
@@ -53,10 +72,10 @@ def parse_worksheet(path):
             kv = re.match(r"^(%s):[ \t]*(.*)$" % "|".join(FIELDS), line)
             if kv:
                 field = kv.group(1)
-                blocks[cur][field] = kv.group(2).strip()
+                blocks[cur][field] = [kv.group(2).strip()]
                 continue
             if field and line.startswith("  ") and line.strip():
-                blocks[cur][field] = (blocks[cur][field] + " " + line.strip()).strip()
+                blocks[cur][field].append(line.strip())
                 continue
             if not line.strip():
                 field = None
@@ -84,17 +103,23 @@ def build(blocks, corpus_ids, errs):
         if b is None:
             unlabelled.append(cid)
             continue
-        title = b.get("title", "")
+        title = text(b, "title")
         if not title:
             unlabelled.append(cid)
             continue
         p = {"title": title}
-        if b.get("notes"):
-            p["notes"] = b["notes"]
-        if b.get("due"):
-            p["due"] = b["due"]
-        if b.get("label"):
-            label = parse_label(b["label"], cid, errs)
+        items = bullets(b, "items", cid, errs)
+        if items:
+            p["items"] = items
+            if items[0] != title:
+                errs.append(f"{cid}: items[0] is {items[0]!r} but title is {title!r} — "
+                            "the first action stated must be both")
+        if text(b, "notes"):
+            p["notes"] = text(b, "notes")
+        if text(b, "due"):
+            p["due"] = text(b, "due")
+        if text(b, "label"):
+            label = parse_label(text(b, "label"), cid, errs)
             if label:
                 p["label"] = label
         parses[cid] = p
@@ -108,6 +133,9 @@ def cell(p):
     def trunc(s, n):
         return s if len(s) <= n else s[:n].rstrip() + "…"
     bits = ["**t:** " + trunc(p["title"], 68)]
+    if p.get("items"):
+        bits.append("**items:** " + " · ".join("%d. %s" % (i, trunc(it, 40))
+                                               for i, it in enumerate(p["items"], 1)))
     if p.get("notes"):
         bits.append("**n:** " + trunc(p["notes"], 60))
     if p.get("due"):

@@ -14,7 +14,16 @@
     },
     "notes": {
       "type": "string",
-      "description": "Everything else worth keeping -- the remainder after the title is lifted out. Omit the field entirely when there is no remainder (do not emit an empty string). Nothing from the raw may be silently dropped: content that isn't the title belongs here."
+      "description": "Everything else worth keeping that is NOT an action -- qualifiers, context, incomplete clauses, and any note about a deviation from the raw (a cleaned stutter, a suspected mis-transcription). Omit the field entirely when there is no remainder (do not emit an empty string). Nothing from the raw may be silently dropped: content that is neither the title nor an `items` entry belongs here."
+    },
+    "items": {
+      "description": "Every action found in the capture, in the order spoken, imperative and filler-stripped. Present ONLY when the capture holds more than one action; omit it entirely for a single-action capture. `items[0]` is always the same action as `title` -- the redundancy is deliberate, so scoring never special-cases the promoted one. A quarter of real dictated captures are multi-item, and burying the 2nd and 3rd actions in `notes` prose makes them invisible to the system while looking lossless; this field keeps them discrete and countable. It does NOT mint several tasks: one capture is still one task, and whether these become separate issues is a Triage decision, not a parse decision.",
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "due": {
       "description": "STRETCH. An inferred due date, only when the raw carries an explicit temporal phrase (\"by Thursday\", \"the 15th\", \"tonight\"). ISO-8601 date (YYYY-MM-DD) if resolvable, else the verbatim phrase. null when nothing temporal is present -- do NOT guess. The sweeper deliberately drops due dates; this field exists to measure whether on-device inference is safe enough to change that.",

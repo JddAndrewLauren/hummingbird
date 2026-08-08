@@ -66,12 +66,17 @@ rigged. **Why blind:** reading a model's parse first anchors your label to it.
    not today.
 2. **Do not open `scoring.md` or `hosted_results.jsonl`** until the worksheet is done.
 3. For each raw, write the parse *you* would want in the local store:
-   - **title** — the one actionable line, filler stripped, short and imperative.
-   - **notes** — everything else worth keeping; blank if none.
+   - **title** — the one actionable line, filler stripped, short and imperative. On a
+     multi-action capture it's the **first** action stated, not the most important.
+   - **items** — only when the capture holds several actions: one `- ` bullet per action,
+     in the order spoken, the first repeating the title's. Blank otherwise; never a
+     one-item list. This doesn't split the capture into three tasks — it stays one task,
+     and splitting is a Triage call you make later.
+   - **notes** — everything else worth keeping that isn't an action; blank if none.
    - **due** — only if the raw carries an explicit temporal phrase; date if resolvable,
      else the phrase verbatim; otherwise leave unset. Never guess.
    - **label** — `context`/`energy`/`size` only where clearly implied; skip freely.
-   - **multi-item** — clearest single action as title, the rest verbatim in notes.
+   - **multi-item** — every action in `items`, first one also the title. Nothing lost.
    - **unparseable** — whole raw as title, nothing else. Kept beats clever.
 4. **`./merge_worksheet.py`** (or hand the worksheet back to any session) — validates every
    label against `schema.json`, writes `ground_truth.jsonl`, and fills `scoring.md`'s

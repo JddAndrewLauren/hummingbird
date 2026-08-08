@@ -1,7 +1,7 @@
 {"id": "ph-01", "parse": {"title": "Email Dana the Q3 roadmap draft", "notes": "Before Thursday standup.", "due": "2026-08-13", "label": {"context": "@computer", "size": "quick"}}}
 {"id": "ph-03", "parse": {"title": "The thing with the Fly deploy token", "notes": "Fragment — no action stated; kept verbatim.", "due": null, "label": {"context": "@computer"}}}
 {"id": "ph-04", "parse": {"title": "Water the plants", "due": null, "label": {"context": "@home", "energy": "low", "size": "quick"}}}
-{"id": "ph-05", "parse": {"title": "Buy a birthday card for mom", "notes": "Also: book the oil change; cancel the gym trial before it charges me.", "due": null}}
+{"id": "ph-05", "parse": {"title": "Buy a birthday card for mom", "items": ["Buy a birthday card for mom", "Book the oil change", "Cancel the gym trial"], "notes": "Cancel the gym trial before it charges me.", "label": {"context": "@errands", "size": "quick"}}}
 {"id": "ph-06", "parse": {"title": "Quarterly taxes", "due": null}}
 {"id": "ph-08", "parse": {"title": "Draft the ADR for the runner endpoint", "notes": "Separate Fly app, not on the sweeper; single bearer token; revisit after the bake-off.", "due": null, "label": {"context": "@computer", "size": "deep"}}}
 {"id": "ph-11", "parse": {"title": "Dentist", "due": null}}
@@ -10,15 +10,15 @@
 {"id": "ph-17", "parse": {"title": "Leak under the bathroom sink getting worse", "notes": "No verb stated; kept close to raw rather than inventing an action.", "due": null, "label": {"context": "@home"}}}
 {"id": "ph-18", "parse": {"title": "Submit the reimbursement for the conference hotel", "notes": "By end of month.", "due": "2026-08-31", "label": {"context": "@computer", "size": "quick"}}}
 {"id": "ph-20", "parse": {"title": "Milk, eggs, bread, coffee filters", "notes": "Shopping list — no verb; items kept in the title.", "due": null, "label": {"context": "@errands", "size": "quick"}}}
-{"id": "ph-22", "parse": {"title": "Car registration", "notes": "Also: the smog check (likely a prerequisite).", "due": null, "label": {"context": "@errands"}}}
+{"id": "ph-22", "parse": {"title": "Car registration", "items": ["Car registration", "Smog check"], "label": {"context": "@errands"}}}
 {"id": "ph-23", "parse": {"title": "Idea: raw-text fallback for capture-parse that never loses the utterance", "notes": "\"Couldn't parse, kept verbatim.\"", "due": null, "label": {"context": "@computer", "size": "medium"}}}
 {"id": "real-01", "parse": {"title": "Testing with voice", "due": null}}
 {"id": "real-02", "parse": {"title": "Call the dentist for new aligners", "due": null, "label": {"context": "@phone", "size": "quick"}}}
 {"id": "real-03", "parse": {"title": "Order clothes", "due": null, "label": {"context": "@computer"}}}
 {"id": "real-04", "parse": {"title": "Golf practice", "due": null}}
 {"id": "real-05", "parse": {"title": "Setup hermes agent", "due": null, "label": {"context": "@computer"}}}
-{"id": "real-06", "parse": {"title": "Return the Amazon package", "notes": "Also: buy printer paper; maybe stop at the pharmacy.", "label": {"context": "@errands", "size": "quick"}}}
-{"id": "real-07", "parse": {"title": "Pick up the dry cleaning", "notes": "Also: get dog food; maybe grab some coffee while I'm at it.", "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-06", "parse": {"title": "Return the Amazon package", "items": ["Return the Amazon package", "Buy printer paper", "Stop at the pharmacy"], "notes": "The pharmacy stop was hedged (\"maybe\").", "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-07", "parse": {"title": "Pick up the dry cleaning", "items": ["Pick up the dry cleaning", "Get dog food", "Grab some coffee"], "notes": "The coffee was hedged (\"maybe ... while I'm at it\").", "label": {"context": "@errands", "size": "quick"}}}
 {"id": "real-08", "parse": {"title": "Review the draft contract for the meeting", "label": {"context": "@computer", "size": "medium"}}}
 {"id": "real-09", "parse": {"title": "Buy a new USB-C cable", "label": {"context": "@errands", "size": "quick"}}}
 {"id": "real-10", "parse": {"title": "Schedule the oil change for the car", "label": {"context": "@phone", "size": "quick"}}}
@@ -35,8 +35,8 @@
 {"id": "real-21", "parse": {"title": "Deal with the weird charge on the credit card", "label": {"context": "@phone"}}}
 {"id": "real-22", "parse": {"title": "The thing with the hotel reservation in Chicago", "notes": "Fragment — no action stated; dictation stutter (\"the the\") cleaned, otherwise kept verbatim."}}
 {"id": "real-23", "parse": {"title": "The thing with the garage door sensor", "notes": "Fragment — no action stated; kept verbatim.", "label": {"context": "@home"}}}
-{"id": "real-24", "parse": {"title": "Finish the quarterly notes", "notes": "Also: update the server inventory; still haven't replied to Mark.", "label": {"context": "@computer"}}}
-{"id": "real-25", "parse": {"title": "Email the photographer", "notes": "Also: confirm the dinner reservation; \"I haven't yet about a wedding gift\" — clause incomplete in the raw, kept verbatim.", "label": {"context": "@computer"}}}
-{"id": "real-26", "parse": {"title": "Pick up milk", "notes": "Also: replace the air filter; haven't called the plumber yet.", "label": {"context": "@errands", "size": "quick"}}}
-{"id": "real-27", "parse": {"title": "Order more toner", "notes": "Also: send Rachel the updated spreadsheet; still haven't submitted the expense report. Raw had a stutter (\"I I\").", "label": {"context": "@computer"}}}
-{"id": "real-28", "parse": {"title": "Go to the bank", "notes": "Also: drop off the library books; fill up the car with gas while out.", "label": {"context": "@errands"}}}
+{"id": "real-24", "parse": {"title": "Finish the quarterly notes", "items": ["Finish the quarterly notes", "Update the server inventory", "Reply to Mark"], "label": {"context": "@computer"}}}
+{"id": "real-25", "parse": {"title": "Email the photographer", "items": ["Email the photographer", "Confirm the dinner reservation"], "notes": "\"I haven't yet about a wedding gift\" — clause incomplete in the raw, kept verbatim; not a well-formed action.", "label": {"context": "@computer"}}}
+{"id": "real-26", "parse": {"title": "Pick up milk", "items": ["Pick up milk", "Replace the air filter", "Call the plumber"], "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-27", "parse": {"title": "Order more toner", "items": ["Order more toner", "Send Rachel the updated spreadsheet", "Submit the expense report"], "notes": "Raw had a stutter (\"I I\").", "label": {"context": "@computer"}}}
+{"id": "real-28", "parse": {"title": "Go to the bank", "items": ["Go to the bank", "Drop off the library books", "Fill up the car with gas"], "notes": "All three while out.", "label": {"context": "@errands"}}}
