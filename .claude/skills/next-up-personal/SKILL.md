@@ -52,7 +52,92 @@ One parser handles every entry point:
 Free text ("I've got twenty minutes and no brain") is a fast path: read it into the same
 three axes and proceed, don't interrogate.
 
+Any of the above may additionally carry **calendar context** — see below. It's an
+optional add-on to the input, not a fifth entry point.
+
 **No standalone GUI.** Deferred to v2 behind the dashboard tripwire — don't smuggle one in.
+
+## Calendar context (optional input)
+
+An **optional** field on top of the three axes above. Its shape is issue #70's
+provider-agnostic read contract, verbatim — this skill knows no Google (or any other
+provider's) field names, holds no calendar credential, and makes no calendar API call.
+Everything below is read-only context; it never becomes a Linear write.
+
+**Schema home:** #41 reserves a per-skill JSON schema versioned beside each `SKILL.md`
+once the skill-runner (`runner/`) exists. That home doesn't exist yet in this repo, so
+this section is the **interim contract surface** — move it verbatim into the versioned
+schema file the first time this skill grows one, don't restate it from memory.
+
+```jsonc
+{
+  // Mirrors client/core's CurrentOrNext (issue #70): the in-progress event if
+  // one is live, else the soonest upcoming one, else neither.
+  "current_or_next": {
+    "status": "in_progress" | "upcoming" | "none",
+    "event": EventRecord | null   // null iff status == "none"
+  },
+  // The result of client/core's events_overlapping_interval (issue #70) run
+  // against today's local calendar day, local-time order. May be empty.
+  "today": [EventRecord, ...]
+}
+```
+
+`EventRecord` is #70's struct, field-for-field, serialized as-is (see
+`client/core/src/calendar/event.rs`): `provider_event_id`, `calendar_id`, `title`,
+`start` / `end` (`{instant_ms, time_zone}`), `all_day`, `recurrence_id`, `location`,
+`organizer`, `status`, `provider_updated_at_ms`, `html_link`. No field here is
+Google-specific and none is renamed for this skill.
+
+**How it's supplied.** The hosted skill-runner (#41) stays context-blind — calendar
+context arrives, if at all, in the `{skill, args}` payload from the calling device's
+mirror (ADR-0005), which already holds the polled snapshot. Until #73 lands calendar
+polling on a real device, a session may supply this field by hand (e.g. pasted JSON) to
+exercise the behavior below.
+
+**Field absent → behavior identical to today.** No display line, no ranking change. This
+is the default and the common case until #73 ships.
+
+**Field present:**
+
+1. **Display first.** Before the top pick, print one line for `current_or_next`:
+   - `in_progress` → `Now: <title> (until <end local time>)`
+   - `upcoming` → `Next: <title> at <start local time>`
+   - `none` → omit the line entirely (nothing to show, not an error)
+2. **Soft size-ranking shift, never a filter.** First find **the next start**: the
+   soonest event start strictly after the declared "now". That is
+   `current_or_next.event.start` when `status` is `upcoming` — but when the status is
+   `in_progress` the next start is *not* in that field at all, so read it off `today`
+   instead (the earliest entry whose `start` is after "now"). Do the same when the
+   in-progress event is all-day: an all-day event runs all day and would otherwise mask
+   every meeting behind it, which is exactly when a 30-minute warning matters most. If
+   there is no such start, there is no shift.
+
+   If the next start is **within 30 minutes** of the declared "now",
+   treat it as an added signal inside ranking step 5 (Energy/size fit, below): a
+   candidate labeled `size: quick` moves ahead of an otherwise-equally-ranked
+   non-`quick` candidate. It **never drops** a `medium` or `deep` candidate from the
+   list and never overrides context (step 1), overdue/due-today (step 2), In Progress
+   bias (step 3), or priority (step 4) — those still run first, untouched. A `deep`
+   chore can still win if nothing else is live; the shift only breaks ties among what
+   the earlier steps already left standing.
+   - Worked example: two candidates tie through steps 1–4 (`ION-20`, `size: medium`,
+     `energy: low`) and (`ION-21`, `size: quick`, `energy: low`), both otherwise equal.
+     With no calendar context, step 5's "fits the declared time" (say, `30m` declared)
+     already favors `ION-21` — the calendar signal is moot there. The shift matters
+     when the *declared* time is loose or skipped (`any`): without an event inside 30
+     minutes, `ION-20` and `ION-21` stay tied into step 6 (oldest first). With an
+     `upcoming` event 12 minutes out, `ION-21` (`quick`) is promoted ahead of `ION-20`
+     for that reason alone — `ION-20` is still offered as an alternate, not dropped.
+   - Masking example: a 10:00–11:00 standup is in progress at 10:50, with an 11:00
+     review next. `current_or_next` reports `in_progress` (the standup), so reading only
+     that field finds no upcoming start and applies no shift — at the exact moment the
+     user has ten free minutes and needs a `quick` pick. Taking the next start off
+     `today` (11:00, ten minutes out) is what makes the shift fire. An all-day
+     "Conference" is the same case, all day long.
+   - Beyond that one lookup, `today` (the full-day list) is read-only context for the
+     display line's surrounding conversation (e.g. "you're also free after 2pm"). It
+     never filters and never ranks on its own; only the 30-minute next-start check does.
 
 ## Selector model
 
@@ -87,11 +172,19 @@ anything with an open blocker):
    No priority. Never sort on the raw `priority` number; it's inverted and `0` means unset
    (see REFERENCE.md).
 5. **Energy / size fit** — matching `energy` and a `size` that fits the declared time.
+   When calendar context is supplied and **the next start** (as computed above — off
+   `current_or_next` when it is `upcoming`, off `today` when an in-progress or all-day
+   event masks it) is within 30 minutes, this step also nudges `size: quick` candidates
+   ahead of otherwise-tied non-`quick` ones. Read the next start from that rule, never
+   from `current_or_next.status` alone: a 10:50 standup with an 11:00 review next is
+   exactly the case that must fire and the status field alone misses. Soft only: it
+   breaks ties left by steps 1–4, it never removes a candidate.
 6. **Oldest first** — `createdAt` ascending, so nothing quietly rots.
 
 ## Output
 
-Three parts, nothing more:
+Three parts, nothing more — plus one optional line first when calendar context was
+supplied (see above): the current/next event, before the top pick.
 
 1. **One top pick** — identifier, title, and a **one-line why** naming the actual reason it
    won ("overdue since Tuesday", "already In Progress and fits @computer", "the only
@@ -180,3 +273,8 @@ break the issue down here; that's the other skill's job.
 - **Any write beyond the delegation protocol's state / comment / label moves.** No minting,
   no description edits, no Route refresh, no re-labelling to "fix" tagging. The selector
   reads; delegation writes exactly four things.
+- **Calendar polling, API calls, and credentials** — the skill only ever reads the
+  calendar-context field it's handed (#70's shape, via the device mirror per ADR-0005).
+  It never calls a calendar provider itself and never holds a calendar credential.
+- **The morning-brief surface** — #46 fixes that surface's own contract; this skill's
+  calendar-context field is unrelated even though it reuses #70's same read queries.

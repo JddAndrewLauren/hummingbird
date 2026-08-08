@@ -1,0 +1,87 @@
+# Deploy only, mirroring deploy.yml's test-then-deploy shape for the web
+# client (ADR-0006's CI split). The first live run — creating the Cloudflare
+# Workers project and binding hb.twinion.net — is a human step; until that
+# exists this workflow will fail at the `wrangler deploy` step, which is
+# expected and does not block anything else. The same human pass sets the
+# `VITE_GOOGLE_CLIENT_ID` Actions secret (issue #73's Web-application OAuth
+# client id); until it exists the deploy succeeds but ships a bundle with no
+# calendar opt-in surface, which is the correct never-opted-in state.
+name: deploy-client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "client/**"
+      - ".github/workflows/deploy-client.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+      # Pinned for the same reason as client.yml: ADR-0004's lockfile-pinned
+      # build requirement covers the toolchain that produces the artifact
+      # this workflow actually deploys.
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.13.1"
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: client/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: client/web/pnpm-lock.yaml
+      - name: pnpm install (client/web)
+        working-directory: client/web
+        run: pnpm install --frozen-lockfile
+      - name: web unit tests
+        working-directory: client/web
+        run: pnpm test
+      - name: web typecheck
+        working-directory: client/web
+        run: pnpm run typecheck
+      # Vite substitutes `VITE_*` at BUILD time, and App.tsx gates the whole
+      # calendar opt-in surface on `VITE_GOOGLE_CLIENT_ID` — without this the
+      # deployed bundle has no Connect button, picker, or tile at all
+      # (issue #73). The secret holds the Web-application OAuth client id
+      # registered against hb.twinion.net; see client/web/.env.example. It is
+      # not a secret in the cryptographic sense (an OAuth client id ships in
+      # the bundle either way) — it lives in Actions secrets only to keep the
+      # deployment's client id out of the repository.
+      - name: web build (wasm core + PWA shell)
+        working-directory: client/web
+        env:
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+        run: pnpm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-web-dist
+          path: client/web/dist
+          retention-days: 1
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-hummingbird-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-web-dist
+          path: client/web/dist
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: client/web
+          command: deploy

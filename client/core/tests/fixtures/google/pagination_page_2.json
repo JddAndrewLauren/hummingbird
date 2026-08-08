@@ -1,0 +1,14 @@
+{
+  "kind": "calendar#events",
+  "items": [
+    {
+      "id": "page2-evt-1",
+      "status": "confirmed",
+      "summary": "Afternoon retro",
+      "start": { "dateTime": "2024-02-01T16:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-02-01T16:30:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-01-20T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=page2-evt-1"
+    }
+  ]
+}

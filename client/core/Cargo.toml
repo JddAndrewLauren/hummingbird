@@ -1,0 +1,32 @@
+[package]
+name = "hummingbird-core"
+version.workspace = true
+edition.workspace = true
+description = "Binding-agnostic sync engine core (ADR-0003)."
+
+[dependencies]
+async-trait = "0.1.92"
+chrono = { version = "0.4.45", features = ["serde"] }
+# The IANA time zone database, for one job: resolving a Google all-day
+# boundary (`date`, no time) to the instant of local midnight in the
+# calendar's own zone. `chrono` alone cannot — it has no zone table — and
+# guessing UTC shifts every all-day event by the calendar's offset. Default
+# features off drops the `chrono-tz-build` path; `std` is all the lookup
+# needs, and it compiles for wasm32 unchanged.
+#
+# It is not free: the zone table takes the release wasm from 525 KB to
+# 1.41 MB (brotli 175 KB -> 247 KB over the wire). `filter-by-regex` would
+# trim it, but the set of zones is whatever calendars the user connects, so
+# there is nothing to filter to. ~70 KB of transfer, once, cached by the
+# service worker, is the price of all-day events landing on the right day.
+chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+indexed_db_futures = "0.6.4"
