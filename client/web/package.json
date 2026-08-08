@@ -1,0 +1,33 @@
+{
+  "name": "hummingbird-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:wasm": "wasm-pack build --target bundler --out-dir ../web/src/wasm/pkg ../ffi-web",
+    "dev": "pnpm run build:wasm && vite",
+    "build": "pnpm run build:wasm && tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "pnpm run build:wasm && tsc -b --noEmit",
+    "test": "vitest run",
+    "wrangler:dev": "pnpm run build && wrangler dev"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vite-plugin-pwa": "^0.21.1",
+    "vite-plugin-top-level-await": "^1.4.4",
+    "vite-plugin-wasm": "^3.4.1",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.0.0"
+  }
+}
