@@ -7,11 +7,17 @@ name = "hummingbird-web"
 main = "csp-worker/worker.ts"
 compatibility_date = "2026-08-08"
 
-# Route the custom domain here once the human step (Cloudflare project +
-# DNS) is done. Left commented so `wrangler dev`/local builds never need it.
-# routes = [
-#   { pattern = "hb.twinion.net", custom_domain = true }
-# ]
+# The permanent origin (ADR-0006). This is not a deploy convenience: the
+# device's IndexedDB mirror, the PWA install and the stored API key are all
+# keyed to the origin, so a deploy that landed on a provider hostname would
+# strand every device that had already onboarded there. It is declared here,
+# in the checked-in source of truth, rather than left to whoever runs the
+# deploy. `wrangler dev` ignores routes, so local builds are unaffected;
+# `wrangler deploy` fails until the human step (Cloudflare project + DNS)
+# binds the domain, which deploy-client.yml already documents as expected.
+routes = [
+  { pattern = "hb.twinion.net", custom_domain = true }
+]
 
 [assets]
 directory = "./dist"

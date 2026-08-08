@@ -14,8 +14,14 @@ use super::transport::{EventsTransport, TransportError};
 
 const EVENTS_BASE_URL: &str = "https://www.googleapis.com/calendar/v3/calendars";
 
-/// Builds the `calendars/{calendarId}/events` URL with `singleEvents=true`
-/// and the adapter's window/pagination query params.
+/// Builds the `calendars/{calendarId}/events` URL with `singleEvents=true`,
+/// `showDeleted=true` and the adapter's window/pagination query params.
+///
+/// `showDeleted` is explicit because Google defaults it to false: without it
+/// a cancelled instance is simply absent from the response, and #71's
+/// requirement that a cancellation reach the mapper (and therefore the
+/// snapshot, so a previously-fetched instance can be superseded rather than
+/// linger) would be satisfied only by the fixture tests, never live.
 fn build_events_url(
     calendar_id: &str,
     time_min: &str,
@@ -25,7 +31,7 @@ fn build_events_url(
     let encoded_calendar_id = urlencode(calendar_id);
     let mut url = format!(
         "{EVENTS_BASE_URL}/{encoded_calendar_id}/events\
-         ?singleEvents=true&timeMin={}&timeMax={}",
+         ?singleEvents=true&showDeleted=true&timeMin={}&timeMax={}",
         urlencode(time_min),
         urlencode(time_max),
     );
@@ -120,8 +126,18 @@ mod tests {
         assert_eq!(
             url,
             "https://www.googleapis.com/calendar/v3/calendars/primary/events\
-             ?singleEvents=true&timeMin=2024-06-08T12%3A00%3A00Z&timeMax=2024-09-13T12%3A00%3A00Z"
+             ?singleEvents=true&showDeleted=true\
+             &timeMin=2024-06-08T12%3A00%3A00Z&timeMax=2024-09-13T12%3A00%3A00Z"
         );
+    }
+
+    #[test]
+    fn events_url_asks_for_deleted_events_because_google_omits_them_by_default() {
+        // The mapper handles cancellations and the fixture tests cover them,
+        // but Google's `showDeleted` defaults to false — without this
+        // parameter no live response would ever contain one to map.
+        let url = build_events_url("primary", "min", "max", None);
+        assert!(url.contains("showDeleted=true"));
     }
 
     #[test]

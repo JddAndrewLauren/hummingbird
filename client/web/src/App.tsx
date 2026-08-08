@@ -7,6 +7,7 @@ import {
   handleCredentialNeeded,
   initConnection,
   msUntilRotation,
+  shouldKeepExistingConnection,
 } from "./calendar/connection";
 import { ContextTile } from "./calendar/ContextTile";
 import {
@@ -275,7 +276,15 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     if (!deps) {
       return;
     }
+    const wasConnected = calendar.connected;
     const result = await connect(deps);
+    if (shouldKeepExistingConnection(wasConnected, result)) {
+      // A cancelled or failed *Reconnect*: keep the opt-in, the last-good
+      // tile and the Reconnect button exactly as they were, so the user can
+      // simply try again. (`needsReconnect` is untouched, so the rotation
+      // timer stays parked and the stale `expiresAtMs` below is never used.)
+      return;
+    }
     writeConnected(localStorage, result.connected);
     coreStore.setCalendarState({
       connected: result.connected,
@@ -298,6 +307,20 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     writeSelectedCalendarIds(localStorage, selectedCalendarIds);
     coreStore.setCalendarState({ selectedCalendarIds });
     setCalendarIdsOnWorker(worker, selectedCalendarIds);
+    pollRefresh(worker, Date.now());
+    requestCurrentNext(worker, Date.now());
+  }
+
+  // The user-facing manual refresh (#46/#72). Without it the only way to
+  // retry a transient poll failure is to change the calendar selection,
+  // reload the app, or wait out the 15-minute timer — and the tile shows a
+  // stale "as of" precisely when someone wants a retry.
+  function handleRefreshClick() {
+    // Re-assert the selection first, for the same reason the connect path
+    // does: a worker restarted by the browser holds an empty one, and a
+    // zero-calendar poll succeeds with an empty snapshot that would replace
+    // the last good one.
+    setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
     pollRefresh(worker, Date.now());
     requestCurrentNext(worker, Date.now());
   }
@@ -340,6 +363,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           {calendar.connected && (
             <>
               <ContextTile calendar={calendar} nowMs={nowMs} />
+              <button
+                type="button"
+                data-testid="refresh-calendar"
+                onClick={handleRefreshClick}
+                className="rounded-md border border-slate-800 px-3 py-2 text-sm font-medium text-slate-300"
+              >
+                Refresh calendar
+              </button>
               <CalendarPicker
                 calendars={calendars}
                 selectedCalendarIds={calendar.selectedCalendarIds}

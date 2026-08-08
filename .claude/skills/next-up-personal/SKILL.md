@@ -104,8 +104,16 @@ is the default and the common case until #73 ships.
    - `in_progress` → `Now: <title> (until <end local time>)`
    - `upcoming` → `Next: <title> at <start local time>`
    - `none` → omit the line entirely (nothing to show, not an error)
-2. **Soft size-ranking shift, never a filter.** If `current_or_next.status` is
-   `upcoming` and that event's `start` is **within 30 minutes** of the declared "now",
+2. **Soft size-ranking shift, never a filter.** First find **the next start**: the
+   soonest event start strictly after the declared "now". That is
+   `current_or_next.event.start` when `status` is `upcoming` — but when the status is
+   `in_progress` the next start is *not* in that field at all, so read it off `today`
+   instead (the earliest entry whose `start` is after "now"). Do the same when the
+   in-progress event is all-day: an all-day event runs all day and would otherwise mask
+   every meeting behind it, which is exactly when a 30-minute warning matters most. If
+   there is no such start, there is no shift.
+
+   If the next start is **within 30 minutes** of the declared "now",
    treat it as an added signal inside ranking step 5 (Energy/size fit, below): a
    candidate labeled `size: quick` moves ahead of an otherwise-equally-ranked
    non-`quick` candidate. It **never drops** a `medium` or `deep` candidate from the
@@ -121,9 +129,15 @@ is the default and the common case until #73 ships.
      minutes, `ION-20` and `ION-21` stay tied into step 6 (oldest first). With an
      `upcoming` event 12 minutes out, `ION-21` (`quick`) is promoted ahead of `ION-20`
      for that reason alone — `ION-20` is still offered as an alternate, not dropped.
-   - `today` (the full-day list) is read-only context for the display line's
-     surrounding conversation (e.g. "you're also free after 2pm") — it does not itself
-     feed ranking; only `current_or_next`'s 30-minute check does.
+   - Masking example: a 10:00–11:00 standup is in progress at 10:50, with an 11:00
+     review next. `current_or_next` reports `in_progress` (the standup), so reading only
+     that field finds no upcoming start and applies no shift — at the exact moment the
+     user has ten free minutes and needs a `quick` pick. Taking the next start off
+     `today` (11:00, ten minutes out) is what makes the shift fire. An all-day
+     "Conference" is the same case, all day long.
+   - Beyond that one lookup, `today` (the full-day list) is read-only context for the
+     display line's surrounding conversation (e.g. "you're also free after 2pm"). It
+     never filters and never ranks on its own; only the 30-minute next-start check does.
 
 ## Selector model
 

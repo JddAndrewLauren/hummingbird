@@ -124,13 +124,18 @@ pub async fn fetch_calendar_snapshot(
             for raw_event in &page.items {
                 // The page's `timeZone` is the calendar's, and it is what
                 // anchors this page's all-day boundaries (see `map_event`).
-                let record = map_event(raw_event, calendar_id, page.time_zone.as_deref()).map_err(
+                // `Ok(None)` is a deleted standalone event — a tombstone
+                // with no instant to place it at, and the one raw shape the
+                // mapper skips rather than fails the whole snapshot over.
+                let mapped = map_event(raw_event, calendar_id, page.time_zone.as_deref()).map_err(
                     |source| AdapterError::Mapping {
                         calendar_id: calendar_id.clone(),
                         source,
                     },
                 )?;
-                events.push(record);
+                if let Some(record) = mapped {
+                    events.push(record);
+                }
             }
 
             match page.next_page_token {

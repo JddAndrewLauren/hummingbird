@@ -83,11 +83,15 @@ impl std::error::Error for MapError {}
 /// `events.list` reports for the calendar — the anchor every all-day
 /// boundary on the page is resolved against (see [`map_event_date_time`]).
 /// `None` (Google omitted it) falls back to UTC.
+///
+/// `Ok(None)` means the item is a deleted *standalone* event: a tombstone
+/// with nothing to place it by (see the `(None, None)` arm below). Every
+/// other unmappable shape is an `Err` that aborts the snapshot.
 pub fn map_event(
     raw: &RawEvent,
     calendar_id: &str,
     calendar_time_zone: Option<&str>,
-) -> Result<EventRecord, MapError> {
+) -> Result<Option<EventRecord>, MapError> {
     let status = map_status(raw)?;
 
     // Cancelled recurring instances carry no `start`/`end`, only
@@ -99,13 +103,21 @@ pub fn map_event(
             map_event_date_time(end, &raw.id, "end", calendar_time_zone)?,
             // All-day-ness comes from the raw shape (`date` vs `dateTime`
             // presence on the start boundary), never from the mapped
-            // time_zone string — a timed `dateTime` boundary can still have
-            // an empty time_zone when Google omits the optional `timeZone`
-            // field (its own calendar default zone applies), and that must
-            // not be mistaken for an all-day event.
+            // time_zone string — a timed `dateTime` boundary carries no
+            // `timeZone` of its own whenever the calendar's default zone
+            // applies, and that must not be mistaken for an all-day event.
             start.date.is_some(),
         ),
         (None, None) => {
+            // A deleted standalone event: `showDeleted=true` returns it
+            // stripped to little more than `id` and `status: cancelled`,
+            // with no `originalStartTime` either — there is no instant to
+            // place it at and, being cancelled, nothing any query would
+            // return (see `crate::calendar::query`). Dropping it is right;
+            // erroring would let one deleted event abort a whole snapshot.
+            if status == EventStatus::Cancelled && raw.original_start_time.is_none() {
+                return Ok(None);
+            }
             let original = raw.original_start_time.as_ref().ok_or_else(|| {
                 MapError::MissingOriginalStartTime {
                     event_id: raw.id.clone(),
@@ -164,7 +176,7 @@ pub fn map_event(
         None => 0,
     };
 
-    Ok(EventRecord {
+    Ok(Some(EventRecord {
         provider_event_id: raw.id.clone(),
         calendar_id: calendar_id.to_string(),
         title: raw.summary.clone().unwrap_or_default(),
@@ -177,7 +189,7 @@ pub fn map_event(
         status,
         provider_updated_at_ms,
         html_link: raw.html_link.clone(),
-    })
+    }))
 }
 
 fn map_status(raw: &RawEvent) -> Result<EventStatus, MapError> {
@@ -203,7 +215,19 @@ fn map_event_date_time(
             event_id: event_id.to_string(),
             value: date_time.clone(),
         })?;
-        let time_zone = boundary.time_zone.clone().unwrap_or_default();
+        // Google omits the optional per-boundary `timeZone` whenever the
+        // event sits in the calendar's own zone, sending only an offset —
+        // and an offset is not a zone (it cannot say what this event's wall
+        // clock reads next November). The page-level zone IS the calendar's
+        // zone, so it is the right answer here rather than an empty string;
+        // only a page that reported no zone at all leaves this unknown.
+        let time_zone = match &boundary.time_zone {
+            Some(zone) => zone.clone(),
+            None => match calendar_time_zone {
+                Some(name) => resolve_time_zone(Some(name), event_id)?.name().to_string(),
+                None => String::new(),
+            },
+        };
         return Ok(EventTime::timed(instant_ms, time_zone));
     }
 
@@ -336,9 +360,17 @@ mod tests {
         }
     }
 
+    /// `map_event` for the items that do map — the `Ok(None)` tombstone case
+    /// has its own test below.
+    fn map_ok(raw: &RawEvent, calendar_id: &str, calendar_time_zone: Option<&str>) -> EventRecord {
+        map_event(raw, calendar_id, calendar_time_zone)
+            .expect("maps without error")
+            .expect("is not a tombstone")
+    }
+
     #[test]
     fn maps_a_timed_confirmed_event() {
-        let record = map_event(&base_event(), "cal-primary", CALENDAR_TZ).unwrap();
+        let record = map_ok(&base_event(), "cal-primary", CALENDAR_TZ);
         assert_eq!(record.provider_event_id, "evt-1");
         assert_eq!(record.calendar_id, "cal-primary");
         assert_eq!(record.title, "Standup");
@@ -354,7 +386,7 @@ mod tests {
         raw.start = Some(all_day_boundary("2024-03-01"));
         raw.end = Some(all_day_boundary("2024-03-03"));
 
-        let record = map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap();
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
         assert!(record.all_day);
         assert_eq!(record.start.time_zone, "America/Los_Angeles");
         assert_eq!(record.end.time_zone, "America/Los_Angeles");
@@ -381,7 +413,7 @@ mod tests {
         raw.start = Some(all_day_boundary("2024-03-01"));
         raw.end = Some(all_day_boundary("2024-03-02"));
 
-        let record = map_event(&raw, "cal-primary", None).unwrap();
+        let record = map_ok(&raw, "cal-primary", None);
         assert_eq!(record.start.time_zone, "UTC");
         assert_eq!(
             record.start.instant_ms,
@@ -402,7 +434,7 @@ mod tests {
         raw.start = Some(all_day_boundary("2024-03-09"));
         raw.end = Some(all_day_boundary("2024-03-11"));
 
-        let record = map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap();
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
         assert_eq!(
             record.start.instant_ms,
             Utc.with_ymd_and_hms(2024, 3, 9, 8, 0, 0)
@@ -426,7 +458,7 @@ mod tests {
         raw.start = Some(all_day_boundary("2024-09-08"));
         raw.end = Some(all_day_boundary("2024-09-09"));
 
-        let record = map_event(&raw, "cal-primary", Some("America/Santiago")).unwrap();
+        let record = map_ok(&raw, "cal-primary", Some("America/Santiago"));
         assert_eq!(
             record.start.instant_ms,
             Utc.with_ymd_and_hms(2024, 9, 8, 4, 0, 0)
@@ -454,9 +486,51 @@ mod tests {
         raw.start = Some(timed_boundary_no_zone("2024-01-08T09:00:00-08:00"));
         raw.end = Some(timed_boundary_no_zone("2024-01-08T09:30:00-08:00"));
 
-        let record = map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap();
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
         assert!(!record.all_day);
+    }
+
+    #[test]
+    fn timed_boundary_with_omitted_time_zone_inherits_the_calendars_zone() {
+        // The omission means "the calendar's own zone", and the page reports
+        // that zone — dropping it would leave a timed event carrying only an
+        // offset, which #71 requires start/end zones over.
+        let mut raw = base_event();
+        raw.start = Some(timed_boundary_no_zone("2024-01-08T09:00:00-08:00"));
+        raw.end = Some(timed_boundary_no_zone("2024-01-08T09:30:00-08:00"));
+
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
+        assert_eq!(record.start.time_zone, "America/Los_Angeles");
+        assert_eq!(record.end.time_zone, "America/Los_Angeles");
+    }
+
+    #[test]
+    fn timed_boundary_zone_stays_unknown_when_neither_boundary_nor_page_names_one() {
+        // Nothing to inherit: an empty zone here is honest rather than a
+        // guess (the instant itself is still exact — it came from the
+        // offset).
+        let mut raw = base_event();
+        raw.start = Some(timed_boundary_no_zone("2024-01-08T09:00:00-08:00"));
+        raw.end = Some(timed_boundary_no_zone("2024-01-08T09:30:00-08:00"));
+
+        let record = map_ok(&raw, "cal-primary", None);
         assert_eq!(record.start.time_zone, "");
+    }
+
+    #[test]
+    fn an_explicit_boundary_time_zone_wins_over_the_page_zone() {
+        let mut raw = base_event();
+        raw.start = Some(timed_boundary(
+            "2024-01-08T12:00:00-05:00",
+            "America/New_York",
+        ));
+        raw.end = Some(timed_boundary(
+            "2024-01-08T12:30:00-05:00",
+            "America/New_York",
+        ));
+
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
+        assert_eq!(record.start.time_zone, "America/New_York");
     }
 
     #[test]
@@ -474,7 +548,7 @@ mod tests {
             "America/Los_Angeles",
         ));
 
-        let record = map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap();
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
         assert_eq!(record.start.time_zone, "America/Los_Angeles");
         assert_eq!(
             record.start.instant_ms,
@@ -497,7 +571,7 @@ mod tests {
             "America/Los_Angeles",
         ));
 
-        let record = map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap();
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
         assert_eq!(record.status, EventStatus::Cancelled);
         assert_eq!(record.start, record.end);
         assert_eq!(
@@ -515,7 +589,7 @@ mod tests {
             "America/Los_Angeles",
         ));
 
-        let record = map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap();
+        let record = map_ok(&raw, "cal-primary", CALENDAR_TZ);
         assert_eq!(
             record.recurrence_id.as_deref(),
             Some("series-1@2024-01-08T09:00:00-08:00")
@@ -537,5 +611,20 @@ mod tests {
         raw.end = None;
         let err = map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap_err();
         assert!(matches!(err, MapError::MissingOriginalStartTime { .. }));
+    }
+
+    #[test]
+    fn a_deleted_standalone_event_is_skipped_rather_than_aborting_the_snapshot() {
+        // What `showDeleted=true` returns for a deleted non-recurring event:
+        // id and status, nothing to place it by. Erroring here would let a
+        // single deleted event take out a whole poll.
+        let mut raw = base_event();
+        raw.status = "cancelled".to_string();
+        raw.summary = None;
+        raw.start = None;
+        raw.end = None;
+        raw.original_start_time = None;
+
+        assert_eq!(map_event(&raw, "cal-primary", CALENDAR_TZ).unwrap(), None);
     }
 }

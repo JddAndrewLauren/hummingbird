@@ -4,7 +4,7 @@
 //! as [`crate::storage::Envelope::as_of`]), which is what keeps these
 //! queries deterministic and testable against hand-built snapshots.
 
-use super::event::EventRecord;
+use super::event::{EventRecord, EventStatus};
 use super::snapshot::CalendarSnapshot;
 
 /// A half-open UTC millisecond interval `[start_ms, end_ms)`.
@@ -24,10 +24,25 @@ impl Interval {
     }
 }
 
-/// Returns every event in `snapshot` whose `[start, end)` overlaps
-/// `interval`'s `[start, end)`, in local-time order (ascending by start
-/// instant, ties broken by end instant then by `provider_event_id` for a
-/// stable, deterministic order).
+/// Whether an event is something to answer a query with at all.
+///
+/// The snapshot is a faithful mirror of what the provider reported and so
+/// deliberately keeps cancelled events — the adapter asks Google for them
+/// (`showDeleted=true`) so a consumer can tell "cancelled" apart from
+/// "absent". A cancellation is nonetheless a record that something is *not*
+/// happening, so no read query hands one back as context: a cancelled future
+/// instance must never become "Next" or bias task ranking. Cancelled
+/// instances are also stored with `start == end` (only `originalStartTime`
+/// exists to place them), and that zero-length placeholder is not an event
+/// anyone is attending.
+fn is_actionable(event: &EventRecord) -> bool {
+    event.status != EventStatus::Cancelled
+}
+
+/// Returns every non-cancelled event in `snapshot` whose `[start, end)`
+/// overlaps `interval`'s `[start, end)`, in local-time order (ascending by
+/// start instant, ties broken by end instant then by `provider_event_id` for
+/// a stable, deterministic order).
 pub fn events_overlapping_interval(
     snapshot: &CalendarSnapshot,
     interval: Interval,
@@ -35,6 +50,7 @@ pub fn events_overlapping_interval(
     let mut matches: Vec<&EventRecord> = snapshot
         .events
         .iter()
+        .filter(|event| is_actionable(event))
         .filter(|event| {
             event.start.instant_ms < interval.end_ms && event.end.instant_ms > interval.start_ms
         })
@@ -66,11 +82,13 @@ pub enum CurrentOrNext<'a> {
 }
 
 /// Finds the in-progress event (if any), else the soonest upcoming event,
-/// as of `now_ms`.
+/// as of `now_ms`. Cancelled events are never returned — see
+/// [`is_actionable`].
 pub fn current_or_next_event(snapshot: &CalendarSnapshot, now_ms: i64) -> CurrentOrNext<'_> {
     let in_progress = snapshot
         .events
         .iter()
+        .filter(|event| is_actionable(event))
         .filter(|event| event.start.instant_ms <= now_ms && event.end.instant_ms > now_ms)
         .min_by(|a, b| {
             a.start
@@ -87,6 +105,7 @@ pub fn current_or_next_event(snapshot: &CalendarSnapshot, now_ms: i64) -> Curren
     let upcoming = snapshot
         .events
         .iter()
+        .filter(|event| is_actionable(event))
         .filter(|event| event.start.instant_ms > now_ms)
         .min_by(|a, b| {
             a.start
@@ -129,6 +148,15 @@ mod tests {
             start: EventTime::all_day(start_ms, "America/Los_Angeles"),
             end: EventTime::all_day(end_ms, "America/Los_Angeles"),
             ..timed_event(id, start_ms, end_ms)
+        }
+    }
+
+    /// A cancelled recurring instance as the Google adapter stores one:
+    /// `start == end`, because only `originalStartTime` places it.
+    fn cancelled_event(id: &str, start_ms: i64) -> EventRecord {
+        EventRecord {
+            status: EventStatus::Cancelled,
+            ..timed_event(id, start_ms, start_ms)
         }
     }
 
@@ -228,6 +256,46 @@ mod tests {
             current_or_next_event(&snapshot, 2_000),
             CurrentOrNext::Upcoming(&soonest)
         );
+    }
+
+    #[test]
+    fn a_cancelled_instance_never_becomes_next() {
+        // The snapshot keeps the cancellation (that is the adapter's job),
+        // but it is not something to do: the confirmed event behind it is
+        // what "Next" means here.
+        let cancelled = cancelled_event("cancelled-standup", 5_000);
+        let real = timed_event("real-meeting", 8_000, 9_000);
+        let snapshot = CalendarSnapshot::new(vec![cancelled, real.clone()]);
+
+        assert_eq!(
+            current_or_next_event(&snapshot, 1_000),
+            CurrentOrNext::Upcoming(&real)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_event_is_never_in_progress_either() {
+        let cancelled = EventRecord {
+            status: EventStatus::Cancelled,
+            ..timed_event("cancelled-long-meeting", 1_000, 9_000)
+        };
+        let snapshot = CalendarSnapshot::new(vec![cancelled]);
+
+        assert_eq!(current_or_next_event(&snapshot, 5_000), CurrentOrNext::None);
+    }
+
+    #[test]
+    fn interval_query_omits_cancelled_events_including_zero_length_placeholders() {
+        // A cancelled instance's `start == end` placeholder still falls
+        // strictly inside a surrounding interval, so the overlap test alone
+        // would return it.
+        let cancelled = cancelled_event("cancelled-standup", 2_000);
+        let real = timed_event("real-meeting", 1_500, 2_500);
+        let snapshot = CalendarSnapshot::new(vec![cancelled, real.clone()]);
+
+        let results = events_overlapping_interval(&snapshot, Interval::new(0, 5_000));
+
+        assert_eq!(results, vec![&real]);
     }
 
     #[test]

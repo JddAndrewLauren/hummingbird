@@ -23,19 +23,32 @@ export function ContextTile({ calendar, nowMs }: ContextTileProps) {
   }
 
   const { tileKind, tileEvent, asOfMs } = calendar;
+  const stale = asOfMs !== null && isStale(asOfMs, nowMs);
 
   if (tileKind === "no_snapshot" || tileKind === "none" || !tileEvent) {
+    // Both empty states say the same words, so the "as of" line is what
+    // separates them: `none` is a real snapshot reporting a genuinely clear
+    // calendar as of a known moment, while `no_snapshot` is no data at all
+    // and has no `asOfMs` to show. Offline that difference is the whole
+    // signal — an empty day read from a two-day-old snapshot is not an
+    // empty day, and without this it was indistinguishable from one.
     return (
       <div
         data-testid="context-tile"
-        className="rounded-lg border border-slate-800 p-4 text-sm text-slate-400"
+        className={`rounded-lg border p-4 text-sm ${
+          stale ? "border-amber-700 text-amber-200" : "border-slate-800 text-slate-400"
+        }`}
       >
-        No current or upcoming event.
+        <p>No current or upcoming event.</p>
+        {asOfMs !== null && (
+          <p className={`mt-2 text-xs ${stale ? "text-amber-300" : "text-slate-500"}`}>
+            {stale ? "Stale — " : ""}as of {formatAsOf(asOfMs, nowMs)}
+          </p>
+        )}
       </div>
     );
   }
 
-  const stale = asOfMs !== null && isStale(asOfMs, nowMs);
   const label = tileKind === "in_progress" ? "Now" : "Next";
 
   return (

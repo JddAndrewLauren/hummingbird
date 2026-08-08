@@ -61,6 +61,23 @@ export async function connect(deps: ConnectionDeps): Promise<ConnectionResult> {
   return { connected: true, needsReconnect: false, expiresAtMs: result.expiresAtMs };
 }
 
+/** Whether a [`connect`] attempt should be discarded entirely, leaving the
+ * device's existing state untouched.
+ *
+ * The same button is "Connect" and "Reconnect". For a first-time opt-in a
+ * declined/failed consent correctly ends disconnected. For a *reconnect* it
+ * must not: writing `connected: false` there un-opts-in the device, drops
+ * the persisted flag, and takes the last-good (stale but real) tile and the
+ * Reconnect affordance itself down with it — so cancelling the Google popup
+ * once would cost the user their offline context. The existing connection
+ * stands until a reconnect actually succeeds. */
+export function shouldKeepExistingConnection(
+  wasConnected: boolean,
+  result: ConnectionResult,
+): boolean {
+  return wasConnected && !result.connected;
+}
+
 /** Answers a credential-needed round-trip from the core (issue #72's
  * `CredentialEvent`, surfaced here as a `credentialEvents` worker message):
  * try a silent re-mint first, only falling back to flagging

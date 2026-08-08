@@ -6,6 +6,7 @@ import {
   handleCredentialNeeded,
   initConnection,
   msUntilRotation,
+  shouldKeepExistingConnection,
 } from "./connection";
 
 function fakeTokenClient(
@@ -101,6 +102,26 @@ describe("handleCredentialNeeded", () => {
 
     expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null });
     expect(d.pushToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("shouldKeepExistingConnection", () => {
+  const failed = { connected: false, needsReconnect: false, expiresAtMs: null };
+  const succeeded = { connected: true, needsReconnect: false, expiresAtMs: 10_000 };
+
+  it("keeps the opt-in when a Reconnect is cancelled or fails", () => {
+    // The device stays connected-but-needing-reconnect: its last-good tile
+    // and the Reconnect button both survive a cancelled Google popup.
+    expect(shouldKeepExistingConnection(true, failed)).toBe(true);
+  });
+
+  it("lets a first-time Connect that is declined end disconnected", () => {
+    expect(shouldKeepExistingConnection(false, failed)).toBe(false);
+  });
+
+  it("never discards a successful result", () => {
+    expect(shouldKeepExistingConnection(true, succeeded)).toBe(false);
+    expect(shouldKeepExistingConnection(false, succeeded)).toBe(false);
   });
 });
 
