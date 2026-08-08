@@ -91,25 +91,35 @@ rigged. **Why blind:** reading a model's parse first anchors your label to it.
 
 **Why you:** the phone is in your pocket, not mine.
 
-**Preferred path — the runner app** (ask an agent to build it if not yet built: a
-minimal Android app that loads `corpus.jsonl`, runs each capture through Gemini Nano
-via the ML Kit GenAI Prompt API, schema-constrained with `prompt.md` + `schema.json`,
-and writes `nano_results.jsonl`):
+**Preferred path — the runner app**, `nano-runner/` (built; full operator runbook in
+`nano-runner/README.md`). It bundles `corpus.jsonl`, assembles each prompt byte-identically
+to `run_hosted.py --emit-prompts` from `prompt.md` + `schema.json`, runs it through Gemini
+Nano via the ML Kit GenAI Prompt API, and writes `nano_results.jsonl`:
 
-1. Install the APK on the **Pixel 10 Pro Fold**.
-2. **Airplane mode on. Wi-Fi off too.** Leave it on for the whole run — offline-ness is
-   the claim under test.
-3. Run once end-to-end; if a capture errors, let the app record the error as that row's
-   result (an on-device failure is a result, not a retry candidate).
-4. Airplane mode off, share `nano_results.jsonl` back (any channel; paste into a #42
-   comment works).
+1. Install the APK on the **Pixel 10 Pro Fold** (`./gradlew :app:assembleDebug`).
+2. **On Wi-Fi**, open it once and let the model download finish if it asks — AICore
+   provisioning is the one step that can't happen offline.
+3. **Airplane mode on. Wi-Fi off too.** Leave it on for the whole run — offline-ness is
+   the claim under test, and the app records the system's airplane flag at run start.
+4. Tap Start. The screen shows `n / 42` and an error count and **nothing else** — no
+   parses, no model text — so this is safe to do before Phase 2. If a capture errors the
+   app records the error as that row's result (an on-device failure is a result, not a
+   retry candidate) and moves on; finished captures are never re-run if you relaunch.
+5. Airplane mode off, tap Share and send back all three files (`nano_results.jsonl`, the
+   verbatim `nano_raw.jsonl` sidecar, and `nano_run_meta.json`).
+
+Note the API asymmetry, recorded on #42: the Prompt API's structured-output path can't
+express this schema and would change the prompt, so Nano runs **unconstrained** with the
+identical prompt and its output is validated afterwards. The hosted side was not weakened
+to match.
 
 **Fallback path (no app):** AI Studio's on-device playground or a scratch project with
 `com.google.mlkit:genai-prompt`, model nano-v3; paste each prompt from
 `run_hosted.py --emit-prompts` by hand. Tedious but honest — same rules about airplane
 mode and recording failures verbatim.
 
-The agent then merges the Nano column into `scoring.md`.
+The agent then merges the Nano column into `scoring.md` with `./merge_nano.py` (or you
+can: drop `nano_results.jsonl` in this directory and run it).
 
 ---
 
@@ -154,7 +164,7 @@ integration work unblocks (or evaporates) accordingly.
 | Messy dictation batch | **you** | ✅ done 2026-08-08 (23 captures, ION-36…ION-58) |
 | Corpus import + hosted re-run | agent | ✅ done 2026-08-08 (`real-06…28`; 10 dictated `ph-*` retired; Triage cleared) |
 | Blind ground truth | **you** | ⬜ Phase 2 — **next, and now the only thing blocking** |
-| Nano runner app | agent | ⬜ on request |
+| Nano runner app | agent | ✅ built 2026-08-08 (`nano-runner/`, + `merge_nano.py`; on-device inference unverified until Phase 3) |
 | Nano run on the Pixel | **you** | ⬜ Phase 3 |
 | Mechanical scoring + tally | agent | ⬜ after Phases 2–3 |
 | Verdict + resolution | **you** → agent | ⬜ Phase 4 |
