@@ -1,0 +1,12 @@
+[package]
+name = "hummingbird-ffi-mobile"
+version.workspace = true
+edition.workspace = true
+description = "UniFFI wrappers over hummingbird-core -> Kotlin (Android, Wear OS) and Swift (iPad)."
+
+[lib]
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+hummingbird-core = { path = "../core" }
+uniffi = "0.28"

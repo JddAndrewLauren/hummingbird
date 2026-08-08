@@ -3,3 +3,5 @@ __pycache__/
 .env
 .DS_Store
 .claude/worktrees/
+client/target/
+
