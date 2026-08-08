@@ -701,6 +701,102 @@ class ChestAndSideBodyFacetsTest(unittest.TestCase):
                 self.assertLess(idx("side-body-facet-01"), idx("gorget-base"))
 
 
+def _polygon_visible_area_fraction(facet_points, envelope_polygon, grid=12):
+    """Fraction of a straight-edge facet polygon's own area that falls
+    inside `envelope_polygon` -- i.e. the fraction that survives the
+    facet group's clip-path and actually renders. Grid-sampled over the
+    facet's bbox, counting only in-facet points; the same technique as
+    `_visible_area_fraction` above, but for a plain point-list polygon
+    (chest/side-body facets) rather than a Bezier `d` path (feathers)."""
+    xs = [p[0] for p in facet_points]
+    ys = [p[1] for p in facet_points]
+    x_min, x_max, y_min, y_max = min(xs), max(xs), min(ys), max(ys)
+    in_facet = 0
+    in_both = 0
+    for gx in range(grid):
+        for gy in range(grid):
+            px = x_min + (gx + 0.5) / grid * (x_max - x_min)
+            py = y_min + (gy + 0.5) / grid * (y_max - y_min)
+            if _point_in_polygon(px, py, facet_points):
+                in_facet += 1
+                if _point_in_polygon(px, py, envelope_polygon):
+                    in_both += 1
+    return in_both / in_facet if in_facet else 0.0
+
+
+class ChestAndSideBodyFacetVisibilityTest(unittest.TestCase):
+    """Round-2 review on PR #89: the original chest-facet fan apex
+    (CHEST_FACET_APEX, a naive midpoint of two envelope vertices) sat
+    OUTSIDE the chest envelope -- CHEST_MASS_POINTS is concave, its top
+    boundary sagging down between the two sharp top corners, so no
+    single off-center apex sees every edge. 4 of 11 fan facets rendered
+    <=1% actual visible area once the chest-clip trimmed away the part
+    of each triangle that fell outside the real silhouette, while the
+    old `test_chest_has_ten_to_eighteen_facets` (SVG element count only)
+    still passed, because clipped-to-nothing elements are still elements.
+    This measures each facet's real, generated-geometry visible-area
+    fraction -- the same technique `GorgetFeatherVisibilityTest` uses for
+    feathers -- so occluded/clipped-away facets can't count toward the
+    10-18 (chest) / 8-12 (side-body) range."""
+
+    VISIBLE_THRESHOLD = 0.95  # ear-clip + edge-midpoint subdivision guarantees ~100% by construction
+
+    def test_every_chest_facet_is_almost_entirely_visible(self):
+        for index, (points, _fill) in enumerate(icon_generator.CHEST_FACETS, start=1):
+            fraction = _polygon_visible_area_fraction(points, icon_generator.CHEST_MASS_POINTS)
+            self.assertGreaterEqual(
+                fraction, self.VISIBLE_THRESHOLD, f"chest-facet-{index:02d} renders only {fraction:.0%} visible"
+            )
+
+    def test_ten_to_eighteen_chest_facets_are_actually_visible(self):
+        visible = sum(
+            1
+            for points, _fill in icon_generator.CHEST_FACETS
+            if _polygon_visible_area_fraction(points, icon_generator.CHEST_MASS_POINTS) >= self.VISIBLE_THRESHOLD
+        )
+        self.assertGreaterEqual(visible, 10)
+        self.assertLessEqual(visible, 18)
+
+    def test_chest_facets_stay_within_the_spec_section_19_size_band(self):
+        # Spec §19: "100-250 px master size." A small allowance
+        # (CHEST_FACET_MAX_DIM's own +5px buffer) covers the polygon's
+        # sharpest ear corners, which can't subdivide further without
+        # exceeding the 18-facet cap -- but nothing near the ~460-500px
+        # (roughly double the band) review measured on the old fan.
+        for index, (points, _fill) in enumerate(icon_generator.CHEST_FACETS, start=1):
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            longest_dim = max(max(xs) - min(xs), max(ys) - min(ys))
+            self.assertLessEqual(
+                longest_dim, icon_generator.CHEST_FACET_MAX_DIM + 5, f"chest-facet-{index:02d} is {longest_dim:.0f}px"
+            )
+
+    def test_every_side_body_facet_is_almost_entirely_visible(self):
+        for index, (points, _fill) in enumerate(icon_generator.SIDE_BODY_FACETS, start=1):
+            fraction = _polygon_visible_area_fraction(points, icon_generator.SIDE_BODY_MASS_POINTS)
+            self.assertGreaterEqual(
+                fraction, self.VISIBLE_THRESHOLD, f"side-body-facet-{index:02d} renders only {fraction:.0%} visible"
+            )
+
+    def test_eight_to_twelve_side_body_facets_are_actually_visible(self):
+        visible = sum(
+            1
+            for points, _fill in icon_generator.SIDE_BODY_FACETS
+            if _polygon_visible_area_fraction(points, icon_generator.SIDE_BODY_MASS_POINTS) >= self.VISIBLE_THRESHOLD
+        )
+        self.assertGreaterEqual(visible, 8)
+        self.assertLessEqual(visible, 12)
+
+    def test_side_body_chains_are_derived_from_the_side_body_envelope(self):
+        # Non-blocking review note on PR #89: SIDE_BODY_INNER_CHAIN/
+        # OUTER_CHAIN must stay slices of SIDE_BODY_MASS_POINTS itself
+        # (icon_generator derives them), not separately hand-typed
+        # literals that could silently drift out of sync with it.
+        mass_points = icon_generator.SIDE_BODY_MASS_POINTS
+        self.assertEqual(set(icon_generator.SIDE_BODY_OUTER_CHAIN), set(mass_points[1:5]))
+        self.assertEqual(set(icon_generator.SIDE_BODY_INNER_CHAIN), {mass_points[0], *mass_points[5:8]})
+
+
 class PathBudgetTest(unittest.TestCase):
     """Spec §35: total path count ~85-110 for the full master."""
 

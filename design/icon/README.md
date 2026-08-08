@@ -132,28 +132,53 @@ Replaces the flat `chest-base`/`side-body-base` color blocks with a low-poly
 facet overlay -- the last geometry this master needs; both masters now
 pass the full QC battery (spec §47-50).
 
-- **Chest (§19):** 11 facets (`chest-facet-01`..`11`), one triangle per
-  edge of `CHEST_MASS_POINTS` fanned from a single apex near the top of
-  the envelope (`CHEST_FACET_APEX`, where the reference concept's own
-  chest facets visibly converge, just under the gorget). Because it's a
-  fan over every envelope edge, the facets always exactly tile the chest
-  silhouette with no gaps, by construction -- no separate coordinate set
-  to keep in sync with the envelope. 11 facets against the gorget's 37
-  feathers is the "dramatically simpler" contrast §19 calls for.
+- **Chest (§19):** 18 facets (`chest-facet-01`..`18`), built by ear-clip
+  triangulating `CHEST_MASS_POINTS` (`_ear_clip` -- the standard
+  algorithm for triangulating a simple polygon, concave or convex, with
+  no interior Steiner points), then bisecting any triangle whose bbox
+  exceeds spec's ~100-250px facet-size band at its longest edge's
+  midpoint (`_subdivide_to_size`), up to an 18-facet cap. Round-1 review
+  on PR #89 caught an earlier version of this that fanned from a single
+  off-center apex instead: `CHEST_MASS_POINTS` is concave (its top
+  boundary sags between the two sharp top corners, pinching the envelope
+  into two lobes), so no single apex can see every edge in a straight
+  line, and 4 of 11 fan facets rendered <=1% actual visible area once
+  the chest-clip trimmed away the part of each triangle that fell
+  outside the real silhouette -- while the dominant facet came out
+  roughly double the size band. Ear-clipping sidesteps the "can one
+  point see every edge" requirement entirely: every triangle it emits
+  is *exactly* a piece of the source polygon, and edge-midpoint
+  subdivision is an affine combination of a parent triangle's own
+  vertices, so that 100%-inside guarantee carries through subdivision
+  too -- not just empirically likely, but true by construction. 18
+  facets against the gorget's 37 feathers is still the "dramatically
+  simpler" contrast §19 calls for.
 - **Side-body (§20):** 9 facets (`side-body-facet-01`..`09`), built by
-  banding `SIDE_BODY_MASS_POINTS`' own inner/outer edge chains into 3
-  bands top-to-bottom, then each band into 3 further sub-quads along its
-  length -- wide, elongated planes rather than small rounded shapes, per
-  §20's explicit "long polygon planes rather than small feather shapes"
-  and §28's "two different geometric languages" (angular/faceted head and
-  chest vs. rounded gorget).
+  banding `SIDE_BODY_MASS_POINTS`' own inner/outer edge chains -- derived
+  as slices of that same point list, not separately hand-typed literals
+  -- into 3 bands top-to-bottom, then each band into 3 further sub-quads
+  along its length -- wide, elongated planes rather than small rounded
+  shapes, per §20's explicit "long polygon planes rather than small
+  feather shapes" and §28's "two different geometric languages"
+  (angular/faceted head and chest vs. rounded gorget). Unlike the chest
+  envelope, this strip is convex enough along its own length that
+  banding it directly already keeps every quad exactly inside the
+  envelope.
 - Both facet groups are clipped to their own envelope (`chest-clip`,
-  `side-body-clip`, same `clipPath` pattern as `crown-clip`/`gorget-clip`),
+  `side-body-clip`, same `clipPath` pattern as `crown-clip`/`gorget-clip`)
+  as a structural safety net on top of the exact-tiling guarantee above,
   and both use only their spec-given color ramps (§19's cream ramp, §20's
   brown-orange ramp) with no strokes.
+- `ChestAndSideBodyFacetVisibilityTest` measures each facet's actual
+  generated-geometry visible-area fraction (the same technique
+  `GorgetFeatherVisibilityTest` uses for feathers) rather than only
+  counting SVG elements, so a facet clipped away to near-nothing can't
+  silently count toward the 10-18/8-12 range the way it did before
+  round-1 review -- and a companion test checks every chest facet's
+  bounding box stays within the §19 size band.
 - Layer order (§34): `chest-base` -> `chest-facets` -> `side-body-base` ->
   `side-body-facets` -> `gorget-base`, unchanged from #61-#63 otherwise.
-- Total path/polygon/ellipse count is now 99 (both variants), inside
+- Total path/polygon/ellipse count is now 106 (both variants), inside
   spec §35's ~85-110 budget.
 - Safe area (§26) and optical center (§27) were already satisfied by the
   #62 landmark placement (beak tip at (135,70), well outside the 65-unit
