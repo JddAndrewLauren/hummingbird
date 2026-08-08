@@ -33,7 +33,9 @@ columns: label blind first, or the score anchors to what the models happened to 
 
 The messy corpus captures deliberately bait these: multi-item (`ph-02, 05, 12, 19, 24`),
 no-verb / fragment (`ph-03, 06, 11, 14, 17, 20`), garbled dictation (`ph-07, 15`),
-inferred-due bait (`ph-01, 09, 15, 18, 21, 24`).
+inferred-due bait (`ph-01, 09, 15, 18, 21, 24`). The `real-*` rows are genuine captures
+from Linear Triage history (2026-08-07) — all short and clean, which is itself data;
+the messy real cases must come from the fresh dictation batch.
 
 ## Sheet
 
@@ -63,6 +65,11 @@ inferred-due bait (`ph-01, 09, 15, 18, 21, 24`).
 | ph-22 | car registration and also the smog check | _TODO_ | _TODO_ | **t:** Car registration<br>**n:** Also: the smog check (likely a prerequisite).<br>**lbl:** context=@errands | | | | |
 | ph-23 | Idea: a raw-text fallback for capture-parse that never loses the utte… | _TODO_ | _TODO_ | **t:** Idea: raw-text fallback for capture-parse that never loses the utterance<br>**n:** "Couldn't parse, kept verbatim."<br>**lbl:** context=@computer, size=medium | | | | |
 | ph-24 | so for the trip we still need to book the dog sitter confirm the rent… | _TODO_ | _TODO_ | **t:** Book the dog sitter for the trip<br>**n:** Also: confirm the rental car; pay the cabin deposit (due th… | | | | |
+| real-01 | Testing with voice | _TODO_ | _TODO_ | **t:** Testing with voice | | | | |
+| real-02 | Call the dentist for new aligners | _TODO_ | _TODO_ | **t:** Call the dentist for new aligners<br>**lbl:** context=@phone, size=quick | | | | |
+| real-03 | order clothes | _TODO_ | _TODO_ | **t:** Order clothes<br>**lbl:** context=@computer | | | | |
+| real-04 | golf practice | _TODO_ | _TODO_ | **t:** Golf practice | | | | |
+| real-05 | Setup hermes agent | _TODO_ | _TODO_ | **t:** Setup hermes agent<br>**lbl:** context=@computer | | | | |
 
 ## Totals (fill after scoring)
 

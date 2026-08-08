@@ -22,3 +22,8 @@
 {"id": "ph-22", "raw": "car registration and also the smog check", "source": "typed"}
 {"id": "ph-23", "raw": "Idea: a raw-text fallback for capture-parse that never loses the utterance — couldn't parse, kept verbatim", "source": "typed"}
 {"id": "ph-24", "raw": "so for the trip we still need to book the dog sitter confirm the rental car and I haven't paid the cabin deposit which is due the fifteenth", "source": "dictated"}
+{"id": "real-01", "raw": "Testing with voice", "source": "dictated", "origin": "ION-24 — Linear Triage 2026-08-07, gate-check-2 phone voice capture"}
+{"id": "real-02", "raw": "Call the dentist for new aligners", "source": "dictated", "origin": "ION-25 — Linear Triage 2026-08-07, gate-check-2 voice capture"}
+{"id": "real-03", "raw": "order clothes", "source": "unknown", "origin": "ION-29 — Linear Triage 2026-08-07"}
+{"id": "real-04", "raw": "golf practice", "source": "unknown", "origin": "ION-30 — Linear Triage 2026-08-07"}
+{"id": "real-05", "raw": "Setup hermes agent", "source": "unknown", "origin": "ION-34 — Linear Triage 2026-08-07"}

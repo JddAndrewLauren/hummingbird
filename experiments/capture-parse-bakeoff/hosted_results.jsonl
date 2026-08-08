@@ -22,3 +22,8 @@
 {"id": "ph-22", "parse": {"title": "Car registration", "notes": "Also: the smog check (likely a prerequisite).", "due": null, "label": {"context": "@errands"}}}
 {"id": "ph-23", "parse": {"title": "Idea: raw-text fallback for capture-parse that never loses the utterance", "notes": "\"Couldn't parse, kept verbatim.\"", "due": null, "label": {"context": "@computer", "size": "medium"}}}
 {"id": "ph-24", "parse": {"title": "Book the dog sitter for the trip", "notes": "Also: confirm the rental car; pay the cabin deposit (due the 15th).", "due": null}}
+{"id": "real-01", "parse": {"title": "Testing with voice", "due": null}}
+{"id": "real-02", "parse": {"title": "Call the dentist for new aligners", "due": null, "label": {"context": "@phone", "size": "quick"}}}
+{"id": "real-03", "parse": {"title": "Order clothes", "due": null, "label": {"context": "@computer"}}}
+{"id": "real-04", "parse": {"title": "Golf practice", "due": null}}
+{"id": "real-05", "parse": {"title": "Setup hermes agent", "due": null, "label": {"context": "@computer"}}}

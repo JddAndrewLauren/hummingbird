@@ -29,29 +29,32 @@ A few dozen captures, one table a human reads in a minute. A prototype, not a be
 | --- | --- |
 | `schema.json` | The parse target. Core `title`+`notes`; `due` and `label` are clearly-optional **stretch** probes — the places a small model is most likely to fail. Real JSON Schema, usable for schema-constrained output. |
 | `prompt.md` | The single shared parse prompt given to **both** parsers verbatim. Identical wording is the point. |
-| `corpus.jsonl` | The captures, one JSON object per line: `{"id","raw","source"}`. **⚠ Currently placeholder** — see below. |
+| `corpus.jsonl` | The captures, one JSON object per line: `{"id","raw","source"}` (real entries also carry `origin`). `ph-*` are placeholders, `real-*` are genuine Triage captures — see below. |
 | `run_hosted.py` | Stdlib-only runner. `--emit-prompts` builds the per-capture prompts to send the hosted model; `--merge` validates the replies against `schema.json` and writes `hosted_results.jsonl`. No API key, no network — the hosted-runner service from #41 doesn't exist yet, so it reads replies from a file/stdin. |
 | `hosted_results.jsonl` | The hosted-baseline parses, `{"id","parse"}` per line. Produced by a hosted Claude parsing the corpus directly with `prompt.md` + `schema.json` — a genuine hosted-baseline sample. |
 | `scoring.md` | The scoring sheet: one row per capture, `hosted` pre-filled, `ground_truth` and `nano` left as `_TODO_`, plus how-to-score and the totals footer. |
 
-## Corpus status — placeholder, must be replaced
+## Corpus status — real captures seeded, fresh dictation still needed
 
-No Linear API key was present at `~/.config/linear/api-key` when this harness was built, so
-the corpus was **not** seeded from real Triage history. `corpus.jsonl` holds 24 realistic
-**placeholder** captures instead — deliberately including the messy cases the ticket calls
-out: run-on dictation, half-sentences, "remind me to…", multiple items in one utterance,
-no-verb fragments, garbled dictation.
+The corpus is now **24 placeholders (`ph-*`) + 5 real captures (`real-*`)**. The real
+entries (added 2026-08-07 with the Linear key present) are the *entire* genuine capture
+history in Linear Triage at that date — the funnel was one day old, and everything else in
+the team was probe residue or `/to-actions`-minted issues, which are not captures. All five
+are short and clean; the messy cases the bake-off exists to measure are so far covered only
+by placeholders.
 
-**Before the real run, replace or augment the corpus with real data:**
+**Before the real run, the corpus still needs:**
 
-- Pull recent Triage / recent issue titles as real seed captures. With a key present, the
-  existing `.claude/skills/next-up-personal/scripts/linear.sh survey` (endpoint
-  `https://api.linear.app/graphql`, `Authorization: <key>` raw — no `Bearer`) already
-  returns issue titles; take a few dozen recent ones.
-- Add a **fresh batch of dictation** through the real phone→Gemini→Tasks path, so the
-  corpus reflects actual transcription noise, not typed approximations of it.
+- A **fresh batch of dictation** through the real phone→Gemini→Tasks path — a couple dozen
+  utterances, deliberately messy (run-on, multi-item, half-sentences), then pulled from
+  Triage into `real-*` rows. This is the load-bearing real data; without it the messy cases
+  are typed approximations.
+- Optionally, retire `ph-*` rows as real equivalents arrive. Placeholder rows that stay
+  should not decide the verdict on their own — read the totals with the `real-*` subset in
+  view.
 
-Keep the `{"id","raw","source"}` shape. Then re-run both sides.
+Keep the `{"id","raw","source"}` shape (plus `origin` pointing at the Triage issue). Then
+re-run the hosted side (steps 1–3 below) for the new rows.
 
 ## How to run
 
@@ -69,9 +72,15 @@ Keep the `{"id","raw","source"}` shape. Then re-run both sides.
 ./run_hosted.py --merge --responses replies.jsonl
 ```
 
-`hosted_results.jsonl` is already populated from a hosted-Claude pass over the placeholder
-corpus, so the baseline column in `scoring.md` is filled and the scoring flow is
-demonstrable today. Re-run steps 1–3 after the corpus is swapped for real captures.
+`hosted_results.jsonl` is already populated from a hosted-Claude pass over the full
+corpus (placeholders + real), so the baseline column in `scoring.md` is filled and the
+scoring flow is demonstrable today. Re-run steps 1–3 whenever the corpus grows.
+
+Per the [#41 resolution](https://github.com/JddAndrewLauren/hummingbird/issues/41), this
+hosted arm is not throwaway — it becomes the production `parse-capture` op on the
+skill-runner endpoint. Once that endpoint is live, regenerate the hosted column *through
+it* (same prompt + schema, one-shot, schema-constrained) so the comparison measures the
+real alternative Nano is up against.
 
 ### On-device side (needs the phone — human only)
 
@@ -85,8 +94,9 @@ mode on** for the whole run, to prove it's genuinely offline. Paste each parse i
 Everything that needs the physical phone or human judgment — left as explicit `_TODO_`s,
 **not** invented here:
 
-1. **Swap the corpus for real captures** (see *Corpus status* above) and re-run the hosted
-   side. Placeholder data must not decide a real trust question.
+1. **Dictate the fresh capture batch** (see *Corpus status* above), pull it into the
+   corpus, and re-run the hosted side for the new rows. Placeholder data must not decide a
+   real trust question.
 2. **Blind ground truth.** For each capture, hand-write the correct parse in
    `scoring.md`'s `ground_truth` column **from the raw text alone, before looking at either
    model's output.** Blind-first or the score anchors to whatever the models produced.
