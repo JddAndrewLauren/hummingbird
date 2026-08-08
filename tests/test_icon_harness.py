@@ -63,6 +63,42 @@ class ContactSheetTest(unittest.TestCase):
 
 
 @unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
+class ActualSizeSheetTest(unittest.TestCase):
+    """Small/micro optical variants (#65, spec §24): judged at their own
+    true pixel size (64/32/24/16), not an upscaled preview."""
+
+    def test_produces_one_image_at_native_pixel_sizes_no_upscaling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "actual-size.png"
+            icon_harness.actual_size_sheet(STUB_SVG, out_path=out_path)
+
+            self.assertTrue(out_path.exists())
+            width, height = icon_harness.png_dimensions(out_path)
+            # Tallest tile is 64px; total width is the sum of the ladder's
+            # own sizes (64+32+24+16=136), not some common display size.
+            self.assertEqual(height, 64)
+            self.assertEqual(width, sum(icon_harness.ACTUAL_SIZE_LADDER))
+
+    def test_cli_subcommand_runs_from_the_command_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "actual-size.png"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "icon_harness.py"),
+                    "actual-size-sheet",
+                    str(STUB_SVG),
+                    "--out",
+                    str(out_path),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(out_path.exists())
+
+
+@unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
 class GrayscaleTest(unittest.TestCase):
     def test_produces_a_desaturated_render(self):
         with tempfile.TemporaryDirectory() as tmp:

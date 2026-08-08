@@ -26,9 +26,22 @@ from one Python program.
 - `hummingbird-icon-master-light.svg`, `hummingbird-icon-master-dark.svg`
   -- generated master SVGs (#61). 1024x1024, full square, self-contained.
   Regenerate with `scripts/icon_generator.py`; never hand-edit.
+- `hummingbird-icon-small-{light,dark}.svg`,
+  `hummingbird-icon-micro-{light,dark}.svg` -- generated small/micro
+  optical variants (#65). Same 1024x1024 viewBox and geometry model as the
+  master, at reduced facet/feather counts (spec §24). Never hand-edit;
+  regenerate with `scripts/icon_generator.py` alongside the masters.
 - `qc/contact-sheet-{light,dark}.png` -- committed gate evidence for the
   current generator output (spec §47 QC battery, size ladder beside the
   reference crop).
+- `qc/contact-sheet-{small,micro}-{light,dark}.png` -- the same
+  upscaled-for-legibility contact sheet, run against the small/micro
+  profiles (#65) instead of the master.
+- `qc/actual-size-{small,micro}-{light,dark}.png` -- the small/micro
+  acceptance evidence itself: 64/32/24/16px renders at their own true
+  pixel size, side by side, with no upscaling to flatter the read (unlike
+  the contact sheet above). This is what spec §24's "small at 32px" and
+  "micro at 16px" reads are actually judged against.
 - `qc/grayscale-{light,dark}.png`, `qc/blur-{light,dark}.png`,
   `qc/silhouette-{light,dark}.png`, `qc/overlay-{light,dark}.png` --
   committed gate evidence for the remaining QC battery modes (spec
@@ -195,6 +208,82 @@ pass the full QC battery (spec §47-50).
   are regenerated against this fix and now show a real silhouette (long
   diagonal beak, round forehead, large upper body, cropped composition).
 
+## Small/micro optical variants (#65)
+
+Adds two more profiles over the *same* geometry model, rather than
+separately redrawn artwork -- spec §24's "variant profiles that dial the
+same geometry model down." `icon_generator.PROFILES` holds three parameter
+sets (`master`/`small`/`micro`); `_build_svg(palette, profile)` renders any
+of them through the identical template `_build_svg(palette)` (the master
+call, unchanged) always used. A shape tweak to the master's own data
+(`CROWN_FACETS`, `CHEST_MASS_POINTS`, `GORGET_FEATHER_RAMP`, ...)
+propagates to small/micro on the next `generate_all()` run, because every
+small/micro shape is built from that same data at a reduced parameter, not
+a separately hand-typed shape set:
+
+- **Gorget feathers ("throat shapes"):** small uses `SMALL_ROW_SPECS` (same
+  5 rows, same x-range/y-center/color-ramp-span per row as the master's own
+  `ROW_SPECS`, roughly half the count and modestly widened per-feather size)
+  -- 19 feathers, spec §24's 16-22 band. Micro's `MICRO_ROW_SPECS` reduces
+  further to 11, spec's 8-12 "throat shapes" band. Both run through the
+  master's own `_build_gorget_feathers`/`_feather_path_d` (same primitive,
+  same ramp), just seeded distinctly (`FEATHER_SEED + 1`/`+ 2`) so they
+  don't replay a truncated prefix of the master's own sequence.
+- **Crown facets ("crown planes"):** `SMALL_CROWN_FACETS`/
+  `MICRO_CROWN_FACETS` are literal index subsets of the master's own
+  14-facet `CROWN_FACETS` list (7 and 4 facets respectively, spec §24's
+  6-8/3-4 bands), picked to spread across the crown's front-to-rear span
+  and gray ramp rather than clustering. The gaps this leaves in the crown
+  mass show the flat `crown-base` color underneath -- correct
+  simplification, not missing geometry.
+- **Chest facets ("chest planes"):** `_ear_clip` on the full 11-vertex
+  `CHEST_MASS_POINTS` always yields exactly 9 triangles (n-2) before any
+  subdivision -- already above small's 6-8 band, and `_subdivide_to_size`
+  can only add more, never fewer. `CHEST_MASS_POINTS_SMALL`/`_MICRO` are
+  ordered *subsets* of the master's own 11-point envelope (8 and 5 points),
+  sized so ear-clipping them directly lands on 6 and 3 triangles. Each
+  subset polygon is still a subset of the real chest silhouette, so it
+  stays exactly inside `chest-clip` even though (like the crown facets
+  above) it leaves part of that silhouette to the flat `chest-base` color.
+- **Side-body facets:** not in spec §24's small/micro shape budgets at all.
+  Per §38's fidelity-priority order (individual facet/polygon detail is
+  priority 8-9, first to go), small keeps a reduced count
+  (`_build_side_body_facets(subdivisions=2)`, 6 facets) and micro drops the
+  overlay entirely (`subdivisions=0`), leaving the flat `side-body-base`
+  color -- "warm orange body" (priority 7) still reads; only its own facet
+  detail doesn't.
+- **Beak:** small keeps the master's full 4-shape beak unchanged -- spec
+  §24's "single beak highlight" is already true of the master's own single
+  `beak-highlight` element, so nothing to reduce. Micro collapses to "one
+  beak shape": the beak envelope itself, flat-filled, no facets or
+  highlight.
+- **Eye:** master keeps all four pieces (ring, gradient iris, two
+  highlights). Small is "simplified" -- drops the secondary glint, keeps
+  ring/iris/primary highlight. Micro is "one black eye, one white eye
+  highlight" -- one flat-filled ring (no separate iris/gradient) plus the
+  primary highlight only.
+- **Eye stripe:** master/small keep both the main wedge and the secondary
+  depth plane; micro is "one eye-stripe shape" -- the main wedge only.
+- **Forehead patch / cheek separator:** neither is in spec §24's small or
+  micro shape lists. Small keeps both unchanged (unlisted items stay
+  unless the budget calls for their removal); micro omits both.
+
+`generate_all()` emits all six SVGs (master/small/micro x light/dark) in
+one run, per spec §40's naming
+(`hummingbird-icon-{master,small,micro}-{light,dark}.svg`). `generate()`
+is unchanged -- still emits only the two master SVGs -- so every existing
+master-only call site keeps working untouched.
+
+`icon_harness.actual_size_sheet` (`actual-size-sheet` CLI subcommand) is
+the QC mode this slice needed that `contact_sheet` doesn't provide: the
+64/32/24/16px ladder at each render's own true pixel size, side by side,
+with no nearest-neighbor upscaling to a common display size. A small/micro
+profile has to read correctly at the size it will actually ship at,
+without an upscaled preview flattering (or unfairly penalizing) that read
+-- `qc/actual-size-{small,micro}-{light,dark}.png` is the committed
+evidence spec §24's small-at-32px / micro-at-16px acceptance reads are
+judged against.
+
 ## Generator
 
 `scripts/icon_generator.py` holds the geometry model (spec §4 composition
@@ -207,7 +296,7 @@ flat major color regions (crown, gorget, chest, side-body masses); head
 identity, feathers and facets are later slices (#62-#64).
 
 ```bash
-# Emit both master SVGs (default: design/icon/).
+# Emit all six SVGs -- master/small/micro x light/dark (default: design/icon/).
 python3 scripts/icon_generator.py --out-dir design/icon
 ```
 
@@ -252,6 +341,12 @@ python3 scripts/icon_harness.py silhouette design/icon/stub.svg \
 # alignment and silhouette drift against the approved concept (spec §37).
 python3 scripts/icon_harness.py overlay design/icon/stub.svg \
     --variant dark --out /tmp/qc-overlay-dark.png
+
+# Small/micro acceptance evidence (#65): 64/32/24/16px at their own true
+# pixel size, side by side, no upscaling.
+python3 scripts/icon_harness.py actual-size-sheet \
+    design/icon/hummingbird-icon-small-light.svg \
+    --out /tmp/actual-size-small-light.png
 ```
 
 `--variant` is `light` or `dark` wherever a mode needs a reference crop.

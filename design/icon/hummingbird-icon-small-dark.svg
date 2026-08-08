@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="background-gradient" cx="50%" cy="50%" r="75%">
+      <stop offset="0%" stop-color="#36444F"/>
+      <stop offset="100%" stop-color="#27323B"/>
+    </radialGradient>
+    <radialGradient id="eye-iris-gradient" cx="35%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#161A1C"/>
+      <stop offset="100%" stop-color="#050606"/>
+    </radialGradient>
+    <clipPath id="beak-clip">
+      <path d="M 135 70 C 230 110, 320 175, 415 355 C 435 375, 455 400, 470 425 C 350 320, 220 180, 144 86 Z"/>
+    </clipPath>
+    <clipPath id="crown-clip">
+      <path d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z"/>
+    </clipPath>
+    <clipPath id="gorget-clip">
+      <path d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z"/>
+    </clipPath>
+    <clipPath id="chest-clip">
+      <polygon points="610 710 530 775 395 770 285 720 215 640 175 680 135 850 100 1024 560 1024 650 850 660 750"/>
+    </clipPath>
+    <clipPath id="side-body-clip">
+      <polygon points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750"/>
+    </clipPath>
+    <!-- Preview-only mask (spec §3): the master itself stays full-square. -->
+    <clipPath id="preview-rounded-square">
+      <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
+    </clipPath>
+  </defs>
+  <g id="icon">
+    <rect id="background" x="0" y="0" width="1024" height="1024" fill="url(#background-gradient)"/>
+    <g id="bird">
+      <path id="bird-silhouette" d="M 135 70 C 230 110, 320 175, 350 220 C 430 190, 590 215, 695 285 C 705 305, 715 330, 720 350 L 780 470 L 825 610 L 875 760 L 925 920 L 955 1024 L 100 1024 L 135 850 L 175 680 L 210 520 L 250 390 C 320 380, 410 405, 470 425 C 350 320, 220 180, 135 70 Z" fill="#181819"/>
+      <polygon id="chest-base" points="610 710 530 775 395 770 285 720 215 640 175 680 135 850 100 1024 560 1024 650 850 660 750" fill="#F6EEE3"/>
+      <g id="chest-facets" clip-path="url(#chest-clip)">
+      <polygon id="chest-facet-01" points="610 710 650 850 560 1024" fill="#FFF9F0"/>
+      <polygon id="chest-facet-02" points="610 710 560 1024 100 1024" fill="#F5ECDF"/>
+      <polygon id="chest-facet-03" points="610 710 100 1024 135 850" fill="#EADBC8"/>
+      <polygon id="chest-facet-04" points="135 850 175 680 215 640" fill="#DDD0BF"/>
+      <polygon id="chest-facet-05" points="135 850 215 640 395 770" fill="#CDBDA8"/>
+      <polygon id="chest-facet-06" points="135 850 395 770 610 710" fill="#FFF9F0"/>
+      </g>
+      <polygon id="side-body-base" points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750" fill="#CE6A16"/>
+      <g id="side-body-facets" clip-path="url(#side-body-clip)">
+      <polygon id="side-body-facet-01" points="660.0 600.0 825.0 610.0 850.0 685.0 660.0 675.0" fill="#E47A16"/>
+      <polygon id="side-body-facet-02" points="660.0 675.0 850.0 685.0 875.0 760.0 660.0 750.0" fill="#D46A12"/>
+      <polygon id="side-body-facet-03" points="660.0 750.0 875.0 760.0 900.0 840.0 655.0 800.0" fill="#B85B18"/>
+      <polygon id="side-body-facet-04" points="655.0 800.0 900.0 840.0 925.0 920.0 650.0 850.0" fill="#A44E1B"/>
+      <polygon id="side-body-facet-05" points="650.0 850.0 925.0 920.0 940.0 972.0 605.0 937.0" fill="#8E451E"/>
+      <polygon id="side-body-facet-06" points="605.0 937.0 940.0 972.0 955.0 1024.0 560.0 1024.0" fill="#E47A16"/>
+      </g>
+      <path id="gorget-base" d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z" fill="#FF8A00"/>
+      <g id="gorget-feathers" clip-path="url(#gorget-clip)">
+      <g id="gorget-bottom-row">
+        <path id="gorget-bottom-row-01" d="M 253.48 649.06 C 288.11 625.82, 327.93 616.6, 382.71 628.27 C 411.25 691.06, 382.49 724.28, 337.81 761.17 C 297.83 739.27, 263.67 712.34, 253.48 649.06 Z" fill="#FFA000"/>
+        <path id="gorget-bottom-row-02" d="M 416.7 620.37 C 460.6 604.42, 503.87 606.59, 558.09 632.18 C 553.19 685.43, 516.95 740.92, 477.11 749.42 C 440.67 724.03, 411.35 684.34, 416.7 620.37 Z" fill="#F46B00"/>
+        <path id="gorget-bottom-row-03" d="M 537.46 623.03 C 579.2 614.35, 648.97 623.51, 682.3 643.61 C 689.63 696.91, 640.09 711.42, 595.13 737.14 C 553.27 721.46, 530.18 674.25, 537.46 623.03 Z" fill="#F4470D"/>
+      </g>
+      <g id="gorget-row-4">
+        <path id="gorget-row-4-01" d="M 204.63 560.22 C 244.68 546.36, 303.37 540.7, 331.3 552.56 C 323.71 599.69, 294.37 631.61, 272.91 638.25 C 236.63 633.33, 207.37 605.47, 204.63 560.22 Z" fill="#FFA000"/>
+        <path id="gorget-row-4-02" d="M 349.3 568.25 C 382.79 549.96, 425.83 540.01, 472.15 550.34 C 465.98 602.18, 454.81 627.57, 424.84 656.16 C 386.62 634.15, 355.6 611.49, 349.3 568.25 Z" fill="#F46B00"/>
+        <path id="gorget-row-4-03" d="M 498.46 569.56 C 531.06 557.63, 575.97 557.54, 612.88 569.37 C 623.51 613.12, 582.65 625.45, 555.8 649.53 C 526.7 629.62, 498.53 613.55, 498.46 569.56 Z" fill="#F4470D"/>
+        <path id="gorget-row-4-04" d="M 615.63 574.74 C 655.03 559.3, 706.96 555.35, 744.04 567.65 C 749.18 607.31, 720.21 628.9, 684.49 655.7 C 649.19 638.94, 617.99 617.61, 615.63 574.74 Z" fill="#D93A18"/>
+      </g>
+      <g id="gorget-row-3">
+        <path id="gorget-row-3-01" d="M 220.35 501.19 C 251.4 490.23, 300.71 490.28, 329.9 499.05 C 336.72 535.06, 305.22 556.75, 276.41 565.9 C 244.08 558.27, 220.97 532.81, 220.35 501.19 Z" fill="#FFA000"/>
+        <path id="gorget-row-3-02" d="M 330.81 497.62 C 363.04 494.61, 417.6 502.46, 437.08 517.18 C 434.97 545.16, 393.84 558.31, 372.66 568.73 C 346.09 557.88, 325.87 524.46, 330.81 497.62 Z" fill="#F46B00"/>
+        <path id="gorget-row-3-03" d="M 438.57 490.32 C 470.25 484.4, 505.44 488.28, 531.17 505.88 C 528.56 543.35, 506.73 566.35, 472.61 571.03 C 447.14 557.94, 432.53 526.23, 438.57 490.32 Z" fill="#F4470D"/>
+        <path id="gorget-row-3-04" d="M 501.92 503.93 C 532.13 488.36, 576.69 486.3, 599.81 497.95 C 610.48 540.6, 581.36 561.67, 555.54 577.48 C 529.1 557.89, 504.36 543.81, 501.92 503.93 Z" fill="#B62E22"/>
+        <path id="gorget-row-3-05" d="M 594.05 495.06 C 620.25 484.67, 671.87 486.82, 692.43 499.62 C 702.88 537.54, 664.84 551.47, 639.74 572.87 C 614.48 552.01, 592.32 532.43, 594.05 495.06 Z" fill="#8D2A23"/>
+      </g>
+      <g id="gorget-row-2">
+        <path id="gorget-row-2-01" d="M 233.1 454.23 C 258.52 439.43, 281.49 437.38, 316.94 439.57 C 317.91 472.61, 302.25 495.64, 284.84 503.04 C 258.39 497.11, 237.34 478.43, 233.1 454.23 Z" fill="#FFA000"/>
+        <path id="gorget-row-2-02" d="M 317.05 458.76 C 349.85 440.13, 390.38 431.23, 417.85 435.32 C 436.58 466.07, 412.96 487.98, 382.49 511.73 C 352.3 501.08, 323.61 486.99, 317.05 458.76 Z" fill="#F46B00"/>
+        <path id="gorget-row-2-03" d="M 461.24 446.04 C 493.83 434.42, 520.9 436.67, 560.93 448.52 C 567.16 480.59, 531.21 512.53, 509.37 516.18 C 484.34 509.21, 460.39 480.41, 461.24 446.04 Z" fill="#D93A18"/>
+        <path id="gorget-row-2-04" d="M 579.9 439.95 C 606.17 437.0, 649.83 445.33, 665.78 460.3 C 648.41 489.25, 642.09 509.53, 607.78 513.7 C 588.09 498.3, 571.59 475.03, 579.9 439.95 Z" fill="#B62E22"/>
+      </g>
+      <g id="gorget-top-row">
+        <path id="gorget-top-row-01" d="M 250.62 400.58 C 270.81 391.79, 299.4 392.79, 323.07 401.3 C 328.47 429.25, 312.06 444.82, 286.25 460.01 C 267.67 445.65, 250.31 431.06, 250.62 400.58 Z" fill="#F46B00"/>
+        <path id="gorget-top-row-02" d="M 384.3 392.19 C 412.04 387.45, 434.05 391.3, 459.14 405.84 C 464.23 437.87, 436.81 452.13, 411.83 453.26 C 393.68 445.2, 378.61 423.37, 384.3 392.19 Z" fill="#D93A18"/>
+        <path id="gorget-top-row-03" d="M 474.98 413.64 C 501.04 398.88, 528.94 394.02, 565.25 398.77 C 573.9 424.8, 557.29 442.88, 529.85 465.29 C 500.15 455.42, 480.11 444.76, 474.98 413.64 Z" fill="#8D2A23"/>
+      </g>
+      </g>
+      <g id="head">
+        <path id="crown-base" d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z" fill="#82827E"/>
+        <g id="crown-facets" clip-path="url(#crown-clip)">
+      <polygon id="crown-facet-01" points="345 235 398 207 422 251" fill="#8C8B89"/>
+      <polygon id="crown-facet-02" points="452 196 516 209 508 243 447 236" fill="#71716F"/>
+      <polygon id="crown-facet-03" points="447 236 508 243 520 277 468 283" fill="#8C8B89"/>
+      <polygon id="crown-facet-04" points="580 225 650 240 670 270 600 260" fill="#555654"/>
+      <polygon id="crown-facet-05" points="465 290 515 285 535 325 490 330" fill="#8C8B89"/>
+      <polygon id="crown-facet-06" points="630 300 700 300 710 360 650 350" fill="#3D403F"/>
+      <polygon id="crown-facet-07" points="600 260 670 270 700 300 630 300" fill="#555654"/>
+        </g>
+        <g id="forehead">
+      <polygon id="forehead-01" points="455 300 520 282 545 315 490 330" fill="#F98400"/>
+      <polygon id="forehead-02" points="520 282 580 285 600 320 545 315" fill="#F36D00"/>
+      <polygon id="forehead-03" points="490 330 545 315 575 345 520 352" fill="#E9500D"/>
+      <polygon id="forehead-04" points="545 315 600 320 625 350 575 345" fill="#C94719"/>
+      <polygon id="forehead-05" points="590 288 655 270 678 302 632 322" fill="#F36D00"/>
+        </g>
+        <polygon id="eye-stripe" points="425 350 570 365 675 395 750 600 700 630 610 475 470 405" fill="#15191A"/>
+        <polygon id="eye-stripe-secondary" points="470 405 610 475 700 630 660 600 590 470 490 415" fill="#2A2421"/>
+        <path id="cheek-separator" d="M 430 393 Q 470 397, 510 417 Q 550 427, 590 433 Q 550 437, 510 424 Q 470 407, 430 401 Z" fill="#F5EFE7"/>
+        <g id="eye">
+          <ellipse id="eye-outer" cx="625" cy="347" rx="50" ry="54" fill="#141719"/>
+          <ellipse id="eye-iris" cx="625" cy="349" rx="37" ry="41" fill="url(#eye-iris-gradient)"/>
+          <ellipse id="eye-highlight-primary" cx="600" cy="316" rx="12.5" ry="9" fill="#F4F5F2"/>
+        </g>
+      </g>
+      <g id="beak" clip-path="url(#beak-clip)">
+        <path id="beak-main" d="M 135 70 C 230 110, 320 175, 415 355 C 435 375, 455 400, 470 425 C 350 320, 220 180, 144 86 Z" fill="#101416"/>
+        <polygon id="beak-face-upper" points="135 70 415 355 300 290 200 160" fill="#202022"/>
+        <polygon id="beak-face-lower" points="144 86 470 425 350 340 220 180" fill="#332A25"/>
+        <polygon id="beak-highlight" points="149 71 411 323 405 329 143 77" fill="#C6C2BA" opacity="0.68"/>
+      </g>
+    </g>
+  </g>
+</svg>
