@@ -1,0 +1,12 @@
+[package]
+name = "hummingbird-ffi-web"
+version.workspace = true
+edition.workspace = true
+description = "wasm-bindgen wrappers over hummingbird-core -> TypeScript."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hummingbird-core = { path = "../core" }
+wasm-bindgen = "0.2"

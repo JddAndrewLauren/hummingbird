@@ -1,0 +1,39 @@
+# Client CI: cargo test across the client/ workspace, plus a wasm32 build
+# for the web FFI crate. Deploy is out of scope here (ADR-0006 splits deploy
+# into its own, later-ticketed workflow); this one only gates on tests.
+name: client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "client/**"
+      - ".github/workflows/client.yml"
+  pull_request:
+    paths:
+      - "client/**"
+      - ".github/workflows/client.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+      - name: cargo test (client workspace)
+        working-directory: client
+        run: cargo test --workspace
+      - name: build ffi-web for wasm32-unknown-unknown
+        working-directory: client
+        run: cargo build --target wasm32-unknown-unknown -p hummingbird-ffi-web
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "latest"
+      - name: wasm-pack build ffi-web (loadable package)
+        working-directory: client/ffi-web
+        run: wasm-pack build --target web --out-dir /tmp/ffi-web-pkg

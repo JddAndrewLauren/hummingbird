@@ -1,0 +1,11 @@
+[package]
+name = "hummingbird-core"
+version.workspace = true
+edition.workspace = true
+description = "Binding-agnostic sync engine core (ADR-0003)."
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
