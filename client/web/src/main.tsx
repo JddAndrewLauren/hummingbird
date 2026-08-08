@@ -29,6 +29,6 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <App worker={worker} />
   </StrictMode>,
 );

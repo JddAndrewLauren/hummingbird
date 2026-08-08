@@ -11,7 +11,8 @@
 use std::fmt;
 
 /// One page of `calendars/{calendarId}/events`, or the failure to fetch it.
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait EventsTransport: Send + Sync {
     /// Fetch one page of events for `calendar_id` within `[time_min,
     /// time_max)`, both RFC 3339 timestamps. `page_token` is `None` for the

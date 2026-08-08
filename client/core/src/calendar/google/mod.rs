@@ -5,9 +5,13 @@
 
 mod adapter;
 mod map;
+mod provider_poller;
 mod raw;
+mod reqwest_transport;
 mod transport;
 
 pub use adapter::{fetch_calendar_snapshot, AdapterError};
 pub use map::MapError;
+pub use provider_poller::GoogleProviderPoller;
+pub use reqwest_transport::ReqwestEventsTransport;
 pub use transport::{EventsTransport, TransportError};
