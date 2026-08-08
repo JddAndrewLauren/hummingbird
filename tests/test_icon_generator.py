@@ -864,5 +864,210 @@ class RasterizesTest(unittest.TestCase):
                     self.assertEqual(icon_harness.png_dimensions(png), (1024, 1024))
 
 
+class SmallMicroVariantTest(unittest.TestCase):
+    """Small/micro optical variants (#65, spec §24): variant profiles that
+    dial the same geometry model down rather than redrawing it. One
+    generator run (`generate_all`) emits all six SVGs (master/small/micro x
+    light/dark)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.paths = icon_generator.generate_all(Path(cls.tmp.name))
+        cls.roots = {key: ET.parse(p).getroot() for key, p in cls.paths.items()}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_one_generator_run_emits_all_six_svgs(self):
+        self.assertEqual(
+            sorted(self.paths.keys()),
+            sorted(
+                [
+                    ("master", "light"),
+                    ("master", "dark"),
+                    ("small", "light"),
+                    ("small", "dark"),
+                    ("micro", "light"),
+                    ("micro", "dark"),
+                ]
+            ),
+        )
+        for key, path in self.paths.items():
+            with self.subTest(key=key):
+                self.assertTrue(path.exists())
+
+    def test_output_names_follow_spec_section_40_naming(self):
+        expected = {
+            ("master", "light"): "hummingbird-icon-master-light.svg",
+            ("master", "dark"): "hummingbird-icon-master-dark.svg",
+            ("small", "light"): "hummingbird-icon-small-light.svg",
+            ("small", "dark"): "hummingbird-icon-small-dark.svg",
+            ("micro", "light"): "hummingbird-icon-micro-light.svg",
+            ("micro", "dark"): "hummingbird-icon-micro-dark.svg",
+        }
+        for key, name in expected.items():
+            with self.subTest(key=key):
+                self.assertEqual(self.paths[key].name, name)
+
+    def test_all_six_are_1024_viewbox_svg_documents(self):
+        for key, root in self.roots.items():
+            with self.subTest(key=key):
+                self.assertEqual(local(root.tag), "svg")
+                self.assertEqual(root.get("viewBox"), "0 0 1024 1024")
+
+    def test_small_gorget_feathers_within_spec_section_24_budget(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("small", variant)]
+                feathers = [
+                    el
+                    for el in root.iter()
+                    if (el.get("id") or "").startswith("gorget-") and local(el.tag) == "path" and el.get("id") != "gorget-base"
+                ]
+                self.assertGreaterEqual(len(feathers), 16)
+                self.assertLessEqual(len(feathers), 22)
+
+    def test_small_crown_facets_within_spec_section_24_budget(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("small", variant)]
+                ids = elements_by_id(root)
+                facet_ids = [i for i in ids if i.startswith("crown-facet-")]
+                self.assertGreaterEqual(len(facet_ids), 6)
+                self.assertLessEqual(len(facet_ids), 8)
+
+    def test_small_chest_facets_within_spec_section_24_budget(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("small", variant)]
+                ids = elements_by_id(root)
+                facet_ids = [i for i in ids if i.startswith("chest-facet-")]
+                self.assertGreaterEqual(len(facet_ids), 6)
+                self.assertLessEqual(len(facet_ids), 8)
+
+    def test_small_beak_has_a_single_highlight(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("small", variant)]
+                ids = elements_by_id(root)
+                highlight_ids = [i for i in ids if i.startswith("beak-highlight")]
+                self.assertEqual(len(highlight_ids), 1)
+
+    def test_small_eye_is_simplified_no_secondary_highlight(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("small", variant)]
+                ids = elements_by_id(root)
+                self.assertIn("eye-outer", ids)
+                self.assertIn("eye-iris", ids)
+                self.assertIn("eye-highlight-primary", ids)
+                self.assertNotIn("eye-highlight-secondary", ids)
+
+    def test_micro_throat_shapes_within_spec_section_24_budget(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("micro", variant)]
+                shapes = [
+                    el
+                    for el in root.iter()
+                    if (el.get("id") or "").startswith("gorget-") and local(el.tag) == "path" and el.get("id") != "gorget-base"
+                ]
+                self.assertGreaterEqual(len(shapes), 8)
+                self.assertLessEqual(len(shapes), 12)
+
+    def test_micro_crown_planes_within_spec_section_24_budget(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("micro", variant)]
+                ids = elements_by_id(root)
+                facet_ids = [i for i in ids if i.startswith("crown-facet-")]
+                self.assertGreaterEqual(len(facet_ids), 3)
+                self.assertLessEqual(len(facet_ids), 4)
+
+    def test_micro_chest_planes_within_spec_section_24_budget(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("micro", variant)]
+                ids = elements_by_id(root)
+                facet_ids = [i for i in ids if i.startswith("chest-facet-")]
+                self.assertGreaterEqual(len(facet_ids), 3)
+                self.assertLessEqual(len(facet_ids), 4)
+
+    def test_micro_eye_is_one_black_eye_and_one_highlight(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("micro", variant)]
+                ids = elements_by_id(root)
+                self.assertIn("eye-outer", ids)
+                self.assertIn("eye-highlight-primary", ids)
+                self.assertNotIn("eye-iris", ids)
+                self.assertNotIn("eye-highlight-secondary", ids)
+
+    def test_micro_beak_is_one_shape(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("micro", variant)]
+                ids = elements_by_id(root)
+                beak_group = ids["beak"]
+                beak_shape_ids = [el.get("id") for el in beak_group if el.get("id")]
+                self.assertEqual(beak_shape_ids, ["beak-main"])
+
+    def test_micro_eye_stripe_is_one_shape(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                root = self.roots[("micro", variant)]
+                ids = elements_by_id(root)
+                self.assertIn("eye-stripe", ids)
+                self.assertNotIn("eye-stripe-secondary", ids)
+
+    def test_small_and_micro_crown_facets_are_a_subset_of_the_masters_own_facets(self):
+        # Spec §24 out-of-scope: "diverging small/micro geometry from the
+        # shared model." Small/micro crown facets must be literal members
+        # of the master's own CROWN_FACETS list -- never separately
+        # hand-drawn shapes.
+        master_facets = icon_generator.CROWN_FACETS
+        for facet in icon_generator.SMALL_CROWN_FACETS:
+            self.assertIn(facet, master_facets)
+        for facet in icon_generator.MICRO_CROWN_FACETS:
+            self.assertIn(facet, master_facets)
+
+    def test_small_and_micro_gorget_rows_use_the_master_ramp_and_envelope(self):
+        for rows in (icon_generator.SMALL_GORGET_FEATHER_ROWS, icon_generator.MICRO_GORGET_FEATHER_ROWS):
+            for row in rows:
+                for feather in row["feathers"]:
+                    self.assertIn(feather["fill"], icon_generator.GORGET_FEATHER_RAMP)
+
+    def test_regenerating_small_and_micro_with_unchanged_parameters_is_byte_stable(self):
+        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+            paths_a = icon_generator.generate_all(Path(tmp_a))
+            paths_b = icon_generator.generate_all(Path(tmp_b))
+            for key in paths_a:
+                self.assertEqual(paths_a[key].read_text(), paths_b[key].read_text())
+
+
+class CommittedSmallMicroMastersUpToDateTest(unittest.TestCase):
+    """The committed design/icon/hummingbird-icon-{small,micro}-*.svg files
+    are generated artifacts, same "never hand-edit" rule as the masters --
+    they must be byte-identical to a fresh generate_all() run."""
+
+    def test_committed_small_micro_match_a_fresh_generate(self):
+        for (profile_name, variant), name in icon_generator.ALL_OUTPUT_NAMES.items():
+            if profile_name == "master":
+                continue
+            with self.subTest(profile=profile_name, variant=variant):
+                committed_path = icon_generator.DEFAULT_OUT_DIR / name
+                self.assertTrue(committed_path.exists(), f"missing committed {committed_path}")
+                committed_text = committed_path.read_text()
+                fresh_text = icon_generator._build_svg(icon_generator.PALETTES[variant], icon_generator.PROFILES[profile_name])
+                self.assertEqual(
+                    committed_text,
+                    fresh_text,
+                    f"{committed_path} is stale -- regenerate with "
+                    "`python3 scripts/icon_generator.py --out-dir design/icon`",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

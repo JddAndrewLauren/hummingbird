@@ -20,6 +20,12 @@ REFERENCE_DIR = REPO_ROOT / "design" / "icon" / "reference"
 # Fixed, deterministic size ladder for the contact sheet / render matrix.
 CONTACT_SHEET_SIZES = (1024, 128, 64, 32, 16)
 
+# Small/micro optical variants (#65, spec §24) are only meant to be judged
+# at their own real target sizes -- 32-64px (small) and 16-24px (micro) --
+# so this ladder skips 1024/128 (no legibility upscaling to hide behind)
+# and adds 24, matching spec §47's own inspection sizes at the small end.
+ACTUAL_SIZE_LADDER = (64, 32, 24, 16)
+
 
 def render_one(svg_path: Path, size: int, out_path: Path) -> Path:
     """Rasterize svg_path at size x size actual pixels via resvg."""
@@ -129,6 +135,35 @@ def contact_sheet(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["magick", *[str(t) for t in tiles], "-background", "white", "+append", str(out_path)],
+            check=True,
+            capture_output=True,
+        )
+    return out_path
+
+
+def actual_size_sheet(
+    svg_path: Path,
+    out_path: Path,
+    sizes=ACTUAL_SIZE_LADDER,
+    background: str = "white",
+) -> Path:
+    """One image: each rendered size at its own true pixel dimensions,
+    side by side -- no legibility upscaling (unlike `contact_sheet`, which
+    nearest-neighbor-upscales every tile to a common display size). This is
+    what the small/micro optical variants (#65, spec §24) are actually
+    judged at, since a resized preview can make a design read better or
+    worse than it will at its real target size."""
+    svg_path = Path(svg_path)
+    out_path = Path(out_path)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        renders = render(svg_path, tmp_dir, sizes)
+        tiles = [str(renders[size]) for size in sizes]
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["magick", *tiles, "-background", background, "-gravity", "South", "+append", str(out_path)],
             check=True,
             capture_output=True,
         )
@@ -381,6 +416,12 @@ def main(argv=None) -> int:
     p_sheet = sub.add_parser("contact-sheet", help="one image: five sizes + matching reference crop")
     _add_common_args(p_sheet, needs_variant=True, needs_size=False)
 
+    p_actual = sub.add_parser(
+        "actual-size-sheet", help="one image: 64/32/24/16px at their own true pixel size, no upscaling (#65)"
+    )
+    p_actual.add_argument("svg", type=Path)
+    p_actual.add_argument("--out", type=Path, required=True)
+
     p_gray = sub.add_parser("grayscale", help="spec §48 monochrome QC render")
     _add_common_args(p_gray)
 
@@ -403,6 +444,9 @@ def main(argv=None) -> int:
             print(f"{size}px -> {path}")
     elif args.command == "contact-sheet":
         out = contact_sheet(args.svg, args.variant, args.out)
+        print(out)
+    elif args.command == "actual-size-sheet":
+        out = actual_size_sheet(args.svg, args.out)
         print(out)
     elif args.command == "grayscale":
         out = grayscale(args.svg, args.out, size=args.size)

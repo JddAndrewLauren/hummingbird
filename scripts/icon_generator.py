@@ -279,8 +279,10 @@ CHEST_FACET_MAX_DIM = 260  # spec §19's 100-250px band, with a small allowance 
 CHEST_FACET_MAX_COUNT = 18  # spec §19's upper facet-count bound
 
 
-def _build_chest_facets() -> list:
-    triangles = _subdivide_to_size(_ear_clip(CHEST_MASS_POINTS), CHEST_FACET_MAX_DIM, CHEST_FACET_MAX_COUNT)
+def _build_chest_facets(envelope: list = None, max_dim: float = CHEST_FACET_MAX_DIM, max_count: int = CHEST_FACET_MAX_COUNT) -> list:
+    if envelope is None:
+        envelope = CHEST_MASS_POINTS
+    triangles = _subdivide_to_size(_ear_clip(envelope), max_dim, max_count)
     ramp = CHEST_FACET_RAMP
     return [(list(triangle), ramp[index % len(ramp)]) for index, triangle in enumerate(triangles)]
 
@@ -309,9 +311,11 @@ SIDE_BODY_FACET_RAMP = ("#E47A16", "#D46A12", "#B85B18", "#A44E1B", "#8E451E")
 SIDE_BODY_FACET_SUBDIVISIONS = 3
 
 
-def _build_side_body_facets() -> list:
+def _build_side_body_facets(subdivisions: int = SIDE_BODY_FACET_SUBDIVISIONS) -> list:
+    if subdivisions <= 0:
+        return []
     ramp = SIDE_BODY_FACET_RAMP
-    sub = SIDE_BODY_FACET_SUBDIVISIONS
+    sub = subdivisions
     facets = []
     index = 0
     for band in range(len(SIDE_BODY_INNER_CHAIN) - 1):
@@ -333,22 +337,26 @@ def _build_side_body_facets() -> list:
 SIDE_BODY_FACETS = _build_side_body_facets()
 
 
-def _chest_facets_svg() -> str:
-    facets = []
-    for index, (points, fill) in enumerate(CHEST_FACETS, start=1):
-        facets.append(
+def _chest_facets_svg(facets: list = None) -> str:
+    if facets is None:
+        facets = CHEST_FACETS
+    out = []
+    for index, (points, fill) in enumerate(facets, start=1):
+        out.append(
             f'      <polygon id="chest-facet-{index:02d}" points="{_points_attr(points)}" fill="{fill}"/>'
         )
-    return "\n".join(facets)
+    return "\n".join(out)
 
 
-def _side_body_facets_svg() -> str:
-    facets = []
-    for index, (points, fill) in enumerate(SIDE_BODY_FACETS, start=1):
-        facets.append(
+def _side_body_facets_svg(facets: list = None) -> str:
+    if facets is None:
+        facets = SIDE_BODY_FACETS
+    out = []
+    for index, (points, fill) in enumerate(facets, start=1):
+        out.append(
             f'      <polygon id="side-body-facet-{index:02d}" points="{_points_attr(points)}" fill="{fill}"/>'
         )
-    return "\n".join(facets)
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -705,17 +713,22 @@ def _feather_path_d(rng: random.Random, width: float, height: float, rotation_de
     return d, (y_min, y_max)
 
 
-def _build_gorget_feathers() -> list:
-    """One deterministic pass (seeded by FEATHER_SEED) over ROW_SPECS,
-    producing {"id", "feathers": [{"d", "fill", "center", "y_extent"}]} per
-    row, in Row-1..Row-5 (top-to-bottom, chin-to-chest) order. `y_extent`
-    (the feather's own actual rendered (y_min, y_max), post-jitter/rotation)
-    lets tests measure real row-to-row overlap from the generated geometry
-    itself rather than recomputing the placement formula."""
-    rng = random.Random(FEATHER_SEED)
-    y_centers = _row_y_centers()
+def _build_gorget_feathers(row_specs: list = None, seed: int = FEATHER_SEED) -> list:
+    """One deterministic pass (seeded by `seed`) over `row_specs` (defaults
+    to the master's ROW_SPECS), producing {"id", "feathers": [{"d", "fill",
+    "center", "y_extent"}]} per row, in Row-1..Row-5 (top-to-bottom,
+    chin-to-chest) order. `y_extent` (the feather's own actual rendered
+    (y_min, y_max), post-jitter/rotation) lets tests measure real row-to-row
+    overlap from the generated geometry itself rather than recomputing the
+    placement formula. The small/micro profiles (#65) pass their own
+    reduced-count row_specs and a distinct fixed seed through this same
+    function -- never a separately written feather-placement pass."""
+    if row_specs is None:
+        row_specs = ROW_SPECS
+    rng = random.Random(seed)
+    y_centers = [row["y_center"] for row in row_specs]
     rows = []
-    for row_spec, y_center in zip(ROW_SPECS, y_centers):
+    for row_spec, y_center in zip(row_specs, y_centers):
         count = row_spec["count"]
         x0, x1 = row_spec["x_range"]
         w0, w1 = row_spec["width_range"]
@@ -754,14 +767,18 @@ def row_y_extent(row: dict) -> tuple:
     return (min(y_mins), max(y_maxes))
 
 
-def _gorget_feathers_svg() -> str:
+def _gorget_feathers_svg(rows: list = None) -> str:
     """Document order follows spec §34's z-stack: gorget-bottom-row (Row 5,
     nearest the chest) painted first/bottommost, up through gorget-top-row
     (Row 1, nearest the chin) painted last/topmost -- the reverse of
     ROW_SPECS's chin-to-chest order, so each row overlaps down into the one
-    below it (spec §17)."""
+    below it (spec §17). `rows` defaults to the master's GORGET_FEATHER_ROWS;
+    the small/micro profiles (#65) pass their own reduced-count rows through
+    the same rendering path."""
+    if rows is None:
+        rows = GORGET_FEATHER_ROWS
     groups = []
-    for row in reversed(GORGET_FEATHER_ROWS):
+    for row in reversed(rows):
         paths = [
             f'        <path id="{row["id"]}-{index:02d}" d="{feather["d"]}" fill="{feather["fill"]}"/>'
             for index, feather in enumerate(row["feathers"], start=1)
@@ -770,13 +787,18 @@ def _gorget_feathers_svg() -> str:
     return "\n".join(groups)
 
 
-def _crown_facets_svg() -> str:
-    facets = []
-    for index, (points, fill) in enumerate(CROWN_FACETS, start=1):
-        facets.append(
+def _crown_facets_svg(facets: list = None) -> str:
+    """`facets` defaults to the master's full CROWN_FACETS; the small/micro
+    profiles (#65) pass a reduced subset of that same literal list through
+    the same rendering path -- never a separately drawn facet set."""
+    if facets is None:
+        facets = CROWN_FACETS
+    out = []
+    for index, (points, fill) in enumerate(facets, start=1):
+        out.append(
             f'      <polygon id="crown-facet-{index:02d}" points="{_points_attr(points)}" fill="{fill}"/>'
         )
-    return "\n".join(facets)
+    return "\n".join(out)
 
 
 def _forehead_patches_svg() -> str:
@@ -788,13 +810,205 @@ def _forehead_patches_svg() -> str:
     return "\n".join(patches)
 
 
-def _build_svg(palette: dict) -> str:
-    """Emit one self-contained master SVG from a palette dict. Geometry is
-    identical for every call; only `palette` values vary -- this is the
-    single code path both light and dark run through (spec: dark differs
-    from light only via palette data, never separate drawing code). Head
-    identity geometry (#62) does not vary by palette at all -- the spec
-    gives no light/dark split for beak/eye/stripe/forehead/cheek."""
+def _forehead_group_svg(include: bool) -> str:
+    """Spec §24: the forehead patch isn't in either small/micro shape
+    budget list. Small keeps it (unlisted items stay unless the budget
+    calls for their removal); micro omits it -- consistent with §38's
+    fidelity-priority ordering, where finer head-identity detail is the
+    first to go under aggressive simplification."""
+    if not include:
+        return ""
+    return f'\n        <g id="forehead">\n{_forehead_patches_svg()}\n        </g>'
+
+
+def _cheek_separator_svg(include: bool) -> str:
+    """Spec §24: like the forehead patch, the cheek separator isn't in
+    either small/micro shape budget list. Small keeps it; micro omits it."""
+    if not include:
+        return ""
+    return f'\n        <path id="cheek-separator" d="{CHEEK_SEPARATOR_PATH}" fill="{CHEEK_SEPARATOR_FILL}"/>'
+
+
+def _beak_svg(detail: str) -> str:
+    """Spec §24: master/small keep the full 4-shape beak (main + two facet
+    planes + the single reflective highlight strip -- "single beak
+    highlight" is already true of the master's own single `beak-highlight`
+    element, so small needs no reduction here). Micro collapses to "one
+    beak shape" -- the envelope itself, flat-filled, no facets or
+    highlight."""
+    if detail == "single":
+        return f'        <path id="beak-main" d="{BEAK_ENVELOPE_PATH}" fill="{BEAK_MAIN_FILL}"/>'
+    return (
+        f'        <path id="beak-main" d="{BEAK_ENVELOPE_PATH}" fill="{BEAK_MAIN_FILL}"/>\n'
+        f'        <polygon id="beak-face-upper" points="{_points_attr(BEAK_FACE_UPPER_POINTS)}" fill="{BEAK_FACE_UPPER_FILL}"/>\n'
+        f'        <polygon id="beak-face-lower" points="{_points_attr(BEAK_FACE_LOWER_POINTS)}" fill="{BEAK_FACE_LOWER_FILL}"/>\n'
+        f'        <polygon id="beak-highlight" points="{_points_attr(BEAK_HIGHLIGHT_POINTS)}" fill="{BEAK_HIGHLIGHT_FILL}" opacity="{BEAK_HIGHLIGHT_OPACITY}"/>'
+    )
+
+
+def _eye_svg(detail: str) -> str:
+    """Spec §24: master keeps all four pieces (ring, gradient iris, two
+    highlights). Small is "simplified" -- drops the secondary glint, keeps
+    the ring/iris/primary highlight. Micro is "one black eye, one white eye
+    highlight" -- one flat-filled ring (no separate iris) plus the primary
+    highlight only."""
+    if detail == "micro":
+        return (
+            f'          <ellipse id="eye-outer" cx="{EYE_CENTER[0]}" cy="{EYE_CENTER[1]}" rx="{EYE_OUTER_RADII[0]}" ry="{EYE_OUTER_RADII[1]}" fill="{EYE_OUTER_FILL}"/>\n'
+            f'          <ellipse id="eye-highlight-primary" cx="{EYE_HIGHLIGHT_PRIMARY_CENTER[0]}" cy="{EYE_HIGHLIGHT_PRIMARY_CENTER[1]}" rx="{EYE_HIGHLIGHT_PRIMARY_RADII[0]}" ry="{EYE_HIGHLIGHT_PRIMARY_RADII[1]}" fill="{EYE_HIGHLIGHT_FILL}"/>'
+        )
+    base = (
+        f'          <ellipse id="eye-outer" cx="{EYE_CENTER[0]}" cy="{EYE_CENTER[1]}" rx="{EYE_OUTER_RADII[0]}" ry="{EYE_OUTER_RADII[1]}" fill="{EYE_OUTER_FILL}"/>\n'
+        f'          <ellipse id="eye-iris" cx="{EYE_IRIS_CENTER[0]}" cy="{EYE_IRIS_CENTER[1]}" rx="{EYE_IRIS_RADII[0]}" ry="{EYE_IRIS_RADII[1]}" fill="url(#eye-iris-gradient)"/>\n'
+        f'          <ellipse id="eye-highlight-primary" cx="{EYE_HIGHLIGHT_PRIMARY_CENTER[0]}" cy="{EYE_HIGHLIGHT_PRIMARY_CENTER[1]}" rx="{EYE_HIGHLIGHT_PRIMARY_RADII[0]}" ry="{EYE_HIGHLIGHT_PRIMARY_RADII[1]}" fill="{EYE_HIGHLIGHT_FILL}"/>'
+    )
+    if detail == "simplified":
+        return base
+    return (
+        base
+        + f'\n          <ellipse id="eye-highlight-secondary" cx="{EYE_HIGHLIGHT_SECONDARY_CENTER[0]}" cy="{EYE_HIGHLIGHT_SECONDARY_CENTER[1]}" rx="{EYE_HIGHLIGHT_SECONDARY_RADII[0]}" ry="{EYE_HIGHLIGHT_SECONDARY_RADII[1]}" fill="{EYE_HIGHLIGHT_FILL}" opacity="{EYE_HIGHLIGHT_SECONDARY_OPACITY}"/>'
+    )
+
+
+def _eye_stripe_svg(detail: str) -> str:
+    """Spec §24: master/small keep both the main wedge and the secondary
+    depth plane. Micro is "one eye-stripe shape" -- the main wedge only."""
+    main = f'        <polygon id="eye-stripe" points="{_points_attr(EYE_STRIPE_MAIN_POINTS)}" fill="{EYE_STRIPE_MAIN_FILL}"/>'
+    if detail == "single":
+        return main
+    secondary = f'        <polygon id="eye-stripe-secondary" points="{_points_attr(EYE_STRIPE_SECONDARY_POINTS)}" fill="{EYE_STRIPE_SECONDARY_FILL}"/>'
+    return main + "\n" + secondary
+
+
+# ---------------------------------------------------------------------------
+# Small/micro optical variants (#65, spec §24): parameter sets over the same
+# geometry model above -- reduced feather/facet counts, a coarser subset of
+# the same envelope points for chest faceting, fewer crown facets picked
+# from the master's own CROWN_FACETS list, and simplified beak/eye/stripe
+# detail levels. Nothing here draws new geometry; every shape a small/micro
+# profile emits is the master's own primitive (feather shape, envelope path,
+# facet ramp) at a reduced count, so a shape tweak to the master's own data
+# (e.g. GORGET_FEATHER_RAMP, CHEST_MASS_POINTS) propagates to small/micro on
+# the next regeneration -- exactly the "one generator run" / "shared model"
+# requirement in the brief, and spec's "diverging small/micro geometry from
+# the shared model" is explicitly out of scope.
+# ---------------------------------------------------------------------------
+
+# Spec §24 small: "16-22 gorget feathers." Same 5 rows, same x-range/y-center/
+# color-ramp-span per row as ROW_SPECS, roughly half each row's master count
+# (and modestly widened width/height so fewer, larger feathers still read as
+# covering the row's own span) -- 3+4+5+4+3 = 19.
+SMALL_ROW_SPECS = [
+    {"id": "gorget-top-row", "count": 3, "width_range": (70, 95), "height_range": (55, 72), "x_range": (295, 520), "color_index_range": (1, 5), "y_center": 421},
+    {"id": "gorget-row-2", "count": 4, "width_range": (80, 105), "height_range": (62, 80), "x_range": (270, 610), "color_index_range": (0, 4), "y_center": 470},
+    {"id": "gorget-row-3", "count": 5, "width_range": (90, 115), "height_range": (70, 90), "x_range": (270, 645), "color_index_range": (0, 5), "y_center": 525},
+    {"id": "gorget-row-4", "count": 4, "width_range": (105, 135), "height_range": (88, 115), "x_range": (280, 665), "color_index_range": (0, 3), "y_center": 592},
+    {"id": "gorget-bottom-row", "count": 3, "width_range": (120, 160), "height_range": (115, 150), "x_range": (320, 610), "color_index_range": (0, 2), "y_center": 672},
+]
+
+# Spec §24 micro: "8-12 throat shapes" -- the same row cascade, reduced
+# further to a handful of large shapes per row. 2+2+3+2+2 = 11.
+MICRO_ROW_SPECS = [
+    {"id": "gorget-top-row", "count": 2, "width_range": (90, 120), "height_range": (70, 90), "x_range": (295, 520), "color_index_range": (1, 5), "y_center": 421},
+    {"id": "gorget-row-2", "count": 2, "width_range": (100, 130), "height_range": (78, 98), "x_range": (270, 610), "color_index_range": (0, 4), "y_center": 470},
+    {"id": "gorget-row-3", "count": 3, "width_range": (110, 145), "height_range": (86, 110), "x_range": (270, 645), "color_index_range": (0, 5), "y_center": 525},
+    {"id": "gorget-row-4", "count": 2, "width_range": (130, 165), "height_range": (108, 140), "x_range": (280, 665), "color_index_range": (0, 3), "y_center": 592},
+    {"id": "gorget-bottom-row", "count": 2, "width_range": (150, 190), "height_range": (140, 175), "x_range": (320, 610), "color_index_range": (0, 2), "y_center": 672},
+]
+
+# Different seeds per profile (still fixed/deterministic -- byte-stable on
+# regeneration) so small/micro don't just replay a truncated prefix of the
+# master's own feather sequence.
+SMALL_GORGET_FEATHER_ROWS = _build_gorget_feathers(SMALL_ROW_SPECS, FEATHER_SEED + 1)
+MICRO_GORGET_FEATHER_ROWS = _build_gorget_feathers(MICRO_ROW_SPECS, FEATHER_SEED + 2)
+
+# Spec §24: small wants 6-8 crown facets, micro wants 3-4 "crown planes."
+# Both are index subsets of the master's own CROWN_FACETS list (same
+# polygons/gray ramp, just fewer of them) rather than a separately
+# triangulated set, picked to spread across the crown's front-to-rear span
+# and the gray ramp rather than clustering in one corner.
+CROWN_FACET_INDICES_SMALL = (0, 2, 5, 7, 9, 11, 13)  # 7 facets
+CROWN_FACET_INDICES_MICRO = (0, 7, 9, 11)  # 4 facets
+SMALL_CROWN_FACETS = [CROWN_FACETS[i] for i in CROWN_FACET_INDICES_SMALL]
+MICRO_CROWN_FACETS = [CROWN_FACETS[i] for i in CROWN_FACET_INDICES_MICRO]
+
+# Spec §24: small wants 6-8 chest facets, micro wants 3-4 "chest planes."
+# `_ear_clip` on the full 11-vertex CHEST_MASS_POINTS always yields exactly
+# 9 triangles (n-2) before any subdivision, which is already above small's
+# 6-8 band and can only grow via `_subdivide_to_size` -- there's no way to
+# *reduce* below the full envelope's own ear-clip count without ear-clipping
+# a coarser vertex set. CHEST_MASS_POINTS_SMALL/MICRO are ordered subsets of
+# the master's own point list (never new coordinates) sized to ear-clip
+# straight to the target count; each subset's polygon is still a subset of
+# the real chest silhouette, so it stays exactly inside the full chest-clip
+# even though it now leaves some of that silhouette's area to the flat
+# chest-base color underneath -- correct simplification, not a bug, per
+# §24's "recognition, not fidelity."
+CHEST_MASS_POINTS_SMALL = [CHEST_MASS_POINTS[i] for i in (0, 2, 4, 5, 6, 7, 8, 9)]  # 8 pts -> 6 triangles
+CHEST_MASS_POINTS_MICRO = [CHEST_MASS_POINTS[i] for i in (0, 4, 6, 8, 9)]  # 5 pts -> 3 triangles
+SMALL_CHEST_FACETS = _build_chest_facets(CHEST_MASS_POINTS_SMALL, max_dim=10_000, max_count=8)
+MICRO_CHEST_FACETS = _build_chest_facets(CHEST_MASS_POINTS_MICRO, max_dim=10_000, max_count=4)
+
+# Side-body facets aren't in spec §24's explicit small/micro shape budgets
+# (only gorget/crown/chest/beak/eye are named) -- per §38's fidelity-priority
+# ordering ("individual feather/polygon detail" is priority 8-9, the first
+# thing to disappear under simplification), small keeps a reduced facet
+# count and micro drops the overlay entirely, leaving the flat
+# `side-body-base` color visible (still spec-accurate: "warm orange body,"
+# priority 7, survives; only its own faceting detail doesn't).
+SMALL_SIDE_BODY_FACETS = _build_side_body_facets(subdivisions=2)  # 6 facets
+MICRO_SIDE_BODY_FACETS = _build_side_body_facets(subdivisions=0)  # none -- flat base only
+
+MASTER_PROFILE = {
+    "crown_facets": CROWN_FACETS,
+    "chest_facets": CHEST_FACETS,
+    "side_body_facets": SIDE_BODY_FACETS,
+    "gorget_rows": GORGET_FEATHER_ROWS,
+    "beak_detail": "full",
+    "eye_detail": "full",
+    "eye_stripe_detail": "full",
+    "include_forehead": True,
+    "include_cheek_separator": True,
+}
+
+SMALL_PROFILE = {
+    "crown_facets": SMALL_CROWN_FACETS,
+    "chest_facets": SMALL_CHEST_FACETS,
+    "side_body_facets": SMALL_SIDE_BODY_FACETS,
+    "gorget_rows": SMALL_GORGET_FEATHER_ROWS,
+    "beak_detail": "full",  # spec §24: "single beak highlight" -- already true of the full beak
+    "eye_detail": "simplified",
+    "eye_stripe_detail": "full",
+    "include_forehead": True,
+    "include_cheek_separator": True,
+}
+
+MICRO_PROFILE = {
+    "crown_facets": MICRO_CROWN_FACETS,
+    "chest_facets": MICRO_CHEST_FACETS,
+    "side_body_facets": MICRO_SIDE_BODY_FACETS,
+    "gorget_rows": MICRO_GORGET_FEATHER_ROWS,
+    "beak_detail": "single",
+    "eye_detail": "micro",
+    "eye_stripe_detail": "single",
+    "include_forehead": False,  # not in spec §24's micro shape list
+    "include_cheek_separator": False,  # not in spec §24's micro shape list
+}
+
+PROFILES = {"master": MASTER_PROFILE, "small": SMALL_PROFILE, "micro": MICRO_PROFILE}
+
+
+def _build_svg(palette: dict, profile: dict = None) -> str:
+    """Emit one self-contained SVG from a palette dict and an optional
+    variant profile (#65, spec §24) -- `profile` defaults to MASTER_PROFILE,
+    so every existing master call site is unchanged. Geometry is identical
+    for every call at a given profile; only `palette` values vary within it
+    -- this is the single code path light and dark both run through (spec:
+    dark differs from light only via palette data, never separate drawing
+    code). Head identity geometry (#62) does not vary by palette at all --
+    the spec gives no light/dark split for beak/eye/stripe/forehead/cheek."""
+    if profile is None:
+        profile = MASTER_PROFILE
     silhouette_d = build_bird_silhouette_path()
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
@@ -832,39 +1046,28 @@ def _build_svg(palette: dict) -> str:
       <path id="bird-silhouette" d="{silhouette_d}" fill="{palette['silhouette_base']}"/>
       <polygon id="chest-base" points="{_points_attr(CHEST_MASS_POINTS)}" fill="{palette['chest_mass']}"/>
       <g id="chest-facets" clip-path="url(#chest-clip)">
-{_chest_facets_svg()}
+{_chest_facets_svg(profile["chest_facets"])}
       </g>
       <polygon id="side-body-base" points="{_points_attr(SIDE_BODY_MASS_POINTS)}" fill="{palette['side_body_mass']}"/>
       <g id="side-body-facets" clip-path="url(#side-body-clip)">
-{_side_body_facets_svg()}
+{_side_body_facets_svg(profile["side_body_facets"])}
       </g>
       <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
       <g id="gorget-feathers" clip-path="url(#gorget-clip)">
-{_gorget_feathers_svg()}
+{_gorget_feathers_svg(profile["gorget_rows"])}
       </g>
       <g id="head">
         <path id="crown-base" d="{CROWN_MASS_PATH}" fill="{palette['crown_mass']}"/>
         <g id="crown-facets" clip-path="url(#crown-clip)">
-{_crown_facets_svg()}
-        </g>
-        <g id="forehead">
-{_forehead_patches_svg()}
-        </g>
-        <polygon id="eye-stripe" points="{_points_attr(EYE_STRIPE_MAIN_POINTS)}" fill="{EYE_STRIPE_MAIN_FILL}"/>
-        <polygon id="eye-stripe-secondary" points="{_points_attr(EYE_STRIPE_SECONDARY_POINTS)}" fill="{EYE_STRIPE_SECONDARY_FILL}"/>
-        <path id="cheek-separator" d="{CHEEK_SEPARATOR_PATH}" fill="{CHEEK_SEPARATOR_FILL}"/>
+{_crown_facets_svg(profile["crown_facets"])}
+        </g>{_forehead_group_svg(profile["include_forehead"])}
+{_eye_stripe_svg(profile["eye_stripe_detail"])}{_cheek_separator_svg(profile["include_cheek_separator"])}
         <g id="eye">
-          <ellipse id="eye-outer" cx="{EYE_CENTER[0]}" cy="{EYE_CENTER[1]}" rx="{EYE_OUTER_RADII[0]}" ry="{EYE_OUTER_RADII[1]}" fill="{EYE_OUTER_FILL}"/>
-          <ellipse id="eye-iris" cx="{EYE_IRIS_CENTER[0]}" cy="{EYE_IRIS_CENTER[1]}" rx="{EYE_IRIS_RADII[0]}" ry="{EYE_IRIS_RADII[1]}" fill="url(#eye-iris-gradient)"/>
-          <ellipse id="eye-highlight-primary" cx="{EYE_HIGHLIGHT_PRIMARY_CENTER[0]}" cy="{EYE_HIGHLIGHT_PRIMARY_CENTER[1]}" rx="{EYE_HIGHLIGHT_PRIMARY_RADII[0]}" ry="{EYE_HIGHLIGHT_PRIMARY_RADII[1]}" fill="{EYE_HIGHLIGHT_FILL}"/>
-          <ellipse id="eye-highlight-secondary" cx="{EYE_HIGHLIGHT_SECONDARY_CENTER[0]}" cy="{EYE_HIGHLIGHT_SECONDARY_CENTER[1]}" rx="{EYE_HIGHLIGHT_SECONDARY_RADII[0]}" ry="{EYE_HIGHLIGHT_SECONDARY_RADII[1]}" fill="{EYE_HIGHLIGHT_FILL}" opacity="{EYE_HIGHLIGHT_SECONDARY_OPACITY}"/>
+{_eye_svg(profile["eye_detail"])}
         </g>
       </g>
       <g id="beak" clip-path="url(#beak-clip)">
-        <path id="beak-main" d="{BEAK_ENVELOPE_PATH}" fill="{BEAK_MAIN_FILL}"/>
-        <polygon id="beak-face-upper" points="{_points_attr(BEAK_FACE_UPPER_POINTS)}" fill="{BEAK_FACE_UPPER_FILL}"/>
-        <polygon id="beak-face-lower" points="{_points_attr(BEAK_FACE_LOWER_POINTS)}" fill="{BEAK_FACE_LOWER_FILL}"/>
-        <polygon id="beak-highlight" points="{_points_attr(BEAK_HIGHLIGHT_POINTS)}" fill="{BEAK_HIGHLIGHT_FILL}" opacity="{BEAK_HIGHLIGHT_OPACITY}"/>
+{_beak_svg(profile["beak_detail"])}
       </g>
     </g>
   </g>
@@ -872,10 +1075,27 @@ def _build_svg(palette: dict) -> str:
 """
 
 
-# Stable, documented output paths (spec §40 naming).
+# Stable, documented output paths (spec §40 naming). Kept as the master-only
+# {variant: name} shape it has always been -- `generate()` below is
+# unchanged (still emits only the two master SVGs), so every existing call
+# site keeps working. ALL_OUTPUT_NAMES (below) is the full six-file map
+# small/micro (#65) add alongside it.
 OUTPUT_NAMES = {
     "light": "hummingbird-icon-master-light.svg",
     "dark": "hummingbird-icon-master-dark.svg",
+}
+
+# Spec §24/§40: one generator run emits all six SVGs -- master/small/micro x
+# light/dark. Keyed by (profile, variant) so `generate_all` can return one
+# flat dict without colliding on the "light"/"dark" keys `generate` already
+# uses for the master pair.
+ALL_OUTPUT_NAMES = {
+    ("master", "light"): "hummingbird-icon-master-light.svg",
+    ("master", "dark"): "hummingbird-icon-master-dark.svg",
+    ("small", "light"): "hummingbird-icon-small-light.svg",
+    ("small", "dark"): "hummingbird-icon-small-dark.svg",
+    ("micro", "light"): "hummingbird-icon-micro-light.svg",
+    ("micro", "dark"): "hummingbird-icon-micro-dark.svg",
 }
 
 
@@ -891,10 +1111,24 @@ def generate(out_dir: Path = DEFAULT_OUT_DIR) -> dict:
     return paths
 
 
+def generate_all(out_dir: Path = DEFAULT_OUT_DIR) -> dict:
+    """Emit all six SVGs (master/small/micro x light/dark) into out_dir in
+    one run (spec §24/§40). Returns {(profile, variant): Path}."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = {}
+    for profile_name, profile in PROFILES.items():
+        for variant, palette in PALETTES.items():
+            out_path = out_dir / ALL_OUTPUT_NAMES[(profile_name, variant)]
+            out_path.write_text(_build_svg(palette, profile))
+            paths[(profile_name, variant)] = out_path
+    return paths
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="icon_generator.py",
-        description="Generate the master light/dark hummingbird icon SVGs (#61).",
+        description="Generate all six (master/small/micro x light/dark) hummingbird icon SVGs (#61/#65).",
     )
     parser.add_argument(
         "--out-dir",
@@ -903,9 +1137,9 @@ def main(argv=None) -> int:
         help=f"output directory (default: {DEFAULT_OUT_DIR})",
     )
     args = parser.parse_args(argv)
-    paths = generate(args.out_dir)
-    for variant, path in sorted(paths.items()):
-        print(f"{variant} -> {path}")
+    paths = generate_all(args.out_dir)
+    for (profile_name, variant), path in sorted(paths.items()):
+        print(f"{profile_name}-{variant} -> {path}")
     return 0
 
 
