@@ -56,12 +56,15 @@ from one Python program.
   packaging). Never hand-edit; regenerate with `scripts/icon_export.py svgs`.
 - `qc/favicon-actual-16.png` -- the favicon's own 16px render, nearest-
   neighbor upscaled for legibility (same convention as the small/micro
-  actual-size sheets).
+  actual-size sheets). Regenerate with `scripts/icon_export.py qc`.
 - `qc/android-adaptive-safe-zone.png` -- the composited background +
   foreground layers with Android's official 66/108dp safe-zone circle
-  overlaid in red, for eyeballing that the head/eye/gorget mass clears it
-  (see the "Export matrix + platform packaging" section below for why the
-  beak-tip spike is the one documented exception).
+  overlaid in red. Read this as "where the circle actually falls on the
+  real artwork", not as evidence of full containment: the chest and
+  side-body masses visibly extend past it, and the gorget bleeds past it
+  on both sides (see the "Export matrix + platform packaging" section
+  below for the full pixel measurement and the beak-tip landmark
+  exception). Regenerate with `scripts/icon_export.py qc`.
 
 ## Head identity (#62)
 
@@ -422,29 +425,56 @@ python3 scripts/icon_export.py all --out-dir design/icon/export
   dropped and its `id="bird"` group wrapped in a
   `translate/scale(0.9)/translate` transform about the canvas center --
   the spec's own "shrinking the bird about 8-12%" (`ANDROID_FOREGROUND_SCALE
-  = 0.90`, the band's midpoint). That shrink is calibrated against the
-  composition's *head* landmarks: `crown_top` clears Android's real
-  66/108dp safe-zone circle only after scaling, not before
-  (`test_unscaled_landmark_would_fail_without_the_shrink`), and every
-  other composition landmark except the beak-tip spike clears it too
-  (`test_head_identity_landmarks_clear_the_safe_zone_after_scaling`). The
-  beak-tip spike itself (`beak_tip`/`beak_lower_tip`, reaching to
-  (135,70), close to the canvas corner) stays outside the safe circle
-  even at max shrink -- pulling it inside would need roughly a 50% shrink,
-  well past the spec's own descriptive "8-12%" estimate, so it's treated
-  as the one documented exception
-  (`SAFE_ZONE_EXEMPT_LANDMARKS`), mirroring spec §26's own "body bleed at
-  bottom" exception for the app icon's safe *area* and how real Android
-  adaptive icons commonly tolerate thin extremities being clipped by some
-  launchers' masks while the guaranteed-safe circle protects the actual
-  identity (head/eye/gorget). `qc/android-adaptive-safe-zone.png` overlays
-  that circle on the composited layers for a visual check.
+  = 0.90`, the band's midpoint).
+
+  What that scale is actually checked against, and what it isn't:
+  - **Checked and true:** the seven named points in
+    `icon_generator.LANDMARKS` plus `EYE_CENTER` -- a small set standing
+    in for head/eye/gorget *identity*, not the whole silhouette -- clear
+    Android's real 66/108dp safe-zone circle once scaled
+    (`test_head_identity_landmarks_clear_the_safe_zone_after_scaling`).
+    `crown_top` specifically clears it only *after* scaling, not before
+    (`test_unscaled_landmark_would_fail_without_the_shrink`) -- that's the
+    landmark the 8-12% figure is calibrated against. The beak-tip spike
+    (`beak_tip`/`beak_lower_tip`, reaching to (135,70), close to the
+    canvas corner) is the one landmark that still fails even at max
+    shrink -- pulling it inside would need roughly a 0.61 scale, well
+    past the spec's own "8-12%" estimate -- so it's a documented,
+    tested exception (`SAFE_ZONE_EXEMPT_LANDMARKS`), on the same
+    precedent as spec §26's "body bleed at bottom" exception for the app
+    icon's safe *area*.
+  - **Not checked by the landmarks, and not true:** literal full-pixel
+    containment. Rendering the actual `foreground.svg` and measuring
+    every opaque pixel against the same circle
+    (`foreground_opaque_pixel_outside_safe_zone_fraction`) shows roughly
+    a third to a half of the foreground's own opaque pixels fall outside
+    it -- the chest and side-body masses are entirely outside the
+    circle, and the gorget bleeds past it on both sides. Achieving full
+    pixel containment would need close to a 0.61 scale, which would read
+    as a much smaller, over-shrunk bird relative to what §44's "8-12%"
+    describes. 0.90 is a deliberate reading of the spec text (protect the
+    named identity, accept the rest bleeding) over pixel-perfect
+    compliance -- the same tradeoff real Android adaptive icons make in
+    practice (content outside the safe circle can get cropped by some
+    launchers' masks; only the guaranteed-safe circle's content survives
+    everywhere).
+
+  `qc/android-adaptive-safe-zone.png` overlays the real circle on the
+  composited layers so this tradeoff is visible directly, not just
+  described -- the head mass sits inside it; the chest/side-body/gorget
+  visibly don't.
 - **Not committed:** the PNG matrix, `.icns` and `.ico` are regenerable
   rasters (`design/icon/export/`, gitignored) -- client work under map #35
   runs `icon_export.py all` when it needs them rather than pulling stale
   binaries out of git. The favicon and Android SVGs *are* committed
   (same "generated source of truth, never hand-edit" rule as the six
   masters, with byte-equality staleness tests).
+- **Committed QC evidence:** `qc/favicon-actual-16.png` and
+  `qc/android-adaptive-safe-zone.png` are also committed, generated
+  gate evidence -- regenerate both with `python3 scripts/icon_export.py
+  qc` (documented, one command, same convention as the harness's own
+  `qc/*.png`), and `CommittedQcRendersUpToDateTest` in
+  `tests/test_icon_export.py` byte-compares each against a fresh build.
 
 ## Tests
 

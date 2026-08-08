@@ -81,7 +81,7 @@ class PngMatrixTest(unittest.TestCase):
 
     def test_renders_are_srgb_8bit_rgba_no_icc_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
-            paths = icon_export.render_png_matrix("dark", Path(tmp), sizes={1024: "master", 32: "small", 16: "micro"})
+            paths = icon_export.render_png_matrix("dark", Path(tmp), sizes=(1024, 32, 16))
             for size, path in paths.items():
                 with self.subTest(size=size):
                     self.assertEqual(icon_export.png_bit_depth(path), 8)
@@ -95,7 +95,7 @@ class PngMatrixTest(unittest.TestCase):
         convention."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
-            matrix_paths = icon_export.render_png_matrix("light", tmp_dir, sizes={64: "small"})
+            matrix_paths = icon_export.render_png_matrix("light", tmp_dir, sizes=(64,))
             master_svg = icon_export.source_svg_path(1024, "light")
             master_downscale = icon_harness.render_one(master_svg, 64, tmp_dir / "master-downscale-64.png")
             diff = icon_harness.mean_pixel_difference(matrix_paths[64], master_downscale)
@@ -183,8 +183,27 @@ class FaviconTest(unittest.TestCase):
     def test_at_most_fifteen_visible_shapes(self):
         svg_text = icon_export.build_favicon_svg()
         count = icon_export.visible_shape_count(svg_text)
+        # Pinned to the real count (background-silhouette, chest-base,
+        # side-body-base, gorget-base, crown-base, eye-stripe, eye-outer,
+        # eye-highlight-primary, beak-main) -- not just "under the spec §45
+        # cap", so a regression that starts double-counting (e.g. <defs>
+        # clipPath shapes leaking back in) fails loudly instead of hiding
+        # under a loose upper bound.
+        self.assertEqual(count, 9, f"favicon shape count changed to {count}; update this pinned figure if intentional")
         self.assertLessEqual(count, 15, f"favicon has {count} visible shapes, spec §45 caps at ~15")
-        self.assertGreater(count, 0)
+
+    def test_visible_shape_count_excludes_defs_clip_path_shapes(self):
+        # Regression guard for the bug the reviewer caught: <defs> holds
+        # clipPath <path>/<polygon> children that share tag names with
+        # real artwork but never render. Confirm the favicon's own <defs>
+        # really does contain shape-tagged elements, and that they don't
+        # get counted.
+        svg_text = icon_export.build_favicon_svg()
+        root = ET.fromstring(svg_text)
+        defs = next(el for el in root.iter() if local(el.tag) == "defs")
+        defs_shape_tags = [local(el.tag) for el in defs.iter() if local(el.tag) in icon_export._VISIBLE_SHAPE_TAGS]
+        self.assertGreater(len(defs_shape_tags), 0, "test fixture assumption broke: favicon <defs> has no shape-tagged children")
+        self.assertEqual(icon_export.visible_shape_count(svg_text), 9)
 
     def test_uses_spec_45s_literal_color_list(self):
         svg_text = icon_export.build_favicon_svg()
@@ -263,6 +282,23 @@ class AndroidSafeZoneTest(unittest.TestCase):
         self.assertFalse(icon_export.landmark_within_safe_zone(crown_top, scale=1.0))
         self.assertTrue(icon_export.landmark_within_safe_zone(crown_top))
 
+    @unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
+    def test_the_landmark_check_does_not_mean_full_pixel_containment(self):
+        """The named-landmark check above is real but narrow -- it only
+        covers 8 points standing in for head/eye/gorget identity. This
+        renders the actual foreground.svg and measures every opaque pixel
+        against the same circle: a large, genuine fraction (roughly a
+        third to a half -- chest and side-body are entirely outside,
+        gorget bleeds both sides) renders outside the safe zone. This is
+        the accepted tradeoff (see the module docstring in
+        scripts/icon_export.py and design/icon/README.md), not a bug --
+        this test exists so that tradeoff can't silently drift into an
+        unnoticed regression (e.g. a future edit that claims full
+        containment without re-measuring)."""
+        fraction = icon_export.foreground_opaque_pixel_outside_safe_zone_fraction()
+        self.assertGreater(fraction, 0.25, "measured outside-safe-zone fraction dropped a lot -- update the docs/PR claim if this is real")
+        self.assertLess(fraction, 0.55, "measured outside-safe-zone fraction rose a lot -- update the docs/PR claim if this is real")
+
 
 class AndroidLayersTest(unittest.TestCase):
     def test_background_is_a_1024_viewbox_svg_with_no_bird(self):
@@ -309,6 +345,82 @@ class CommittedAndroidLayersUpToDateTest(unittest.TestCase):
         self.assertTrue(foreground_path.exists())
         self.assertEqual(background_path.read_text(), icon_export.build_android_background_svg())
         self.assertEqual(foreground_path.read_text(), icon_export.build_android_foreground_svg())
+
+
+# ---------------------------------------------------------------------------
+# Committed QC evidence (design/icon/qc/favicon-actual-16.png,
+# qc/android-adaptive-safe-zone.png): regenerate with
+# `python3 scripts/icon_export.py qc`, same convention as the harness's
+# own qc/*.png (grayscale/blur/silhouette/overlay/contact-sheet, each with
+# a documented one-command regeneration path).
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
+class QcRenderTest(unittest.TestCase):
+    def test_favicon_qc_render_is_a_nearest_neighbor_upscaled_16px_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = icon_export.build_favicon_qc_render(Path(tmp) / "favicon-actual-16.png")
+            self.assertTrue(out_path.exists())
+            self.assertEqual(icon_harness.png_dimensions(out_path), (256, 256))
+
+    def test_android_safe_zone_qc_render_shows_the_composited_layers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = icon_export.build_android_safe_zone_qc_render(Path(tmp) / "android-adaptive-safe-zone.png")
+            self.assertTrue(out_path.exists())
+            self.assertEqual(icon_harness.png_dimensions(out_path), (512, 512))
+
+    def test_cli_qc_subcommand_writes_both_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            icon_dir = Path(tmp) / "icon"
+            icon_dir.mkdir()
+            icon_generator.generate_all(icon_dir)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "icon_export.py"),
+                    "--icon-dir",
+                    str(icon_dir),
+                    "qc",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((icon_dir / "qc" / icon_export.FAVICON_QC_NAME).exists())
+            self.assertTrue((icon_dir / "qc" / icon_export.ANDROID_SAFE_ZONE_QC_NAME).exists())
+
+
+class CommittedQcRendersUpToDateTest(unittest.TestCase):
+    """The committed design/icon/qc/favicon-actual-16.png and
+    qc/android-adaptive-safe-zone.png are generated gate evidence, same
+    "never hand-edit" rule as the SVGs -- regenerate with
+    `python3 scripts/icon_export.py qc` whenever the favicon/Android
+    source SVGs change."""
+
+    @unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
+    def test_committed_favicon_qc_render_matches_a_fresh_build(self):
+        committed_path = icon_export.DEFAULT_ICON_DIR / "qc" / icon_export.FAVICON_QC_NAME
+        self.assertTrue(committed_path.exists(), f"missing committed {committed_path}")
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh_path = icon_export.build_favicon_qc_render(Path(tmp) / icon_export.FAVICON_QC_NAME)
+            self.assertEqual(
+                committed_path.read_bytes(),
+                fresh_path.read_bytes(),
+                f"{committed_path} is stale -- regenerate with `python3 scripts/icon_export.py qc`",
+            )
+
+    @unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
+    def test_committed_android_safe_zone_qc_render_matches_a_fresh_build(self):
+        committed_path = icon_export.DEFAULT_ICON_DIR / "qc" / icon_export.ANDROID_SAFE_ZONE_QC_NAME
+        self.assertTrue(committed_path.exists(), f"missing committed {committed_path}")
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh_path = icon_export.build_android_safe_zone_qc_render(Path(tmp) / icon_export.ANDROID_SAFE_ZONE_QC_NAME)
+            self.assertEqual(
+                committed_path.read_bytes(),
+                fresh_path.read_bytes(),
+                f"{committed_path} is stale -- regenerate with `python3 scripts/icon_export.py qc`",
+            )
 
 
 # ---------------------------------------------------------------------------

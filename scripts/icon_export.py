@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -90,9 +91,19 @@ def _normalize_png(png_path: Path) -> Path:
     return png_path
 
 
-def render_png_matrix(variant: str, out_dir: Path, icon_dir: Path = DEFAULT_ICON_DIR, sizes=EXPORT_MATRIX) -> dict:
-    """Render every §41 matrix size for one variant, each from its own
-    correct optical source. Returns {size: Path}."""
+def render_png_matrix(
+    variant: str, out_dir: Path, icon_dir: Path = DEFAULT_ICON_DIR, sizes=tuple(EXPORT_MATRIX)
+) -> dict:
+    """Render each of `sizes` for one variant, every size from its own
+    correct §41 optical source. Returns {size: Path}.
+
+    `sizes` is an iterable of size ints (default: every EXPORT_MATRIX
+    key) -- NOT a {size: profile} mapping. Each size's source profile
+    always comes from the module-level EXPORT_MATRIX via
+    `source_svg_path`; there's no per-call override of which profile a
+    size sources from, so a `sizes` argument's *values* (if it happened
+    to be a dict) would silently be ignored. Pass a subset of sizes to
+    render fewer, not a dict pointing at different profiles."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
@@ -256,12 +267,20 @@ def build_favicon_svg(palette: dict = None) -> str:
     return icon_generator._build_svg(palette, FAVICON_PROFILE)
 
 
-def visible_shape_count(svg_text: str, *, exclude_ids=("background",)) -> int:
-    """Count of drawable (non-group, non-background) elements -- what
-    spec §45's "<=15 visible shapes" is judged against."""
-    import xml.etree.ElementTree as ET
+_SVG_NS = "http://www.w3.org/2000/svg"
 
+
+def visible_shape_count(svg_text: str, *, exclude_ids=("background",)) -> int:
+    """Count of drawable (non-group, non-background) elements that
+    actually render -- what spec §45's "<=15 visible shapes" is judged
+    against. `<defs>` is stripped first: its clipPath/gradient children
+    (`<path>`/`<polygon>` inside `beak-clip`, `crown-clip`, etc.) match
+    the same tag names as real artwork but never paint anything -- left
+    in, they silently inflate the count (6 clipPath shapes on top of the
+    favicon's real 9, for example)."""
     root = ET.fromstring(svg_text)
+    for defs in list(root.findall(f"{{{_SVG_NS}}}defs")):
+        root.remove(defs)
     count = 0
     for el in root.iter():
         if _local_tag(el) in _VISIBLE_SHAPE_TAGS and el.get("id") not in exclude_ids:
@@ -280,19 +299,35 @@ def generate_favicon(out_dir: Path = DEFAULT_ICON_DIR) -> Path:
 # ---------------------------------------------------------------------------
 # Android adaptive-icon layers (spec §44): background.svg + foreground.svg,
 # SVG only, no APK/resource packaging. The foreground is the master bird
-# artwork, uniformly scaled ~8-12% and re-centered on the canvas so the
-# head/eye/gorget identity mass clears Android's official safe zone (a
-# circle 66dp in diameter, centered, within the 108dp adaptive canvas --
-# ANDROID_SAFE_ZONE_RADIUS below). The beak-tip spike is the one
-# exception: even at the low end of that 8-12% band it stays outside the
-# safe-zone circle (it reaches to (135,70), close to the canvas corner),
-# and pulling it inside would need a ~50% shrink well past what the spec
-# text describes. This mirrors spec §26's own explicit "body bleed at
-# bottom" exception for the app icon's safe *area* -- a thin extremity is
-# allowed to bleed past the guaranteed-safe region by design; Android's
-# own adaptive-icon convention tolerates the same for non-identity
-# extremities (only some launchers' masks will crop it). See
-# design/icon/README.md for this reasoning and the per-landmark numbers.
+# artwork, uniformly scaled ~8-12% and re-centered on the canvas (spec
+# §44's own "shrinking the bird about 8-12%", ANDROID_FOREGROUND_SCALE =
+# 0.90, the band's midpoint, below).
+#
+# What that scale is actually checked against: the seven named landmark
+# points in icon_generator.LANDMARKS plus EYE_CENTER -- a small, named set
+# standing in for the head/eye/gorget *identity* -- clear Android's real
+# safe zone (a circle 66dp in diameter, centered, within the 108dp
+# adaptive canvas -- ANDROID_SAFE_ZONE_RADIUS below) once scaled, except
+# for the beak-tip spike (SAFE_ZONE_EXEMPT_LANDMARKS below), which stays
+# outside even at max shrink and is treated as a documented exception
+# (mirroring spec §26's own "body bleed at bottom" exception for the app
+# icon's safe *area*).
+#
+# What that scale does NOT achieve: literal full-silhouette containment.
+# Measuring the actual rendered foreground.svg (not just its landmarks)
+# against the same circle shows roughly 39% of its own opaque pixels
+# render outside it -- the chest and side-body masses are entirely
+# outside the circle, and the gorget bleeds past it on both sides. Full
+# containment of every opaque pixel would need close to a 0.61 scale
+# (radius/reach, not the 0.90 the spec's own "8-12%" describes), which
+# would leave a much smaller, over-shrunk bird relative to what §44 asks
+# for. 0.90 is a deliberate reading of the spec text over literal
+# pixel-perfect compliance: Android's own adaptive-icon convention
+# tolerates exactly this (content outside the safe circle gets cropped by
+# some launchers' masks, not all; only the guaranteed-safe circle's
+# content survives everywhere) -- see design/icon/README.md's "Export
+# matrix + platform packaging" section for the full writeup and the
+# committed qc/android-adaptive-safe-zone.png overlay.
 # ---------------------------------------------------------------------------
 
 ANDROID_CANVAS_CENTER = (512, 512)
@@ -302,8 +337,9 @@ ANDROID_CANVAS_DP = 108
 ANDROID_SAFE_ZONE_RADIUS = 1024 * (ANDROID_SAFE_ZONE_DIAMETER_DP / ANDROID_CANVAS_DP) / 2
 
 # The beak-tip spike's own two landmarks are the documented bleed
-# exception above; every other composition landmark must clear the safe
-# zone at ANDROID_FOREGROUND_SCALE.
+# exception above; every other *named landmark* (not every rendered
+# pixel -- see the module note above) clears the safe zone at
+# ANDROID_FOREGROUND_SCALE.
 SAFE_ZONE_EXEMPT_LANDMARKS = frozenset({"beak_tip", "beak_lower_tip"})
 
 BACKGROUND_OUTPUT_NAME = "background.svg"
@@ -327,6 +363,41 @@ def distance_from_center(point, center=ANDROID_CANVAS_CENTER) -> float:
 
 def landmark_within_safe_zone(point, scale: float = ANDROID_FOREGROUND_SCALE, center=ANDROID_CANVAS_CENTER) -> bool:
     return distance_from_center(landmark_after_transform(point, scale, center), center) <= ANDROID_SAFE_ZONE_RADIUS
+
+
+_TXT_PIXEL_RE = re.compile(r"^(\d+),(\d+): \((\d+),(\d+),(\d+),(\d+)\)")
+
+
+def foreground_opaque_pixel_outside_safe_zone_fraction(size: int = 256) -> float:
+    """The real pixel-level measurement behind the module docstring's
+    "~39% of the foreground's own opaque pixels render outside the safe
+    zone" claim -- unlike `landmark_within_safe_zone`, which only checks
+    the seven named LANDMARKS + EYE_CENTER, this renders the actual
+    foreground.svg and scans every pixel. Downsampled to `size` (the
+    fraction is scale-invariant, so full 1024px isn't needed to be
+    representative)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        fg_path = tmp_dir / "foreground.svg"
+        fg_path.write_text(build_android_foreground_svg())
+        png = icon_harness.render_one(fg_path, size, tmp_dir / "foreground.png")
+        result = subprocess.run(["magick", str(png), "txt:"], check=True, capture_output=True, text=True)
+
+    cx = cy = size / 2
+    radius = size * (ANDROID_SAFE_ZONE_DIAMETER_DP / ANDROID_CANVAS_DP) / 2
+    total_opaque = 0
+    outside_opaque = 0
+    for line in result.stdout.splitlines()[1:]:
+        match = _TXT_PIXEL_RE.match(line)
+        if not match:
+            continue
+        x, y, _r, _g, _b, alpha = (int(g) for g in match.groups())
+        if alpha == 0:
+            continue
+        total_opaque += 1
+        if math.hypot(x - cx, y - cy) > radius:
+            outside_opaque += 1
+    return outside_opaque / total_opaque if total_opaque else 0.0
 
 
 def build_android_background_svg(palette: dict = None) -> str:
@@ -375,6 +446,105 @@ def generate_android_layers(out_dir: Path = DEFAULT_ICON_DIR / "android") -> dic
 
 
 # ---------------------------------------------------------------------------
+# Committed QC evidence (design/icon/qc/favicon-actual-16.png,
+# qc/android-adaptive-safe-zone.png) -- same "regenerate with one
+# documented command" convention as the harness's own qc/*.png (grayscale,
+# blur, silhouette, overlay, contact-sheet, actual-size-sheet). Regenerate
+# both with `python3 scripts/icon_export.py qc`.
+# ---------------------------------------------------------------------------
+
+FAVICON_QC_NAME = "favicon-actual-16.png"
+FAVICON_QC_DISPLAY_SIZE = 256  # nearest-neighbor upscale for legibility, same convention as actual-size sheets
+
+ANDROID_SAFE_ZONE_QC_NAME = "android-adaptive-safe-zone.png"
+ANDROID_SAFE_ZONE_QC_SIZE = 512  # display resolution for the composited preview
+
+
+def build_favicon_qc_render(out_path: Path, display_size: int = FAVICON_QC_DISPLAY_SIZE) -> Path:
+    """spec §45 acceptance evidence: the favicon at its own actual 16px,
+    nearest-neighbor upscaled for legibility (never a quality filter --
+    that would invent detail the real 16px render doesn't have, same
+    honesty rule as icon_harness.tile_filter). `-strip` matters for
+    byte-reproducibility, not just file size: ImageMagick otherwise embeds
+    a `date:create`/`date:modify` tEXt chunk with the current wall-clock
+    time, which would make CommittedQcRendersUpToDateTest fail on every
+    run regardless of whether the actual pixels changed."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        svg_path = tmp_dir / "favicon.svg"
+        svg_path.write_text(build_favicon_svg())
+        raw = icon_harness.render_one(svg_path, 16, tmp_dir / "favicon-16.png")
+        subprocess.run(
+            ["magick", str(raw), "-filter", "point", "-resize", f"{display_size}x{display_size}", "-strip", str(out_path)],
+            check=True,
+            capture_output=True,
+        )
+    return out_path
+
+
+def build_android_safe_zone_qc_render(out_path: Path, size: int = ANDROID_SAFE_ZONE_QC_SIZE) -> Path:
+    """Composited background + foreground layers with Android's real
+    66/108dp safe-zone circle overlaid in red. A visual aid for the
+    landmark-based claim (`landmark_within_safe_zone`) -- NOT evidence
+    that every opaque foreground pixel stays inside the circle; it
+    doesn't (see the module docstring above /
+    `foreground_opaque_pixel_outside_safe_zone_fraction`: ~39% of the
+    foreground's own opaque pixels render outside it, chest and
+    side-body entirely so)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        bg_path = tmp_dir / "background.svg"
+        fg_path = tmp_dir / "foreground.svg"
+        bg_path.write_text(build_android_background_svg())
+        fg_path.write_text(build_android_foreground_svg())
+        bg_png = icon_harness.render_one(bg_path, 1024, tmp_dir / "background.png")
+        fg_png = icon_harness.render_one(fg_path, 1024, tmp_dir / "foreground.png")
+        composite = tmp_dir / "composite.png"
+        subprocess.run(
+            ["magick", str(bg_png), str(fg_png), "-composite", str(composite)],
+            check=True,
+            capture_output=True,
+        )
+        cx, cy = ANDROID_CANVAS_CENTER
+        edge_y = cy - ANDROID_SAFE_ZONE_RADIUS
+        overlay = tmp_dir / "overlay.png"
+        subprocess.run(
+            [
+                "magick",
+                str(composite),
+                "-stroke",
+                "red",
+                "-strokewidth",
+                "4",
+                "-fill",
+                "none",
+                "-draw",
+                f"circle {cx},{cy} {cx},{edge_y}",
+                str(overlay),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["magick", str(overlay), "-resize", f"{size}x{size}", "-strip", str(out_path)],
+            check=True,
+            capture_output=True,
+        )
+    return out_path
+
+
+def generate_qc_renders(out_dir: Path = DEFAULT_ICON_DIR / "qc") -> dict:
+    out_dir = Path(out_dir)
+    favicon_path = build_favicon_qc_render(out_dir / FAVICON_QC_NAME)
+    android_path = build_android_safe_zone_qc_render(out_dir / ANDROID_SAFE_ZONE_QC_NAME)
+    return {"favicon": favicon_path, "android_safe_zone": android_path}
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -399,7 +569,10 @@ def main(argv=None) -> int:
     parser.add_argument("--icon-dir", type=Path, default=DEFAULT_ICON_DIR, help="source SVG directory")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_svgs = sub.add_parser("svgs", help="(re)generate favicon.svg + android background/foreground SVGs")
+    sub.add_parser("svgs", help="(re)generate favicon.svg + android background/foreground SVGs")
+
+    p_qc = sub.add_parser("qc", help="(re)generate committed QC evidence: favicon-actual-16.png + android-adaptive-safe-zone.png")
+    p_qc.add_argument("--out-dir", type=Path, default=None, help="default: <icon-dir>/qc")
 
     p_png = sub.add_parser("png-matrix", help="spec §41 PNG export matrix, one variant")
     p_png.add_argument("--variant", required=True, choices=("light", "dark"))
@@ -424,6 +597,11 @@ def main(argv=None) -> int:
         print(favicon)
         print(layers["background"])
         print(layers["foreground"])
+    elif args.command == "qc":
+        out_dir = args.out_dir or (args.icon_dir / "qc")
+        paths = generate_qc_renders(out_dir)
+        print(paths["favicon"])
+        print(paths["android_safe_zone"])
     elif args.command == "png-matrix":
         paths = render_png_matrix(args.variant, args.out_dir, args.icon_dir)
         for size, path in sorted(paths.items()):
