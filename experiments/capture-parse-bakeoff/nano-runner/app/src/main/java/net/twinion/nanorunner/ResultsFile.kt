@@ -99,6 +99,24 @@ class ResultsFile(val file: File) : Closeable {
         stream.fd.sync()
     }
 
+    /**
+     * Remove the last [n] rows. Used only when the circuit breaker trips: the rows that
+     * revealed a systemic condition are evidence about the phone, not results about
+     * those captures, and leaving them in would spend those ids permanently — the same
+     * reasoning that stops the run in the first place.
+     */
+    fun dropLastRows(n: Int) {
+        if (n <= 0 || !file.isFile) return
+        close() // reopen on the next append, at the new end
+        val kept = file.readLines().filter { it.isNotBlank() }.dropLast(n)
+        val text = if (kept.isEmpty()) "" else kept.joinToString("\n", postfix = "\n")
+        FileOutputStream(file).use {
+            it.write(text.toByteArray(Charsets.UTF_8))
+            it.flush()
+            it.fd.sync()
+        }
+    }
+
     override fun close() {
         out?.close()
         out = null

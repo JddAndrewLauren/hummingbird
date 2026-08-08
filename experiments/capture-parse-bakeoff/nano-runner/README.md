@@ -141,7 +141,16 @@ expensive:
   about any capture, and the untouched ids stay runnable later. Output the model *did*
   produce never trips this, however repetitive: "Nano fences every answer" is a finding,
   and one worth having for all 42 captures. The breaker guards the corpus against the
-  phone, not against the model.
+  phone, not against the model. When it trips, the rows that revealed the condition are
+  taken back OUT of `nano_results.jsonl` — they are evidence about the phone, not results
+  about those captures — so every unrun id stays runnable. `nano_raw.jsonl` keeps them;
+  the audit trail is never rewritten.
+
+**AICore quota (`GenAiException code=9`) is the expected mid-run condition.** It appeared
+after ~29 consecutive inferences on the first full attempt. It clears on its own; keep
+the app in the FOREGROUND (the message also covers "disallowed background usage"), plug
+the phone in, wait a few minutes, and tap Start again. Resume makes running the corpus
+across several sittings free.
 
 To throw a spoiled run away, use **Discard this run and start over** on the Done screen
 (two taps, with a confirmation). Only for runs spoiled by something other than the model

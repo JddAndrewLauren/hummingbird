@@ -185,10 +185,54 @@ class RunLoopTest {
             }
         }
 
-        assertEquals(RunLoop.IDENTICAL_ERROR_LIMIT, summary.errors)
         assertTrue(summary.stoppedEarly != null)
-        // The untouched ids are still runnable later — that's the whole point.
-        assertEquals(RunLoop.IDENTICAL_ERROR_LIMIT, resultsF.readLines().size)
+        // The rows that revealed the condition are taken back out: they are evidence
+        // about the phone, not results about those captures, and every id must stay
+        // runnable once the condition clears.
+        assertEquals(0, summary.errors)
+        assertEquals(0, resultsF.length())
+        // The audit sidecar still has them — evidence is never rewritten.
+        assertEquals(RunLoop.IDENTICAL_ERROR_LIMIT, rawF.readLines().size)
+    }
+
+    /**
+     * The 2026-08-08 third run: 29 captures answered, then AICore returned ErrorCode 9
+     * (quota / background use) three times. Those three ids must survive to be re-run.
+     */
+    @Test
+    fun `a mid-run condition keeps the good rows and releases the poisoned ones`() = runTest {
+        val resultsF = File(tmp.root, "r.jsonl")
+        val rawF = File(tmp.root, "raw.jsonl")
+        val many = (1..10).map { Capture("c$it", "raw $it", null) }
+        val engine = ScriptedEngine(
+            many.associate { c ->
+                val n = c.id.removePrefix("c").toInt()
+                c.raw to if (n <= 4) "{\"title\":\"ok $n\"}" else IllegalStateException("QUOTA")
+            }
+        )
+
+        val summary = ResultsFile(resultsF).use { r ->
+            ResultsFile(rawF).use { raw ->
+                RunLoop(engine, many, "{{RAW}}", "{}", r, raw).run()
+            }
+        }
+
+        assertTrue(summary.stoppedEarly != null)
+        assertEquals(4, summary.ok)
+        assertEquals(0, summary.errors)
+        val ids = rows(resultsF).map { it["id"]!!.jsonPrimitive.content }
+        assertEquals(listOf("c1", "c2", "c3", "c4"), ids)
+
+        // Resuming after the condition clears runs c5 onward — nothing was spent.
+        val healthy = ScriptedEngine(many.associate { it.raw to "{\"title\":\"ok\"}" })
+        ResultsFile(resultsF).use { r ->
+            ResultsFile(rawF).use { raw ->
+                RunLoop(healthy, many, "{{RAW}}", "{}", r, raw).run()
+            }
+        }
+        val after = rows(resultsF).map { it["id"]!!.jsonPrimitive.content }
+        assertEquals(many.map { it.id }, after)
+        assertEquals(after.size, after.distinct().size)
     }
 
     /**

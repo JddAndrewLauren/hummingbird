@@ -48,6 +48,7 @@ class RunLoop(
         var stoppedEarly: String? = null
         var lastError: String? = null
         var identicalErrorsInARow = 0
+        val trailing = mutableListOf<String>() // ids in the current identical-error streak
         onProgress(Progress(alreadyDone.size, captures.size, 0))
 
         for (capture in captures) {
@@ -98,14 +99,27 @@ class RunLoop(
             val thisError = if (engineThrew) Rows.errorOf(row) else null
             if (thisError != null && thisError == lastError) {
                 identicalErrorsInARow++
+                trailing += capture.id
             } else {
                 identicalErrorsInARow = if (thisError != null) 1 else 0
+                trailing.clear()
+                if (thisError != null) trailing += capture.id
             }
             lastError = thisError
             if (identicalErrorsInARow >= IDENTICAL_ERROR_LIMIT) {
-                stoppedEarly = "$identicalErrorsInARow captures in a row failed the same " +
-                    "way — that looks systemic, not per-capture, so the rest were left " +
-                    "unrun rather than spent on it."
+                // The rows that revealed the condition are evidence about the phone, not
+                // results about those captures. Take them back out, so all of the unrun
+                // ids — including these — are still runnable once the condition clears.
+                // nano_raw.jsonl keeps them: the audit trail is never rewritten.
+                results.dropLastRows(trailing.size)
+                errors -= trailing.size
+                failed.removeAll(trailing.toSet())
+                alreadyDone.removeAll(trailing.toSet())
+                stoppedEarly = "${trailing.size} captures in a row failed the same way — " +
+                    "that looks systemic, not per-capture. Those rows were taken back " +
+                    "out and the rest left unrun, so nothing is spent on it. Fix the " +
+                    "condition and tap Start again."
+                onProgress(Progress(alreadyDone.size, captures.size, errors))
                 break
             }
         }
