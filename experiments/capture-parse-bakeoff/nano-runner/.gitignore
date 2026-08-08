@@ -1,0 +1,12 @@
+# Gradle / Android build state — the nested .gitignore keeps the repo root's
+# (sweeper-oriented) ignore file untouched.
+.gradle/
+build/
+local.properties
+.kotlin/
+.DS_Store
+
+# Harness assets are COPIED in at build time from ../ (corpus.jsonl, prompt.md,
+# schema.json). They are never committed twice — the harness dir is the source of
+# truth, and a stale committed copy is exactly the drift this bake-off can't afford.
+app/src/main/assets/harness/

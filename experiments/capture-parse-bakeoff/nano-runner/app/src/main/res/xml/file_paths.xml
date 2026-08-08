@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- getExternalFilesDir(null): adb-pullable without root AND shareable. -->
+    <external-files-path name="results" path="." />
+</paths>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Nano Runner</string>
+    <string name="app_title">Nano Runner</string>
+    <string name="blindness_note">Shows progress only — never model output. Safe to run before the blind ground-truth labelling.</string>
+    <string name="start">Start</string>
+    <string name="download">Download model (needs Wi-Fi)</string>
+    <string name="share">Share results</string>
+</resources>
