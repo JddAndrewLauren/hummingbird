@@ -1,0 +1,190 @@
+//! Core-owned persistence (ADR-0003): an internal snapshot store trait with
+//! a compile-target split — in-memory (the cross-platform test default),
+//! `std::fs` write-temp-then-rename (non-`wasm32`), and IndexedDB
+//! (`wasm32`).
+//!
+//! The trait is internal to `core` — there is no host-implemented storage
+//! callback (ADR-0003's rejected alternative). The host contributes exactly
+//! one thing at init: a storage path/namespace, handed to whichever
+//! implementation the target picks. Writes are atomic: a snapshot write
+//! either fully replaces the previous snapshot or leaves it intact, which is
+//! what ADR-0007 and issue #46 lean on.
+
+mod envelope;
+mod memory;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod fs;
+
+#[cfg(target_arch = "wasm32")]
+mod indexed_db;
+
+pub use envelope::{Envelope, Persistable};
+pub use memory::MemorySnapshotStore;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use fs::FsSnapshotStore;
+
+#[cfg(target_arch = "wasm32")]
+pub use indexed_db::{IndexedDbError, IndexedDbSnapshotStore};
+
+/// One atomic snapshot slot.
+///
+/// Each compile target gets its own implementation of this trait
+/// ([`MemorySnapshotStore`], [`FsSnapshotStore`], [`IndexedDbSnapshotStore`]).
+/// Callers use [`save_snapshot`]/[`load_snapshot`] rather than this trait's
+/// `write`/`read` directly — those are the only entry points that require a
+/// [`Persistable`] payload, which is what keeps secret material
+/// unrepresentable.
+///
+/// `async fn` in this trait is deliberate, not an oversight: the trait is
+/// internal to `core` (never exported as `dyn SnapshotStore`, never crossing
+/// an FFI boundary), so the auto-trait-bound loss the `async_fn_in_trait`
+/// lint warns about does not apply here — nothing needs a `Send` bound on
+/// the trait itself, and the `wasm32` `IndexedDbSnapshotStore` impl
+/// genuinely cannot offer one (`JsValue` is `!Send`).
+#[allow(async_fn_in_trait)]
+pub trait SnapshotStore {
+    /// The error type surfaced by this store's underlying medium.
+    type Error: std::fmt::Debug;
+
+    /// Atomically replaces the stored snapshot bytes: this call either
+    /// fully publishes `bytes` or leaves the previously published snapshot
+    /// intact, even if the process crashes mid-write.
+    async fn write(&self, bytes: Vec<u8>) -> Result<(), Self::Error>;
+
+    /// Reads the current snapshot bytes, or `None` if nothing has been
+    /// written yet.
+    async fn read(&self) -> Result<Option<Vec<u8>>, Self::Error>;
+}
+
+/// Errors from [`save_snapshot`]/[`load_snapshot`]: either the underlying
+/// store's medium failed, or `serde_json` failed to (de)serialise the
+/// envelope.
+#[derive(Debug)]
+pub enum SnapshotError<E> {
+    /// The underlying store's medium (disk, IndexedDB, ...) failed.
+    Store(E),
+    /// `serde_json` failed to serialise the envelope for writing.
+    Serialize(serde_json::Error),
+    /// `serde_json` failed to deserialise the stored bytes.
+    Deserialize(serde_json::Error),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for SnapshotError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for SnapshotError<E> {}
+
+/// Wraps `payload` in an [`Envelope`] with `schema_version` and `as_of`, and
+/// atomically writes it through `store`.
+///
+/// Only types that implement [`Persistable`] — an explicit, opt-in marker —
+/// can reach this function. That is the snapshot store's API shape that
+/// makes storing secret material unrepresentable (ADR-0004/ADR-0005): a
+/// credential type would have to deliberately implement `Persistable` to
+/// become storable here, and none does.
+///
+/// ```compile_fail
+/// # use hummingbird_core::storage::{save_snapshot, MemorySnapshotStore};
+/// # async fn example() {
+/// let store = MemorySnapshotStore::default();
+/// // `String` never implements `Persistable` — this must not compile.
+/// save_snapshot(&store, 1, 0, "a secret token".to_string()).await.unwrap();
+/// # }
+/// ```
+pub async fn save_snapshot<T, S>(
+    store: &S,
+    schema_version: u32,
+    as_of: u64,
+    payload: T,
+) -> Result<(), SnapshotError<S::Error>>
+where
+    T: Persistable,
+    S: SnapshotStore,
+{
+    let envelope = Envelope::new(schema_version, as_of, payload);
+    let bytes = serde_json::to_vec(&envelope).map_err(SnapshotError::Serialize)?;
+    store.write(bytes).await.map_err(SnapshotError::Store)
+}
+
+/// Reads and deserialises the current [`Envelope`], or `None` if nothing has
+/// been written yet.
+pub async fn load_snapshot<T, S>(
+    store: &S,
+) -> Result<Option<Envelope<T>>, SnapshotError<S::Error>>
+where
+    T: Persistable,
+    S: SnapshotStore,
+{
+    match store.read().await.map_err(SnapshotError::Store)? {
+        None => Ok(None),
+        Some(bytes) => {
+            let envelope =
+                serde_json::from_slice(&bytes).map_err(SnapshotError::Deserialize)?;
+            Ok(Some(envelope))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestPayload {
+        note: String,
+        count: u32,
+    }
+
+    impl Persistable for TestPayload {}
+
+    #[tokio::test]
+    async fn envelope_round_trips_through_serde_json_with_version_and_as_of_intact() {
+        let store = MemorySnapshotStore::default();
+        let payload = TestPayload {
+            note: "hello".to_string(),
+            count: 3,
+        };
+
+        save_snapshot(&store, 7, 1_700_000_000_000, payload.clone())
+            .await
+            .unwrap();
+
+        let loaded: Envelope<TestPayload> = load_snapshot(&store).await.unwrap().unwrap();
+
+        assert_eq!(loaded.schema_version, 7);
+        assert_eq!(loaded.as_of, 1_700_000_000_000);
+        assert_eq!(loaded.payload, payload);
+    }
+
+    #[tokio::test]
+    async fn load_before_any_save_is_none() {
+        let store = MemorySnapshotStore::default();
+        let loaded: Option<Envelope<TestPayload>> = load_snapshot(&store).await.unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn envelope_bytes_are_readable_json() {
+        // ADR-0003: "a readable mirror file is worth real money when
+        // debugging" — the envelope must actually be human-readable JSON,
+        // not merely something `serde_json` can round-trip.
+        let envelope = Envelope::new(
+            1,
+            0,
+            TestPayload {
+                note: "hello".to_string(),
+                count: 3,
+            },
+        );
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"as_of\":0"));
+        assert!(json.contains("\"note\":\"hello\""));
+    }
+}
