@@ -113,6 +113,16 @@ class FakeHttp:
         ]
 
 
+def run_tasks_adapter(cfg, dry_run):
+    """The pre-seam `run_sweep(cfg, dry_run)` contract, for the Tasks adapter.
+
+    These tests predate the adapter seam and assert Google Tasks behavior is
+    unchanged by it -- so they drive just that adapter through the shared
+    engine and keep their original (ok, failures, notes) shape."""
+    result = sweep.run_adapter(sweep.GoogleTasksAdapter(cfg), dry_run)
+    return result.ok, result.failures, result.notes
+
+
 class SweepFlowTest(unittest.TestCase):
     def setUp(self):
         self.real_http = sweep.http_json
@@ -122,7 +132,7 @@ class SweepFlowTest(unittest.TestCase):
 
     def run_with(self, fake, dry_run=False):
         sweep.http_json = fake
-        return sweep.run_sweep(CFG, dry_run)
+        return run_tasks_adapter(CFG, dry_run)
 
     def patched_tasks(self, fake):
         return [c["url"] for c in fake.mutating() if c["method"] == "PATCH"]
@@ -211,6 +221,22 @@ class SweepFlowTest(unittest.TestCase):
         self.assertEqual(len(patches), 1)  # task-1 stays incomplete for the retry
         self.assertIn("task-2", patches[0])
 
+    def test_a_malformed_item_fails_only_itself(self):
+        # A row the adapter cannot even describe must fail that row and let the
+        # drain continue -- preparation is inside the per-item try, so it can
+        # never abort the rest of the adapter's list.
+        tasks = {"items": ["not-a-task", {"id": "task-9", "title": "call the vet"}]}
+        fake = FakeHttp(tasks=tasks)
+        ok, failures, _ = self.run_with(fake)
+
+        self.assertFalse(ok)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("unidentified google-tasks item", failures[0])
+
+        patches = self.patched_tasks(fake)
+        self.assertEqual(len(patches), 1)  # the good row still swept and acked
+        self.assertIn("task-9", patches[0])
+
     def test_denylisted_list_is_skipped(self):
         import json
         import tempfile
@@ -222,7 +248,7 @@ class SweepFlowTest(unittest.TestCase):
 
         fake = FakeHttp()
         sweep.http_json = fake
-        ok, failures, _ = sweep.run_sweep(cfg, False)
+        ok, failures, _ = run_tasks_adapter(cfg, False)
 
         self.assertTrue(ok)
         self.assertEqual(failures, [])
@@ -244,7 +270,7 @@ class SweepFlowTest(unittest.TestCase):
 
         fake = FakeHttp()
         sweep.http_json = fake
-        ok, failures, _ = sweep.run_sweep(cfg, False)
+        ok, failures, _ = run_tasks_adapter(cfg, False)
 
         self.assertTrue(ok)
         self.assertEqual(failures, [])
@@ -296,7 +322,7 @@ class TerminalFailureTest(unittest.TestCase):
 
     def run_with(self, fake):
         sweep.http_json = fake
-        return sweep.run_sweep(CFG, False)
+        return run_tasks_adapter(CFG, False)
 
     def patched_tasks(self, fake):
         return [c["url"] for c in fake.mutating() if c["method"] == "PATCH"]

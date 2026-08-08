@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""One-time local OAuth consent flow: mint a Google Tasks refresh token.
+"""One-time local OAuth consent flow: mint a Google refresh token.
+
+The token carries both sweeper scopes -- Google Tasks and Gmail modify (the
+capture-label drain needs to read labelled messages and remove the label).
+Adding a scope later means re-running this and re-setting the secret.
 
 Run once, on your own machine, against the Internal desktop-app OAuth client
 in the twinion.net Workspace. The token it prints goes straight into
@@ -26,7 +30,12 @@ import webbrowser
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-SCOPE = "https://www.googleapis.com/auth/tasks"
+SCOPE = " ".join(
+    (
+        "https://www.googleapis.com/auth/tasks",
+        "https://www.googleapis.com/auth/gmail.modify",
+    )
+)
 PORT = 8765
 REDIRECT_URI = "http://localhost:%d/" % PORT
 
