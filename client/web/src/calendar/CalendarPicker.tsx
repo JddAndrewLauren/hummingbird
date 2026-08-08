@@ -1,5 +1,5 @@
-import type { CalendarListEntry } from "./calendarList";
-import { toggleCalendarId } from "./selection";
+import type { CalendarListEntryDTO } from "../store/protocol";
+import { toggleCalendarId, unavailableSelectedIds } from "./selection";
 
 // The calendar picker (issue #73): its selection is what drives which
 // calendars the core polls (`setCalendarIds`). Deliberately thin — every
@@ -8,7 +8,7 @@ import { toggleCalendarId } from "./selection";
 // App.tsx/store.ts throughout #69).
 
 export interface CalendarPickerProps {
-  calendars: CalendarListEntry[];
+  calendars: CalendarListEntryDTO[];
   selectedCalendarIds: string[];
   onChange: (selectedCalendarIds: string[]) => void;
 }
@@ -18,7 +18,9 @@ export function CalendarPicker({
   selectedCalendarIds,
   onChange,
 }: CalendarPickerProps) {
-  if (calendars.length === 0) {
+  const unavailable = unavailableSelectedIds(selectedCalendarIds, calendars);
+
+  if (calendars.length === 0 && unavailable.length === 0) {
     return null;
   }
 
@@ -38,6 +40,24 @@ export function CalendarPicker({
             onChange={() => onChange(toggleCalendarId(selectedCalendarIds, calendar.id))}
           />
           {calendar.summary}
+        </label>
+      ))}
+      {/* A selected calendar Google no longer offers: deleted, access
+          revoked, or hidden. It keeps failing every all-or-nothing poll, so
+          it is rendered here rather than dropped silently — checked, so
+          unchecking it is the removal. */}
+      {unavailable.map((id) => (
+        <label
+          key={id}
+          data-testid="unavailable-calendar"
+          className="flex items-center gap-2 text-sm text-amber-300"
+        >
+          <input
+            type="checkbox"
+            checked
+            onChange={() => onChange(toggleCalendarId(selectedCalendarIds, id))}
+          />
+          {id} (unavailable — uncheck to stop polling it)
         </label>
       ))}
     </fieldset>

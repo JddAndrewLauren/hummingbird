@@ -4,10 +4,10 @@
 
 // No `unsafe-inline`; `connect-src` limited to self, `api.linear.app`
 // (ADR-0004's mitigation for a non-expiring key in browser storage),
-// `www.googleapis.com` (issue #73: the calendarList fetch in
-// `calendar/calendarList.ts` and the wasm transport's Calendar Events
-// fetch in `core::calendar::google::reqwest_transport` both target that
-// host only -- no broader `googleapis.com` wildcard), and
+// `www.googleapis.com` (issue #73: both Google reads -- Calendar Events and
+// the picker's calendarList -- go out from the wasm core's one transport,
+// `core::calendar::google::reqwest_transport`, and target that host only --
+// no broader `googleapis.com` wildcard), and
 // `accounts.google.com`. That last one is easy to miss: GIS is not only a
 // script and an iframe, it also issues its own XHRs to `accounts.google.com`
 // while minting a token, so a `connect-src` that omits it blocks consent and

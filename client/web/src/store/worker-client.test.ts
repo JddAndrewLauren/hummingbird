@@ -6,6 +6,7 @@ import {
   pollStart,
   pollTimer,
   pushTokenToWorker,
+  requestCalendarList,
   requestCurrentNext,
   setCalendarIdsOnWorker,
   type WorkerLike,
@@ -15,6 +16,7 @@ const initialCalendar: CalendarState = {
   connected: false,
   needsReconnect: false,
   selectedCalendarIds: [],
+  availableCalendars: [],
   lastPollOutcome: null,
   tileKind: "no_snapshot",
   tileEvent: null,
@@ -154,6 +156,24 @@ describe("attachWorkerClient", () => {
       asOfMs: 500,
     });
   });
+
+  it("writes the picker's options on a calendarList message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "calendarList",
+        calendars: [{ id: "primary", summary: "john@twinion.net" }],
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().calendar).toEqual({
+      ...initialCalendar,
+      availableCalendars: [{ id: "primary", summary: "john@twinion.net" }],
+    });
+  });
 });
 
 describe("the calendar send helpers", () => {
@@ -199,5 +219,13 @@ describe("the calendar send helpers", () => {
       type: "getCurrentNext",
       nowMs: 4,
     });
+  });
+
+  it("requestCalendarList posts a listCalendars request with no token", () => {
+    // The core lists with the credential it was already pushed (ADR-0003:
+    // the core owns HTTP), so this side never handles a token for it.
+    const worker = fakeWorker();
+    requestCalendarList(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "listCalendars" });
   });
 });

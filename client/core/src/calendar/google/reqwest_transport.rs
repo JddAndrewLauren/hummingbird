@@ -1,18 +1,30 @@
-//! [`ReqwestEventsTransport`]: the live [`EventsTransport`] implementation
-//! over `calendars/{calendarId}/events`, built on the `reqwest::Client` the
+//! [`ReqwestGoogleTransport`]: the live [`EventsTransport`] +
+//! [`CalendarListTransport`] implementation over `calendars/{calendarId}/
+//! events` and `users/me/calendarList`, built on the `reqwest::Client` the
 //! core already owns HTTP through (ADR-0003) — the same client works
 //! unmodified on `wasm32` (browser Fetch) and on native targets, per
 //! [`crate::fetch_status`].
 //!
+//! One type implements both because they are one HTTP path against one
+//! service with one credential: the alternative the ADR rules out is a second
+//! path per host (a browser `fetch` in `client/web`, a `URLSession` on iPad)
+//! for the picker's lookup alone.
+//!
 //! No test here ever performs a live network call (#46's acceptance,
-//! mirrored from the adapter fixture tests): [`build_events_url`] — the only
-//! logic with a branch worth pinning — is a pure function tested in
+//! mirrored from the adapter fixture tests): the URL builders — the only
+//! logic with a branch worth pinning — are pure functions tested in
 //! isolation; the request-sending path itself is exercised end-to-end by
 //! #71/#73's higher-level tests against scripted/fixture transports.
 
-use super::transport::{EventsTransport, TransportError};
+use super::transport::{CalendarListTransport, EventsTransport, TransportError};
 
 const EVENTS_BASE_URL: &str = "https://www.googleapis.com/calendar/v3/calendars";
+
+/// `minAccessRole=reader` because a calendar the user cannot read is not a
+/// usable poll target — offering it in the picker would only produce a
+/// selection whose first poll fails.
+const CALENDAR_LIST_URL: &str =
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader";
 
 /// Builds the `calendars/{calendarId}/events` URL with `singleEvents=true`,
 /// `showDeleted=true` and the adapter's window/pagination query params.
@@ -42,6 +54,15 @@ fn build_events_url(
     url
 }
 
+/// Builds the `users/me/calendarList` URL, with the pagination token when
+/// there is one.
+fn build_calendar_list_url(page_token: Option<&str>) -> String {
+    match page_token {
+        Some(token) => format!("{CALENDAR_LIST_URL}&pageToken={}", urlencode(token)),
+        None => CALENDAR_LIST_URL.to_string(),
+    }
+}
+
 /// A minimal, dependency-free percent-encoder sufficient for the fixed
 /// alphabet these query values are drawn from (RFC 3339 timestamps,
 /// provider-issued calendar ids and page tokens) — this module reaches for
@@ -59,35 +80,25 @@ fn urlencode(value: &str) -> String {
     out
 }
 
-#[derive(Debug)]
-pub struct ReqwestEventsTransport {
+#[derive(Debug, Clone)]
+pub struct ReqwestGoogleTransport {
     client: reqwest::Client,
 }
 
-impl Default for ReqwestEventsTransport {
+impl Default for ReqwestGoogleTransport {
     fn default() -> Self {
         Self::new(reqwest::Client::new())
     }
 }
 
-impl ReqwestEventsTransport {
+impl ReqwestGoogleTransport {
     pub fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
-}
 
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl EventsTransport for ReqwestEventsTransport {
-    async fn fetch_page(
-        &self,
-        calendar_id: &str,
-        access_token: &str,
-        time_min: &str,
-        time_max: &str,
-        page_token: Option<&str>,
-    ) -> Result<String, TransportError> {
-        let url = build_events_url(calendar_id, time_min, time_max, page_token);
+    /// One authenticated GET returning the raw body, with the status
+    /// preserved on failure — the poller's hold-vs-retry decision reads it.
+    async fn get(&self, url: String, access_token: &str) -> Result<String, TransportError> {
         let response = self
             .client
             .get(url)
@@ -108,6 +119,38 @@ impl EventsTransport for ReqwestEventsTransport {
             .text()
             .await
             .map_err(|source| TransportError::new(source.to_string()))
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl EventsTransport for ReqwestGoogleTransport {
+    async fn fetch_page(
+        &self,
+        calendar_id: &str,
+        access_token: &str,
+        time_min: &str,
+        time_max: &str,
+        page_token: Option<&str>,
+    ) -> Result<String, TransportError> {
+        self.get(
+            build_events_url(calendar_id, time_min, time_max, page_token),
+            access_token,
+        )
+        .await
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl CalendarListTransport for ReqwestGoogleTransport {
+    async fn fetch_calendar_list_page(
+        &self,
+        access_token: &str,
+        page_token: Option<&str>,
+    ) -> Result<String, TransportError> {
+        self.get(build_calendar_list_url(page_token), access_token)
+            .await
     }
 }
 
@@ -150,5 +193,18 @@ mod tests {
     fn calendar_ids_containing_reserved_characters_are_percent_encoded() {
         let url = build_events_url("team@example.com", "min", "max", None);
         assert!(url.contains("/calendars/team%40example.com/events"));
+    }
+
+    #[test]
+    fn the_calendar_list_url_asks_only_for_readable_calendars() {
+        assert_eq!(
+            build_calendar_list_url(None),
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader"
+        );
+    }
+
+    #[test]
+    fn the_calendar_list_url_appends_the_page_token_when_present() {
+        assert!(build_calendar_list_url(Some("page-2")).ends_with("&pageToken=page-2"));
     }
 }

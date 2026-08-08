@@ -1,4 +1,5 @@
 import type {
+  CalendarListEntryDTO,
   CalendarWorkerRequest,
   CredentialEventDTO,
   CurrentNextEventDTO,
@@ -25,6 +26,7 @@ export interface CalendarHostLike {
   onTimer(nowMs: number): Promise<string>;
   takeCredentialEvents(): string;
   currentOrNext(nowMs: number): Promise<string>;
+  listCalendars(): Promise<string>;
 }
 
 interface RawCredentialEvent {
@@ -44,6 +46,11 @@ interface RawCurrentNextResponse {
   kind: CurrentNextKind;
   event: RawEventRecord | null;
   as_of_ms: number | null;
+}
+
+interface RawCalendarListResponse {
+  kind: "ok" | "no_credential" | "failed" | "busy";
+  calendars: CalendarListEntryDTO[];
 }
 
 function mapEvent(raw: RawEventRecord | null): CurrentNextEventDTO | null {
@@ -125,6 +132,18 @@ export async function handleCalendarRequest(
         event: mapEvent(raw.event),
         asOfMs: raw.as_of_ms,
       });
+      return;
+    }
+    case "listCalendars": {
+      const raw = JSON.parse(await host.listCalendars()) as RawCalendarListResponse;
+      if (raw.kind !== "ok") {
+        // Same reasoning as `"busy"` above: a held credential, a failed
+        // lookup or a busy core is no answer at all, and posting an empty
+        // list would blank a picker that is showing real options — taking
+        // the user's ability to deselect a calendar with it.
+        return;
+      }
+      post({ type: "calendarList", calendars: raw.calendars });
       return;
     }
   }

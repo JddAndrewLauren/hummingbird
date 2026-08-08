@@ -3,7 +3,9 @@
 //! is testable with plain `cargo test` on any target — `lib.rs`'s
 //! `wasm_bindings` module is the thin JS-facing shim over this.
 
-use hummingbird_core::calendar::google::{GoogleProviderPoller, ReqwestEventsTransport};
+use hummingbird_core::calendar::google::{
+    CalendarListEntry, GoogleProviderPoller, ReqwestGoogleTransport,
+};
 use hummingbird_core::calendar::{current_or_next_event, CurrentOrNext, EventRecord};
 use hummingbird_core::context::{ContextPoller, CredentialEvent, PollOutcome};
 
@@ -27,7 +29,7 @@ fn new_store(namespace: &str) -> StoreImpl {
     }
 }
 
-type GooglePoller = ContextPoller<GoogleProviderPoller<ReqwestEventsTransport>, StoreImpl>;
+type GooglePoller = ContextPoller<GoogleProviderPoller<ReqwestGoogleTransport>, StoreImpl>;
 
 const SCHEMA_VERSION: u32 = 1;
 const PROVIDER: &str = "google_calendar";
@@ -40,6 +42,19 @@ pub struct CurrentNextResponse {
     pub as_of_ms: Option<u64>,
 }
 
+/// The response shape for `listCalendars` (issue #73's picker options).
+///
+/// A failure is reported as a `kind`, not thrown: the option list is a UX
+/// nicety and never a poll dependency, so the host's job on a bad list is to
+/// leave the picker as it stands, not to surface an error.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CalendarListResponse {
+    /// `"ok"`, `"no_credential"` (nothing pushed yet, or polling is held on
+    /// a rejected token), or `"failed"`.
+    pub kind: &'static str,
+    pub calendars: Vec<CalendarListEntry>,
+}
+
 /// Plain-Rust wrapper over one Google Calendar [`ContextPoller`], holding
 /// exactly the operations the web host needs.
 pub struct CalendarHostCore {
@@ -49,7 +64,7 @@ pub struct CalendarHostCore {
 impl CalendarHostCore {
     pub fn new(namespace: String, calendar_ids: Vec<String>) -> Self {
         let store = new_store(&namespace);
-        let transport = ReqwestEventsTransport::default();
+        let transport = ReqwestGoogleTransport::default();
         let fetcher = GoogleProviderPoller::new(transport, calendar_ids);
         let poller = ContextPoller::new(PROVIDER, fetcher, store, SCHEMA_VERSION);
         Self { poller }
@@ -73,6 +88,29 @@ impl CalendarHostCore {
 
     pub async fn on_timer(&mut self, now_ms: i64) -> PollOutcome {
         self.poller.on_timer(now_ms).await
+    }
+
+    /// The calendars this device's credential can read — the picker's
+    /// options. Uses the token already pushed for polling rather than taking
+    /// one: the host has no reason to hand the same credential across the
+    /// boundary twice, and a token the core is holding on must not go out.
+    pub async fn list_calendars(&self) -> CalendarListResponse {
+        let Some(token) = self.poller.current_token() else {
+            return CalendarListResponse {
+                kind: "no_credential",
+                calendars: Vec::new(),
+            };
+        };
+        match self.poller.fetcher().list_calendars(&token).await {
+            Ok(calendars) => CalendarListResponse {
+                kind: "ok",
+                calendars,
+            },
+            Err(_) => CalendarListResponse {
+                kind: "failed",
+                calendars: Vec::new(),
+            },
+        }
     }
 
     pub fn take_credential_events(&mut self) -> Vec<CredentialEvent> {
@@ -139,6 +177,23 @@ mod tests {
         let mut host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
         let outcome = host.start(1_000).await;
         assert_eq!(outcome_name(outcome), "no_credential");
+    }
+
+    #[tokio::test]
+    async fn listing_calendars_before_any_token_is_pushed_reports_no_credential() {
+        // The one branch reachable without a network: it matters because the
+        // picker calls this on a device whose silent re-mint failed, and a
+        // "no_credential" answer must leave the existing options alone
+        // rather than clearing them.
+        let host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
+
+        assert_eq!(
+            host.list_calendars().await,
+            CalendarListResponse {
+                kind: "no_credential",
+                calendars: Vec::new(),
+            }
+        );
     }
 
     #[tokio::test]

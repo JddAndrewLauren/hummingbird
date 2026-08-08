@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarPicker } from "./calendar/CalendarPicker";
-import { type CalendarListEntry, listCalendars } from "./calendar/calendarList";
 import {
   connect,
   type ConnectionDeps,
+  type ConnectionResult,
   handleCredentialNeeded,
   initConnection,
   msUntilRotation,
@@ -24,6 +24,7 @@ import {
   pollStart,
   pollTimer,
   pushTokenToWorker,
+  requestCalendarList,
   requestCurrentNext,
   setCalendarIdsOnWorker,
   type WorkerLike,
@@ -83,14 +84,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   workerRef.current ??= injectedWorker ?? realWorker();
   const worker = workerRef.current;
 
-  // The most recently pushed access token, kept only in memory (never
-  // persisted — same in-memory-only discipline as #72's core-side
-  // `CredentialState`) so the calendar-list fetch below can reuse it
-  // instead of minting a second token for the same consent.
-  const lastAccessTokenRef = useRef<string | null>(null);
-  const [calendars, setCalendars] = useState<CalendarListEntry[]>([]);
   const [expiresAtMs, setExpiresAtMs] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  // When the last credential-recovery retry went out (0 = never). See
+  // `resumeAfterReconnect`.
+  const lastRecoveryPollAtRef = useRef(0);
 
   function connectionDeps(): ConnectionDeps | null {
     const client = tokenClient();
@@ -99,24 +98,38 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     }
     return {
       tokenClient: client,
-      pushToken: (token) => {
-        lastAccessTokenRef.current = token;
-        pushTokenToWorker(worker, token);
-      },
+      pushToken: (token) => pushTokenToWorker(worker, token),
     };
   }
 
-  async function refreshCalendarList() {
-    const token = lastAccessTokenRef.current;
-    if (!token) {
+  // Re-polls and re-reads the tile after a credential *recovery* — the
+  // credential-needed round-trip below, not the proactive rotation timer
+  // (which re-mints while polling is healthy and has no abandoned poll to
+  // retry).
+  function resumeAfterReconnect(result: ConnectionResult) {
+    if (!result.connected || result.needsReconnect) {
       return;
     }
-    try {
-      setCalendars(await listCalendars(token));
-    } catch {
-      // The picker's options are a UX nicety, not a poll dependency: a
-      // failed list fetch never blocks polling itself.
+    // At most one recovery poll per timer interval. The retry closes a loop
+    // — its own 401 records another credential event, which flips
+    // `needsReconnect` back on and re-enters this path — so a token GIS
+    // keeps minting and Google keeps rejecting (a revoked scope, say) would
+    // otherwise spin re-mint/poll pairs as fast as the network allows. The
+    // cooldown makes the pathological case degrade to exactly the cadence
+    // this recovery replaced, and never worse.
+    const now = Date.now();
+    if (now - lastRecoveryPollAtRef.current < TIMER_INTERVAL_MS) {
+      return;
     }
+    lastRecoveryPollAtRef.current = now;
+    // Re-assert the selection first, for the same reason every other poll
+    // trigger here does: a worker restarted by the browser holds an empty
+    // one, and a zero-calendar poll succeeds with an empty snapshot that
+    // would replace the last good one.
+    setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
+    pollRefresh(worker, now);
+    requestCurrentNext(worker, now);
+    requestCalendarList(worker);
   }
 
   // Core-start wiring: attempt a silent re-mint for a previously-connected
@@ -167,7 +180,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       }
       if (result.connected && !result.needsReconnect) {
         pollStart(worker, Date.now());
-        await refreshCalendarList();
+        requestCalendarList(worker);
       }
     })();
     return () => {
@@ -197,6 +210,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         needsReconnect: result.needsReconnect,
       });
       setExpiresAtMs(result.expiresAtMs);
+      // The poll that provoked this round-trip was abandoned mid-flight and
+      // nothing else retries it: the foreground timer restarts from zero, so
+      // without this the tile stays stale for up to another 15 minutes after
+      // a recovery the user never saw fail.
+      resumeAfterReconnect(result);
     })();
     return () => {
       cancelled = true;
@@ -299,7 +317,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       // quietly replace the last good snapshot with an empty one.
       setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
       pollStart(worker, Date.now());
-      await refreshCalendarList();
+      requestCalendarList(worker);
     }
   }
 
@@ -372,7 +390,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
                 Refresh calendar
               </button>
               <CalendarPicker
-                calendars={calendars}
+                calendars={calendar.availableCalendars}
                 selectedCalendarIds={calendar.selectedCalendarIds}
                 onChange={handleCalendarSelectionChange}
               />

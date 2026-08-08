@@ -15,7 +15,7 @@
 
 mod calendar_host;
 
-pub use calendar_host::{CalendarHostCore, CurrentNextResponse};
+pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
 
 use wasm_bindgen::prelude::*;
 
@@ -145,6 +145,10 @@ mod wasm_bindings {
     /// as it stands, rather than blanking it.
     const BUSY_CURRENT_NEXT: &str = r#"{"kind":"busy","event":null,"as_of_ms":null}"#;
 
+    /// The same "no new information" answer for `listCalendars`: the host
+    /// leaves the picker's existing options alone rather than emptying it.
+    const BUSY_CALENDAR_LIST: &str = r#"{"kind":"busy","calendars":[]}"#;
+
     /// Which `ContextPoller` trigger a `poll` call stands for. The three
     /// exported triggers differ only in this, so they share one body rather
     /// than three copies of the check-out/await/check-in dance.
@@ -217,6 +221,28 @@ mod wasm_bindings {
         pub fn on_timer(&self, now_ms: f64) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move { Ok(poll(&inner, now_ms, Trigger::Timer).await) })
+        }
+
+        /// The calendars this device's credential can read, as JSON:
+        /// `{"kind": "ok"|"no_credential"|"failed"|"busy",
+        ///   "calendars": [{"id": string, "summary": string}]}`.
+        ///
+        /// No token parameter: the core already holds the one it polls with
+        /// (`pushToken`), so this endpoint costs the host nothing and the
+        /// credential never crosses the boundary a second time.
+        #[wasm_bindgen(js_name = listCalendars)]
+        pub fn list_calendars(&self) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(core) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CALENDAR_LIST));
+                };
+                let response = core.list_calendars().await;
+                inner.check_in(core);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CalendarListResponse serializes"),
+                ))
+            })
         }
 
         /// Drains every credential-needed event since the last drain, as a

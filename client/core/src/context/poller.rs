@@ -99,6 +99,19 @@ where
         &self.fetcher
     }
 
+    /// The token an *auxiliary* authenticated read against this provider
+    /// should use, or `None` when none has been pushed or polling is held.
+    ///
+    /// This exists for reads that are not poll attempts and write no
+    /// snapshot — #73's calendar-list lookup for the picker. It honours the
+    /// hold for the same reason `attempt` does: a token Google has already
+    /// rejected cannot succeed on a different endpoint. The credential still
+    /// never leaves the core+FFI process boundary and is never persisted
+    /// (ADR-0004/0005); no binding exports this.
+    pub fn current_token(&self) -> Option<String> {
+        self.credential.token().map(str::to_string)
+    }
+
     /// The host calls this at init and on every token rotation. Always
     /// resumes polling, even if this provider was previously held — a fresh
     /// push is the only way out of a hold.
@@ -290,6 +303,26 @@ mod tests {
         assert_eq!(second, PollOutcome::Held);
         assert_eq!(poller.take_credential_events(), Vec::new());
         assert_eq!(poller.fetcher.seen_tokens.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_auxiliary_token_follows_the_same_hold_as_a_poll_attempt() {
+        let fetcher = ScriptedPoller::new(vec![Err(PollFailure::Unauthorized)]);
+        let store = MemorySnapshotStore::default();
+        let mut poller = ContextPoller::new("google_calendar", fetcher, store, 1);
+
+        assert_eq!(poller.current_token(), None);
+
+        poller.push_token("token-1");
+        assert_eq!(poller.current_token(), Some("token-1".to_string()));
+
+        // Held on a rejected credential: an auxiliary read must not go out
+        // with the token Google just refused either.
+        assert_eq!(poller.start(1_000).await, PollOutcome::Unauthorized);
+        assert_eq!(poller.current_token(), None);
+
+        poller.push_token("token-2");
+        assert_eq!(poller.current_token(), Some("token-2".to_string()));
     }
 
     #[tokio::test]

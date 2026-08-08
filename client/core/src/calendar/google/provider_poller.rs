@@ -28,7 +28,8 @@ use std::sync::RwLock;
 use crate::context::{PollFailure, ProviderPoller};
 
 use super::adapter::fetch_calendar_snapshot;
-use super::transport::EventsTransport;
+use super::calendar_list::{list_calendars, CalendarListEntry, CalendarListError};
+use super::transport::{CalendarListTransport, EventsTransport};
 use crate::calendar::CalendarSnapshot;
 
 /// Wraps an [`EventsTransport`] with the host-supplied, host-mutable list of
@@ -57,6 +58,25 @@ impl<T: EventsTransport> GoogleProviderPoller<T> {
             .read()
             .expect("calendar_ids lock poisoned")
             .clone()
+    }
+}
+
+/// The picker's options (#73), on the same transport the polls go through.
+///
+/// A separate `impl` block with its own bound, not a method on the one
+/// above: every fixture transport in the adapter's tests implements
+/// [`EventsTransport`] alone and has no business scripting a calendar-list
+/// response.
+impl<T: EventsTransport + CalendarListTransport> GoogleProviderPoller<T> {
+    /// Lists the calendars this credential can read. Deliberately outside
+    /// [`ProviderPoller::poll`]: it writes no snapshot, and its failure is
+    /// never a reason to hold polling — the caller decides what a stale or
+    /// missing option list means for the UI.
+    pub async fn list_calendars(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<CalendarListEntry>, CalendarListError> {
+        list_calendars(&self.transport, access_token).await
     }
 }
 

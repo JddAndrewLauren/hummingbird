@@ -54,6 +54,15 @@ export type CurrentNextKind =
  * a kind that says nothing about the tile. */
 export type RenderableCurrentNextKind = Exclude<CurrentNextKind, "busy">;
 
+/** One selectable calendar offered by the picker — the core's
+ * `CalendarListEntry` (`client/core/src/calendar/google/calendar_list.rs`),
+ * which fetches it over the core's own `reqwest` path (ADR-0003). Nothing on
+ * this side of the boundary ever calls Google directly. */
+export interface CalendarListEntryDTO {
+  id: string;
+  summary: string;
+}
+
 /** The event fields the context tile renders — a narrowed mirror of core's
  * `EventRecord` (issue #70), not the full provider-agnostic shape. */
 export interface CurrentNextEventDTO {
@@ -72,7 +81,10 @@ export type CalendarWorkerRequest =
   | { type: "pollStart"; nowMs: number }
   | { type: "pollRefresh"; nowMs: number }
   | { type: "pollTimer"; nowMs: number }
-  | { type: "getCurrentNext"; nowMs: number };
+  | { type: "getCurrentNext"; nowMs: number }
+  /** Carries no token: the core lists with the credential it was already
+   * pushed, so the picker's lookup costs the host nothing extra. */
+  | { type: "listCalendars" };
 
 // -- worker -> main -----------------------------------------------------
 
@@ -81,6 +93,11 @@ export type WorkerResponse =
   | { type: "error"; message: string }
   | { type: "pollOutcome"; outcome: PollOutcomeName }
   | { type: "credentialEvents"; events: CredentialEventDTO[] }
+  /** Only posted for a successful listing. A held credential, a failed
+   * lookup or a busy core say nothing about which calendars exist, and the
+   * worker drops them rather than emptying a picker that is showing real
+   * options. */
+  | { type: "calendarList"; calendars: CalendarListEntryDTO[] }
   | {
       type: "currentNext";
       kind: RenderableCurrentNextKind;

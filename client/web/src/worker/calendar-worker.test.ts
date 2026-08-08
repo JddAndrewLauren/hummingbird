@@ -17,6 +17,7 @@ function fakeHost(overrides: Partial<CalendarHostLike> = {}): CalendarHostLike {
     currentOrNext: vi
       .fn()
       .mockResolvedValue('{"kind":"no_snapshot","event":null,"as_of_ms":null}'),
+    listCalendars: vi.fn().mockResolvedValue('{"kind":"ok","calendars":[]}'),
     ...overrides,
   };
 }
@@ -142,6 +143,47 @@ describe("handleCalendarRequest", () => {
 
     expect(posted).toEqual([]);
   });
+
+  it("listCalendars posts the core's options, carrying no token of its own", async () => {
+    const host = fakeHost({
+      listCalendars: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          kind: "ok",
+          calendars: [
+            { id: "primary", summary: "john@twinion.net" },
+            { id: "team@twinion.net", summary: "Team" },
+          ],
+        }),
+      ),
+    });
+
+    const posted = await run({ type: "listCalendars" }, host);
+
+    expect(host.listCalendars).toHaveBeenCalledWith();
+    expect(posted).toEqual([
+      {
+        type: "calendarList",
+        calendars: [
+          { id: "primary", summary: "john@twinion.net" },
+          { id: "team@twinion.net", summary: "Team" },
+        ],
+      },
+    ]);
+  });
+
+  it.each(["no_credential", "failed", "busy"])(
+    'listCalendars posts nothing when the host answers "%s"',
+    async (kind) => {
+      // None of these say the user has no calendars. Posting an empty list
+      // would blank the picker -- and with it the only affordance for
+      // deselecting a calendar that is failing every poll.
+      const host = fakeHost({
+        listCalendars: vi.fn().mockResolvedValue(`{"kind":"${kind}","calendars":[]}`),
+      });
+
+      expect(await run({ type: "listCalendars" }, host)).toEqual([]);
+    },
+  );
 });
 
 describe("createRequestQueue", () => {

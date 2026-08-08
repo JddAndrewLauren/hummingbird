@@ -5,6 +5,7 @@ const initialCalendar: CalendarState = {
   connected: false,
   needsReconnect: false,
   selectedCalendarIds: [],
+  availableCalendars: [],
   lastPollOutcome: null,
   tileKind: "no_snapshot",
   tileEvent: null,

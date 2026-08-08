@@ -3,10 +3,16 @@
 //! without change, and testable entirely against fixtures (no live
 //! credentials, per #46's acceptance).
 //!
-//! Only a read method exists: fetching one page of
-//! `calendars/{calendarId}/events`. There is no write-capable method on this
-//! trait and never will be — the adapter only ever needs `calendar.readonly`
-//! scope.
+//! Only read methods exist: one page of `calendars/{calendarId}/events`
+//! ([`EventsTransport`]) and one page of `users/me/calendarList`
+//! ([`CalendarListTransport`]). There is no write-capable method on either
+//! trait and never will be — both endpoints are covered by the same
+//! `calendar.readonly` scope the adapter already holds.
+//!
+//! They are two traits rather than two methods on one deliberately: the
+//! event adapter is injected with a transport in a dozen fixture tests that
+//! have no business scripting a calendar-list response, and #73's picker
+//! lookup is not part of a poll attempt.
 
 use std::fmt;
 
@@ -25,6 +31,22 @@ pub trait EventsTransport: Send + Sync {
         access_token: &str,
         time_min: &str,
         time_max: &str,
+        page_token: Option<&str>,
+    ) -> Result<String, TransportError>;
+}
+
+/// One page of `users/me/calendarList` — the options #73's calendar picker
+/// offers, not part of any poll attempt.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait CalendarListTransport: Send + Sync {
+    /// Fetch one page of the signed-in user's calendar list. `page_token` is
+    /// `None` for the first page and `Some` for every subsequent page, taken
+    /// verbatim from the previous page's `nextPageToken`. Returns the raw
+    /// JSON response body on success.
+    async fn fetch_calendar_list_page(
+        &self,
+        access_token: &str,
         page_token: Option<&str>,
     ) -> Result<String, TransportError>;
 }

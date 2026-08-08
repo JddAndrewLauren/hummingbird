@@ -50,6 +50,9 @@ export function attachWorkerClient(
           store.setCalendarState({ needsReconnect: true });
         }
         return;
+      case "calendarList":
+        store.setCalendarState({ availableCalendars: message.calendars });
+        return;
       case "currentNext":
         store.setCalendarState({
           tileKind: message.kind,
@@ -89,4 +92,12 @@ export function pollTimer(worker: WorkerLike, nowMs: number): void {
 
 export function requestCurrentNext(worker: WorkerLike, nowMs: number): void {
   worker.postMessage({ type: "getCurrentNext", nowMs });
+}
+
+// Asks the core to re-list the picker's options. Send this only after the
+// token that should be used has already been pushed: the worker processes
+// requests strictly in arrival order, so a `pushToken` queued first is the
+// credential this listing goes out with.
+export function requestCalendarList(worker: WorkerLike): void {
+  worker.postMessage({ type: "listCalendars" });
 }

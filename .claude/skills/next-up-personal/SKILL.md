@@ -172,10 +172,13 @@ anything with an open blocker):
    No priority. Never sort on the raw `priority` number; it's inverted and `0` means unset
    (see REFERENCE.md).
 5. **Energy / size fit** — matching `energy` and a `size` that fits the declared time.
-   When calendar context is supplied (above) and its `current_or_next` is `upcoming`
-   within 30 minutes, this step also nudges `size: quick` candidates ahead of
-   otherwise-tied non-`quick` ones. Soft only: it breaks ties left by steps 1–4, it
-   never removes a candidate.
+   When calendar context is supplied and **the next start** (as computed above — off
+   `current_or_next` when it is `upcoming`, off `today` when an in-progress or all-day
+   event masks it) is within 30 minutes, this step also nudges `size: quick` candidates
+   ahead of otherwise-tied non-`quick` ones. Read the next start from that rule, never
+   from `current_or_next.status` alone: a 10:50 standup with an 11:00 review next is
+   exactly the case that must fire and the status field alone misses. Soft only: it
+   breaks ties left by steps 1–4, it never removes a candidate.
 6. **Oldest first** — `createdAt` ascending, so nothing quietly rots.
 
 ## Output

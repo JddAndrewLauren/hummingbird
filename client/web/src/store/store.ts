@@ -4,6 +4,7 @@
 // only writer.
 
 import type {
+  CalendarListEntryDTO,
   CurrentNextEventDTO,
   PollOutcomeName,
   RenderableCurrentNextKind,
@@ -19,6 +20,11 @@ export interface CalendarState {
   connected: boolean;
   needsReconnect: boolean;
   selectedCalendarIds: string[];
+  /** The picker's options, as last listed by the core. Distinct from
+   * `selectedCalendarIds`, which is persisted and survives a listing that
+   * never happened (offline start, held credential) — a selected id absent
+   * from here is rendered as unavailable rather than silently dropped. */
+  availableCalendars: CalendarListEntryDTO[];
   lastPollOutcome: PollOutcomeName | null;
   tileKind: RenderableCurrentNextKind;
   tileEvent: CurrentNextEventDTO | null;
@@ -38,6 +44,7 @@ const initialCalendarState: CalendarState = {
   connected: false,
   needsReconnect: false,
   selectedCalendarIds: [],
+  availableCalendars: [],
   lastPollOutcome: null,
   tileKind: "no_snapshot",
   tileEvent: null,
