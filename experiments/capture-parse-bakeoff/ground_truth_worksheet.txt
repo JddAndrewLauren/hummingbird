@@ -1,0 +1,413 @@
+GROUND-TRUTH WORKSHEET -- capture-parse bake-off (#42)
+======================================================================
+
+Blind labelling. Do NOT open scoring.md or hosted_results.jsonl until this
+file is finished -- reading a model's parse first anchors your label to it,
+and the whole bake-off rests on these labels being independent.
+
+For each capture, write the parse YOU would want in the local store:
+
+  title  -- the one actionable line, filler stripped, short and imperative.
+  notes  -- everything else worth keeping. Blank if there is no remainder.
+  due    -- only if the raw carries an explicit temporal phrase. A date
+            (YYYY-MM-DD) if you can resolve it against that row's `spoken`
+            date, else the phrase verbatim. Blank otherwise. Never guess.
+  label  -- comma-separated, any subset, only where CLEARLY implied:
+              context=@home|@errands|@phone|@computer|@work|@anywhere
+              energy=low|medium|high
+              size=quick|medium|deep
+            Blank is a perfectly good answer. Skip freely.
+
+Two rules that decide the hard rows:
+
+  multi-item   -- clearest single action becomes the title; the rest goes
+                  into notes, near-verbatim. Nothing may be lost.
+  unparseable  -- put the whole raw text in title, leave the rest blank.
+                  Kept beats clever.
+
+Blank means "unset" and is a real answer. Write your label even when it feels
+obvious -- the easy rows are the control.
+
+Keep the `== id ==` lines exactly as they are; the merge script keys on them.
+Multi-line values are fine: indent continuation lines by two spaces.
+
+42 captures below.
+======================================================================
+
+== ph-01 ==
+raw:    Email Dana the Q3 roadmap draft before Thursday standup
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-03 ==
+raw:    the thing with the fly deploy token
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-04 ==
+raw:    remind me to water the plants when I get home
+source: dictated   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-05 ==
+raw:    buy a birthday card for mom, book the oil change, and cancel the gym trial before it charges me
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-06 ==
+raw:    quarterly taxes
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-08 ==
+raw:    Draft the ADR for the runner endpoint — separate Fly app, not on the sweeper, single bearer token, revisit after the bake-off
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-11 ==
+raw:    dentist
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-13 ==
+raw:    Read the Foundation Models guided-generation docs before starting the iPad prototype
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-14 ==
+raw:    book flights for
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-17 ==
+raw:    leak under the bathroom sink getting worse
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-18 ==
+raw:    Submit the reimbursement for the conference hotel by end of month
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-20 ==
+raw:    milk eggs bread coffee filters
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-22 ==
+raw:    car registration and also the smog check
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== ph-23 ==
+raw:    Idea: a raw-text fallback for capture-parse that never loses the utterance — couldn't parse, kept verbatim
+source: typed   spoken: 2026-08-07 (synthetic row -- no real capture date; this is the anchor the hosted column used, so resolve against it)
+
+title:
+notes:
+due:
+label:
+
+== real-01 ==
+raw:    Testing with voice
+source: dictated   spoken: 2026-08-07
+
+title:
+notes:
+due:
+label:
+
+== real-02 ==
+raw:    Call the dentist for new aligners
+source: dictated   spoken: 2026-08-07
+
+title:
+notes:
+due:
+label:
+
+== real-03 ==
+raw:    order clothes
+source: unknown   spoken: 2026-08-07
+
+title:
+notes:
+due:
+label:
+
+== real-04 ==
+raw:    golf practice
+source: unknown   spoken: 2026-08-07
+
+title:
+notes:
+due:
+label:
+
+== real-05 ==
+raw:    Setup hermes agent
+source: unknown   spoken: 2026-08-07
+
+title:
+notes:
+due:
+label:
+
+== real-06 ==
+raw:    I need to return that Amazon package and also buy printer paper. Maybe stop at the pharmacy
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-07 ==
+raw:    Okay so I need to pick up the dry cleaning and also get dog food and maybe grab some coffee while I'm at it?
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-08 ==
+raw:    Review the draft contract for the meeting
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-09 ==
+raw:    Buy a new USBC cable
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-10 ==
+raw:    Schedule the oil change for the car
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-11 ==
+raw:    Email Sarah about the
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-12 ==
+raw:    Book the the flights for
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-13 ==
+raw:    Pick up the prescription tonight
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-14 ==
+raw:    We're new the car registration by the 15th
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-15 ==
+raw:    Send the revised proposal to James by Friday
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-16 ==
+raw:    Move the dentist appointment. Actually no reschedule the cleaning to the 21st
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-17 ==
+raw:    Schedule the actually no it reschedule that budget meeting to Tuesday
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-18 ==
+raw:    Remind me to cancel that free trial next Thursday
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-19 ==
+raw:    Remind me to water the plants when I get home
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-20 ==
+raw:    Remind me to tackle the take the trash. Take the trash cans out tomorrow morning
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-21 ==
+raw:    To deal with the weird charge on the credit card
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-22 ==
+raw:    The thing with the the hotel reservation in Chicago
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-23 ==
+raw:    The thing with the garage door sensor
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-24 ==
+raw:    Finish the quarterly notes update the server inventory and I still haven't replied to mark
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-25 ==
+raw:    Email the photographer confirm the dinner reservation and I haven't yet about a wedding gift
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-26 ==
+raw:    Pick up milk. Replace the air filter and I haven't called the plumber yet
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-27 ==
+raw:    Order more toner send Rachel the updated spreadsheet and I I still haven't submitted the expense report
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:
+
+== real-28 ==
+raw:    I should go to the bank and drop off the library books and fill up the car with gas while I'm out
+source: dictated   spoken: 2026-08-08
+
+title:
+notes:
+due:
+label:

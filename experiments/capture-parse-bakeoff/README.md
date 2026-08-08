@@ -32,6 +32,9 @@ A few dozen captures, one table a human reads in a minute. A prototype, not a be
 | `corpus.jsonl` | The captures, one JSON object per line: `{"id","raw","source"}` (real entries also carry `origin`). `ph-*` are placeholders, `real-*` are genuine Triage captures — see below. |
 | `run_hosted.py` | Stdlib-only runner. `--emit-prompts` builds the per-capture prompts to send the hosted model; `--merge` validates the replies against `schema.json` and writes `hosted_results.jsonl`. No API key, no network — the hosted-runner service from #41 doesn't exist yet, so it reads replies from a file/stdin. |
 | `hosted_results.jsonl` | The hosted-baseline parses, `{"id","parse"}` per line. Produced by a hosted Claude parsing the corpus directly with `prompt.md` + `schema.json` — a genuine hosted-baseline sample. |
+| `emit_worksheet.py` | Builds `ground_truth_worksheet.txt` — `id` + `raw` only, four blank fields per capture. Reads `corpus.jsonl` and nothing else, so it *cannot* leak a model parse into the blind phase. Refuses to overwrite a worksheet that already has answers in it. |
+| `ground_truth_worksheet.txt` | The blind labelling worksheet. Filled by hand, by the human, before looking at any model column. |
+| `merge_worksheet.py` | The other half: parses the filled worksheet, validates every label against `schema.json` (a typo'd enum fails here, not during scoring), writes `ground_truth.jsonl`, and fills `scoring.md`'s `ground_truth` column. `--check` validates without writing. Idempotent — partial worksheets merge fine and re-runs never clobber a filled cell. |
 | `scoring.md` | The scoring sheet: one row per capture, `hosted` pre-filled, `ground_truth` and `nano` left as `_TODO_`, plus how-to-score and the totals footer. |
 
 ## Corpus status — the fresh dictation batch has landed
@@ -106,9 +109,12 @@ Everything that needs the physical phone or human judgment — left as explicit 
 1. ~~**Dictate the fresh capture batch**, pull it into the corpus, and re-run the hosted
    side for the new rows.~~ **Done 2026-08-08** — 23 real dictated captures added as
    `real-06…28`, hosted column regenerated and validated (see *Corpus status* above).
-2. **Blind ground truth.** For each capture, hand-write the correct parse in
-   `scoring.md`'s `ground_truth` column **from the raw text alone, before looking at either
-   model's output.** Blind-first or the score anchors to whatever the models produced.
+2. **Blind ground truth.** Run `./emit_worksheet.py` and fill in
+   `ground_truth_worksheet.txt` **from the raw text alone, before looking at either model's
+   output** — blind-first, or the score anchors to whatever the models produced. Then
+   `./merge_worksheet.py` writes it into `scoring.md`'s `ground_truth` column. Label in the
+   worksheet rather than in `scoring.md` directly: the worksheet is the only view of the
+   corpus with no model column on screen.
 3. **The Nano run.** Pixel 10 Pro Fold, airplane mode, identical prompt + schema; fill the
    `nano` column.
 4. **Score and tally.** Mark the ✓ columns and failure-mode tags, fill the totals footer,

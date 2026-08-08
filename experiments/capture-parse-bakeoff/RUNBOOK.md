@@ -58,9 +58,12 @@ cadence) before sending it.
 "correct" answers, ground truth correlates with one contestant and the bake-off is
 rigged. **Why blind:** reading a model's parse first anchors your label to it.
 
-1. Ask any session: **"emit the ground-truth worksheet."** It produces a file with only
-   `id` + `raw` — no model columns anywhere on screen. (Equivalent one-liner:
-   `python3 -c "import json;[print(f'\n== {r[\"id\"]} ==\n{r[\"raw\"]}\nGT: ') for r in map(json.loads, open('corpus.jsonl'))]" > ground_truth_worksheet.txt`)
+1. **`./emit_worksheet.py`** — writes `ground_truth_worksheet.txt`: `id` + `raw` plus four
+   blank fields per capture, no model column anywhere on screen. It reads `corpus.jsonl`
+   and nothing else, so it can't leak one. (Already emitted for the current 42-row corpus;
+   re-run it only if the corpus changes. It refuses to overwrite a worksheet with answers
+   in it.) Each entry carries a `spoken:` date — resolve relative phrases against *that*,
+   not today.
 2. **Do not open `scoring.md` or `hosted_results.jsonl`** until the worksheet is done.
 3. For each raw, write the parse *you* would want in the local store:
    - **title** — the one actionable line, filler stripped, short and imperative.
@@ -70,8 +73,12 @@ rigged. **Why blind:** reading a model's parse first anchors your label to it.
    - **label** — `context`/`energy`/`size` only where clearly implied; skip freely.
    - **multi-item** — clearest single action as title, the rest verbatim in notes.
    - **unparseable** — whole raw as title, nothing else. Kept beats clever.
-4. Hand the worksheet back: the agent merges it into `scoring.md`'s `ground_truth`
-   column. After this point you may look at anything.
+4. **`./merge_worksheet.py`** (or hand the worksheet back to any session) — validates every
+   label against `schema.json`, writes `ground_truth.jsonl`, and fills `scoring.md`'s
+   `ground_truth` column. `--check` validates without writing. Partial worksheets are fine:
+   unlabelled rows are listed and left as `_TODO_`, and re-running never clobbers a cell
+   you've already filled — so you can label in several sittings. After this point you may
+   look at anything.
 
 ---
 
