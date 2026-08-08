@@ -23,12 +23,12 @@ session, and puts it in the `Authorization` header of every call to
 | Host | Where the key rests |
 | --- | --- |
 | Desktop web | IndexedDB — the only option in a browser |
-| Android, Wear OS | Android Keystore |
+| Android, Wear OS | App-private encrypted storage, protected by an Android Keystore key (hardware-backed where supported) |
 | iPad | iOS Keychain |
 
 The credential *shape* is identical on all four clients. Only the resting place
-differs, and that is the point: two of the four have hardware-backed secret
-storage the core cannot reach.
+differs, and that is the point: the three native clients have platform-protected
+secret storage the core cannot reach.
 
 **A 401 leaves the core as an event, and the outbound queue holds.** A revoked
 or mistyped key must never drain the queue. The host re-prompts; captures wait.
@@ -64,8 +64,10 @@ Two properties motivate the carve-out:
    you can copy, read, and paste into an issue while debugging. If the key lived
    in that store, every one of those actions would leak a `Write` credential.
 2. **Native hosts have better storage than the core can offer.** The core's
-   `std::fs` leg would write the key as plaintext beside the mirror. Keystore
-   and Keychain are hardware-backed and encrypted at rest.
+   `std::fs` leg would write the key as plaintext beside the mirror. On Android
+   and Wear OS, a Keystore-managed cryptographic key protects the credential in
+   app-private encrypted storage, with hardware backing where supported. On
+   iPad, Keychain encrypts the credential at rest.
 
 ## Why not OAuth
 
