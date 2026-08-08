@@ -1,24 +1,27 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createCoreStore } from "./store";
 import { attachWorkerClient } from "./worker-client";
 
-// A minimal fake of the Worker surface the client needs: postMessage +
-// an assignable onmessage handler the test can drive directly.
+// A minimal fake of the Worker surface the client needs: just an assignable
+// onmessage handler the test can drive directly. Deliberately NO postMessage:
+// the client must never send anything (PR #79 round-2 blocker — a request
+// posted at construction races the worker's async module evaluation and is
+// dropped; the worker announces readiness itself instead).
 function fakeWorker() {
   return {
-    postMessage: vi.fn(),
     onmessage: null as ((event: MessageEvent) => void) | null,
   };
 }
 
 describe("attachWorkerClient", () => {
-  it("posts an init request to the worker on attach", () => {
+  it("only listens on attach — sends nothing, so there is no init race to lose", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
 
     attachWorkerClient(worker, store);
 
-    expect(worker.postMessage).toHaveBeenCalledWith({ type: "init" });
+    expect(worker.onmessage).toBeTypeOf("function");
+    expect(store.getSnapshot().status).toBe("loading");
   });
 
   it("moves the store to ready with the reported api version on a ready message", () => {
