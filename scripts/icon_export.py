@@ -318,8 +318,11 @@ def generate_favicon(out_dir: Path = DEFAULT_ICON_DIR) -> Path:
 # against the same circle shows roughly 39% of its own opaque pixels
 # render outside it -- the chest and side-body masses are entirely
 # outside the circle, and the gorget bleeds past it on both sides. Full
-# containment of every opaque pixel would need close to a 0.61 scale
-# (radius/reach, not the 0.90 the spec's own "8-12%" describes), which
+# containment of every opaque pixel would need close to a 0.46 scale
+# (measured: at a 512px render the current 0.90-scaled foreground's max
+# opaque radius is ~304px vs a ~156px safe radius, so
+# 0.90 * 156/304 ~ 0.463 -- not the 0.90 the spec's own "8-12%"
+# describes), which
 # would leave a much smaller, over-shrunk bird relative to what §44 asks
 # for. 0.90 is a deliberate reading of the spec text over literal
 # pixel-perfect compliance: Android's own adaptive-icon convention

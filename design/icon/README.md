@@ -438,7 +438,9 @@ python3 scripts/icon_export.py all --out-dir design/icon/export
     landmark the 8-12% figure is calibrated against. The beak-tip spike
     (`beak_tip`/`beak_lower_tip`, reaching to (135,70), close to the
     canvas corner) is the one landmark that still fails even at max
-    shrink -- pulling it inside would need roughly a 0.61 scale, well
+    shrink -- pulling it inside would need roughly a 0.54 scale
+    (measured: 312.9px safe radius / 580.9px landmark distance;
+    ~0.56 for `beak_lower_tip`), well
     past the spec's own "8-12%" estimate -- so it's a documented,
     tested exception (`SAFE_ZONE_EXEMPT_LANDMARKS`), on the same
     precedent as spec §26's "body bleed at bottom" exception for the app
@@ -450,7 +452,9 @@ python3 scripts/icon_export.py all --out-dir design/icon/export
     a third to a half of the foreground's own opaque pixels fall outside
     it -- the chest and side-body masses are entirely outside the
     circle, and the gorget bleeds past it on both sides. Achieving full
-    pixel containment would need close to a 0.61 scale, which would read
+    pixel containment would need close to a 0.46 scale (measured at a
+    512px render: max opaque radius 304.1px at the current 0.90 scale
+    vs a 156.4px safe radius, so 0.90 x 156.4/304.1 ~ 0.463), which would read
     as a much smaller, over-shrunk bird relative to what §44's "8-12%"
     describes. 0.90 is a deliberate reading of the spec text (protect the
     named identity, accept the rest bleeding) over pixel-perfect
