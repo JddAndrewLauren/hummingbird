@@ -7,6 +7,15 @@ name: deploy
 on:
   push:
     branches: [main]
+    paths:
+      - "sweep.py"
+      - "denylist.json"
+      - "crontab"
+      - "Dockerfile"
+      - "fly.toml"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/deploy.yml"
 
 jobs:
   test:
