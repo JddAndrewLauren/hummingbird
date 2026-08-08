@@ -188,12 +188,15 @@ CROWN_GRAYS = (
 )
 
 CROWN_FACETS = [
-    ([(345, 235), (400, 215), (415, 255), (365, 270)], CROWN_GRAYS[1]),
-    ([(400, 215), (460, 205), (455, 245), (415, 255)], CROWN_GRAYS[0]),
-    ([(460, 205), (520, 205), (510, 245), (455, 245)], CROWN_GRAYS[1]),
-    ([(365, 270), (415, 255), (430, 300), (380, 310)], CROWN_GRAYS[2]),
-    ([(415, 255), (455, 245), (465, 290), (430, 300)], CROWN_GRAYS[0]),
-    ([(455, 245), (510, 245), (515, 285), (465, 290)], CROWN_GRAYS[1]),
+    # Front cluster (was a near-regular 2x3 quad grid -- flagged in review).
+    # Jittered vertices and a triangle in the mix instead of six uniform
+    # quads so it reads as irregular faceting, not tiling.
+    ([(345, 235), (398, 207), (422, 251)], CROWN_GRAYS[1]),
+    ([(398, 207), (452, 196), (447, 236), (422, 251)], CROWN_GRAYS[0]),
+    ([(452, 196), (516, 209), (508, 243), (447, 236)], CROWN_GRAYS[2]),
+    ([(345, 235), (422, 251), (435, 298), (378, 312)], CROWN_GRAYS[2]),
+    ([(422, 251), (447, 236), (468, 283), (435, 298)], CROWN_GRAYS[0]),
+    ([(447, 236), (508, 243), (520, 277), (468, 283)], CROWN_GRAYS[1]),
     ([(510, 245), (580, 225), (600, 260), (540, 275)], CROWN_GRAYS[2]),
     ([(580, 225), (650, 240), (670, 270), (600, 260)], CROWN_GRAYS[3]),
     ([(430, 300), (465, 290), (490, 330), (440, 345)], CROWN_GRAYS[2]),
@@ -214,6 +217,10 @@ FOREHEAD_PATCHES = [
     ([(520, 282), (580, 285), (600, 320), (545, 315)], FOREHEAD_ORANGES[1]),
     ([(490, 330), (545, 315), (575, 345), (520, 352)], FOREHEAD_ORANGES[2]),
     ([(545, 315), (600, 320), (625, 350), (575, 345)], FOREHEAD_ORANGES[3]),
+    # Sweeps on up over the eye's top edge (eye center 625,347, outer
+    # radius ~50-54 -> top edge ~y293) rather than stopping short of it,
+    # per spec §10 ("the patch should sweep upward over the eye").
+    ([(590, 288), (655, 270), (678, 302), (632, 322)], FOREHEAD_ORANGES[1]),
 ]
 
 # Spec §11: dark eye-stripe wedge, beak base -> beneath eye -> rear cheek,
@@ -249,13 +256,13 @@ EYE_IRIS_RADII = (37, 41)
 EYE_IRIS_GRADIENT_CENTER_FILL = "#161A1C"
 EYE_IRIS_GRADIENT_EDGE_FILL = "#050606"
 EYE_HIGHLIGHT_PRIMARY_CENTER = (600, 316)
-# Widened from the spec's literal ~25x18 (rx 12.5/ry 9): at that size the
-# highlight is sub-pixel by the 32px render (spec §12 requires it stay
-# visible there) and resvg's anti-aliasing spreads it into invisibility --
-# confirmed by direct pixel sampling of the 32px render. 16/12 keeps the
-# highlight reading as a glint (not a blown-out white patch) at 1024px
-# while surviving downscale.
-EYE_HIGHLIGHT_PRIMARY_RADII = (16, 12)
+# Spec §12 literal size (~25x18). An earlier revision widened this to 16/12
+# on a mistaken reading of a 32px pixel sample; re-sampled against the
+# literal size, the highlight pixel comes in at luma ~113 against a
+# surrounding eye of ~28-50 -- already clearly visible at 32px, so the
+# widening wasn't needed and cost the highlight its "glint" read at 1024px
+# (it started breaching the eye ring's upper-left outline instead).
+EYE_HIGHLIGHT_PRIMARY_RADII = (12.5, 9)
 EYE_HIGHLIGHT_FILL = "#F4F5F2"
 EYE_HIGHLIGHT_SECONDARY_CENTER = (612, 330)
 EYE_HIGHLIGHT_SECONDARY_RADII = (4, 4)
@@ -263,7 +270,14 @@ EYE_HIGHLIGHT_SECONDARY_OPACITY = 0.6
 
 # Spec §13: one tapered filled Bézier shape (not a stroke), route (430,390)
 # -> (510,410) -> (590,430), width 8-18px master, narrow at each end and
-# widest at the middle.
+# widest at the middle. Spec §34 lists cheek-light below crown-base, but
+# also explicitly allows "eye stripe / crown ordering adjustments" -- at
+# that position the crown/forehead/eye-stripe masses drawn afterward cover
+# all but a sliver of it. Emitted after eye-stripe/eye-stripe-secondary
+# (and before the eye group, so it still reads as passing near/under the
+# eye rather than over it) so the streak is actually visible where it
+# separates cheek from gorget, per the acceptance intent rather than the
+# literal document-order default.
 CHEEK_SEPARATOR_PATH = (
     "M 430 393 Q 470 397, 510 417 Q 550 427, 590 433 "
     "Q 550 437, 510 424 Q 470 407, 430 401 Z"
@@ -373,7 +387,6 @@ def _build_svg(palette: dict) -> str:
       <polygon id="side-body-base" points="{_points_attr(SIDE_BODY_MASS_POINTS)}" fill="{palette['side_body_mass']}"/>
       <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
       <g id="head">
-        <path id="cheek-separator" d="{CHEEK_SEPARATOR_PATH}" fill="{CHEEK_SEPARATOR_FILL}"/>
         <path id="crown-base" d="{CROWN_MASS_PATH}" fill="{palette['crown_mass']}"/>
         <g id="crown-facets" clip-path="url(#crown-clip)">
 {_crown_facets_svg()}
@@ -383,6 +396,7 @@ def _build_svg(palette: dict) -> str:
         </g>
         <polygon id="eye-stripe" points="{_points_attr(EYE_STRIPE_MAIN_POINTS)}" fill="{EYE_STRIPE_MAIN_FILL}"/>
         <polygon id="eye-stripe-secondary" points="{_points_attr(EYE_STRIPE_SECONDARY_POINTS)}" fill="{EYE_STRIPE_SECONDARY_FILL}"/>
+        <path id="cheek-separator" d="{CHEEK_SEPARATOR_PATH}" fill="{CHEEK_SEPARATOR_FILL}"/>
         <g id="eye">
           <ellipse id="eye-outer" cx="{EYE_CENTER[0]}" cy="{EYE_CENTER[1]}" rx="{EYE_OUTER_RADII[0]}" ry="{EYE_OUTER_RADII[1]}" fill="{EYE_OUTER_FILL}"/>
           <ellipse id="eye-iris" cx="{EYE_IRIS_CENTER[0]}" cy="{EYE_IRIS_CENTER[1]}" rx="{EYE_IRIS_RADII[0]}" ry="{EYE_IRIS_RADII[1]}" fill="url(#eye-iris-gradient)"/>

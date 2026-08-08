@@ -27,15 +27,14 @@
       <polygon id="side-body-base" points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750" fill="#CE6A16"/>
       <path id="gorget-base" d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z" fill="#FF8A00"/>
       <g id="head">
-        <path id="cheek-separator" d="M 430 393 Q 470 397, 510 417 Q 550 427, 590 433 Q 550 437, 510 424 Q 470 407, 430 401 Z" fill="#F5EFE7"/>
         <path id="crown-base" d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z" fill="#82827E"/>
         <g id="crown-facets" clip-path="url(#crown-clip)">
-      <polygon id="crown-facet-01" points="345 235 400 215 415 255 365 270" fill="#8C8B89"/>
-      <polygon id="crown-facet-02" points="400 215 460 205 455 245 415 255" fill="#AAA9A6"/>
-      <polygon id="crown-facet-03" points="460 205 520 205 510 245 455 245" fill="#8C8B89"/>
-      <polygon id="crown-facet-04" points="365 270 415 255 430 300 380 310" fill="#71716F"/>
-      <polygon id="crown-facet-05" points="415 255 455 245 465 290 430 300" fill="#AAA9A6"/>
-      <polygon id="crown-facet-06" points="455 245 510 245 515 285 465 290" fill="#8C8B89"/>
+      <polygon id="crown-facet-01" points="345 235 398 207 422 251" fill="#8C8B89"/>
+      <polygon id="crown-facet-02" points="398 207 452 196 447 236 422 251" fill="#AAA9A6"/>
+      <polygon id="crown-facet-03" points="452 196 516 209 508 243 447 236" fill="#71716F"/>
+      <polygon id="crown-facet-04" points="345 235 422 251 435 298 378 312" fill="#71716F"/>
+      <polygon id="crown-facet-05" points="422 251 447 236 468 283 435 298" fill="#AAA9A6"/>
+      <polygon id="crown-facet-06" points="447 236 508 243 520 277 468 283" fill="#8C8B89"/>
       <polygon id="crown-facet-07" points="510 245 580 225 600 260 540 275" fill="#71716F"/>
       <polygon id="crown-facet-08" points="580 225 650 240 670 270 600 260" fill="#555654"/>
       <polygon id="crown-facet-09" points="430 300 465 290 490 330 440 345" fill="#71716F"/>
@@ -50,13 +49,15 @@
       <polygon id="forehead-02" points="520 282 580 285 600 320 545 315" fill="#F36D00"/>
       <polygon id="forehead-03" points="490 330 545 315 575 345 520 352" fill="#E9500D"/>
       <polygon id="forehead-04" points="545 315 600 320 625 350 575 345" fill="#C94719"/>
+      <polygon id="forehead-05" points="590 288 655 270 678 302 632 322" fill="#F36D00"/>
         </g>
         <polygon id="eye-stripe" points="425 350 570 365 675 395 750 600 700 630 610 475 470 405" fill="#15191A"/>
         <polygon id="eye-stripe-secondary" points="470 405 610 475 700 630 660 600 590 470 490 415" fill="#2A2421"/>
+        <path id="cheek-separator" d="M 430 393 Q 470 397, 510 417 Q 550 427, 590 433 Q 550 437, 510 424 Q 470 407, 430 401 Z" fill="#F5EFE7"/>
         <g id="eye">
           <ellipse id="eye-outer" cx="625" cy="347" rx="50" ry="54" fill="#141719"/>
           <ellipse id="eye-iris" cx="625" cy="349" rx="37" ry="41" fill="url(#eye-iris-gradient)"/>
-          <ellipse id="eye-highlight-primary" cx="600" cy="316" rx="16" ry="12" fill="#F4F5F2"/>
+          <ellipse id="eye-highlight-primary" cx="600" cy="316" rx="12.5" ry="9" fill="#F4F5F2"/>
           <ellipse id="eye-highlight-secondary" cx="612" cy="330" rx="4" ry="4" fill="#F4F5F2" opacity="0.6"/>
         </g>
       </g>

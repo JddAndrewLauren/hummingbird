@@ -53,11 +53,21 @@ split for it), so light and dark masters share it byte-for-byte; only
 the underlying mass colors (crown/gorget/chest/side-body) still vary by
 variant.
 
-The eye's primary highlight is sized larger than the spec's literal
-~25x18 master figure (now ~32x24): at that literal size the highlight
-is sub-pixel by the 32px render and resvg's anti-aliasing spreads it
-into invisibility, failing the "visible at 32px" acceptance criterion --
-confirmed by direct pixel sampling of the rendered 32px/16px PNGs.
+The eye's primary highlight uses the spec's literal ~25x18 master figure
+(rx 12.5/ry 9). An earlier revision widened it, on a mistaken pixel
+sample; re-sampling the 32px render at the literal size shows the
+highlight pixel at luma ~113 against a surrounding eye of ~14-60 --
+already clearly visible there, so the literal size was kept. Widening
+it further breaches the eye ring's own outline at 1024px, reading as a
+blown-out patch rather than a glint.
+
+The cheek separator (§13) is emitted after `eye-stripe`/
+`eye-stripe-secondary` rather than in §34's literal `cheek-light`
+position below `crown-base` -- at that position the crown, forehead and
+eye-stripe masses drawn afterward cover all but a sliver of it. Spec §34
+explicitly allows "eye stripe / crown ordering adjustments"; raising it
+here is what makes the streak actually visible, separating cheek from
+gorget near the eye instead of reading as stray notches.
 
 ## Generator
 

@@ -266,11 +266,16 @@ class HeadIdentityTest(unittest.TestCase):
                 def idx(element_id):
                     return order.index(element_id)
 
-                self.assertLess(idx("cheek-separator"), idx("crown-base"))
                 self.assertLess(idx("crown-base"), idx("crown-facet-01"))
                 self.assertLess(idx("crown-facet-01"), idx("forehead-01"))
                 self.assertLess(idx("forehead-01"), idx("eye-stripe"))
-                self.assertLess(idx("eye-stripe"), idx("eye-outer"))
+                self.assertLess(idx("eye-stripe"), idx("eye-stripe-secondary"))
+                # Spec §34 explicitly allows eye-stripe/crown ordering
+                # adjustments; cheek-separator is raised above eye-stripe
+                # (and kept below the eye group) so it's actually visible
+                # instead of buried under every mass drawn after it.
+                self.assertLess(idx("eye-stripe-secondary"), idx("cheek-separator"))
+                self.assertLess(idx("cheek-separator"), idx("eye-outer"))
                 self.assertLess(idx("eye-outer"), idx("eye-iris"))
                 self.assertLess(idx("eye-iris"), idx("eye-highlight-primary"))
                 self.assertLess(idx("eye-highlight-primary"), idx("beak-main"))
