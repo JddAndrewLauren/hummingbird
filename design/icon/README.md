@@ -48,6 +48,20 @@ from one Python program.
   §48-§50, §37) against the current generator output. `silhouette-*.png`
   now excludes the master's own full-bleed `background` rect (see #64
   below) and shows a real silhouette rather than a solid black square.
+- `hummingbird-icon-favicon.svg` -- the dedicated, further-simplified
+  favicon variation (#66, spec §45). Never hand-edit; regenerate with
+  `scripts/icon_export.py svgs`.
+- `android/background.svg`, `android/foreground.svg` -- Android
+  adaptive-icon SVG layers (#66, spec §44; SVG only, no APK/resource
+  packaging). Never hand-edit; regenerate with `scripts/icon_export.py svgs`.
+- `qc/favicon-actual-16.png` -- the favicon's own 16px render, nearest-
+  neighbor upscaled for legibility (same convention as the small/micro
+  actual-size sheets).
+- `qc/android-adaptive-safe-zone.png` -- the composited background +
+  foreground layers with Android's official 66/108dp safe-zone circle
+  overlaid in red, for eyeballing that the head/eye/gorget mass clears it
+  (see the "Export matrix + platform packaging" section below for why the
+  beak-tip spike is the one documented exception).
 
 ## Head identity (#62)
 
@@ -357,12 +371,91 @@ Later slices commit these PNGs as gate evidence -- the file names above
 (`{mode}-{variant}.png`, or the render ladder's `{svg-stem}-{size}.png`)
 are the predictable convention to follow.
 
+## Export matrix + platform packaging (#66)
+
+`scripts/icon_export.py` consumes the six committed SVGs and produces
+everything a platform actually ships. One documented command regenerates
+every export from a clean checkout:
+
+```bash
+# SVG sources: favicon + Android layers, into design/icon/ (committed).
+python3 scripts/icon_export.py svgs
+
+# Everything else: PNG matrix + .icns + .ico, both variants, into
+# design/icon/export/ (regenerable build output -- gitignored, not
+# committed; run this whenever you need the rasters, not once-and-commit).
+python3 scripts/icon_export.py all --out-dir design/icon/export
+```
+
+- **PNG matrix (spec §41):** `icon_export.EXPORT_MATRIX` maps each of
+  1024/512/256/128 (master), 64/48/32 (small) and 24/16 (micro) to its
+  own correct optical source -- never one master image resized to every
+  size. Every render is normalized to sRGB/RGBA/8-bit with no embedded
+  ICC profile (`_normalize_png`; the `png:color-type=6` define matters
+  here -- without it, a fully-opaque small render like the 16px tile gets
+  silently written back down to 3-channel RGB with no alpha channel at
+  all, since ImageMagick's PNG encoder picks color-type from actual pixel
+  content unless told otherwise).
+- **macOS `.icns` (spec §42):** built via `iconutil` from a real
+  `.iconset` (`ICNS_ICONSET_ENTRIES`, Apple's fixed `icon_NxN[@2x].png`
+  naming), covering 16 through 1024. Every iconset tile is rendered from
+  the same §41-correct optical source as the PNG matrix.
+- **Windows `.ico` (spec §43):** built via ImageMagick from renders at
+  all seven `ICO_SIZES` (16-256). The 16/24/32 entries come from the
+  micro/small SVGs, not a master downscale --
+  `IcoTest.test_16_24_32_entries_match_micro_small_artwork` extracts each
+  embedded frame back out of the built `.ico` and pixel-compares it
+  against a fresh render of its intended source, and a companion test
+  confirms the 16px entry is visibly different from what a master
+  downscale would produce.
+- **Favicon (spec §45):** `FAVICON_PROFILE` reuses the master's own
+  geometry/palette data at zero facet/feather counts (crown/chest/
+  side-body facets, gorget feather rows all empty; single-shape beak;
+  micro eye; single eye-stripe; no forehead/cheek) through
+  `icon_generator._build_svg` -- no new artwork. 9 visible shapes (well
+  under the ~15 cap), the literal gray-head/black-beak/black-eye/
+  orange-throat/cream-chest color list, reading cleanly at actual 16px
+  (`qc/favicon-actual-16.png`).
+- **Android adaptive layers (spec §44):** `background.svg` is the flat
+  background gradient alone; `foreground.svg` is the *full* master bird
+  (spec gives no reduced shape budget here) with its background rect
+  dropped and its `id="bird"` group wrapped in a
+  `translate/scale(0.9)/translate` transform about the canvas center --
+  the spec's own "shrinking the bird about 8-12%" (`ANDROID_FOREGROUND_SCALE
+  = 0.90`, the band's midpoint). That shrink is calibrated against the
+  composition's *head* landmarks: `crown_top` clears Android's real
+  66/108dp safe-zone circle only after scaling, not before
+  (`test_unscaled_landmark_would_fail_without_the_shrink`), and every
+  other composition landmark except the beak-tip spike clears it too
+  (`test_head_identity_landmarks_clear_the_safe_zone_after_scaling`). The
+  beak-tip spike itself (`beak_tip`/`beak_lower_tip`, reaching to
+  (135,70), close to the canvas corner) stays outside the safe circle
+  even at max shrink -- pulling it inside would need roughly a 50% shrink,
+  well past the spec's own descriptive "8-12%" estimate, so it's treated
+  as the one documented exception
+  (`SAFE_ZONE_EXEMPT_LANDMARKS`), mirroring spec §26's own "body bleed at
+  bottom" exception for the app icon's safe *area* and how real Android
+  adaptive icons commonly tolerate thin extremities being clipped by some
+  launchers' masks while the guaranteed-safe circle protects the actual
+  identity (head/eye/gorget). `qc/android-adaptive-safe-zone.png` overlays
+  that circle on the composited layers for a visual check.
+- **Not committed:** the PNG matrix, `.icns` and `.ico` are regenerable
+  rasters (`design/icon/export/`, gitignored) -- client work under map #35
+  runs `icon_export.py all` when it needs them rather than pulling stale
+  binaries out of git. The favicon and Android SVGs *are* committed
+  (same "generated source of truth, never hand-edit" rule as the six
+  masters, with byte-equality staleness tests).
+
 ## Tests
 
 `python3 -m unittest discover -s tests` runs `tests/test_icon_harness.py`
 (against the real `resvg`/`magick` binaries -- no mocking, the harness's
 entire job is shelling out to them correctly; those tests skip themselves
-if the binaries aren't on `PATH`) and `tests/test_icon_generator.py`
+if the binaries aren't on `PATH`), `tests/test_icon_generator.py`
 (pure-Python structural checks -- valid SVG, only spec-permitted
 elements, semantic IDs, light/dark geometry parity -- plus one harness
-round-trip test that also skips without `resvg`).
+round-trip test that also skips without `resvg`), and
+`tests/test_icon_export.py` (export matrix, `.icns`/`.ico` build +
+pixel-verified source, favicon shape budget, Android safe-zone landmark
+math -- render/pack tests skip without `resvg`/`magick`, and the `.icns`
+tests additionally skip without `iconutil`, i.e. off macOS).
