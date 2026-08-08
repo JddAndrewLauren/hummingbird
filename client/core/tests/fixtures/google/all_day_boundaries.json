@@ -1,0 +1,24 @@
+{
+  "kind": "calendar#events",
+  "items": [
+    {
+      "id": "holiday-1",
+      "status": "confirmed",
+      "summary": "New Year's Day",
+      "start": { "date": "2024-01-01" },
+      "end": { "date": "2024-01-02" },
+      "updated": "2023-12-01T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=holiday-1"
+    },
+    {
+      "id": "conference-1",
+      "status": "confirmed",
+      "summary": "Offsite (multi-day)",
+      "location": "Austin, TX",
+      "start": { "date": "2024-03-01" },
+      "end": { "date": "2024-03-04" },
+      "updated": "2024-02-01T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=conference-1"
+    }
+  ]
+}
