@@ -191,6 +191,31 @@ class RunLoopTest {
         assertEquals(RunLoop.IDENTICAL_ERROR_LIMIT, resultsF.readLines().size)
     }
 
+    /**
+     * The 2026-08-08 re-run: Nano wraps every answer in ```json fences, so every capture
+     * failed the strict parse identically. That is a FINDING and we want it for all 42 —
+     * the breaker guards the corpus against the phone, not against the model.
+     */
+    @Test
+    fun `output the model did produce never trips the circuit breaker`() = runTest {
+        val resultsF = File(tmp.root, "r.jsonl")
+        val rawF = File(tmp.root, "raw.jsonl")
+        val many = (1..10).map { Capture("c$it", "raw $it", null) }
+        val engine = ScriptedEngine(
+            many.associate { it.raw to "```json\n{\"title\":\"fenced\"}\n```" }
+        )
+
+        val summary = ResultsFile(resultsF).use { r ->
+            ResultsFile(rawF).use { raw ->
+                RunLoop(engine, many, "{{RAW}}", "{}", r, raw).run()
+            }
+        }
+
+        assertEquals(null, summary.stoppedEarly)
+        assertEquals(10, summary.errors)
+        assertEquals(10, resultsF.readLines().size)
+    }
+
     @Test
     fun `scattered unrelated failures do not trip the circuit breaker`() = runTest {
         val resultsF = File(tmp.root, "r.jsonl")

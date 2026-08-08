@@ -18,6 +18,15 @@ inference fails is one of the things the bake-off is measuring. Invalid parses a
 rendered too (prefixed `**INVALID:**`), because "produced JSON that misses the schema"
 is a different failure from "produced no JSON at all", and the scorer needs to see which.
 
+CODE FENCES. Gemini Nano wraps its answer in ```json fences on every capture, though the
+shared prompt says "No prose, no code fences"; the hosted baseline never does. Scoring
+that as a total miss would collapse two separate findings into one and throw away the
+whole parse-quality comparison, so a whole-output fence around well-formed JSON is
+unwrapped here, counted separately in the summary, and marked `**FENCED:**` in the cell
+so the envelope failure stays visible in the sheet. This happens ONLY in scoring, and
+only for an exact whole-output fence -- the phone still records output verbatim, and
+prose outside the fence is never repaired.
+
 Every cell is sanitised (`|` escaped, newlines -> `<br>`) before it goes into the
 markdown table. Unlike the ground_truth and hosted columns, this text is model output
 arriving from a device -- untrusted enough that a stray pipe should not silently
@@ -45,6 +54,32 @@ RESULTS = os.path.join(HERE, "nano_results.jsonl")
 
 TODO = "_TODO_"
 
+# The runner's wording for "the model answered, but not with one strict JSON object".
+NOT_JSON = "model output is not a strict JSON object"
+
+
+# A ```json ... ``` wrapper around the whole output, and nothing else outside it.
+FENCE = re.compile(r"\A\s*```[A-Za-z0-9_-]*\s*\n(?P<body>.*?)\n?\s*```\s*\Z", re.S)
+
+
+def unfence(text):
+    """-> the fenced body, or None if `text` isn't exactly one fenced block.
+
+    Gemini Nano wraps its output in ```json fences even though the shared prompt says
+    "No prose, no code fences" -- observed on every capture of the 2026-08-08 run. The
+    hosted baseline obeyed. That difference is a real finding and is counted separately.
+
+    But scoring it as a total miss would throw away the substantive comparison: the
+    JSON inside is well-formed, and stripping a fence in a production integration is a
+    deterministic envelope unwrap, not a semantic repair. So the envelope failure and
+    the parse quality are measured as two different things.
+
+    Strictly one whole-output fence: prose outside the fence, or a fence around only
+    part of the answer, is NOT unwrapped -- that would be repairing content.
+    """
+    m = FENCE.match(text)
+    return m.group("body") if m else None
+
 
 def sanitize(text):
     """Model text -> one safe markdown table cell."""
@@ -60,7 +95,9 @@ def classify(rows, corpus_ids, schema):
 
     cells_by_id holds the rendered markdown for every id the phone reported on.
     """
-    cells, stats, problems = {}, {"valid": 0, "invalid": 0, "error": 0}, []
+    cells = {}
+    stats = {"valid": 0, "invalid": 0, "error": 0, "fenced": 0}
+    problems = []
     seen = set()
 
     for row in rows:
@@ -73,6 +110,24 @@ def classify(rows, corpus_ids, schema):
             continue
         seen.add(cid)
 
+        # A strict-parse failure whose output is just a fenced JSON object is really two
+        # facts: "didn't obey the envelope instruction" and "the parse itself was X".
+        # Recover the second without losing the first.
+        marker = ""
+        if "error" in row and row["error"] == NOT_JSON and row.get("raw_output"):
+            body = unfence(row["raw_output"])
+            if body is not None:
+                try:
+                    inner = json.loads(body)
+                except (ValueError, TypeError):
+                    inner = None
+                if isinstance(inner, dict):
+                    stats["fenced"] += 1
+                    problems.append(f"{cid}: output was valid JSON wrapped in a code fence "
+                                    "(prompt says no fences) -- scored on the unwrapped parse")
+                    row = {"id": cid, "parse": inner}
+                    marker = "**FENCED:** "
+
         if "parse" in row:
             errs = []
             validate(row["parse"], schema, cid, errs)
@@ -84,11 +139,11 @@ def classify(rows, corpus_ids, schema):
                 problems.extend(errs)
                 why = trunc(errs[0].split(": ", 1)[-1], 90)
                 cells[cid] = sanitize(
-                    "**INVALID:** " + why + "\n" + cell(_titled(row["parse"]))
+                    marker + "**INVALID:** " + why + "\n" + cell(_titled(row["parse"]))
                 )
             else:
                 stats["valid"] += 1
-                cells[cid] = sanitize(cell(row["parse"]))
+                cells[cid] = sanitize(marker + cell(row["parse"]))
         elif "error" in row:
             stats["error"] += 1
             problems.append(f"{cid}: {row['error']}")
@@ -153,6 +208,9 @@ def summary(stats, corpus_ids, problems, filled):
         f"- schema-valid parses: {stats['valid']}",
         f"- parses that missed the schema: {stats['invalid']}",
         f"- rows the model/API failed outright: {stats['error']}",
+        f"- arrived wrapped in a code fence: {stats['fenced']}"
+        f" (prompt forbids fences; the hosted baseline emitted none) — unwrapped for"
+        f" scoring and marked `**FENCED:**`",
         f"- cells filled this run: {filled}",
     ]
     if problems:

@@ -85,7 +85,8 @@ class MergeNanoTest(unittest.TestCase):
         self.assertIn("**t:** Email Dana the roadmap", self.nano_cell(a))
         self.assertIn("**INVALID:**", self.nano_cell(c))
         self.assertIn("**INVALID:**", self.nano_cell(d))
-        self.assertIn("**ERR:**", self.nano_cell(e))
+        # e is a fenced-but-valid output: unwrapped and scored, still marked.
+        self.assertIn("**FENCED:**", self.nano_cell(e))
         self.assertIn("**ERR:**", self.nano_cell(f))
 
         # Errors are reported, not swallowed, and the extra/missing ids are named.
@@ -94,11 +95,13 @@ class MergeNanoTest(unittest.TestCase):
         self.assertIn("@spaceship", err)         # the enum violation
 
         # The summary on stdout is what gets pasted into the issue comment.
-        # 3, not 2: the stray "not-a-capture" row is itself a valid parse -- the
-        # count is of what the phone reported, and the mismatch is reported separately.
-        self.assertIn("schema-valid parses: 3", out)
+        # 4, not 3: the stray "not-a-capture" row is itself a valid parse (the count
+        # is of what the phone reported; the mismatch is reported separately), and the
+        # fenced row is scored on its unwrapped parse.
+        self.assertIn("schema-valid parses: 4", out)
+        self.assertIn("arrived wrapped in a code fence: 1", out)
         self.assertIn("parses that missed the schema: 2", out)
-        self.assertIn("rows the model/API failed outright: 2", out)
+        self.assertIn("rows the model/API failed outright: 1", out)
 
     def test_cells_are_sanitised_so_model_text_cannot_reshape_the_table(self):
         self.write_results(self.mixed_rows())
@@ -158,6 +161,67 @@ class MergeNanoTest(unittest.TestCase):
             footer = [l for l in fh if l.startswith("| nano |")]
         self.assertTrue(footer, "the totals footer should still be there")
         self.assertIn("_TODO_", footer[0])
+
+    # --- code fences: the 2026-08-08 phone run's actual failure mode ----------
+
+    def test_whole_output_fence_is_unwrapped_scored_and_still_marked(self):
+        a, b = self.ids[:2]
+        self.write_results([
+            {"id": a, "error": merge_nano.NOT_JSON,
+             "raw_output": '```json\n{"title": "Water the plants"}\n```'},
+            {"id": b, "error": merge_nano.NOT_JSON,
+             "raw_output": '```\n{"title": "Bare fence"}\n```'},
+        ])
+        code, out, err = self.run_script()
+
+        # The parse is recovered...
+        self.assertIn("Water the plants", self.nano_cell(a))
+        self.assertIn("Bare fence", self.nano_cell(b))
+        # ...but the envelope failure is never hidden.
+        self.assertIn("**FENCED:**", self.nano_cell(a))
+        self.assertIn("**FENCED:**", self.nano_cell(b))
+        self.assertIn("arrived wrapped in a code fence: 2", out)
+        self.assertIn("code fence", err)
+        self.assertEqual(1, code, "fencing is still a reported problem")
+
+    def test_a_fenced_parse_that_misses_the_schema_is_both_fenced_and_invalid(self):
+        a = self.ids[0]
+        self.write_results([
+            {"id": a, "error": merge_nano.NOT_JSON,
+             "raw_output": '```json\n{"title": "x", "label": {"context": "@spaceship"}}\n```'},
+        ])
+        code, out, err = self.run_script()
+        cell = self.nano_cell(a)
+        self.assertIn("**FENCED:**", cell)
+        self.assertIn("**INVALID:**", cell)
+        self.assertIn("@spaceship", err)
+
+    def test_prose_around_the_json_is_never_unwrapped(self):
+        a, b, c = self.ids[:3]
+        self.write_results([
+            # Prose outside the fence — unwrapping would be repairing content.
+            {"id": a, "error": merge_nano.NOT_JSON,
+             "raw_output": 'Sure! Here you go:\n```json\n{"title": "nope"}\n```'},
+            {"id": b, "error": merge_nano.NOT_JSON,
+             "raw_output": 'Here is the JSON: {"title": "nope"}'},
+            # A fence around something that isn't a JSON object.
+            {"id": c, "error": merge_nano.NOT_JSON, "raw_output": '```json\n[1, 2, 3]\n```'},
+        ])
+        code, out, err = self.run_script()
+        for cid in (a, b, c):
+            self.assertIn("**ERR:**", self.nano_cell(cid))
+            self.assertNotIn("**FENCED:**", self.nano_cell(cid))
+        self.assertIn("arrived wrapped in a code fence: 0", out)
+
+    def test_api_errors_are_never_confused_with_fenced_output(self):
+        a = self.ids[0]
+        self.write_results([
+            {"id": a, "error": "com.google.mlkit.genai.common.GenAiException code=9: busy",
+             "raw_output": None},
+        ])
+        self.run_script()
+        self.assertIn("**ERR:**", self.nano_cell(a))
+        self.assertNotIn("**FENCED:**", self.nano_cell(a))
 
     def test_duplicate_ids_are_flagged(self):
         self.write_results([

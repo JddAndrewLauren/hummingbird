@@ -56,6 +56,7 @@ class RunLoop(
             val prompt = PromptAssembly.assembleFromFiles(template, schemaText, capture.raw)
             val t0 = clock()
             var output: String? = null
+            var engineThrew = false
             val row: String = try {
                 output = engine.generate(prompt)
                 val parsed = Rows.parseStrictObject(output)
@@ -74,6 +75,7 @@ class RunLoop(
             } catch (t: Throwable) {
                 errors++
                 failed += capture.id
+                engineThrew = true
                 Rows.errorRow(capture.id, Rows.describe(t), output)
             }
 
@@ -84,12 +86,16 @@ class RunLoop(
             alreadyDone += capture.id
             onProgress(Progress(alreadyDone.size, captures.size, errors))
 
-            // A per-capture failure is a result. The SAME failure over and over is a
-            // condition — a quota, a thermal cutoff, a broken config — and recording it
-            // against every remaining id would permanently spend those captures on a
-            // fact about the phone rather than about the model. Stop instead; the
-            // untouched ids stay runnable later.
-            val thisError = Rows.errorOf(row)
+            // The SAME ENGINE failure over and over is a condition — a quota, a thermal
+            // cutoff, a broken config — and recording it against every remaining id
+            // would permanently spend those captures on a fact about the phone rather
+            // than about the model. Stop instead; the untouched ids stay runnable.
+            //
+            // Output the model DID produce never trips this, however repetitive. "Nano
+            // always wraps its JSON in code fences" is a finding, and one worth having
+            // for all 42 captures — the breaker exists to protect the corpus from the
+            // phone, not from the model.
+            val thisError = if (engineThrew) Rows.errorOf(row) else null
             if (thisError != null && thisError == lastError) {
                 identicalErrorsInARow++
             } else {

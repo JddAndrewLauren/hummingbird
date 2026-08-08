@@ -106,6 +106,19 @@ first phone run (2026-08-08) is how we found the number. It is still ~3x headroo
 largest hosted parse is 265 characters, roughly 66-88 tokens. A response that is
 nonetheless cut off is recorded as an honest failure, never repaired.
 
+### Nano fences its output (observed 2026-08-08)
+
+Every capture came back as well-formed JSON wrapped in ` ```json ` fences, despite the
+shared prompt's "Output only JSON conforming to the schema. No prose, no code fences."
+The hosted baseline never did this.
+
+The prompt is **not** being tuned to fix it — identical wording on both sides is the
+whole invariant, and changing it would invalidate the hosted column. The app still
+records output verbatim. `merge_nano.py` unwraps an exact whole-output fence at
+scoring time, counts it separately, and marks the cell `**FENCED:**`, so the envelope
+failure and the parse quality stay two measurements rather than one. Prose outside the
+fence is never unwrapped — that would be repairing content.
+
 ### Strict JSON, never lenient
 
 Output is parsed with `kotlinx-serialization-json`, **not** `org.json`. Android's
@@ -123,9 +136,12 @@ expensive:
   the run and records **nothing**. It would have failed identically on all 42 captures,
   and 42 identical error rows are indistinguishable from 42 model failures in the
   results file.
-- Three consecutive **identical** failures stop the run and leave the remaining captures
-  unrun. That shape means a condition — quota, thermal, config — not a fact about any
-  capture, and the untouched ids stay runnable later.
+- Three consecutive **identical ENGINE errors** stop the run and leave the remaining
+  captures unrun. That shape means a condition — quota, thermal, config — not a fact
+  about any capture, and the untouched ids stay runnable later. Output the model *did*
+  produce never trips this, however repetitive: "Nano fences every answer" is a finding,
+  and one worth having for all 42 captures. The breaker guards the corpus against the
+  phone, not against the model.
 
 To throw a spoiled run away, use **Discard this run and start over** on the Done screen
 (two taps, with a confirmation). Only for runs spoiled by something other than the model
