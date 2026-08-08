@@ -6,7 +6,9 @@
 //!
 //! [`Core`] is the one storage/sync public API that both `ffi-mobile` and
 //! `ffi-web` surface verbatim (ADR-0001 seam rule 2). It is a stub today;
-//! persistence lands in a later issue (#68).
+//! sync lands in a later issue. Persistence lives in [`storage`] (#68).
+
+pub mod storage;
 
 /// The public API version both FFI crates surface.
 pub const API_VERSION: u32 = 1;
