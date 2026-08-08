@@ -98,7 +98,17 @@ export function createGisTokenClient(
 ): TokenClient {
   return {
     async requestToken(prompt: TokenPrompt): Promise<TokenResult | TokenError> {
-      await loadGisScript();
+      try {
+        await loadGisScript();
+      } catch {
+        // A script-load failure (offline, blocked, CDN down) must resolve
+        // to the documented `TokenError` union member, same as any other
+        // GIS failure -- callers (`calendar/connection.ts`) never `catch`
+        // `requestToken`, so letting this reject would surface as an
+        // unhandled rejection and leave the UI stuck showing an inert
+        // Connect/Reconnect button instead of routing to `needsReconnect`.
+        return { error: "gis_script_load_failed" };
+      }
       const accounts = window.google?.accounts;
       if (!accounts) {
         return { error: "gis_unavailable" };

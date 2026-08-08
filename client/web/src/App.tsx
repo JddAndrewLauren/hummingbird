@@ -33,6 +33,14 @@ import {
 // `navigator.onLine` gate every tick below.
 const TIMER_INTERVAL_MS = 15 * 60 * 1000;
 
+// How often the "as of" label / stale styling re-samples the clock. This is
+// independent of the poll timer above (which early-returns while
+// `needsReconnect` is true): a credential hold must not freeze the
+// staleness display, so this ticks any time a tile is showing at all,
+// including during a credential hold. `formatAsOf`'s coarsest unit is a
+// minute, so a much finer tick would just be wasted renders.
+const CLOCK_TICK_MS = 30 * 1000;
+
 const GOOGLE_CLIENT_ID: string | undefined = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
 let cachedTokenClient: TokenClient | null = null;
@@ -81,6 +89,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const lastAccessTokenRef = useRef<string | null>(null);
   const [calendars, setCalendars] = useState<CalendarListEntry[]>([]);
   const [expiresAtMs, setExpiresAtMs] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   function connectionDeps(): ConnectionDeps | null {
     const client = tokenClient();
@@ -216,6 +225,21 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.connected, calendar.needsReconnect]);
 
+  // Keeps the context tile's "as of" label / stale styling live. Gated
+  // only on `calendar.connected` (the tile's own render condition below) —
+  // deliberately NOT also gated on `!calendar.needsReconnect` like the poll
+  // timer effect above, so staleness keeps advancing (and correctly turns
+  // "stale") exactly during a credential hold, instead of freezing at
+  // whatever `Date.now()` happened to be sampled at the last render before
+  // the hold began.
+  useEffect(() => {
+    if (!calendar.connected) {
+      return;
+    }
+    const id = window.setInterval(() => setNowMs(Date.now()), CLOCK_TICK_MS);
+    return () => window.clearInterval(id);
+  }, [calendar.connected]);
+
   async function handleConnectClick() {
     const deps = connectionDeps();
     if (!deps) {
@@ -279,7 +303,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {calendar.connected && (
             <>
-              <ContextTile calendar={calendar} nowMs={Date.now()} />
+              <ContextTile calendar={calendar} nowMs={nowMs} />
               <CalendarPicker
                 calendars={calendars}
                 selectedCalendarIds={calendar.selectedCalendarIds}
