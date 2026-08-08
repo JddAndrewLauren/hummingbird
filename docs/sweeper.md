@@ -1,33 +1,49 @@
-# The Tasks→Linear sweeper
+# The capture→Linear sweeper
 
-A one-way sweeper that moves every incomplete Google Tasks item (outside a
-denylist) into Linear Triage as a bare-text issue, marks it complete in Tasks,
-and reports its own liveness to healthchecks.io. It is the only built artifact
-of v0 capture — no custom client, no endpoint. Spec: issue
-[#14](https://github.com/JddAndrewLauren/hummingbird/issues/14), decided in
-[#5](https://github.com/JddAndrewLauren/hummingbird/issues/5) and
-[#8](https://github.com/JddAndrewLauren/hummingbird/issues/8).
+A one-way sweeper that drains capture sources into Linear Triage as bare-text
+issues and reports its own liveness to healthchecks.io. One drain engine,
+isolated adapters (ADR-0002): **Google Tasks** (every incomplete item outside
+a denylist, fail-open; marked complete as the ack) and **Gmail** (only
+messages carrying the `hummingbird/capture` label, fail-closed; the label
+removed as the ack). No custom client, no endpoint. Spec: issues
+[#14](https://github.com/JddAndrewLauren/hummingbird/issues/14) and
+[#45](https://github.com/JddAndrewLauren/hummingbird/issues/45), decided in
+[#5](https://github.com/JddAndrewLauren/hummingbird/issues/5),
+[#8](https://github.com/JddAndrewLauren/hummingbird/issues/8), and
+[#43](https://github.com/JddAndrewLauren/hummingbird/issues/43)/ADR-0002.
 
 ## Shape
 
 | File | What it is |
 | --- | --- |
-| `sweep.py` | The whole sweeper. Python 3 stdlib only, one-shot, importable for tests. |
-| `denylist.json` | Lists to skip, keyed by list id, title as the value. |
+| `sweep.py` | The whole sweeper: the drain engine plus both adapters. Python 3 stdlib only, one-shot, importable for tests. |
+| `denylist.json` | Tasks lists to skip, keyed by list id, title as the value. |
 | `crontab` | `*/15 * * * *` — read by supercronic inside the container. |
 | `Dockerfile` | `python:3.12-slim` + supercronic pinned by version and sha256. |
 | `fly.toml` | `hummingbird-sweeper`, one 256MB always-on worker. |
 | `.github/workflows/deploy.yml` | Tests, then `flyctl deploy` — on push to `main` only. |
-| `scripts/mint_refresh_token.py` | One-time local OAuth consent helper. |
-| `tests/test_sweep.py` | `python3 -m unittest discover -s tests`. Cred-free. |
+| `scripts/mint_refresh_token.py` | One-time local OAuth consent helper (Tasks + Gmail scopes). |
+| `tests/test_sweep.py`, `tests/test_gmail.py` | `python3 -m unittest discover -s tests`. Cred-free. |
 
 ## How it runs
 
 supercronic fires `/app/sweep` every 15 minutes. The sweeper stays a one-shot
 script — no `while true; sleep 900` — so it is equally runnable locally and by
-hand: `fly ssh console -C /app/sweep`. Every run logs `sweep start`, a line per
-list, a line per item, and `sweep finish ok=… created=… existed=… completed=…
-failed=… skipped=… quarantined=… duration=…`.
+hand: `fly ssh console -C /app/sweep`. One run drains every adapter in turn;
+each adapter logs `sweep start adapter=…`, a line per list/item, and its own
+`sweep finish adapter=… ok=… created=… existed=… completed=… failed=…
+skipped=… quarantined=… duration=…`.
+
+### The adapter seam
+
+Each source implements `enumerate` / `derive_capture` / `source_key` / `ack`
+against the one shared engine, which owns everything load-bearing: the
+Linear-first ordering, deterministic ids, transient-versus-terminal
+classification, quarantine, per-adapter counts, and the ping. An adapter's
+failure — even its own plumbing (token exchange, a missing capture label) —
+fails only that adapter's result; the others drain and report normally. One
+frozen `NAMESPACE` per source keeps id spaces disjoint, each guarded by its
+own frozen test vector.
 
 A `fcntl.flock` on `$SWEEP_LOCK` (default `/tmp/sweep.lock`) is taken *inside*
 the script rather than by a `flock -n` wrapper in the crontab, so it covers
@@ -39,12 +55,14 @@ Exit codes: 0 = success, dry run, or lock contention; 1 = any failure.
 
 ## Per-item algorithm
 
-For each list not in the denylist, for each incomplete task:
+For every item an adapter enumerates (Tasks: each incomplete task in each list
+not in the denylist; Gmail: each message carrying the capture label):
 
-1. `derive_capture(title, notes)` — skip the item entirely if it carries neither
-2. `id = deterministic_v4(task.id)`
+1. `derive_capture(item)` — skip the item entirely if it carries nothing
+2. `id = deterministic_v4(source_key, adapter.namespace)`
 3. `issueCreate` in Linear with that client-supplied id
-4. only on success → `PATCH` the Tasks item to `status: completed`
+4. only on success → ack in the source (Tasks: `PATCH` to `status: completed`;
+   Gmail: remove the capture label, and nothing else)
 5. on a **transient** error → log it, **leave the task incomplete** (the next
    sweep retries), mark the sweep failed, continue to the next item
 6. on a **terminal** error → log `QUARANTINE`, leave the task incomplete, and
@@ -61,12 +79,15 @@ deterministic id turns that retry into an "already exists" success.
 `IssueCreateInput` accepts a client-supplied `id`, but Linear validates it as
 UUID **version 4 specifically** — a genuine RFC-4122 v5 uuid is rejected with
 `id must be a UUID`, so `uuid.uuid5()` is not usable. `deterministic_v4()`
-hashes `sha256(NAMESPACE + task_id)`, takes 16 bytes, and forces the version
-and variant nibbles into v4 shape.
+hashes `sha256(namespace + source_key)`, takes 16 bytes, and forces the
+version and variant nibbles into v4 shape.
 
-`NAMESPACE` in `sweep.py` must never change. Every issue id the sweeper has
-ever minted derives from it; changing it re-mints every id and duplicates every
-still-open capture. A frozen test vector in `tests/test_sweep.py` guards it.
+The namespaces in `sweep.py` — `NAMESPACE`
+(`hummingbird-sweeper/google-tasks/v1`) and `GMAIL_NAMESPACE`
+(`hummingbird-sweeper/gmail/v1`) — must never change. Every issue id an
+adapter has ever minted derives from its namespace; changing one re-mints
+every id in that source and duplicates every still-open capture. Frozen test
+vectors in `tests/test_sweep.py` and `tests/test_gmail.py` guard them.
 
 A duplicate create comes back as `code: INPUT_ERROR` with
 `userPresentableMessage: "Entity Issue with id <uuid> already exists."` — the
@@ -74,7 +95,7 @@ sweeper matches that exactly and treats it as success. There is deliberately no
 footer and no attachment on the issue: the UUID is the link (recomputable from
 the task id), and the completed Tasks item is the audit trail.
 
-### Field mapping
+### Field mapping (Google Tasks)
 
 - **Title → title, verbatim.** No cleanup, truncation, or prefix.
 - **Non-empty notes → description.** Empty notes → no `description` field.
@@ -92,6 +113,36 @@ the task id), and the completed Tasks item is the audit trail.
 - **Due date → dropped.** A Gemini-inferred date is a scheduling decision made
   by a transcription engine. The phrase ("Thursday") survives in the title, and
   a real date gets set deliberately during triage.
+
+## The Gmail adapter
+
+An inbox is a firehose, so Gmail inverts Tasks' fail-open posture to
+**opt-in, fail-closed** (ADR-0002). The unit is the **message**, and the
+`hummingbird/capture` label is the whole gesture:
+
+- **Only labelled messages are enumerated.** Everything else is invisible to
+  the sweeper — it never lists, reads, or touches an unlabelled message.
+- **The ack removes exactly that label from that message.** Never archive,
+  mark-read, star, delete, or any other mutation. The message stays where it
+  was as the audit trail; the thread deep link in the issue is the road back.
+- **The label missing from the mailbox entirely fails the adapter** — visibly,
+  on its own healthcheck — rather than enumerating anything. No gesture, no
+  trust. Google Tasks keeps draining normally either way.
+
+### Field mapping (Gmail)
+
+- **Title** — the decoded, non-blank `Subject` header, verbatim. Blank or
+  missing subject → the first non-blank line of the snippet → `(no subject)`.
+  A labelled message earned capture by a deliberate human gesture, so unlike a
+  blank Tasks row it is never skipped.
+- **Description**, in a stable shape: `From:` (decoded sender), `Date:` (the
+  message timestamp, UTC), `Thread:` (a Gmail thread deep link), then a blank
+  line and the snippet when present.
+
+Failure handling is the engine's, unchanged: transient errors leave the label
+in place for the next sweep to retry; terminal content rejections quarantine
+(the label stays, the run stays green, the item rides the success ping); a
+crash between create and unlabel replays as an "already exists" success.
 
 ## Dry run
 
@@ -114,11 +165,15 @@ a normal push-and-deploy.
 ## Liveness
 
 healthchecks.io, free tier, **grace period 45 minutes** (three consecutive
-missed sweeps). Success is pinged **only after a fully successful, non-dry
-sweep** — a sweeper that runs but errors on every call must still trip the
-alarm. Any failure or exception POSTs the accumulated failure lines to
-`$HEALTHCHECK_URL/fail` for immediate alerting. The ping itself is wrapped in
-its own try/except and can never fail a run.
+missed sweeps). **One check per capture adapter** (ADR-0002): a shared check
+held red by one broken drain would hide the health of the others.
+`$HEALTHCHECK_URL` is the Google Tasks check; `$GMAIL_HEALTHCHECK_URL` is the
+Gmail check. Each adapter pings its own check independently, success or
+failure, every run. Success is pinged **only after that adapter's fully
+successful, non-dry drain** — a sweeper that runs but errors on every call
+must still trip the alarm. Any failure or exception POSTs that adapter's
+accumulated failure lines to its check's `/fail` for immediate alerting. The
+ping itself is wrapped in its own try/except and can never fail a run.
 
 Fly health checks are explicitly *not* the mechanism: they restart, they don't
 notify. Structural backstop: unswept items visibly accumulate in the Tasks app.
@@ -173,14 +228,18 @@ and `flyctl secrets set HEALTHCHECK_URL=...`.
 Set with `flyctl secrets set`; nothing on-device, nothing committed.
 
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`,
-`LINEAR_API_KEY`, `HEALTHCHECK_URL`.
+`LINEAR_API_KEY`, `HEALTHCHECK_URL`, `GMAIL_HEALTHCHECK_URL`.
 
 Google auth is a **Workspace Internal** OAuth app (captures land in the
 twinion.net Workspace account). Internal user type means no verification review
 and no 7-day refresh-token expiry — that footgun applies only to apps in
 Testing status. Desktop-app OAuth client, one-time local consent to mint the
-refresh token. Deferred alternative if token durability ever bites: a service
-account with domain-wide delegation.
+refresh token, which carries both scopes:
+`https://www.googleapis.com/auth/tasks` and
+`https://www.googleapis.com/auth/gmail.modify` (read labelled messages +
+remove the label; there is no narrower Gmail scope that can write labels).
+Deferred alternative if token durability ever bites: a service account with
+domain-wide delegation.
 
 The Linear key goes in the `Authorization` header **raw, not `Bearer`**.
 Constants in `sweep.py`: `teamId` `84ab9e0b-f455-42d7-a48a-49e65da3b2e6` (ION),
@@ -192,9 +251,10 @@ queries/day. Nothing binds at this cadence.
 
 ## Human setup checklist
 
-Provisioned and live since 2026-08-07; every step below is done. The list stays
-as the rebuild runbook — what to redo if the Fly app, the OAuth client, or the
-healthchecks check ever has to be recreated from scratch.
+The Tasks-era steps were provisioned and live on 2026-08-07 and stay as the
+rebuild runbook — what to redo if the Fly app, the OAuth client, or a
+healthchecks check ever has to be recreated from scratch. The Gmail go-live
+steps below them are new with [#45](https://github.com/JddAndrewLauren/hummingbird/issues/45).
 
 1. **Fly app.** `flyctl apps create hummingbird-sweeper --org personal` (same
    account/billing as `twinion-api`). Then `flyctl tokens create deploy` and
@@ -212,6 +272,31 @@ healthchecks check ever has to be recreated from scratch.
 6. **Go live.** Push to `main` (which deploys), watch `flyctl logs`, unpause
    the healthchecks check, and confirm both a success ping and a test capture
    landing in Triage.
+
+### Gmail go-live
+
+1. **Label.** In the twinion.net Gmail account, create the label
+   `hummingbird/capture` (in the UI this is a `capture` label nested under a
+   `hummingbird` parent; the API sees the full `hummingbird/capture` name).
+   Until it exists the Gmail adapter fails closed and red — that is by design.
+2. **healthchecks.io.** Create a second, dedicated check (grace period 45
+   minutes, like the first); record its ping URL. Leave it paused until
+   go-live.
+3. **Re-consent.** `python3 scripts/mint_refresh_token.py --client-id …
+   --client-secret …` — the script now requests Tasks + `gmail.modify`
+   together, so the one consent covers both adapters. Grant as the twinion.net
+   account.
+4. **Secrets.** `flyctl secrets set GOOGLE_REFRESH_TOKEN=<new token>
+   GMAIL_HEALTHCHECK_URL=<new ping url>`. The old Tasks-only refresh token is
+   superseded; nothing else changes.
+5. **Dry run.** Label one test message, export the secrets locally, run
+   `./sweep.py --dry-run`, and read both adapters' output — the Gmail adapter
+   should log the labelled message and mutate nothing.
+6. **Go live.** Push to `main` (which deploys), watch `flyctl logs`, unpause
+   the new check, and verify one live capture: the labelled message appears in
+   Linear Triage with the subject as title and the sender/date/thread-link
+   description, and only the `hummingbird/capture` label disappears from it —
+   still unarchived, still unread-state-untouched.
 
 ## Acceptance (post-provisioning)
 
