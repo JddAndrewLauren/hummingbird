@@ -1,29 +1,42 @@
 {"id": "ph-01", "parse": {"title": "Email Dana the Q3 roadmap draft", "notes": "Before Thursday standup.", "due": "2026-08-13", "label": {"context": "@computer", "size": "quick"}}}
-{"id": "ph-02", "parse": {"title": "Call the dentist to reschedule the cleaning", "notes": "Also: grab the prescription while out that way; maybe pick up milk.", "due": null, "label": {"context": "@phone", "size": "quick"}}}
 {"id": "ph-03", "parse": {"title": "The thing with the Fly deploy token", "notes": "Fragment — no action stated; kept verbatim.", "due": null, "label": {"context": "@computer"}}}
 {"id": "ph-04", "parse": {"title": "Water the plants", "due": null, "label": {"context": "@home", "energy": "low", "size": "quick"}}}
 {"id": "ph-05", "parse": {"title": "Buy a birthday card for mom", "notes": "Also: book the oil change; cancel the gym trial before it charges me.", "due": null}}
 {"id": "ph-06", "parse": {"title": "Quarterly taxes", "due": null}}
-{"id": "ph-07", "parse": {"title": "Send the invoice to the landscaping people", "notes": "The one from last month.", "due": null, "label": {"context": "@computer", "size": "quick"}}}
 {"id": "ph-08", "parse": {"title": "Draft the ADR for the runner endpoint", "notes": "Separate Fly app, not on the sweeper; single bearer token; revisit after the bake-off.", "due": null, "label": {"context": "@computer", "size": "deep"}}}
-{"id": "ph-09", "parse": {"title": "Take the trash out", "notes": "It's recycling week.", "due": "2026-08-07", "label": {"context": "@home", "energy": "low", "size": "quick"}}}
-{"id": "ph-10", "parse": {"title": "Renew the passport", "notes": "We leave in October, so there's a window.", "due": null, "label": {"context": "@errands", "size": "deep"}}}
 {"id": "ph-11", "parse": {"title": "Dentist", "due": null}}
-{"id": "ph-12", "parse": {"title": "Pick up the dry cleaning", "notes": "Also: call the plumber about the leak under the sink; we're out of coffee.", "due": null}}
 {"id": "ph-13", "parse": {"title": "Read the Foundation Models guided-generation docs", "notes": "Before starting the iPad prototype.", "due": null, "label": {"context": "@computer", "size": "medium"}}}
 {"id": "ph-14", "parse": {"title": "Book flights for", "notes": "Truncated capture — destination missing; kept verbatim.", "due": null}}
-{"id": "ph-15", "parse": {"title": "Reschedule the 1:1 with Sam", "notes": "To Friday afternoon.", "due": "2026-08-14", "label": {"context": "@computer", "size": "quick"}}}
-{"id": "ph-16", "parse": {"title": "Send Grandma a thank-you note for the sweater", "due": null, "label": {"context": "@home", "energy": "low", "size": "quick"}}}
 {"id": "ph-17", "parse": {"title": "Leak under the bathroom sink getting worse", "notes": "No verb stated; kept close to raw rather than inventing an action.", "due": null, "label": {"context": "@home"}}}
 {"id": "ph-18", "parse": {"title": "Submit the reimbursement for the conference hotel", "notes": "By end of month.", "due": "2026-08-31", "label": {"context": "@computer", "size": "quick"}}}
-{"id": "ph-19", "parse": {"title": "Transfer $500 to savings", "notes": "Also: set up autopay for the electric bill.", "due": null, "label": {"context": "@phone", "size": "quick"}}}
 {"id": "ph-20", "parse": {"title": "Milk, eggs, bread, coffee filters", "notes": "Shopping list — no verb; items kept in the title.", "due": null, "label": {"context": "@errands", "size": "quick"}}}
-{"id": "ph-21", "parse": {"title": "Follow up with the recruiter", "notes": "She said she'd have an update by Wednesday.", "due": null, "label": {"context": "@phone", "size": "quick"}}}
 {"id": "ph-22", "parse": {"title": "Car registration", "notes": "Also: the smog check (likely a prerequisite).", "due": null, "label": {"context": "@errands"}}}
 {"id": "ph-23", "parse": {"title": "Idea: raw-text fallback for capture-parse that never loses the utterance", "notes": "\"Couldn't parse, kept verbatim.\"", "due": null, "label": {"context": "@computer", "size": "medium"}}}
-{"id": "ph-24", "parse": {"title": "Book the dog sitter for the trip", "notes": "Also: confirm the rental car; pay the cabin deposit (due the 15th).", "due": null}}
 {"id": "real-01", "parse": {"title": "Testing with voice", "due": null}}
 {"id": "real-02", "parse": {"title": "Call the dentist for new aligners", "due": null, "label": {"context": "@phone", "size": "quick"}}}
 {"id": "real-03", "parse": {"title": "Order clothes", "due": null, "label": {"context": "@computer"}}}
 {"id": "real-04", "parse": {"title": "Golf practice", "due": null}}
 {"id": "real-05", "parse": {"title": "Setup hermes agent", "due": null, "label": {"context": "@computer"}}}
+{"id": "real-06", "parse": {"title": "Return the Amazon package", "notes": "Also: buy printer paper; maybe stop at the pharmacy.", "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-07", "parse": {"title": "Pick up the dry cleaning", "notes": "Also: get dog food; maybe grab some coffee while I'm at it.", "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-08", "parse": {"title": "Review the draft contract for the meeting", "label": {"context": "@computer", "size": "medium"}}}
+{"id": "real-09", "parse": {"title": "Buy a new USB-C cable", "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-10", "parse": {"title": "Schedule the oil change for the car", "label": {"context": "@phone", "size": "quick"}}}
+{"id": "real-11", "parse": {"title": "Email Sarah about the", "notes": "Truncated capture — subject missing; kept verbatim.", "label": {"context": "@computer"}}}
+{"id": "real-12", "parse": {"title": "Book the flights for", "notes": "Truncated capture — destination missing; dictation stutter (\"the the\") cleaned, otherwise kept verbatim."}}
+{"id": "real-13", "parse": {"title": "Pick up the prescription", "notes": "Tonight.", "due": "2026-08-08", "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-14", "parse": {"title": "Renew the car registration", "notes": "By the 15th. Raw reads \"We're new the car registration\" — \"We're new\" appears to be a mis-transcription of \"renew\".", "due": "2026-08-15", "label": {"context": "@computer"}}}
+{"id": "real-15", "parse": {"title": "Send the revised proposal to James", "notes": "By Friday.", "due": "2026-08-14", "label": {"context": "@computer", "size": "quick"}}}
+{"id": "real-16", "parse": {"title": "Reschedule the cleaning to the 21st", "notes": "Self-correction in the raw: started as \"move the dentist appointment\", corrected to rescheduling the cleaning.", "due": "2026-08-21", "label": {"context": "@phone", "size": "quick"}}}
+{"id": "real-17", "parse": {"title": "Reschedule the budget meeting", "notes": "To Tuesday. Self-correction in the raw: \"Schedule the — actually no — reschedule\".", "due": "2026-08-11", "label": {"context": "@computer", "size": "quick"}}}
+{"id": "real-18", "parse": {"title": "Cancel the free trial", "notes": "Next Thursday.", "due": "next Thursday", "label": {"context": "@computer", "size": "quick"}}}
+{"id": "real-19", "parse": {"title": "Water the plants", "label": {"context": "@home", "energy": "low", "size": "quick"}}}
+{"id": "real-20", "parse": {"title": "Take the trash cans out", "notes": "Tomorrow morning. Raw contained a false start: \"remind me to tackle the take the trash\".", "due": "2026-08-09", "label": {"context": "@home", "energy": "low", "size": "quick"}}}
+{"id": "real-21", "parse": {"title": "Deal with the weird charge on the credit card", "label": {"context": "@phone"}}}
+{"id": "real-22", "parse": {"title": "The thing with the hotel reservation in Chicago", "notes": "Fragment — no action stated; dictation stutter (\"the the\") cleaned, otherwise kept verbatim."}}
+{"id": "real-23", "parse": {"title": "The thing with the garage door sensor", "notes": "Fragment — no action stated; kept verbatim.", "label": {"context": "@home"}}}
+{"id": "real-24", "parse": {"title": "Finish the quarterly notes", "notes": "Also: update the server inventory; still haven't replied to Mark.", "label": {"context": "@computer"}}}
+{"id": "real-25", "parse": {"title": "Email the photographer", "notes": "Also: confirm the dinner reservation; \"I haven't yet about a wedding gift\" — clause incomplete in the raw, kept verbatim.", "label": {"context": "@computer"}}}
+{"id": "real-26", "parse": {"title": "Pick up milk", "notes": "Also: replace the air filter; haven't called the plumber yet.", "label": {"context": "@errands", "size": "quick"}}}
+{"id": "real-27", "parse": {"title": "Order more toner", "notes": "Also: send Rachel the updated spreadsheet; still haven't submitted the expense report. Raw had a stutter (\"I I\").", "label": {"context": "@computer"}}}
+{"id": "real-28", "parse": {"title": "Go to the bank", "notes": "Also: drop off the library books; fill up the car with gas while out.", "label": {"context": "@errands"}}}

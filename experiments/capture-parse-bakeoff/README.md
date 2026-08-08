@@ -34,27 +34,36 @@ A few dozen captures, one table a human reads in a minute. A prototype, not a be
 | `hosted_results.jsonl` | The hosted-baseline parses, `{"id","parse"}` per line. Produced by a hosted Claude parsing the corpus directly with `prompt.md` + `schema.json` — a genuine hosted-baseline sample. |
 | `scoring.md` | The scoring sheet: one row per capture, `hosted` pre-filled, `ground_truth` and `nano` left as `_TODO_`, plus how-to-score and the totals footer. |
 
-## Corpus status — real captures seeded, fresh dictation still needed
+## Corpus status — the fresh dictation batch has landed
 
-The corpus is now **24 placeholders (`ph-*`) + 5 real captures (`real-*`)**. The real
-entries (added 2026-08-07 with the Linear key present) are the *entire* genuine capture
-history in Linear Triage at that date — the funnel was one day old, and everything else in
-the team was probe residue or `/to-actions`-minted issues, which are not captures. All five
-are short and clean; the messy cases the bake-off exists to measure are so far covered only
-by placeholders.
+The corpus is **14 placeholders (`ph-*`) + 28 real captures (`real-*`)**, 42 rows:
 
-**Before the real run, the corpus still needs:**
+- `real-01…05` — the Triage history as of 2026-08-07, the entire genuine capture record at
+  that date. All short and clean.
+- `real-06…28` — the **fresh dictation batch** (Linear Triage 2026-08-08, ION-36…ION-58),
+  spoken through the real phone→Gemini→Tasks path and deliberately messy. Each row's
+  `origin` points at its Triage issue. This is the load-bearing real data the bake-off was
+  waiting on: run-on multi-item utterances, truncated half-sentences, "remind me to…",
+  mid-utterance self-corrections, and genuine mis-transcriptions (`real-14` — "We're new
+  the car registration" for "renew").
 
-- A **fresh batch of dictation** through the real phone→Gemini→Tasks path — a couple dozen
-  utterances, deliberately messy (run-on, multi-item, half-sentences), then pulled from
-  Triage into `real-*` rows. This is the load-bearing real data; without it the messy cases
-  are typed approximations.
-- Optionally, retire `ph-*` rows as real equivalents arrive. Placeholder rows that stay
-  should not decide the verdict on their own — read the totals with the `real-*` subset in
-  view.
+That subset is 28 of 42 rows and covers every failure mode in `scoring.md`, so **the
+`real-*` totals can carry the verdict on their own** — the placeholders are now a
+cross-check, not the evidence. `real-19` is a verbatim duplicate of `ph-04`, which gives a
+free per-parser consistency check.
 
-Keep the `{"id","raw","source"}` shape (plus `origin` pointing at the Triage issue). Then
-re-run the hosted side (steps 1–3 below) for the new rows.
+**Ten placeholders were retired** at the same time (`ph-02, 07, 09, 10, 12, 15, 16, 19, 21,
+24`) — every `ph-*` row marked `dictated`, minus `ph-04`, kept deliberately as the duplicate
+control for `real-19`. Invented dictation noise shouldn't stand in for the genuine article
+once the genuine article exists. The 14 survivors are all `typed` captures, a class the
+dictation batch can't cover by construction, so they stay as an orthogonal cross-check.
+(They're in git history if a comparison ever wants them back.)
+
+Keep the `{"id","raw","source"}` shape (plus `origin` pointing at the Triage issue) if the
+corpus grows again. Then re-run the hosted side (steps 1–3 below) for the new rows.
+
+**Due-date caveat:** relative phrases resolve against the *run* date — 2026-08-07 for
+`ph-*` / `real-01…05`, 2026-08-08 for `real-06…28`. Score each row against its own date.
 
 ## How to run
 
@@ -94,9 +103,9 @@ mode on** for the whole run, to prove it's genuinely offline. Paste each parse i
 Everything that needs the physical phone or human judgment — left as explicit `_TODO_`s,
 **not** invented here:
 
-1. **Dictate the fresh capture batch** (see *Corpus status* above), pull it into the
-   corpus, and re-run the hosted side for the new rows. Placeholder data must not decide a
-   real trust question.
+1. ~~**Dictate the fresh capture batch**, pull it into the corpus, and re-run the hosted
+   side for the new rows.~~ **Done 2026-08-08** — 23 real dictated captures added as
+   `real-06…28`, hosted column regenerated and validated (see *Corpus status* above).
 2. **Blind ground truth.** For each capture, hand-write the correct parse in
    `scoring.md`'s `ground_truth` column **from the raw text alone, before looking at either
    model's output.** Blind-first or the score anchors to whatever the models produced.

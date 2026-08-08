@@ -139,9 +139,9 @@ integration work unblocks (or evaporates) accordingly.
 | Harness (schema/prompt/corpus/runner/sheet) | agent | ✅ built |
 | Real Triage history seeded (5 captures) | agent | ✅ done 2026-08-07 |
 | Hosted baseline column | agent | ✅ filled (re-runs cheap; later via the runner endpoint per #41) |
-| Messy dictation batch | **you** | ⬜ Phase 1 |
-| Corpus import + hosted re-run | agent | ⬜ after Phase 1 |
-| Blind ground truth | **you** | ⬜ Phase 2 |
+| Messy dictation batch | **you** | ✅ done 2026-08-08 (23 captures, ION-36…ION-58) |
+| Corpus import + hosted re-run | agent | ✅ done 2026-08-08 (`real-06…28`; 10 dictated `ph-*` retired; Triage cleared) |
+| Blind ground truth | **you** | ⬜ Phase 2 — **next, and now the only thing blocking** |
 | Nano runner app | agent | ⬜ on request |
 | Nano run on the Pixel | **you** | ⬜ Phase 3 |
 | Mechanical scoring + tally | agent | ⬜ after Phases 2–3 |
