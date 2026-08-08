@@ -5,6 +5,8 @@ edition.workspace = true
 description = "Binding-agnostic sync engine core (ADR-0003)."
 
 [dependencies]
+async-trait = "0.1.92"
+chrono = { version = "0.4.45", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

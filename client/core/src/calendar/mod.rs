@@ -9,6 +9,7 @@
 //! (ADR-0002 rule 1).
 
 mod event;
+pub mod google;
 mod query;
 mod snapshot;
 

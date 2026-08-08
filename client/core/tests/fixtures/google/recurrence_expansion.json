@@ -1,0 +1,44 @@
+{
+  "kind": "calendar#events",
+  "items": [
+    {
+      "id": "series-1_20240108T170000Z",
+      "status": "confirmed",
+      "summary": "Weekly Standup",
+      "location": "Zoom",
+      "organizer": { "email": "john@twinion.net", "displayName": "John Dominguez" },
+      "start": { "dateTime": "2024-01-08T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-01-08T09:30:00-08:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "series-1",
+      "originalStartTime": { "dateTime": "2024-01-08T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-01-02T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=series-1-jan08"
+    },
+    {
+      "id": "series-1_20240115T170000Z",
+      "status": "confirmed",
+      "summary": "Weekly Standup",
+      "location": "Zoom",
+      "organizer": { "email": "john@twinion.net", "displayName": "John Dominguez" },
+      "start": { "dateTime": "2024-01-15T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-01-15T09:30:00-08:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "series-1",
+      "originalStartTime": { "dateTime": "2024-01-15T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-01-09T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=series-1-jan15"
+    },
+    {
+      "id": "series-1_20240122T170000Z",
+      "status": "confirmed",
+      "summary": "Weekly Standup",
+      "location": "Zoom",
+      "organizer": { "email": "john@twinion.net", "displayName": "John Dominguez" },
+      "start": { "dateTime": "2024-01-22T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-01-22T09:30:00-08:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "series-1",
+      "originalStartTime": { "dateTime": "2024-01-22T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-01-16T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=series-1-jan22"
+    }
+  ]
+}
