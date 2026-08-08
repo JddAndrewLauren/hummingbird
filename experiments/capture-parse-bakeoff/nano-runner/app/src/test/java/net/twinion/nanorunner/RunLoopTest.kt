@@ -137,6 +137,82 @@ class RunLoopTest {
         assertEquals("an earlier failure", rows(resultsF)[1]["error"]!!.jsonPrimitive.content)
     }
 
+    /**
+     * The 2026-08-08 phone run: `maxOutputTokens = 1024` was rejected by AICore before
+     * any inference, so all 42 captures failed identically and were recorded — and
+     * recorded ids are never re-run. A config fault must abort with nothing written.
+     */
+    @Test
+    fun `a misconfigured engine aborts the run and records nothing`() = runTest {
+        val resultsF = File(tmp.root, "r.jsonl")
+        val rawF = File(tmp.root, "raw.jsonl")
+        val engine = object : NanoEngine {
+            override suspend fun availability() = Availability.AVAILABLE
+            override fun download(): Flow<DownloadProgress> = emptyFlow()
+            override suspend fun generate(prompt: String): String =
+                throw EngineMisconfigured(
+                    "generation config rejected by the SDK",
+                    IllegalArgumentException("maxOutputTokens must be between 1 and 256"),
+                )
+            override suspend fun describe() = emptyMap<String, String>()
+            override fun close() = Unit
+        }
+
+        var thrown: EngineMisconfigured? = null
+        try {
+            ResultsFile(resultsF).use { r ->
+                ResultsFile(rawF).use { raw -> loop(engine, r, raw).run() }
+            }
+        } catch (e: EngineMisconfigured) {
+            thrown = e
+        }
+
+        assertTrue("the fault must surface, not be recorded", thrown != null)
+        assertTrue("no id may be spent on our own config bug", resultsF.length() == 0L)
+    }
+
+    @Test
+    fun `a systemic failure stops the run instead of spending every id on it`() = runTest {
+        val resultsF = File(tmp.root, "r.jsonl")
+        val rawF = File(tmp.root, "raw.jsonl")
+        val many = (1..10).map { Capture("c$it", "raw $it", null) }
+        // Every capture fails the same way, as a quota or thermal cutoff would.
+        val engine = ScriptedEngine(many.associate { it.raw to IllegalStateException("BUSY") })
+
+        val summary = ResultsFile(resultsF).use { r ->
+            ResultsFile(rawF).use { raw ->
+                RunLoop(engine, many, "{{RAW}}", "{}", r, raw).run()
+            }
+        }
+
+        assertEquals(RunLoop.IDENTICAL_ERROR_LIMIT, summary.errors)
+        assertTrue(summary.stoppedEarly != null)
+        // The untouched ids are still runnable later — that's the whole point.
+        assertEquals(RunLoop.IDENTICAL_ERROR_LIMIT, resultsF.readLines().size)
+    }
+
+    @Test
+    fun `scattered unrelated failures do not trip the circuit breaker`() = runTest {
+        val resultsF = File(tmp.root, "r.jsonl")
+        val rawF = File(tmp.root, "raw.jsonl")
+        val many = (1..9).map { Capture("c$it", "raw $it", null) }
+        val engine = ScriptedEngine(
+            many.associate { c ->
+                val n = c.id.removePrefix("c").toInt()
+                c.raw to if (n % 2 == 0) IllegalStateException("failure $n") else "{\"title\":\"ok\"}"
+            }
+        )
+
+        val summary = ResultsFile(resultsF).use { r ->
+            ResultsFile(rawF).use { raw ->
+                RunLoop(engine, many, "{{RAW}}", "{}", r, raw).run()
+            }
+        }
+
+        assertEquals(null, summary.stoppedEarly)
+        assertEquals(9, resultsF.readLines().size)
+    }
+
     @Test
     fun `a run killed mid-file resumes without duplicating or losing an id`() = runTest {
         val resultsF = File(tmp.root, "r.jsonl")

@@ -20,6 +20,11 @@ class RunLoop(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
+    companion object {
+        /** Consecutive identical failures that mean "condition", not "capture". */
+        const val IDENTICAL_ERROR_LIMIT = 3
+    }
+
     data class Progress(val done: Int, val total: Int, val errors: Int)
 
     data class Summary(
@@ -28,6 +33,8 @@ class RunLoop(
         val errors: Int,
         val failedIds: List<String>,
         val skipped: Int,
+        /** Non-null when the loop stopped early rather than working through the corpus. */
+        val stoppedEarly: String? = null,
     )
 
     suspend fun run(onProgress: (Progress) -> Unit = {}): Summary {
@@ -38,6 +45,9 @@ class RunLoop(
         var ok = 0
         var errors = 0
         val failed = mutableListOf<String>()
+        var stoppedEarly: String? = null
+        var lastError: String? = null
+        var identicalErrorsInARow = 0
         onProgress(Progress(alreadyDone.size, captures.size, 0))
 
         for (capture in captures) {
@@ -59,6 +69,8 @@ class RunLoop(
                 }
             } catch (e: CancellationException) {
                 throw e // the user left / the scope died — not a model failure, don't record one
+            } catch (e: EngineMisconfigured) {
+                throw e // our fault, identical for every capture: record nothing, stop
             } catch (t: Throwable) {
                 errors++
                 failed += capture.id
@@ -71,8 +83,27 @@ class RunLoop(
             results.appendRow(row)
             alreadyDone += capture.id
             onProgress(Progress(alreadyDone.size, captures.size, errors))
+
+            // A per-capture failure is a result. The SAME failure over and over is a
+            // condition — a quota, a thermal cutoff, a broken config — and recording it
+            // against every remaining id would permanently spend those captures on a
+            // fact about the phone rather than about the model. Stop instead; the
+            // untouched ids stay runnable later.
+            val thisError = Rows.errorOf(row)
+            if (thisError != null && thisError == lastError) {
+                identicalErrorsInARow++
+            } else {
+                identicalErrorsInARow = if (thisError != null) 1 else 0
+            }
+            lastError = thisError
+            if (identicalErrorsInARow >= IDENTICAL_ERROR_LIMIT) {
+                stoppedEarly = "$identicalErrorsInARow captures in a row failed the same " +
+                    "way — that looks systemic, not per-capture, so the rest were left " +
+                    "unrun rather than spent on it."
+                break
+            }
         }
 
-        return Summary(captures.size, ok, errors, failed, skipped)
+        return Summary(captures.size, ok, errors, failed, skipped, stoppedEarly)
     }
 }

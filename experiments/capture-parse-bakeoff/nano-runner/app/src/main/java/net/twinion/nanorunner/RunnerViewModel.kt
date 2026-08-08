@@ -39,6 +39,7 @@ sealed interface UiState {
         val errors: Int,
         val failedIds: List<String>,
         val dryRun: Boolean,
+        val stoppedEarly: String? = null,
     ) : UiState
 
     /** A problem with the app itself (assets, corrupt results file) — safe to show. */
@@ -120,6 +121,20 @@ class RunnerViewModel(app: Application) : AndroidViewModel(app) {
         null
     }
 
+    /** True once there is anything to discard — drives the "start over" affordance. */
+    fun hasResults(): Boolean = resultsFile.isFile && resultsFile.length() > 0
+
+    /**
+     * Throw away this run and start clean. Needed because a recorded id is never re-run:
+     * when a run is spoiled by something that isn't the model (a bad generation config, a
+     * quota storm), the only honest recovery is to discard it rather than resume into it.
+     */
+    fun discardResults() {
+        if (runJob?.isActive == true) return
+        listOf(resultsFile, rawFile, metaFile).forEach { runCatching { it.delete() } }
+        viewModelScope.launch { check() }
+    }
+
     /** Must happen on Wi-Fi, BEFORE airplane mode — this is the one networked step. */
     fun download() {
         if (runJob?.isActive == true) return
@@ -160,14 +175,26 @@ class RunnerViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: EngineMisconfigured) {
+                _state.value = UiState.Broken(
+                    "${e.message}: ${Rows.describe(e.cause ?: e)}\n\nNothing was recorded — " +
+                        "this is the app's fault, not the model's, and it would have " +
+                        "failed identically on all ${captures.size} captures."
+                )
+                return@launch
             } catch (t: Throwable) {
                 _state.value = UiState.Broken(Rows.describe(t))
                 return@launch
             }
 
-            writeMeta(startedAt, airplaneAtStart, summary)
+            // A resume that had nothing left to do must not overwrite the metadata of
+            // the run that actually produced the results.
+            if (summary.skipped < summary.total) {
+                writeMeta(startedAt, airplaneAtStart, summary)
+            }
             _state.value = UiState.Done(
                 summary.total, summary.ok, summary.errors, summary.failedIds, dryRun,
+                summary.stoppedEarly,
             )
         }
     }

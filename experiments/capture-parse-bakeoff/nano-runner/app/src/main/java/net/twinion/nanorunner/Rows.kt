@@ -54,6 +54,12 @@ object Rows {
             put("latency_ms", latencyMs)
         }.toString()
 
+    /** The `error` field of a serialised row, or null if it is a success row. */
+    fun errorOf(row: String): String? = runCatching {
+        val error = (strict.parseToJsonElement(row) as JsonObject)["error"]
+        (error as? JsonPrimitive)?.content
+    }.getOrNull()
+
     /** A one-line, self-describing rendering of whatever went wrong. */
     fun describe(t: Throwable): String {
         val code = genAiErrorCode(t)?.let { " code=$it" } ?: ""

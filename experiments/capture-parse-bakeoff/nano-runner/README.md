@@ -96,9 +96,15 @@ The hosted side was **not** weakened to match. That asymmetry is itself a bake-o
 finding, and it is written up on #42.
 
 Generation config: SDK defaults for sampling (temperature/topK/seed left unset — setting
-them would be tuning a side the hosted parser never got), `maxOutputTokens = 1024`
-(headroom, >5x the largest hosted parse; a truncation is recorded as an honest failure),
+them would be tuning a side the hosted parser never got), `maxOutputTokens = 256`,
 `candidateCount = 1`. The full config is recorded in `nano_run_meta.json`.
+
+**256 is a hard device ceiling, not a preference.** AICore rejects anything larger with
+`IllegalArgumentException: maxOutputTokens must be between 1 and 256` — before any
+inference, so every capture fails identically. The client SDK does not validate it; the
+first phone run (2026-08-08) is how we found the number. It is still ~3x headroom: the
+largest hosted parse is 265 characters, roughly 66-88 tokens. A response that is
+nonetheless cut off is recorded as an honest failure, never repaired.
 
 ### Strict JSON, never lenient
 
@@ -107,6 +113,23 @@ Output is parsed with `kotlinx-serialization-json`, **not** `org.json`. Android'
 and would launder malformed model output into a valid-looking parse before the Python
 validator ever saw it. There is no trimming and no fence-stripping either: a fenced or
 prose-wrapped answer is a recorded failure, and scoring gets to classify it.
+
+### When a run is spoiled
+
+Two guards exist because a recorded id is **never** re-run, which makes a bad run
+expensive:
+
+- A configuration fault (`EngineMisconfigured` — the SDK rejecting our request) aborts
+  the run and records **nothing**. It would have failed identically on all 42 captures,
+  and 42 identical error rows are indistinguishable from 42 model failures in the
+  results file.
+- Three consecutive **identical** failures stop the run and leave the remaining captures
+  unrun. That shape means a condition — quota, thermal, config — not a fact about any
+  capture, and the untouched ids stay runnable later.
+
+To throw a spoiled run away, use **Discard this run and start over** on the Done screen
+(two taps, with a confirmation). Only for runs spoiled by something other than the model
+— genuine model failures are results and belong in the file.
 
 ### Crash-safety
 

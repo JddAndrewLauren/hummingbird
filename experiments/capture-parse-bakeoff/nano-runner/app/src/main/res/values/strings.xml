@@ -6,4 +6,5 @@
     <string name="start">Start</string>
     <string name="download">Download model (needs Wi-Fi)</string>
     <string name="share">Share results</string>
+    <string name="start_over">Discard this run and start over</string>
 </resources>

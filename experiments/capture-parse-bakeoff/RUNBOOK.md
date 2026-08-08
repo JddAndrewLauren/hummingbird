@@ -105,6 +105,8 @@ Nano via the ML Kit GenAI Prompt API, and writes `nano_results.jsonl`:
    parses, no model text — so this is safe to do before Phase 2. If a capture errors the
    app records the error as that row's result (an on-device failure is a result, not a
    retry candidate) and moves on; finished captures are never re-run if you relaunch.
+   If it stops early saying the failures look systemic, or a run gets spoiled by
+   something that isn't the model, use **Discard this run and start over**.
 5. Airplane mode off, tap Share and send back all three files (`nano_results.jsonl`, the
    verbatim `nano_raw.jsonl` sidecar, and `nano_run_meta.json`).
 
@@ -164,7 +166,7 @@ integration work unblocks (or evaporates) accordingly.
 | Messy dictation batch | **you** | ✅ done 2026-08-08 (23 captures, ION-36…ION-58) |
 | Corpus import + hosted re-run | agent | ✅ done 2026-08-08 (`real-06…28`; 10 dictated `ph-*` retired; Triage cleared) |
 | Blind ground truth | **you** | ⬜ Phase 2 — **next, and now the only thing blocking** |
-| Nano runner app | agent | ✅ built 2026-08-08 (`nano-runner/`, + `merge_nano.py`; on-device inference unverified until Phase 3) |
-| Nano run on the Pixel | **you** | ⬜ Phase 3 |
+| Nano runner app | agent | ✅ built 2026-08-08 (`nano-runner/`, + `merge_nano.py`); v1 run failed on a config bug, fixed and re-armed same day |
+| Nano run on the Pixel | **you** | 🔁 attempt 1 on 2026-08-08 lost to the app's `maxOutputTokens` bug (no inference ran); re-run with the fixed APK |
 | Mechanical scoring + tally | agent | ⬜ after Phases 2–3 |
 | Verdict + resolution | **you** → agent | ⬜ Phase 4 |

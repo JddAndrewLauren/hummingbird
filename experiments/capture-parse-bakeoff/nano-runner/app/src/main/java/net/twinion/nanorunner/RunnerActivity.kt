@@ -1,5 +1,6 @@
 package net.twinion.nanorunner
 
+import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
@@ -29,6 +30,7 @@ class RunnerActivity : ComponentActivity() {
     private lateinit var failedView: TextView
     private lateinit var primary: Button
     private lateinit var share: Button
+    private lateinit var startOver: Button
     private lateinit var footer: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,6 +41,7 @@ class RunnerActivity : ComponentActivity() {
         failedView = findViewById(R.id.failed_ids)
         primary = findViewById(R.id.primary)
         share = findViewById(R.id.share)
+        startOver = findViewById(R.id.start_over)
         footer = findViewById(R.id.footer)
 
         // Debug-only dry run: `adb shell am start -n net.twinion.nanorunner/.RunnerActivity
@@ -59,6 +62,7 @@ class RunnerActivity : ComponentActivity() {
         keepScreenOn(state is UiState.Running || state is UiState.Downloading)
         failedView.text = ""
         share.visibility = View.GONE
+        startOver.visibility = View.GONE
         primary.isEnabled = false
         footer.text = "harness ${BuildConfig.HARNESS_COMMIT} · ${vm.resultsFile.parent}"
 
@@ -97,6 +101,7 @@ class RunnerActivity : ComponentActivity() {
 
             is UiState.Ready -> {
                 stateView.text = if (state.dryRun) "Ready (DRY RUN)" else "Ready"
+                if (state.alreadyDone > 0) showStartOver()
                 detailView.text = buildString {
                     append("${state.total} captures")
                     if (state.alreadyDone > 0) {
@@ -118,9 +123,17 @@ class RunnerActivity : ComponentActivity() {
             }
 
             is UiState.Done -> {
-                stateView.text = if (state.dryRun) "Done (DRY RUN)" else "Done"
-                detailView.text = "${state.total} captures · ${state.ok} recorded parses · " +
-                    "${state.errors} failures"
+                stateView.text = when {
+                    state.stoppedEarly != null -> "Stopped early"
+                    state.dryRun -> "Done (DRY RUN)"
+                    else -> "Done"
+                }
+                detailView.text = buildString {
+                    append("${state.total} captures · ${state.ok} recorded parses · ")
+                    append("${state.errors} failures")
+                    state.stoppedEarly?.let { append("\n\n").append(it) }
+                }
+                showStartOver()
                 if (state.failedIds.isNotEmpty()) {
                     failedView.text = "failed ids: " + state.failedIds.joinToString(", ")
                 }
@@ -133,7 +146,29 @@ class RunnerActivity : ComponentActivity() {
             is UiState.Broken -> {
                 stateView.text = "Can't run"
                 detailView.text = state.detail
+                if (vm.hasResults()) showStartOver()
             }
+        }
+    }
+
+    /**
+     * Discarding is destructive and irreversible, so it is always a two-tap decision.
+     * The confirmation names the files rather than showing any of their content.
+     */
+    private fun showStartOver() {
+        startOver.visibility = View.VISIBLE
+        startOver.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Discard this run?")
+                .setMessage(
+                    "Deletes nano_results.jsonl, nano_raw.jsonl and nano_run_meta.json " +
+                        "from this phone and starts the 42 captures over.\n\nOnly do this " +
+                        "if the run was spoiled by something other than the model — " +
+                        "genuine model failures are results and should be kept."
+                )
+                .setNegativeButton("Keep") { d, _ -> d.dismiss() }
+                .setPositiveButton("Discard") { _, _ -> vm.discardResults() }
+                .show()
         }
     }
 

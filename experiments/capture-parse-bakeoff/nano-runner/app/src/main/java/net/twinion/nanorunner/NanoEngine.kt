@@ -10,6 +10,14 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 
+/**
+ * The engine could not be used at all: a harness or configuration fault, not something
+ * the model did. It aborts the run and records nothing, because the alternative — one
+ * identical error row per capture — looks exactly like 42 model failures in the results
+ * file, and those ids are then never retried.
+ */
+class EngineMisconfigured(message: String, cause: Throwable) : Exception(message, cause)
+
 /** Model availability, in the app's own vocabulary. */
 enum class Availability { UNAVAILABLE, DOWNLOADABLE, DOWNLOADING, AVAILABLE }
 
@@ -77,14 +85,18 @@ class MlKitEngine : NanoEngine {
     }
 
     override suspend fun generate(prompt: String): String {
-        val request = GenerateContentRequest.builder(TextPart(prompt))
-            .apply {
-                // Headroom, not tuning: >5x the largest hosted parse. If a response is
-                // still cut off, that truncation is recorded as an honest failure.
-                maxOutputTokens = MAX_OUTPUT_TOKENS
-                candidateCount = 1
-            }
-            .build()
+        val request = try {
+            GenerateContentRequest.builder(TextPart(prompt))
+                .apply {
+                    maxOutputTokens = MAX_OUTPUT_TOKENS
+                    candidateCount = 1
+                }
+                .build()
+        } catch (t: IllegalArgumentException) {
+            // Argument validation is OUR mistake, identical for every capture, and not
+            // a fact about the model. It must never be recorded as 42 model failures.
+            throw EngineMisconfigured("generation config rejected by the SDK", t)
+        }
         val response = model.generateContent(request)
         val candidate = response.candidates.firstOrNull()
             ?: throw IllegalStateException("model returned no candidates")
@@ -108,7 +120,18 @@ class MlKitEngine : NanoEngine {
     }
 
     companion object {
-        const val MAX_OUTPUT_TOKENS = 1024
+        /**
+         * 256 is the ceiling AICore enforces on this device — asking for more is
+         * rejected outright with `IllegalArgumentException: maxOutputTokens must be
+         * between 1 and 256`, before any inference happens. (The client SDK does not
+         * validate it; the 2026-08-08 phone run is where we learned the number.)
+         *
+         * It is still ample headroom: the largest hosted parse is 265 characters,
+         * roughly 66-88 tokens, so this is ~3x the biggest thing we expect. A response
+         * that is nonetheless cut off records as an honest failure rather than a
+         * silently repaired one.
+         */
+        const val MAX_OUTPUT_TOKENS = 256
     }
 }
 
