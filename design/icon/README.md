@@ -32,11 +32,9 @@ from one Python program.
 - `qc/grayscale-{light,dark}.png`, `qc/blur-{light,dark}.png`,
   `qc/silhouette-{light,dark}.png`, `qc/overlay-{light,dark}.png` --
   committed gate evidence for the remaining QC battery modes (spec
-  §48-§50, §37) against the current generator output. Note:
-  `silhouette-*.png` renders solid black end to end -- the harness's
-  silhouette mode colorizes every opaque fill, including the full-bleed
-  `background` rect, to black (spec §50 assumes a transparent-background
-  render); it can't be run meaningfully on the masters as-is.
+  §48-§50, §37) against the current generator output. `silhouette-*.png`
+  now excludes the master's own full-bleed `background` rect (see #64
+  below) and shows a real silhouette rather than a solid black square.
 
 ## Head identity (#62)
 
@@ -127,6 +125,50 @@ Row 1 ("darkest reds concentrated near right side") spans the ramp's red
 end, Row 3 (visually dominant) spans the full ramp, and Row 4 ("more
 gold/orange toward left") stays toward the warm end -- never a random
 scatter.
+
+## Chest + side-body facets, optical cleanup (#64)
+
+Replaces the flat `chest-base`/`side-body-base` color blocks with a low-poly
+facet overlay -- the last geometry this master needs; both masters now
+pass the full QC battery (spec §47-50).
+
+- **Chest (§19):** 11 facets (`chest-facet-01`..`11`), one triangle per
+  edge of `CHEST_MASS_POINTS` fanned from a single apex near the top of
+  the envelope (`CHEST_FACET_APEX`, where the reference concept's own
+  chest facets visibly converge, just under the gorget). Because it's a
+  fan over every envelope edge, the facets always exactly tile the chest
+  silhouette with no gaps, by construction -- no separate coordinate set
+  to keep in sync with the envelope. 11 facets against the gorget's 37
+  feathers is the "dramatically simpler" contrast §19 calls for.
+- **Side-body (§20):** 9 facets (`side-body-facet-01`..`09`), built by
+  banding `SIDE_BODY_MASS_POINTS`' own inner/outer edge chains into 3
+  bands top-to-bottom, then each band into 3 further sub-quads along its
+  length -- wide, elongated planes rather than small rounded shapes, per
+  §20's explicit "long polygon planes rather than small feather shapes"
+  and §28's "two different geometric languages" (angular/faceted head and
+  chest vs. rounded gorget).
+- Both facet groups are clipped to their own envelope (`chest-clip`,
+  `side-body-clip`, same `clipPath` pattern as `crown-clip`/`gorget-clip`),
+  and both use only their spec-given color ramps (§19's cream ramp, §20's
+  brown-orange ramp) with no strokes.
+- Layer order (§34): `chest-base` -> `chest-facets` -> `side-body-base` ->
+  `side-body-facets` -> `gorget-base`, unchanged from #61-#63 otherwise.
+- Total path/polygon/ellipse count is now 99 (both variants), inside
+  spec §35's ~85-110 budget.
+- Safe area (§26) and optical center (§27) were already satisfied by the
+  #62 landmark placement (beak tip at (135,70), well outside the 65-unit
+  edge margin) and are unchanged by this slice's chest/body-only
+  additions; a regression test (`SafeAreaTest`) guards the beak-tip
+  margin.
+- The silhouette QC harness mode (`icon_harness.silhouette`) previously
+  rendered solid black end-to-end for a master SVG, because it colorized
+  every opaque pixel including the master's own full-bleed `background`
+  rect -- the earlier note below about this is now stale. `silhouette()`
+  strips the `id="background"` element before rasterizing, so only the
+  bird itself flattens to black over a transparent canvas, which is what
+  spec §50 actually wants to inspect. `qc/silhouette-{light,dark}.png`
+  are regenerated against this fix and now show a real silhouette (long
+  diagonal beak, round forehead, large upper body, cropped composition).
 
 ## Generator
 

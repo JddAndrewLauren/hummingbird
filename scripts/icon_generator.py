@@ -141,6 +141,104 @@ def _points_attr(points) -> str:
     return " ".join(_pt(p) for p in points)
 
 
+def _centroid(points) -> tuple:
+    return (sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points))
+
+
+def _lerp(a, b, t) -> tuple:
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+
+# ---------------------------------------------------------------------------
+# Chest + side-body facets (#64, spec §19-20): the flat chest-base/
+# side-body-base masses gain a low-poly facet overlay. Both are derived
+# from the same envelope point lists used for the base fills above, so the
+# facets always tile that exact silhouette with no separately-maintained
+# coordinate set to drift out of sync -- and (like crown/gorget) the facet
+# group is also clipped to its own envelope as a structural safety net.
+#
+# Chest (spec §19): a centroid-style fan from a single apex near the top of
+# the envelope (where the reference concept's chest facets visibly converge,
+# just under the gorget) out to every envelope edge -- one triangle per
+# edge, so the facets always exactly tile the chest silhouette with no
+# gaps, by construction. len(CHEST_MASS_POINTS) == 11 edges, comfortably
+# inside spec's "10-18 facets"; deliberately far fewer/larger than the
+# gorget's 37 feathers, which is the "dramatically simpler" contrast §19
+# calls for -- no outlines, no per-feather rounding, just flat planes.
+CHEST_FACET_RAMP = ("#FFF9F0", "#F5ECDF", "#EADBC8", "#DDD0BF", "#CDBDA8")
+CHEST_FACET_APEX = _centroid([(610, 710), (215, 640)])  # top-of-chest convergence point
+
+
+def _build_chest_facets() -> list:
+    apex = CHEST_FACET_APEX
+    n = len(CHEST_MASS_POINTS)
+    facets = []
+    for i in range(n):
+        a, b = CHEST_MASS_POINTS[i], CHEST_MASS_POINTS[(i + 1) % n]
+        fill = CHEST_FACET_RAMP[i % len(CHEST_FACET_RAMP)]
+        facets.append(([apex, a, b], fill))
+    return facets
+
+
+CHEST_FACETS = _build_chest_facets()
+
+# Side-body (spec §20): "long polygon planes rather than small feather
+# shapes." SIDE_BODY_MASS_POINTS already traces an elongated top-to-bottom
+# strip (an inner/left edge and an outer/right edge following the outer
+# silhouette's own boundary chain); band the strip into thirds top-to-
+# bottom, then each band into three further sub-quads along its own
+# length, giving 9 wide horizontal-ish planes (spec §35's "Body facets
+# 8-12") that read as long structural mass rather than rounded feathers --
+# distinct from the gorget's rounded-shield primitive per §28's "two
+# different geometric languages."
+SIDE_BODY_INNER_CHAIN = [(660, 600), (660, 750), (650, 850), (560, 1024)]
+SIDE_BODY_OUTER_CHAIN = [(825, 610), (875, 760), (925, 920), (955, 1024)]
+SIDE_BODY_FACET_RAMP = ("#E47A16", "#D46A12", "#B85B18", "#A44E1B", "#8E451E")
+SIDE_BODY_FACET_SUBDIVISIONS = 3
+
+
+def _build_side_body_facets() -> list:
+    ramp = SIDE_BODY_FACET_RAMP
+    sub = SIDE_BODY_FACET_SUBDIVISIONS
+    facets = []
+    index = 0
+    for band in range(len(SIDE_BODY_INNER_CHAIN) - 1):
+        inner_a, inner_b = SIDE_BODY_INNER_CHAIN[band], SIDE_BODY_INNER_CHAIN[band + 1]
+        outer_a, outer_b = SIDE_BODY_OUTER_CHAIN[band], SIDE_BODY_OUTER_CHAIN[band + 1]
+        for s in range(sub):
+            t0, t1 = s / sub, (s + 1) / sub
+            quad = [
+                _lerp(inner_a, inner_b, t0),
+                _lerp(outer_a, outer_b, t0),
+                _lerp(outer_a, outer_b, t1),
+                _lerp(inner_a, inner_b, t1),
+            ]
+            facets.append((quad, ramp[index % len(ramp)]))
+            index += 1
+    return facets
+
+
+SIDE_BODY_FACETS = _build_side_body_facets()
+
+
+def _chest_facets_svg() -> str:
+    facets = []
+    for index, (points, fill) in enumerate(CHEST_FACETS, start=1):
+        facets.append(
+            f'      <polygon id="chest-facet-{index:02d}" points="{_points_attr(points)}" fill="{fill}"/>'
+        )
+    return "\n".join(facets)
+
+
+def _side_body_facets_svg() -> str:
+    facets = []
+    for index, (points, fill) in enumerate(SIDE_BODY_FACETS, start=1):
+        facets.append(
+            f'      <polygon id="side-body-facet-{index:02d}" points="{_points_attr(points)}" fill="{fill}"/>'
+        )
+    return "\n".join(facets)
+
+
 # ---------------------------------------------------------------------------
 # Head identity (#62, spec §38 fidelity priorities 1-5): beak planes, eye,
 # eye stripe, crown facets, forehead patch, cheek separator. Coordinates and
@@ -605,6 +703,12 @@ def _build_svg(palette: dict) -> str:
     <clipPath id="gorget-clip">
       <path d="{GORGET_MASS_PATH}"/>
     </clipPath>
+    <clipPath id="chest-clip">
+      <polygon points="{_points_attr(CHEST_MASS_POINTS)}"/>
+    </clipPath>
+    <clipPath id="side-body-clip">
+      <polygon points="{_points_attr(SIDE_BODY_MASS_POINTS)}"/>
+    </clipPath>
     <!-- Preview-only mask (spec §3): the master itself stays full-square. -->
     <clipPath id="preview-rounded-square">
       <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
@@ -615,7 +719,13 @@ def _build_svg(palette: dict) -> str:
     <g id="bird">
       <path id="bird-silhouette" d="{silhouette_d}" fill="{palette['silhouette_base']}"/>
       <polygon id="chest-base" points="{_points_attr(CHEST_MASS_POINTS)}" fill="{palette['chest_mass']}"/>
+      <g id="chest-facets" clip-path="url(#chest-clip)">
+{_chest_facets_svg()}
+      </g>
       <polygon id="side-body-base" points="{_points_attr(SIDE_BODY_MASS_POINTS)}" fill="{palette['side_body_mass']}"/>
+      <g id="side-body-facets" clip-path="url(#side-body-clip)">
+{_side_body_facets_svg()}
+      </g>
       <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
       <g id="gorget-feathers" clip-path="url(#gorget-clip)">
 {_gorget_feathers_svg()}

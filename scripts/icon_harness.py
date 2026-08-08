@@ -8,6 +8,7 @@ documented one-command-per-mode usage and tool dependencies.
 """
 
 import argparse
+import re
 import subprocess
 import sys
 import tempfile
@@ -167,9 +168,40 @@ def blur(svg_path: Path, out_path: Path, size: int = 1024, radius: int = 8) -> P
     return _qc_render(svg_path, out_path, size, extra_args=["-blur", f"0x{radius}"])
 
 
+# Master SVGs carry a full-bleed opaque `id="background"` rect (spec §6/
+# §21). Naively colorizing every opaque pixel black (as `_qc_render`
+# does) would flatten that too, leaving the whole 1024x1024 canvas solid
+# black -- telling a reviewer nothing about spec §50's "should still
+# strongly suggest the approved icon" (the design/icon/README.md
+# "Note" this superseded). Matches the rect's own opening tag verbatim
+# (`icon_generator._build_svg` always emits it as one self-closing
+# element with `id="background"` first in its attribute list) rather than
+# every element with that id, since only the background rect -- not bird
+# geometry -- should ever be excluded from the silhouette.
+_BACKGROUND_RECT_RE = re.compile(r'<rect id="background"[^>]*/>')
+
+
+def _strip_background(svg_path: Path, tmp_dir: Path) -> Path:
+    """Write a copy of svg_path with its `id="background"` rect removed,
+    so a silhouette render leaves that region transparent instead of
+    flattening it to black alongside the bird. A no-op (returns the
+    original text unchanged) for any SVG without that element -- e.g.
+    the harness's own stub.svg, which is already transparent outside its
+    opaque rect."""
+    text = svg_path.read_text()
+    stripped_text = _BACKGROUND_RECT_RE.sub("", text)
+    stripped_path = tmp_dir / f"{svg_path.stem}-no-background.svg"
+    stripped_path.write_text(stripped_text)
+    return stripped_path
+
+
 def silhouette(svg_path: Path, out_path: Path, size: int = 1024) -> Path:
-    """QC mode (spec §50): every opaque fill flattened to black, alpha kept."""
-    return _qc_render(svg_path, out_path, size, extra_args=["-fill", "black", "-colorize", "100%"])
+    """QC mode (spec §50): every opaque fill flattened to black, alpha
+    kept -- with the master's own full-bleed background rect excluded
+    first (see `_strip_background`), so only the bird itself silhouettes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        no_bg_svg = _strip_background(Path(svg_path), Path(tmp))
+        return _qc_render(no_bg_svg, out_path, size, extra_args=["-fill", "black", "-colorize", "100%"])
 
 
 def is_pure_black_and_transparent(png_path: Path) -> bool:

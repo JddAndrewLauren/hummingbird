@@ -603,6 +603,152 @@ class GorgetLowerCoverageRenderTest(unittest.TestCase):
                     self.assertFalse(is_bare_base, f"({x},{y}) is bare gorget-base color, not a feather")
 
 
+class ChestAndSideBodyFacetsTest(unittest.TestCase):
+    """Chest + side-body facets (#64, spec §19-20): the flat chest-base and
+    side-body-base masses gain low-poly facet overlays. Chest reads
+    dramatically simpler than the gorget (§19); side-body uses long
+    polygon planes, not small feather shapes (§20)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.paths = icon_generator.generate(Path(self.tmp.name))
+        self.roots = {variant: ET.parse(p).getroot() for variant, p in self.paths.items()}
+
+    def test_chest_has_ten_to_eighteen_facets(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                facet_ids = [i for i in ids if i.startswith("chest-facet-")]
+                self.assertGreaterEqual(len(facet_ids), 10)
+                self.assertLessEqual(len(facet_ids), 18)
+
+    def test_chest_facets_use_only_spec_section_19_ramp(self):
+        ramp = set(icon_generator.CHEST_FACET_RAMP)
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                for facet_id in (i for i in ids if i.startswith("chest-facet-")):
+                    self.assertIn(ids[facet_id].get("fill"), ramp)
+
+    def test_chest_is_visually_simpler_than_the_gorget(self):
+        # Spec §19: "the chest must visually simplify dramatically
+        # compared with the gorget. That contrast is intentional."
+        chest_facet_count = len(icon_generator.CHEST_FACETS)
+        gorget_feather_count = sum(len(row["feathers"]) for row in icon_generator.GORGET_FEATHER_ROWS)
+        self.assertLess(chest_facet_count, gorget_feather_count)
+
+    def test_chest_facets_are_clipped_to_the_chest_envelope(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                group = ids["chest-facets"]
+                self.assertEqual(group.get("clip-path"), "url(#chest-clip)")
+
+    def test_side_body_has_eight_to_twelve_facets(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                facet_ids = [i for i in ids if i.startswith("side-body-facet-")]
+                self.assertGreaterEqual(len(facet_ids), 8)
+                self.assertLessEqual(len(facet_ids), 12)
+
+    def test_side_body_facets_use_only_spec_section_20_ramp(self):
+        ramp = set(icon_generator.SIDE_BODY_FACET_RAMP)
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                for facet_id in (i for i in ids if i.startswith("side-body-facet-")):
+                    self.assertIn(ids[facet_id].get("fill"), ramp)
+
+    def test_side_body_facets_read_as_long_planes_not_small_shapes(self):
+        # "Long polygon planes rather than small feather shapes" (spec
+        # §20): every side-body facet's bounding-box aspect ratio should
+        # be elongated, not roughly square/round like a gorget feather.
+        for points, _fill in icon_generator.SIDE_BODY_FACETS:
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            width, height = max(xs) - min(xs), max(ys) - min(ys)
+            longer, shorter = max(width, height), max(min(width, height), 1)
+            self.assertGreaterEqual(longer / shorter, 1.3)
+
+    def test_side_body_facets_are_clipped_to_the_side_body_envelope(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                group = ids["side-body-facets"]
+                self.assertEqual(group.get("clip-path"), "url(#side-body-clip)")
+
+    def test_no_outlines_on_chest_or_side_body_facets(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                for el in root.iter():
+                    element_id = el.get("id") or ""
+                    if element_id.startswith("chest-facet-") or element_id.startswith("side-body-facet-"):
+                        self.assertIsNone(el.get("stroke"))
+
+    def test_layer_order_chest_then_side_body_then_gorget(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                order = document_order_ids(root)
+
+                def idx(element_id):
+                    return order.index(element_id)
+
+                self.assertLess(idx("chest-base"), idx("chest-facet-01"))
+                self.assertLess(idx("chest-facet-01"), idx("side-body-base"))
+                self.assertLess(idx("side-body-base"), idx("side-body-facet-01"))
+                self.assertLess(idx("side-body-facet-01"), idx("gorget-base"))
+
+
+class PathBudgetTest(unittest.TestCase):
+    """Spec §35: total path count ~85-110 for the full master."""
+
+    SHAPE_TAGS = {"path", "polygon", "ellipse", "circle", "rect"}
+
+    def test_total_shape_count_is_within_spec_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = icon_generator.generate(Path(tmp))
+            for variant, path in paths.items():
+                with self.subTest(variant=variant):
+                    root = ET.parse(path).getroot()
+                    count = sum(1 for el in root.iter() if local(el.tag) in self.SHAPE_TAGS)
+                    self.assertGreaterEqual(count, 85)
+                    self.assertLessEqual(count, 110)
+
+
+class SafeAreaTest(unittest.TestCase):
+    """Spec §26: the beak tip should not be closer than ~65 units to the
+    upper or left canvas edges."""
+
+    def test_beak_tip_respects_the_safe_area_margin(self):
+        tip_x, tip_y = icon_generator.LANDMARKS["beak_tip"]
+        self.assertGreaterEqual(tip_x, 65)
+        self.assertGreaterEqual(tip_y, 65)
+
+
+class DarkContrastTest(unittest.TestCase):
+    """Spec §46: the gorget must stay distinctly brighter than the dark
+    background, and the cream chest must not disappear into the light
+    background."""
+
+    @staticmethod
+    def _luminance(hex_color: str) -> float:
+        hex_color = hex_color.lstrip("#")
+        r, g, b = (int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def test_dark_gorget_is_brighter_than_the_dark_background(self):
+        bg = self._luminance(icon_generator.DARK_PALETTE["background_end"])
+        gorget = self._luminance(icon_generator.DARK_PALETTE["gorget_mass"])
+        self.assertGreater(gorget, bg)
+
+    def test_light_chest_has_tonal_separation_from_the_light_background(self):
+        bg = self._luminance(icon_generator.LIGHT_PALETTE["background_end"])
+        chest = self._luminance(icon_generator.LIGHT_PALETTE["chest_mass"])
+        self.assertNotEqual(round(bg), round(chest))
+
+
 class RasterizesTest(unittest.TestCase):
     def test_both_masters_rasterize_via_the_harness(self):
         import shutil
