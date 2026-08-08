@@ -63,15 +63,25 @@ def reference_path(variant: str) -> Path:
     return REFERENCE_DIR / f"{variant}-1024.png"
 
 
-def _resize_point(src: Path, dst: Path, display_size: int) -> Path:
-    """Nearest-neighbor resize -- keeps small renders honestly blocky."""
+def tile_filter(source_size: int, display_size: int) -> str:
+    """Which ImageMagick -filter to use when resizing a rendered tile to
+    the contact sheet's display size. Upscaling (source_size <=
+    display_size) uses nearest-neighbor so small-size honesty is
+    preserved -- no filter can invent detail that isn't in the actual
+    render. Downscaling (the 1024 tile shrunk to fit the sheet) uses a
+    quality filter instead; point-sampling a 1024px render down to 256px
+    would alias real art rather than showing it."""
+    return "point" if source_size <= display_size else "Lanczos"
+
+
+def _resize_tile(src: Path, dst: Path, display_size: int, source_size: int) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             "magick",
             str(src),
             "-filter",
-            "point",
+            tile_filter(source_size, display_size),
             "-resize",
             f"{display_size}x{display_size}",
             str(dst),
@@ -99,7 +109,7 @@ def contact_sheet(
         renders = render(svg_path, tmp_dir, sizes)
         tiles = []
         for size in sizes:
-            tile = _resize_point(renders[size], tmp_dir / f"tile-{size}.png", display_size)
+            tile = _resize_tile(renders[size], tmp_dir / f"tile-{size}.png", display_size, size)
             tiles.append(tile)
         ref_tile = tmp_dir / "tile-reference.png"
         subprocess.run(
@@ -218,11 +228,77 @@ def overlay(svg_path: Path, variant: str, out_path: Path, size: int = 1024, opac
     return out_path
 
 
+# The concept sheet's page background, sampled outside the icon squares.
+# A reference crop containing any of this color at its outer edges means
+# the crop bbox missed and dragged in page margin.
+PAGE_BACKGROUND_RGB = (246, 246, 247)
+# Tight on purpose: the page background is a near-neutral off-white and the
+# light-mode icon's own background is a warm cream close in brightness but
+# with a real R/G/B spread (e.g. ~240,232,226). A loose fuzz here would
+# flag the icon's legitimate background as "page margin".
+PAGE_BACKGROUND_FUZZ = 10
+
+
+def pixel_rgba(png_path: Path, x: int, y: int) -> tuple:
+    """(r, g, b, a) of one pixel, 0-255 each, via `magick`'s `fx:` operator.
+    fx always reports normalized 0-1 floats regardless of the PNG's actual
+    bit depth (a fully binary alpha channel -- as ImageMagick sometimes
+    writes for a flat silhouette -- would otherwise round-trip through the
+    `pixel:p{}}` format at 1-bit precision and misreport as 0/1)."""
+    result = subprocess.run(
+        [
+            "magick",
+            str(png_path),
+            "-alpha",
+            "on",
+            "-format",
+            f"%[fx:p{{{x},{y}}}.r] %[fx:p{{{x},{y}}}.g] %[fx:p{{{x},{y}}}.b] %[fx:p{{{x},{y}}}.a]",
+            "info:",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    r, g, b, a = (round(float(v) * 255) for v in result.stdout.split())
+    return (r, g, b, a)
+
+
+def pixel_rgb(png_path: Path, x: int, y: int) -> tuple:
+    """(r, g, b) of one pixel, via `magick`."""
+    return pixel_rgba(png_path, x, y)[:3]
+
+
+def has_no_page_background_margin(
+    png_path: Path,
+    page_bg=PAGE_BACKGROUND_RGB,
+    fuzz: int = PAGE_BACKGROUND_FUZZ,
+) -> bool:
+    """True if none of the four mid-row/mid-col edge pixels match the
+    concept sheet's page background -- i.e. the crop bbox is exact and
+    didn't drag in a strip of page margin on any side."""
+    width, height = png_dimensions(png_path)
+    mid_x, mid_y = width // 2, height // 2
+    edge_points = [
+        (mid_x, 0),  # top-mid
+        (mid_x, height - 1),  # bottom-mid
+        (0, mid_y),  # left-mid
+        (width - 1, mid_y),  # right-mid
+    ]
+    for x, y in edge_points:
+        r, g, b = pixel_rgb(png_path, x, y)
+        if all(abs(c - bg) <= fuzz for c, bg in zip((r, g, b), page_bg)):
+            return False
+    return True
+
+
 def mean_pixel_difference(png_a: Path, png_b: Path) -> float:
-    """Normalized (0-1) mean absolute-error pixel difference between two
-    same-size PNGs, via `magick compare`. Non-zero means "visibly different";
-    `compare` exits non-zero whenever a difference is found, so its return
-    code is not itself an error here."""
+    """Fraction (0-1) of pixels that differ at all between two same-size
+    PNGs -- ImageMagick's normalized AE ("absolute error count") metric,
+    via `magick compare`. This is a differing-pixel fraction, not a true
+    per-channel mean absolute error; it's a cheap "are these visibly
+    different" signal, not a perceptual distance. Non-zero means visibly
+    different; `compare` exits non-zero whenever any difference is found,
+    so its return code is not itself an error here."""
     result = subprocess.run(
         ["magick", "compare", "-metric", "AE", str(png_a), str(png_b), "null:"],
         capture_output=True,

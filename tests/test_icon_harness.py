@@ -52,6 +52,15 @@ class ContactSheetTest(unittest.TestCase):
             # One row: five rendered sizes + one reference crop.
             self.assertGreater(width, height * 5)
 
+    def test_small_renders_upscale_nearest_neighbor_but_the_1024_tile_does_not(self):
+        # Small sizes must stay honestly blocky (point/nearest-neighbor);
+        # downscaling the full 1024 render to a smaller display tile should
+        # use a quality filter instead, or it aliases real detail.
+        display_size = icon_harness.CONTACT_SHEET_DISPLAY_SIZE
+        self.assertEqual(icon_harness.tile_filter(16, display_size), "point")
+        self.assertEqual(icon_harness.tile_filter(32, display_size), "point")
+        self.assertNotEqual(icon_harness.tile_filter(1024, display_size), "point")
+
 
 @unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
 class GrayscaleTest(unittest.TestCase):
@@ -89,6 +98,20 @@ class SilhouetteTest(unittest.TestCase):
             self.assertTrue(out_path.exists())
             self.assertEqual(icon_harness.png_dimensions(out_path), (1024, 1024))
             self.assertTrue(icon_harness.is_pure_black_and_transparent(out_path))
+
+    def test_preserves_the_stub_transparent_margin(self):
+        # STUB_SVG's opaque rect only covers x/y 128..896; outside that is
+        # transparent canvas. A silhouette that flattened alpha away too
+        # would turn that margin solid black instead of leaving it clear.
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "silhouette.png"
+            icon_harness.silhouette(STUB_SVG, out_path=out_path, size=1024)
+
+            r, g, b, a = icon_harness.pixel_rgba(out_path, 10, 10)
+            self.assertEqual(a, 0, "corner of the transparent margin should stay transparent")
+            r, g, b, a = icon_harness.pixel_rgba(out_path, 512, 512)
+            self.assertEqual((r, g, b), (0, 0, 0))
+            self.assertGreater(a, 0, "center of the opaque rect should stay opaque")
 
 
 @unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
@@ -129,6 +152,24 @@ class CliTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(out_path.exists())
+
+
+@unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
+class ReferenceCropTest(unittest.TestCase):
+    """Regression for a mis-crop: dark-1024.png once carried a strip of
+    concept-sheet page background (#F6F6F7) down its right edge, squashing
+    the icon inside the 1024x1024 canvas. Both reference crops must be
+    exact -- they're the alignment target for overlay/contact-sheet in
+    every downstream slice."""
+
+    def test_light_and_dark_crops_have_no_page_background_margin(self):
+        for variant in ("light", "dark"):
+            with self.subTest(variant=variant):
+                path = icon_harness.reference_path(variant)
+                self.assertTrue(
+                    icon_harness.has_no_page_background_margin(path),
+                    f"{path} has a page-background margin on at least one edge",
+                )
 
 
 if __name__ == "__main__":
