@@ -11,6 +11,8 @@ facets and optical variants without restructuring this module.
 """
 
 import argparse
+import math
+import random
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -332,6 +334,199 @@ DARK_PALETTE = {
 PALETTES = {"light": LIGHT_PALETTE, "dark": DARK_PALETTE}
 
 
+# ---------------------------------------------------------------------------
+# Gorget feather system (#63, spec §14-18): the flat gorget block becomes one
+# base under-shape (already given above as GORGET_MASS_PATH/§14) plus ~5
+# overlapping rows of a seeded, jittered rounded-shield primitive (§15-18).
+# All of it is deterministic data computed once at import time from
+# FEATHER_SEED -- same inputs, same SVG, satisfying the "regenerating with
+# unchanged parameters is byte-stable" acceptance criterion for free, the
+# same way CROWN_FACETS above is a literal list rather than randomized per
+# call. Row counts/sizes/colors are parameters (ROW_SPECS) so taste feedback
+# lands as data changes, not a rewrite -- and the later small/micro slice
+# (#65) reuses these same parameters at reduced counts (out of scope here).
+# ---------------------------------------------------------------------------
+
+# Spec §15: the rounded-shield feather primitive, given verbatim as an
+# ordered point list -- M, then three cubic Bezier segments' (c1, c2, end)
+# triples. On-curve endpoints are indices 0/3/6/9 (9 repeats 0, closing the
+# shape); the rest are off-curve control points that curvature jitter
+# perturbs independently, so no two instances share an identical bulge.
+FEATHER_BASE_POINTS = [
+    (0, 0), (14, -7), (32, -7), (46, 0),
+    (46, 22), (36, 36), (23, 44),
+    (10, 36), (0, 22), (0, 0),
+]
+FEATHER_ENDPOINT_INDICES = {0, 3, 6, 9}
+FEATHER_BASE_WIDTH = 46.0
+FEATHER_BASE_HEIGHT = 51.0  # primitive's own bbox: y runs -7..44
+
+# Spec §7/§18 orange/gorget ramp, warmest (yellow-orange) to coolest (gorget
+# shadow). Each feather's fill is an index into this ramp, chosen by its
+# left-to-right column position within its row (§18: warm left, red/deep-red
+# right) -- never a random rainbow pick.
+GORGET_FEATHER_RAMP = (
+    "#FFA000",  # 0 yellow-orange
+    "#FF8500",  # 1 primary orange
+    "#F46B00",  # 2 deep orange
+    "#F4470D",  # 3 vermilion
+    "#D93A18",  # 4 red-orange
+    "#B62E22",  # 5 deep red
+    "#8D2A23",  # 6 gorget shadow
+)
+
+# Spec §16-17: five rows, ids following spec §34's layer-order names (Row 1
+# "near chin" -> gorget-top-row ... Row 5 "overlaps the chest" ->
+# gorget-bottom-row). Width/height ranges are §16's own per-row figures --
+# sampling within them already delivers the "no two identical, ~10-15%
+# spread" look (§15) without a separate multiplier. color_index_range picks
+# a sub-span of GORGET_FEATHER_RAMP per §16's per-row color notes (Row 1
+# "darkest reds concentrated near right side", Row 4 "more gold/orange
+# toward left", Row 3 "visually dominant" gets the full ramp).
+ROW_SPECS = [
+    {
+        "id": "gorget-top-row", "count": 6, "width_range": (55, 75), "height_range": (45, 60),
+        "x_range": (420, 760), "color_index_range": (2, 6),
+    },
+    {
+        "id": "gorget-row-2", "count": 8, "width_range": (65, 82), "height_range": (52, 66),
+        "x_range": (330, 760), "color_index_range": (1, 5),
+    },
+    {
+        "id": "gorget-row-3", "count": 9, "width_range": (72, 90), "height_range": (58, 72),
+        "x_range": (250, 775), "color_index_range": (0, 6),
+    },
+    {
+        "id": "gorget-row-4", "count": 8, "width_range": (78, 100), "height_range": (65, 82),
+        "x_range": (220, 680), "color_index_range": (0, 4),
+    },
+    {
+        "id": "gorget-bottom-row", "count": 6, "width_range": (85, 110), "height_range": (70, 90),
+        "x_range": (215, 650), "color_index_range": (0, 3),
+    },
+]
+ROW_WIDTH_RANGES = [row["width_range"] for row in ROW_SPECS]
+ROW_HEIGHT_RANGES = [row["height_range"] for row in ROW_SPECS]
+
+FEATHER_SEED = 20260808  # fixed -- regenerating with unchanged parameters must be byte-stable
+ROW_OVERLAP = 0.30  # spec §17: 28-38%; the midpoint keeps equal margin both ways
+ROW_TOP_Y = 430.0  # Row 1 (near chin) y-center; the rest are derived below
+ROTATION_JITTER_DEG = 14.0  # spec §15 rotation variation
+CURVATURE_JITTER = 0.15  # spec §15 curvature variation (of a control point's own scaled offset)
+POSITION_JITTER = 0.06  # column-position jitter, as a fraction of the row's x-span
+ROW_Y_JITTER = 0.08  # per-feather y jitter, as a fraction of the row's avg height
+
+
+def _row_y_centers() -> list:
+    """Row 1's y-center is fixed (ROW_TOP_Y); each following row's is
+    derived from ROW_OVERLAP against the average height of the two
+    adjacent rows, so the 28-38% overlap (spec §17) is a property of the
+    data, not a hand-tuned coincidence."""
+    centers = [ROW_TOP_Y]
+    for i in range(1, len(ROW_SPECS)):
+        prev_h = sum(ROW_SPECS[i - 1]["height_range"]) / 2
+        this_h = sum(ROW_SPECS[i]["height_range"]) / 2
+        gap = ((prev_h + this_h) / 2) * (1 - ROW_OVERLAP)
+        centers.append(centers[-1] + gap)
+    return centers
+
+
+def _rotate_point(point, angle_deg: float, origin) -> tuple:
+    ox, oy = origin
+    x, y = point
+    theta = math.radians(angle_deg)
+    dx, dy = x - ox, y - oy
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    return (ox + dx * cos_t - dy * sin_t, oy + dx * sin_t + dy * cos_t)
+
+
+def _feather_path_d(rng: random.Random, width: float, height: float, rotation_deg: float, cx: float, cy: float) -> str:
+    """One feather instance: scale the base primitive to width/height,
+    jitter its control points (curvature), rotate, then translate its
+    centroid to (cx, cy). Coordinates are baked into the returned `d`
+    string (not left as a `transform` attribute) so every instance's own
+    path text differs -- no two feathers share geometry, satisfying "no
+    visible cloning" (spec §15) even under XML-level inspection."""
+    sx, sy = width / FEATHER_BASE_WIDTH, height / FEATHER_BASE_HEIGHT
+    points = []
+    for index, (x, y) in enumerate(FEATHER_BASE_POINTS):
+        px, py = x * sx, y * sy
+        if index not in FEATHER_ENDPOINT_INDICES:
+            px *= 1 + rng.uniform(-CURVATURE_JITTER, CURVATURE_JITTER)
+            py *= 1 + rng.uniform(-CURVATURE_JITTER, CURVATURE_JITTER)
+        points.append((px, py))
+
+    centroid = (sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points))
+    rotated = [_rotate_point(p, rotation_deg, centroid) for p in points]
+    dx, dy = cx - centroid[0], cy - centroid[1]
+    placed = [(round(px + dx, 2), round(py + dy, 2)) for px, py in rotated]
+
+    m = placed[0]
+    c1a, c1b, e1 = placed[1:4]
+    c2a, c2b, e2 = placed[4:7]
+    c3a, c3b, e3 = placed[7:10]
+    return (
+        f"M {_pt(m)} "
+        f"C {_pt(c1a)}, {_pt(c1b)}, {_pt(e1)} "
+        f"C {_pt(c2a)}, {_pt(c2b)}, {_pt(e2)} "
+        f"C {_pt(c3a)}, {_pt(c3b)}, {_pt(e3)} Z"
+    )
+
+
+def _build_gorget_feathers() -> list:
+    """One deterministic pass (seeded by FEATHER_SEED) over ROW_SPECS,
+    producing {"id", "feathers": [{"d", "fill", "center"}]} per row, in
+    Row-1..Row-5 (top-to-bottom, chin-to-chest) order."""
+    rng = random.Random(FEATHER_SEED)
+    y_centers = _row_y_centers()
+    rows = []
+    for row_spec, y_center in zip(ROW_SPECS, y_centers):
+        count = row_spec["count"]
+        x0, x1 = row_spec["x_range"]
+        w0, w1 = row_spec["width_range"]
+        h0, h1 = row_spec["height_range"]
+        c0, c1 = row_spec["color_index_range"]
+        avg_h = (h0 + h1) / 2
+        feathers = []
+        for i in range(count):
+            # Evenly spaced base column position, then jittered so the row
+            # doesn't read as a uniform grid (spec §15: "no visible
+            # cloning" applies to placement, not just shape).
+            col_fraction = i / (count - 1) if count > 1 else 0.5
+            cx = x0 + col_fraction * (x1 - x0) + rng.uniform(-POSITION_JITTER, POSITION_JITTER) * (x1 - x0)
+            cy = y_center + rng.uniform(-ROW_Y_JITTER, ROW_Y_JITTER) * avg_h
+            width = rng.uniform(w0, w1)
+            height = rng.uniform(h0, h1)
+            rotation = rng.uniform(-ROTATION_JITTER_DEG, ROTATION_JITTER_DEG)
+            color_index = round(c0 + col_fraction * (c1 - c0))
+            fill = GORGET_FEATHER_RAMP[color_index]
+            d = _feather_path_d(rng, width, height, rotation, cx, cy)
+            feathers.append({"d": d, "fill": fill, "center": (cx, cy)})
+        rows.append({"id": row_spec["id"], "feathers": feathers})
+    return rows
+
+
+# Computed once at import time -- pure function of FEATHER_SEED/ROW_SPECS,
+# so every generate() call (light and dark both) sees the identical rows.
+GORGET_FEATHER_ROWS = _build_gorget_feathers()
+
+
+def _gorget_feathers_svg() -> str:
+    """Document order follows spec §34's z-stack: gorget-bottom-row (Row 5,
+    nearest the chest) painted first/bottommost, up through gorget-top-row
+    (Row 1, nearest the chin) painted last/topmost -- the reverse of
+    ROW_SPECS's chin-to-chest order, so each row overlaps down into the one
+    below it (spec §17)."""
+    groups = []
+    for row in reversed(GORGET_FEATHER_ROWS):
+        paths = [
+            f'        <path id="{row["id"]}-{index:02d}" d="{feather["d"]}" fill="{feather["fill"]}"/>'
+            for index, feather in enumerate(row["feathers"], start=1)
+        ]
+        groups.append(f'      <g id="{row["id"]}">\n' + "\n".join(paths) + "\n      </g>")
+    return "\n".join(groups)
+
+
 def _crown_facets_svg() -> str:
     facets = []
     for index, (points, fill) in enumerate(CROWN_FACETS, start=1):
@@ -386,6 +581,9 @@ def _build_svg(palette: dict) -> str:
       <polygon id="chest-base" points="{_points_attr(CHEST_MASS_POINTS)}" fill="{palette['chest_mass']}"/>
       <polygon id="side-body-base" points="{_points_attr(SIDE_BODY_MASS_POINTS)}" fill="{palette['side_body_mass']}"/>
       <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
+      <g id="gorget-feathers">
+{_gorget_feathers_svg()}
+      </g>
       <g id="head">
         <path id="crown-base" d="{CROWN_MASS_PATH}" fill="{palette['crown_mass']}"/>
         <g id="crown-facets" clip-path="url(#crown-clip)">

@@ -281,6 +281,130 @@ class HeadIdentityTest(unittest.TestCase):
                 self.assertLess(idx("eye-highlight-primary"), idx("beak-main"))
 
 
+class GorgetFeatherTest(unittest.TestCase):
+    """Gorget feather system (#63, spec §14-18): the flat gorget block is
+    replaced by one base under-shape plus ~5 overlapping rows of a seeded,
+    jittered rounded-shield primitive."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.paths = icon_generator.generate(Path(self.tmp.name))
+        self.roots = {variant: ET.parse(p).getroot() for variant, p in self.paths.items()}
+
+    def _feather_elements(self, root):
+        return [el for el in root.iter() if (el.get("id") or "").startswith("gorget-") and local(el.tag) == "path" and el.get("id") != "gorget-base"]
+
+    def test_gorget_base_under_shape_still_present(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                self.assertIn("gorget-base", ids)
+                self.assertEqual(local(ids["gorget-base"].tag), "path")
+
+    def test_master_has_35_to_45_feathers(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                feathers = self._feather_elements(root)
+                self.assertGreaterEqual(len(feathers), 35)
+                self.assertLessEqual(len(feathers), 45)
+
+    def test_five_rows_with_spec_section_16_counts(self):
+        expected_ranges = {
+            "gorget-top-row": (5, 6),
+            "gorget-row-2": (7, 8),
+            "gorget-row-3": (8, 9),
+            "gorget-row-4": (7, 8),
+            "gorget-bottom-row": (5, 6),
+        }
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                for row_id, (low, high) in expected_ranges.items():
+                    self.assertIn(row_id, ids)
+                    count = len([i for i in ids if i.startswith(row_id + "-")])
+                    self.assertGreaterEqual(count, low, row_id)
+                    self.assertLessEqual(count, high, row_id)
+
+    def test_no_two_feather_instances_are_identical(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                feathers = self._feather_elements(root)
+                d_values = [el.get("d") for el in feathers]
+                self.assertEqual(len(d_values), len(set(d_values)))
+
+    def test_no_outlines_between_feathers(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                for el in self._feather_elements(root):
+                    self.assertIsNone(el.get("stroke"))
+
+    def test_row_sizes_grow_toward_the_bottom_row(self):
+        widths = [sum(w) / 2 for w in icon_generator.ROW_WIDTH_RANGES]
+        heights = [sum(h) / 2 for h in icon_generator.ROW_HEIGHT_RANGES]
+        self.assertEqual(widths, sorted(widths))
+        self.assertEqual(heights, sorted(heights))
+
+    def test_row_overlap_within_spec_section_17_range(self):
+        centers = icon_generator._row_y_centers()
+        for i in range(len(centers) - 1):
+            prev_h = sum(icon_generator.ROW_HEIGHT_RANGES[i]) / 2
+            next_h = sum(icon_generator.ROW_HEIGHT_RANGES[i + 1]) / 2
+            gap = centers[i + 1] - centers[i]
+            overlap = 1 - gap / ((prev_h + next_h) / 2)
+            self.assertGreaterEqual(overlap, 0.28)
+            self.assertLessEqual(overlap, 0.38)
+
+    def test_color_distribution_follows_spec_section_18_directional_map(self):
+        ramp = icon_generator.GORGET_FEATHER_RAMP
+        # Scarlet zone (spec §18): X 620-740, Y 480-650 -- expect a color
+        # near the red/deep-red end of the ramp there.
+        scarlet_index = ramp.index("#B62E22")
+        # Warmest zone (spec §18): X 250-420, Y 500-700 -- expect a color
+        # near the yellow-orange end of the ramp there.
+        warm_index = ramp.index("#FFA000")
+        self.assertGreater(scarlet_index, warm_index)
+
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                fills_in_scarlet_zone = []
+                fills_in_warm_zone = []
+                for row in icon_generator.GORGET_FEATHER_ROWS:
+                    for feather in row["feathers"]:
+                        cx, cy = feather["center"]
+                        if 620 <= cx <= 740 and 480 <= cy <= 650:
+                            fills_in_scarlet_zone.append(ramp.index(feather["fill"]))
+                        if 250 <= cx <= 420 and 500 <= cy <= 700:
+                            fills_in_warm_zone.append(ramp.index(feather["fill"]))
+                self.assertTrue(fills_in_scarlet_zone, "no feathers sampled in the scarlet zone")
+                self.assertTrue(fills_in_warm_zone, "no feathers sampled in the warm zone")
+                avg_scarlet = sum(fills_in_scarlet_zone) / len(fills_in_scarlet_zone)
+                avg_warm = sum(fills_in_warm_zone) / len(fills_in_warm_zone)
+                self.assertGreater(avg_scarlet, avg_warm)
+
+    def test_regenerating_with_unchanged_parameters_is_byte_stable(self):
+        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+            paths_a = icon_generator.generate(Path(tmp_a))
+            paths_b = icon_generator.generate(Path(tmp_b))
+            for variant in paths_a:
+                self.assertEqual(paths_a[variant].read_text(), paths_b[variant].read_text())
+
+    def test_layer_order_gorget_rows_sit_between_gorget_base_and_crown(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                order = document_order_ids(root)
+
+                def idx(element_id):
+                    return order.index(element_id)
+
+                self.assertLess(idx("gorget-base"), idx("gorget-bottom-row"))
+                self.assertLess(idx("gorget-bottom-row"), idx("gorget-row-4"))
+                self.assertLess(idx("gorget-row-4"), idx("gorget-row-3"))
+                self.assertLess(idx("gorget-row-3"), idx("gorget-row-2"))
+                self.assertLess(idx("gorget-row-2"), idx("gorget-top-row"))
+                self.assertLess(idx("gorget-top-row"), idx("crown-base"))
+
+
 class RasterizesTest(unittest.TestCase):
     def test_both_masters_rasterize_via_the_harness(self):
         import shutil

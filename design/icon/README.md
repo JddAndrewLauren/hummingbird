@@ -69,6 +69,43 @@ explicitly allows "eye stripe / crown ordering adjustments"; raising it
 here is what makes the streak actually visible, separating cheek from
 gorget near the eye instead of reading as stray notches.
 
+## Gorget feather system (#63)
+
+Replaces the flat gorget color block with the spec's main visual identity:
+one unified `gorget-base` under-shape (§14, unchanged from #61/#62) plus
+five overlapping rows (`gorget-top-row` through `gorget-bottom-row`,
+`§16`/`§34` naming) of a seeded, jittered rounded-shield primitive (§15),
+37 feathers total on the master. `scripts/icon_generator.py`'s
+`ROW_SPECS` holds each row's count/width/height/x-span/color-ramp-span as
+data (`_build_gorget_feathers`, seeded by the fixed `FEATHER_SEED`), so a
+later taste pass or the small/micro slice (#65, reduced counts) changes
+parameters, not drawing code. Every feather's own `d` path text is
+distinct -- width, height, rotation and each Bezier control point's
+curvature are independently jittered per instance, then baked into its
+coordinates (not left as a separate `transform`), and the whole pass is
+deterministic (same `FEATHER_SEED`, same output every run) so the
+generator stays byte-stable.
+
+Row-to-row vertical overlap (§17: 28-38%) is derived, not hand-typed:
+`_row_y_centers()` computes each row's y-center from the previous row's
+against a fixed `ROW_OVERLAP` (0.30, the range's midpoint) and the two
+adjacent rows' average height, so the overlap is a property of the data.
+Document order follows §34's z-stack -- `gorget-bottom-row` (Row 5,
+nearest the chest, the largest feathers) painted first/bottommost, up
+through `gorget-top-row` (Row 1, nearest the chin) painted last/topmost --
+so each row's feathers overlap down into the row below, cascading like
+shingled scales per §17 ("no outlines between feathers; separation from
+color contrast only").
+
+Color follows §18's directional map via `GORGET_FEATHER_RAMP` (the §7
+orange/gorget seven-step hex ramp, warmest yellow-orange to coolest
+gorget-shadow): each feather's fill is chosen by its left-to-right column
+position within its row against that row's own `color_index_range`, so
+Row 1 ("darkest reds concentrated near right side") spans the ramp's red
+end, Row 3 (visually dominant) spans the full ramp, and Row 4 ("more
+gold/orange toward left") stays toward the warm end -- never a random
+scatter.
+
 ## Generator
 
 `scripts/icon_generator.py` holds the geometry model (spec §4 composition
