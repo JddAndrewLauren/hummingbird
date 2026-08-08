@@ -221,6 +221,22 @@ class SweepFlowTest(unittest.TestCase):
         self.assertEqual(len(patches), 1)  # task-1 stays incomplete for the retry
         self.assertIn("task-2", patches[0])
 
+    def test_a_malformed_item_fails_only_itself(self):
+        # A row the adapter cannot even describe must fail that row and let the
+        # drain continue -- preparation is inside the per-item try, so it can
+        # never abort the rest of the adapter's list.
+        tasks = {"items": ["not-a-task", {"id": "task-9", "title": "call the vet"}]}
+        fake = FakeHttp(tasks=tasks)
+        ok, failures, _ = self.run_with(fake)
+
+        self.assertFalse(ok)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("unidentified google-tasks item", failures[0])
+
+        patches = self.patched_tasks(fake)
+        self.assertEqual(len(patches), 1)  # the good row still swept and acked
+        self.assertIn("task-9", patches[0])
+
     def test_denylisted_list_is_skipped(self):
         import json
         import tempfile

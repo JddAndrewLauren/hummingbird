@@ -32,6 +32,8 @@ Environment:
   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, LINEAR_API_KEY
   HEALTHCHECK_URL        (Google Tasks check; required live, unused in --dry-run)
   GMAIL_HEALTHCHECK_URL  (Gmail check; required live, unused in --dry-run)
+  Each check is validated at its own adapter's boundary, so a missing one
+  fails only that adapter.
   SWEEP_LOCK             (optional; defaults to /tmp/sweep.lock)
 
 Exit codes: 0 = success, dry run, or lock contention. 1 = any failure.
@@ -309,7 +311,11 @@ def gmail_capture_label_id(token):
 
 
 def gmail_list_message_ids(token, label_id):
-    url = "%s/users/me/messages?labelIds=%s&maxResults=%d" % (
+    # includeSpamTrash is Gmail's default-false, and leaving it false would make
+    # mailbox location a second admission rule behind the label's back: a
+    # deliberately labelled message sitting in Spam or Trash would be dropped
+    # while the adapter still reported success. The label is the whole gesture.
+    url = "%s/users/me/messages?labelIds=%s&includeSpamTrash=true&maxResults=%d" % (
         GMAIL_URL,
         urllib.parse.quote(label_id, safe=""),
         PAGE_SIZE,
@@ -567,6 +573,7 @@ class GoogleTasksAdapter:
 
     name = "google-tasks"
     namespace = NAMESPACE
+    healthcheck_env = "HEALTHCHECK_URL"
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -624,6 +631,7 @@ class GmailAdapter:
 
     name = "gmail"
     namespace = GMAIL_NAMESPACE
+    healthcheck_env = "GMAIL_HEALTHCHECK_URL"
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -641,9 +649,20 @@ class GmailAdapter:
         log("gmail label '%s' carries %d message(s)" % (GMAIL_CAPTURE_LABEL, len(message_ids)))
         for message_id in message_ids:
             try:
-                yield gmail_get_message(self.token, message_id)
+                message = gmail_get_message(self.token, message_id)
             except Exception as exc:
                 fail("message %s" % message_id, exc)
+                continue
+            # Listing and retrieval are two calls, and the label can come off
+            # between them. Only a *currently* labelled message may enter the
+            # drain, so the retrieved labels are the authority, not the list.
+            if self.label_id not in (message.get("labelIds") or []):
+                log(
+                    "message %s lost the capture label since listing; skipping"
+                    % message_id
+                )
+                continue
+            yield message
 
     def source_key(self, item):
         return item.get("id")
@@ -684,20 +703,34 @@ def run_adapter(adapter, dry_run):
         log("ERROR %s: %s" % (ref, exc))
 
     try:
+        if not dry_run and not adapter.healthcheck_url:
+            # This adapter's own config, checked at its own boundary so a
+            # missing check for one source never stops another's drain. Not
+            # draining is the safe half: capture with the dead-man's switch
+            # unarmed is invisible, whereas a check that is never pinged goes
+            # red on grace expiry, which is the switch doing its job.
+            raise SweepError(
+                "missing environment variable %s" % adapter.healthcheck_env
+            )
         for item in adapter.enumerate(fail):
-            ref = adapter.describe(item)
-            capture = adapter.derive_capture(item)
-            if capture is None:
-                # Nothing to capture, so nothing to lose. Left unacked on
-                # purpose: the row stays visible in its source for a human to
-                # delete, rather than being disposed of silently. It will
-                # re-warn every sweep until then, and never touches the alarm.
-                stats["skipped"] += 1
-                log("WARN skipping empty capture %s (no title, no notes)" % ref)
-                continue
-            title, description = capture
-            issue_id = deterministic_v4(adapter.source_key(item), adapter.namespace)
+            # Preparation lives inside the per-item try with the create and the
+            # ack: a malformed item must fail that item and let the drain go on,
+            # never abort the adapter mid-list.
+            ref = "unidentified %s item" % adapter.name
+            title = ""
             try:
+                ref = adapter.describe(item)
+                capture = adapter.derive_capture(item)
+                if capture is None:
+                    # Nothing to capture, so nothing to lose. Left unacked on
+                    # purpose: the row stays visible in its source for a human
+                    # to delete, rather than being disposed of silently. It will
+                    # re-warn every sweep until then, and never touches the alarm.
+                    stats["skipped"] += 1
+                    log("WARN skipping empty capture %s (no title, no notes)" % ref)
+                    continue
+                title, description = capture
+                issue_id = deterministic_v4(adapter.source_key(item), adapter.namespace)
                 if dry_run:
                     log(
                         "DRY-RUN would create %s title='%s' (%s)"
@@ -769,44 +802,69 @@ def run_adapter(adapter, dry_run):
     return AdapterResult(adapter.name, adapter.healthcheck_url, ok, failures, set_aside)
 
 
-def run_sweep(cfg, dry_run):
+def report_result(result):
+    """Ping one adapter's own check. Each check is that adapter's dead-man's
+    switch and nobody else's (ADR-0002), so this takes a single result and
+    never looks at the others."""
+    if not result.healthcheck_url:
+        return
+    if result.ok:
+        ping_success(
+            result.healthcheck_url,
+            "\n".join(result.notes) if result.notes else None,
+            name=result.name,
+        )
+    else:
+        ping_failure(
+            result.healthcheck_url, "\n".join(result.failures), name=result.name
+        )
+
+
+def run_sweep(cfg, dry_run, on_result=None):
     """Run every capture adapter in one sweep. Returns [AdapterResult, ...].
 
     Isolation is the point (ADR-0002): each adapter gets its own result, its
     own healthcheck ping, and its own failure list, and a failure in one never
     prevents another from draining and reporting.
+
+    `on_result` is called with each result the moment that adapter finishes,
+    before the next one starts. Reporting is isolated in *time* as well as in
+    routing: a later adapter grinding through its timeouts must not hold an
+    earlier adapter's ping past its grace period and turn a healthy drain red.
     """
     results = []
     for adapter in (GoogleTasksAdapter(cfg), GmailAdapter(cfg)):
         try:
-            results.append(run_adapter(adapter, dry_run))
+            result = run_adapter(adapter, dry_run)
         except Exception as exc:  # belt for the braces inside run_adapter
             log("ERROR adapter %s aborted: %s" % (adapter.name, exc))
-            results.append(
-                AdapterResult(
-                    adapter.name,
-                    adapter.healthcheck_url,
-                    False,
-                    ["adapter %s aborted: %s" % (adapter.name, exc)],
-                    [],
-                )
+            result = AdapterResult(
+                adapter.name,
+                adapter.healthcheck_url,
+                False,
+                ["adapter %s aborted: %s" % (adapter.name, exc)],
+                [],
             )
+        results.append(result)
+        if on_result is not None:
+            on_result(result)
     return results
 
 
-def config_from_env(env, dry_run):
+def config_from_env(env):
     def required(name):
         value = env.get(name)
         if not value:
             raise SweepError("missing environment variable %s" % name)
         return value
 
+    # Deliberately not required here. A check url belongs to one adapter, so
+    # demanding it before the sweep starts would let a missing Gmail check stop
+    # the Google Tasks drain and vice versa -- exactly the coupling ADR-0002
+    # forbids. Each adapter validates its own check at its own boundary in
+    # run_adapter instead.
     healthcheck = env.get("HEALTHCHECK_URL") or ""
     gmail_healthcheck = env.get("GMAIL_HEALTHCHECK_URL") or ""
-    if not dry_run and not healthcheck:
-        raise SweepError("missing environment variable HEALTHCHECK_URL")
-    if not dry_run and not gmail_healthcheck:
-        raise SweepError("missing environment variable GMAIL_HEALTHCHECK_URL")
 
     return Config(
         google_client_id=required("GOOGLE_CLIENT_ID"),
@@ -847,9 +905,16 @@ def main(argv=None):
         log("another sweep holds %s; skipping this run" % lock_path)
         return 0
 
+    # One ping per adapter, each to its own check, fired the moment that
+    # adapter finishes: a shared check held red by one broken drain would hide
+    # the health of the others, and a ping deferred until every adapter has
+    # finished would let a slow one hold a healthy adapter's check past its
+    # grace period (ADR-0002).
+    on_result = None if args.dry_run else report_result
+
     try:
-        cfg = config_from_env(os.environ, args.dry_run)
-        results = run_sweep(cfg, args.dry_run)
+        cfg = config_from_env(os.environ)
+        results = run_sweep(cfg, args.dry_run, on_result)
     except Exception as exc:
         # A failure before any adapter ran -- config, usually. Nothing swept,
         # so every adapter's alarm must trip. Fall back to the raw env vars so
@@ -862,23 +927,11 @@ def main(argv=None):
             AdapterResult("gmail", os.environ.get("GMAIL_HEALTHCHECK_URL", ""),
                           False, [aborted], []),
         ]
-
-    # One ping per adapter, each to its own check: a shared check held red by
-    # one broken drain would hide the health of the others (ADR-0002).
-    if not args.dry_run:
-        for result in results:
-            if not result.healthcheck_url:
-                continue
-            if result.ok:
-                ping_success(
-                    result.healthcheck_url,
-                    "\n".join(result.notes) if result.notes else None,
-                    name=result.name,
-                )
-            else:
-                ping_failure(
-                    result.healthcheck_url, "\n".join(result.failures), name=result.name
-                )
+        # Nothing reported yet on this path -- the abort happened before any
+        # adapter finished -- so report both here.
+        if on_result is not None:
+            for result in results:
+                on_result(result)
 
     lock.close()
     return 0 if all(result.ok for result in results) else 1

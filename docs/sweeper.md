@@ -40,10 +40,22 @@ Each source implements `enumerate` / `derive_capture` / `source_key` / `ack`
 against the one shared engine, which owns everything load-bearing: the
 Linear-first ordering, deterministic ids, transient-versus-terminal
 classification, quarantine, per-adapter counts, and the ping. An adapter's
-failure — even its own plumbing (token exchange, a missing capture label) —
-fails only that adapter's result; the others drain and report normally. One
-frozen `NAMESPACE` per source keeps id spaces disjoint, each guarded by its
-own frozen test vector.
+failure — even its own plumbing (token exchange, a missing capture label, a
+missing healthcheck url) — fails only that adapter's result; the others drain
+and report normally. One frozen `NAMESPACE` per source keeps id spaces
+disjoint, each guarded by its own frozen test vector.
+
+Isolation is why **each adapter validates its own config at its own boundary**.
+`config_from_env()` requires only what both adapters share (the credentials);
+a missing `$HEALTHCHECK_URL` or `$GMAIL_HEALTHCHECK_URL` is raised inside
+`run_adapter` for that adapter alone, so one absent check can never stop the
+other source's drain. That adapter then captures nothing: draining with its
+dead-man's switch unarmed would be invisible, whereas a check that is never
+pinged goes red on grace expiry, which is the switch working.
+
+Per item, `describe`/`derive_capture`/id derivation sit **inside** the same
+per-item `try` as the create and the ack, so a malformed item fails only itself
+and the drain continues down the list.
 
 A `fcntl.flock` on `$SWEEP_LOCK` (default `/tmp/sweep.lock`) is taken *inside*
 the script rather than by a `flock -n` wrapper in the crontab, so it covers
@@ -67,8 +79,9 @@ not in the denylist; Gmail: each message carrying the capture label):
    sweep retries), mark the sweep failed, continue to the next item
 6. on a **terminal** error → log `QUARANTINE`, leave the task incomplete, and
    continue **without** failing the sweep (see Liveness)
-7. after all items: no failures → ping the healthchecks success URL, carrying
-   any quarantined/skipped summary as its body
+7. after that adapter's last item, before the next adapter starts: no failures
+   → ping *its* healthchecks success URL, carrying any quarantined/skipped
+   summary as its body
 
 **Create-in-Linear-first is load-bearing.** A crash between steps 3 and 4 can
 only produce a visible duplicate attempt, never a silent loss — and the
@@ -122,6 +135,14 @@ An inbox is a firehose, so Gmail inverts Tasks' fail-open posture to
 
 - **Only labelled messages are enumerated.** Everything else is invisible to
   the sweeper — it never lists, reads, or touches an unlabelled message.
+- **The label, not the mailbox, is the admission rule.** The listing passes
+  `includeSpamTrash=true` (Gmail defaults it to false), so a deliberately
+  labelled message is captured wherever it sits. Location silently overruling
+  the gesture would be a second, invisible rule.
+- **The label is rechecked on retrieval.** Listing and metadata fetch are two
+  calls; if the label came off in between, the retrieved `labelIds` win and the
+  message is skipped with a log line, not captured. Only a *currently* labelled
+  message enters the drain.
 - **The ack removes exactly that label from that message.** Never archive,
   mark-read, star, delete, or any other mutation. The message stays where it
   was as the audit trail; the thread deep link in the issue is the road back.
@@ -169,7 +190,11 @@ missed sweeps). **One check per capture adapter** (ADR-0002): a shared check
 held red by one broken drain would hide the health of the others.
 `$HEALTHCHECK_URL` is the Google Tasks check; `$GMAIL_HEALTHCHECK_URL` is the
 Gmail check. Each adapter pings its own check independently, success or
-failure, every run. Success is pinged **only after that adapter's fully
+failure, every run, **the moment that adapter finishes and before the next one
+starts** — a later adapter grinding through 30-second timeouts must not hold an
+earlier adapter's ping past the 45-minute grace and turn a healthy drain red.
+An adapter whose url is unset fails itself and drains
+nothing, leaving the other's reporting untouched. Success is pinged **only after that adapter's fully
 successful, non-dry drain** — a sweeper that runs but errors on every call
 must still trip the alarm. Any failure or exception POSTs that adapter's
 accumulated failure lines to its check's `/fail` for immediate alerting. The
@@ -275,24 +300,31 @@ steps below them are new with [#45](https://github.com/JddAndrewLauren/hummingbi
 
 ### Gmail go-live
 
-1. **Label.** In the twinion.net Gmail account, create the label
+1. **Enable the Gmail API.** In the same Google Cloud project as the OAuth
+   client, enable the Gmail API (`gcloud services enable gmail.googleapis.com`,
+   or APIs & Services → Library → Gmail API → Enable). It is off by default in
+   a fresh project — without it every Gmail call fails 403 with
+   `Gmail API has not been used in project …` however good the token is. The
+   Tasks API was enabled the same way during the 2026-08-07 provisioning.
+2. **Label.** In the twinion.net Gmail account, create the label
    `hummingbird/capture` (in the UI this is a `capture` label nested under a
    `hummingbird` parent; the API sees the full `hummingbird/capture` name).
    Until it exists the Gmail adapter fails closed and red — that is by design.
-2. **healthchecks.io.** Create a second, dedicated check (grace period 45
+3. **healthchecks.io.** Create a second, dedicated check (grace period 45
    minutes, like the first); record its ping URL. Leave it paused until
-   go-live.
-3. **Re-consent.** `python3 scripts/mint_refresh_token.py --client-id …
+   go-live. Until `GMAIL_HEALTHCHECK_URL` is set the Gmail adapter fails and
+   captures nothing, while Google Tasks keeps draining normally.
+4. **Re-consent.** `python3 scripts/mint_refresh_token.py --client-id …
    --client-secret …` — the script now requests Tasks + `gmail.modify`
    together, so the one consent covers both adapters. Grant as the twinion.net
    account.
-4. **Secrets.** `flyctl secrets set GOOGLE_REFRESH_TOKEN=<new token>
+5. **Secrets.** `flyctl secrets set GOOGLE_REFRESH_TOKEN=<new token>
    GMAIL_HEALTHCHECK_URL=<new ping url>`. The old Tasks-only refresh token is
    superseded; nothing else changes.
-5. **Dry run.** Label one test message, export the secrets locally, run
+6. **Dry run.** Label one test message, export the secrets locally, run
    `./sweep.py --dry-run`, and read both adapters' output — the Gmail adapter
    should log the labelled message and mutate nothing.
-6. **Go live.** Push to `main` (which deploys), watch `flyctl logs`, unpause
+7. **Go live.** Push to `main` (which deploys), watch `flyctl logs`, unpause
    the new check, and verify one live capture: the labelled message appears in
    Linear Triage with the subject as title and the sender/date/thread-link
    description, and only the `hummingbird/capture` label disappears from it —

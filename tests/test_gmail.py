@@ -5,9 +5,15 @@ sweep.http_json, so these tests monkeypatch exactly that one function and
 assert on the calls it receives.
 """
 
+import contextlib
+import io
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -42,6 +48,7 @@ def message(
     sender="Jane Doe <jane@example.com>",
     snippet="do the thing",
     internal_date=INTERNAL_DATE,
+    label_ids=(LABEL_ID, "INBOX"),
 ):
     headers = []
     if subject is not None:
@@ -52,6 +59,7 @@ def message(
         "id": msg_id,
         "threadId": thread_id,
         "snippet": snippet,
+        "labelIds": list(label_ids),
         "payload": {"headers": headers},
     }
     if internal_date is not None:
@@ -148,6 +156,8 @@ class FakeHttp:
 
     def __call__(self, url, method="GET", headers=None, body=None):
         self.calls.append({"url": url, "method": method, "headers": headers, "body": body})
+        if url.startswith("https://hc.example/"):
+            return {}
         if url == sweep.GOOGLE_TOKEN_URL:
             return {"access_token": "at"}
         if url == sweep.LINEAR_URL:
@@ -176,6 +186,16 @@ class FakeHttp:
 
     def linear_creates(self):
         return [c for c in self.calls if c["url"] == sweep.LINEAR_URL]
+
+    def pings(self):
+        return [c for c in self.calls if c["url"].startswith("https://hc.example/")]
+
+    def first_index(self, needle):
+        """Position of the first call whose url contains `needle`, or None."""
+        for index, call in enumerate(self.calls):
+            if needle in call["url"]:
+                return index
+        return None
 
 
 class GmailFlowTest(unittest.TestCase):
@@ -229,6 +249,25 @@ class GmailFlowTest(unittest.TestCase):
         listings = [c for c in fake.calls if "/users/me/messages?" in c["url"]]
         self.assertEqual(len(listings), 1)
         self.assertIn("labelIds=%s" % LABEL_ID, listings[0]["url"])
+
+    def test_enumeration_includes_labelled_spam_and_trash(self):
+        # The label is the admission rule, not the mailbox location: Gmail
+        # defaults includeSpamTrash to false, which would silently drop a
+        # deliberately labelled message while still reporting success.
+        fake = FakeHttp()
+        self.run_gmail(fake)
+        listings = [c for c in fake.calls if "/users/me/messages?" in c["url"]]
+        self.assertIn("includeSpamTrash=true", listings[0]["url"])
+
+    def test_label_removed_during_enumeration_cancels_the_capture(self):
+        # The user unlabelled the message between the listing and the metadata
+        # fetch. Fail closed: no issue, no mutation, and the run stays green.
+        fake = FakeHttp(messages=[message(label_ids=("INBOX",))])
+        result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(fake.linear_creates(), [])
+        self.assertEqual(fake.gmail_mutations(), [])
 
     def test_missing_label_fails_closed(self):
         # No capture label in the mailbox means no gesture to trust: the
@@ -333,6 +372,35 @@ class AdapterIsolationTest(unittest.TestCase):
         self.assertTrue(results["gmail"].ok)
         self.assertEqual(len(fake.gmail_mutations()), 1)  # message swept and unlabelled
 
+    def test_a_missing_check_url_fails_only_its_own_adapter(self):
+        # A healthcheck url belongs to one adapter. A missing Gmail check must
+        # not stop the Google Tasks drain -- and the Gmail adapter must not
+        # drain unreported, so it captures nothing and fails visibly.
+        fake = FakeHttp()
+        sweep.http_json = fake
+        results = self.by_name(sweep.run_sweep(CFG._replace(gmail_healthcheck_url=""), False))
+
+        self.assertTrue(results["google-tasks"].ok)
+        self.assertFalse(results["gmail"].ok)
+        self.assertTrue(
+            any("GMAIL_HEALTHCHECK_URL" in line for line in results["gmail"].failures)
+        )
+        self.assertEqual(fake.gmail_mutations(), [])
+        self.assertFalse(any("/users/me/" in c["url"] for c in fake.calls))
+        # The task was still swept and completed.
+        patches = [c for c in fake.calls
+                   if c["method"] == "PATCH" and c["url"].startswith(sweep.TASKS_URL)]
+        self.assertEqual(len(patches), 1)
+
+    def test_a_missing_check_url_is_irrelevant_to_a_dry_run(self):
+        fake = FakeHttp()
+        sweep.http_json = fake
+        results = self.by_name(
+            sweep.run_sweep(CFG._replace(healthcheck_url="", gmail_healthcheck_url=""), True)
+        )
+        self.assertTrue(results["google-tasks"].ok)
+        self.assertTrue(results["gmail"].ok)
+
     def test_failure_reports_never_cross_adapters(self):
         fake = FakeHttp(labels={"labels": []})
         sweep.http_json = fake
@@ -341,6 +409,117 @@ class AdapterIsolationTest(unittest.TestCase):
         self.assertEqual(results["google-tasks"].failures, [])
         self.assertTrue(results["gmail"].failures)
         self.assertFalse(any("task" in line for line in results["gmail"].failures))
+
+
+class MainReportingTest(unittest.TestCase):
+    """One run, end to end through main(): which check each adapter pings,
+    with what body, and when. The routing is the reporting isolation
+    (ADR-0002) -- a crossed url or a deferred ping is invisible to every test
+    that stops at the AdapterResult."""
+
+    TASKS_CHECK = "https://hc.example/tasks"
+    GMAIL_CHECK = "https://hc.example/gmail"
+    ENV = {
+        "GOOGLE_CLIENT_ID": "cid",
+        "GOOGLE_CLIENT_SECRET": "secret",
+        "GOOGLE_REFRESH_TOKEN": "refresh",
+        "LINEAR_API_KEY": "lin_key",
+        "HEALTHCHECK_URL": TASKS_CHECK,
+        "GMAIL_HEALTHCHECK_URL": GMAIL_CHECK,
+        "SWEEP_DENYLIST": "/nonexistent/denylist.json",
+    }
+
+    def setUp(self):
+        self.real_http = sweep.http_json
+        self.lock_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        sweep.http_json = self.real_http
+        shutil.rmtree(self.lock_dir, ignore_errors=True)
+
+    def run_main(self, fake, argv=(), env=None):
+        sweep.http_json = fake
+        environ = dict(self.ENV)
+        environ["SWEEP_LOCK"] = str(Path(self.lock_dir) / "sweep.lock")
+        environ.update(env or {})
+        with mock.patch.dict(os.environ, environ, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                return sweep.main(list(argv))
+
+    def ping(self, fake, url):
+        matches = [c for c in fake.pings() if c["url"] == url]
+        self.assertEqual(len(matches), 1, "expected exactly one ping to %s" % url)
+        return matches[0]
+
+    def test_each_adapter_pings_its_own_check(self):
+        fake = FakeHttp()
+        self.assertEqual(self.run_main(fake), 0)
+
+        self.assertEqual(
+            sorted(c["url"] for c in fake.pings()),
+            [self.GMAIL_CHECK, self.TASKS_CHECK],
+        )
+
+    def test_a_failing_adapter_fails_only_its_own_check(self):
+        # The capture label is gone, so Gmail fails and Google Tasks does not.
+        # The fail ping must go to the Gmail check and nowhere else.
+        fake = FakeHttp(labels={"labels": []})
+        self.assertEqual(self.run_main(fake), 1)
+
+        gmail = self.ping(fake, self.GMAIL_CHECK + "/fail")
+        self.assertIn("failing closed", gmail["body"].decode("utf-8"))
+        self.assertEqual(self.ping(fake, self.TASKS_CHECK)["method"], "GET")
+        self.assertIsNone(fake.first_index(self.TASKS_CHECK + "/fail"))
+
+    def test_a_failing_adapter_never_reports_through_the_other_check(self):
+        fake = FakeHttp(lists_response={"_status": 503, "error": "backend down"})
+        self.assertEqual(self.run_main(fake), 1)
+
+        tasks = self.ping(fake, self.TASKS_CHECK + "/fail")
+        self.assertIn("backend down", tasks["body"].decode("utf-8"))
+        # Gmail drained fine, so its check gets a plain success and none of
+        # the Google Tasks failure text.
+        gmail = self.ping(fake, self.GMAIL_CHECK)
+        self.assertEqual(gmail["method"], "GET")
+        self.assertIsNone(gmail["body"])
+        self.assertIsNone(fake.first_index(self.GMAIL_CHECK + "/fail"))
+
+    def test_each_adapter_pings_before_the_next_one_starts(self):
+        # Reporting is isolated in time too: a slow adapter must not hold an
+        # earlier adapter's ping past its grace period and turn a healthy
+        # drain red. The Google Tasks ping must land before Gmail's first call.
+        fake = FakeHttp()
+        self.run_main(fake)
+
+        self.assertLess(
+            fake.first_index(self.TASKS_CHECK),
+            fake.first_index("/users/me/labels"),
+        )
+
+    def test_set_aside_counts_reach_only_their_own_check(self):
+        # An empty Google Tasks row is set aside, so its note belongs in the
+        # Google Tasks ping body -- and nowhere near the Gmail one.
+        fake = FakeHttp()
+        fake.tasks = {"items": [{"id": "task-1", "title": "", "notes": ""}]}
+        self.assertEqual(self.run_main(fake), 0)
+
+        tasks = self.ping(fake, self.TASKS_CHECK)
+        self.assertEqual(tasks["method"], "POST")
+        self.assertIn("1 empty captures skipped", tasks["body"].decode("utf-8"))
+        self.assertIsNone(self.ping(fake, self.GMAIL_CHECK)["body"])
+
+    def test_a_config_failure_fails_every_check(self):
+        # Nothing was swept, so no adapter may look alive.
+        fake = FakeHttp()
+        self.assertEqual(self.run_main(fake, env={"LINEAR_API_KEY": ""}), 1)
+        for url in (self.TASKS_CHECK, self.GMAIL_CHECK):
+            body = self.ping(fake, url + "/fail")["body"].decode("utf-8")
+            self.assertIn("LINEAR_API_KEY", body)
+
+    def test_a_dry_run_pings_nothing(self):
+        fake = FakeHttp()
+        self.assertEqual(self.run_main(fake, argv=["--dry-run"]), 0)
+        self.assertEqual(fake.pings(), [])
 
 
 class GmailConfigTest(unittest.TestCase):
@@ -352,14 +531,20 @@ class GmailConfigTest(unittest.TestCase):
         "HEALTHCHECK_URL": "https://hc.example/tasks",
     }
 
-    def test_live_run_requires_the_gmail_check(self):
-        with self.assertRaises(sweep.SweepError) as ctx:
-            sweep.config_from_env(dict(self.ENV), dry_run=False)
-        self.assertIn("GMAIL_HEALTHCHECK_URL", str(ctx.exception))
-
-    def test_dry_run_does_not(self):
-        cfg = sweep.config_from_env(dict(self.ENV), dry_run=True)
+    def test_a_missing_check_url_does_not_abort_config(self):
+        # Config is shared by both adapters, so it must not fail on one
+        # adapter's check: that check is validated at its own boundary, where
+        # it can fail only its own drain.
+        cfg = sweep.config_from_env(dict(self.ENV))
         self.assertEqual(cfg.gmail_healthcheck_url, "")
+        self.assertEqual(cfg.healthcheck_url, "https://hc.example/tasks")
+
+    def test_a_missing_credential_still_aborts_config(self):
+        env = dict(self.ENV)
+        del env["LINEAR_API_KEY"]
+        with self.assertRaises(sweep.SweepError) as ctx:
+            sweep.config_from_env(env)
+        self.assertIn("LINEAR_API_KEY", str(ctx.exception))
 
 
 if __name__ == "__main__":
