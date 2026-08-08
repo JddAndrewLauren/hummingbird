@@ -364,53 +364,70 @@ FEATHER_BASE_HEIGHT = 51.0  # primitive's own bbox: y runs -7..44
 # Spec §7/§18 orange/gorget ramp, warmest (yellow-orange) to coolest (gorget
 # shadow). Each feather's fill is an index into this ramp, chosen by its
 # left-to-right column position within its row (§18: warm left, red/deep-red
-# right) -- never a random rainbow pick.
+# right) -- never a random rainbow pick. §7's "primary orange" (#FF8500) is
+# deliberately left out: it's also LIGHT_PALETTE's gorget-base fill (and
+# DARK_PALETTE's is only ~4% brighter, #FF8A00), so a feather using it would
+# be invisible against its own base -- violating §17's "separation comes
+# entirely from color contrast" (review on #63/PR #87 caught 6 such
+# feathers). GorgetFeatherFillsAreDistinctFromBaseTest guards this.
 GORGET_FEATHER_RAMP = (
     "#FFA000",  # 0 yellow-orange
-    "#FF8500",  # 1 primary orange
-    "#F46B00",  # 2 deep orange
-    "#F4470D",  # 3 vermilion
-    "#D93A18",  # 4 red-orange
-    "#B62E22",  # 5 deep red
-    "#8D2A23",  # 6 gorget shadow
+    "#F46B00",  # 1 deep orange
+    "#F4470D",  # 2 vermilion
+    "#D93A18",  # 3 red-orange
+    "#B62E22",  # 4 deep red
+    "#8D2A23",  # 5 gorget shadow
 )
 
 # Spec §16-17: five rows, ids following spec §34's layer-order names (Row 1
 # "near chin" -> gorget-top-row ... Row 5 "overlaps the chest" ->
-# gorget-bottom-row). Width/height ranges are §16's own per-row figures --
-# sampling within them already delivers the "no two identical, ~10-15%
-# spread" look (§15) without a separate multiplier. color_index_range picks
-# a sub-span of GORGET_FEATHER_RAMP per §16's per-row color notes (Row 1
-# "darkest reds concentrated near right side", Row 4 "more gold/orange
-# toward left", Row 3 "visually dominant" gets the full ramp).
+# gorget-bottom-row). color_index_range picks a sub-span of
+# GORGET_FEATHER_RAMP per §16's per-row color notes (Row 1 "darkest reds
+# concentrated near right side", Row 4 "more gold/orange toward left",
+# Row 3 "visually dominant" gets the full ramp).
+#
+# y_center/width_range/height_range are hand-placed (not derived from a
+# single overlap constant) so the cascade can actually reach the gorget
+# envelope's own extent -- §16's literal per-row figures (e.g. Row 5
+# "Height: 70-90") only produce ~200px of legitimate row-to-row overlap
+# stacked from a chin-height start, well short of the ~390px the base
+# envelope (GORGET_MASS_PATH, §14) actually spans; review on #63/PR #87
+# measured the result as 50.7% feather coverage in the lower gorget with
+# 0% in the bottom two 50px bands. Row 4/5 are widened beyond §16's literal
+# numbers (still "the largest shapes", per §16's own steer) and Row 5's
+# center is pushed down to where the envelope's lowest vertex actually is
+# (GORGET_MASS_PATH's "530 775") so the cascade reaches the chest overlap
+# §16 calls for. The feather group is clipped to GORGET_MASS_PATH (same
+# pattern as crown-clip, #62) so any feather overshooting the envelope at
+# these larger sizes is trimmed to the mass's own silhouette, never bleeding
+# into the background or beak -- GorgetFeathersClippedToEnvelopeTest guards
+# this structurally.
 ROW_SPECS = [
     {
         "id": "gorget-top-row", "count": 6, "width_range": (55, 75), "height_range": (45, 60),
-        "x_range": (420, 760), "color_index_range": (2, 6),
+        "x_range": (420, 760), "color_index_range": (1, 5), "y_center": 418,
     },
     {
-        "id": "gorget-row-2", "count": 8, "width_range": (65, 82), "height_range": (52, 66),
-        "x_range": (330, 760), "color_index_range": (1, 5),
+        "id": "gorget-row-2", "count": 8, "width_range": (65, 85), "height_range": (52, 68),
+        "x_range": (330, 760), "color_index_range": (0, 4), "y_center": 472,
     },
     {
-        "id": "gorget-row-3", "count": 9, "width_range": (72, 90), "height_range": (58, 72),
-        "x_range": (250, 775), "color_index_range": (0, 6),
+        "id": "gorget-row-3", "count": 9, "width_range": (75, 96), "height_range": (60, 78),
+        "x_range": (250, 775), "color_index_range": (0, 5), "y_center": 530,
     },
     {
-        "id": "gorget-row-4", "count": 8, "width_range": (78, 100), "height_range": (65, 82),
-        "x_range": (220, 680), "color_index_range": (0, 4),
+        "id": "gorget-row-4", "count": 8, "width_range": (88, 115), "height_range": (72, 95),
+        "x_range": (220, 690), "color_index_range": (0, 3), "y_center": 600,
     },
     {
-        "id": "gorget-bottom-row", "count": 6, "width_range": (85, 110), "height_range": (70, 90),
-        "x_range": (215, 650), "color_index_range": (0, 3),
+        "id": "gorget-bottom-row", "count": 6, "width_range": (100, 140), "height_range": (88, 120),
+        "x_range": (210, 660), "color_index_range": (0, 2), "y_center": 685,
     },
 ]
 ROW_WIDTH_RANGES = [row["width_range"] for row in ROW_SPECS]
 ROW_HEIGHT_RANGES = [row["height_range"] for row in ROW_SPECS]
 
 FEATHER_SEED = 20260808  # fixed -- regenerating with unchanged parameters must be byte-stable
-ROW_OVERLAP = 0.30  # spec §17: 28-38%; the midpoint keeps equal margin both ways
-ROW_TOP_Y = 430.0  # Row 1 (near chin) y-center; the rest are derived below
 ROTATION_JITTER_DEG = 14.0  # spec §15 rotation variation
 CURVATURE_JITTER = 0.15  # spec §15 curvature variation (of a control point's own scaled offset)
 POSITION_JITTER = 0.06  # column-position jitter, as a fraction of the row's x-span
@@ -418,17 +435,7 @@ ROW_Y_JITTER = 0.08  # per-feather y jitter, as a fraction of the row's avg heig
 
 
 def _row_y_centers() -> list:
-    """Row 1's y-center is fixed (ROW_TOP_Y); each following row's is
-    derived from ROW_OVERLAP against the average height of the two
-    adjacent rows, so the 28-38% overlap (spec §17) is a property of the
-    data, not a hand-tuned coincidence."""
-    centers = [ROW_TOP_Y]
-    for i in range(1, len(ROW_SPECS)):
-        prev_h = sum(ROW_SPECS[i - 1]["height_range"]) / 2
-        this_h = sum(ROW_SPECS[i]["height_range"]) / 2
-        gap = ((prev_h + this_h) / 2) * (1 - ROW_OVERLAP)
-        centers.append(centers[-1] + gap)
-    return centers
+    return [row["y_center"] for row in ROW_SPECS]
 
 
 def _rotate_point(point, angle_deg: float, origin) -> tuple:
@@ -465,18 +472,24 @@ def _feather_path_d(rng: random.Random, width: float, height: float, rotation_de
     c1a, c1b, e1 = placed[1:4]
     c2a, c2b, e2 = placed[4:7]
     c3a, c3b, e3 = placed[7:10]
-    return (
+    d = (
         f"M {_pt(m)} "
         f"C {_pt(c1a)}, {_pt(c1b)}, {_pt(e1)} "
         f"C {_pt(c2a)}, {_pt(c2b)}, {_pt(e2)} "
         f"C {_pt(c3a)}, {_pt(c3b)}, {_pt(e3)} Z"
     )
+    y_min = min(p[1] for p in placed)
+    y_max = max(p[1] for p in placed)
+    return d, (y_min, y_max)
 
 
 def _build_gorget_feathers() -> list:
     """One deterministic pass (seeded by FEATHER_SEED) over ROW_SPECS,
-    producing {"id", "feathers": [{"d", "fill", "center"}]} per row, in
-    Row-1..Row-5 (top-to-bottom, chin-to-chest) order."""
+    producing {"id", "feathers": [{"d", "fill", "center", "y_extent"}]} per
+    row, in Row-1..Row-5 (top-to-bottom, chin-to-chest) order. `y_extent`
+    (the feather's own actual rendered (y_min, y_max), post-jitter/rotation)
+    lets tests measure real row-to-row overlap from the generated geometry
+    itself rather than recomputing the placement formula."""
     rng = random.Random(FEATHER_SEED)
     y_centers = _row_y_centers()
     rows = []
@@ -500,8 +513,8 @@ def _build_gorget_feathers() -> list:
             rotation = rng.uniform(-ROTATION_JITTER_DEG, ROTATION_JITTER_DEG)
             color_index = round(c0 + col_fraction * (c1 - c0))
             fill = GORGET_FEATHER_RAMP[color_index]
-            d = _feather_path_d(rng, width, height, rotation, cx, cy)
-            feathers.append({"d": d, "fill": fill, "center": (cx, cy)})
+            d, y_extent = _feather_path_d(rng, width, height, rotation, cx, cy)
+            feathers.append({"d": d, "fill": fill, "center": (cx, cy), "y_extent": y_extent})
         rows.append({"id": row_spec["id"], "feathers": feathers})
     return rows
 
@@ -509,6 +522,14 @@ def _build_gorget_feathers() -> list:
 # Computed once at import time -- pure function of FEATHER_SEED/ROW_SPECS,
 # so every generate() call (light and dark both) sees the identical rows.
 GORGET_FEATHER_ROWS = _build_gorget_feathers()
+
+
+def row_y_extent(row: dict) -> tuple:
+    """A row's actual aggregate (y_min, y_max) across all its generated
+    feathers -- real geometry, not the row_spec's nominal center/height."""
+    y_mins = [f["y_extent"][0] for f in row["feathers"]]
+    y_maxes = [f["y_extent"][1] for f in row["feathers"]]
+    return (min(y_mins), max(y_maxes))
 
 
 def _gorget_feathers_svg() -> str:
@@ -569,6 +590,9 @@ def _build_svg(palette: dict) -> str:
     <clipPath id="crown-clip">
       <path d="{CROWN_MASS_PATH}"/>
     </clipPath>
+    <clipPath id="gorget-clip">
+      <path d="{GORGET_MASS_PATH}"/>
+    </clipPath>
     <!-- Preview-only mask (spec §3): the master itself stays full-square. -->
     <clipPath id="preview-rounded-square">
       <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
@@ -581,7 +605,7 @@ def _build_svg(palette: dict) -> str:
       <polygon id="chest-base" points="{_points_attr(CHEST_MASS_POINTS)}" fill="{palette['chest_mass']}"/>
       <polygon id="side-body-base" points="{_points_attr(SIDE_BODY_MASS_POINTS)}" fill="{palette['side_body_mass']}"/>
       <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
-      <g id="gorget-feathers">
+      <g id="gorget-feathers" clip-path="url(#gorget-clip)">
 {_gorget_feathers_svg()}
       </g>
       <g id="head">

@@ -345,15 +345,52 @@ class GorgetFeatherTest(unittest.TestCase):
         self.assertEqual(widths, sorted(widths))
         self.assertEqual(heights, sorted(heights))
 
-    def test_row_overlap_within_spec_section_17_range(self):
-        centers = icon_generator._row_y_centers()
-        for i in range(len(centers) - 1):
-            prev_h = sum(icon_generator.ROW_HEIGHT_RANGES[i]) / 2
-            next_h = sum(icon_generator.ROW_HEIGHT_RANGES[i + 1]) / 2
-            gap = centers[i + 1] - centers[i]
-            overlap = 1 - gap / ((prev_h + next_h) / 2)
-            self.assertGreaterEqual(overlap, 0.28)
-            self.assertLessEqual(overlap, 0.38)
+    def test_row_overlap_measured_from_generated_geometry(self):
+        # Independent of the placement formula (review on #63/PR #87 flagged
+        # the previous version of this test as tautological -- it recomputed
+        # the same constants the generator used to place the rows). This
+        # measures each row's *actual* aggregate (y_min, y_max) across its
+        # generated feathers -- real post-jitter/rotation geometry -- and
+        # asserts consecutive rows genuinely overlap (share a nonzero y-band,
+        # not just an idealized center-to-center gap), by a fraction of the
+        # smaller row's own real span roughly in the spec §17 neighborhood.
+        rows = icon_generator.GORGET_FEATHER_ROWS
+        for i in range(len(rows) - 1):
+            upper_min, upper_max = icon_generator.row_y_extent(rows[i])
+            lower_min, lower_max = icon_generator.row_y_extent(rows[i + 1])
+            intersection = upper_max - lower_min
+            self.assertGreater(intersection, 0, f"{rows[i]['id']}/{rows[i + 1]['id']} do not overlap at all")
+            smaller_span = min(upper_max - upper_min, lower_max - lower_min)
+            overlap_fraction = intersection / smaller_span
+            self.assertGreaterEqual(overlap_fraction, 0.15, rows[i]["id"])
+            self.assertLessEqual(overlap_fraction, 0.95, rows[i]["id"])
+
+    def test_gorget_feathers_clipped_to_the_base_envelope(self):
+        # Review on #63/PR #87: 9/37 feathers (4 entirely) rendered outside
+        # gorget-base, reading as detached color blobs. The feather group is
+        # clipped to GORGET_MASS_PATH (same pattern as #62's crown-clip), so
+        # no feather geometry -- however far a seeded instance overshoots --
+        # can render past the mass's own silhouette.
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                feather_group = ids["gorget-feathers"]
+                self.assertEqual(feather_group.get("clip-path"), "url(#gorget-clip)")
+                clip_paths = [el for el in root.iter() if local(el.tag) == "clippath" or local(el.tag) == "clipPath"]
+                gorget_clip = next(el for el in clip_paths if el.get("id") == "gorget-clip")
+                clip_shape = next(iter(gorget_clip))
+                self.assertEqual(clip_shape.get("d"), icon_generator.GORGET_MASS_PATH)
+
+    def test_no_feather_fill_matches_either_variants_base_gorget_fill(self):
+        # Review on #63/PR #87: 6 feathers used #FF8500, exactly
+        # LIGHT_PALETTE's gorget-base fill, so they were invisible against
+        # their own base (§17 requires separation from color contrast).
+        base_fills = {icon_generator.LIGHT_PALETTE["gorget_mass"], icon_generator.DARK_PALETTE["gorget_mass"]}
+        for fill in icon_generator.GORGET_FEATHER_RAMP:
+            self.assertNotIn(fill, base_fills)
+        for row in icon_generator.GORGET_FEATHER_ROWS:
+            for feather in row["feathers"]:
+                self.assertNotIn(feather["fill"], base_fills)
 
     def test_color_distribution_follows_spec_section_18_directional_map(self):
         ramp = icon_generator.GORGET_FEATHER_RAMP
@@ -403,6 +440,43 @@ class GorgetFeatherTest(unittest.TestCase):
                 self.assertLess(idx("gorget-row-3"), idx("gorget-row-2"))
                 self.assertLess(idx("gorget-row-2"), idx("gorget-top-row"))
                 self.assertLess(idx("gorget-top-row"), idx("crown-base"))
+
+
+class GorgetLowerCoverageRenderTest(unittest.TestCase):
+    """Review on #63/PR #87: the lower gorget rendered essentially bare
+    (50.7% feather coverage overall, 0% in the two lowest 50px bands) --
+    the bottom row's y_center didn't reach far enough down. Rasterize the
+    real master and sample pixels in the lower gorget/chest-overlap region;
+    each must show a feather color (not the flat gorget-base fill showing
+    through)."""
+
+    def setUp(self):
+        import shutil
+
+        if shutil.which("resvg") is None or shutil.which("magick") is None:
+            self.skipTest("resvg/magick not on PATH")
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        global icon_harness
+        import icon_harness
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.paths = icon_generator.generate(Path(self.tmp.name))
+
+    def test_lower_gorget_shows_feather_color_not_bare_base(self):
+        # Points inside the lower gorget / chest-overlap region (spec §16
+        # Row 5), picked from the actual Row 4/Row 5 x-ranges and y-centers.
+        sample_points = [(455, 600), (435, 650), (435, 685), (500, 700)]
+        for variant, svg_path in self.paths.items():
+            base_fill = icon_generator.PALETTES[variant]["gorget_mass"]
+            png = icon_harness.render_one(svg_path, 1024, Path(self.tmp.name) / f"{variant}-1024.png")
+            with self.subTest(variant=variant):
+                for x, y in sample_points:
+                    r, g, b, a = icon_harness.pixel_rgba(png, x, y)
+                    self.assertGreater(a, 0, f"({x},{y}) is transparent -- outside the bird entirely")
+                    base_r, base_g, base_b = (int(base_fill.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+                    is_bare_base = all(abs(c - bc) <= 6 for c, bc in zip((r, g, b), (base_r, base_g, base_b)))
+                    self.assertFalse(is_bare_base, f"({x},{y}) is bare gorget-base color, not a feather")
 
 
 class RasterizesTest(unittest.TestCase):

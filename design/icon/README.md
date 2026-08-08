@@ -86,16 +86,38 @@ coordinates (not left as a separate `transform`), and the whole pass is
 deterministic (same `FEATHER_SEED`, same output every run) so the
 generator stays byte-stable.
 
-Row-to-row vertical overlap (§17: 28-38%) is derived, not hand-typed:
-`_row_y_centers()` computes each row's y-center from the previous row's
-against a fixed `ROW_OVERLAP` (0.30, the range's midpoint) and the two
-adjacent rows' average height, so the overlap is a property of the data.
+Row-to-row vertical placement (`y_center` per row in `ROW_SPECS`) is
+hand-placed, not derived from a single overlap constant -- §16's literal
+per-row width/height figures only produce ~200px of legitimate row-to-row
+overlap stacked from a chin-height start, well short of the ~390px the
+gorget-base envelope actually spans top-to-bottom, so a purely
+formula-derived layout (an earlier version of this file) left the lower
+gorget essentially bare (review on PR #87 measured 50.7% feather coverage
+overall, 0% in the lowest two 50px bands). Row 4/5 are also widened beyond
+§16's literal numbers (still "the largest shapes", per §16's own steer)
+and pushed down so the cascade reaches the chest overlap §16 calls for.
+`GorgetFeatherTest.test_row_overlap_measured_from_generated_geometry`
+verifies real overlap (15-95% intersection of each row's own actual
+rendered y-extent, not a recomputation of the placement formula) between
+every adjacent pair, and `GorgetLowerCoverageRenderTest` rasterizes the
+real master and samples the lower gorget to confirm it's not bare base
+color. The `gorget-feathers` group is clipped to `GORGET_MASS_PATH` (same
+`clipPath` pattern as #62's `crown-clip`), so feathers this large can
+overshoot the envelope freely at generation time and still never render
+outside the mass's own silhouette -- `GorgetFeathersClippedToEnvelopeTest`
+guards the clip is wired up.
+
 Document order follows §34's z-stack -- `gorget-bottom-row` (Row 5,
 nearest the chest, the largest feathers) painted first/bottommost, up
 through `gorget-top-row` (Row 1, nearest the chin) painted last/topmost --
 so each row's feathers overlap down into the row below, cascading like
 shingled scales per §17 ("no outlines between feathers; separation from
-color contrast only").
+color contrast only"). `GORGET_FEATHER_RAMP` deliberately excludes §7's
+"primary orange" (#FF8500): it's also `LIGHT_PALETTE`'s `gorget_mass` fill
+(and `DARK_PALETTE`'s is only ~4% brighter), so a feather using it would
+be invisible against its own base -- review on PR #87 caught 6 such
+feathers; `test_no_feather_fill_matches_either_variants_base_gorget_fill`
+guards it.
 
 Color follows §18's directional map via `GORGET_FEATHER_RAMP` (the §7
 orange/gorget seven-step hex ramp, warmest yellow-orange to coolest
