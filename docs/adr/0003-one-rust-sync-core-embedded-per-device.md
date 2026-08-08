@@ -44,7 +44,10 @@ UniFFI maps Rust futures to Kotlin `suspend fun` and Swift `async`/`await`.
 **The core owns persistence**, behind an internal Rust trait with a
 compile-target split: `indexed_db_futures` on `wasm32`, `std::fs` with
 write-temp-then-rename elsewhere. The host contributes exactly one thing — a
-storage directory path at init.
+storage directory path at init. *Amended by
+[ADR-0004](0004-client-linear-credential-is-scoped-per-device-host-supplied.md):
+the host also supplies the Linear credential at init, and the core holds it in
+memory without ever persisting it.*
 
 This is what enforces ADR-0001's write-path safety. The outbound queue must be
 durable *before* the Linear call goes out, and here the core awaits its own
