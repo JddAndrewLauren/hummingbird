@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Harness stub: a colored rectangle. No bird drawing belongs in this
+       slice (#60); this file exists only to give the render/QC harness
+       something to rasterize while it is built and tested. -->
+  <rect x="0" y="0" width="1024" height="1024" fill="#F7F1E8"/>
+  <rect x="128" y="128" width="768" height="768" fill="#F46B00"/>
+</svg>
