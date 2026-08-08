@@ -29,6 +29,45 @@ from one Python program.
 - `qc/contact-sheet-{light,dark}.png` -- committed gate evidence for the
   current generator output (spec §47 QC battery, size ladder beside the
   reference crop).
+- `qc/grayscale-{light,dark}.png`, `qc/blur-{light,dark}.png`,
+  `qc/silhouette-{light,dark}.png`, `qc/overlay-{light,dark}.png` --
+  committed gate evidence for the remaining QC battery modes (spec
+  §48-§50, §37) against the current generator output. Note:
+  `silhouette-*.png` renders solid black end to end -- the harness's
+  silhouette mode colorizes every opaque fill, including the full-bleed
+  `background` rect, to black (spec §50 assumes a transparent-background
+  render); it can't be run meaningfully on the masters as-is.
+
+## Head identity (#62)
+
+Adds the spec's fidelity priorities 1-5 (§38) on top of #61's silhouette
+and major color blocks: the beak as 4 shapes (main + two facet planes +
+a narrow reflective strip, all clipped to the beak's own envelope so
+nothing bleeds into the crown/background), the eye as ring + iris (with
+a subtle radial gradient) + two highlights, the dark eye-stripe wedge,
+14 irregular crown facets (clipped to the crown envelope, cycling
+through the spec's 5-step gray ramp), the restrained orange forehead
+patch, and the cheek separator as one filled tapered Bézier shape. All
+of this geometry is palette-independent (the spec gives no light/dark
+split for it), so light and dark masters share it byte-for-byte; only
+the underlying mass colors (crown/gorget/chest/side-body) still vary by
+variant.
+
+The eye's primary highlight uses the spec's literal ~25x18 master figure
+(rx 12.5/ry 9). An earlier revision widened it, on a mistaken pixel
+sample; re-sampling the 32px render at the literal size shows the
+highlight pixel at luma ~113 against a surrounding eye of ~14-60 --
+already clearly visible there, so the literal size was kept. Widening
+it further breaches the eye ring's own outline at 1024px, reading as a
+blown-out patch rather than a glint.
+
+The cheek separator (§13) is emitted after `eye-stripe`/
+`eye-stripe-secondary` rather than in §34's literal `cheek-light`
+position below `crown-base` -- at that position the crown, forehead and
+eye-stripe masses drawn afterward cover all but a sliver of it. Spec §34
+explicitly allows "eye stripe / crown ordering adjustments"; raising it
+here is what makes the streak actually visible, separating cheek from
+gorget near the eye instead of reading as stray notches.
 
 ## Generator
 

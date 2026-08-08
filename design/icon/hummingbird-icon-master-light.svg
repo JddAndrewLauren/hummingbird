@@ -4,6 +4,16 @@
       <stop offset="0%" stop-color="#FBF7F0"/>
       <stop offset="100%" stop-color="#F2E9DD"/>
     </radialGradient>
+    <radialGradient id="eye-iris-gradient" cx="35%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#161A1C"/>
+      <stop offset="100%" stop-color="#050606"/>
+    </radialGradient>
+    <clipPath id="beak-clip">
+      <path d="M 135 70 C 230 110, 320 175, 415 355 C 435 375, 455 400, 470 425 C 350 320, 220 180, 144 86 Z"/>
+    </clipPath>
+    <clipPath id="crown-clip">
+      <path d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z"/>
+    </clipPath>
     <!-- Preview-only mask (spec §3): the master itself stays full-square. -->
     <clipPath id="preview-rounded-square">
       <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
@@ -16,7 +26,47 @@
       <polygon id="chest-base" points="610 710 530 775 395 770 285 720 215 640 175 680 135 850 100 1024 560 1024 650 850 660 750" fill="#EFE5D7"/>
       <polygon id="side-body-base" points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750" fill="#CE6A16"/>
       <path id="gorget-base" d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z" fill="#FF8500"/>
-      <path id="crown-base" d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z" fill="#747471"/>
+      <g id="head">
+        <path id="crown-base" d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z" fill="#747471"/>
+        <g id="crown-facets" clip-path="url(#crown-clip)">
+      <polygon id="crown-facet-01" points="345 235 398 207 422 251" fill="#8C8B89"/>
+      <polygon id="crown-facet-02" points="398 207 452 196 447 236 422 251" fill="#AAA9A6"/>
+      <polygon id="crown-facet-03" points="452 196 516 209 508 243 447 236" fill="#71716F"/>
+      <polygon id="crown-facet-04" points="345 235 422 251 435 298 378 312" fill="#71716F"/>
+      <polygon id="crown-facet-05" points="422 251 447 236 468 283 435 298" fill="#AAA9A6"/>
+      <polygon id="crown-facet-06" points="447 236 508 243 520 277 468 283" fill="#8C8B89"/>
+      <polygon id="crown-facet-07" points="510 245 580 225 600 260 540 275" fill="#71716F"/>
+      <polygon id="crown-facet-08" points="580 225 650 240 670 270 600 260" fill="#555654"/>
+      <polygon id="crown-facet-09" points="430 300 465 290 490 330 440 345" fill="#71716F"/>
+      <polygon id="crown-facet-10" points="465 290 515 285 535 325 490 330" fill="#8C8B89"/>
+      <polygon id="crown-facet-11" points="515 285 600 260 630 300 560 320" fill="#71716F"/>
+      <polygon id="crown-facet-12" points="630 300 700 300 710 360 650 350" fill="#3D403F"/>
+      <polygon id="crown-facet-13" points="440 345 490 330 510 370 460 380" fill="#555654"/>
+      <polygon id="crown-facet-14" points="600 260 670 270 700 300 630 300" fill="#555654"/>
+        </g>
+        <g id="forehead">
+      <polygon id="forehead-01" points="455 300 520 282 545 315 490 330" fill="#F98400"/>
+      <polygon id="forehead-02" points="520 282 580 285 600 320 545 315" fill="#F36D00"/>
+      <polygon id="forehead-03" points="490 330 545 315 575 345 520 352" fill="#E9500D"/>
+      <polygon id="forehead-04" points="545 315 600 320 625 350 575 345" fill="#C94719"/>
+      <polygon id="forehead-05" points="590 288 655 270 678 302 632 322" fill="#F36D00"/>
+        </g>
+        <polygon id="eye-stripe" points="425 350 570 365 675 395 750 600 700 630 610 475 470 405" fill="#15191A"/>
+        <polygon id="eye-stripe-secondary" points="470 405 610 475 700 630 660 600 590 470 490 415" fill="#2A2421"/>
+        <path id="cheek-separator" d="M 430 393 Q 470 397, 510 417 Q 550 427, 590 433 Q 550 437, 510 424 Q 470 407, 430 401 Z" fill="#F5EFE7"/>
+        <g id="eye">
+          <ellipse id="eye-outer" cx="625" cy="347" rx="50" ry="54" fill="#141719"/>
+          <ellipse id="eye-iris" cx="625" cy="349" rx="37" ry="41" fill="url(#eye-iris-gradient)"/>
+          <ellipse id="eye-highlight-primary" cx="600" cy="316" rx="12.5" ry="9" fill="#F4F5F2"/>
+          <ellipse id="eye-highlight-secondary" cx="612" cy="330" rx="4" ry="4" fill="#F4F5F2" opacity="0.6"/>
+        </g>
+      </g>
+      <g id="beak" clip-path="url(#beak-clip)">
+        <path id="beak-main" d="M 135 70 C 230 110, 320 175, 415 355 C 435 375, 455 400, 470 425 C 350 320, 220 180, 144 86 Z" fill="#101416"/>
+        <polygon id="beak-face-upper" points="135 70 415 355 300 290 200 160" fill="#202022"/>
+        <polygon id="beak-face-lower" points="144 86 470 425 350 340 220 180" fill="#332A25"/>
+        <polygon id="beak-highlight" points="149 71 411 323 405 329 143 77" fill="#C6C2BA" opacity="0.68"/>
+      </g>
     </g>
   </g>
 </svg>
