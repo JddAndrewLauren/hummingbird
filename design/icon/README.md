@@ -1,9 +1,9 @@
 # App icon render + QC harness
 
-Supports the app-icon SVG build (plan #59, slices #60-#66). This slice
-(#60) commits the approved reference and the harness every later slice
-iterates against. It draws no part of the bird -- `stub.svg` here is a
-colored rectangle used only to exercise the harness.
+Supports the app-icon SVG build (plan #59, slices #60-#66). Slice #60
+committed the approved reference and the render/QC harness. Slice #61
+adds the generator: the silhouette + major color blocks, light and dark,
+from one Python program.
 
 ## Contents
 
@@ -13,9 +13,38 @@ colored rectangle used only to exercise the harness.
 - `reference/light-1024.png`, `reference/dark-1024.png` -- the light- and
   dark-mode "FINAL ICONS" squares cropped out of the concept sheet, each
   resized to a clean 1024x1024 PNG. These are what the harness overlays
-  and contact-sheets renders against.
+  and contact-sheets renders against. The source crops (out of
+  `concept-sheet.png`, ImageMagick geometry `WxH+X+Y`) are
+  `303x329+37+64` for light and `297x329+385+64` for dark -- both are
+  stretch-to-square normalizations of non-square source regions, so
+  light and dark disagree by ~2% in internal art proportions. Worth
+  knowing if a later slice's overlay QC shows a small, consistent
+  alignment drift between variants that isn't in the generator's geometry.
 - `stub.svg` -- a placeholder SVG (colored rectangle) for exercising the
-  harness before any real icon geometry exists.
+  harness before any real icon geometry exists (#60 only; the generator
+  below produces the real masters).
+- `hummingbird-icon-master-light.svg`, `hummingbird-icon-master-dark.svg`
+  -- generated master SVGs (#61). 1024x1024, full square, self-contained.
+  Regenerate with `scripts/icon_generator.py`; never hand-edit.
+- `qc/contact-sheet-{light,dark}.png` -- committed gate evidence for the
+  current generator output (spec §47 QC battery, size ladder beside the
+  reference crop).
+
+## Generator
+
+`scripts/icon_generator.py` holds the geometry model (spec §4 composition
+landmarks, §21 outer-silhouette boundaries, §9 crown envelope, §14 gorget
+envelope) and both palettes (§7 colors, §23 dark-mode shifts) as data, and
+emits both master SVGs from one code path -- dark differs from light only
+by the values in `DARK_PALETTE`, never by separate drawing code. This
+slice (#61) draws only the background, the outer bird silhouette, and
+flat major color regions (crown, gorget, chest, side-body masses); head
+identity, feathers and facets are later slices (#62-#64).
+
+```bash
+# Emit both master SVGs (default: design/icon/).
+python3 scripts/icon_generator.py --out-dir design/icon
+```
 
 ## Tool dependencies
 
@@ -71,6 +100,9 @@ are the predictable convention to follow.
 ## Tests
 
 `python3 -m unittest discover -s tests` runs `tests/test_icon_harness.py`
-against the real `resvg`/`magick` binaries (no mocking -- the harness's
-entire job is shelling out to them correctly). Those tests skip themselves
-if the binaries aren't on `PATH`.
+(against the real `resvg`/`magick` binaries -- no mocking, the harness's
+entire job is shelling out to them correctly; those tests skip themselves
+if the binaries aren't on `PATH`) and `tests/test_icon_generator.py`
+(pure-Python structural checks -- valid SVG, only spec-permitted
+elements, semantic IDs, light/dark geometry parity -- plus one harness
+round-trip test that also skips without `resvg`).
