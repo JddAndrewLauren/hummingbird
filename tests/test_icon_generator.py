@@ -137,6 +137,28 @@ class DarkDiffersOnlyByPaletteTest(unittest.TestCase):
             self.assertNotIn(icon_generator.DARK_PALETTE["crown_mass"], light_text)
 
 
+class CommittedMastersUpToDateTest(unittest.TestCase):
+    """The committed design/icon/hummingbird-icon-master-*.svg files are
+    generated artifacts under a "never hand-edit" rule -- they must be
+    byte-identical to what a fresh generator run produces, or the
+    committed source of truth has silently drifted from the generator."""
+
+    def test_committed_masters_match_a_fresh_generate(self):
+        committed = icon_generator.OUTPUT_NAMES
+        for variant, name in committed.items():
+            with self.subTest(variant=variant):
+                committed_path = icon_generator.DEFAULT_OUT_DIR / name
+                self.assertTrue(committed_path.exists(), f"missing committed {committed_path}")
+                committed_text = committed_path.read_text()
+                fresh_text = icon_generator._build_svg(icon_generator.PALETTES[variant])
+                self.assertEqual(
+                    committed_text,
+                    fresh_text,
+                    f"{committed_path} is stale -- regenerate with "
+                    "`python3 scripts/icon_generator.py --out-dir design/icon`",
+                )
+
+
 class RasterizesTest(unittest.TestCase):
     def test_both_masters_rasterize_via_the_harness(self):
         import shutil

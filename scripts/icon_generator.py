@@ -164,7 +164,12 @@ LIGHT_PALETTE = {
     "silhouette_base": "#181819",  # spec §8 warm black
     "crown_mass": "#747471",  # spec §23 light gray midtone
     "gorget_mass": _LIGHT_GORGET,
-    "chest_mass": "#F4EADF",  # spec §23 light cream chest
+    # spec §23's light cream chest (#F4EADF) is visually indistinguishable
+    # from the light background (243,235,224 vs 244,234,223 at y=950),
+    # leaving only a forbidden (§46) anti-aliased hairline outline instead
+    # of the required shape/tonal separation. Use §19's chest base fill
+    # instead, which has real contrast against the background.
+    "chest_mass": "#EFE5D7",  # spec §19 chest base fill
     "side_body_mass": "#CE6A16",  # spec §20 base
 }
 
@@ -202,10 +207,10 @@ def _build_svg(palette: dict) -> str:
     <rect id="background" x="0" y="0" width="1024" height="1024" fill="url(#background-gradient)"/>
     <g id="bird">
       <path id="bird-silhouette" d="{silhouette_d}" fill="{palette['silhouette_base']}"/>
-      <path id="crown-base" d="{CROWN_MASS_PATH}" fill="{palette['crown_mass']}"/>
-      <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
       <polygon id="chest-base" points="{_points_attr(CHEST_MASS_POINTS)}" fill="{palette['chest_mass']}"/>
       <polygon id="side-body-base" points="{_points_attr(SIDE_BODY_MASS_POINTS)}" fill="{palette['side_body_mass']}"/>
+      <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
+      <path id="crown-base" d="{CROWN_MASS_PATH}" fill="{palette['crown_mass']}"/>
     </g>
   </g>
 </svg>
