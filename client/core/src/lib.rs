@@ -8,6 +8,7 @@
 //! `ffi-web` surface verbatim (ADR-0001 seam rule 2). It is a stub today;
 //! sync lands in a later issue. Persistence lives in [`storage`] (#68).
 
+pub mod calendar;
 pub mod storage;
 
 /// The public API version both FFI crates surface.
