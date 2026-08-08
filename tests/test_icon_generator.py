@@ -159,6 +159,123 @@ class CommittedMastersUpToDateTest(unittest.TestCase):
                 )
 
 
+def elements_by_id(root):
+    return {el.get("id"): el for el in root.iter() if el.get("id")}
+
+
+def document_order_ids(root):
+    return [el.get("id") for el in root.iter() if el.get("id")]
+
+
+class HeadIdentityTest(unittest.TestCase):
+    """Head identity (#62, spec fidelity priorities 1-5, §38): beak planes,
+    eye, eye stripe, crown facets, forehead patch, cheek separator."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.paths = icon_generator.generate(Path(self.tmp.name))
+        self.roots = {variant: ET.parse(p).getroot() for variant, p in self.paths.items()}
+
+    def test_beak_is_three_to_five_shapes_not_one_triangle(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                beak_ids = [i for i in ids if i.startswith("beak-")]
+                self.assertGreaterEqual(len(beak_ids), 3)
+                self.assertLessEqual(len(beak_ids), 5)
+
+    def test_beak_highlight_strip_is_narrow_and_translucent(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                strip = ids["beak-highlight"]
+                opacity = float(strip.get("opacity"))
+                self.assertTrue(0.60 <= opacity <= 0.75)
+
+    def test_beak_uses_no_flat_black(self):
+        for variant, path in self.paths.items():
+            with self.subTest(variant=variant):
+                text = path.read_text()
+                self.assertNotIn("#000000", text)
+                self.assertNotIn("#000\"", text)
+
+    def test_crown_has_ten_to_sixteen_facets(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                facet_ids = [i for i in ids if i.startswith("crown-facet-")]
+                self.assertGreaterEqual(len(facet_ids), 10)
+                self.assertLessEqual(len(facet_ids), 16)
+
+    def test_crown_facets_use_only_gray_palette(self):
+        gray_hexes = set(icon_generator.CROWN_GRAYS)
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                for facet_id in (i for i in ids if i.startswith("crown-facet-")):
+                    self.assertIn(ids[facet_id].get("fill"), gray_hexes)
+
+    def test_forehead_patch_is_three_to_five_restrained_shapes(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                forehead_ids = [i for i in ids if i.startswith("forehead-")]
+                self.assertGreaterEqual(len(forehead_ids), 3)
+                self.assertLessEqual(len(forehead_ids), 5)
+                for forehead_id in forehead_ids:
+                    self.assertIn(ids[forehead_id].get("fill"), icon_generator.FOREHEAD_ORANGES)
+
+    def test_eye_has_ring_iris_and_two_highlights(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                for expected in (
+                    "eye-outer",
+                    "eye-iris",
+                    "eye-highlight-primary",
+                    "eye-highlight-secondary",
+                ):
+                    self.assertIn(expected, ids)
+                outer_rx = float(ids["eye-outer"].get("rx"))
+                highlight_rx = float(ids["eye-highlight-primary"].get("rx"))
+                self.assertLess(highlight_rx, outer_rx)
+
+    def test_eye_stripe_is_a_dark_wedge_not_pure_black(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                self.assertIn("eye-stripe", ids)
+                self.assertIn("eye-stripe-secondary", ids)
+                self.assertNotEqual(ids["eye-stripe"].get("fill"), "#000000")
+
+    def test_cheek_separator_is_a_filled_shape_not_a_stroke(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                ids = elements_by_id(root)
+                cheek = ids["cheek-separator"]
+                self.assertEqual(local(cheek.tag), "path")
+                self.assertIsNotNone(cheek.get("fill"))
+                self.assertIsNone(cheek.get("stroke"))
+
+    def test_layer_order_follows_spec_section_34(self):
+        for variant, root in self.roots.items():
+            with self.subTest(variant=variant):
+                order = document_order_ids(root)
+
+                def idx(element_id):
+                    return order.index(element_id)
+
+                self.assertLess(idx("cheek-separator"), idx("crown-base"))
+                self.assertLess(idx("crown-base"), idx("crown-facet-01"))
+                self.assertLess(idx("crown-facet-01"), idx("forehead-01"))
+                self.assertLess(idx("forehead-01"), idx("eye-stripe"))
+                self.assertLess(idx("eye-stripe"), idx("eye-outer"))
+                self.assertLess(idx("eye-outer"), idx("eye-iris"))
+                self.assertLess(idx("eye-iris"), idx("eye-highlight-primary"))
+                self.assertLess(idx("eye-highlight-primary"), idx("beak-main"))
+
+
 class RasterizesTest(unittest.TestCase):
     def test_both_masters_rasterize_via_the_harness(self):
         import shutil
