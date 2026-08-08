@@ -351,9 +351,10 @@ class GorgetFeatherTest(unittest.TestCase):
         # the same constants the generator used to place the rows). This
         # measures each row's *actual* aggregate (y_min, y_max) across its
         # generated feathers -- real post-jitter/rotation geometry -- and
-        # asserts consecutive rows genuinely overlap (share a nonzero y-band,
-        # not just an idealized center-to-center gap), by a fraction of the
-        # smaller row's own real span roughly in the spec §17 neighborhood.
+        # asserts consecutive rows overlap by spec §17's own band (28-38%),
+        # as a fraction of the smaller row's own real span. Round-2 review
+        # on PR #87 measured 24.7/24.9/27.5/19.8% while this test still
+        # accepted anything in 15-95% -- the asserted band is now the spec's.
         rows = icon_generator.GORGET_FEATHER_ROWS
         for i in range(len(rows) - 1):
             upper_min, upper_max = icon_generator.row_y_extent(rows[i])
@@ -362,8 +363,8 @@ class GorgetFeatherTest(unittest.TestCase):
             self.assertGreater(intersection, 0, f"{rows[i]['id']}/{rows[i + 1]['id']} do not overlap at all")
             smaller_span = min(upper_max - upper_min, lower_max - lower_min)
             overlap_fraction = intersection / smaller_span
-            self.assertGreaterEqual(overlap_fraction, 0.15, rows[i]["id"])
-            self.assertLessEqual(overlap_fraction, 0.95, rows[i]["id"])
+            self.assertGreaterEqual(overlap_fraction, 0.28, rows[i]["id"])
+            self.assertLessEqual(overlap_fraction, 0.38, rows[i]["id"])
 
     def test_gorget_feathers_clipped_to_the_base_envelope(self):
         # Review on #63/PR #87: 9/37 feathers (4 entirely) rendered outside
@@ -440,6 +441,129 @@ class GorgetFeatherTest(unittest.TestCase):
                 self.assertLess(idx("gorget-row-3"), idx("gorget-row-2"))
                 self.assertLess(idx("gorget-row-2"), idx("gorget-top-row"))
                 self.assertLess(idx("gorget-top-row"), idx("crown-base"))
+
+
+def _cubic_point(p0, p1, p2, p3, t):
+    mt = 1 - t
+    return (
+        mt**3 * p0[0] + 3 * mt**2 * t * p1[0] + 3 * mt * t**2 * p2[0] + t**3 * p3[0],
+        mt**3 * p0[1] + 3 * mt**2 * t * p1[1] + 3 * mt * t**2 * p2[1] + t**3 * p3[1],
+    )
+
+
+def _path_polygon(d, samples_per_segment=60):
+    """Flatten an `M x y C ... Z` path (the only shape grammar the gorget
+    uses) into a sampled polygon point list."""
+    import re
+
+    nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", d)]
+    points = []
+    current = (nums[0], nums[1])
+    i = 2
+    while i + 5 < len(nums):
+        c1, c2, end = (nums[i], nums[i + 1]), (nums[i + 2], nums[i + 3]), (nums[i + 4], nums[i + 5])
+        for s in range(1, samples_per_segment + 1):
+            points.append(_cubic_point(current, c1, c2, end, s / samples_per_segment))
+        current = end
+        i += 6
+    return points
+
+
+def _point_in_polygon(x, y, polygon):
+    inside = False
+    n = len(polygon)
+    for k in range(n):
+        x1, y1 = polygon[k]
+        x2, y2 = polygon[(k + 1) % n]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
+def _visible_area_fraction(feather_d, envelope_polygon, grid=10):
+    """Fraction of a feather's own area that falls inside the envelope --
+    i.e. the fraction that survives the gorget-clip and actually renders.
+    Grid-sampled over the feather's bbox, counting only in-feather points."""
+    outline = _path_polygon(feather_d, 20)
+    xs = [p[0] for p in outline]
+    ys = [p[1] for p in outline]
+    x_min, x_max, y_min, y_max = min(xs), max(xs), min(ys), max(ys)
+    in_feather = 0
+    in_both = 0
+    for gx in range(grid):
+        for gy in range(grid):
+            px = x_min + (gx + 0.5) / grid * (x_max - x_min)
+            py = y_min + (gy + 0.5) / grid * (y_max - y_min)
+            if _point_in_polygon(px, py, outline):
+                in_feather += 1
+                if _point_in_polygon(px, py, envelope_polygon):
+                    in_both += 1
+    return in_both / in_feather if in_feather else 0.0
+
+
+class GorgetFeatherVisibilityTest(unittest.TestCase):
+    """Round-2 review on PR #87: the gorget-clip contained overflow, but 7
+    of 37 feathers were placed so far outside the envelope they rendered
+    ZERO pixels (and 3 more nearly so) -- only ~27 VISIBLE feathers where
+    spec §15 requires 35-45 visible, per-row §16 counts missed, and ramp
+    step #8D2A23 occupied no rendered pixels. Element counts in the SVG
+    can't catch that; this measures pre-clip geometric containment of each
+    feather in the envelope -- the fraction of its area the clip lets
+    render -- from the generated geometry itself."""
+
+    VISIBLE_THRESHOLD = 0.5  # a feather with >=50% of its area rendering is unmistakably visible
+
+    @classmethod
+    def setUpClass(cls):
+        cls.envelope = _path_polygon(icon_generator.GORGET_MASS_PATH, 60)
+        cls.fractions = {}  # feather id -> visible-area fraction
+        cls.visible_by_row = {}
+        cls.visible_fills = set()
+        for row in icon_generator.GORGET_FEATHER_ROWS:
+            visible = 0
+            for index, feather in enumerate(row["feathers"], start=1):
+                fraction = _visible_area_fraction(feather["d"], cls.envelope)
+                cls.fractions[f"{row['id']}-{index:02d}"] = fraction
+                if fraction >= cls.VISIBLE_THRESHOLD:
+                    visible += 1
+                    cls.visible_fills.add(feather["fill"])
+            cls.visible_by_row[row["id"]] = visible
+
+    def test_every_emitted_feather_renders_most_of_its_area(self):
+        # "Essentially every emitted feather renders visibly inside the
+        # envelope" -- no dead geometry hiding behind the clip.
+        for feather_id, fraction in self.fractions.items():
+            self.assertGreaterEqual(
+                fraction, self.VISIBLE_THRESHOLD,
+                f"{feather_id} renders only {fraction:.0%} of its area inside the gorget envelope",
+            )
+
+    def test_35_to_45_feathers_are_visible_not_just_emitted(self):
+        total_visible = sum(self.visible_by_row.values())
+        self.assertGreaterEqual(total_visible, 35)
+        self.assertLessEqual(total_visible, 45)
+
+    def test_per_row_visible_counts_match_spec_section_16(self):
+        expected_ranges = {
+            "gorget-top-row": (5, 6),
+            "gorget-row-2": (7, 8),
+            "gorget-row-3": (8, 9),
+            "gorget-row-4": (7, 8),
+            "gorget-bottom-row": (5, 6),
+        }
+        for row_id, (low, high) in expected_ranges.items():
+            visible = self.visible_by_row[row_id]
+            self.assertGreaterEqual(visible, low, row_id)
+            self.assertLessEqual(visible, high, row_id)
+
+    def test_every_ramp_color_appears_on_a_visible_feather(self):
+        # §16 Row 1's "darkest reds concentrated near right side" was
+        # unrealized: every #8D2A23 feather rendered zero pixels.
+        for fill in icon_generator.GORGET_FEATHER_RAMP:
+            self.assertIn(
+                fill, self.visible_fills,
+                f"ramp step {fill} occupies no visibly-rendered feather",
+            )
 
 
 class GorgetLowerCoverageRenderTest(unittest.TestCase):

@@ -394,34 +394,46 @@ GORGET_FEATHER_RAMP = (
 # envelope (GORGET_MASS_PATH, §14) actually spans; review on #63/PR #87
 # measured the result as 50.7% feather coverage in the lower gorget with
 # 0% in the bottom two 50px bands. Row 4/5 are widened beyond §16's literal
-# numbers (still "the largest shapes", per §16's own steer) and Row 5's
-# center is pushed down to where the envelope's lowest vertex actually is
-# (GORGET_MASS_PATH's "530 775") so the cascade reaches the chest overlap
-# §16 calls for. The feather group is clipped to GORGET_MASS_PATH (same
-# pattern as crown-clip, #62) so any feather overshooting the envelope at
-# these larger sizes is trimmed to the mass's own silhouette, never bleeding
-# into the background or beak -- GorgetFeathersClippedToEnvelopeTest guards
-# this structurally.
+# numbers (still "the largest shapes", per §16's own steer) so the cascade
+# reaches the chest overlap §16 calls for. The feather group is clipped to
+# GORGET_MASS_PATH (same pattern as crown-clip, #62) so any feather
+# overshooting the envelope is trimmed to the mass's own silhouette, never
+# bleeding into the background or beak -- GorgetFeathersClippedToEnvelopeTest
+# guards this structurally.
+#
+# x_ranges are budgeted against the envelope's measured x-span at each row's
+# actual y-extent (GORGET_MASS_PATH's interior narrows sharply toward the
+# chin: right edge ~x574 at y=400, ~x660 at y=450, ~x785 at y=650), minus
+# each row's max feather half-width and position jitter. Round-2 review on
+# PR #87 measured the previous ranges (top row reaching x=760 at y~420,
+# where the envelope ends near x~615) as 7 of 37 feathers clipped to ZERO
+# rendered pixels and 3 more nearly gone -- only ~27 visible against §15's
+# 35-45, with §16's per-row counts missed and ramp step #8D2A23 (the "darkest
+# reds near right side" of Row 1) occupying no pixels at all. Every emitted
+# feather now renders >=~80% of its own area inside the envelope, measured
+# by GorgetFeatherVisibilityTest against the same generated geometry.
+# Measured aggregate row-to-row overlap (row_y_extent) lands mid-band in
+# §17's 28-38%: 32.2/28.9/33.7/31.5%.
 ROW_SPECS = [
     {
         "id": "gorget-top-row", "count": 6, "width_range": (55, 75), "height_range": (45, 60),
-        "x_range": (420, 760), "color_index_range": (1, 5), "y_center": 418,
+        "x_range": (295, 520), "color_index_range": (1, 5), "y_center": 421,
     },
     {
         "id": "gorget-row-2", "count": 8, "width_range": (65, 85), "height_range": (52, 68),
-        "x_range": (330, 760), "color_index_range": (0, 4), "y_center": 472,
+        "x_range": (270, 610), "color_index_range": (0, 4), "y_center": 470,
     },
     {
         "id": "gorget-row-3", "count": 9, "width_range": (75, 96), "height_range": (60, 78),
-        "x_range": (250, 775), "color_index_range": (0, 5), "y_center": 530,
+        "x_range": (270, 645), "color_index_range": (0, 5), "y_center": 525,
     },
     {
-        "id": "gorget-row-4", "count": 8, "width_range": (88, 115), "height_range": (72, 95),
-        "x_range": (220, 690), "color_index_range": (0, 3), "y_center": 600,
+        "id": "gorget-row-4", "count": 8, "width_range": (88, 115), "height_range": (75, 100),
+        "x_range": (280, 665), "color_index_range": (0, 3), "y_center": 592,
     },
     {
-        "id": "gorget-bottom-row", "count": 6, "width_range": (100, 140), "height_range": (88, 120),
-        "x_range": (210, 660), "color_index_range": (0, 2), "y_center": 685,
+        "id": "gorget-bottom-row", "count": 6, "width_range": (100, 140), "height_range": (100, 135),
+        "x_range": (320, 610), "color_index_range": (0, 2), "y_center": 672,
     },
 ]
 ROW_WIDTH_RANGES = [row["width_range"] for row in ROW_SPECS]
