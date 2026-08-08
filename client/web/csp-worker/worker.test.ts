@@ -36,10 +36,10 @@ describe("csp-worker", () => {
     expect(await response.text()).toBe("not found");
   });
 
-  it("has no unsafe-inline and scopes connect-src to self and api.linear.app", () => {
+  it("has no unsafe-inline and scopes connect-src to self, api.linear.app, and www.googleapis.com", () => {
     expect(CONTENT_SECURITY_POLICY).not.toMatch(/unsafe-inline/);
     expect(CONTENT_SECURITY_POLICY).toMatch(
-      /connect-src 'self' https:\/\/api\.linear\.app/,
+      /connect-src 'self' https:\/\/api\.linear\.app https:\/\/www\.googleapis\.com/,
     );
   });
 
@@ -49,8 +49,39 @@ describe("csp-worker", () => {
     // alone -- 'wasm-unsafe-eval' is the narrow source expression that
     // permits wasm compilation without also permitting arbitrary eval.
     expect(CONTENT_SECURITY_POLICY).toMatch(
-      /script-src 'self' 'wasm-unsafe-eval'/,
+      /script-src 'self' 'wasm-unsafe-eval' https:\/\/accounts\.google\.com/,
     );
     expect(CONTENT_SECURITY_POLICY).not.toMatch(/script-src[^;]*'unsafe-eval'/);
+  });
+
+  it("allows the GIS script tag to load from accounts.google.com", () => {
+    // issue #73: `google/gis.ts` injects
+    // `<script src="https://accounts.google.com/gsi/client">` directly into
+    // the document -- this must be an explicit script-src grant, not just
+    // 'self'.
+    expect(CONTENT_SECURITY_POLICY).toMatch(
+      /script-src[^;]*\bhttps:\/\/accounts\.google\.com\b/,
+    );
+  });
+
+  it("scopes frame-src to exactly accounts.google.com for GIS's silent re-mint iframe", () => {
+    // GIS's `prompt: "none"` silent re-mint round-trips through a hidden
+    // iframe served from accounts.google.com; without an explicit
+    // frame-src grant the browser blocks the iframe and the silent re-mint
+    // never resolves.
+    expect(CONTENT_SECURITY_POLICY).toMatch(
+      /frame-src https:\/\/accounts\.google\.com/,
+    );
+  });
+
+  it("does not admit any Google origin beyond what GIS and the calendar fetch require", () => {
+    // Pins the policy to exactly the two Google hosts this feature needs --
+    // no wildcards, no broader googleapis.com/google.com grant.
+    const googleMatches = CONTENT_SECURITY_POLICY.match(
+      /https:\/\/[a-z0-9.-]*google[a-z0-9.-]*/g,
+    );
+    expect(new Set(googleMatches)).toEqual(
+      new Set(["https://accounts.google.com", "https://www.googleapis.com"]),
+    );
   });
 });

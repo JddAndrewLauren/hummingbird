@@ -14,11 +14,31 @@
 // (main.tsx), before any worker message can be dispatched. If the wasm import
 // itself fails (e.g. CSP), module evaluation throws and the main thread's
 // worker.onerror surfaces it instead.
+//
+// Issue #73's calendar wiring is the one case that goes the other direction
+// (main -> worker): `self.onmessage` is attached below BEFORE `announceReady`
+// posts "ready", and the main thread only ever sends a `CalendarWorkerRequest`
+// after observing "ready" (see protocol.ts) — so by the time any such
+// request could arrive, the listener has already been attached, in the same
+// synchronous continuation of this module's async evaluation.
 
-import { core_api_version } from "../wasm/pkg/hummingbird_ffi_web";
+import { CalendarHost, core_api_version } from "../wasm/pkg/hummingbird_ffi_web";
+import type { CalendarWorkerRequest, WorkerResponse } from "../store/protocol";
 import { announceReady } from "./announce";
+import { handleCalendarRequest } from "./calendar-worker";
 
-announceReady(
-  (response) => (self as unknown as Worker).postMessage(response),
-  core_api_version,
-);
+// The IndexedDB database name (ADR-0003: the host contributes exactly one
+// thing at init — a storage path/namespace). No calendars are selected
+// until the picker (main thread) calls `setCalendarIds`.
+const CALENDAR_NAMESPACE = "hummingbird-calendar";
+
+const post = (response: WorkerResponse) =>
+  (self as unknown as Worker).postMessage(response);
+
+const calendarHost = new CalendarHost(CALENDAR_NAMESPACE, []);
+
+self.onmessage = (event: MessageEvent<CalendarWorkerRequest>) => {
+  void handleCalendarRequest(event.data, calendarHost, post);
+};
+
+announceReady(post, core_api_version);

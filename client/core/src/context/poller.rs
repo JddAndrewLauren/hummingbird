@@ -1,7 +1,7 @@
 //! [`ContextPoller`]: the poll trigger + credential seam for one context
 //! provider (issue #72, per ADR-0005 and ADR-0007's cadence doctrine).
 
-use crate::storage::{save_snapshot, Persistable, SnapshotStore};
+use crate::storage::{load_snapshot, save_snapshot, Envelope, Persistable, SnapshotStore};
 
 use super::credential::CredentialState;
 
@@ -10,7 +10,8 @@ use super::credential::CredentialState;
 /// failure. #71's [`crate::calendar::google::fetch_calendar_snapshot`] is
 /// the Google implementation this seam is built for; #47's future M365
 /// adapter fills the same shape unchanged.
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait ProviderPoller {
     type Snapshot: Persistable;
 
@@ -32,7 +33,7 @@ pub enum PollFailure {
 
 /// One host-visible signal: this provider's credential no longer works and
 /// polling is held until [`ContextPoller::push_token`] supplies a fresh one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CredentialEvent {
     pub provider: String,
     pub at_ms: i64,
@@ -88,11 +89,27 @@ where
         }
     }
 
+    /// The wrapped provider poller, for host wiring that needs to reach
+    /// provider-specific configuration (#73's calendar picker driving
+    /// [`crate::calendar::google::GoogleProviderPoller::set_calendar_ids`])
+    /// without this type needing to know that method exists.
+    pub fn fetcher(&self) -> &P {
+        &self.fetcher
+    }
+
     /// The host calls this at init and on every token rotation. Always
     /// resumes polling, even if this provider was previously held — a fresh
     /// push is the only way out of a hold.
     pub fn push_token(&mut self, token: impl Into<String>) {
         self.credential.push(token.into());
+    }
+
+    /// The most recently persisted snapshot, with its `as_of`, or `None` if
+    /// nothing has been successfully polled yet — the read side of the
+    /// same store `attempt` writes through, for a host (#73's context tile)
+    /// to render without needing its own store handle.
+    pub async fn current_snapshot(&self) -> Option<Envelope<P::Snapshot>> {
+        load_snapshot(&self.store).await.unwrap_or(None)
     }
 
     /// Drains every [`CredentialEvent`] recorded since the last drain. Poll-
@@ -183,7 +200,8 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     impl ProviderPoller for ScriptedPoller {
         type Snapshot = FakeSnapshot;
 
@@ -345,6 +363,24 @@ mod tests {
         let saved: Option<crate::storage::Envelope<FakeSnapshot>> =
             load_snapshot(&poller.store).await.unwrap();
         assert_eq!(saved, None);
+    }
+
+    #[tokio::test]
+    async fn current_snapshot_is_none_until_a_poll_succeeds_then_reflects_the_latest_write() {
+        let fetcher = ScriptedPoller::new(vec![Ok(FakeSnapshot {
+            events: vec!["evt-1".to_string()],
+        })]);
+        let store = MemorySnapshotStore::default();
+        let mut poller = ContextPoller::new("google_calendar", fetcher, store, 1);
+
+        assert_eq!(poller.current_snapshot().await, None);
+
+        poller.push_token("token-1");
+        assert_eq!(poller.start(9_000).await, PollOutcome::Succeeded);
+
+        let snapshot = poller.current_snapshot().await.unwrap();
+        assert_eq!(snapshot.as_of, 9_000);
+        assert_eq!(snapshot.payload.events, vec!["evt-1".to_string()]);
     }
 
     #[tokio::test]

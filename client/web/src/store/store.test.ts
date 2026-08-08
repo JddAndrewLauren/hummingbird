@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { coreStore, createCoreStore } from "./store";
+import { type CalendarState, coreStore, createCoreStore } from "./store";
+
+const initialCalendar: CalendarState = {
+  connected: false,
+  needsReconnect: false,
+  selectedCalendarIds: [],
+  lastPollOutcome: null,
+  tileKind: "no_snapshot",
+  tileEvent: null,
+  asOfMs: null,
+};
 
 describe("createCoreStore", () => {
   it("starts in the loading state with no api version and no error", () => {
@@ -9,6 +19,7 @@ describe("createCoreStore", () => {
       status: "loading",
       apiVersion: null,
       error: null,
+      calendar: initialCalendar,
     });
   });
 
@@ -31,6 +42,25 @@ describe("createCoreStore", () => {
       status: "ready",
       apiVersion: 1,
       error: null,
+      calendar: initialCalendar,
+    });
+  });
+
+  it("setCalendarState merges into the calendar slice without touching the rest", () => {
+    const store = createCoreStore();
+    store.setState({ status: "ready", apiVersion: 1 });
+
+    store.setCalendarState({ connected: true, selectedCalendarIds: ["primary"] });
+
+    expect(store.getSnapshot()).toEqual({
+      status: "ready",
+      apiVersion: 1,
+      error: null,
+      calendar: {
+        ...initialCalendar,
+        connected: true,
+        selectedCalendarIds: ["primary"],
+      },
     });
   });
 
