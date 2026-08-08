@@ -30,14 +30,20 @@ fn fixture(name: &str) -> String {
     }
 }
 
-/// Serves a scripted sequence of page responses per calendar id, popped in
-/// call order. A `None` entry stands in for a transport failure.
+/// One scripted `(expected_page_token, response)` pair. A `None` response
+/// stands in for a transport failure.
+type FixturePage = (Option<String>, Option<String>);
+
+/// Serves a scripted sequence of pages per calendar id, popped in call
+/// order. The expected token is asserted against what the adapter actually
+/// passes, so a fixture transport that ignored pagination and re-requested
+/// page 1 forever would fail the test instead of silently passing.
 struct FixtureTransport {
-    pages: Mutex<HashMap<String, Vec<Option<String>>>>,
+    pages: Mutex<HashMap<String, Vec<FixturePage>>>,
 }
 
 impl FixtureTransport {
-    fn single_calendar(calendar_id: &str, pages: Vec<Option<String>>) -> Self {
+    fn single_calendar(calendar_id: &str, pages: Vec<FixturePage>) -> Self {
         let mut map = HashMap::new();
         map.insert(calendar_id.to_string(), pages);
         Self {
@@ -54,7 +60,7 @@ impl EventsTransport for FixtureTransport {
         _access_token: &str,
         _time_min: &str,
         _time_max: &str,
-        _page_token: Option<&str>,
+        page_token: Option<&str>,
     ) -> Result<String, TransportError> {
         let mut pages = self.pages.lock().unwrap();
         let queue = pages
@@ -63,7 +69,13 @@ impl EventsTransport for FixtureTransport {
         if queue.is_empty() {
             panic!("fixture transport ran out of pages for calendar {calendar_id}");
         }
-        match queue.remove(0) {
+        let (expected_token, response) = queue.remove(0);
+        assert_eq!(
+            expected_token.as_deref(),
+            page_token,
+            "calendar {calendar_id}: adapter requested page_token {page_token:?}, expected {expected_token:?}"
+        );
+        match response {
             Some(body) => Ok(body),
             None => Err(TransportError::new("simulated transport failure")),
         }
@@ -74,7 +86,7 @@ impl EventsTransport for FixtureTransport {
 async fn recurrence_expansion_yields_one_instance_per_series_occurrence() {
     let transport = FixtureTransport::single_calendar(
         "cal-primary",
-        vec![Some(fixture("recurrence_expansion"))],
+        vec![(None, Some(fixture("recurrence_expansion")))],
     );
 
     let snapshot =
@@ -120,8 +132,10 @@ async fn recurrence_expansion_yields_one_instance_per_series_occurrence() {
 
 #[tokio::test]
 async fn cancelled_instance_in_a_series_is_mapped_not_dropped() {
-    let transport =
-        FixtureTransport::single_calendar("cal-primary", vec![Some(fixture("cancelled_instance"))]);
+    let transport = FixtureTransport::single_calendar(
+        "cal-primary",
+        vec![(None, Some(fixture("cancelled_instance")))],
+    );
 
     let snapshot =
         fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
@@ -155,8 +169,10 @@ async fn cancelled_instance_in_a_series_is_mapped_not_dropped() {
 
 #[tokio::test]
 async fn all_day_boundaries_map_to_utc_midnight_with_exclusive_multi_day_end() {
-    let transport =
-        FixtureTransport::single_calendar("cal-primary", vec![Some(fixture("all_day_boundaries"))]);
+    let transport = FixtureTransport::single_calendar(
+        "cal-primary",
+        vec![(None, Some(fixture("all_day_boundaries")))],
+    );
 
     let snapshot =
         fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
@@ -179,8 +195,10 @@ async fn all_day_boundaries_map_to_utc_midnight_with_exclusive_multi_day_end() {
 
 #[tokio::test]
 async fn dst_transition_day_produces_real_elapsed_instants_not_wall_clock_offsets() {
-    let transport =
-        FixtureTransport::single_calendar("cal-primary", vec![Some(fixture("dst_transition"))]);
+    let transport = FixtureTransport::single_calendar(
+        "cal-primary",
+        vec![(None, Some(fixture("dst_transition")))],
+    );
 
     let snapshot =
         fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
@@ -212,8 +230,11 @@ async fn multi_page_pagination_assembles_every_page_of_every_calendar() {
     let transport = FixtureTransport::single_calendar(
         "cal-primary",
         vec![
-            Some(fixture("pagination_page_1")),
-            Some(fixture("pagination_page_2")),
+            (None, Some(fixture("pagination_page_1"))),
+            (
+                Some("page-2-token".to_string()),
+                Some(fixture("pagination_page_2")),
+            ),
         ],
     );
 
@@ -235,7 +256,10 @@ async fn multi_page_pagination_assembles_every_page_of_every_calendar() {
 async fn mid_pagination_failure_yields_no_snapshot_at_all() {
     let transport = FixtureTransport::single_calendar(
         "cal-primary",
-        vec![Some(fixture("pagination_page_1")), None],
+        vec![
+            (None, Some(fixture("pagination_page_1"))),
+            (Some("page-2-token".to_string()), None),
+        ],
     );
 
     let result =

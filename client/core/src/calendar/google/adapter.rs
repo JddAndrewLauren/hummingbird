@@ -85,6 +85,7 @@ pub async fn fetch_calendar_snapshot(
 
     for calendar_id in calendar_ids {
         let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = std::collections::HashSet::new();
 
         loop {
             let body = transport
@@ -117,7 +118,21 @@ pub async fn fetch_calendar_snapshot(
             }
 
             match page.next_page_token {
-                Some(token) => page_token = Some(token),
+                Some(token) => {
+                    // Guard against a malformed or misbehaving server
+                    // handing back a page token we've already requested,
+                    // which would otherwise loop forever re-fetching the
+                    // same page.
+                    if !seen_page_tokens.insert(token.clone()) {
+                        return Err(AdapterError::InvalidResponse {
+                            calendar_id: calendar_id.clone(),
+                            message: format!(
+                                "Google returned repeated pagination token {token:?}"
+                            ),
+                        });
+                    }
+                    page_token = Some(token);
+                }
                 None => break,
             }
         }
@@ -133,13 +148,19 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    /// One scripted `(expected_page_token, response)` pair.
+    type ScriptedPage = (Option<String>, Result<String, TransportError>);
+
+    /// Ordered scripted pages per calendar. The expected token is asserted
+    /// against what the adapter actually passes, so a fake that ignores
+    /// pagination and re-requests page 1 forever fails the test instead of
+    /// silently passing.
     struct ScriptedTransport {
-        // calendar_id -> ordered responses, popped one per call.
-        pages: Mutex<HashMap<String, Vec<Result<String, TransportError>>>>,
+        pages: Mutex<HashMap<String, Vec<ScriptedPage>>>,
     }
 
     impl ScriptedTransport {
-        fn new(pages: HashMap<String, Vec<Result<String, TransportError>>>) -> Self {
+        fn new(pages: HashMap<String, Vec<ScriptedPage>>) -> Self {
             Self {
                 pages: Mutex::new(pages),
             }
@@ -154,7 +175,7 @@ mod tests {
             _access_token: &str,
             _time_min: &str,
             _time_max: &str,
-            _page_token: Option<&str>,
+            page_token: Option<&str>,
         ) -> Result<String, TransportError> {
             let mut pages = self.pages.lock().unwrap();
             let queue = pages
@@ -163,7 +184,13 @@ mod tests {
             if queue.is_empty() {
                 panic!("scripted transport ran out of pages for calendar {calendar_id}");
             }
-            queue.remove(0)
+            let (expected_token, response) = queue.remove(0);
+            assert_eq!(
+                expected_token.as_deref(),
+                page_token,
+                "calendar {calendar_id}: adapter requested page_token {page_token:?}, expected {expected_token:?}"
+            );
+            response
         }
     }
 
@@ -200,8 +227,14 @@ mod tests {
         pages.insert(
             "cal-primary".to_string(),
             vec![
-                Ok(page_json(&confirmed_event("evt-1"), Some("page-2"))),
-                Ok(page_json(&confirmed_event("evt-2"), None)),
+                (
+                    None,
+                    Ok(page_json(&confirmed_event("evt-1"), Some("page-2"))),
+                ),
+                (
+                    Some("page-2".to_string()),
+                    Ok(page_json(&confirmed_event("evt-2"), None)),
+                ),
             ],
         );
         let transport = ScriptedTransport::new(pages);
@@ -226,8 +259,14 @@ mod tests {
         pages.insert(
             "cal-primary".to_string(),
             vec![
-                Ok(page_json(&confirmed_event("evt-1"), Some("page-2"))),
-                Err(TransportError::new("502 from Google")),
+                (
+                    None,
+                    Ok(page_json(&confirmed_event("evt-1"), Some("page-2"))),
+                ),
+                (
+                    Some("page-2".to_string()),
+                    Err(TransportError::new("502 from Google")),
+                ),
             ],
         );
         let transport = ScriptedTransport::new(pages);
@@ -248,11 +287,11 @@ mod tests {
         let mut pages = HashMap::new();
         pages.insert(
             "cal-a".to_string(),
-            vec![Ok(page_json(&confirmed_event("evt-1"), None))],
+            vec![(None, Ok(page_json(&confirmed_event("evt-1"), None)))],
         );
         pages.insert(
             "cal-b".to_string(),
-            vec![Err(TransportError::new("network error"))],
+            vec![(None, Err(TransportError::new("network error")))],
         );
         let transport = ScriptedTransport::new(pages);
 
@@ -265,5 +304,40 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_repeated_page_token_is_an_error_not_an_infinite_loop() {
+        // If a server (or a misbehaving fake) handed back the same
+        // nextPageToken twice, an adapter with no repeated-token guard would
+        // loop forever re-requesting it. The transport only scripts two
+        // responses, so an adapter that re-requests page 1 for the "page-2"
+        // token would panic on running out of scripted pages instead of
+        // surfacing a clean error — this pins the guard down explicitly.
+        let mut pages = HashMap::new();
+        pages.insert(
+            "cal-primary".to_string(),
+            vec![
+                (
+                    None,
+                    Ok(page_json(&confirmed_event("evt-1"), Some("page-2"))),
+                ),
+                (
+                    Some("page-2".to_string()),
+                    Ok(page_json(&confirmed_event("evt-2"), Some("page-2"))),
+                ),
+            ],
+        );
+        let transport = ScriptedTransport::new(pages);
+
+        let result = fetch_calendar_snapshot(
+            &transport,
+            "token",
+            &["cal-primary".to_string()],
+            1_700_000_000_000,
+        )
+        .await;
+
+        assert!(matches!(result, Err(AdapterError::InvalidResponse { .. })));
     }
 }

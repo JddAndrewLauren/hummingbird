@@ -74,10 +74,17 @@ pub fn map_event(raw: &RawEvent, calendar_id: &str) -> Result<EventRecord, MapEr
     // Cancelled recurring instances carry no `start`/`end`, only
     // `originalStartTime` — the slot the cancellation occupies. Everything
     // else uses `start`/`end` directly.
-    let (start, end) = match (&raw.start, &raw.end) {
+    let (start, end, all_day) = match (&raw.start, &raw.end) {
         (Some(start), Some(end)) => (
             map_event_date_time(start, &raw.id, "start")?,
             map_event_date_time(end, &raw.id, "end")?,
+            // All-day-ness comes from the raw shape (`date` vs `dateTime`
+            // presence on the start boundary), never from the mapped
+            // time_zone string — a timed `dateTime` boundary can still have
+            // an empty time_zone when Google omits the optional `timeZone`
+            // field (its own calendar default zone applies), and that must
+            // not be mistaken for an all-day event.
+            start.date.is_some(),
         ),
         (None, None) => {
             let original = raw.original_start_time.as_ref().ok_or_else(|| {
@@ -86,7 +93,7 @@ pub fn map_event(raw: &RawEvent, calendar_id: &str) -> Result<EventRecord, MapEr
                 }
             })?;
             let boundary = map_event_date_time(original, &raw.id, "originalStartTime")?;
-            (boundary.clone(), boundary)
+            (boundary.clone(), boundary, original.date.is_some())
         }
         (Some(_), None) => {
             return Err(MapError::MissingBoundary {
@@ -101,8 +108,6 @@ pub fn map_event(raw: &RawEvent, calendar_id: &str) -> Result<EventRecord, MapEr
             })
         }
     };
-
-    let all_day = start.time_zone.is_empty();
 
     let recurrence_id = match &raw.recurring_event_id {
         Some(series_id) => {
@@ -219,6 +224,14 @@ mod tests {
         }
     }
 
+    fn timed_boundary_no_zone(date_time: &str) -> RawEventDateTime {
+        RawEventDateTime {
+            date: None,
+            date_time: Some(date_time.to_string()),
+            time_zone: None,
+        }
+    }
+
     fn all_day_boundary(date: &str) -> RawEventDateTime {
         RawEventDateTime {
             date: Some(date.to_string()),
@@ -287,6 +300,20 @@ mod tests {
                 .unwrap()
                 .timestamp_millis()
         );
+    }
+
+    #[test]
+    fn timed_boundary_with_omitted_time_zone_is_not_all_day() {
+        // Google routinely omits the optional `timeZone` field for events on
+        // the calendar's default zone; that must not be mistaken for an
+        // all-day (`date`-only) boundary.
+        let mut raw = base_event();
+        raw.start = Some(timed_boundary_no_zone("2024-01-08T09:00:00-08:00"));
+        raw.end = Some(timed_boundary_no_zone("2024-01-08T09:30:00-08:00"));
+
+        let record = map_event(&raw, "cal-primary").unwrap();
+        assert!(!record.all_day);
+        assert_eq!(record.start.time_zone, "");
     }
 
     #[test]
