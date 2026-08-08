@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="background-gradient" cx="50%" cy="50%" r="75%">
+      <stop offset="0%" stop-color="#FBF7F0"/>
+      <stop offset="100%" stop-color="#F2E9DD"/>
+    </radialGradient>
+    <radialGradient id="eye-iris-gradient" cx="35%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#161A1C"/>
+      <stop offset="100%" stop-color="#050606"/>
+    </radialGradient>
+    <clipPath id="beak-clip">
+      <path d="M 135 70 C 230 110, 320 175, 415 355 C 435 375, 455 400, 470 425 C 350 320, 220 180, 144 86 Z"/>
+    </clipPath>
+    <clipPath id="crown-clip">
+      <path d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z"/>
+    </clipPath>
+    <clipPath id="gorget-clip">
+      <path d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z"/>
+    </clipPath>
+    <clipPath id="chest-clip">
+      <polygon points="610 710 530 775 395 770 285 720 215 640 175 680 135 850 100 1024 560 1024 650 850 660 750"/>
+    </clipPath>
+    <clipPath id="side-body-clip">
+      <polygon points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750"/>
+    </clipPath>
+    <!-- Preview-only mask (spec §3): the master itself stays full-square. -->
+    <clipPath id="preview-rounded-square">
+      <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
+    </clipPath>
+  </defs>
+  <g id="icon">
+    <rect id="background" x="0" y="0" width="1024" height="1024" fill="url(#background-gradient)"/>
+    <g id="bird">
+      <path id="bird-silhouette" d="M 135 70 C 230 110, 320 175, 350 220 C 430 190, 590 215, 695 285 C 705 305, 715 330, 720 350 L 780 470 L 825 610 L 875 760 L 925 920 L 955 1024 L 100 1024 L 135 850 L 175 680 L 210 520 L 250 390 C 320 380, 410 405, 470 425 C 350 320, 220 180, 135 70 Z" fill="#181819"/>
+      <polygon id="chest-base" points="610 710 530 775 395 770 285 720 215 640 175 680 135 850 100 1024 560 1024 650 850 660 750" fill="#EFE5D7"/>
+      <g id="chest-facets" clip-path="url(#chest-clip)">
+
+      </g>
+      <polygon id="side-body-base" points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750" fill="#CE6A16"/>
+      <g id="side-body-facets" clip-path="url(#side-body-clip)">
+
+      </g>
+      <path id="gorget-base" d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z" fill="#FF8500"/>
+      <g id="gorget-feathers" clip-path="url(#gorget-clip)">
+
+      </g>
+      <g id="head">
+        <path id="crown-base" d="M 340 230 C 420 190, 560 210, 670 270 C 705 290, 718 330, 710 380 L 625 405 L 430 355 Z" fill="#747471"/>
+        <g id="crown-facets" clip-path="url(#crown-clip)">
+
+        </g>
+        <polygon id="eye-stripe" points="425 350 570 365 675 395 750 600 700 630 610 475 470 405" fill="#15191A"/>
+        <g id="eye">
+          <ellipse id="eye-outer" cx="625" cy="347" rx="50" ry="54" fill="#141719"/>
+          <ellipse id="eye-highlight-primary" cx="600" cy="316" rx="12.5" ry="9" fill="#F4F5F2"/>
+        </g>
+      </g>
+      <g id="beak" clip-path="url(#beak-clip)">
+        <path id="beak-main" d="M 135 70 C 230 110, 320 175, 415 355 C 435 375, 455 400, 470 425 C 350 320, 220 180, 144 86 Z" fill="#101416"/>
+      </g>
+    </g>
+  </g>
+</svg>

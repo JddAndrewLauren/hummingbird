@@ -3,3 +3,8 @@ __pycache__/
 .env
 .DS_Store
 .claude/worktrees/
+
+# Regenerable icon export build outputs (#66) -- PNG matrix, .icns, .ico.
+# Not source of truth; run `python3 scripts/icon_export.py all` to rebuild.
+# The generated SVG *sources* (favicon.svg, android/*.svg) are committed.
+design/icon/export/
