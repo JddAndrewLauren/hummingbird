@@ -28,35 +28,56 @@ pub use fs::FsSnapshotStore;
 #[cfg(target_arch = "wasm32")]
 pub use indexed_db::{IndexedDbError, IndexedDbSnapshotStore};
 
+/// Sealing boundary for [`SnapshotStore`] (the Rust API guidelines'
+/// sealed-trait pattern, C-SEALED): `sealed` is a private module, so
+/// `sealed::Sealed` — despite being `pub trait` — cannot be named or
+/// implemented from outside this crate. That is what keeps `write`/`read`
+/// off the public API surface: an external crate can neither call them
+/// (method resolution requires the trait in scope, and `Sealed` cannot be
+/// imported) nor implement `SnapshotStore` for its own type (the blanket
+/// impl below requires `Sealed`, which it also cannot implement). Only
+/// [`save_snapshot`]/[`load_snapshot`] — gated on [`Persistable`] — reach
+/// storage from outside `core`.
+mod sealed {
+    /// Carries the byte-level `write`/`read` operations `core`'s own
+    /// per-target [`super::SnapshotStore`] impls provide.
+    ///
+    /// `async fn` in this trait is deliberate, not an oversight: the trait
+    /// is internal to `core` (never exported as `dyn Sealed`, never
+    /// crossing an FFI boundary), so the auto-trait-bound loss the
+    /// `async_fn_in_trait` lint warns about does not apply here — nothing
+    /// needs a `Send` bound on the trait itself, and the `wasm32`
+    /// `IndexedDbSnapshotStore` impl genuinely cannot offer one (`JsValue`
+    /// is `!Send`).
+    #[allow(async_fn_in_trait)]
+    pub trait Sealed {
+        /// The error type surfaced by this store's underlying medium.
+        type Error: std::fmt::Debug;
+
+        /// Atomically replaces the stored snapshot bytes: this call either
+        /// fully publishes `bytes` or leaves the previously published
+        /// snapshot intact, even if the process crashes mid-write.
+        async fn write(&self, bytes: Vec<u8>) -> Result<(), Self::Error>;
+
+        /// Reads the current snapshot bytes, or `None` if nothing has been
+        /// written yet.
+        async fn read(&self) -> Result<Option<Vec<u8>>, Self::Error>;
+    }
+}
+
 /// One atomic snapshot slot.
 ///
 /// Each compile target gets its own implementation of this trait
 /// ([`MemorySnapshotStore`], [`FsSnapshotStore`], [`IndexedDbSnapshotStore`]).
-/// Callers use [`save_snapshot`]/[`load_snapshot`] rather than this trait's
-/// `write`/`read` directly — those are the only entry points that require a
-/// [`Persistable`] payload, which is what keeps secret material
-/// unrepresentable.
-///
-/// `async fn` in this trait is deliberate, not an oversight: the trait is
-/// internal to `core` (never exported as `dyn SnapshotStore`, never crossing
-/// an FFI boundary), so the auto-trait-bound loss the `async_fn_in_trait`
-/// lint warns about does not apply here — nothing needs a `Send` bound on
-/// the trait itself, and the `wasm32` `IndexedDbSnapshotStore` impl
-/// genuinely cannot offer one (`JsValue` is `!Send`).
-#[allow(async_fn_in_trait)]
-pub trait SnapshotStore {
-    /// The error type surfaced by this store's underlying medium.
-    type Error: std::fmt::Debug;
+/// Callers use [`save_snapshot`]/[`load_snapshot`] rather than `write`/`read`
+/// directly — those are the only entry points that require a [`Persistable`]
+/// payload, which is what keeps secret material unrepresentable. `write` and
+/// `read` themselves live on the private [`sealed::Sealed`] supertrait, so
+/// this trait cannot be implemented, and its byte-level methods cannot be
+/// called, from outside this crate.
+pub trait SnapshotStore: sealed::Sealed {}
 
-    /// Atomically replaces the stored snapshot bytes: this call either
-    /// fully publishes `bytes` or leaves the previously published snapshot
-    /// intact, even if the process crashes mid-write.
-    async fn write(&self, bytes: Vec<u8>) -> Result<(), Self::Error>;
-
-    /// Reads the current snapshot bytes, or `None` if nothing has been
-    /// written yet.
-    async fn read(&self) -> Result<Option<Vec<u8>>, Self::Error>;
-}
+impl<T: sealed::Sealed> SnapshotStore for T {}
 
 /// Errors from [`save_snapshot`]/[`load_snapshot`]: either the underlying
 /// store's medium failed, or `serde_json` failed to (de)serialise the

@@ -6,7 +6,7 @@
 //! this crate offers, and it keeps the on-disk/in-browser representation
 //! human-readable, same as the `std::fs` leg.
 
-use super::SnapshotStore;
+use super::sealed::Sealed;
 use indexed_db_futures::database::Database;
 use indexed_db_futures::prelude::*;
 use indexed_db_futures::transaction::TransactionMode;
@@ -75,7 +75,7 @@ impl IndexedDbSnapshotStore {
     }
 }
 
-impl SnapshotStore for IndexedDbSnapshotStore {
+impl Sealed for IndexedDbSnapshotStore {
     type Error = IndexedDbError;
 
     async fn write(&self, bytes: Vec<u8>) -> Result<(), IndexedDbError> {

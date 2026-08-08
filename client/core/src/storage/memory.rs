@@ -1,6 +1,6 @@
 //! In-memory [`SnapshotStore`] — the cross-platform test default (ADR-0003).
 
-use super::SnapshotStore;
+use super::sealed::Sealed;
 use std::convert::Infallible;
 use std::sync::Mutex;
 
@@ -12,7 +12,7 @@ pub struct MemorySnapshotStore {
     inner: Mutex<Option<Vec<u8>>>,
 }
 
-impl SnapshotStore for MemorySnapshotStore {
+impl Sealed for MemorySnapshotStore {
     type Error = Infallible;
 
     async fn write(&self, bytes: Vec<u8>) -> Result<(), Infallible> {

@@ -3,7 +3,7 @@
 //! dev-environment note in ADR-0003 — so the in-memory store stays the
 //! cross-platform test default; this impl is exercised on macOS/Linux hosts.
 
-use super::SnapshotStore;
+use super::sealed::Sealed;
 use std::io;
 use std::path::PathBuf;
 
@@ -30,7 +30,7 @@ impl FsSnapshotStore {
     }
 }
 
-impl SnapshotStore for FsSnapshotStore {
+impl Sealed for FsSnapshotStore {
     type Error = io::Error;
 
     async fn write(&self, bytes: Vec<u8>) -> Result<(), io::Error> {
