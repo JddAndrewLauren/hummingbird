@@ -17,6 +17,12 @@
     <clipPath id="gorget-clip">
       <path d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z"/>
     </clipPath>
+    <clipPath id="chest-clip">
+      <polygon points="610 710 530 775 395 770 285 720 215 640 175 680 135 850 100 1024 560 1024 650 850 660 750"/>
+    </clipPath>
+    <clipPath id="side-body-clip">
+      <polygon points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750"/>
+    </clipPath>
     <!-- Preview-only mask (spec §3): the master itself stays full-square. -->
     <clipPath id="preview-rounded-square">
       <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
@@ -27,7 +33,38 @@
     <g id="bird">
       <path id="bird-silhouette" d="M 135 70 C 230 110, 320 175, 350 220 C 430 190, 590 215, 695 285 C 705 305, 715 330, 720 350 L 780 470 L 825 610 L 875 760 L 925 920 L 955 1024 L 100 1024 L 135 850 L 175 680 L 210 520 L 250 390 C 320 380, 410 405, 470 425 C 350 320, 220 180, 135 70 Z" fill="#181819"/>
       <polygon id="chest-base" points="610 710 530 775 395 770 285 720 215 640 175 680 135 850 100 1024 560 1024 650 850 660 750" fill="#F6EEE3"/>
+      <g id="chest-facets" clip-path="url(#chest-clip)">
+      <polygon id="chest-facet-01" points="610 710 660 750 650 850" fill="#FFF9F0"/>
+      <polygon id="chest-facet-02" points="175 680 215 640 285 720" fill="#F5ECDF"/>
+      <polygon id="chest-facet-03" points="560 1024 395 770 530 775" fill="#EADBC8"/>
+      <polygon id="chest-facet-04" points="330.0 1024.0 100 1024 135 850" fill="#DDD0BF"/>
+      <polygon id="chest-facet-05" points="175 680 367.5 852.0 135 850" fill="#CDBDA8"/>
+      <polygon id="chest-facet-06" points="135 850 347.5 937.0 330.0 1024.0" fill="#FFF9F0"/>
+      <polygon id="chest-facet-07" points="347.5 937.0 560 1024 330.0 1024.0" fill="#F5ECDF"/>
+      <polygon id="chest-facet-08" points="560 1024 347.5 937.0 367.5 852.0" fill="#EADBC8"/>
+      <polygon id="chest-facet-09" points="347.5 937.0 135 850 367.5 852.0" fill="#DDD0BF"/>
+      <polygon id="chest-facet-10" points="367.5 852.0 175 680 285 720" fill="#CDBDA8"/>
+      <polygon id="chest-facet-11" points="610 710 585.0 867.0 530 775" fill="#FFF9F0"/>
+      <polygon id="chest-facet-12" points="585.0 867.0 560 1024 530 775" fill="#F5ECDF"/>
+      <polygon id="chest-facet-13" points="560 1024 422.5 872.0 395 770" fill="#EADBC8"/>
+      <polygon id="chest-facet-14" points="422.5 872.0 285 720 395 770" fill="#DDD0BF"/>
+      <polygon id="chest-facet-15" points="560 1024 585.0 867.0 650 850" fill="#CDBDA8"/>
+      <polygon id="chest-facet-16" points="585.0 867.0 610 710 650 850" fill="#FFF9F0"/>
+      <polygon id="chest-facet-17" points="285 720 422.5 872.0 367.5 852.0" fill="#F5ECDF"/>
+      <polygon id="chest-facet-18" points="422.5 872.0 560 1024 367.5 852.0" fill="#EADBC8"/>
+      </g>
       <polygon id="side-body-base" points="660 600 825 610 875 760 925 920 955 1024 560 1024 650 850 660 750" fill="#CE6A16"/>
+      <g id="side-body-facets" clip-path="url(#side-body-clip)">
+      <polygon id="side-body-facet-01" points="660.0 600.0 825.0 610.0 841.6666666666666 660.0 660.0 650.0" fill="#E47A16"/>
+      <polygon id="side-body-facet-02" points="660.0 650.0 841.6666666666666 660.0 858.3333333333334 710.0 660.0 700.0" fill="#D46A12"/>
+      <polygon id="side-body-facet-03" points="660.0 700.0 858.3333333333334 710.0 875.0 760.0 660.0 750.0" fill="#B85B18"/>
+      <polygon id="side-body-facet-04" points="660.0 750.0 875.0 760.0 891.6666666666666 813.3333333333334 656.6666666666666 783.3333333333334" fill="#A44E1B"/>
+      <polygon id="side-body-facet-05" points="656.6666666666666 783.3333333333334 891.6666666666666 813.3333333333334 908.3333333333334 866.6666666666666 653.3333333333334 816.6666666666666" fill="#8E451E"/>
+      <polygon id="side-body-facet-06" points="653.3333333333334 816.6666666666666 908.3333333333334 866.6666666666666 925.0 920.0 650.0 850.0" fill="#E47A16"/>
+      <polygon id="side-body-facet-07" points="650.0 850.0 925.0 920.0 935.0 954.6666666666666 620.0 908.0" fill="#D46A12"/>
+      <polygon id="side-body-facet-08" points="620.0 908.0 935.0 954.6666666666666 945.0 989.3333333333334 590.0 966.0" fill="#B85B18"/>
+      <polygon id="side-body-facet-09" points="590.0 966.0 945.0 989.3333333333334 955.0 1024.0 560.0 1024.0" fill="#A44E1B"/>
+      </g>
       <path id="gorget-base" d="M 250 390 C 330 340, 470 350, 585 405 C 685 450, 760 535, 785 650 C 740 705, 650 750, 530 775 C 395 770, 285 720, 215 640 C 195 540, 205 455, 250 390 Z" fill="#FF8A00"/>
       <g id="gorget-feathers" clip-path="url(#gorget-clip)">
       <g id="gorget-bottom-row">

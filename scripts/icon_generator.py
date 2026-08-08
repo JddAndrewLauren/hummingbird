@@ -141,6 +141,216 @@ def _points_attr(points) -> str:
     return " ".join(_pt(p) for p in points)
 
 
+def _centroid(points) -> tuple:
+    return (sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points))
+
+
+def _lerp(a, b, t) -> tuple:
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+
+# ---------------------------------------------------------------------------
+# Generic simple-polygon triangulation (#64 round 2): a single off-center
+# apex fanned to every envelope vertex -- the original approach here --
+# only exactly tiles a *star-shaped* polygon (one where some interior point
+# can "see" every edge in a straight line). CHEST_MASS_POINTS is concave
+# (its top boundary sags down through (530,775)/(395,770) between the two
+# sharp corners at (610,710) and (215,640), pinching the polygon into two
+# lobes at the top), so no single apex sees every edge: review on PR #89
+# measured 4 of 11 fan facets at <=1% actual visible area after the
+# chest-clip trimmed away the part of each triangle that fell outside the
+# real (concave) silhouette, and the one facet spanning the polygon's
+# 460px-long bottom edge came out roughly double spec §19's 100-250px
+# facet-size band.
+#
+# Ear-clip triangulation (standard algorithm for simple polygons, concave
+# or convex, no interior Steiner points) sidesteps the star-shaped
+# requirement entirely: every triangle it emits is *exactly* a piece of
+# the source polygon, so 100% of each triangle's area is guaranteed inside
+# the envelope by construction -- not just empirically likely. `_ear_clip`
+# repeatedly finds a convex vertex whose triangle with its two neighbors
+# contains no other remaining vertex (a valid "ear"), clips it off, and
+# recurses; any simple polygon triangulates fully this way.
+#
+# Ear-clipping alone gives one triangle per interior diagonal (n-2 for an
+# n-vertex polygon -- 9 for CHEST_MASS_POINTS's 11 vertices), which is
+# below spec's 10-18 facet count and leaves some ears far outside the
+# 100-250px size band (the polygon's long, sweeping edges produce long,
+# thin ears). `_subdivide_to_size` then repeatedly bisects the
+# largest-area triangle that still exceeds `max_dim` at its longest edge's
+# midpoint -- a split that, like the ear itself, stays *exactly* inside
+# its parent triangle (an affine combination of the parent's own
+# vertices), so the 100%-inside guarantee carries through subdivision.
+def _cross(o, a, b) -> float:
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _point_in_triangle(p, a, b, c) -> bool:
+    d1, d2, d3 = _cross(a, b, p), _cross(b, c, p), _cross(c, a, p)
+    has_neg = d1 < 0 or d2 < 0 or d3 < 0
+    has_pos = d1 > 0 or d2 > 0 or d3 > 0
+    return not (has_neg and has_pos)
+
+
+def _signed_area(polygon) -> float:
+    n = len(polygon)
+    return sum(polygon[i][0] * polygon[(i + 1) % n][1] - polygon[(i + 1) % n][0] * polygon[i][1] for i in range(n)) / 2
+
+
+def _ear_clip(polygon: list) -> list:
+    """Triangulate a simple (non-self-intersecting) polygon, concave or
+    convex, into a list of (a, b, c) triangles that exactly tile it --
+    n-2 triangles for an n-vertex polygon, zero gaps, zero overlap."""
+    points = list(polygon) if _signed_area(polygon) > 0 else list(reversed(polygon))
+    remaining = list(range(len(points)))
+    triangles = []
+    while len(remaining) > 3:
+        n = len(remaining)
+        for i in range(n):
+            i0, i1, i2 = remaining[(i - 1) % n], remaining[i], remaining[(i + 1) % n]
+            a, b, c = points[i0], points[i1], points[i2]
+            if _cross(a, b, c) <= 0:  # reflex vertex, not a candidate ear
+                continue
+            if any(_point_in_triangle(points[j], a, b, c) for j in remaining if j not in (i0, i1, i2)):
+                continue  # another vertex sits inside this ear -- not valid yet
+            triangles.append((a, b, c))
+            remaining.pop(i)
+            break
+        else:
+            break  # numerically degenerate input; stop rather than loop forever
+    if len(remaining) == 3:
+        triangles.append(tuple(points[i] for i in remaining))
+    return triangles
+
+
+def _triangle_bbox_max_dim(triangle) -> float:
+    xs = [p[0] for p in triangle]
+    ys = [p[1] for p in triangle]
+    return max(max(xs) - min(xs), max(ys) - min(ys))
+
+
+def _triangle_area(triangle) -> float:
+    (x1, y1), (x2, y2), (x3, y3) = triangle
+    return abs(x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2
+
+
+def _split_longest_edge(triangle) -> tuple:
+    a, b, c = triangle
+    edges = ((a, b, c), (b, c, a), (c, a, b))  # (p, q, opposite vertex)
+    p, q, opposite = max(edges, key=lambda edge: math.dist(edge[0], edge[1]))
+    midpoint = _lerp(p, q, 0.5)
+    return (p, midpoint, opposite), (midpoint, q, opposite)
+
+
+def _subdivide_to_size(triangles: list, max_dim: float, max_count: int) -> list:
+    """Bisect the largest-area over-sized triangle at its longest edge's
+    midpoint, repeatedly, until every triangle's bounding-box longer side
+    is within `max_dim` or `max_count` is reached (a hard cap protects
+    spec §35's total path budget; the polygon's sharpest corners can stay
+    slightly over `max_dim` rather than blow the count past it)."""
+    result = list(triangles)
+    while True:
+        oversized = [t for t in result if _triangle_bbox_max_dim(t) > max_dim]
+        if not oversized or len(result) >= max_count:
+            return result
+        target = max(oversized, key=_triangle_area)
+        result.remove(target)
+        result.extend(_split_longest_edge(target))
+
+
+# ---------------------------------------------------------------------------
+# Chest + side-body facets (#64, spec §19-20): the flat chest-base/
+# side-body-base masses gain a low-poly facet overlay. Both are derived
+# from the same envelope point lists used for the base fills above, so the
+# facets always tile that exact silhouette with no separately-maintained
+# coordinate set to drift out of sync -- and (like crown/gorget) the facet
+# group is also clipped to its own envelope as a structural safety net
+# (belt-and-braces on top of the exact-tiling guarantee above).
+#
+# Chest (spec §19): ear-clip CHEST_MASS_POINTS, then subdivide down toward
+# spec's ~100-250px facet-size band (see `_subdivide_to_size` above) up to
+# an 18-facet hard cap -- 18 facets against the gorget's 37 feathers is
+# still the "dramatically simpler" contrast §19 calls for, and every facet
+# is *exactly* inside the chest silhouette by construction (no
+# fan-from-an-off-center-apex clipping loss). No outlines, no per-feather
+# rounding, just flat planes.
+CHEST_FACET_RAMP = ("#FFF9F0", "#F5ECDF", "#EADBC8", "#DDD0BF", "#CDBDA8")
+CHEST_FACET_MAX_DIM = 260  # spec §19's 100-250px band, with a small allowance for sharp-corner ears
+CHEST_FACET_MAX_COUNT = 18  # spec §19's upper facet-count bound
+
+
+def _build_chest_facets() -> list:
+    triangles = _subdivide_to_size(_ear_clip(CHEST_MASS_POINTS), CHEST_FACET_MAX_DIM, CHEST_FACET_MAX_COUNT)
+    ramp = CHEST_FACET_RAMP
+    return [(list(triangle), ramp[index % len(ramp)]) for index, triangle in enumerate(triangles)]
+
+
+CHEST_FACETS = _build_chest_facets()
+
+# Side-body (spec §20): "long polygon planes rather than small feather
+# shapes." SIDE_BODY_MASS_POINTS already traces an elongated top-to-bottom
+# strip -- an inner/left edge (its own points 0, 7, 6, 5, top to bottom)
+# and an outer/right edge (points 1-4, following the outer silhouette's
+# own boundary chain) -- derived here rather than re-typed as separate
+# literals, so the two chains can never drift out of sync with the base
+# envelope they're read from. Band the strip into thirds top-to-bottom,
+# then each band into three further sub-quads along its own length,
+# giving 9 wide horizontal-ish planes (spec §35's "Body facets 8-12")
+# that read as long structural mass rather than rounded feathers --
+# distinct from the gorget's rounded-shield primitive per §28's "two
+# different geometric languages." Unlike the chest envelope, this strip
+# is convex enough along its own length that banding it directly (rather
+# than ear-clipping) already keeps every quad exactly inside the
+# envelope; `ChestAndSideBodyFacetsTest`'s geometric visibility check
+# confirms that rather than assuming it.
+SIDE_BODY_INNER_CHAIN = [SIDE_BODY_MASS_POINTS[0], *reversed(SIDE_BODY_MASS_POINTS[5:8])]
+SIDE_BODY_OUTER_CHAIN = SIDE_BODY_MASS_POINTS[1:5]
+SIDE_BODY_FACET_RAMP = ("#E47A16", "#D46A12", "#B85B18", "#A44E1B", "#8E451E")
+SIDE_BODY_FACET_SUBDIVISIONS = 3
+
+
+def _build_side_body_facets() -> list:
+    ramp = SIDE_BODY_FACET_RAMP
+    sub = SIDE_BODY_FACET_SUBDIVISIONS
+    facets = []
+    index = 0
+    for band in range(len(SIDE_BODY_INNER_CHAIN) - 1):
+        inner_a, inner_b = SIDE_BODY_INNER_CHAIN[band], SIDE_BODY_INNER_CHAIN[band + 1]
+        outer_a, outer_b = SIDE_BODY_OUTER_CHAIN[band], SIDE_BODY_OUTER_CHAIN[band + 1]
+        for s in range(sub):
+            t0, t1 = s / sub, (s + 1) / sub
+            quad = [
+                _lerp(inner_a, inner_b, t0),
+                _lerp(outer_a, outer_b, t0),
+                _lerp(outer_a, outer_b, t1),
+                _lerp(inner_a, inner_b, t1),
+            ]
+            facets.append((quad, ramp[index % len(ramp)]))
+            index += 1
+    return facets
+
+
+SIDE_BODY_FACETS = _build_side_body_facets()
+
+
+def _chest_facets_svg() -> str:
+    facets = []
+    for index, (points, fill) in enumerate(CHEST_FACETS, start=1):
+        facets.append(
+            f'      <polygon id="chest-facet-{index:02d}" points="{_points_attr(points)}" fill="{fill}"/>'
+        )
+    return "\n".join(facets)
+
+
+def _side_body_facets_svg() -> str:
+    facets = []
+    for index, (points, fill) in enumerate(SIDE_BODY_FACETS, start=1):
+        facets.append(
+            f'      <polygon id="side-body-facet-{index:02d}" points="{_points_attr(points)}" fill="{fill}"/>'
+        )
+    return "\n".join(facets)
+
+
 # ---------------------------------------------------------------------------
 # Head identity (#62, spec §38 fidelity priorities 1-5): beak planes, eye,
 # eye stripe, crown facets, forehead patch, cheek separator. Coordinates and
@@ -605,6 +815,12 @@ def _build_svg(palette: dict) -> str:
     <clipPath id="gorget-clip">
       <path d="{GORGET_MASS_PATH}"/>
     </clipPath>
+    <clipPath id="chest-clip">
+      <polygon points="{_points_attr(CHEST_MASS_POINTS)}"/>
+    </clipPath>
+    <clipPath id="side-body-clip">
+      <polygon points="{_points_attr(SIDE_BODY_MASS_POINTS)}"/>
+    </clipPath>
     <!-- Preview-only mask (spec §3): the master itself stays full-square. -->
     <clipPath id="preview-rounded-square">
       <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220"/>
@@ -615,7 +831,13 @@ def _build_svg(palette: dict) -> str:
     <g id="bird">
       <path id="bird-silhouette" d="{silhouette_d}" fill="{palette['silhouette_base']}"/>
       <polygon id="chest-base" points="{_points_attr(CHEST_MASS_POINTS)}" fill="{palette['chest_mass']}"/>
+      <g id="chest-facets" clip-path="url(#chest-clip)">
+{_chest_facets_svg()}
+      </g>
       <polygon id="side-body-base" points="{_points_attr(SIDE_BODY_MASS_POINTS)}" fill="{palette['side_body_mass']}"/>
+      <g id="side-body-facets" clip-path="url(#side-body-clip)">
+{_side_body_facets_svg()}
+      </g>
       <path id="gorget-base" d="{GORGET_MASS_PATH}" fill="{palette['gorget_mass']}"/>
       <g id="gorget-feathers" clip-path="url(#gorget-clip)">
 {_gorget_feathers_svg()}

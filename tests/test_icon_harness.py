@@ -115,6 +115,37 @@ class SilhouetteTest(unittest.TestCase):
 
 
 @unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
+class SilhouetteExcludesFullBleedBackgroundTest(unittest.TestCase):
+    """#64: a master SVG's own `background` rect is full-bleed and opaque
+    (spec §6/§21), so naively colorizing every opaque pixel black -- as
+    the stub-SVG tests above exercise -- flattens the *entire* 1024x1024
+    canvas to solid black and the QC render tells a reviewer nothing.
+    Spec §50 wants only the bird rendered black, over a still-legible
+    canvas, so the silhouette actually "strongly suggests the approved
+    icon." silhouette() strips the `id="background"` element before
+    rasterizing so only genuine bird geometry gets flattened."""
+
+    MASTER_SVG = REPO_ROOT / "design" / "icon" / "hummingbird-icon-master-light.svg"
+
+    def test_silhouette_of_a_master_is_not_solid_black(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "silhouette.png"
+            icon_harness.silhouette(self.MASTER_SVG, out_path=out_path, size=1024)
+
+            # A corner well outside the bird's own bounding box (spec §5:
+            # bird bounds ~X 100-940, Y 55-1024) must stay transparent,
+            # not get swept into the flattened black background.
+            r, g, b, a = icon_harness.pixel_rgba(out_path, 5, 5)
+            self.assertEqual(a, 0, "background corner should be transparent, not part of the silhouette")
+
+    def test_silhouette_of_a_master_is_pure_black_and_transparent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "silhouette.png"
+            icon_harness.silhouette(self.MASTER_SVG, out_path=out_path, size=1024)
+            self.assertTrue(icon_harness.is_pure_black_and_transparent(out_path))
+
+
+@unittest.skipIf(MISSING_TOOLS, f"missing harness binaries: {MISSING_TOOLS}")
 class OverlayTest(unittest.TestCase):
     def test_composites_render_over_reference_at_half_opacity(self):
         with tempfile.TemporaryDirectory() as tmp:
