@@ -3,6 +3,7 @@ __pycache__/
 .env
 .DS_Store
 .claude/worktrees/
+client/target/
 
 # Regenerable icon export build outputs (#66) -- PNG matrix, .icns, .ico.
 # Not source of truth; run `python3 scripts/icon_export.py all` to rebuild.

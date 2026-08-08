@@ -1,0 +1,36 @@
+{
+  "kind": "calendar#events",
+  "items": [
+    {
+      "id": "series-2_20240108T170000Z",
+      "status": "confirmed",
+      "summary": "1:1 with Matt",
+      "organizer": { "email": "matt@twinion.net" },
+      "start": { "dateTime": "2024-01-08T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-01-08T09:30:00-08:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "series-2",
+      "originalStartTime": { "dateTime": "2024-01-08T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-01-02T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=series-2-jan08"
+    },
+    {
+      "id": "series-2_20240115T170000Z",
+      "status": "cancelled",
+      "recurringEventId": "series-2",
+      "originalStartTime": { "dateTime": "2024-01-15T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-01-10T00:00:00.000Z"
+    },
+    {
+      "id": "series-2_20240122T170000Z",
+      "status": "confirmed",
+      "summary": "1:1 with Matt",
+      "organizer": { "email": "matt@twinion.net" },
+      "start": { "dateTime": "2024-01-22T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-01-22T09:30:00-08:00", "timeZone": "America/Los_Angeles" },
+      "recurringEventId": "series-2",
+      "originalStartTime": { "dateTime": "2024-01-22T09:00:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-01-16T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=series-2-jan22"
+    }
+  ]
+}

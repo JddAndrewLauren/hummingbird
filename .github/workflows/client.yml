@@ -1,0 +1,64 @@
+# Client CI: cargo test across the client/ workspace, a wasm32 build for the
+# web FFI crate, and (#69) a test-gated build of client/web — pnpm
+# install -> vitest -> tsc -> vite build, wasm core included. Deploy is out
+# of scope here; deploy-client.yml (ADR-0006's split) gates its own build on
+# main and runs `wrangler deploy` behind it.
+name: client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "client/**"
+      - ".github/workflows/client.yml"
+  pull_request:
+    paths:
+      - "client/**"
+      - ".github/workflows/client.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+      - name: cargo test (client workspace)
+        working-directory: client
+        run: cargo test --workspace
+      - name: build ffi-web for wasm32-unknown-unknown
+        working-directory: client
+        run: cargo build --target wasm32-unknown-unknown -p hummingbird-ffi-web
+      # Pinned, not "latest": ADR-0004 requires lockfile-pinned client
+      # builds, and a floating wasm-pack can change the shipped artifact (or
+      # break CI) with no repository change. Bump deliberately.
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.13.1"
+      - name: wasm-pack build ffi-web (loadable package)
+        working-directory: client/ffi-web
+        run: wasm-pack build --target web --out-dir /tmp/ffi-web-pkg
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: client/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: client/web/pnpm-lock.yaml
+      - name: pnpm install (client/web)
+        working-directory: client/web
+        run: pnpm install --frozen-lockfile
+      - name: web unit tests
+        working-directory: client/web
+        run: pnpm test
+      - name: web typecheck
+        working-directory: client/web
+        run: pnpm run typecheck
+      - name: web build (wasm core in a worker + PWA shell)
+        working-directory: client/web
+        run: pnpm run build

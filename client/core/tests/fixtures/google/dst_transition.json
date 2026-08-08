@@ -1,0 +1,23 @@
+{
+  "kind": "calendar#events",
+  "items": [
+    {
+      "id": "early-riser",
+      "status": "confirmed",
+      "summary": "Before the spring-forward jump",
+      "start": { "dateTime": "2024-03-10T01:30:00-08:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-03-10T01:45:00-08:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-03-01T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=early-riser"
+    },
+    {
+      "id": "post-jump-meeting",
+      "status": "confirmed",
+      "summary": "After the spring-forward jump",
+      "start": { "dateTime": "2024-03-10T03:30:00-07:00", "timeZone": "America/Los_Angeles" },
+      "end": { "dateTime": "2024-03-10T04:00:00-07:00", "timeZone": "America/Los_Angeles" },
+      "updated": "2024-03-01T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=post-jump-meeting"
+    }
+  ]
+}
