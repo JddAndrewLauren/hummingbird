@@ -17,7 +17,6 @@ export default defineConfig({
     topLevelAwait(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["favicon.svg"],
       workbox: {
         // The wasm binary is fetched by the worker and must be precached
         // for the "installed PWA loads with the network disabled"

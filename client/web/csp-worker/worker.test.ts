@@ -42,4 +42,15 @@ describe("csp-worker", () => {
       /connect-src 'self' https:\/\/api\.linear\.app/,
     );
   });
+
+  it("allows wasm compilation via 'wasm-unsafe-eval' without the broader 'unsafe-eval'", () => {
+    // Chrome (and other browsers following the WebAssembly/CSP integration
+    // spec) refuse WebAssembly.compile/instantiate under `script-src 'self'`
+    // alone -- 'wasm-unsafe-eval' is the narrow source expression that
+    // permits wasm compilation without also permitting arbitrary eval.
+    expect(CONTENT_SECURITY_POLICY).toMatch(
+      /script-src 'self' 'wasm-unsafe-eval'/,
+    );
+    expect(CONTENT_SECURITY_POLICY).not.toMatch(/script-src[^;]*'unsafe-eval'/);
+  });
 });
