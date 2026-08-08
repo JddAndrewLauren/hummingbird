@@ -87,7 +87,8 @@ async function runPollTrigger(
 }
 
 /** Handles one `CalendarWorkerRequest`, posting whatever `WorkerResponse`(s)
- * it produces. The only entry point `core.worker.ts` needs to wire up. */
+ * it produces. Callers should go through [`createRequestQueue`] rather than
+ * calling this directly — see the re-entrancy note there. */
 export async function handleCalendarRequest(
   request: CalendarWorkerRequest,
   host: CalendarHostLike,
@@ -113,6 +114,11 @@ export async function handleCalendarRequest(
       const raw = JSON.parse(
         await host.currentOrNext(request.nowMs),
       ) as RawCurrentNextResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty answer: posting this would blank a tile
+        // that is currently showing something true.
+        return;
+      }
       post({
         type: "currentNext",
         kind: raw.kind,
@@ -122,4 +128,41 @@ export async function handleCalendarRequest(
       return;
     }
   }
+}
+
+/** Serialises every request into one at-a-time chain.
+ *
+ * This is a correctness requirement, not a tidiness one. `CalendarHost` is
+ * `Rc<RefCell<CalendarHostCore>>` on the Rust side, and a poll trigger holds
+ * that borrow across its network await; a second request that reached the
+ * host mid-poll would hit a `RefCell` borrow panic, and a wasm panic poisons
+ * the whole module, not just the one call. `onmessage` alone gives no such
+ * guarantee — it fires a fresh, unsequenced handler per message, and the
+ * main thread genuinely does send bursts (the picker posts `setCalendarIds`,
+ * `pollRefresh` and `getCurrentNext` back to back). Queueing here is what
+ * makes "one call at a time" true rather than merely intended.
+ *
+ * Requests are processed strictly in arrival order, which is also the
+ * ordering the picker depends on: the new selection lands before the refresh
+ * that must use it.
+ *
+ * A failing request is logged and swallowed rather than left to reject: the
+ * chain must survive it, and there is no per-request error channel in the
+ * protocol (a `{type: "error"}` response means "the core failed to load" and
+ * would wrongly blank the whole UI). The poll paths report their own
+ * failures as outcomes, so nothing user-visible is lost here.
+ */
+export function createRequestQueue(
+  host: CalendarHostLike,
+  post: (response: WorkerResponse) => void,
+): (request: CalendarWorkerRequest) => Promise<void> {
+  let tail: Promise<void> = Promise.resolve();
+  return (request) => {
+    tail = tail.then(() =>
+      handleCalendarRequest(request, host, post).catch((error: unknown) => {
+        console.error("calendar worker request failed", request.type, error);
+      }),
+    );
+    return tail;
+  };
 }

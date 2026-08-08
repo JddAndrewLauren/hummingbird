@@ -32,10 +32,27 @@ export type PollOutcomeName =
   | "held"
   | "succeeded"
   | "transient_failure"
-  | "unauthorized";
+  | "unauthorized"
+  /** The host was already inside another call and nothing was attempted.
+   * The worker's request queue means this should never be observed; the
+   * wasm binding reports it rather than panicking if it ever is. */
+  | "busy";
 
-/** The shape of `currentOrNext`'s `"kind"` field. */
-export type CurrentNextKind = "no_snapshot" | "none" | "in_progress" | "upcoming";
+/** The shape of `currentOrNext`'s `"kind"` field. `"busy"` is the same
+ * never-in-practice signal as the poll outcome above, and carries no
+ * information about the tile — the worker drops it rather than posting it,
+ * so it never reaches the store. */
+export type CurrentNextKind =
+  | "no_snapshot"
+  | "none"
+  | "in_progress"
+  | "upcoming"
+  | "busy";
+
+/** The subset of [`CurrentNextKind`] that can reach the main thread — the
+ * worker never forwards `"busy"`, so no consumer downstream has to consider
+ * a kind that says nothing about the tile. */
+export type RenderableCurrentNextKind = Exclude<CurrentNextKind, "busy">;
 
 /** The event fields the context tile renders — a narrowed mirror of core's
  * `EventRecord` (issue #70), not the full provider-agnostic shape. */
@@ -66,7 +83,7 @@ export type WorkerResponse =
   | { type: "credentialEvents"; events: CredentialEventDTO[] }
   | {
       type: "currentNext";
-      kind: CurrentNextKind;
+      kind: RenderableCurrentNextKind;
       event: CurrentNextEventDTO | null;
       asOfMs: number | null;
     };

@@ -34,13 +34,38 @@ pub trait EventsTransport: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportError {
     pub message: String,
+    /// The HTTP status, when the failure was a response rather than a
+    /// connection-level error.
+    ///
+    /// This exists for exactly one caller: #72's `ContextPoller` has to tell
+    /// a dead credential (hold polling, ask the host for a new token) from a
+    /// transient failure (retry on the next trigger), and a status buried in
+    /// a `String` cannot carry that decision. Anything that needs to branch
+    /// on *which* failure this was reads this field, never `message`.
+    pub status: Option<u16>,
 }
 
 impl TransportError {
+    /// A connection-level failure — no response arrived, so no status.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            status: None,
         }
+    }
+
+    /// A response arrived and was not a success.
+    pub fn http(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status: Some(status),
+        }
+    }
+
+    /// Whether Google rejected the credential itself (HTTP 401): the token
+    /// is expired or revoked and no retry against it can succeed.
+    pub fn is_unauthorized(&self) -> bool {
+        self.status == Some(401)
     }
 }
 

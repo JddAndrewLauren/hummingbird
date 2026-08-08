@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WorkerResponse } from "../store/protocol";
-import { type CalendarHostLike, handleCalendarRequest } from "./calendar-worker";
+import {
+  type CalendarHostLike,
+  createRequestQueue,
+  handleCalendarRequest,
+} from "./calendar-worker";
 
 function fakeHost(overrides: Partial<CalendarHostLike> = {}): CalendarHostLike {
   return {
@@ -123,5 +127,80 @@ describe("handleCalendarRequest", () => {
     expect(posted).toEqual([
       { type: "currentNext", kind: "no_snapshot", event: null, asOfMs: null },
     ]);
+  });
+
+  it('getCurrentNext posts nothing when the host answers "busy"', async () => {
+    // "busy" is the absence of an answer, not an empty one: posting it would
+    // blank a tile that is currently showing a real event.
+    const host = fakeHost({
+      currentOrNext: vi
+        .fn()
+        .mockResolvedValue('{"kind":"busy","event":null,"as_of_ms":null}'),
+    });
+
+    const posted = await run({ type: "getCurrentNext", nowMs: 1_000 }, host);
+
+    expect(posted).toEqual([]);
+  });
+});
+
+describe("createRequestQueue", () => {
+  /** A promise plus the handle to settle it from the test. */
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  it("does not let a second request reach the host while the first is in flight", async () => {
+    // The property the wasm host depends on: `CalendarHost` holds a
+    // `RefCell` borrow across a poll's network await, so a request that
+    // reached it mid-poll would panic the whole wasm module. Bursts are
+    // routine -- a picker change posts setCalendarIds, pollRefresh and
+    // getCurrentNext back to back -- so nothing but a queue makes
+    // "one at a time" true.
+    const inFlight = deferred<string>();
+    const host = fakeHost({
+      refresh: vi.fn().mockReturnValue(inFlight.promise),
+    });
+    const posted: WorkerResponse[] = [];
+    const enqueue = createRequestQueue(host, (response) => posted.push(response));
+
+    void enqueue({ type: "pollRefresh", nowMs: 1_000 });
+    const second = enqueue({ type: "getCurrentNext", nowMs: 1_000 });
+    await Promise.resolve();
+
+    expect(host.currentOrNext).not.toHaveBeenCalled();
+
+    inFlight.resolve("succeeded");
+    await second;
+
+    expect(host.currentOrNext).toHaveBeenCalledWith(1_000);
+    expect(posted).toEqual([
+      { type: "pollOutcome", outcome: "succeeded" },
+      { type: "currentNext", kind: "no_snapshot", event: null, asOfMs: null },
+    ]);
+  });
+
+  it("keeps draining after a request fails", async () => {
+    // One rejected request must not wedge the queue: everything behind it
+    // would stop, and the UI would silently stop updating.
+    const host = fakeHost({
+      refresh: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const posted: WorkerResponse[] = [];
+    const enqueue = createRequestQueue(host, (response) => posted.push(response));
+
+    await enqueue({ type: "pollRefresh", nowMs: 1_000 });
+    await enqueue({ type: "getCurrentNext", nowMs: 2_000 });
+
+    expect(consoleError).toHaveBeenCalled();
+    expect(posted).toEqual([
+      { type: "currentNext", kind: "no_snapshot", event: null, asOfMs: null },
+    ]);
+    consoleError.mockRestore();
   });
 });

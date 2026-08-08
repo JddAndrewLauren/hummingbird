@@ -169,7 +169,7 @@ async fn cancelled_instance_in_a_series_is_mapped_not_dropped() {
 }
 
 #[tokio::test]
-async fn all_day_boundaries_map_to_utc_midnight_with_exclusive_multi_day_end() {
+async fn all_day_boundaries_map_to_calendar_local_midnight_with_exclusive_multi_day_end() {
     let transport = FixtureTransport::single_calendar(
         "cal-primary",
         vec![(None, Some(fixture("all_day_boundaries")))],
@@ -184,8 +184,18 @@ async fn all_day_boundaries_map_to_utc_midnight_with_exclusive_multi_day_end() {
 
     let holiday = &snapshot.events[0];
     assert!(holiday.all_day);
-    assert_eq!(holiday.start.time_zone, "");
-    assert_eq!(holiday.end.time_zone, "");
+    // The page's `timeZone` — the calendar's, reported once per response —
+    // is what an all-day boundary is anchored in. New Year's Day on a
+    // Los Angeles calendar begins at 08:00Z, not 00:00Z (which is 16:00 on
+    // New Year's Eve, locally).
+    assert_eq!(holiday.start.time_zone, "America/Los_Angeles");
+    assert_eq!(holiday.end.time_zone, "America/Los_Angeles");
+    assert_eq!(
+        holiday.start.instant_ms,
+        chrono::DateTime::parse_from_rfc3339("2024-01-01T08:00:00Z")
+            .unwrap()
+            .timestamp_millis()
+    );
 
     let conference = &snapshot.events[1];
     assert!(conference.all_day);

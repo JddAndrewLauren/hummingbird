@@ -6,10 +6,11 @@
 //
 // Requests exactly `calendar.readonly` — no write scope, ever (Agent
 // Brief's first acceptance criterion). This is an independent per-device
-// credential: it reuses the sweeper's Workspace Internal OAuth client id
-// only as the registered client id, never its refresh token or Tasks/Gmail
-// scopes (those live entirely in `sweep.py`'s world, untouched by this
-// module).
+// credential, minted by its own Web-application OAuth client (see
+// `.env.example`: the sweeper's client is a desktop-app one and cannot be
+// reused for a browser flow, contrary to issue #73's brief). The sweeper's
+// refresh token and Tasks/Gmail scopes are untouched either way — those
+// live entirely in `sweep.py`'s world, not this module's.
 
 export const CALENDAR_READONLY_SCOPE =
   "https://www.googleapis.com/auth/calendar.readonly";
@@ -77,14 +78,30 @@ function loadGisScript(): Promise<void> {
   if (window.google?.accounts) {
     return Promise.resolve();
   }
-  scriptLoadPromise ??= new Promise((resolve, reject) => {
+  if (scriptLoadPromise === null) {
     const script = document.createElement("script");
     script.src = GIS_SCRIPT_SRC;
     script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error("failed to load Google Identity Services"));
-    document.head.appendChild(script);
-  });
+    scriptLoadPromise = new Promise<void>((resolve, reject) => {
+      // Handlers before `appendChild`, so a synchronous failure cannot fire
+      // into a script with nothing listening.
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("failed to load Google Identity Services"));
+      document.head.appendChild(script);
+    }).catch((error: unknown) => {
+      // A rejected load must NOT stay memoised. The common failure here is
+      // transient (offline, blocked, CDN hiccup), and a cached rejection
+      // would make every later Connect/Reconnect click replay that same
+      // failure until the page is reloaded, long after connectivity came
+      // back — the button would look alive and be dead. Clearing the slot
+      // (and removing the spent tag, so a retry appends a fresh one) makes
+      // the next call a real retry. The success path stays memoised, so
+      // exactly one script tag ever loads.
+      scriptLoadPromise = null;
+      script.remove();
+      throw error;
+    });
+  }
   return scriptLoadPromise;
 }
 

@@ -126,8 +126,8 @@ mod tests {
     fn all_day_event(id: &str, start_ms: i64, end_ms: i64) -> EventRecord {
         EventRecord {
             all_day: true,
-            start: EventTime::all_day(start_ms),
-            end: EventTime::all_day(end_ms),
+            start: EventTime::all_day(start_ms, "America/Los_Angeles"),
+            end: EventTime::all_day(end_ms, "America/Los_Angeles"),
             ..timed_event(id, start_ms, end_ms)
         }
     }

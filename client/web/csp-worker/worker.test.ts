@@ -36,11 +36,23 @@ describe("csp-worker", () => {
     expect(await response.text()).toBe("not found");
   });
 
-  it("has no unsafe-inline and scopes connect-src to self, api.linear.app, and www.googleapis.com", () => {
+  it("has no unsafe-inline and scopes connect-src to self, api.linear.app, www.googleapis.com, and accounts.google.com", () => {
     expect(CONTENT_SECURITY_POLICY).not.toMatch(/unsafe-inline/);
     expect(CONTENT_SECURITY_POLICY).toMatch(
-      /connect-src 'self' https:\/\/api\.linear\.app https:\/\/www\.googleapis\.com/,
+      /connect-src 'self' https:\/\/api\.linear\.app https:\/\/www\.googleapis\.com https:\/\/accounts\.google\.com/,
     );
+  });
+
+  it("lets GIS reach accounts.google.com over connect-src, not only script-src and frame-src", () => {
+    // The easy-to-miss half of Google's CSP requirements: minting a token
+    // has GIS issue its own requests to accounts.google.com, so a policy
+    // that allows the script and the iframe but not the connection blocks
+    // consent and silent re-mint anyway -- and only in production, since
+    // dev runs without this header.
+    const connectSrc = CONTENT_SECURITY_POLICY.split("; ").find((directive) =>
+      directive.startsWith("connect-src "),
+    );
+    expect(connectSrc).toContain("https://accounts.google.com");
   });
 
   it("allows wasm compilation via 'wasm-unsafe-eval' without the broader 'unsafe-eval'", () => {

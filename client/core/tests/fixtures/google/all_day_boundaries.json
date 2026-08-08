@@ -1,5 +1,6 @@
 {
   "kind": "calendar#events",
+  "timeZone": "America/Los_Angeles",
   "items": [
     {
       "id": "holiday-1",

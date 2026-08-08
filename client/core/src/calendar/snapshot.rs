@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::storage::Persistable;
+use crate::storage::{Persistable, PersistableSealed};
 
 use super::event::EventRecord;
 
@@ -19,6 +19,7 @@ pub struct CalendarSnapshot {
     pub events: Vec<EventRecord>,
 }
 
+impl PersistableSealed for CalendarSnapshot {}
 impl Persistable for CalendarSnapshot {}
 
 impl CalendarSnapshot {

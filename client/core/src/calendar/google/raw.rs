@@ -11,6 +11,12 @@ pub struct RawEventsPage {
     pub items: Vec<RawEvent>,
     #[serde(rename = "nextPageToken")]
     pub next_page_token: Option<String>,
+    /// The calendar's own IANA time zone, which `events.list` reports once
+    /// per page rather than per event. It is the only thing that gives an
+    /// all-day boundary (`date`, no time, no zone of its own) a real
+    /// instant — see [`super::map::map_event`].
+    #[serde(rename = "timeZone")]
+    pub time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -20,6 +20,10 @@ mod fs;
 mod indexed_db;
 
 pub use envelope::{Envelope, Persistable};
+/// `Persistable`'s sealing supertrait, nameable inside `core` only — see
+/// [`Persistable`]. Every `impl Persistable` in this crate needs a matching
+/// `impl PersistableSealed`.
+pub(crate) use envelope::sealed::PersistableSealed;
 pub use memory::MemorySnapshotStore;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -162,6 +166,7 @@ mod tests {
         count: u32,
     }
 
+    impl PersistableSealed for TestPayload {}
     impl Persistable for TestPayload {}
 
     #[tokio::test]

@@ -25,7 +25,7 @@
 import { CalendarHost, core_api_version } from "../wasm/pkg/hummingbird_ffi_web";
 import type { CalendarWorkerRequest, WorkerResponse } from "../store/protocol";
 import { announceReady } from "./announce";
-import { handleCalendarRequest } from "./calendar-worker";
+import { createRequestQueue } from "./calendar-worker";
 
 // The IndexedDB database name (ADR-0003: the host contributes exactly one
 // thing at init — a storage path/namespace). No calendars are selected
@@ -37,8 +37,14 @@ const post = (response: WorkerResponse) =>
 
 const calendarHost = new CalendarHost(CALENDAR_NAMESPACE, []);
 
+// Every request goes through one at-a-time queue: `CalendarHost` is not
+// re-entrant (see createRequestQueue), and `onmessage` on its own would run
+// a fresh handler per message with no regard for one already suspended on a
+// network await.
+const enqueue = createRequestQueue(calendarHost, post);
+
 self.onmessage = (event: MessageEvent<CalendarWorkerRequest>) => {
-  void handleCalendarRequest(event.data, calendarHost, post);
+  void enqueue(event.data);
 };
 
 announceReady(post, core_api_version);

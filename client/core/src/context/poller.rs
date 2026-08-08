@@ -2,6 +2,8 @@
 //! provider (issue #72, per ADR-0005 and ADR-0007's cadence doctrine).
 
 use crate::storage::{load_snapshot, save_snapshot, Envelope, Persistable, SnapshotStore};
+#[cfg(test)]
+use crate::storage::PersistableSealed;
 
 use super::credential::CredentialState;
 
@@ -181,6 +183,7 @@ mod tests {
     struct FakeSnapshot {
         events: Vec<String>,
     }
+    impl PersistableSealed for FakeSnapshot {}
     impl Persistable for FakeSnapshot {}
 
     /// A scripted [`ProviderPoller`]: each call to `poll` pops the next

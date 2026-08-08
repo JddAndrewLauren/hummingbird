@@ -3,13 +3,19 @@
 // handler/entrypoint, and errors on a plain string constant living there.
 
 // No `unsafe-inline`; `connect-src` limited to self, `api.linear.app`
-// (ADR-0004's mitigation for a non-expiring key in browser storage), and
+// (ADR-0004's mitigation for a non-expiring key in browser storage),
 // `www.googleapis.com` (issue #73: the calendarList fetch in
 // `calendar/calendarList.ts` and the wasm transport's Calendar Events
 // fetch in `core::calendar::google::reqwest_transport` both target that
-// host only -- no broader `googleapis.com` wildcard). The shell is keyless
-// and mirror-free otherwise (ADR-0006), so there is nothing else to scope a
-// source list to.
+// host only -- no broader `googleapis.com` wildcard), and
+// `accounts.google.com`. That last one is easy to miss: GIS is not only a
+// script and an iframe, it also issues its own XHRs to `accounts.google.com`
+// while minting a token, so a `connect-src` that omits it blocks consent and
+// silent re-mint even though `script-src`/`frame-src` allow the origin --
+// Google documents all four directives together
+// (developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
+// The shell is keyless and mirror-free otherwise (ADR-0006), so there is
+// nothing else to scope a source list to.
 //
 // `script-src` carries `'wasm-unsafe-eval'`: Chrome (and other browsers
 // following the WebAssembly/CSP integration spec) require it before
@@ -30,7 +36,7 @@ export const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com",
   "style-src 'self'",
-  "connect-src 'self' https://api.linear.app https://www.googleapis.com",
+  "connect-src 'self' https://api.linear.app https://www.googleapis.com https://accounts.google.com",
   "img-src 'self' data:",
   "manifest-src 'self'",
   "worker-src 'self'",

@@ -58,6 +58,19 @@ impl fmt::Display for AdapterError {
     }
 }
 
+impl AdapterError {
+    /// Whether this failure was Google rejecting the credential (HTTP 401)
+    /// rather than anything retryable. #72's `ContextPoller` branches on
+    /// this to hold polling and ask the host for a fresh token; a mapping or
+    /// parse failure is never unauthorized, however it was provoked.
+    pub fn is_unauthorized(&self) -> bool {
+        match self {
+            AdapterError::Transport { source, .. } => source.is_unauthorized(),
+            AdapterError::InvalidResponse { .. } | AdapterError::Mapping { .. } => false,
+        }
+    }
+}
+
 impl std::error::Error for AdapterError {}
 
 /// Compute the `[time_min, time_max)` RFC 3339 window bounds around `now_ms`
@@ -109,11 +122,14 @@ pub async fn fetch_calendar_snapshot(
                 })?;
 
             for raw_event in &page.items {
-                let record =
-                    map_event(raw_event, calendar_id).map_err(|source| AdapterError::Mapping {
+                // The page's `timeZone` is the calendar's, and it is what
+                // anchors this page's all-day boundaries (see `map_event`).
+                let record = map_event(raw_event, calendar_id, page.time_zone.as_deref()).map_err(
+                    |source| AdapterError::Mapping {
                         calendar_id: calendar_id.clone(),
                         source,
-                    })?;
+                    },
+                )?;
                 events.push(record);
             }
 

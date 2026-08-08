@@ -6,11 +6,13 @@ use serde::{Deserialize, Serialize};
 /// One endpoint (start or end) of an event: an instant plus the IANA time
 /// zone the provider associated with it.
 ///
-/// For an all-day event's boundary, `instant_ms` is the UTC instant of
-/// local midnight on the calendar date (the provider's `date`-only
-/// boundaries have no time-of-day and no meaningful time zone); `time_zone`
-/// is then the empty string. Multi-day all-day events use the provider's
-/// exclusive-end convention, matching [`EventRecord::end`].
+/// For an all-day event's boundary, `instant_ms` is the instant of local
+/// midnight on the calendar date, resolved in the calendar's own time zone
+/// — which `time_zone` then carries. A `date`-only boundary names a local
+/// day rather than an instant, so it has no meaning without that zone:
+/// resolving it in UTC instead shifts the whole event by the calendar's
+/// offset. Multi-day all-day events use the provider's exclusive-end
+/// convention, matching [`EventRecord::end`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventTime {
     /// Milliseconds since the Unix epoch, UTC.
@@ -29,12 +31,12 @@ impl EventTime {
         }
     }
 
-    /// An all-day boundary: the UTC instant of local midnight on the
-    /// calendar date, with no time zone.
-    pub fn all_day(midnight_utc_ms: i64) -> Self {
+    /// An all-day boundary: the instant of local midnight on the calendar
+    /// date, in the calendar's time zone.
+    pub fn all_day(midnight_ms: i64, time_zone: impl Into<String>) -> Self {
         Self {
-            instant_ms: midnight_utc_ms,
-            time_zone: String::new(),
+            instant_ms: midnight_ms,
+            time_zone: time_zone.into(),
         }
     }
 }

@@ -3,7 +3,11 @@
 // is no second state channel — the worker client (worker-client.ts) is the
 // only writer.
 
-import type { CurrentNextEventDTO, CurrentNextKind, PollOutcomeName } from "./protocol";
+import type {
+  CurrentNextEventDTO,
+  PollOutcomeName,
+  RenderableCurrentNextKind,
+} from "./protocol";
 
 export type CoreStatus = "loading" | "ready" | "error";
 
@@ -16,7 +20,7 @@ export interface CalendarState {
   needsReconnect: boolean;
   selectedCalendarIds: string[];
   lastPollOutcome: PollOutcomeName | null;
-  tileKind: CurrentNextKind;
+  tileKind: RenderableCurrentNextKind;
   tileEvent: CurrentNextEventDTO | null;
   asOfMs: number | null;
 }

@@ -144,8 +144,27 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         selectedCalendarIds,
       });
       setExpiresAtMs(result.expiresAtMs);
-      if (result.connected && !result.needsReconnect) {
+      if (result.connected) {
+        // Both of these run even when the silent re-mint failed — the
+        // offline-start case, which is exactly when they matter most.
+        //
+        // The selection, because the worker was constructed with an empty
+        // one: leaving it empty means a later Reconnect polls zero
+        // calendars, and a zero-calendar poll SUCCEEDS with an empty
+        // snapshot, overwriting the last good one (`fetch_calendar_snapshot`
+        // simply iterates no ids). The last-good snapshot is a
+        // previously-connected device's only offline context; a reconnect
+        // must not be able to destroy it.
+        //
+        // The current/next request, because nothing else asks for one until
+        // a poll completes — and a held credential means no poll completes.
+        // Without this the persisted IndexedDB snapshot is never read and
+        // the tile claims "no current or upcoming event" on a device that
+        // has one, which is worse than showing it honestly stale.
         setCalendarIdsOnWorker(worker, selectedCalendarIds);
+        requestCurrentNext(worker, Date.now());
+      }
+      if (result.connected && !result.needsReconnect) {
         pollStart(worker, Date.now());
         await refreshCalendarList();
       }
@@ -236,8 +255,19 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     if (!calendar.connected) {
       return;
     }
-    const id = window.setInterval(() => setNowMs(Date.now()), CLOCK_TICK_MS);
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setNowMs(now);
+      // Re-query current/next, not just the clock. "Now" and "Next" are
+      // answers about a moment, and the moment moves: without this the tile
+      // keeps saying "Next" after an event has started and "Now" after it
+      // has ended, until the 15-minute network poll happens to correct it.
+      // This read is local (the persisted snapshot, no network), so it is
+      // also correct to run during a credential hold or offline.
+      requestCurrentNext(worker, now);
+    }, CLOCK_TICK_MS);
     return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.connected]);
 
   async function handleConnectClick() {
@@ -253,6 +283,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     });
     setExpiresAtMs(result.expiresAtMs);
     if (result.connected) {
+      // Re-assert the selection before polling. This click is also the
+      // Reconnect button, and the worker's copy of the selection can be
+      // empty here (a startup whose silent re-mint failed, a worker
+      // restarted by the browser) — polling with an empty selection would
+      // quietly replace the last good snapshot with an empty one.
+      setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
       pollStart(worker, Date.now());
       await refreshCalendarList();
     }

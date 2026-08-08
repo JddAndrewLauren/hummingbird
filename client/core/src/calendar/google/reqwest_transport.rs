@@ -91,10 +91,11 @@ impl EventsTransport for ReqwestEventsTransport {
             .map_err(|source| TransportError::new(source.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(TransportError::new(format!(
-                "Google returned HTTP {}",
-                response.status()
-            )));
+            let status = response.status();
+            return Err(TransportError::http(
+                status.as_u16(),
+                format!("Google returned HTTP {status}"),
+            ));
         }
 
         response
