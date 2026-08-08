@@ -95,8 +95,11 @@ are deferred until the desire is demonstrated.
 
 ## Sequencing
 
-Three end-to-end adapter specs implement the decision in order: (1) Gmail
-capture, including its isolated drain path and dedicated healthcheck; (2)
-Google Calendar context, including the mirror and consumer contracts it needs;
-(3) M365 calendar context on the same contracts, last. The issue links are
-recorded here when the specs are published.
+Three end-to-end adapter specs implement the decision in order:
+
+1. [Gmail capture](https://github.com/JddAndrewLauren/hummingbird/issues/45),
+   including its isolated drain path and dedicated healthcheck.
+2. [Google Calendar context](https://github.com/JddAndrewLauren/hummingbird/issues/46),
+   including the mirror and consumer contracts it needs.
+3. [M365 calendar context](https://github.com/JddAndrewLauren/hummingbird/issues/47)
+   on the same contracts, last.
