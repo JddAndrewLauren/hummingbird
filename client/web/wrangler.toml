@@ -1,0 +1,20 @@
+# Checked-in source of truth for the web client's Cloudflare Workers static
+# assets deploy (ADR-0006). Live deploy + the hb.twinion.net DNS binding are
+# a human step (#69's brief); everything here is exercised locally with
+# `wrangler dev` against a `pnpm build` output.
+
+name = "hummingbird-web"
+main = "csp-worker/worker.ts"
+compatibility_date = "2026-08-08"
+
+# Route the custom domain here once the human step (Cloudflare project +
+# DNS) is done. Left commented so `wrangler dev`/local builds never need it.
+# routes = [
+#   { pattern = "hb.twinion.net", custom_domain = true }
+# ]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true

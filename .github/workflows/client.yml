@@ -1,6 +1,8 @@
-# Client CI: cargo test across the client/ workspace, plus a wasm32 build
-# for the web FFI crate. Deploy is out of scope here (ADR-0006 splits deploy
-# into its own, later-ticketed workflow); this one only gates on tests.
+# Client CI: cargo test across the client/ workspace, a wasm32 build for the
+# web FFI crate, and (#69) a test-gated build of client/web — pnpm
+# install -> vitest -> tsc -> vite build, wasm core included. Deploy is out
+# of scope here; deploy-client.yml (ADR-0006's split) gates its own build on
+# main and runs `wrangler deploy` behind it.
 name: client
 
 on:
@@ -37,3 +39,23 @@ jobs:
       - name: wasm-pack build ffi-web (loadable package)
         working-directory: client/ffi-web
         run: wasm-pack build --target web --out-dir /tmp/ffi-web-pkg
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: client/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: client/web/pnpm-lock.yaml
+      - name: pnpm install (client/web)
+        working-directory: client/web
+        run: pnpm install --frozen-lockfile
+      - name: web unit tests
+        working-directory: client/web
+        run: pnpm test
+      - name: web typecheck
+        working-directory: client/web
+        run: pnpm run typecheck
+      - name: web build (wasm core in a worker + PWA shell)
+        working-directory: client/web
+        run: pnpm run build
