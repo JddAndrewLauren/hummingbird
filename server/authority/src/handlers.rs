@@ -235,7 +235,7 @@ fn changes(query: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, SqlError> 
     // workspace never touches `items` (ADR-0008's rows-read argument).
     let version = read_meta_version(sql)?;
     if since >= version {
-        return Ok(json(200, &ChangesResponse { version, items: vec![] }));
+        return Ok(json(200, &ChangesResponse::empty(version)));
     }
 
     let rows = sql.exec(
@@ -243,7 +243,13 @@ fn changes(query: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, SqlError> 
         &[SqlValue::Integer(since)],
     )?;
     let items = rows.iter().map(item_from_row).collect::<Result<Vec<_>, _>>()?;
-    Ok(json(200, &ChangesResponse { version, items }))
+    Ok(json(
+        200,
+        &ChangesResponse {
+            items,
+            ..ChangesResponse::empty(version)
+        },
+    ))
 }
 
 // --------------------------------------------------------------- helpers

@@ -1,0 +1,60 @@
+//! The context lanes and workspace preferences of ADR-0009: `alerts`
+//! (pushed context, upserted on `(source, source_key)`), `context_snapshots`
+//! (server-polled gauges replaced wholesale), and `settings` (small
+//! cross-device binding facts).
+
+use serde::{Deserialize, Serialize};
+
+/// One pushed-context alert, exactly the `alerts` columns. The source owns
+/// `raised_at`/`resolved_at`/`expires_at`; `dismissed_at` is human-owned and
+/// never touched by ingest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Alert {
+    /// Server-minted deterministic id — a re-raise of the same
+    /// `(source, source_key)` lands on the same row by construction.
+    pub id: String,
+    /// 'healthchecks', 'home-assistant', 'gmail-alert/v1', …
+    pub source: String,
+    /// Identity within the source; re-raise upserts.
+    pub source_key: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub url: Option<String>,
+    pub severity: Option<String>,
+    pub raised_at: i64,
+    /// The source said it's over (infra up-event).
+    pub resolved_at: Option<i64>,
+    /// The human waved it away (email, HA).
+    pub dismissed_at: Option<i64>,
+    /// Source-declared TTL: auto-dismiss.
+    pub expires_at: Option<i64>,
+    pub version: i64,
+}
+
+/// One server-polled gauge, exactly the `context_snapshots` columns.
+/// `payload` mirrors the TEXT column: source-shaped JSON, parsed by the
+/// client that renders the tile, never by the server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextSnapshot {
+    /// 'anthropic-usage', 'github/hummingbird', 'photo-site', …
+    pub source: String,
+    /// Metric within the source: 'weekly_limit', 'open_prs', …
+    pub key: String,
+    pub payload: String,
+    /// Drives the "as of…" staleness display (ADR-0002's alarm).
+    pub fetched_at: i64,
+    pub version: i64,
+}
+
+/// One workspace preference, exactly the `settings` columns. `value`
+/// mirrors the TEXT column: canonical JSON, written from [`PutSetting`]'s
+/// typed `value` and parsed by the consuming client.
+///
+/// [`PutSetting`]: crate::PutSetting
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Setting {
+    pub key: String,
+    pub value: String,
+    pub updated_at: i64,
+    pub version: i64,
+}
