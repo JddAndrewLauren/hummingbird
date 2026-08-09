@@ -1,12 +1,38 @@
 //! [`SyncMirror`]: the device's reconciling local read model of the owned
 //! workspace (ADR-0008/0009), built from [`ChangesResponse`] pages.
 //!
-//! Two apply paths, one rule (ADR-0007's amendment, ADR-0008 "reads: delta
-//! pull, full sweep as backstop"): a delta pull is additive — it may
-//! upsert or, on an explicit soft-delete flag, remove a row, but it never
-//! drops a row just because this delta didn't mention it. Only
-//! [`SyncMirror::apply_sweep`], fed the complete workspace, may demote an
-//! id by its absence from the response.
+//! Two apply paths, one rule (ADR-0008 "reads: delta pull, full sweep as
+//! backstop", ADR-0007's retention as it survives that amendment): a delta
+//! pull is additive — it may upsert a row live or, on an explicit
+//! soft-delete flag, mark it absent, but it never drops a row just because
+//! this delta didn't mention it. Only [`SyncMirror::apply_sweep`], fed the
+//! complete workspace, may demote a row by its absence from the response.
+//!
+//! **Retention, not deletion.** ADR-0008 dissolved absence-*inference* on
+//! the wire (rows are never deleted server-side, only flagged), but ADR-0007
+//! separately requires that the device's own read model "only grows or
+//! updates" — reconciliation "never erases a record", so it "stays in the
+//! snapshot forever" and every device stays a full export. A row that goes
+//! absent (soft-delete flag, or missing from a complete sweep) is therefore
+//! *retained* here with [`Presence::Absent`], not removed from the map —
+//! the same rule [`crate::task::Mirror`] already enforces for the S1 model,
+//! reused verbatim ([`crate::task::Presence`]) rather than redefined, since
+//! it is a domain-agnostic notion. The live accessors (`item`, `all_items`,
+//! `project`, `route`, `steps_for_item`, `blockers_of`) filter to
+//! [`Presence::Live`] only; the `*_including_absent` accessors expose the
+//! retained history for a caller — a debug view, a future undo — that needs
+//! it.
+//!
+//! **Relationship to [`crate::task::Mirror`].** That type is the S1
+//! (Linear-era) mirror; this one is its S2/#100 replacement for the owned
+//! schema, built from `hummingbird_domain` types directly rather than a
+//! Linear-shaped `Item`. Nothing in this issue migrates persistence, the
+//! dead-letter journal, or the FFI-facing `Core` handle from one to the
+//! other — that migration, and which mirror (if not both, mid-cutover) ends
+//! up behind [`crate::storage::Persistable`], is explicitly out of scope
+//! here and left to a later slice in this chain (tracked for #103, which
+//! also owns wiring `apply_delta`/`apply_sweep` into the drain-then-sweep
+//! cycle and the conflict/backoff machinery around it).
 
 use std::collections::BTreeMap;
 
@@ -14,20 +40,30 @@ use hummingbird_domain::{
     Alert, BlockedBy, ChangesResponse, ContextSnapshot, Fog, Item, Project, Route, Setting, Step,
 };
 
+use crate::task::Presence;
+
+/// One stored row plus whether it is currently live — the retained-history
+/// half of the retention rule above.
+#[derive(Debug, Clone, PartialEq)]
+struct Slot<T> {
+    record: T,
+    presence: Presence,
+}
+
 /// The device's local read model of every synced table, plus the delta
 /// cursor (`meta.version` as of the last fully-applied pull).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SyncMirror {
     version: i64,
-    projects: BTreeMap<String, Project>,
-    routes: BTreeMap<String, Route>,
-    fog: BTreeMap<String, Fog>,
-    items: BTreeMap<String, Item>,
-    steps: BTreeMap<String, Step>,
-    blocked_by: BTreeMap<(String, String), BlockedBy>,
-    alerts: BTreeMap<String, Alert>,
-    context_snapshots: BTreeMap<(String, String), ContextSnapshot>,
-    settings: BTreeMap<String, Setting>,
+    projects: BTreeMap<String, Slot<Project>>,
+    routes: BTreeMap<String, Slot<Route>>,
+    fog: BTreeMap<String, Slot<Fog>>,
+    items: BTreeMap<String, Slot<Item>>,
+    steps: BTreeMap<String, Slot<Step>>,
+    blocked_by: BTreeMap<(String, String), Slot<BlockedBy>>,
+    alerts: BTreeMap<String, Slot<Alert>>,
+    context_snapshots: BTreeMap<(String, String), Slot<ContextSnapshot>>,
+    settings: BTreeMap<String, Slot<Setting>>,
 }
 
 impl SyncMirror {
@@ -42,25 +78,36 @@ impl SyncMirror {
     }
 
     pub fn item(&self, id: &str) -> Option<&Item> {
-        self.items.get(id)
+        live(self.items.get(id))
+    }
+
+    /// The stored record regardless of presence — retained history, for a
+    /// caller that needs it (a debug view, a future undo). Absence from
+    /// this accessor, unlike [`SyncMirror::item`], means "never synced",
+    /// not "archived".
+    pub fn item_including_absent(&self, id: &str) -> Option<&Item> {
+        self.items.get(id).map(|slot| &slot.record)
     }
 
     pub fn all_items(&self) -> impl Iterator<Item = &Item> {
-        self.items.values()
+        self.items.values().filter_map(live_slot)
     }
 
     pub fn project(&self, id: &str) -> Option<&Project> {
-        self.projects.get(id)
+        live(self.projects.get(id))
     }
 
     pub fn route(&self, project_id: &str) -> Option<&Route> {
-        self.routes.get(project_id)
+        live(self.routes.get(project_id))
     }
 
     /// Every live Step attached to `item_id`, id order — first-class
     /// records, never parsed from a body string.
     pub fn steps_for_item<'a>(&'a self, item_id: &'a str) -> impl Iterator<Item = &'a Step> {
-        self.steps.values().filter(move |s| s.item_id == item_id)
+        self.steps
+            .values()
+            .filter_map(live_slot)
+            .filter(move |s| s.item_id == item_id)
     }
 
     /// Every id that blocks `item_id` — the direction the schema and the
@@ -69,119 +116,153 @@ impl SyncMirror {
     pub fn blockers_of<'a>(&'a self, item_id: &'a str) -> impl Iterator<Item = &'a str> {
         self.blocked_by
             .values()
+            .filter_map(live_slot)
             .filter(move |edge| edge.item_id == item_id)
             .map(|edge| edge.blocker_id.as_str())
     }
 
     pub fn alert(&self, id: &str) -> Option<&Alert> {
-        self.alerts.get(id)
+        live(self.alerts.get(id))
     }
 
     pub fn setting(&self, key: &str) -> Option<&Setting> {
-        self.settings.get(key)
+        live(self.settings.get(key))
     }
 
     /// Applies one delta pull: additive only. A row absent from `resp` is
     /// left exactly as it was; a row present with its soft-delete flag set
-    /// is removed from the mirror (the flag *is* the removal signal, never
-    /// the gap). The cursor advances to `resp.version` only after every
-    /// table below has been applied — built on a scratch copy and swapped
-    /// in as the last step, so a caller that never observes the swap (a
-    /// crash mid-apply) sees the previous, fully-consistent mirror, and a
-    /// replay of the same delta is a harmless no-op.
+    /// is marked absent (retained, not removed — see the module docs) using
+    /// the flag's own timestamp, since that is a more precise "since" than
+    /// anything this call could invent. The cursor advances to
+    /// `resp.version` only after every table below has been applied — built
+    /// on a scratch copy and swapped in as the last step, so a caller that
+    /// never observes the swap (a panic mid-apply) sees the previous,
+    /// fully-consistent mirror, and a replay of the same delta is a
+    /// harmless no-op.
     pub fn apply_delta(&mut self, resp: ChangesResponse) {
         let mut next = self.clone();
-        next.apply_tables(resp, false);
+        next.apply_tables(resp, false, 0);
         *self = next;
     }
 
-    /// Applies one full sweep: the complete workspace. A row present is
-    /// upserted (or removed, on its soft-delete flag) exactly as a delta
-    /// would; a row this device previously held live but that is missing
-    /// from `resp` entirely is demoted — removed from the mirror, because
-    /// the sweep is a complete picture and its absence is meaningful.
-    pub fn apply_sweep(&mut self, resp: ChangesResponse) {
+    /// Applies one full sweep: the complete workspace, as of `now_ms` (used
+    /// only to stamp a row demoted purely by its absence from `resp` — a
+    /// row's own soft-delete flag always wins when present, per
+    /// [`SyncMirror::apply_delta`]). A row present is upserted live (or
+    /// marked absent, on its soft-delete flag) exactly as a delta would; a
+    /// row this device previously held live but that is missing from
+    /// `resp` entirely is demoted, because the sweep is a complete picture
+    /// and its absence is meaningful. Same panic-safety as `apply_delta`.
+    pub fn apply_sweep(&mut self, resp: ChangesResponse, now_ms: i64) {
         let mut next = self.clone();
-        next.apply_tables(resp, true);
+        next.apply_tables(resp, true, now_ms);
         *self = next;
     }
 
-    fn apply_tables(&mut self, resp: ChangesResponse, full: bool) {
+    fn apply_tables(&mut self, resp: ChangesResponse, full: bool, now_ms: i64) {
         apply_table(
             &mut self.projects,
             resp.projects,
             |p| p.id.clone(),
-            |p| p.archived_at.is_some(),
+            |p| p.archived_at,
             full,
+            now_ms,
         );
         apply_table(
             &mut self.routes,
             resp.routes,
             |r| r.project_id.clone(),
-            |_| false,
+            |_| None,
             full,
+            now_ms,
         );
-        apply_table(&mut self.fog, resp.fog, |f| f.id.clone(), |_| false, full);
+        apply_table(
+            &mut self.fog,
+            resp.fog,
+            |f| f.id.clone(),
+            |_| None,
+            full,
+            now_ms,
+        );
         apply_table(
             &mut self.items,
             resp.items,
             |i| i.id.clone(),
-            |i| i.archived_at.is_some(),
+            |i| i.archived_at,
             full,
+            now_ms,
         );
         apply_table(
             &mut self.steps,
             resp.steps,
             |s| s.id.clone(),
-            |s| s.deleted_at.is_some(),
+            |s| s.deleted_at,
             full,
+            now_ms,
         );
         apply_table(
             &mut self.blocked_by,
             resp.blocked_by,
             |b| (b.item_id.clone(), b.blocker_id.clone()),
-            |b| b.removed_at.is_some(),
+            |b| b.removed_at,
             full,
+            now_ms,
         );
         apply_table(
             &mut self.alerts,
             resp.alerts,
             |a| a.id.clone(),
-            |_| false,
+            |_| None,
             full,
+            now_ms,
         );
         apply_table(
             &mut self.context_snapshots,
             resp.context_snapshots,
             |c| (c.source.clone(), c.key.clone()),
-            |_| false,
+            |_| None,
             full,
+            now_ms,
         );
         apply_table(
             &mut self.settings,
             resp.settings,
             |s| s.key.clone(),
-            |_| false,
+            |_| None,
             full,
+            now_ms,
         );
 
         self.version = resp.version;
     }
 }
 
+fn live<T>(slot: Option<&Slot<T>>) -> Option<&T> {
+    slot.and_then(live_slot)
+}
+
+fn live_slot<T>(slot: &Slot<T>) -> Option<&T> {
+    slot.presence.is_live().then_some(&slot.record)
+}
+
 /// Applies one table's slice of a pull to `map`.
 ///
-/// Every row in `incoming` is either upserted (removed on `is_removed`) —
-/// the additive half both a delta and a sweep share. When `full` is set
-/// (a sweep), every key not touched by this call is dropped: the response
-/// was the complete workspace, so its absence is the demotion signal. When
-/// `full` is unset (a delta), untouched keys are left exactly as they were.
+/// Every row in `incoming` is upserted: live if `removed_since` returns
+/// `None`, absent (stamped with the returned timestamp) if it returns
+/// `Some` — the additive half both a delta and a sweep share, and never a
+/// removal from `map` itself (retention, per the module docs). When `full`
+/// is set (a sweep), every key not touched by this call is demoted to
+/// absent as of `now_ms` (preserving an earlier absence's original stamp):
+/// the response was the complete workspace, so its absence is the
+/// demotion signal. When `full` is unset (a delta), untouched keys are
+/// left exactly as they were.
 fn apply_table<K, T>(
-    map: &mut BTreeMap<K, T>,
+    map: &mut BTreeMap<K, Slot<T>>,
     incoming: Vec<T>,
     key_of: impl Fn(&T) -> K,
-    is_removed: impl Fn(&T) -> bool,
+    removed_since: impl Fn(&T) -> Option<i64>,
     full: bool,
+    now_ms: i64,
 ) where
     K: Ord + Clone,
 {
@@ -189,14 +270,24 @@ fn apply_table<K, T>(
     for row in incoming {
         let key = key_of(&row);
         seen.insert(key.clone());
-        if is_removed(&row) {
-            map.remove(&key);
-        } else {
-            map.insert(key, row);
-        }
+        let presence = match removed_since(&row) {
+            Some(since_ms) => Presence::Absent { since_ms },
+            None => Presence::Live,
+        };
+        map.insert(
+            key,
+            Slot {
+                record: row,
+                presence,
+            },
+        );
     }
     if full {
-        map.retain(|k, _| seen.contains(k));
+        for (key, slot) in map.iter_mut() {
+            if !seen.contains(key) {
+                slot.presence = slot.presence.demote(now_ms);
+            }
+        }
     }
 }
 
@@ -357,37 +448,89 @@ mod tests {
 
         // A sweep that omits "a-2" entirely (as opposed to a delta, where
         // omission just means "unchanged") demotes it.
-        mirror.apply_sweep(ChangesResponse {
-            version: 2,
-            items: vec![item("a-1")],
-            ..ChangesResponse::empty(2)
-        });
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 2,
+                items: vec![item("a-1")],
+                ..ChangesResponse::empty(2)
+            },
+            9_000,
+        );
 
         assert!(mirror.item("a-1").is_some());
         assert!(
             mirror.item("a-2").is_none(),
             "a full sweep's completeness makes an id's absence meaningful"
         );
+        assert_eq!(
+            mirror.item_including_absent("a-2"),
+            Some(&item("a-2")),
+            "demotion retains the record — ADR-0007/0008 retention, not deletion"
+        );
     }
 
     /// #100 acceptance: "A full sweep and a delta pull over the same seeded
-    /// fixture workspace produce byte-identical mirrors."
+    /// fixture workspace produce byte-identical mirrors" — the mirror-side
+    /// half of #114's server assertion. Proven by *convergence*, not by
+    /// applying one identical response to two empty mirrors (which cannot
+    /// distinguish `apply_sweep` from `apply_delta` at all): mirror A is
+    /// built from a sequence of deltas (create, update, soft-delete);
+    /// mirror B is built from one sweep of the equivalent final state.
     #[test]
-    fn a_full_sweep_and_a_delta_over_the_same_fixture_produce_identical_mirrors() {
+    fn a_mirror_built_from_a_delta_sequence_matches_one_built_from_the_equivalent_sweep() {
+        let mut via_deltas = SyncMirror::new();
+        via_deltas.apply_delta(ChangesResponse {
+            version: 1,
+            projects: vec![project("p-1")],
+            routes: vec![route("p-1")],
+            items: vec![item("a-1"), item("a-2")],
+            steps: vec![step("s-1", "a-1")],
+            blocked_by: vec![blocked_by("a-1", "a-2")],
+            ..ChangesResponse::empty(1)
+        });
+        let mut renamed = item("a-1");
+        renamed.title = "renamed".to_string();
+        renamed.version = 2;
+        via_deltas.apply_delta(ChangesResponse {
+            version: 2,
+            items: vec![renamed.clone()],
+            ..ChangesResponse::empty(2)
+        });
+        let mut deleted_step = step("s-1", "a-1");
+        deleted_step.deleted_at = Some(500);
+        deleted_step.version = 3;
+        via_deltas.apply_delta(ChangesResponse {
+            version: 3,
+            steps: vec![deleted_step.clone()],
+            ..ChangesResponse::empty(3)
+        });
+
         let mut via_sweep = SyncMirror::new();
-        via_sweep.apply_sweep(seeded_workspace(5));
+        via_sweep.apply_sweep(
+            ChangesResponse {
+                version: 3,
+                projects: vec![project("p-1")],
+                routes: vec![route("p-1")],
+                items: vec![renamed, item("a-2")],
+                steps: vec![deleted_step],
+                blocked_by: vec![blocked_by("a-1", "a-2")],
+                ..ChangesResponse::empty(3)
+            },
+            9_999, // must not matter: nothing is absent-by-gap in this fixture
+        );
 
-        let mut via_delta = SyncMirror::new();
-        via_delta.apply_delta(seeded_workspace(5));
-
-        assert_eq!(via_sweep, via_delta);
+        assert_eq!(via_deltas, via_sweep);
+        // And the observable behaviour agrees too, not just internal state.
+        assert_eq!(via_deltas.item("a-1").unwrap().title, "renamed");
+        assert_eq!(via_deltas.steps_for_item("a-1").count(), 0);
     }
 
     /// #100 acceptance: "Soft-deleted rows are applied as removals" — the
     /// adapter maps the flag into the mirror's own absence rather than
-    /// inferring deletion from a gap.
+    /// inferring deletion from a gap. "Removals" from the live view, per
+    /// ADR-0007/0008 retention — never erased from the mirror itself.
     #[test]
-    fn a_soft_deleted_item_is_removed_from_the_mirror_by_a_delta() {
+    fn a_soft_deleted_item_leaves_the_live_view_but_stays_retrievable() {
         let mut mirror = SyncMirror::new();
         mirror.apply_delta(seeded_workspace(1));
         assert!(mirror.item("a-1").is_some());
@@ -396,7 +539,7 @@ mod tests {
         archived.archived_at = Some(9_999);
         mirror.apply_delta(ChangesResponse {
             version: 2,
-            items: vec![archived],
+            items: vec![archived.clone()],
             ..ChangesResponse::empty(2)
         });
 
@@ -404,10 +547,19 @@ mod tests {
             mirror.item("a-1").is_none(),
             "the explicit archived_at flag, not a gap, is the removal signal"
         );
+        assert!(
+            !mirror.all_items().any(|i| i.id == "a-1"),
+            "an archived item must also leave all_items()"
+        );
+        assert_eq!(
+            mirror.item_including_absent("a-1"),
+            Some(&archived),
+            "the record stays in the mirror forever — retention, not deletion"
+        );
     }
 
     #[test]
-    fn a_soft_deleted_step_and_a_removed_blocked_by_edge_are_removed_too() {
+    fn a_soft_deleted_step_and_a_removed_blocked_by_edge_leave_their_live_views() {
         let mut mirror = SyncMirror::new();
         mirror.apply_delta(seeded_workspace(1));
 
@@ -475,5 +627,35 @@ mod tests {
             "replaying an already-applied delta must be a no-op"
         );
         assert_eq!(mirror.version(), 5);
+    }
+
+    /// A second sweep that also misses an id must not refresh its absence
+    /// stamp — the same "first, not latest" rule [`Presence::demote`]
+    /// already enforces for the S1 mirror.
+    #[test]
+    fn a_second_sweep_that_also_misses_an_id_does_not_reset_its_absence_clock() {
+        let mut mirror = SyncMirror::new();
+        mirror.apply_delta(seeded_workspace(1));
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 2,
+                items: vec![item("a-1")],
+                ..ChangesResponse::empty(2)
+            },
+            2_000,
+        );
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 3,
+                items: vec![item("a-1")],
+                ..ChangesResponse::empty(3)
+            },
+            9_000,
+        );
+
+        assert_eq!(
+            mirror.items.get("a-2").unwrap().presence,
+            Presence::Absent { since_ms: 2_000 }
+        );
     }
 }

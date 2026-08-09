@@ -25,6 +25,16 @@ pub trait ChangesTransport: Send + Sync {
 /// A failure to fetch or parse one response. Carries no partial data — the
 /// adapter's complete-or-nothing guarantee depends on that: either a whole
 /// [`hummingbird_domain::ChangesResponse`] comes back, or nothing does.
+///
+/// Deliberately its own type rather than a shared import of
+/// `calendar::google::transport::TransportError`, even though the two are
+/// currently field-for-field identical: they are different lanes (a
+/// third-party read-only API vs. this app's own read/write authority) with
+/// no reason to evolve in lockstep — a status-carrying variant a future
+/// Google quirk needs has no business showing up in every `sync` transport
+/// error. #101 is about to add a CAS-write transport error alongside this
+/// one; if that one also turns out identical, that is the point to decide
+/// on a shared base type instead of three copies, not before.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportError {
     pub message: String,

@@ -5,6 +5,19 @@
 //! domain types are the shared crate both sides compile). Complete-or-
 //! nothing: a transport failure or a malformed body yields an error, never
 //! a partial [`ChangesResponse`] for a caller to apply.
+//!
+//! Forward-compat is asymmetric today, by construction rather than by
+//! oversight: an unmodelled *field* on an entity survives deserialisation
+//! (serde's default — none of the domain entity types set
+//! `deny_unknown_fields`, only the request DTOs do), but an unmodelled
+//! *enum variant* (`Stage`, `Size`, `Energy`) fails the whole pull as
+//! [`AdapterError::InvalidResponse`]. Both sides compile the same
+//! `hummingbird_domain` crate today, so this is only a skewed-client
+//! hazard (an old client talking to a schema that has grown a new variant)
+//! rather than a live one — but it is the same class of risk the
+//! unmodelled-field guarantee exists to cover, and worth a deliberate
+//! `#[serde(other)]`-style fallback if a variant ever needs to roll out
+//! gradually across devices.
 
 use std::fmt;
 
