@@ -249,7 +249,8 @@ pub struct PutSetting {
 /// `expected_version`: webhook sources cannot track versions, and the
 /// upsert on `(source, source_key)` is inherently absolute — the source is
 /// authoritative for its own fields (ADR-0009 rule 3). Every source-owned
-/// field is set from this payload on each raise (absent = NULL);
+/// field is set from this payload on each raise (absent = NULL), except
+/// that an absent `raised_at` keeps the stored stamp on a re-raise;
 /// `dismissed_at` is human-owned and never touched by ingest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -263,7 +264,8 @@ pub struct AlertIngest {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<String>,
-    /// Defaults to the server clock when absent.
+    /// Absent: the server clock on first raise; on a re-raise the stored
+    /// stamp is kept, so an identical replayed payload is a no-op.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raised_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
