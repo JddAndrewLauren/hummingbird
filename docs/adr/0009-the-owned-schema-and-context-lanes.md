@@ -1,6 +1,8 @@
 # ADR-0009: The owned schema — first-class domain records, and context joins by transport
 
-**Status:** accepted · 2026-08-08
+**Status:** accepted · 2026-08-08 · amended 2026-08-09 (standing-questions
+grilling: `scheduled_date`, `settings`, the standing-questions section, and
+rule 2 generalized to material snapshot changes)
 **Context:** the authority-move grilling of 2026-08-08. Companion to
 [ADR-0008](0008-the-authority-is-an-app-owned-server.md); amends
 [ADR-0002](0002-sources-join-by-role-urgency-computed-at-read-time.md)'s
@@ -71,7 +73,10 @@ CREATE TABLE items (
   priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
   project_id  TEXT REFERENCES projects(id),
   project_pos INTEGER,                      -- order within the Route's action list
-  due_date    TEXT,                         -- ISO date, set deliberately at triage only
+  due_date    TEXT,                         -- ISO deadline, set deliberately at triage only:
+                                            --   consequences; the only date urgency reads
+  scheduled_date TEXT,                      -- ISO do-date the human chose: a preference,
+                                            --   slides freely, never feeds urgency
   source      TEXT,                         -- frozen namespace: 'google-tasks/v1', 'gmail/v1', 'web', …
   source_key  TEXT,                         -- the id in that source
   source_url  TEXT,                         -- deep link back: Gmail thread, Calendar event, …
@@ -127,6 +132,17 @@ CREATE TABLE context_snapshots (
   PRIMARY KEY (source, key)
 );
 
+-- Workspace preferences: small cross-device binding facts (which race
+-- series are followed, which calendar is the vacations calendar), synced
+-- through the normal delta pull. Machinery like meta and tokens, not a
+-- domain record; the tiles that consume these stay client code.
+CREATE TABLE settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,                 -- JSON
+  updated_at INTEGER NOT NULL,
+  version    INTEGER NOT NULL
+);
+
 CREATE TABLE tokens (                       -- per-writer bearer auth (ADR-0008)
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,                 -- 'pixel-9', 'sweeper', 'home-assistant'
@@ -164,7 +180,7 @@ who can hold the credential and how the data moves:
 | --- | --- | --- | --- |
 | Capture | drained by the sweeper | Google Tasks, Gmail `hummingbird/capture` | create in authority, ack in source |
 | Context, device-polled | client core, per-device OAuth (ADR-0005) | Google Calendar, M365 | replaced in the device mirror |
-| Context, server-polled | DO cron + static keys as Worker secrets | Anthropic/OpenAI usage, GitHub repo stats, photo-site analytics | `context_snapshots` row replaced wholesale |
+| Context, server-polled | DO cron + static keys as Worker secrets | Anthropic/OpenAI usage, GitHub repo stats, photo-site analytics, race schedules, the city waste-collection page | `context_snapshots` row replaced wholesale |
 | Context, pushed | webhooks at `/api/alerts`, `ingest`-scoped tokens; or a sweeper adapter for pull-only sources | infra checks (auto-resolve), Home Assistant (dismiss/expire), Gmail `hummingbird/alert` label (dismiss), GitHub events, photo-site events | `alerts` upsert on `(source, source_key)`; leaves view by resolve / dismiss / expiry |
 
 Rules that hold across every lane:
@@ -174,8 +190,12 @@ Rules that hold across every lane:
 2. **A machine may raise an alert; a machine may never mint an item.** The
    gesture rule protects items, one level up: converting an alert to an item
    is one tap, a capture with `source_key` = alert id, deterministic id,
-   double-tap a no-op. Threshold crossings on gauges ("80% of weekly cap")
-   may machine-raise alerts.
+   double-tap a no-op. A server poll may machine-raise an alert on a
+   threshold crossing ("80% of weekly cap") or on a **material change in
+   its snapshot** (a holiday sliding trash pickup Monday → Tuesday). What
+   counts as material is defined per source, at wiring time — a weekly
+   "next date" rolling forward on cadence is not a change — and the alert
+   must state the change itself, never just that one happened.
 3. **Authorities stay authoritative:** Home Assistant decides what to send;
    the photo site decides what to push; hummingbird receives and never
    configures their rules.
@@ -183,10 +203,49 @@ Rules that hold across every lane:
    carry `(source, source_key[, source_url])`. That is the entire common
    core — see rejected alternatives.
 
+### Standing questions read the lanes, they never add storage
+
+Standing questions (glossary: "when is the next race," "what's this
+weekend," "how long to the next vacation") are read-time consumers of the
+lanes above, decided in the 2026-08-09 grilling:
+
+- **Next race** — server-polled lane: one `context_snapshots` row per series
+  (`source='f1'`/`'indycar'`), payload holding the upcoming schedule; "next"
+  computed at read time. The same cron that refreshes the snapshot is what
+  may later machine-raise a "race in 90 minutes" alert (rule 2's threshold
+  carve-out) — the question answers, the alert interrupts, never one
+  mechanism.
+- **Weekend plans** — no new data: calendar-mirror events in the window,
+  plus items *scheduled* or *due* in it. This is what forced the
+  `scheduled_date`/`due_date` split — a do-date is a preference, a deadline
+  has consequences, and only the latter feeds urgency (ADR-0002).
+- **Vacation countdown** — device-polled lane: "next event on the dedicated
+  Trips calendar." The calendar stays the authority; the question
+  auto-advances when a vacation passes.
+- **Which cans** — server-polled lane: a daily poll of the city's
+  address-specific collection page (verified static HTML, 2026-08-09) →
+  one snapshot whose payload holds each stream's cadence and next date;
+  answered at read time as "which containers go out, and when." Holiday
+  slides are rule 2's material-change case: the adapter judges deviation
+  from cadence (the date rolling forward a week is not a change) and the
+  alert names the slide — "trash: Monday → Tuesday this week."
+
+Answers are never stored (ADR-0002 verbatim); the only persistent trace of
+a standing question is its binding facts in `settings`.
+
+Rendering is bespoke per question — a three-can graphic for waste, countdown
+strings ("12 days before Monaco") for races and vacations — which is *why*
+tiles are client code and a `tiles` record was rejected: there is no generic
+shape to store. A pane may also render the live alerts that share its
+snapshot's `source` (the waste pane shows holiday-slide text only while such
+an alert is unresolved) — a deliberate use of rule 4's shared provenance
+vocabulary, and a wiring constraint: a source's alerts and its snapshot must
+use the same `source` string, or the pane-level join silently breaks.
+
 ### Sequencing
 
-Alerts, snapshots, token scopes and webhook endpoints are **in the schema
-now** (retrofitting provenance later is what cost us this migration); their
+Alerts, snapshots, settings, token scopes and webhook endpoints are **in the
+schema now** (retrofitting provenance later is what cost us this migration); their
 **source wiring comes after task-parity cutover** — the move exists because
 the task domain fought its authority, and alerts must not delay the cutover.
 Caveat recorded: *API-account* usage has real endpoints at Anthropic and
