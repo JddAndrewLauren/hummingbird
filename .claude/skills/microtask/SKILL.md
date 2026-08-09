@@ -5,6 +5,10 @@ description: Break one already-selected, stalled Linear issue into a checklist o
 
 # Microtask
 
+> **Status:** targets the live Linear workspace, which remains the working
+> surface until the owned stack (ADR-0008) is daily-usable; the skill
+> retargets to the owned API then.
+
 Lower activation energy on **one already-selected, stalled issue** by writing a checklist of
 tiny concrete steps into its Linear description. Write first, offer company second. Speed is
 the value.

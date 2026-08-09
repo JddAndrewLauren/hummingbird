@@ -5,8 +5,8 @@
 //!
 //! Nothing here is Google-specific — this is the shared shape #71's Google
 //! adapter fills and #47's future M365 adapter fills too. This module is
-//! read-only context: it cannot mint, modify, or reference a Linear issue
-//! (ADR-0002 rule 1).
+//! read-only context: it cannot mint, modify, or reference an Action in the
+//! task authority (ADR-0002 rule 1).
 
 mod event;
 pub mod google;

@@ -26,7 +26,7 @@ export default defineConfig({
       manifest: {
         name: "hummingbird",
         short_name: "hummingbird",
-        description: "Personal GTD-style task system, backed by Linear.",
+        description: "Personal GTD-style task system.",
         start_url: "/",
         scope: "/",
         display: "standalone",

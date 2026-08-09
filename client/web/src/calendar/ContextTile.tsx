@@ -5,7 +5,7 @@ import { formatAsOf, isStale } from "./staleness";
 // never-opted-in device (`connected: false`) — the Agent Brief's "opt-in is
 // per-device... unconstrained ranking" criterion starts here: no tile, no
 // signal, nothing for a ranking consumer to lean on. Links out via a plain
-// `<a>` and never mints or touches a Linear Action (ADR-0002 rule 1 applies
+// `<a>` and never mints or touches an Action (ADR-0002 rule 1 applies
 // transitively: this is read-only calendar context, same as #70's mirror).
 
 export interface ContextTileProps {

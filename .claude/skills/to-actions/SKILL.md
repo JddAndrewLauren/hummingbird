@@ -5,6 +5,10 @@ description: Break a personal project into actions on Linear (org twinion, team 
 
 # /to-actions
 
+> **Status:** targets the live Linear workspace, which remains the working
+> surface until the owned stack (ADR-0008) is daily-usable; the skill
+> retargets to the owned API then.
+
 Break a personal **project** into **actions** on Linear via a bounded interview. The
 personal analogue of `/to-tickets`: publish the graph, work the frontier — with **fog
 held back** in the project description instead of forced into premature issues.

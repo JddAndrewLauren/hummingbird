@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """One-way sweeper: capture sources -> Linear Triage issues.
 
+OFF since 2026-08-08 (ADR-0008): the Fly machine is stopped and both
+healthchecks are paused while the authority moves to the app-owned server.
+One PR retargets the write side to POST /api/items when the owned stack is
+daily-usable; everything below describes the built artifact and stands
+otherwise. See docs/sweeper.md for the restart procedure.
+
 One drain engine, isolated adapters (ADR-0002). Two capture adapters run per
 sweep: Google Tasks (every incomplete item outside the denylist, fail-open)
 and Gmail (only messages carrying the `hummingbird/capture` label,

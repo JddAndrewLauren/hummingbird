@@ -1,6 +1,10 @@
 # ADR-0002: Sources join by role; urgency is computed at read time
 
-**Status:** accepted · 2026-08-07
+**Status:** accepted · 2026-08-07 · **amended 2026-08-08 by
+[ADR-0009](0009-the-owned-schema-and-context-lanes.md):** the task authority
+is now the owned server (ADR-0008), and context gains transport lanes —
+server-polled snapshots and pushed alerts. Both taxonomies and rules 1–6
+stand; alerts re-entered through this ADR's own petition mechanism.
 **Context:** the data-sources grilling of 2026-08-07, issue
 [#43](https://github.com/JddAndrewLauren/hummingbird/issues/43); extends
 [ADR-0001](0001-linear-is-the-authority-behind-a-clean-seam.md).

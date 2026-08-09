@@ -1,6 +1,11 @@
 # ADR-0006: The web client is served from Cloudflare Workers static assets at a public, permanent origin
 
-**Status:** accepted · 2026-08-08
+**Status:** accepted · 2026-08-08 · **amended 2026-08-08 by
+[ADR-0008](0008-the-authority-is-an-app-owned-server.md):** Cloudflare also
+hosts the authority — an API worker + Durable Object at
+`hb.twinion.net/api/*`, same-origin with the shell, so the CSP tightens to
+`connect-src 'self'` plus the context providers. "Fly holds processes" now
+reads: Fly holds the sweeper.
 **Context:** the hosting grilling of 2026-08-08, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#54](https://github.com/JddAndrewLauren/hummingbird/issues/54), graduated from

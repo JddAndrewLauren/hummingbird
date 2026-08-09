@@ -36,10 +36,13 @@ describe("csp-worker", () => {
     expect(await response.text()).toBe("not found");
   });
 
-  it("has no unsafe-inline and scopes connect-src to self, api.linear.app, www.googleapis.com, and accounts.google.com", () => {
+  it("has no unsafe-inline and scopes connect-src to self, www.googleapis.com, and accounts.google.com", () => {
+    // The task API is same-origin (ADR-0008), so 'self' covers it;
+    // api.linear.app was retired with the authority move.
     expect(CONTENT_SECURITY_POLICY).not.toMatch(/unsafe-inline/);
+    expect(CONTENT_SECURITY_POLICY).not.toMatch(/linear/);
     expect(CONTENT_SECURITY_POLICY).toMatch(
-      /connect-src 'self' https:\/\/api\.linear\.app https:\/\/www\.googleapis\.com https:\/\/accounts\.google\.com/,
+      /connect-src 'self' https:\/\/www\.googleapis\.com https:\/\/accounts\.google\.com/,
     );
   });
 

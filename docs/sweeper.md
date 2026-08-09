@@ -1,5 +1,15 @@
 # The capture→Linear sweeper
 
+> **Status (2026-08-08): OFF.** The Fly machine is stopped and both
+> healthchecks are paused: the authority is moving to the app-owned server
+> ([ADR-0008](adr/0008-the-authority-is-an-app-owned-server.md)). Captures
+> wait in their sources — Tasks items stay incomplete, Gmail labels stay on —
+> and the frozen namespaces make the eventual drain duplicate-free. The
+> retarget is one PR swapping the engine's write side to `POST /api/items`
+> (create-in-authority-first, identical crash-safety proof) when the owned
+> stack is daily-usable. Everything below describes the built artifact and
+> stands otherwise; restart = `flyctl machine start` + unpause the checks.
+
 A one-way sweeper that drains capture sources into Linear Triage as bare-text
 issues and reports its own liveness to healthchecks.io. One drain engine,
 isolated adapters (ADR-0002): **Google Tasks** (every incomplete item outside

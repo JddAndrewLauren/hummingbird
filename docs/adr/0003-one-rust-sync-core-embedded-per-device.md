@@ -1,6 +1,13 @@
 # ADR-0003: One Rust sync core, embedded per device
 
-**Status:** accepted · 2026-08-07
+**Status:** accepted · 2026-08-07 · **amended 2026-08-08 by
+[ADR-0008](0008-the-authority-is-an-app-owned-server.md):** the "no relay and
+no app-owned backend" clause is superseded — an owned authority now exists,
+the Linear adapter is never built, and the CORS argument is moot (the API is
+same-origin). Everything else stands: the sync engine remains a library
+embedded per device, the crate layout, persistence and web-client decisions
+are unchanged, and the domain types in `core/src/task/` extract into a
+standalone crate the server shares.
 **Context:** the stack grilling of 2026-08-07, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#40](https://github.com/JddAndrewLauren/hummingbird/issues/40). Implements
