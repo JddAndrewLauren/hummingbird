@@ -7,6 +7,9 @@ description = "Binding-agnostic sync engine core (ADR-0003)."
 [dependencies]
 async-trait = "0.1.92"
 chrono = { version = "0.4.45", features = ["serde"] }
+# The owned-schema wire DTOs and domain records (ADR-0008/0009), compiled by
+# both sides — this crate deserialises them, never redefines them (#100/#101).
+hummingbird-domain = { path = "../../server/domain" }
 # The IANA time zone database, for one job: resolving a Google all-day
 # boundary (`date`, no time) to the instant of local midnight in the
 # calendar's own zone. `chrono` alone cannot — it has no zone table — and

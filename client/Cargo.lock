@@ -523,12 +523,21 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "hummingbird-domain",
  "indexed_db_futures",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "hummingbird-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
