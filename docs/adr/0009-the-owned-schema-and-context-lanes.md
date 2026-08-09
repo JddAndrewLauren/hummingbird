@@ -2,7 +2,14 @@
 
 **Status:** accepted · 2026-08-08 · amended 2026-08-09 (standing-questions
 grilling: `scheduled_date`, `settings`, the standing-questions section, and
-rule 2 generalized to material snapshot changes)
+rule 2 generalized to material snapshot changes) · **amended 2026-08-09 by
+[ADR-0011](0011-context-ingestion-moves-server-side.md) /
+[ADR-0012](0012-the-notification-lane.md):** rule 3 is scoped to push
+sources and gains a second clause for streams hummingbird polls itself; the
+server-polled lane gains **evaluated streams** (mail and calendar events,
+judged in-poll, only matches persisting); `alerts.severity` may be stamped
+by the minting rule; and `rules`, `push_targets`, and the delivery log join
+the schema (DDL in ADR-0012).
 **Context:** the authority-move grilling of 2026-08-08. Companion to
 [ADR-0008](0008-the-authority-is-an-app-owned-server.md); amends
 [ADR-0002](0002-sources-join-by-role-urgency-computed-at-read-time.md)'s
