@@ -30,8 +30,10 @@ export default defineConfig({
         start_url: "/",
         scope: "/",
         display: "standalone",
-        background_color: "#0b0f14",
-        theme_color: "#0b0f14",
+        // --ink-950, the dark theme's page surface. Matches index.html's
+        // theme-color, which these two had drifted from.
+        background_color: "#0f141a",
+        theme_color: "#0f141a",
         icons: [
           {
             src: "icon.svg",

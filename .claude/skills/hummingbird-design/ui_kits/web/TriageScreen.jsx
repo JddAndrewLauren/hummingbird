@@ -40,7 +40,7 @@ function TriageScreen({ data, onDrain }) {
           <span className="hb-meta">{queue.length} unsorted · swept every 15m</span>
         </div>
         {queue.length === 0 ? (
-          <Card padding="0"><EmptyState icon="inbox" title="Triage is empty"
+          <Card padding="0"><EmptyState icon="inbox" headingLevel={3} title="Triage is empty"
             body="Everything captured has been sorted. The sweeper drains again in 15 minutes." /></Card>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>

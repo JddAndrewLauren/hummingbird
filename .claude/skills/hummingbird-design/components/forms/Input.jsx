@@ -5,6 +5,11 @@ export function Input({ label, hint, error, icon, size = "md", trailing, id, sty
   const [focus, setFocus] = React.useState(false);
   const autoId = React.useId ? React.useId() : "hb-input";
   const inputId = id || autoId;
+  // One hint/error node, one id, derived from the same base as the field — so a
+  // caller-supplied `id` owns both ends of the association. Only point
+  // aria-describedby at it when something is actually rendered there.
+  const describedById = inputId + "-desc";
+  const describedBy = error || hint ? describedById : undefined;
   const h = size === "lg" ? 44 : size === "sm" ? 30 : 36;
   const borderColor = error ? "var(--status-danger-fg)" : focus ? "var(--accent)" : "var(--border-default)";
   return (
@@ -18,13 +23,15 @@ export function Input({ label, hint, error, icon, size = "md", trailing, id, sty
         transition: "border-color var(--dur-fast) var(--ease-flit), box-shadow var(--dur-fast) var(--ease-flit)",
       }}>
         {icon ? <Icon name={icon} size={16} color="var(--text-muted)" /> : null}
-        <input id={inputId} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+        <input id={inputId} aria-describedby={describedBy} aria-invalid={error ? true : undefined} {...rest}
+          onFocus={(event) => { setFocus(true); rest.onFocus?.(event); }}
+          onBlur={(event) => { setFocus(false); rest.onBlur?.(event); }}
           style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent",
-            font: "var(--type-body)", color: "var(--text-primary)", padding: 0 }} {...rest} />
+            font: "var(--type-body)", color: "var(--text-primary)", padding: 0 }} />
         {trailing}
       </div>
-      {error ? <span style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{error}</span>
-        : hint ? <span style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{hint}</span> : null}
+      {error ? <span id={describedById} style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{error}</span>
+        : hint ? <span id={describedById} style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{hint}</span> : null}
     </div>
   );
 }

@@ -59,6 +59,12 @@ jobs:
       - name: web typecheck
         working-directory: client/web
         run: pnpm run typecheck
+      # Errors fail the build; the known jsx-a11y violations in the ported
+      # design-system components are warnings until HANDOFF-a11y-designsystem.md
+      # is worked (then this can take --max-warnings 0).
+      - name: web lint
+        working-directory: client/web
+        run: pnpm run lint
       - name: web build (wasm core in a worker + PWA shell)
         working-directory: client/web
         run: pnpm run build
