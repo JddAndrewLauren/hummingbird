@@ -1,0 +1,7 @@
+:root{
+  --radius-xs:4px; --radius-sm:6px; --radius-md:10px; --radius-lg:14px;
+  --radius-xl:20px; --radius-2xl:28px; --radius-pill:999px;
+  --radius-card:var(--radius-lg);
+  --radius-control:var(--radius-md);
+  --radius-icon-app:22.37%;  /* squircle ratio of the app icon plate */
+}

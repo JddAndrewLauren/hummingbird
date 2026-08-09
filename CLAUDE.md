@@ -30,6 +30,20 @@ three routes; no auth, no production deploy — `wrangler dev` +
 `server/scripts/smoke.sh` locally, `.github/workflows/server.yml` in CI.
 #114 grows it to the full schema and token auth.
 
+## The design system
+
+The UI brand is the "Hummingbird Design System" project on claude.ai/design;
+`.claude/skills/hummingbird-design/` is its repo-local mirror (tokens, the
+16-component library, the web UI kit — sync record and what was deliberately
+omitted in that directory's `github.md`). **All frontend/UI work must use
+it: invoke `/hummingbird-design` before styling anything.** The web app
+consumes it via `client/web/src/design/` (a copy of the tokens, with
+`fonts.css` swapped to self-hosted `@font-face` because the production CSP
+allows no Google Fonts) and `client/web/src/styles.css` (maps tokens onto
+Tailwind utilities, dark mode on `[data-theme="dark"]`). When the design
+project changes: re-pull the mirror first, then re-copy tokens into
+`client/web/src/design/`.
+
 ## Agent skills
 
 ### Issue tracker

@@ -1,0 +1,125 @@
+/* --- Base ramps -------------------------------------------------------
+   Sampled from the Hummingbird app icon (assets/app-icon-*.png):
+   ember from the throat, ink from the dark-mode plate (#2F3A45) and the
+   client's theme-color (#0b0f14), sand from the light-mode plate (#FAF0E7),
+   plume from the head feathers. */
+:root{
+  --ember-50:#fff4ea; --ember-100:#ffe3c8; --ember-200:#ffc68f; --ember-300:#fea354;
+  --ember-400:#fe8a03; --ember-500:#eb6d06; --ember-600:#d45505; --ember-700:#c62704;
+  --ember-800:#9e2a08; --ember-900:#6e1e06;
+
+  --ink-50:#f3f5f6; --ink-100:#e3e7ea; --ink-200:#c8cfd5; --ink-300:#9faab4;
+  --ink-400:#6f7d89; --ink-500:#4c5a67; --ink-600:#384552; --ink-700:#2f3a45;
+  --ink-800:#212a33; --ink-900:#171e25; --ink-950:#0f141a;
+
+  --sand-50:#fdfaf6; --sand-100:#faf0e7; --sand-200:#f3e9df; --sand-300:#e8dacd;
+  --sand-400:#d6c4b4;
+
+  --plume-300:#bbb3b1; --plume-400:#a39a94; --plume-500:#8d8580;
+
+  --moss-100:#d8f0e6; --moss-500:#17916b; --moss-600:#0f7455; --moss-900:#0a3f30;
+  --amber-100:#fdefcc; --amber-500:#d99a06; --amber-600:#b57f04; --amber-900:#5a3f02;
+  --crimson-100:#fadedb; --crimson-500:#b3261e; --crimson-600:#961d16; --crimson-900:#4d1310;
+  --sky-100:#d9edf6; --sky-500:#1e7fa8; --sky-600:#166588; --sky-900:#0c3547;
+}
+
+/* --- Semantic aliases: light (default) -------------------------------- */
+:root{
+  --surface-page:var(--sand-50);
+  --surface-card:#ffffff;
+  --surface-raised:#ffffff;
+  --surface-sunken:var(--sand-200);
+  --surface-quiet:var(--sand-100);
+  --surface-inverse:var(--ink-900);
+  --surface-scrim:rgba(23,30,37,.42);
+
+  --text-primary:var(--ink-900);
+  --text-secondary:var(--ink-500);
+  --text-muted:var(--ink-400);
+  --text-inverse:var(--sand-50);
+  --text-brand:var(--ember-700);
+  --text-link:var(--ember-700);
+  --text-link-hover:var(--ember-800);
+
+  --border-subtle:var(--sand-300);
+  --border-default:#e2d9d0;
+  --border-strong:var(--ink-200);
+
+  --accent:var(--ember-500);
+  --accent-hover:var(--ember-600);
+  --accent-press:var(--ember-700);
+  --accent-quiet:var(--ember-50);
+  --accent-quiet-border:var(--ember-200);
+  --on-accent:#ffffff;
+
+  --focus-ring:rgba(235,109,6,.38);
+
+  --status-done-fg:var(--moss-600); --status-done-bg:var(--moss-100);
+  --status-warn-fg:var(--amber-600); --status-warn-bg:var(--amber-100);
+  --status-danger-fg:var(--crimson-600); --status-danger-bg:var(--crimson-100);
+  --status-info-fg:var(--sky-600); --status-info-bg:var(--sky-100);
+
+  /* Stage lane — ADR-0009 vocabulary: Triage → Grilling → Ready →
+     In Progress → Blocked → Done */
+  --stage-triage:var(--sky-600);      --stage-triage-bg:var(--sky-100);
+  --stage-grilling:var(--amber-600);  --stage-grilling-bg:var(--amber-100);
+  --stage-ready:var(--moss-600);      --stage-ready-bg:var(--moss-100);
+  --stage-progress:var(--ember-600);  --stage-progress-bg:var(--ember-50);
+  --stage-blocked:var(--crimson-600); --stage-blocked-bg:var(--crimson-100);
+  --stage-done:var(--ink-400);        --stage-done-bg:var(--ink-100);
+
+  /* Urgency — derived at read time, never stored (CONTEXT.md) */
+  --urgency-calm:var(--ink-300);
+  --urgency-soon:var(--amber-500);
+  --urgency-now:var(--ember-500);
+  --urgency-overdue:var(--crimson-500);
+}
+
+/* --- Semantic aliases: dark ------------------------------------------- */
+[data-theme="dark"]{
+  --surface-page:var(--ink-950);
+  --surface-card:var(--ink-800);
+  --surface-raised:var(--ink-700);
+  --surface-sunken:#0a0e13;
+  --surface-quiet:rgba(255,255,255,.04);
+  --surface-inverse:var(--sand-100);
+  --surface-scrim:rgba(5,8,11,.62);
+
+  --text-primary:var(--sand-100);
+  --text-secondary:var(--ink-300);
+  --text-muted:var(--ink-400);
+  --text-inverse:var(--ink-900);
+  --text-brand:var(--ember-400);
+  --text-link:var(--ember-400);
+  --text-link-hover:var(--ember-300);
+
+  --border-subtle:rgba(255,255,255,.07);
+  --border-default:rgba(255,255,255,.12);
+  --border-strong:rgba(255,255,255,.22);
+
+  --accent:var(--ember-500);
+  --accent-hover:var(--ember-400);
+  --accent-press:var(--ember-600);
+  --accent-quiet:rgba(235,109,6,.14);
+  --accent-quiet-border:rgba(235,109,6,.32);
+  --on-accent:#ffffff;
+
+  --focus-ring:rgba(254,138,3,.45);
+
+  --status-done-fg:#4cc79b;  --status-done-bg:rgba(23,145,107,.18);
+  --status-warn-fg:#f0b429;  --status-warn-bg:rgba(217,154,6,.18);
+  --status-danger-fg:#f08076;--status-danger-bg:rgba(179,38,30,.22);
+  --status-info-fg:#5cb6d8;  --status-info-bg:rgba(30,127,168,.20);
+
+  --stage-triage:#5cb6d8;    --stage-triage-bg:rgba(30,127,168,.20);
+  --stage-grilling:#f0b429;  --stage-grilling-bg:rgba(217,154,6,.18);
+  --stage-ready:#4cc79b;     --stage-ready-bg:rgba(23,145,107,.18);
+  --stage-progress:var(--ember-400); --stage-progress-bg:rgba(235,109,6,.18);
+  --stage-blocked:#f08076;   --stage-blocked-bg:rgba(179,38,30,.22);
+  --stage-done:var(--ink-400); --stage-done-bg:rgba(255,255,255,.06);
+
+  --urgency-calm:var(--ink-400);
+  --urgency-soon:#f0b429;
+  --urgency-now:var(--ember-400);
+  --urgency-overdue:#f08076;
+}

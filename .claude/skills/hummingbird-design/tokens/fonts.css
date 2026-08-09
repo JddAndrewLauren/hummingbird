@@ -1,0 +1,11 @@
+/* Hummingbird webfonts.
+   The source repo ships no brand typeface (the web client is a placeholder
+   shell on Tailwind's default system stack), so these are Google Fonts
+   selections made for this system — see readme.md "Typography". */
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Figtree:ital,wght@0,300..900;1,300..900&family=Space+Mono:wght@400;700&display=swap");
+
+:root{
+  --font-display:"Space Grotesk","Segoe UI",system-ui,sans-serif;
+  --font-sans:"Figtree","Segoe UI",system-ui,-apple-system,sans-serif;
+  --font-mono:"Space Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}

@@ -1,1 +1,99 @@
+/* Hummingbird design system wiring (see .claude/skills/hummingbird-design/,
+   the repo-local mirror of the claude.ai/design project — src/design/ is a
+   copy of its tokens with fonts.css swapped to self-hosted @font-face).
+
+   Token files are imported individually (the mirror's styles.css can't be
+   imported into a layer — its nested @imports would land inside the layer
+   block, where imports are invalid). Only base.css carries element rules;
+   it goes into `base` so Tailwind utilities still win over it. */
+@import "./design/tokens/fonts.css";
+@import "./design/tokens/colors.css";
+@import "./design/tokens/typography.css";
+@import "./design/tokens/spacing.css";
+@import "./design/tokens/radius.css";
+@import "./design/tokens/elevation.css";
+@import "./design/tokens/motion.css";
+@import "./design/tokens/base.css" layer(base);
 @import "tailwindcss";
+
+/* The design system themes on [data-theme="dark"], not the OS preference. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Map the token palette onto Tailwind color utilities (`inline` so the
+   generated utilities reference the runtime vars, which is what lets the
+   [data-theme="dark"] swap work). Non-color tokens have no first-class
+   mapping — reach them with parenthesized arbitrary values, e.g.
+   font-(family-name:--font-display), rounded-(--radius-card),
+   shadow-(--shadow-2), w-(--rail-width). */
+@theme inline {
+  /* Ramps */
+  --color-ember-50: var(--ember-50); --color-ember-100: var(--ember-100);
+  --color-ember-200: var(--ember-200); --color-ember-300: var(--ember-300);
+  --color-ember-400: var(--ember-400); --color-ember-500: var(--ember-500);
+  --color-ember-600: var(--ember-600); --color-ember-700: var(--ember-700);
+  --color-ember-800: var(--ember-800); --color-ember-900: var(--ember-900);
+
+  --color-ink-50: var(--ink-50); --color-ink-100: var(--ink-100);
+  --color-ink-200: var(--ink-200); --color-ink-300: var(--ink-300);
+  --color-ink-400: var(--ink-400); --color-ink-500: var(--ink-500);
+  --color-ink-600: var(--ink-600); --color-ink-700: var(--ink-700);
+  --color-ink-800: var(--ink-800); --color-ink-900: var(--ink-900);
+  --color-ink-950: var(--ink-950);
+
+  --color-sand-50: var(--sand-50); --color-sand-100: var(--sand-100);
+  --color-sand-200: var(--sand-200); --color-sand-300: var(--sand-300);
+  --color-sand-400: var(--sand-400);
+
+  --color-plume-300: var(--plume-300); --color-plume-400: var(--plume-400);
+  --color-plume-500: var(--plume-500);
+
+  --color-moss-100: var(--moss-100); --color-moss-500: var(--moss-500);
+  --color-moss-600: var(--moss-600); --color-moss-900: var(--moss-900);
+  --color-sky-100: var(--sky-100); --color-sky-500: var(--sky-500);
+  --color-sky-600: var(--sky-600); --color-sky-900: var(--sky-900);
+
+  /* Semantic surfaces / text / borders */
+  --color-surface-page: var(--surface-page);
+  --color-surface-card: var(--surface-card);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-quiet: var(--surface-quiet);
+  --color-surface-inverse: var(--surface-inverse);
+  --color-surface-scrim: var(--surface-scrim);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-text-inverse: var(--text-inverse);
+  --color-text-brand: var(--text-brand);
+  --color-text-link: var(--text-link);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-press: var(--accent-press);
+  --color-accent-quiet: var(--accent-quiet);
+  --color-accent-quiet-border: var(--accent-quiet-border);
+  --color-on-accent: var(--on-accent);
+
+  /* Status / stage / urgency (meaning, never decoration) */
+  --color-status-done-fg: var(--status-done-fg); --color-status-done-bg: var(--status-done-bg);
+  --color-status-warn-fg: var(--status-warn-fg); --color-status-warn-bg: var(--status-warn-bg);
+  --color-status-danger-fg: var(--status-danger-fg); --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-info-fg: var(--status-info-fg); --color-status-info-bg: var(--status-info-bg);
+
+  --color-stage-triage: var(--stage-triage); --color-stage-triage-bg: var(--stage-triage-bg);
+  --color-stage-grilling: var(--stage-grilling); --color-stage-grilling-bg: var(--stage-grilling-bg);
+  --color-stage-ready: var(--stage-ready); --color-stage-ready-bg: var(--stage-ready-bg);
+  --color-stage-progress: var(--stage-progress); --color-stage-progress-bg: var(--stage-progress-bg);
+  --color-stage-blocked: var(--stage-blocked); --color-stage-blocked-bg: var(--stage-blocked-bg);
+  --color-stage-done: var(--stage-done); --color-stage-done-bg: var(--stage-done-bg);
+
+  --color-urgency-calm: var(--urgency-calm);
+  --color-urgency-soon: var(--urgency-soon);
+  --color-urgency-now: var(--urgency-now);
+  --color-urgency-overdue: var(--urgency-overdue);
+}
