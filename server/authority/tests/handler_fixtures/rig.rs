@@ -264,6 +264,11 @@ pub fn put_setting(sql: &dyn Sql, key: &str, body: &str, now_ms: i64) -> ApiResp
     req(sql, "PUT", &format!("/api/settings/{key}"), None, Some(body), now_ms)
 }
 
+/// Webhook ingest — the one route that speaks with the ingest scope.
+pub fn ingest_alert(sql: &dyn Sql, body: &str, now_ms: i64) -> ApiResponse {
+    req_as(sql, INGEST_TOKEN, "POST", "/api/alerts", None, Some(body), now_ms)
+}
+
 // -------------------------------------------------------- body helpers
 
 /// Deserialize a response body into any DTO.

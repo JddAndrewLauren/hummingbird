@@ -115,14 +115,18 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("PUT", ["settings", key]) if !key.is_empty() => {
             settings::put(key, req.body, now_ms, sql)
         }
+        ("POST", ["alerts"]) => alerts::ingest(req.body, now_ms, sql),
+        ("PATCH", ["alerts", id]) if !id.is_empty() => alerts::dismiss(id, req.body, now_ms, sql),
         ("GET", ["changes"]) => changes::changes(req.query, sql),
         ("GET", ["sweep"]) => changes::sweep(sql),
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
-        (_, ["items" | "projects" | "fog" | "steps" | "blocked_by" | "changes" | "sweep"]) => {
-            Ok(method_not_allowed())
-        }
-        (_, ["items" | "projects" | "routes" | "fog" | "steps" | "settings", id])
+        (
+            _,
+            ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "changes"
+                | "sweep"],
+        ) => Ok(method_not_allowed()),
+        (_, ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts", id])
             if !id.is_empty() =>
         {
             Ok(method_not_allowed())

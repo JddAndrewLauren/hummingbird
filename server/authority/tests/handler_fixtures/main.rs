@@ -6,6 +6,7 @@
 mod rig;
 
 mod admin_tokens;
+mod alerts;
 mod auth;
 mod blocked_by;
 mod changes;
