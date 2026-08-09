@@ -215,8 +215,9 @@ mod wasm_bindings {
             future_to_promise(async move { Ok(poll(&inner, now_ms, Trigger::Refresh).await) })
         }
 
-        /// The foreground 15-minute timer tick (ADR-0007); the host is
-        /// responsible for only calling this while online and foregrounded.
+        /// The foreground 15-minute context-poll timer tick (#46, under
+        /// ADR-0005); the host is responsible for only calling this while
+        /// online and foregrounded.
         #[wasm_bindgen(js_name = onTimer)]
         pub fn on_timer(&self, now_ms: f64) -> js_sys::Promise {
             let inner = self.inner.clone();

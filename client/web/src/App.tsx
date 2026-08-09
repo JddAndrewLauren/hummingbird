@@ -30,9 +30,9 @@ import {
   type WorkerLike,
 } from "./store/worker-client";
 
-// The 15-minute foreground timer (ADR-0007). The host is responsible for
-// only ticking while online and foregrounded — `document.hidden`/
-// `navigator.onLine` gate every tick below.
+// The 15-minute context-poll foreground timer (#46, under ADR-0005). The
+// host is responsible for only ticking while online and foregrounded —
+// `document.hidden`/`navigator.onLine` gate every tick below.
 const TIMER_INTERVAL_MS = 15 * 60 * 1000;
 
 // How often the "as of" label / stale styling re-samples the clock. This is
@@ -248,7 +248,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.connected, calendar.needsReconnect, expiresAtMs]);
 
-  // The foreground 15-minute timer (ADR-0007).
+  // The foreground 15-minute context-poll timer (#46, under ADR-0005).
   useEffect(() => {
     if (!calendar.connected || calendar.needsReconnect) {
       return;

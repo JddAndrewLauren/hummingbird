@@ -1,6 +1,6 @@
 // How the context tile (issue #73) decides it's showing honestly-stale
 // data — the Agent Brief's "degrades to stale honestly" criterion. The
-// foreground timer polls every 15 minutes (ADR-0007); a margin beyond that
+// foreground timer polls every 15 minutes (#46, under ADR-0005); a margin beyond that
 // is what separates "the last poll simply hasn't ticked yet" from "polling
 // is actually stuck" (offline, held on a credential, backgrounded tab).
 

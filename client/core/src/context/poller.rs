@@ -1,5 +1,5 @@
 //! [`ContextPoller`]: the poll trigger + credential seam for one context
-//! provider (issue #72, per ADR-0005 and ADR-0007's cadence doctrine).
+//! provider (issue #72, per ADR-0005's placement decision).
 
 use crate::storage::{load_snapshot, save_snapshot, Envelope, Persistable, SnapshotStore};
 #[cfg(test)]
@@ -60,8 +60,9 @@ pub enum PollOutcome {
 
 /// Poll trigger + credential seam for one context provider.
 ///
-/// The host owns cadence (ADR-0007: core start, explicit refresh, a 15-min
-/// foreground timer) and calls the matching method at each trigger point;
+/// The host owns cadence (core start, explicit refresh, and #46's 15-min
+/// foreground timer, under ADR-0005 — not ADR-0007's 60-second *task-sync*
+/// timer) and calls the matching method at each trigger point;
 /// this type owns what happens on each call — token lookup, the fetch, and
 /// atomic persistence on success. `refresh` and the timer path both funnel
 /// through the same attempt as `start`, deliberately: manual refresh gets no
@@ -145,7 +146,8 @@ where
         self.attempt(now_ms).await
     }
 
-    /// The foreground 15-minute timer tick (ADR-0007). The host is
+    /// The foreground 15-minute context-poll timer tick (#46, under
+    /// ADR-0005). The host is
     /// responsible for calling this only while online and foregrounded, and
     /// only pausing/resuming the timer itself — this method carries no
     /// cadence logic of its own, so it, too, is the same attempt.
