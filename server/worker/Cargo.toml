@@ -16,3 +16,7 @@ serde_json = "1.0"
 # CI's `cargo build --target wasm32-unknown-unknown` is what gates the shim.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 worker = "0.8.5"
+# The authority's Entropy seam, implemented over crypto.getRandomValues.
+# 0.2 pinned deliberately: 0.3 moved the wasm backend behind a RUSTFLAGS
+# cfg, which would complicate every build entry point for no gain here.
+getrandom = { version = "0.2", features = ["js"] }

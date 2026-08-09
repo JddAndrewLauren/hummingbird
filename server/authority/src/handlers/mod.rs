@@ -2,7 +2,9 @@
 //! here is a pure function of the request, the injected clock and the
 //! [`Sql`] seam — the shim adds nothing but transport.
 
+mod admin_tokens;
 mod alerts;
+mod auth;
 mod blocked_by;
 mod changes;
 mod fog;
@@ -15,6 +17,7 @@ mod steps;
 use hummingbird_domain::{ApiError, ConflictResponse, VERSION_CONFLICT};
 use serde::Serialize;
 
+use crate::entropy::Entropy;
 use crate::sql::{Sql, SqlError, SqlValue};
 
 /// The transport-agnostic request: the shim maps `worker::Request` onto
@@ -26,27 +29,69 @@ pub struct ApiRequest<'a> {
     /// The raw query string, without the `?`.
     pub query: Option<&'a str>,
     pub body: Option<&'a str>,
+    /// The raw `Authorization` header value, if any. Parsing lives here in
+    /// the pure crate, not the shim.
+    pub authorization: Option<&'a str>,
 }
 
-/// Status + JSON body; every response body is JSON.
+/// Status + JSON body. Every response body is JSON — except the 401/403,
+/// whose bodies are empty by design (clean status, no leakage).
 #[derive(Debug, PartialEq)]
 pub struct ApiResponse {
     pub status: u16,
     pub body: String,
 }
 
-/// The one entry point. `now_ms` is injected (the shim passes the worker
-/// clock) — nothing in this crate reads a clock of its own.
-pub fn handle(req: &ApiRequest, now_ms: i64, sql: &dyn Sql) -> ApiResponse {
-    let result = route(req, now_ms, sql);
+/// Everything injected around a request: the clock, the `ADMIN_SECRET`
+/// Worker secret (`None` = admin routes fail closed), and the entropy
+/// source for token minting. Nothing in this crate reads a clock or an
+/// environment of its own.
+pub struct HandleContext<'a> {
+    pub now_ms: i64,
+    pub admin_secret: Option<&'a str>,
+    pub entropy: &'a dyn Entropy,
+}
+
+/// The one entry point.
+pub fn handle(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> ApiResponse {
+    let result = route(req, ctx, sql);
     result.unwrap_or_else(|e| error(500, "internal", &e.message))
 }
 
-fn route(req: &ApiRequest, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
     let Some(rest) = req.path.strip_prefix("/api/") else {
         return Ok(error(404, "not_found", "no such route"));
     };
     let segments: Vec<&str> = rest.split('/').collect();
+
+    // The admin lane authenticates against ADMIN_SECRET, never the tokens
+    // table.
+    if segments.first() == Some(&"admin") {
+        if !auth::admin_ok(req.authorization, ctx.admin_secret) {
+            return Ok(empty_status(401));
+        }
+        return match (req.method, segments.as_slice()) {
+            ("POST", ["admin", "tokens"]) => admin_tokens::mint(req.body, ctx, sql),
+            ("GET", ["admin", "tokens"]) => admin_tokens::list(sql),
+            ("DELETE", ["admin", "tokens", id]) if !id.is_empty() => {
+                admin_tokens::revoke(id, ctx.now_ms, sql)
+            }
+            (_, ["admin", "tokens"]) => Ok(method_not_allowed()),
+            (_, ["admin", "tokens", id]) if !id.is_empty() => Ok(method_not_allowed()),
+            _ => Ok(error(404, "not_found", "no such route")),
+        };
+    }
+
+    // Everything else authenticates first — an unauthenticated caller never
+    // learns the route map — then passes the scope matrix before routing.
+    let Some(scope) = auth::authenticate(req.authorization, ctx.now_ms, sql)? else {
+        return Ok(empty_status(401));
+    };
+    if !auth::permitted(scope, req.method, &segments) {
+        return Ok(empty_status(403));
+    }
+
+    let now_ms = ctx.now_ms;
     match (req.method, segments.as_slice()) {
         ("POST", ["items"]) => items::create(req.body, now_ms, sql),
         ("PATCH", ["items", id]) if !id.is_empty() => items::patch(id, req.body, now_ms, sql),
@@ -156,4 +201,12 @@ fn error(status: u16, code: &str, message: &str) -> ApiResponse {
 
 fn method_not_allowed() -> ApiResponse {
     error(405, "method_not_allowed", "wrong method for this route")
+}
+
+/// The 401/403 shape: a clean status and nothing else.
+fn empty_status(status: u16) -> ApiResponse {
+    ApiResponse {
+        status,
+        body: String::new(),
+    }
 }

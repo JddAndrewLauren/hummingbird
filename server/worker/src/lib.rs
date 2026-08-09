@@ -13,9 +13,21 @@ mod shim {
     use std::cell::Cell;
     use std::collections::HashMap;
 
-    use hummingbird_authority::{handle, init_schema, ApiRequest, Row, Sql, SqlError, SqlValue};
+    use hummingbird_authority::{
+        handle, init_schema, ApiRequest, Entropy, HandleContext, Row, Sql, SqlError, SqlValue,
+    };
     use hummingbird_domain::ApiError;
     use worker::*;
+
+    /// [`Entropy`] over the platform CSPRNG (`crypto.getRandomValues` via
+    /// `getrandom`'s js backend) — token minting's randomness source.
+    struct WorkersEntropy;
+
+    impl Entropy for WorkersEntropy {
+        fn fill(&self, buf: &mut [u8]) {
+            getrandom::getrandom(buf).expect("the platform CSPRNG is available");
+        }
+    }
 
     /// [`Sql`] over the Durable Object's synchronous SQLite storage.
     struct WorkersSql {
@@ -74,13 +86,17 @@ mod shim {
     pub struct Authority {
         state: State,
         schema_ready: Cell<bool>,
+        /// `ADMIN_SECRET` Worker secret; absent (e.g. unset in `wrangler
+        /// dev`) means the admin routes fail closed with a 401.
+        admin_secret: Option<String>,
     }
 
     impl DurableObject for Authority {
-        fn new(state: State, _env: Env) -> Self {
+        fn new(state: State, env: Env) -> Self {
             Authority {
                 state,
                 schema_ready: Cell::new(false),
+                admin_secret: env.secret("ADMIN_SECRET").map(|s| s.to_string()).ok(),
             }
         }
 
@@ -104,6 +120,7 @@ mod shim {
 
             let method = req.method().to_string().to_uppercase();
             let url = req.url()?;
+            let authorization = req.headers().get("authorization")?;
             let body = req.text().await?;
             let api = handle(
                 &ApiRequest {
@@ -111,8 +128,13 @@ mod shim {
                     path: url.path(),
                     query: url.query(),
                     body: if body.is_empty() { None } else { Some(&body) },
+                    authorization: authorization.as_deref(),
                 },
-                Date::now().as_millis() as i64,
+                &HandleContext {
+                    now_ms: Date::now().as_millis() as i64,
+                    admin_secret: self.admin_secret.as_deref(),
+                    entropy: &WorkersEntropy,
+                },
                 &sql,
             );
             json_response(api.status, api.body)
@@ -120,6 +142,10 @@ mod shim {
     }
 
     fn json_response(status: u16, body: String) -> Result<Response> {
+        // The 401/403 contract: a clean status, no body, no content-type.
+        if body.is_empty() {
+            return Ok(Response::empty()?.with_status(status));
+        }
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
         Ok(Response::ok(body)?.with_status(status).with_headers(headers))

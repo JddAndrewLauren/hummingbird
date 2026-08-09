@@ -5,6 +5,8 @@
 
 mod rig;
 
+mod admin_tokens;
+mod auth;
 mod blocked_by;
 mod changes;
 mod fog;

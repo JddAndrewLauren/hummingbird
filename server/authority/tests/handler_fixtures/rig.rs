@@ -3,12 +3,48 @@
 //! request helpers every suite builds on. Zero live credentials.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-use hummingbird_authority::{handle, init_schema, ApiRequest, ApiResponse, Row, SqlError, SqlValue};
+use hummingbird_authority::{
+    handle, init_schema, ApiRequest, ApiResponse, Entropy, HandleContext, Row, SqlError, SqlValue,
+};
 use hummingbird_domain::Item;
+use sha2::{Digest, Sha256};
 
 // Re-exported so every suite gets the trait (for `sql.exec`) with `rig::*`.
 pub use hummingbird_authority::Sql;
+
+/// The rig's admin secret, injected into every request's context.
+pub const ADMIN_SECRET: &str = "test-admin-secret";
+
+/// Pre-seeded per-scope tokens: rows inserted with precomputed hashes so
+/// every suite can speak with any scope without minting first. The mint
+/// path itself is exercised in `admin_tokens.rs`.
+pub const DEVICE_TOKEN: &str = "hb_rig_device_token";
+pub const SWEEPER_TOKEN: &str = "hb_rig_sweeper_token";
+pub const INGEST_TOKEN: &str = "hb_rig_ingest_token";
+
+pub fn sha256_hex(input: &str) -> String {
+    Sha256::digest(input.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Deterministic but distinct per call: each fill draws a fresh base from a
+/// process-wide counter, so two mints in one test never collide on a hash.
+pub struct TestEntropy;
+
+static ENTROPY_BASE: AtomicU8 = AtomicU8::new(1);
+
+impl Entropy for TestEntropy {
+    fn fill(&self, buf: &mut [u8]) {
+        let base = ENTROPY_BASE.fetch_add(1, Ordering::Relaxed);
+        for (i, byte) in buf.iter_mut().enumerate() {
+            *byte = base.wrapping_add(i as u8);
+        }
+    }
+}
 
 pub struct RusqliteSql {
     pub conn: rusqlite::Connection,
@@ -26,6 +62,23 @@ impl RusqliteSql {
             .expect("pragma applies");
         let sql = RusqliteSql { conn };
         init_schema(&sql).expect("schema initializes");
+        for (id, scope, plaintext) in [
+            ("rig-device", "device", DEVICE_TOKEN),
+            ("rig-sweeper", "sweeper", SWEEPER_TOKEN),
+            ("rig-ingest", "ingest", INGEST_TOKEN),
+        ] {
+            sql.exec(
+                "INSERT INTO tokens (id, name, scope, token_hash, created_at) \
+                 VALUES (?, ?, ?, ?, 0)",
+                &[
+                    SqlValue::Text(id.into()),
+                    SqlValue::Text(format!("rig {scope}")),
+                    SqlValue::Text(scope.into()),
+                    SqlValue::Text(sha256_hex(plaintext)),
+                ],
+            )
+            .expect("token seed inserts");
+        }
         sql
     }
 }
@@ -100,9 +153,12 @@ impl Sql for RecordingSql<'_> {
 
 // ------------------------------------------------------ request helpers
 
-/// The generic request: every suite's per-entity wrappers reduce to this.
-pub fn req(
+/// The lowest-level request: explicit authorization header and admin
+/// secret. Every other helper reduces to this.
+pub fn req_with(
     sql: &dyn Sql,
+    authorization: Option<&str>,
+    admin_secret: Option<&str>,
     method: &str,
     path: &str,
     query: Option<&str>,
@@ -115,10 +171,65 @@ pub fn req(
             path,
             query,
             body,
+            authorization,
         },
-        now_ms,
+        &HandleContext {
+            now_ms,
+            admin_secret,
+            entropy: &TestEntropy,
+        },
         sql,
     )
+}
+
+/// A request carrying the given bearer token.
+pub fn req_as(
+    sql: &dyn Sql,
+    token: &str,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    body: Option<&str>,
+    now_ms: i64,
+) -> ApiResponse {
+    let header = format!("Bearer {token}");
+    req_with(sql, Some(&header), Some(ADMIN_SECRET), method, path, query, body, now_ms)
+}
+
+/// The default request: the rig's device token — most of the API is
+/// device-scoped.
+pub fn req(
+    sql: &dyn Sql,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    body: Option<&str>,
+    now_ms: i64,
+) -> ApiResponse {
+    req_as(sql, DEVICE_TOKEN, method, path, query, body, now_ms)
+}
+
+/// An admin-lane request: the bearer is the admin secret itself.
+pub fn req_admin(
+    sql: &dyn Sql,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    now_ms: i64,
+) -> ApiResponse {
+    let header = format!("Bearer {ADMIN_SECRET}");
+    req_with(sql, Some(&header), Some(ADMIN_SECRET), method, path, None, body, now_ms)
+}
+
+/// A deliberately unauthenticated request.
+pub fn req_anon(
+    sql: &dyn Sql,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    body: Option<&str>,
+) -> ApiResponse {
+    req_with(sql, None, Some(ADMIN_SECRET), method, path, query, body, 0)
 }
 
 /// `POST` to a collection path with a JSON body.

@@ -127,7 +127,7 @@ fn tokens_never_appear_in_changes_or_sweep() {
 }
 
 #[test]
-fn changes_since_current_is_empty_and_reads_only_meta() {
+fn changes_since_current_reads_only_tokens_and_meta() {
     let sql = RusqliteSql::new();
     post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
     let recording = RecordingSql::new(&sql);
@@ -139,13 +139,16 @@ fn changes_since_current_is_empty_and_reads_only_meta() {
     let statements = recording.statements.borrow();
     assert_eq!(
         statements.len(),
-        1,
-        "an unchanged workspace costs one statement: {statements:?}"
+        3,
+        "an unchanged workspace costs auth (token select + last_seen stamp) \
+         plus one meta read: {statements:?}"
     );
+    assert!(statements[0].contains("FROM tokens"), "{}", statements[0]);
+    assert!(statements[1].contains("UPDATE tokens"), "{}", statements[1]);
     assert!(
-        statements[0].contains("FROM meta") && !statements[0].contains("items"),
-        "and that statement reads meta, not items: {}",
-        statements[0]
+        statements[2].contains("FROM meta") && !statements[2].contains("items"),
+        "the gate reads meta, never an entity table: {}",
+        statements[2]
     );
 }
 
