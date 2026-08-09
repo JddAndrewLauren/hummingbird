@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <!-- The app icon, derived from the reference plate (see
+         client/web/scripts/derive-app-icons.sh). Real pixels per size rather
+         than one image the browser rescales: at 16px this artwork is mostly
+         gorget and beak, and a browser downscale of a larger plate muddies
+         exactly those. The manifest installs /app-icon-{192,512}.png. -->
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0f141a" />
     <title>hummingbird</title>
