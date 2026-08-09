@@ -105,9 +105,10 @@ plus the PWA window reaching 2 confirms the assumption; two instances each repor
 ### Scope
 
 This ADR governs the **desktop web host**. Native clients embed the core directly
-per ADR-0003 and the question does not arise there. Note that `SharedWorker` is
-absent on Chrome for Android — irrelevant while Android is a UniFFI client, and a
-trigger to revisit this decision if a mobile *web* client is ever wanted.
+per ADR-0003 and the question does not arise there. `SharedWorker` reached Chrome
+for Android only in version 148 (Firefox for Android 33, Safari on iOS 16), so a
+mobile *web* client is possible but would rest on a far newer baseline than the
+desktop one — re-check it rather than assume it if one is ever wanted.
 
 Support is not otherwise a constraint: `SharedWorker`'s `options.type` is Chrome
 80+, Firefox 114+ and Safari 15+, and `client/web/vite.config.ts` already commits
