@@ -136,7 +136,17 @@ where
     P: Serialize,
     T: DeserializeOwned,
 {
-    let base_version = base.get("version").and_then(Value::as_i64).unwrap_or(0);
+    let Some(base_version) = base.get("version").and_then(Value::as_i64) else {
+        // #103 forwarded-review fix: a `base` with no numeric `version` is a
+        // malformed local record, not a legitimate "start from zero" — this
+        // client's own captured base always carries a version. Silently
+        // defaulting to `0` would send a CAS write against a fabricated
+        // expected_version, hiding whatever produced the malformed base
+        // behind a spurious 409 instead of surfacing it here.
+        return Err(WriteError::InvalidResponse(
+            "base has no numeric \"version\" field".to_string(),
+        ));
+    };
 
     let patch = build_patch(base_version);
     let patch_value = serde_json::to_value(&patch)
@@ -150,10 +160,18 @@ where
         Sent::Conflict(current) => match rebase::decide(&patch_value, base, &current) {
             RebaseDecision::Collision(fields) => Err(WriteError::Conflict { fields, current }),
             RebaseDecision::Safe => {
-                let current_version = current
-                    .get("version")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(base_version);
+                // #103 forwarded-review fix: a `current` with no numeric
+                // `version` is a malformed 409 body — the server's own
+                // contract guarantees `current.version` on every conflict.
+                // Silently falling back to `base_version` would resend the
+                // exact version this client already knows is stale, hiding
+                // the malformed body behind a second, spurious 409 instead
+                // of surfacing it here.
+                let Some(current_version) = current.get("version").and_then(Value::as_i64) else {
+                    return Err(WriteError::InvalidResponse(
+                        "409 conflict body has no numeric \"version\" field".to_string(),
+                    ));
+                };
                 let retry_patch = build_patch(current_version);
                 let retry_value = serde_json::to_value(&retry_patch)
                     .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
@@ -164,7 +182,11 @@ where
                     Sent::Success(_, body) => parse(&body),
                     Sent::Failed(error) => Err(error),
                     Sent::Conflict(current2) => {
-                        let fields = match rebase::decide(&retry_value, base, &current2) {
+                        // #103 forwarded-review fix: diff against `current`
+                        // — the point this retry was actually rebased onto
+                        // — never the original `base` two versions back. See
+                        // `a_second_conflict_is_diffed_against_the_rebased_onto_current_not_the_original_base`.
+                        let fields = match rebase::decide(&retry_value, &current, &current2) {
                             RebaseDecision::Collision(fields) => fields,
                             RebaseDecision::Safe => Vec::new(),
                         };
@@ -550,6 +572,49 @@ mod tests {
 
         assert!(matches!(err, WriteError::Conflict { .. }));
         assert_eq!(transport.call_count(), 2, "capped at one retry");
+    }
+
+    /// #103 forwarded-review fix: the second conflict's rebase diff must
+    /// compare against the *first* 409's `current` (the point this retry was
+    /// actually rebased onto), never the original `base` two versions back.
+    /// Fixture: the field is achieved-then-churned — `title` is "oat milk"
+    /// (already achieved, hence `Safe`) at the first 409, then a second
+    /// intervening write moves it back to the *original* `base`'s value
+    /// ("buy milk") by the second 409. Diffing against the stale `base`
+    /// would see `current2.title == base.title` and wrongly call that
+    /// "untouched since we last rebased" (`Safe`, `fields: []`) — a real
+    /// collision (someone reverted the field between the two attempts)
+    /// reported with nothing the user can act on. Diffing against the first
+    /// `current` catches it: that field moved away from what this retry was
+    /// rebased onto.
+    #[tokio::test]
+    async fn a_second_conflict_is_diffed_against_the_rebased_onto_current_not_the_original_base()
+    {
+        let first_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy oat milk","version":2}}"#;
+        let second_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy milk","version":3}}"#;
+        let transport =
+            ScriptedTransport::new(vec![ok(409, second_conflict), ok(409, first_conflict)]);
+        let base = json!({"id": "a-1", "title": "buy milk", "version": 1});
+
+        let err = patch_with_rebase::<_, FakeItem>(
+            &transport,
+            "token",
+            HttpMethod::Patch,
+            "/api/items/a-1",
+            &base,
+            |v| json!({"expected_version": v, "title": "buy oat milk"}),
+        )
+        .await
+        .unwrap_err();
+
+        match err {
+            WriteError::Conflict { fields, .. } => assert_eq!(
+                fields,
+                vec!["title".to_string()],
+                "the field must be named as a collision, not silently reported empty"
+            ),
+            other => panic!("expected a named collision, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -11,9 +11,12 @@
 //! mutations, rebase-on-409, deterministic ids, and the error taxonomy the
 //! outbound queue (#102) will drive. `queue` (S4/#102) is that outbound
 //! queue: the durable FIFO structure and drain semantics built on top of
-//! `write`.
+//! `write`. `cycle` (S5/#103) is ADR-0007's one cycle — drain then sweep —
+//! wired on top of `queue`, `adapter`, and `mirror`, plus the backoff and
+//! active-issue-count machinery around it.
 
 pub mod adapter;
+pub mod cycle;
 pub mod mirror;
 pub mod queue;
 pub mod reqwest_transport;
@@ -21,6 +24,7 @@ pub mod transport;
 pub mod write;
 
 pub use adapter::{fetch_delta, fetch_sweep, AdapterError};
+pub use cycle::{Backoff, CycleOutcome, LoadError, SyncCycle, Trigger};
 pub use mirror::SyncMirror;
 pub use queue::{DeadLetterEntry, DeadLetterReason, DrainOutcome, MutationIntent, OutboundQueue, QueueEntry};
 pub use reqwest_transport::ReqwestSyncTransport;

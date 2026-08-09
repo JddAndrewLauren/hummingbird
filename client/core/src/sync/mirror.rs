@@ -26,25 +26,40 @@
 //! **Relationship to [`crate::task::Mirror`].** That type is the S1
 //! (Linear-era) mirror; this one is its S2/#100 replacement for the owned
 //! schema, built from `hummingbird_domain` types directly rather than a
-//! Linear-shaped `Item`. Nothing in this issue migrates persistence, the
-//! dead-letter journal, or the FFI-facing `Core` handle from one to the
-//! other — that migration, and which mirror (if not both, mid-cutover) ends
-//! up behind [`crate::storage::Persistable`], is explicitly out of scope
-//! here and left to a later slice in this chain (tracked for #103, which
-//! also owns wiring `apply_delta`/`apply_sweep` into the drain-then-sweep
-//! cycle and the conflict/backoff machinery around it).
+//! Linear-shaped `Item`.
+//!
+//! **#103 resolves which mirror is persisted.** `SyncMirror` is
+//! [`crate::storage::Persistable`] as of this issue — it is the read model
+//! [`super::cycle::SyncCycle`] persists after every completed sweep, and the
+//! one going forward for the owned schema. `crate::task::Mirror` (the S1
+//! Linear-era type, and its dead-letter journal, and the FFI-facing `Core`
+//! handle built on it) is *not* migrated onto this type here — the two
+//! mirrors coexist unchanged during the ADR-0008 cutover, and retiring the
+//! Linear-era one is a separate, later concern this issue does not own.
 
 use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 use hummingbird_domain::{
     Alert, BlockedBy, ChangesResponse, ContextSnapshot, Fog, Item, Project, Route, Setting, Step,
 };
 
+use crate::storage::{Persistable, PersistableSealed};
 use crate::task::Presence;
+
+/// The schema version written into this mirror's snapshot envelope. Bump it
+/// when the payload shape changes — see [`super::queue::QUEUE_SCHEMA_VERSION`]
+/// for what that failure mode must never degrade into (this mirror included:
+/// an empty result *is* harmless here, since the next sweep refills it, but
+/// [`crate::storage::SnapshotError::Deserialize`] must still never be mapped
+/// to `SyncMirror::default()` by a caller — that would discard retained
+/// history no sweep can reconstruct, only refill going forward).
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 1;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Slot<T> {
     record: T,
     presence: Presence,
@@ -52,7 +67,15 @@ struct Slot<T> {
 
 /// The device's local read model of every synced table, plus the delta
 /// cursor (`meta.version` as of the last fully-applied pull).
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// **Persisted — the #103-resolved answer to the S2/#100 question this
+/// module's docs used to leave open.** This is the mirror that gets
+/// `Persistable` and carries the owned-schema read model forward; the
+/// Linear-era [`crate::task::Mirror`] is not extended to the owned schema and
+/// is left as-is for whatever cutover sequencing a later issue owns —
+/// nothing here migrates its dead-letter journal or its FFI-facing `Core`
+/// handle, only settles which *type* is the one going forward.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SyncMirror {
     version: i64,
     projects: BTreeMap<String, Slot<Project>>,
@@ -60,10 +83,48 @@ pub struct SyncMirror {
     fog: BTreeMap<String, Slot<Fog>>,
     items: BTreeMap<String, Slot<Item>>,
     steps: BTreeMap<String, Slot<Step>>,
+    /// `serde_json` cannot serialize a map keyed by a tuple (it requires
+    /// string keys) — [`tuple_key_map`] carries this as an array of entries
+    /// on the wire instead, same `BTreeMap` in memory.
+    #[serde(with = "tuple_key_map")]
     blocked_by: BTreeMap<(String, String), Slot<BlockedBy>>,
     alerts: BTreeMap<String, Slot<Alert>>,
+    #[serde(with = "tuple_key_map")]
     context_snapshots: BTreeMap<(String, String), Slot<ContextSnapshot>>,
     settings: BTreeMap<String, Slot<Setting>>,
+}
+
+impl PersistableSealed for SyncMirror {}
+impl Persistable for SyncMirror {}
+
+/// `serde(with = ...)` shim for a `BTreeMap` keyed by a tuple: serializes as
+/// an array of `(key, value)` entries (which `serde_json` handles fine,
+/// since only *map* serialization requires string keys) and rebuilds the
+/// `BTreeMap` on the way back in.
+mod tuple_key_map {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S, K, V>(map: &BTreeMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        K: Serialize + Ord,
+        V: Serialize,
+    {
+        let entries: Vec<(&K, &V)> = map.iter().collect();
+        entries.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+    {
+        let entries: Vec<(K, V)> = Vec::deserialize(deserializer)?;
+        Ok(entries.into_iter().collect())
+    }
 }
 
 impl SyncMirror {
@@ -127,6 +188,20 @@ impl SyncMirror {
 
     pub fn setting(&self, key: &str) -> Option<&Setting> {
         live(self.settings.get(key))
+    }
+
+    /// Live and not yet `Done` — the population ADR-0001's 250-issue
+    /// watchline measures, ported to the owned schema (`crate::task::query`'s
+    /// `active_count` is its S1/Linear-era twin).
+    ///
+    /// Surfaced as a query rather than left to be remembered: the watchline
+    /// is a migration trigger, and a trigger nobody can see is not a
+    /// trigger. [`super::cycle::SyncCycle`] exposes this after every cycle
+    /// so a host can observe it without re-deriving the filter itself.
+    pub fn active_item_count(&self) -> usize {
+        self.all_items()
+            .filter(|item| item.stage != hummingbird_domain::Stage::Done)
+            .count()
     }
 
     /// Applies one delta pull: additive only. A row absent from `resp` is
@@ -469,6 +544,40 @@ mod tests {
         );
     }
 
+    /// ADR-0007: "a formerly-absent id returned by a later sweep simply
+    /// rejoins the live set" — forwarded by the #100 reviewer as untested.
+    /// A full sweep is the only path that can demote *or* resurrect an id,
+    /// since a delta's silence about an id means "unchanged", never
+    /// "gone" or "back".
+    #[test]
+    fn a_formerly_absent_id_rejoins_the_live_set_on_a_later_sweep() {
+        let mut mirror = SyncMirror::new();
+        mirror.apply_sweep(seeded_workspace(1), 1_000);
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 2,
+                items: vec![item("a-1")],
+                ..ChangesResponse::empty(2)
+            },
+            2_000,
+        );
+        assert!(
+            mirror.item("a-2").is_none(),
+            "a-2 must be absent before the resurrecting sweep"
+        );
+
+        mirror.apply_sweep(seeded_workspace(3), 3_000);
+
+        assert!(
+            mirror.item("a-2").is_some(),
+            "a-2 simply rejoins the live set — ADR-0007 has no separate un-demotion step"
+        );
+        assert!(
+            mirror.all_items().any(|i| i.id == "a-2"),
+            "a rejoined id must also reappear in every live-filtered view"
+        );
+    }
+
     /// #100 acceptance: "A full sweep and a delta pull over the same seeded
     /// fixture workspace produce byte-identical mirrors" — the mirror-side
     /// half of #114's server assertion. Proven by *convergence*, not by
@@ -656,6 +765,72 @@ mod tests {
         assert_eq!(
             mirror.items.get("a-2").unwrap().presence,
             Presence::Absent { since_ms: 2_000 }
+        );
+    }
+
+    /// #103 acceptance: "the cycle exposes the active-issue count, so the
+    /// 250-issue watchline is observed rather than remembered." Live and
+    /// `Done` are both excluded — a finished item is not what the watchline
+    /// counts, and an absent one dropped out already.
+    #[test]
+    fn active_item_count_excludes_absent_and_done_items() {
+        let mut done = item("a-3");
+        done.stage = hummingbird_domain::Stage::Done;
+
+        let mut mirror = SyncMirror::new();
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 1,
+                items: vec![item("a-1"), item("a-2"), done.clone()],
+                ..ChangesResponse::empty(1)
+            },
+            1_000,
+        );
+        // a-2 goes absent on the next sweep; a-3 stays live but Done.
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 2,
+                items: vec![item("a-1"), done],
+                ..ChangesResponse::empty(2)
+            },
+            2_000,
+        );
+
+        assert_eq!(
+            mirror.active_item_count(),
+            1,
+            "only a-1 is both live and not Done"
+        );
+    }
+
+    /// #103: `SyncMirror` is now `Persistable` — this must actually round
+    /// trip through `serde_json`, tuple-keyed tables (`blocked_by`,
+    /// `context_snapshots`) included. `serde_json` rejects a native
+    /// `BTreeMap` with a tuple key outright (it requires string keys), which
+    /// is exactly what `tuple_key_map` works around — a compiling
+    /// `#[derive(Serialize, Deserialize)]` alone would not have caught a
+    /// mistake there, only an actual round trip through the store does.
+    #[tokio::test]
+    async fn a_persisted_mirror_round_trips_through_the_snapshot_store_including_tuple_keyed_tables(
+    ) {
+        use crate::storage::{load_snapshot, save_snapshot, MemorySnapshotStore};
+
+        let mut mirror = SyncMirror::new();
+        mirror.apply_sweep(seeded_workspace(1), 1_000);
+
+        let store = MemorySnapshotStore::default();
+        save_snapshot(&store, 1, 1_000, mirror.clone())
+            .await
+            .unwrap();
+
+        let loaded: SyncMirror = load_snapshot(&store).await.unwrap().unwrap().payload;
+
+        assert_eq!(loaded, mirror);
+        assert_eq!(loaded.version(), 1);
+        assert_eq!(
+            loaded.blockers_of("a-1").collect::<Vec<_>>(),
+            vec!["a-2"],
+            "the tuple-keyed blocked_by table must survive the round trip"
         );
     }
 }
