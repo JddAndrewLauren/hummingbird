@@ -7,7 +7,11 @@ CAS with client rebase-on-409; absence-demotes dissolves (archival is
 explicit data, rows never vanish); delta-since-version is the normal pull
 with the full sweep as the backstop this ADR already prescribed. The cycle,
 strict-FIFO queue, atomic apply, dead-letter journal, backoff and cadence
-all stand.
+all stand. · **amended 2026-08-09 by
+[ADR-0010](0010-one-core-per-origin.md):** this ADR specifies the cycle but
+never says how many run against one origin. Exactly one — the core lives in a
+`SharedWorker`, and a second tab or the installed PWA window is a view, not a
+second cycle.
 **Context:** the sync-mechanics grilling of 2026-08-08, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#57](https://github.com/JddAndrewLauren/hummingbird/issues/57). Fills in the
