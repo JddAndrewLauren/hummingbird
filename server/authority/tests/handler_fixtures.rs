@@ -178,6 +178,31 @@ fn create_replay_same_id_returns_200_current_item_without_bump() {
 }
 
 #[test]
+fn create_replay_with_divergent_payload_returns_the_original_row() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    let resp = post(&sql, r#"{"id": "a-1", "title": "something else"}"#, 2000);
+    assert_eq!(resp.status, 200, "already-exists = success (ADR-0008)");
+    let replayed = item(&resp);
+    assert_eq!(replayed.title, "hello", "the stored row, not the divergent payload");
+    assert_eq!(replayed.version, 1);
+    assert_eq!(meta_version(&sql), 1, "no version bump");
+}
+
+#[test]
+fn create_with_server_stamped_fields_400() {
+    let sql = RusqliteSql::new();
+    for (body, field) in [
+        (r#"{"id": "a", "title": "t", "version": 9}"#, "version"),
+        (r#"{"id": "a", "title": "t", "seq": 5}"#, "seq"),
+    ] {
+        let resp = post(&sql, body, 0);
+        assert_eq!(resp.status, 400, "server-stamped `{field}`: {}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 0, "no write happened");
+}
+
+#[test]
 fn seq_mints_monotonically() {
     let sql = RusqliteSql::new();
     for (i, id) in ["a", "b", "c"].iter().enumerate() {
@@ -289,6 +314,73 @@ fn patch_explicit_null_clears_and_absent_leaves() {
 }
 
 #[test]
+fn patch_with_only_expected_version_is_a_noop() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 1}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged = item(&resp);
+    assert_eq!(unchanged.version, 1, "no version bump");
+    assert_eq!(unchanged.updated_at, 1000, "no updated_at restamp");
+    assert_eq!(meta_version(&sql), 1);
+}
+
+#[test]
+fn patch_null_on_not_null_field_400() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    for (body, field) in [
+        (r#"{"expected_version": 1, "title": null}"#, "title"),
+        (r#"{"expected_version": 1, "stage": null}"#, "stage"),
+        (r#"{"expected_version": 1, "priority": null}"#, "priority"),
+    ] {
+        let resp = patch(&sql, "a-1", body, 2000);
+        assert_eq!(resp.status, 400, "null `{field}`: {}", resp.body);
+        assert!(
+            resp.body.contains("may not be null"),
+            "the message names the offence: {}",
+            resp.body
+        );
+    }
+    assert_eq!(meta_version(&sql), 1, "no write happened");
+}
+
+#[test]
+fn patch_unknown_field_400() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 1, "titel": "x"}"#, 2000);
+    assert_eq!(resp.status, 400, "a typo'd field must not silently no-op: {}", resp.body);
+    assert_eq!(meta_version(&sql), 1, "no write happened");
+}
+
+#[test]
+fn patch_clears_enum_and_integer_fields_via_null() {
+    let sql = RusqliteSql::new();
+    post(
+        &sql,
+        r#"{"id": "a-1", "title": "hello", "size": "quick", "energy": "high"}"#,
+        1000,
+    );
+    patch(&sql, "a-1", r#"{"expected_version": 1, "archived_at": 5000}"#, 2000);
+    let parsed: ChangesResponse = serde_json::from_str(&changes(&sql, "since=0").body).unwrap();
+    assert_eq!(parsed.items.len(), 1, "archived rows are flagged, never deleted");
+    assert_eq!(parsed.items[0].archived_at, Some(5000));
+
+    let resp = patch(
+        &sql,
+        "a-1",
+        r#"{"expected_version": 2, "size": null, "energy": null, "archived_at": null}"#,
+        3000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let cleared = item(&resp);
+    assert_eq!(cleared.size, None);
+    assert_eq!(cleared.energy, None);
+    assert_eq!(cleared.archived_at, None);
+}
+
+#[test]
 fn patch_validation_rejects_bad_input() {
     let sql = RusqliteSql::new();
     post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
@@ -358,6 +450,16 @@ fn changes_since_zero_is_the_full_sweep() {
 }
 
 #[test]
+fn changes_since_above_current_version_returns_empty_with_server_version() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a", "title": "first"}"#, 0); // version 1
+    let parsed: ChangesResponse =
+        serde_json::from_str(&changes(&sql, "since=999").body).unwrap();
+    assert!(parsed.items.is_empty());
+    assert_eq!(parsed.version, 1, "the actual server version, not the cursor");
+}
+
+#[test]
 fn changes_since_missing_or_non_numeric_400() {
     let sql = RusqliteSql::new();
     for query in ["", "since=abc", "cursor=1"] {
@@ -411,6 +513,41 @@ fn unknown_route_404_and_wrong_method_405() {
         );
         assert_eq!(resp.status, 405, "{method} {path}");
     }
+}
+
+#[test]
+fn post_and_patch_with_no_body_400() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 0);
+    for (method, path) in [("POST", "/api/items"), ("PATCH", "/api/items/a-1")] {
+        let resp = handle(
+            &ApiRequest {
+                method,
+                path,
+                query: None,
+                body: None,
+            },
+            0,
+            &sql,
+        );
+        assert_eq!(resp.status, 400, "{method} {path}: {}", resp.body);
+    }
+}
+
+#[test]
+fn patch_trailing_slash_empty_id_404() {
+    let sql = RusqliteSql::new();
+    let resp = handle(
+        &ApiRequest {
+            method: "PATCH",
+            path: "/api/items/",
+            query: None,
+            body: Some(r#"{"expected_version": 1}"#),
+        },
+        0,
+        &sql,
+    );
+    assert_eq!(resp.status, 404);
 }
 
 // -------------------------------------------------------------- schema

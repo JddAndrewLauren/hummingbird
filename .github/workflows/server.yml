@@ -15,9 +15,17 @@ on:
       - "server/**"
       - ".github/workflows/server.yml"
 
+# Superseded PR pushes cancel their stale runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The smoke script bounds its own readiness wait, but npx download and
+    # `cargo install worker-build` on a cold cache are otherwise unbounded.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

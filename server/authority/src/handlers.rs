@@ -67,7 +67,8 @@ fn create_item(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiResp
     }
 
     // Idempotent by client-supplied id: a replay is answered with the
-    // current row, no write, no version bump (ADR-0008). The DO is
+    // current row, no write, no version bump (ADR-0008) — even a divergent
+    // payload on the same id returns the stored row unchanged. The DO is
     // single-threaded, so SELECT-then-INSERT cannot race.
     if let Some(row) = select_item(sql, &create.id)? {
         return Ok(json(200, &item_from_row(&row)?));
@@ -199,6 +200,12 @@ fn patch_item(
     if let Some(archived_at) = patch.archived_at {
         sets.push("archived_at = ?");
         params.push(SqlValue::from_opt_i64(archived_at));
+    }
+
+    // No settable field touched: answer with the current row, no UPDATE —
+    // a version bump here would force every peer to re-pull an unchanged row.
+    if sets.is_empty() {
+        return Ok(json(200, &current));
     }
 
     let version = read_meta_version(sql)? + 1;

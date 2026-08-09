@@ -14,6 +14,7 @@ mod shim {
     use std::collections::HashMap;
 
     use hummingbird_authority::{handle, init_schema, ApiRequest, Row, Sql, SqlError, SqlValue};
+    use hummingbird_domain::ApiError;
     use worker::*;
 
     /// [`Sql`] over the Durable Object's synchronous SQLite storage.
@@ -91,7 +92,12 @@ mod shim {
             // failure surfaces as a clean 500 instead of a poisoned object.
             if !self.schema_ready.get() {
                 if let Err(e) = init_schema(&sql) {
-                    return json_response(500, format!("{{\"error\":\"internal\",\"message\":{}}}", serde_json::Value::from(e.message)));
+                    let body = serde_json::to_string(&ApiError {
+                        error: "internal".to_string(),
+                        message: e.message,
+                    })
+                    .expect("ApiError serializes");
+                    return json_response(500, body);
                 }
                 self.schema_ready.set(true);
             }

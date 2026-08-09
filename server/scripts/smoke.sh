@@ -8,6 +8,12 @@
 # Run from server/: ./scripts/smoke.sh
 set -euo pipefail
 
+# jq backs every assertion below — fail before any expensive work. curl gets
+# the same guard: without it the port check silently passes and the readiness
+# loop burns its whole budget before failing.
+command -v jq >/dev/null || { echo "FAIL: jq is required" >&2; exit 1; }
+command -v curl >/dev/null || { echo "FAIL: curl is required" >&2; exit 1; }
+
 PORT="${SMOKE_PORT:-8787}"
 BASE="http://127.0.0.1:${PORT}"
 cd "$(dirname "$0")/../worker"
@@ -29,12 +35,20 @@ rm -rf .wrangler/state
 cargo install -q worker-build && worker-build --release
 
 export CI=true WRANGLER_SEND_METRICS=false
-# Own process group (setsid) so the trap can kill the whole tree — killing
-# only the npx wrapper orphans the wrangler node process and its workerd,
-# which then squats the port with a state dir the next run deletes.
-setsid npx --yes wrangler@4 dev --port "$PORT" >/tmp/wrangler-smoke.log 2>&1 &
-WRANGLER_PID=$!
-trap 'kill -- "-$WRANGLER_PID" 2>/dev/null || true' EXIT
+# The trap must kill the whole tree — killing only the npx wrapper orphans
+# the wrangler node process and its workerd, which then squats the port with
+# a state dir the next run deletes. With setsid (Linux) the tree gets its own
+# process group and one group kill suffices; without it (macOS) fall back to
+# killing the wrapper's descendants first, then the wrapper.
+if command -v setsid >/dev/null; then
+  setsid npx --yes wrangler@4 dev --port "$PORT" >/tmp/wrangler-smoke.log 2>&1 &
+  WRANGLER_PID=$!
+  trap 'kill -- "-$WRANGLER_PID" 2>/dev/null || true' EXIT
+else
+  npx --yes wrangler@4 dev --port "$PORT" >/tmp/wrangler-smoke.log 2>&1 &
+  WRANGLER_PID=$!
+  trap 'pkill -P "$WRANGLER_PID" 2>/dev/null || true; kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
+fi
 
 # The build is warm; this budget covers the workerd download and boot.
 for _ in $(seq 1 60); do
@@ -60,9 +74,10 @@ request() {
   [ -n "$data" ] && args+=(-d "$data")
   local raw
   raw=$(curl "${args[@]}")
-  BODY=$(printf '%s' "$raw" | head -n -1)
+  # Split on the last newline (BSD head rejects `head -n -1`).
+  BODY=${raw%$'\n'*}
   local status
-  status=$(printf '%s' "$raw" | tail -n 1)
+  status=${raw##*$'\n'}
   [ "$status" = "$expected_status" ] ||
     fail "$method $path -> $status (wanted $expected_status): $BODY"
 }

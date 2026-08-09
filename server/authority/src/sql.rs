@@ -19,6 +19,11 @@ impl SqlValue {
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             SqlValue::Integer(n) => Some(*n),
+            // JS numbers are f64 — a DO cursor may surface an INTEGER
+            // column as a whole f64; accept it only when exact.
+            SqlValue::Real(f) if f.trunc() == *f && *f >= i64::MIN as f64 && *f < i64::MAX as f64 => {
+                Some(*f as i64)
+            }
             _ => None,
         }
     }
