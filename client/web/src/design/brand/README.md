@@ -1,68 +1,84 @@
 # Brand mark
 
-The app icon, in the places the client renders it. Every file is a
-byte-identical copy of a generated artifact from
-`archive/app-icon-svg-v1:design/icon/`:
+Every app-icon raster the client ships, derived from the **reference plate** —
+the approved app icon artwork, which is also where the whole colour palette was
+sampled from.
 
-| File | Generated source | Role |
-| --- | --- | --- |
-| `hummingbird-icon-micro-light.svg` | `hummingbird-icon-micro-light.svg` | Nav rail mark, light theme (22px) |
-| `hummingbird-icon-micro-dark.svg` | `hummingbird-icon-micro-dark.svg` | Nav rail mark, dark theme (22px) |
-| `../../../public/favicon.svg` | `hummingbird-icon-favicon.svg` | Browser tab icon (16px) |
-| `../../../public/app-icon.svg` | `hummingbird-icon-master-light.svg` | Installed PWA icon (large) |
+## Regenerating
 
-The two rail marks live here because `NavRail` imports them, so Vite
-fingerprints and bundles them. The other two live in `public/` because
-`index.html` and the PWA manifest reference them by literal path.
+    client/web/scripts/derive-app-icons.sh <dir with light-1024.png and dark-1024.png>
 
-**Never hand-edit these.** They are generator output, not drawings. The
-generator (`scripts/icon_generator.py`) lives on the `archive/app-icon-svg-v1`
-tag along with its spec, tests and QC evidence; it is not on `main` — the
-icon program (#59, slices #60–#66) was shelved to that tag rather than
-merged. To change the mark, restore the generator, edit its geometry data,
-re-run it, and re-copy the output here.
+Requires ImageMagick. The outputs are committed; the script is how you
+regenerate them, not part of the build. Never hand-edit the PNGs.
 
-**Why a different profile per role.** The generator emits three optical
-profiles — `master` (1024–128px), `small` (64–32px) and `micro` (24–16px) —
-over the same geometry model at reduced facet and feather counts, plus a
-dedicated further-simplified favicon variation. Each consumer takes the
-profile built for the size it renders at: the rail mark at 22px takes
-`micro`, the tab icon takes the favicon variation, and the installed PWA
-icon — which is rendered large — takes the full-detail `master`. Picking
-one file for all three would be wrong in both directions: a downscaled
-`master` mushes at 16px, and the favicon variation is nearly bare at 512px.
-That is the whole reason the profiles exist.
+**The reference plates are not in this repo** — they are binary and were
+omitted from the design-mirror pull. Get them from the Hummingbird Design
+System project on claude.ai/design, which holds them twice:
 
-**Why the PWA icon is not `maskable`.** A maskable icon must keep its
-content within a circle of 80% the icon's diameter, since the platform may
-crop to any mask inside that. This artwork does not — measured against the
-outer silhouette on its 1024 canvas (safe radius 409.6), 9 of 26 boundary
-points fall outside, the beak tip (135,70) furthest at radius 580.9. A
-circular mask would cut off the beak, which is the silhouette's defining
-feature. Containment needs roughly a 0.60 scale, i.e. a separately
-generated maskable variant. Until the generator emits one, the manifest
-declares `purpose: "any"` and lets the platform pad the icon instead.
+| Path in the design project | Note |
+| --- | --- |
+| `assets/app-icon-{light,dark}-1024.png` | What the design system's own Brand cards and web UI kit reference. Prefer these. |
+| `uploads/{light,dark}-1024.png` | The original uploads. |
 
-**Still missing: `apple-touch-icon`.** iOS Safari ignores the manifest for
-home-screen installs and wants an `apple-touch-icon` PNG, which cannot be
-SVG. The generator's export program produces that raster matrix, but the
-PNGs are deliberately treated as regenerable build output and are not
-committed to the tag — so restoring this needs the exporter run, not a file
-copy.
+The copies currently committed here were derived from
+`archive/app-icon-svg-v1:design/icon/reference/{light,dark}-1024.png`, which is
+the same artwork but reached by a different route: that tag cropped it out of
+the concept sheet and stretched it to square. That crop is slightly off — on
+the dark plate the squircle sits 161px from the left edge but 134px from the
+right, a ~2.6% asymmetry the tag's own README documents. At 16–78px this is a
+fraction of a pixel and invisible, but re-derive from the design project's
+`assets/` when convenient and this note can go.
 
-**Why two files.** The variants differ in plate and mass colours (the
-generator's `DARK_PALETTE`), not geometry — `light` is a cream plate for the
-light theme, `dark` a slate plate for dark. `NavRail` picks by resolved
-theme.
+## What is generated, and why each size exists
 
-**Why `<img>` and not inline SVG.** Both files define the same element ids
-(`background-gradient`, `eye-iris-gradient`, `beak-clip`, …). Inlining both
-into one document would collide those ids, and whichever paint server or
-clip path resolved first would win for both marks. Referencing them as image
-URLs keeps each file its own document, so the ids stay scoped.
+| File | Consumer |
+| --- | --- |
+| `app-icon-{light,dark}-{26,52,78}.png` | Nav rail mark — 26px CSS, with 2x/3x for hidpi |
+| `../../../public/favicon-{16,32,48}.png` | Browser tab |
+| `../../../public/app-icon-{192,512}.png` | Installed PWA (manifest) |
 
-The full-bleed `background` rect makes each file a square plate; the rail
-rounds it with `--radius-icon-app` (22.37%, the icon plate's own squircle
-ratio). The files also define an unused `preview-rounded-square` clip path —
-deliberately not applied, so the plate stays square and its corner radius is
-the consumer's call.
+Real pixels per size rather than one image the browser rescales: at 16px this
+artwork is mostly gorget and beak, and a downscale of a larger plate muddies
+exactly those.
+
+The rail marks live here because `NavRail` imports them, so Vite fingerprints
+and bundles them. The rest live in `public/` because `index.html` and the PWA
+manifest reference them by literal path.
+
+## How the corners are cut
+
+The reference plates are opaque: the squircle is drawn on an opaque **white**
+surround, so the corners are white rather than transparent. The script
+flood-fills inward from all four corners to lift exactly that surround out,
+which a geometric mask could not do — the corner is a superellipse, not a
+circular arc, and the token's 22.37% is a squircle ratio, not a radius a
+circular mask would reproduce.
+
+The flood fill's fuzz has to clear the light plate's smallest separation from
+white (blue channel, 231 vs 248 = 6.7%) without reaching it. 4% sits inside
+that. It cannot eat the bird's own cream chest, which is enclosed by the plate
+and so unreachable from a corner.
+
+## Rules the design system sets
+
+The Brand › App icon card and the design system's own `ui_kits/web/NavRail.jsx`
+both settle questions this code would otherwise have to guess at:
+
+- The rail mark is **26px**, squircled with `--radius-icon-app` (22.37%) in
+  CSS, and carries **no border or plate of its own** — the card's own wording
+  is "never on a coloured plate of its own".
+- It is decorative: the wordmark beside it already names the app, so `alt=""`
+  keeps screen readers from announcing the brand twice.
+- Light and dark plates are both first-class; the rail picks by resolved theme.
+
+## Known gaps
+
+- **`apple-touch-icon`.** iOS Safari ignores the manifest for home-screen
+  installs and wants an `apple-touch-icon` PNG. Unlike before, nothing
+  technical blocks this now that the pipeline emits PNGs — but iOS applies its
+  own mask to a full-bleed square, so it wants a plate whose corners are
+  *filled*, not the transparent-cornered derivation used everywhere else. That
+  is a deliberate extra output, not a size to add to the loop.
+- **No maskable variant.** See the reasoning in `vite.config.ts`: this artwork
+  puts 33.6% of the bird outside the maskable safe circle, so the manifest
+  declares `purpose: "any"` only.

@@ -1,8 +1,12 @@
 import { Badge } from "../components/core/Badge";
 import { Icon, type IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
-import markDark from "../design/brand/hummingbird-icon-micro-dark.svg";
-import markLight from "../design/brand/hummingbird-icon-micro-light.svg";
+import markDark1x from "../design/brand/app-icon-dark-26.png";
+import markDark2x from "../design/brand/app-icon-dark-52.png";
+import markDark3x from "../design/brand/app-icon-dark-78.png";
+import markLight1x from "../design/brand/app-icon-light-26.png";
+import markLight2x from "../design/brand/app-icon-light-52.png";
+import markLight3x from "../design/brand/app-icon-light-78.png";
 import type { ResolvedTheme } from "../theme/theme";
 import { SCREENS, type Screen } from "./screens";
 
@@ -52,29 +56,28 @@ export function NavRail({
         borderRight: "1px solid var(--border-subtle)",
       }}
     >
-      {/* Mark + wordmark. The mark is the app icon's `micro` optical profile,
-          the variant generated for 24–16px reads — see design/brand/README.md
-          for provenance and why it is an <img> rather than inline SVG. It is
-          decorative here: the wordmark beside it already names the app, so
-          alt="" keeps screen readers from announcing the brand twice. */}
+      {/* Mark + wordmark, as the design system's own NavRail draws it: the app
+          icon at 26px, squircled with --radius-icon-app, and no plate or
+          border of its own ("never on a coloured plate of its own"). The mark
+          is decorative — the wordmark beside it already names the app, so
+          alt="" keeps screen readers from announcing the brand twice.
+          See design/brand/README.md for where the artwork comes from. */}
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)", padding: "0 var(--space-3)" }}>
         <img
-          src={theme === "dark" ? markDark : markLight}
+          src={theme === "dark" ? markDark1x : markLight1x}
+          // Raster art, so hidpi needs real pixels rather than an upscale.
+          srcSet={
+            theme === "dark"
+              ? `${markDark1x} 1x, ${markDark2x} 2x, ${markDark3x} 3x`
+              : `${markLight1x} 1x, ${markLight2x} 2x, ${markLight3x} 3x`
+          }
           alt=""
-          width={22}
-          height={22}
+          width={26}
+          height={26}
           style={{
             display: "block",
             flex: "0 0 auto",
             borderRadius: "var(--radius-icon-app)",
-            // The light plate (#FBF7F0) and the rail behind it
-            // (--surface-quiet, #faf0e7) are the same value to the eye, so
-            // without an edge the plate vanishes in the light theme and the
-            // icon's deliberately-cropped composition reads as a shape cut
-            // off mid-body. A hairline gives it its boundary back. Inset
-            // rather than a border so the box stays 22px and the ring
-            // follows the squircle exactly.
-            boxShadow: "inset 0 0 0 1px var(--border-subtle)",
           }}
         />
         <span

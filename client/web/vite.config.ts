@@ -17,11 +17,25 @@ export default defineConfig({
     topLevelAwait(),
     VitePWA({
       registerType: "autoUpdate",
+      // Defaults to true, which force-adds every manifest icon to the
+      // precache regardless of the workbox globs below — that is what kept
+      // dragging the 238 KB install icon in. Off, the globs decide, and the
+      // 192 still gets precached because it matches them.
+      includeManifestIcons: false,
       workbox: {
         // The wasm binary is fetched by the worker and must be precached
         // for the "installed PWA loads with the network disabled"
-        // acceptance criterion.
-        globPatterns: ["**/*.{js,css,html,svg,wasm}"],
+        // acceptance criterion. `png` is in here because the nav rail's
+        // brand mark is raster: leave it out and the shell renders a broken
+        // image offline.
+        globPatterns: ["**/*.{js,css,html,svg,png,wasm}"],
+        // ...except the 512 install icon, which the platform fetches once at
+        // install time and the running shell never renders. Precaching it
+        // would put 238 KB on every first load to no end. No `**/` prefix:
+        // these patterns resolve against the build root, and `**/` there
+        // requires a directory to descend into, so it silently misses a
+        // top-level file (verified against the emitted sw.js, not assumed).
+        globIgnores: ["app-icon-512.png"],
       },
       manifest: {
         name: "hummingbird",
@@ -36,25 +50,29 @@ export default defineConfig({
         theme_color: "#0f141a",
         icons: [
           {
-            // The full-detail app icon. The tab favicon is a different file
-            // (/favicon.svg, a reduced-shape variation that survives 16px);
-            // this one is rendered large, so it wants every facet.
-            src: "app-icon.svg",
-            sizes: "any",
-            type: "image/svg+xml",
-            // `any` only — deliberately not `maskable`. A maskable icon must
-            // keep its content inside a circle of 80% the icon's diameter,
-            // because the platform may crop to any mask within that. This
-            // artwork does not: measured against the outer silhouette on its
-            // own 1024 canvas (safe radius 409.6), 9 of the 26 boundary
-            // points fall outside, the beak tip (135,70) furthest in at
-            // radius 580.9 — a circular mask would cut the beak off, and the
-            // beak is the silhouette's whole identity. Containment needs
-            // roughly a 0.60 scale, i.e. a separately generated maskable
-            // variant, not a flag here. Claiming `maskable` without one is
-            // how you ship a cropped icon; `any` makes the platform pad it
-            // instead. (The previous placeholder claimed `maskable` *and*
-            // had transparent rounded corners, which a mask would expose.)
+            src: "app-icon-192.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "app-icon-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            // `any` only — deliberately not `maskable`, for two reasons.
+            // A maskable icon must be full-bleed, and these plates have
+            // transparent corners (the reference artwork is a squircle, and
+            // the derivation lifts the surround out rather than keeping it
+            // white); a platform mask wider than that squircle would expose
+            // the gaps. It must also keep its content inside a circle of 80%
+            // the icon's diameter, and this artwork does not: measuring the
+            // bird against the plate's own background, 33.6% of its pixels
+            // fall outside that circle and containment would need a 0.57
+            // scale. Both want a separately produced maskable plate, not a
+            // flag here — claiming `maskable` without one is how you ship a
+            // cropped icon. `any` makes the platform pad it instead. (The
+            // placeholder this replaced claimed `maskable` while also having
+            // transparent corners, so it had the same bug.)
             purpose: "any",
           },
         ],
