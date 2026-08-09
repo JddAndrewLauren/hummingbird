@@ -11,7 +11,10 @@ export interface HeaderProps {
   /** Search has no implementation yet; the affordance appears only where it
    * would work. */
   onSearch?: () => void;
-  onRefresh: () => void;
+  /** Refresh polls the worker, and `worker-client.ts` may only be called once
+   * the core reports `ready`. The affordance appears only where it would work:
+   * omit it and no button renders. */
+  onRefresh?: () => void;
   onCapture: () => void;
 }
 
@@ -43,7 +46,9 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
         </Badge>
       ) : null}
       {onSearch ? <IconButton icon="search" label="Search" onClick={onSearch} /> : null}
-      <IconButton icon="refresh-cw" label="Refresh calendar context" onClick={onRefresh} />
+      {onRefresh ? (
+        <IconButton icon="refresh-cw" label="Refresh calendar context" onClick={onRefresh} />
+      ) : null}
       {/* The shell owns capture (#107): the box itself lives on Triage, and
           this is the always-present way to reach it from any screen. The
           global focus hotkey lands with S12 (#110). */}

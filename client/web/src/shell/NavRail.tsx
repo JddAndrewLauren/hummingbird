@@ -2,23 +2,19 @@ import { Badge } from "../components/core/Badge";
 import { Icon, type IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
 import type { ResolvedTheme } from "../theme/theme";
-import type { Screen } from "./screens";
-
-interface NavItem {
-  screen: Screen;
-  label: string;
-  icon: IconName;
-}
+import { SCREENS, type Screen } from "./screens";
 
 // Nav labels are the surface's own name; the header asks the question the
-// screen answers (see SCREEN_TITLES).
-const NAV: readonly NavItem[] = [
-  { screen: "now", label: "Now", icon: "zap" },
-  { screen: "triage", label: "Triage", icon: "inbox" },
-  { screen: "routes", label: "Routes", icon: "route" },
-  { screen: "alerts", label: "Alerts", icon: "bell" },
-  { screen: "settings", label: "Settings", icon: "settings" },
-];
+// screen answers (see SCREEN_TITLES). The order is `SCREENS`, not a second
+// list here — this record only says how each one is drawn, and being a
+// `Record<Screen, …>` it cannot silently miss a screen.
+const NAV: Record<Screen, { label: string; icon: IconName }> = {
+  now: { label: "Now", icon: "zap" },
+  triage: { label: "Triage", icon: "inbox" },
+  routes: { label: "Routes", icon: "route" },
+  alerts: { label: "Alerts", icon: "bell" },
+  settings: { label: "Settings", icon: "settings" },
+};
 
 export interface NavRailProps {
   screen: Screen;
@@ -70,14 +66,15 @@ export function NavRail({
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-        {NAV.map((item) => {
-          const active = item.screen === screen;
-          const count = counts[item.screen];
+        {SCREENS.map((item) => {
+          const { label, icon } = NAV[item];
+          const active = item === screen;
+          const count = counts[item];
           return (
             <button
-              key={item.screen}
+              key={item}
               type="button"
-              onClick={() => onScreen(item.screen)}
+              onClick={() => onScreen(item)}
               aria-current={active ? "page" : undefined}
               style={{
                 display: "flex",
@@ -95,10 +92,10 @@ export function NavRail({
                 transition: "background var(--dur-fast) var(--ease-flit), color var(--dur-fast) var(--ease-flit)",
               }}
             >
-              <Icon name={item.icon} size={17} />
-              <span style={{ flex: 1 }}>{item.label}</span>
+              <Icon name={icon} size={17} />
+              <span style={{ flex: 1 }}>{label}</span>
               {count ? (
-                <Badge tone={item.screen === "alerts" ? "danger" : "neutral"} mono>
+                <Badge tone={item === "alerts" ? "danger" : "neutral"} mono>
                   {count}
                 </Badge>
               ) : null}

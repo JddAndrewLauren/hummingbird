@@ -50,7 +50,7 @@ export function AlertCard({ tier = "normal", source, title, detail, time, href, 
         <div style={{ display: "flex", gap: "var(--space-4)", marginTop: "var(--space-3)", flexWrap: "wrap" }}>
           {acked ? <span style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>Acked</span>
             : <Button size="sm" variant="secondary" iconLeft="check" onClick={onAck}>Ack</Button>}
-          {href ? <Button size="sm" variant="ghost" iconRight="arrow-up-right" onClick={() => window.open(href, "_blank")}>Open source</Button> : null}
+          {href ? <Button size="sm" variant="ghost" iconRight="arrow-up-right" onClick={() => window.open(href, "_blank", "noopener,noreferrer")}>Open source</Button> : null}
         </div>
       </div>
     </div>

@@ -22,7 +22,9 @@ export function Checkbox({ checked = false, onChange, label, hint, tone = "defau
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-5)", minHeight: 24,
         cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, ...style }} {...rest}>
-      <input type="checkbox" checked={checked} onChange={onChange} disabled={disabled}
+      {/* readOnly when there is no handler: a controlled input without onChange
+          warns in React and announces as togglable when it is not. */}
+      <input type="checkbox" checked={checked} onChange={onChange} readOnly={!onChange} disabled={disabled}
         style={{ position: "absolute", opacity: 0, width: 1, height: 1 }} />
       <span style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center",

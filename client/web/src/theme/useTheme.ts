@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   readThemePreference,
   resolveTheme,
@@ -11,6 +11,17 @@ const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 function systemPrefersDark(): boolean {
   return window.matchMedia(DARK_QUERY).matches;
+}
+
+// The OS setting is external state, so it is read through
+// `useSyncExternalStore` rather than mirrored into React state. Copying it
+// into `useState` meant re-syncing inside an effect, which renders once with
+// the stale value before correcting itself — a visible wrong-theme frame when
+// returning to "follow system". Reading it here is always fresh.
+function subscribeToSystemTheme(onStoreChange: () => void): () => void {
+  const query = window.matchMedia(DARK_QUERY);
+  query.addEventListener("change", onStoreChange);
+  return () => query.removeEventListener("change", onStoreChange);
 }
 
 function applyTheme(theme: ResolvedTheme): void {
@@ -35,22 +46,11 @@ export function useTheme(): ThemeControl {
   const [preference, setPreferenceState] = useState<ThemePreference>(() =>
     readThemePreference(localStorage),
   );
-  const [prefersDark, setPrefersDark] = useState<boolean>(systemPrefersDark);
+  const prefersDark = useSyncExternalStore(subscribeToSystemTheme, systemPrefersDark);
 
-  // Only subscribed while the preference actually defers to the OS. An
-  // explicit light/dark choice must not move when the system flips at
-  // sunset, so there is nothing to listen for in that state.
-  useEffect(() => {
-    if (preference !== "system") {
-      return;
-    }
-    const query = window.matchMedia(DARK_QUERY);
-    const onChange = (event: MediaQueryListEvent) => setPrefersDark(event.matches);
-    setPrefersDark(query.matches);
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, [preference]);
-
+  // The subscription is unconditional, but an explicit light/dark preference
+  // simply ignores the value — `resolveTheme` only consults it under
+  // "system", so a system flip at sunset cannot move an explicit choice.
   const theme = resolveTheme(preference, prefersDark);
 
   useEffect(() => {

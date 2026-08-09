@@ -36,7 +36,12 @@ export interface NowScreenProps {
 }
 
 export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
-  const top = demo?.items[1];
+  // Ranking is not implemented, so the hero picks by the one property that
+  // makes an item obviously the current one — not by fixture position, which
+  // would let a reordered fixture describe the wrong action.
+  const top = demo
+    ? (demo.items.find((item) => item.stage === "in_progress") ?? demo.items[0])
+    : undefined;
   const rest = demo ? demo.items.filter((item) => item.id !== top?.id && item.stage !== "done") : [];
 
   return (
@@ -45,7 +50,7 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
         {demo && top ? (
           <>
             <div>
-              <span className="hb-meta">top pick · thursday</span>
+              <span className="hb-meta">top pick</span>
               <Card
                 accent
                 elevation={2}
@@ -67,10 +72,11 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
                 <h2 style={{ font: "var(--type-h1)", letterSpacing: "var(--tracking-heading)" }}>
                   {top.title}
                 </h2>
-                <p style={{ font: "var(--type-body)", color: "var(--text-secondary)" }}>
-                  Started 40 minutes ago. Three of seven steps ticked; the next one is
-                  &ldquo;regenerate the fixture set&rdquo;.
-                </p>
+                {top.note ? (
+                  <p style={{ font: "var(--type-body)", color: "var(--text-secondary)" }}>
+                    {top.note}
+                  </p>
+                ) : null}
                 <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
                   <Button iconLeft="play">Resume</Button>
                   <Button variant="secondary" iconLeft="list-checks" onClick={() => onScreen("routes")}>
@@ -82,7 +88,10 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
                 </div>
               </Card>
             </div>
-            <Section title="Also startable" meta={`${rest.length} actions`}>
+            <Section
+              title="Also startable"
+              meta={`${rest.length} ${rest.length === 1 ? "action" : "actions"}`}
+            >
               <Card padding="var(--space-3)">
                 {rest.map((item) => (
                   <ItemRow

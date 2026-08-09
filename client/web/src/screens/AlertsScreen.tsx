@@ -20,7 +20,7 @@ export function AlertsScreen({ demo }: AlertsScreenProps) {
     <TwoColumn>
       <Column>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-          <h3 style={{ font: "var(--type-h3)", color: "var(--text-primary)" }}>Live</h3>
+          <h2 style={{ font: "var(--type-h3)", color: "var(--text-primary)" }}>Live</h2>
           <span className="hb-meta">{live.length} unacked · default-deny</span>
         </div>
         {live.length === 0 ? (
@@ -37,7 +37,7 @@ export function AlertsScreen({ demo }: AlertsScreenProps) {
           </Card>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
-            {alerts.map((alert) => (
+            {live.map((alert) => (
               <AlertCard
                 key={alert.id}
                 tier={alert.tier}

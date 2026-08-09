@@ -1,3 +1,5 @@
+import { useState } from "react";
+import type { ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
@@ -19,6 +21,15 @@ const THEME_OPTIONS = [
 
 function isThemePreference(value: string): value is ThemePreference {
   return value === "system" || value === "light" || value === "dark";
+}
+
+/** A single-sentence card: what is not there, and why. */
+function Note({ children }: { children: ReactNode }) {
+  return (
+    <Card padding="var(--space-6)">
+      <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>{children}</p>
+    </Card>
+  );
 }
 
 export interface SettingsScreenProps {
@@ -51,25 +62,42 @@ export function SettingsScreen({
     calendar.availableCalendars,
   );
 
+  // Demo mode toggles a local copy and nothing else: the fixture ids are not
+  // real calendars, and routing them through `onSelectionChange` would persist
+  // them to localStorage and poll the worker for calendars that do not exist.
+  const [demoSelectedIds, setDemoSelectedIds] = useState<string[]>(() => {
+    const first = demo?.calendars[0]?.id;
+    return first === undefined ? [] : [first];
+  });
+
+  // The design-system picker always renders its fieldset, so an empty one is
+  // an empty box captioned "Calendars to poll" — a control over nothing.
+  const hasCalendars = calendar.availableCalendars.length > 0 || unavailableIds.length > 0;
+
   return (
     <TwoColumn>
       <Column>
         <Section title="Calendar context">
-          {GOOGLE_CLIENT_ID ? (
+          {!GOOGLE_CLIENT_ID ? (
+            <Note>Calendar context is unavailable: this build has no Google client id.</Note>
+          ) : status !== "ready" ? (
+            <Note>Calendar context is unavailable until the local core loads.</Note>
+          ) : demo || hasCalendars ? (
             <CalendarPicker
               calendars={demo ? demo.calendars : calendar.availableCalendars}
-              selectedIds={demo ? [demo.calendars[0].id] : calendar.selectedCalendarIds}
+              selectedIds={demo ? demoSelectedIds : calendar.selectedCalendarIds}
               unavailableIds={demo ? [] : unavailableIds}
               onToggle={(id) =>
-                onSelectionChange(toggleCalendarId(calendar.selectedCalendarIds, id))
+                demo
+                  ? setDemoSelectedIds((current) => toggleCalendarId(current, id))
+                  : onSelectionChange(toggleCalendarId(calendar.selectedCalendarIds, id))
               }
             />
           ) : (
-            <Card padding="var(--space-6)">
-              <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-                Calendar context is unavailable: this build has no Google client id.
-              </p>
-            </Card>
+            <Note>
+              No calendars have been listed yet — nothing to choose from until Google Calendar
+              returns a list.
+            </Note>
           )}
         </Section>
 
@@ -88,12 +116,7 @@ export function SettingsScreen({
                 }
               }}
             />
-            {demo ? (
-              <>
-                <Switch checked label="Keep polling while backgrounded" />
-                <Switch label="Show acked alerts" />
-              </>
-            ) : null}
+            {demo ? <Switch label="Show acked alerts" /> : null}
           </Card>
         </Section>
 
@@ -140,7 +163,7 @@ export function SettingsScreen({
           </p>
         </Card>
 
-        {GOOGLE_CLIENT_ID ? (
+        {status === "ready" && GOOGLE_CLIENT_ID ? (
           <>
             <span className="hb-meta">google calendar</span>
             <Card

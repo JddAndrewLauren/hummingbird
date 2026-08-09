@@ -4,6 +4,8 @@
 
 export type Screen = "now" | "triage" | "routes" | "alerts" | "settings";
 
+/** Rail order, defined once. `NavRail` maps over this and looks its labels and
+ * icons up by screen, so the order lives here and nowhere else. */
 export const SCREENS: readonly Screen[] = [
   "now",
   "triage",

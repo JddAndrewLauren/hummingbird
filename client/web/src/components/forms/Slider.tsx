@@ -34,6 +34,19 @@ export function Slider({ label, options = [], value = null, onChange, optional =
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
     return () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); };
   });
+  // Fewer than two stops is not a slider: there is nothing to choose between,
+  // the stop maths (i / (n - 1)) divides by zero and renders `left: "NaN%"`,
+  // and a pointer drag over zero options rounds to index -1. Render the label
+  // alone rather than a track that lies about what it can do. (After the hooks
+  // above, so the hook order never changes.)
+  if (n < 2) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", ...style }} {...rest}>
+        <span style={{ font: "var(--weight-semibold) var(--size-body-sm)/1.2 var(--font-sans)", color: "var(--text-secondary)" }}>{label}</span>
+        <span className="hb-meta" style={{ color: "var(--text-muted)" }}>nothing to choose from</span>
+      </div>
+    );
+  }
   const pct = value === null ? 0 : (value / (n - 1)) * 100;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", ...style }} {...rest}>

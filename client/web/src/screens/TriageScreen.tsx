@@ -116,15 +116,25 @@ export function TriageScreen({ demo }: TriageScreenProps) {
             marginBottom: "var(--space-4)",
           }}
         >
-          <h3 style={{ font: "var(--type-h3)", color: "var(--text-primary)" }}>Triage</h3>
-          <span className="hb-meta">{queue.length} unsorted · swept every 15m</span>
+          <h2 style={{ font: "var(--type-h3)", color: "var(--text-primary)" }}>Triage</h2>
+          {/* The sweeper is off pending the authority move, and nothing in this
+              app drains the queue — only demo mode may claim a cadence. */}
+          <span className="hb-meta">
+            {demo
+              ? `${queue.length} unsorted · swept every 15m`
+              : `${queue.length} unsorted · no capture source wired`}
+          </span>
         </div>
         {queue.length === 0 ? (
           <Card padding="0">
             <EmptyState
               icon="inbox"
               title="Triage is empty"
-              body="Everything captured has been sorted. The sweeper drains again in 15 minutes."
+              body={
+                demo
+                  ? "Everything captured has been sorted. The sweeper drains again in 15 minutes."
+                  : "Nothing writes to Triage yet — no capture source is wired to the core."
+              }
             />
           </Card>
         ) : (

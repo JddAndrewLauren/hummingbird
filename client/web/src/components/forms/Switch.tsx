@@ -17,7 +17,9 @@ export function Switch({ checked = false, onChange, label, hint, disabled = fals
         {label ? <span style={{ font: "var(--type-body)", color: "var(--text-primary)" }}>{label}</span> : null}
         {hint ? <span style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{hint}</span> : null}
       </span>
-      <input type="checkbox" role="switch" checked={checked} onChange={onChange} disabled={disabled}
+      {/* readOnly when there is no handler: a controlled input without onChange
+          warns in React and announces as togglable when it is not. */}
+      <input type="checkbox" role="switch" checked={checked} onChange={onChange} readOnly={!onChange} disabled={disabled}
         style={{ position: "absolute", opacity: 0, width: 1, height: 1 }} />
       <span style={{ position: "relative", width: 40, height: 24, flex: "0 0 auto",
         background: checked ? "var(--accent)" : "var(--border-strong)",

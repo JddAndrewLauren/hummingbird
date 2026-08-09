@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { contextTileProps } from "./calendar/tile-props";
 import { demoData } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
@@ -44,13 +44,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const error = useStore((state) => state.error);
   const calendar = useStore((state) => state.calendar);
 
-  const workerRef = useRef<WorkerLike | null>(null);
-  workerRef.current ??= injectedWorker ?? realWorker();
-  const worker = workerRef.current;
+  // A lazy initializer rather than a ref: reading `ref.current` during render
+  // is what React's rules forbid, and this needs to be constructed exactly
+  // once per mount either way.
+  const [worker] = useState<WorkerLike>(() => injectedWorker ?? realWorker());
 
-  const demoRef = useRef<ReturnType<typeof demoData> | null>(null);
-  demoRef.current ??= demoData();
-  const demo = demoRef.current;
+  // Lazy initializer, not a ref: `demoData()` returns null in production, and
+  // `ref.current ??= …` would re-run it on every render forever.
+  const [demo] = useState(demoData);
 
   const [screen, setScreen] = useState<Screen>("now");
   const { preference, theme, setPreference } = useTheme();
@@ -62,6 +63,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   } = useCalendarWiring(worker, status, calendar);
 
   const tile = contextTileProps(calendar, nowMs);
+
+  // `worker-client.ts`'s postMessage wrappers may only be called once the core
+  // reports `ready`, and a refresh on a device with no calendar opt-in would
+  // poll an empty selection — the one thing the wiring hook works to prevent.
+  // No usable refresh, no button.
+  const canRefresh = status === "ready" && calendar.connected && !calendar.needsReconnect;
 
   return (
     <div
@@ -85,8 +92,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         <Header
           title={SCREEN_TITLES[screen]}
           syncLabel={demo?.syncBadge}
-          onSearch={demo ? () => undefined : undefined}
-          onRefresh={handleRefreshClick}
+          onRefresh={canRefresh ? handleRefreshClick : undefined}
           onCapture={() => setScreen("triage")}
         />
 

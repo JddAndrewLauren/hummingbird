@@ -27,7 +27,12 @@ pnpm dev            # build the wasm core, then vite dev
 - `pnpm test` — vitest over the store, worker-protocol, and CSP-worker unit
   tests (`src/**/*.test.ts`, `csp-worker/**/*.test.ts`).
 - `pnpm typecheck` — `tsc -b --noEmit` across the app and the Cloudflare
-  Worker script.
+  Worker script. Note `tsc -p tsconfig.json` checks **nothing** — the root
+  config is solution-style (`"files": []`); always go through this script.
+- `pnpm lint` — ESLint. `react-hooks/exhaustive-deps` is an error (the
+  suppressions in `shell/useCalendarWiring.ts` are deliberate and reviewed);
+  the `jsx-a11y` violations in the ported design-system components are
+  warnings until `HANDOFF-a11y-designsystem.md` is worked.
 - `pnpm wrangler:dev` — build, then `wrangler dev`, serving `dist/` through
   `csp-worker/worker.ts` (adds the strict CSP header) with the `wrangler.toml`
   `[assets]` config (SPA fallback via `not_found_handling`).

@@ -90,7 +90,9 @@ export function Section({
           marginBottom: "var(--space-4)",
         }}
       >
-        <h3 style={{ font: "var(--type-h3)", color: "var(--text-primary)" }}>{title}</h3>
+        {/* h2 under the header's h1: `--type-h3` is the size token, not the
+            level — heading levels must not skip. */}
+        <h2 style={{ font: "var(--type-h3)", color: "var(--text-primary)" }}>{title}</h2>
         {meta ? <span className="hb-meta">{meta}</span> : null}
       </div>
       {children}

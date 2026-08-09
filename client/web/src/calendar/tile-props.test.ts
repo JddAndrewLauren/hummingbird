@@ -37,6 +37,11 @@ describe("contextTileProps", () => {
     expect(props).toEqual({ kind: "none", asOf: "12m ago", stale: false });
   });
 
+  it("omits the as-of line for a clear calendar with no known moment, since only that line separates it from no data at all", () => {
+    const props = contextTileProps(state({ tileKind: "none", asOfMs: null }), NOW);
+    expect(props).toEqual({ kind: "none", asOf: undefined, stale: false });
+  });
+
   it("turns stale past the threshold and keeps showing the data", () => {
     const asOfMs = NOW - (STALE_AFTER_MS + 60_000);
     const props = contextTileProps(
@@ -75,6 +80,35 @@ describe("contextTileProps", () => {
     );
     expect(props?.timeLabel).toBe("All day");
     expect(props?.href).toBeUndefined();
+  });
+
+  it("labels a timed event as a range joined by an en dash, not a hyphen, per the design system's dash rule", () => {
+    const startMs = NOW;
+    const endMs = NOW + 45 * 60_000;
+    const props = contextTileProps(
+      state({
+        tileKind: "in_progress",
+        asOfMs: NOW,
+        tileEvent: {
+          title: "Design review",
+          startMs,
+          endMs,
+          allDay: false,
+          htmlLink: null,
+        },
+      }),
+      NOW,
+    );
+    // The ends are formatted with `toLocaleTimeString`, whose output depends
+    // on the machine's timezone and locale, so the expected text is derived
+    // from the same API rather than hard-coded — what is asserted here is the
+    // shape (both ends present, in order) and the separator, which are this
+    // module's decisions and not the platform's.
+    const at = (ms: number) =>
+      new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(props?.timeLabel).toBe(`${at(startMs)}–${at(endMs)}`);
+    expect(props?.timeLabel?.split("–")).toEqual([at(startMs), at(endMs)]);
+    expect(props?.timeLabel).not.toBe(`${at(startMs)}-${at(endMs)}`);
   });
 
   it("renders an event-shaped kind carrying no event as an empty tile", () => {
