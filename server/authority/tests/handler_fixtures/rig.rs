@@ -145,6 +145,14 @@ pub fn changes(sql: &dyn Sql, query: &str) -> ApiResponse {
     req(sql, "GET", "/api/changes", Some(query), None, 0)
 }
 
+pub fn sweep(sql: &dyn Sql) -> ApiResponse {
+    req(sql, "GET", "/api/sweep", None, None, 0)
+}
+
+pub fn put_setting(sql: &dyn Sql, key: &str, body: &str, now_ms: i64) -> ApiResponse {
+    req(sql, "PUT", &format!("/api/settings/{key}"), None, Some(body), now_ms)
+}
+
 // -------------------------------------------------------- body helpers
 
 /// Deserialize a response body into any DTO.
@@ -192,4 +200,48 @@ pub fn seed_item(sql: &dyn Sql, id: &str) -> i64 {
         resp.body
     );
     item(&resp).version
+}
+
+/// The two tables without a #114 write handler are seeded through the seam
+/// directly, stamping the next workspace version the way a handler would.
+
+pub fn seed_alert_raw(sql: &dyn Sql, id: &str, source: &str, source_key: &str) -> i64 {
+    let version = meta_version(sql) + 1;
+    sql.exec(
+        "INSERT INTO alerts (id, source, source_key, title, raised_at, version) \
+         VALUES (?, ?, ?, 'seeded alert', 100, ?)",
+        &[
+            SqlValue::Text(id.into()),
+            SqlValue::Text(source.into()),
+            SqlValue::Text(source_key.into()),
+            SqlValue::Integer(version),
+        ],
+    )
+    .unwrap();
+    sql.exec(
+        "UPDATE meta SET version = ? WHERE id = 1",
+        &[SqlValue::Integer(version)],
+    )
+    .unwrap();
+    version
+}
+
+pub fn seed_snapshot_raw(sql: &dyn Sql, source: &str, key: &str) -> i64 {
+    let version = meta_version(sql) + 1;
+    sql.exec(
+        "INSERT INTO context_snapshots (source, key, payload, fetched_at, version) \
+         VALUES (?, ?, '{\"gauge\": 1}', 100, ?)",
+        &[
+            SqlValue::Text(source.into()),
+            SqlValue::Text(key.into()),
+            SqlValue::Integer(version),
+        ],
+    )
+    .unwrap();
+    sql.exec(
+        "UPDATE meta SET version = ? WHERE id = 1",
+        &[SqlValue::Integer(version)],
+    )
+    .unwrap();
+    version
 }

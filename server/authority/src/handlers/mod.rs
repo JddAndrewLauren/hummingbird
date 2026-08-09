@@ -2,12 +2,14 @@
 //! here is a pure function of the request, the injected clock and the
 //! [`Sql`] seam — the shim adds nothing but transport.
 
+mod alerts;
 mod blocked_by;
 mod changes;
 mod fog;
 mod items;
 mod projects;
 mod routes;
+mod settings;
 mod steps;
 
 use hummingbird_domain::{ApiError, ConflictResponse, VERSION_CONFLICT};
@@ -65,13 +67,19 @@ fn route(req: &ApiRequest, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, Sq
         {
             blocked_by::patch(item_id, blocker_id, req.body, now_ms, sql)
         }
+        ("PUT", ["settings", key]) if !key.is_empty() => {
+            settings::put(key, req.body, now_ms, sql)
+        }
         ("GET", ["changes"]) => changes::changes(req.query, sql),
+        ("GET", ["sweep"]) => changes::sweep(sql),
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
-        (_, ["items" | "projects" | "fog" | "steps" | "blocked_by" | "changes"]) => {
+        (_, ["items" | "projects" | "fog" | "steps" | "blocked_by" | "changes" | "sweep"]) => {
             Ok(method_not_allowed())
         }
-        (_, ["items" | "projects" | "routes" | "fog" | "steps", id]) if !id.is_empty() => {
+        (_, ["items" | "projects" | "routes" | "fog" | "steps" | "settings", id])
+            if !id.is_empty() =>
+        {
             Ok(method_not_allowed())
         }
         (_, ["blocked_by", item_id, blocker_id])

@@ -13,4 +13,5 @@ mod projects_routes;
 mod rebase;
 mod routing;
 mod schema;
+mod settings;
 mod steps;
