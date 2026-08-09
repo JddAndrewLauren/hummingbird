@@ -19,6 +19,17 @@ decided upstream; read `docs/sweeper.md` before touching any of them.
 server (ADR-0008); it retargets to `POST /api/items` when the owned stack is
 daily-usable.
 
+## The authority server
+
+`server/` is the app-owned authority (ADR-0008/0009), its own Cargo
+workspace: `domain` (the owned-schema types both sides will compile),
+`authority` (pure handler logic over a sync `Sql` seam, fixture-tested with
+rusqlite), and `worker` (the thin `workers-rs` shim — one Worker, one
+SQLite-backed Durable Object). S0 (#113) carries only `meta` + `items` and
+three routes; no auth, no production deploy — `wrangler dev` +
+`server/scripts/smoke.sh` locally, `.github/workflows/server.yml` in CI.
+#114 grows it to the full schema and token auth.
+
 ## Agent skills
 
 ### Issue tracker
