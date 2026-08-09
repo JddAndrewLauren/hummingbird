@@ -5,6 +5,14 @@
 is now the owned server (ADR-0008), and context gains transport lanes —
 server-polled snapshots and pushed alerts. Both taxonomies and rules 1–6
 stand; alerts re-entered through this ADR's own petition mechanism.
+**Amended 2026-08-09 by [ADR-0011](0011-context-ingestion-moves-server-side.md)
+/ [ADR-0012](0012-the-notification-lane.md):** the petition mechanism admits
+two more out-of-scope entries — M365 mail and the pager/alert-router role
+(the notification lane is the demonstrated consumer). The urgency doctrine is
+**reaffirmed**, with its cleanest formulation to date: rules evaluate at fire
+time and stamp severity only on the alerts they mint; nothing ever writes
+urgency onto an existing record; ranking is a read-time query over lifecycle
+state.
 **Context:** the data-sources grilling of 2026-08-07, issue
 [#43](https://github.com/JddAndrewLauren/hummingbird/issues/43); extends
 [ADR-0001](0001-linear-is-the-authority-behind-a-clean-seam.md).

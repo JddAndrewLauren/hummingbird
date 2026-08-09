@@ -8,6 +8,14 @@ were authority-independent. Calendars remain device-polled; sources with
 daemon-friendly static keys join
 [ADR-0009](0009-the-owned-schema-and-context-lanes.md)'s server-polled lane
 instead.
+**Narrowed 2026-08-09 by
+[ADR-0011](0011-context-ingestion-moves-server-side.md):** device polling
+remains the display path, unchanged — but a server-side ingestion path now
+exists beside it for notification-rule evaluation. The M365 daemon-auth
+argument rested on a corporate-tenant premise that proved false for the
+operator's actual tenant (their own; admin consent available), and the
+Google leg was never a trap (the sweeper's Workspace-Internal refresh token
+is the live precedent).
 **Context:** the context-polling grilling of 2026-08-08, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#50](https://github.com/JddAndrewLauren/hummingbird/issues/50). Resolves the
