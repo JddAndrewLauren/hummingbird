@@ -5,6 +5,10 @@ description: Pick what to do right now from the personal Linear workspace (org t
 
 # /next-up-personal
 
+> **Status:** targets the live Linear workspace, which remains the working
+> surface until the owned stack (ADR-0008) is daily-usable; the skill
+> retargets to the owned API then.
+
 A **task selector**, not a router: answer "what should I do right now" against the live
 Linear workspace with **one** top pick. Plus one branch — handing a single chosen issue to
 an agent. Never a full list; that's the Linear UI's job.

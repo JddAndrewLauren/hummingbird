@@ -1,7 +1,10 @@
 # hummingbird
 
-Personal GTD-style task system on Linear (org `twinion`, team `ION`). See `CONTEXT.md`
-for the domain glossary.
+Personal GTD-style task system. The task authority is moving from Linear
+(org `twinion`, team `ION`) to an app-owned server (ADR-0008); the Linear
+workspace stays the live working surface — and the skills below still target
+it — until the owned stack is daily-usable. See `CONTEXT.md` for the domain
+glossary.
 
 ## The sweeper
 

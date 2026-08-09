@@ -2,9 +2,10 @@
 // treats every named export of a Worker's `main` module as a candidate
 // handler/entrypoint, and errors on a plain string constant living there.
 
-// No `unsafe-inline`; `connect-src` limited to self, `api.linear.app`
-// (ADR-0004's mitigation for a non-expiring key in browser storage),
-// `www.googleapis.com` (issue #73: both Google reads -- Calendar Events and
+// No `unsafe-inline`; `connect-src` limited to self (the task API is
+// same-origin at `hb.twinion.net/api/*` per ADR-0008 -- the `api.linear.app`
+// allowance was retired with it, since the Linear client adapter is never
+// built), `www.googleapis.com` (issue #73: both Google reads -- Calendar Events and
 // the picker's calendarList -- go out from the wasm core's one transport,
 // `core::calendar::google::reqwest_transport`, and target that host only --
 // no broader `googleapis.com` wildcard), and
@@ -36,7 +37,7 @@ export const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com",
   "style-src 'self'",
-  "connect-src 'self' https://api.linear.app https://www.googleapis.com https://accounts.google.com",
+  "connect-src 'self' https://www.googleapis.com https://accounts.google.com",
   "img-src 'self' data:",
   "manifest-src 'self'",
   "worker-src 'self'",

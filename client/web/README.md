@@ -3,8 +3,9 @@
 Desktop web client shell (#69): Vite + React + Tailwind + TypeScript, the
 wasm sync core (`hummingbird-ffi-web`, #67) loaded in a Web Worker, PWA
 offline shell, served from Cloudflare Workers static assets at
-`hb.twinion.net` (ADR-0006). This is a placeholder shell — no Linear sync,
-auth, or calendar UI yet (see #73).
+`hb.twinion.net` (ADR-0006). This is a placeholder shell — no task sync yet:
+it will target the owned API (ADR-0008); a Linear client adapter is never
+built. Calendar context and its Google auth landed with #73.
 
 ## Local development
 
