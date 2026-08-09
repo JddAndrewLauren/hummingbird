@@ -1,0 +1,14 @@
+/* Minimal element defaults so a bare page picks up the brand. */
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--surface-page);color:var(--text-primary);font:var(--type-body);letter-spacing:var(--tracking-body);-webkit-font-smoothing:antialiased;text-wrap:pretty}
+h1,h2,h3,h4{margin:0;letter-spacing:var(--tracking-heading)}
+h1{font:var(--type-h1)}h2{font:var(--type-h2)}h3{font:var(--type-h3)}
+p{margin:0}
+a{color:var(--text-link);text-decoration-color:color-mix(in oklab,var(--text-link) 40%,transparent);text-underline-offset:2px;transition:color var(--dur-fast) var(--ease-flit)}
+a:hover{color:var(--text-link-hover);text-decoration-color:currentColor}
+:focus-visible{outline:none;box-shadow:var(--ring-focus);border-radius:var(--radius-sm)}
+::selection{background:var(--accent-quiet);color:var(--text-primary)}
+.hb-meta{font:var(--type-meta);letter-spacing:var(--tracking-meta);text-transform:uppercase;color:var(--text-muted)}
+@keyframes hb-spin{to{transform:rotate(360deg)}}
+@keyframes hb-flit{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}

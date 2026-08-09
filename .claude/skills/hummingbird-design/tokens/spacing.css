@@ -1,0 +1,13 @@
+:root{
+  --space-0:0px; --space-1:2px; --space-2:4px; --space-3:6px; --space-4:8px;
+  --space-5:12px; --space-6:16px; --space-7:20px; --space-8:24px; --space-9:32px;
+  --space-10:40px; --space-11:48px; --space-12:64px; --space-13:80px;
+
+  /* Layout constants */
+  --gutter-page:24px;
+  --rail-width:236px;        /* desktop nav rail */
+  --panel-width:320px;       /* right-hand context panel */
+  --row-height:44px;         /* item row; also the minimum touch target */
+  --touch-min:44px;
+  --content-max:880px;
+}
