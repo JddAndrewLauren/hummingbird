@@ -159,16 +159,27 @@ pub enum DeadLetterReason {
     /// defect no client retry resolves either.
     Permanent(String),
     /// A 409 that did not auto-resolve: the fields where the intervening
-    /// write and this entry's own intent disagree.
-    Conflict { fields: Vec<String> },
+    /// write and this entry's own intent disagree, plus the server's
+    /// `current` entity — ADR-0007's "1 edit didn't apply" affordance needs
+    /// the server value, not just the field names, to give the user
+    /// anything to act on. Forwarded #101/#102 review finding: this used to
+    /// be dropped (`Err(WriteError::Conflict { fields, .. })`) on the way
+    /// into the journal.
+    Conflict { fields: Vec<String>, current: Value },
 }
 
 /// One dead-lettered entry: the abandoned intent plus why, so it can be
 /// re-applied by hand or inspected — never silently dropped.
+///
+/// `at_ms` is when this entry was dead-lettered — caller-injected (this
+/// module never samples a clock; see the module docs' wasm32 note), and
+/// forwarded from #101/#102 review: a "1 edit didn't apply" affordance with
+/// no timestamp gives the user nothing to judge how stale it is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeadLetterEntry {
     pub entry: QueueEntry,
     pub reason: DeadLetterReason,
+    pub at_ms: i64,
 }
 
 /// What one [`OutboundQueue::drain`] call did.
@@ -245,10 +256,14 @@ impl OutboundQueue {
 
     /// Strict FIFO drain: see the module docs for exactly what stops it and
     /// what merely dead-letters and continues.
+    ///
+    /// `now_ms` is caller-injected (never sampled — see the module docs'
+    /// wasm32 note) and stamps every entry this call dead-letters.
     pub async fn drain(
         &mut self,
         transport: &impl MutationTransport,
         access_token: &str,
+        now_ms: i64,
     ) -> DrainOutcome {
         let mut dead_lettered = 0;
 
@@ -268,15 +283,15 @@ impl OutboundQueue {
                     return DrainOutcome::CredentialNeeded;
                 }
                 Err(WriteError::Permanent(message)) => {
-                    self.dead_letter(DeadLetterReason::Permanent(message));
+                    self.dead_letter(DeadLetterReason::Permanent(message), now_ms);
                     dead_lettered += 1;
                 }
                 Err(WriteError::InvalidResponse(message)) => {
-                    self.dead_letter(DeadLetterReason::Permanent(message));
+                    self.dead_letter(DeadLetterReason::Permanent(message), now_ms);
                     dead_lettered += 1;
                 }
-                Err(WriteError::Conflict { fields, .. }) => {
-                    self.dead_letter(DeadLetterReason::Conflict { fields });
+                Err(WriteError::Conflict { fields, current }) => {
+                    self.dead_letter(DeadLetterReason::Conflict { fields, current }, now_ms);
                     dead_lettered += 1;
                 }
             }
@@ -287,9 +302,13 @@ impl OutboundQueue {
     /// from `drain`, immediately after that same entry's `attempt` resolved
     /// to a non-retryable failure — the front entry is always the one just
     /// attempted.
-    fn dead_letter(&mut self, reason: DeadLetterReason) {
+    fn dead_letter(&mut self, reason: DeadLetterReason, at_ms: i64) {
         if let Some(entry) = self.entries.pop_front() {
-            self.dead_letters.push(DeadLetterEntry { entry, reason });
+            self.dead_letters.push(DeadLetterEntry {
+                entry,
+                reason,
+                at_ms,
+            });
         }
     }
 }
@@ -445,7 +464,7 @@ mod tests {
         queue.enqueue(create_entry("m-2", "a-2"));
         queue.enqueue(create_entry("m-3", "a-3"));
 
-        let outcome = queue.drain(&transport, "token").await;
+        let outcome = queue.drain(&transport, "token", 1_000).await;
 
         assert_eq!(outcome, DrainOutcome::Blocked { dead_lettered: 0 });
         assert_eq!(transport.call_count(), 2, "position 3 must never be attempted");
@@ -473,7 +492,7 @@ mod tests {
         queue.enqueue(create_entry("m-2", "a-2"));
         queue.enqueue(create_entry("m-3", "a-3"));
 
-        let outcome = queue.drain(&transport, "token").await;
+        let outcome = queue.drain(&transport, "token", 1_000).await;
 
         assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 1 });
         assert_eq!(transport.call_count(), 3, "position 3 must still be attempted");
@@ -498,7 +517,7 @@ mod tests {
         let mut queue = OutboundQueue::new();
         queue.enqueue(create_entry("m-1", "a-1"));
 
-        let outcome = queue.drain(&transport, "token").await;
+        let outcome = queue.drain(&transport, "token", 1_000).await;
 
         assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 1 });
         assert!(queue.is_empty());
@@ -506,9 +525,11 @@ mod tests {
     }
 
     /// An unresolved conflict (a same-field 409, or a second 409 on the
-    /// rebased retry) dead-letters too, naming the colliding fields —
-    /// ADR-0007's field-level conflict resolution (S5) acts on this
-    /// journal; this slice only needs it to not block the queue.
+    /// rebased retry) dead-letters too, naming the colliding fields, the
+    /// server's `current` entity (the "1 edit didn't apply" affordance's
+    /// material — #101/#102 forwarded review), and a timestamp — ADR-0007's
+    /// field-level conflict resolution (S5) acts on this journal; this slice
+    /// only needs it to not block the queue.
     #[tokio::test]
     async fn an_unresolved_conflict_dead_letters_naming_the_fields() {
         let conflict_body =
@@ -517,11 +538,19 @@ mod tests {
         let mut queue = OutboundQueue::new();
         queue.enqueue(patch_entry("m-1", "a-1", 1));
 
-        let outcome = queue.drain(&transport, "token").await;
+        let outcome = queue.drain(&transport, "token", 1_000).await;
 
         assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 1 });
+        assert_eq!(queue.dead_letters()[0].at_ms, 1_000);
         match &queue.dead_letters()[0].reason {
-            DeadLetterReason::Conflict { fields } => assert_eq!(fields, &vec!["title".to_string()]),
+            DeadLetterReason::Conflict { fields, current } => {
+                assert_eq!(fields, &vec!["title".to_string()]);
+                assert_eq!(
+                    current,
+                    &json!({"id": "a-1", "title": "someone else's", "version": 2}),
+                    "the server's current entity must reach the journal, not be dropped"
+                );
+            }
             other => panic!("expected a named collision, got {other:?}"),
         }
     }
@@ -538,7 +567,7 @@ mod tests {
         queue.enqueue(create_entry("m-2", "a-2"));
         queue.enqueue(create_entry("m-3", "a-3"));
 
-        let outcome = queue.drain(&transport, "token").await;
+        let outcome = queue.drain(&transport, "token", 1_000).await;
 
         assert_eq!(outcome, DrainOutcome::CredentialNeeded);
         assert_eq!(
@@ -579,7 +608,7 @@ mod tests {
         )]);
         let mut working_copy: OutboundQueue =
             load_snapshot(&store).await.unwrap().unwrap().payload;
-        let outcome = working_copy.drain(&first_attempt_transport, "token").await;
+        let outcome = working_copy.drain(&first_attempt_transport, "token", 1_000).await;
         assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 0 });
         // ...but the crash happens right here, before `working_copy`'s
         // popped state is ever saved back to `store` — so `store` still
@@ -603,7 +632,7 @@ mod tests {
         let replay_transport =
             ScriptedTransport::new(vec![ok(409, replay_conflict), ok(200, replay_retry_success)]);
 
-        let replay_outcome = rebooted_queue.drain(&replay_transport, "token").await;
+        let replay_outcome = rebooted_queue.drain(&replay_transport, "token", 2_000).await;
 
         assert_eq!(
             replay_outcome,
@@ -634,7 +663,7 @@ mod tests {
             ScriptedTransport::new(vec![ok(201, r#"{"id":"a-1","version":1}"#)]);
         let mut working_copy: OutboundQueue =
             load_snapshot(&store).await.unwrap().unwrap().payload;
-        working_copy.drain(&first_attempt_transport, "token").await;
+        working_copy.drain(&first_attempt_transport, "token", 1_000).await;
         // Crash here, before `store` ever learns the entry was sent.
 
         let mut rebooted_queue: OutboundQueue =
@@ -642,7 +671,7 @@ mod tests {
         let replay_transport =
             ScriptedTransport::new(vec![ok(200, r#"{"id":"a-1","version":1}"#)]);
 
-        let replay_outcome = rebooted_queue.drain(&replay_transport, "token").await;
+        let replay_outcome = rebooted_queue.drain(&replay_transport, "token", 2_000).await;
 
         assert_eq!(replay_outcome, DrainOutcome::Completed { dead_lettered: 0 });
         assert!(rebooted_queue.is_empty());
