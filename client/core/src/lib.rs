@@ -11,6 +11,7 @@
 pub mod calendar;
 pub mod context;
 pub mod storage;
+pub mod task;
 
 /// The public API version both FFI crates surface.
 pub const API_VERSION: u32 = 1;
