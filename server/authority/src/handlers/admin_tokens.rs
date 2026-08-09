@@ -21,15 +21,17 @@ pub fn mint(
     if mint.id.is_empty() {
         return Ok(error(400, "validation", "id must be non-empty"));
     }
-    if mint.name.is_empty() {
-        return Ok(error(400, "validation", "name must be non-empty"));
-    }
 
     // Idempotent by client-supplied id — but the plaintext exists only in
     // the original 201 (only its hash is stored), so a replay returns the
-    // metadata without it.
+    // metadata without it. The select runs before the remaining validation:
+    // already-exists is success, even under a divergent payload.
     if let Some(row) = select_token(sql, &mint.id)? {
         return Ok(json(200, &token_info_from_row(&row)?));
+    }
+
+    if mint.name.is_empty() {
+        return Ok(error(400, "validation", "name must be non-empty"));
     }
 
     let mut bytes = [0u8; 32];

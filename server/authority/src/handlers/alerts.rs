@@ -146,10 +146,13 @@ pub fn dismiss(
     Ok(json(200, &alert_from_row(&row)?))
 }
 
-/// `hex(sha256("alert:" + source + ":" + source_key))[..32]` — stable
-/// across raises by construction.
+/// `hex(sha256("alert:" + len(source) + ":" + source + ":" + source_key))[..32]`
+/// — stable across raises by construction. The length prefix keeps the
+/// preimage unambiguous: without it, `("app", "db:prod")` and
+/// `("app:db", "prod")` would collide on id while differing on the real
+/// identity columns, and the second raise would hit the primary key forever.
 fn deterministic_id(source: &str, source_key: &str) -> String {
-    let mut id = auth::sha256_hex(&format!("alert:{source}:{source_key}"));
+    let mut id = auth::sha256_hex(&format!("alert:{}:{source}:{source_key}", source.len()));
     id.truncate(32);
     id
 }

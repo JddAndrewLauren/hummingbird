@@ -100,6 +100,57 @@ fn sweeper_token_creates_items_and_nothing_else() {
 }
 
 #[test]
+fn scope_matrix_default_arm_denies_every_other_route() {
+    let sql = RusqliteSql::new();
+    // The matrix names two non-device allowances and defaults everything
+    // else to device-only; these representatives pin the default arm for
+    // both narrow scopes across the route families their allowances sit
+    // nearest to.
+    for (token, scope, method, path, body) in [
+        (
+            SWEEPER_TOKEN,
+            "sweeper",
+            "PATCH",
+            "/api/alerts/al-1",
+            r#"{"expected_version": 1, "dismissed_at": 1}"#,
+        ),
+        (
+            SWEEPER_TOKEN,
+            "sweeper",
+            "POST",
+            "/api/steps",
+            r#"{"id": "s", "item_id": "a", "body": "b", "position": 1}"#,
+        ),
+        (
+            SWEEPER_TOKEN,
+            "sweeper",
+            "PUT",
+            "/api/settings/k",
+            r#"{"expected_version": 0, "value": true}"#,
+        ),
+        (
+            INGEST_TOKEN,
+            "ingest",
+            "PATCH",
+            "/api/routes/x",
+            r#"{"expected_version": 1, "destination": "d"}"#,
+        ),
+        (
+            INGEST_TOKEN,
+            "ingest",
+            "POST",
+            "/api/blocked_by",
+            r#"{"item_id": "a", "blocker_id": "b"}"#,
+        ),
+    ] {
+        let resp = req_as(&sql, token, method, path, None, Some(body), 0);
+        assert_eq!(resp.status, 403, "{scope} {method} {path}: {}", resp.body);
+        assert!(resp.body.is_empty(), "{scope} {method} {path} leaked: {}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 0, "nothing was written");
+}
+
+#[test]
 fn revoked_token_gets_401_on_its_next_request() {
     let sql = RusqliteSql::new();
     assert_eq!(changes(&sql, "since=0").status, 200, "live token works");

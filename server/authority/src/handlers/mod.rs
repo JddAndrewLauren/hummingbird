@@ -24,7 +24,10 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// this, tests build it directly.
 pub struct ApiRequest<'a> {
     pub method: &'a str,
-    /// Path only, no query string — e.g. `/api/items/uuid-1`.
+    /// Path only, no query string — e.g. `/api/items/uuid-1`. Segments are
+    /// matched exactly as received (no percent-decoding): entity ids and
+    /// settings keys must be URL-safe literals — an encoded character is
+    /// stored and matched verbatim.
     pub path: &'a str,
     /// The raw query string, without the `?`.
     pub query: Option<&'a str>,

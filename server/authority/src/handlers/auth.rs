@@ -77,6 +77,11 @@ pub fn authenticate(
 /// alert ingest. Sweeper is its retarget contract and nothing else:
 /// `POST /api/items`. Ingest is the webhook lane and nothing else:
 /// `POST /api/alerts`. Admin routes never reach here.
+///
+/// Known gap, deliberately deferred: an ingest token is not bound to a
+/// `source` — any ingest credential may upsert any source's alerts. #145
+/// closes this (tokens.source, enforced here) and must land before the
+/// first production ingest token is minted.
 pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
     match (method, segments) {
         ("POST", ["items"]) => matches!(scope, Scope::Device | Scope::Sweeper),

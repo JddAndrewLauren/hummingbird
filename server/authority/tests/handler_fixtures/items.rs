@@ -50,6 +50,20 @@ fn create_replay_with_divergent_payload_returns_the_original_row() {
 }
 
 #[test]
+fn create_replay_with_invalid_divergent_payload_still_returns_the_stored_row() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    // The replay-select runs before field validation: already-exists is
+    // success (ADR-0008), even when the divergent payload would 400 fresh.
+    let resp = post(&sql, r#"{"id": "a-1", "title": "hello", "priority": 9}"#, 2000);
+    assert_eq!(resp.status, 200, "already-exists wins over validation: {}", resp.body);
+    let replayed = item(&resp);
+    assert_eq!(replayed.title, "hello");
+    assert_eq!(replayed.priority, 0, "the stored row, not the divergent payload");
+    assert_eq!(meta_version(&sql), 1, "no version bump");
+}
+
+#[test]
 fn create_with_server_stamped_fields_400() {
     let sql = RusqliteSql::new();
     for (body, field) in [

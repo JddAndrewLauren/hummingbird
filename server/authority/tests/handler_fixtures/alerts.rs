@@ -16,12 +16,39 @@ fn first_raise_201_with_deterministic_id_and_bump() {
     );
     assert_eq!(resp.status, 201, "{}", resp.body);
     let alert: Alert = body_as(&resp);
-    let expected_id = &sha256_hex("alert:healthchecks:sweeper")[..32];
+    // The preimage length-prefixes the source, so shifted-colon identities
+    // cannot collide (see `identity_shifted_colon_mints_distinct_ids`).
+    let expected_id = &sha256_hex("alert:12:healthchecks:sweeper")[..32];
     assert_eq!(alert.id, expected_id, "id is a pure function of the identity");
     assert_eq!(alert.raised_at, 1000, "server clock fills an absent raised_at");
     assert_eq!(alert.dismissed_at, None);
     assert_eq!(alert.version, 1);
     assert_eq!(meta_version(&sql), 1);
+}
+
+#[test]
+fn identity_shifted_colon_mints_distinct_ids() {
+    let sql = RusqliteSql::new();
+    // Without the length prefix in the id preimage, these two identities
+    // would hash to the same id — and the second first-raise would 500 on
+    // the alerts primary key, forever.
+    let first = ingest_alert(
+        &sql,
+        r#"{"source": "app", "source_key": "db:prod", "title": "down"}"#,
+        0,
+    );
+    assert_eq!(first.status, 201, "{}", first.body);
+    let second = ingest_alert(
+        &sql,
+        r#"{"source": "app:db", "source_key": "prod", "title": "down"}"#,
+        0,
+    );
+    assert_eq!(second.status, 201, "{}", second.body);
+    let a: Alert = body_as(&first);
+    let b: Alert = body_as(&second);
+    assert_ne!(a.id, b.id, "distinct identities mint distinct ids");
+    let rows = sql.exec("SELECT id FROM alerts", &[]).unwrap();
+    assert_eq!(rows.len(), 2, "two rows, one per identity");
 }
 
 #[test]
@@ -60,6 +87,24 @@ fn changed_re_raise_updates_source_fields_absolutely() {
     assert_eq!(alert.body, None, "absent optional clears");
     assert_eq!(alert.severity, None, "absent optional clears");
     assert_eq!(alert.version, 2, "a real change bumps");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
+fn re_raise_omitting_expires_at_clears_it() {
+    let sql = RusqliteSql::new();
+    ingest_alert(
+        &sql,
+        r#"{"source": "hc", "source_key": "k", "title": "down", "expires_at": 9000}"#,
+        1000,
+    );
+    // The source stops sending its TTL: absent clears, like every other
+    // source-owned optional — and a cleared field is a real change.
+    let resp = ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "down"}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let alert: Alert = body_as(&resp);
+    assert_eq!(alert.expires_at, None, "absent expires_at clears");
+    assert_eq!(alert.version, 2, "clearing is a real change");
     assert_eq!(meta_version(&sql), 2);
 }
 

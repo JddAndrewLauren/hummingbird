@@ -17,6 +17,17 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     if create.id.is_empty() {
         return Ok(error(400, "validation", "id must be non-empty"));
     }
+
+    // Idempotent by client-supplied id: a replay is answered with the
+    // current row, no write, no version bump (ADR-0008) — even a divergent
+    // payload on the same id returns the stored row unchanged, which is why
+    // the select runs before the remaining validation: already-exists is
+    // success, never a 400. The DO is single-threaded, so SELECT-then-INSERT
+    // cannot race.
+    if let Some(row) = select_item(sql, &create.id)? {
+        return Ok(json(200, &item_from_row(&row)?));
+    }
+
     if create.title.is_empty() {
         return Ok(error(400, "validation", "title must be non-empty"));
     }
@@ -28,14 +39,6 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         if !super::projects::project_exists(sql, project_id)? {
             return Ok(error(400, "validation", "unknown project_id"));
         }
-    }
-
-    // Idempotent by client-supplied id: a replay is answered with the
-    // current row, no write, no version bump (ADR-0008) — even a divergent
-    // payload on the same id returns the stored row unchanged. The DO is
-    // single-threaded, so SELECT-then-INSERT cannot race.
-    if let Some(row) = select_item(sql, &create.id)? {
-        return Ok(json(200, &item_from_row(&row)?));
     }
 
     let version = read_meta_version(sql)? + 1;

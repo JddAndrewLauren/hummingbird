@@ -189,9 +189,23 @@ fn changes_since_above_current_version_returns_empty_with_server_version() {
 }
 
 #[test]
+fn changes_since_negative_is_the_full_sweep() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a", "title": "first"}"#, 0);
+    post(&sql, r#"{"id": "b", "title": "second"}"#, 0);
+    // Any cursor below every stamp pulls everything: -1 parses fine and
+    // must agree with the sweep, not trip validation.
+    let resp = changes(&sql, "since=-1");
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(resp.body, sweep(&sql).body, "a negative cursor is the full sweep");
+}
+
+#[test]
 fn changes_since_missing_or_non_numeric_400() {
     let sql = RusqliteSql::new();
-    for query in ["", "since=abc", "cursor=1"] {
+    // The last case overflows i64 — numeric to the eye, but the parse fails
+    // and the 400 answers, never a wrapped cursor.
+    for query in ["", "since=abc", "cursor=1", "since=99999999999999999999"] {
         let resp = changes(&sql, query);
         assert_eq!(resp.status, 400, "query {query:?}: {}", resp.body);
     }

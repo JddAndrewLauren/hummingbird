@@ -45,8 +45,25 @@ fn post_and_patch_with_no_body_400() {
 #[test]
 fn trailing_slash_empty_id_404() {
     let sql = RusqliteSql::new();
-    for path in ["/api/items/", "/api/projects/", "/api/routes/", "/api/fog/", "/api/steps/"] {
+    for path in [
+        "/api/items/",
+        "/api/projects/",
+        "/api/routes/",
+        "/api/fog/",
+        "/api/steps/",
+        "/api/alerts/",
+    ] {
         let resp = req(&sql, "PATCH", path, None, Some(r#"{"expected_version": 1}"#), 0);
         assert_eq!(resp.status, 404, "PATCH {path}");
     }
+    // Settings takes PUT, not PATCH — the empty key still falls to 404.
+    let resp = req(
+        &sql,
+        "PUT",
+        "/api/settings/",
+        None,
+        Some(r#"{"expected_version": 0, "value": true}"#),
+        0,
+    );
+    assert_eq!(resp.status, 404, "PUT /api/settings/");
 }

@@ -16,12 +16,16 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     if create.id.is_empty() {
         return Ok(error(400, "validation", "id must be non-empty"));
     }
-    if create.name.is_empty() {
-        return Ok(error(400, "validation", "name must be non-empty"));
-    }
 
+    // Replay before the remaining validation: already-exists is success and
+    // returns the stored row (ADR-0008), even under a divergent payload that
+    // would no longer validate.
     if let Some(row) = select_project(sql, &create.id)? {
         return Ok(json(200, &project_from_row(&row)?));
+    }
+
+    if create.name.is_empty() {
+        return Ok(error(400, "validation", "name must be non-empty"));
     }
 
     let version = read_meta_version(sql)? + 1;
