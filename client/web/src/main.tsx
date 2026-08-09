@@ -3,7 +3,11 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { coreStore } from "./store/store";
 import { attachWorkerClient } from "./store/worker-client";
+import { applyInitialTheme } from "./theme/useTheme";
 import "./styles.css";
+
+// Before the first render, so nothing paints in the wrong theme.
+applyInitialTheme();
 
 const worker = new Worker(new URL("./worker/core.worker.ts", import.meta.url), {
   type: "module",
