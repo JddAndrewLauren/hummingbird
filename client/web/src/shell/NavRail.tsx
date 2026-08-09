@@ -1,6 +1,8 @@
 import { Badge } from "../components/core/Badge";
 import { Icon, type IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
+import markDark from "../design/brand/hummingbird-icon-micro-dark.svg";
+import markLight from "../design/brand/hummingbird-icon-micro-light.svg";
 import type { ResolvedTheme } from "../theme/theme";
 import { SCREENS, type Screen } from "./screens";
 
@@ -50,11 +52,31 @@ export function NavRail({
         borderRight: "1px solid var(--border-subtle)",
       }}
     >
-      {/* The brand mark is the app icon PNG, which is not in the in-repo
-          design mirror (binary, omitted from the pull). Until it is, the
-          wordmark carries the brand alone — set in type, as the design
-          README's Wordmark card prescribes for the no-logo case. */}
+      {/* Mark + wordmark. The mark is the app icon's `micro` optical profile,
+          the variant generated for 24–16px reads — see design/brand/README.md
+          for provenance and why it is an <img> rather than inline SVG. It is
+          decorative here: the wordmark beside it already names the app, so
+          alt="" keeps screen readers from announcing the brand twice. */}
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)", padding: "0 var(--space-3)" }}>
+        <img
+          src={theme === "dark" ? markDark : markLight}
+          alt=""
+          width={22}
+          height={22}
+          style={{
+            display: "block",
+            flex: "0 0 auto",
+            borderRadius: "var(--radius-icon-app)",
+            // The light plate (#FBF7F0) and the rail behind it
+            // (--surface-quiet, #faf0e7) are the same value to the eye, so
+            // without an edge the plate vanishes in the light theme and the
+            // icon's deliberately-cropped composition reads as a shape cut
+            // off mid-body. A hairline gives it its boundary back. Inset
+            // rather than a border so the box stays 22px and the ring
+            // follows the squircle exactly.
+            boxShadow: "inset 0 0 0 1px var(--border-subtle)",
+          }}
+        />
         <span
           style={{
             font: "var(--weight-bold) 18px/1 var(--font-display)",
