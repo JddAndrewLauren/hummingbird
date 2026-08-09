@@ -1,0 +1,16 @@
+# The authority API worker (ADR-0008): one Worker, one SQLite-backed
+# Durable Object. S0 (#113) is `wrangler dev` + CI only — no `routes`, no
+# production deploy; the hb.twinion.net/api/* routing arrives with #114+.
+name = "hummingbird-authority"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-08-08"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[durable_objects]
+bindings = [{ name = "AUTHORITY", class_name = "Authority" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Authority"]
