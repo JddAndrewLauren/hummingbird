@@ -11,7 +11,8 @@
 //! mutations, rebase-on-409, deterministic ids, and the error taxonomy the
 //! outbound queue (#102) will drive. `queue` (S4/#102) is that outbound
 //! queue: the durable FIFO structure and drain semantics built on top of
-//! `write`. `cycle` (S5/#103) is ADR-0007's one cycle — drain then sweep —
+//! `write`. `cycle` (S5/#103) is ADR-0007/ADR-0008's one cycle — drain then
+//! pull, delta as the normal pull with a full sweep as the backstop —
 //! wired on top of `queue`, `adapter`, and `mirror`, plus the backoff and
 //! active-issue-count machinery around it.
 

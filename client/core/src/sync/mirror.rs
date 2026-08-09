@@ -30,7 +30,7 @@
 //!
 //! **#103 resolves which mirror is persisted.** `SyncMirror` is
 //! [`crate::storage::Persistable`] as of this issue — it is the read model
-//! [`super::cycle::SyncCycle`] persists after every completed sweep, and the
+//! [`super::cycle::SyncCycle`] persists after every completed pull, and the
 //! one going forward for the owned schema. `crate::task::Mirror` (the S1
 //! Linear-era type, and its dead-letter journal, and the FFI-facing `Core`
 //! handle built on it) is *not* migrated onto this type here — the two

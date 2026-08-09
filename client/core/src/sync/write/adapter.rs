@@ -617,6 +617,69 @@ mod tests {
         }
     }
 
+    /// #103 forwarded-review fix: a `base` with no numeric `version` field
+    /// is a malformed local record — never a legitimate "start from zero".
+    /// This must surface as `InvalidResponse` before any request is sent,
+    /// not silently default `expected_version` to `0`.
+    #[tokio::test]
+    async fn a_base_with_no_numeric_version_is_an_invalid_response_not_a_silent_zero() {
+        let transport = ScriptedTransport::new(vec![]); // must never be called
+        let base = json!({"id": "a-1", "title": "buy milk"}); // no "version" at all
+
+        let err = patch_with_rebase::<_, FakeItem>(
+            &transport,
+            "token",
+            HttpMethod::Patch,
+            "/api/items/a-1",
+            &base,
+            |v| json!({"expected_version": v, "title": "buy oat milk"}),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, WriteError::InvalidResponse(_)));
+        assert_eq!(
+            transport.call_count(),
+            0,
+            "a malformed base must never reach the transport at all"
+        );
+    }
+
+    /// #103 forwarded-review fix: a safe-rebase 409 whose `current` body has
+    /// no numeric `version` field is a malformed conflict response from the
+    /// server — never a legitimate cue to silently retry at `base_version`
+    /// (which is guaranteed stale, since the whole point of rebasing is to
+    /// retry at the *new* version).
+    #[tokio::test]
+    async fn a_conflict_current_with_no_numeric_version_is_an_invalid_response_not_a_silent_retry_at_base_version(
+    ) {
+        // Disjoint field (`context`), so `rebase::decide` calls this `Safe`
+        // and the adapter proceeds to build a retry — which is exactly the
+        // path that must be caught before it fires.
+        let conflict_body =
+            r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy milk","context":"@computer"}}"#;
+        let transport = ScriptedTransport::new(vec![ok(409, conflict_body)]);
+        let base = json!({"id": "a-1", "title": "buy milk", "context": "@calls", "version": 1});
+
+        let err = patch_with_rebase::<_, FakeItem>(
+            &transport,
+            "token",
+            HttpMethod::Patch,
+            "/api/items/a-1",
+            &base,
+            |v| json!({"expected_version": v, "title": "buy oat milk"}),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, WriteError::InvalidResponse(_)));
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "the malformed conflict body must be caught before any retry is sent"
+        );
+    }
+
     #[tokio::test]
     async fn a_401_on_patch_is_unauthorized() {
         let transport = ScriptedTransport::new(vec![ok(401, "")]);
