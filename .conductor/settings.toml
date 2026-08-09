@@ -1,0 +1,30 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+# Conductor setup/run scripts for the web shell (client/web).
+#
+# The Vite dev server is the only runnable surface in this repo today; the
+# authority server (server/) runs under `wrangler dev` and is not wired up
+# here yet. Both run scripts pin themselves to a workspace-allocated port
+# (CONDUCTOR_PORT + n) so several workspaces can serve at once.
+#
+# ~/.cargo/bin is prepended explicitly: these scripts run in a
+# non-interactive shell and `build:wasm` needs wasm-pack + cargo.
+
+[scripts]
+setup = "export PATH=\"$HOME/.cargo/bin:$PATH\" && cd client/web && pnpm install --frozen-lockfile && pnpm run build:wasm"
+run_mode = "concurrent"
+
+# The demo site: the same shell, rendering the design kit's fixture data on
+# every surface. Gated on `import.meta.env.DEV` as well as `?demo`, so it
+# only exists under the dev server (see client/web/README.md).
+[scripts.run.demo]
+command = "export PATH=\"$HOME/.cargo/bin:$PATH\" && cd client/web && pnpm dev --port $CONDUCTOR_PORT --strictPort --open '/?demo'"
+available_in = [ "local" ]
+default = true
+icon = "sparkles"
+
+# The real shell, with its honest empty states.
+[scripts.run.dev]
+command = "export PATH=\"$HOME/.cargo/bin:$PATH\" && cd client/web && pnpm dev --port $((CONDUCTOR_PORT + 1)) --strictPort"
+available_in = [ "local" ]
+icon = "play"
