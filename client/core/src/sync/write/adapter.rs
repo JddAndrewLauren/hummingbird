@@ -58,6 +58,14 @@ async fn send(
         )
         .await
     {
+        // A well-behaved `MutationTransport` never carries a status on this
+        // branch (write::transport's own doc: status lives on `RawResponse`,
+        // this is connection-level only) — but the outbound queue (#102)
+        // holds the *entire* queue on `WriteError::Unauthorized` and only
+        // blocks the current entry on `Retryable`, so a transport that ever
+        // did tag a dead-credential failure this way must not be silently
+        // downgraded to "retry forever" instead of "ask for a fresh token".
+        Err(source) if source.is_unauthorized() => Sent::Failed(WriteError::Unauthorized),
         Err(source) => Sent::Failed(WriteError::Retryable(source.to_string())),
         Ok(response) if (200..300).contains(&response.status) => {
             Sent::Success(response.status, response.body)
@@ -362,6 +370,28 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, WriteError::Retryable(_)));
+    }
+
+    /// A connection-level failure is not always status-free: a transport
+    /// that tags a dead credential this way (rather than the documented
+    /// `RawResponse{status: 401, ..}` path) must still surface
+    /// `Unauthorized`, not `Retryable` — #102's outbound queue holds the
+    /// whole queue on the former and only blocks the current entry on the
+    /// latter, so confusing the two would silently turn "ask for a fresh
+    /// token" into "retry forever".
+    #[tokio::test]
+    async fn a_connection_failure_carrying_a_401_status_is_unauthorized_not_retryable() {
+        let transport = ScriptedTransport::new(vec![Err(TransportError::http(401, "expired"))]);
+        let create_dto = FakeCreate {
+            id: "a-1".into(),
+            title: "buy milk".into(),
+        };
+
+        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, WriteError::Unauthorized);
     }
 
     #[tokio::test]

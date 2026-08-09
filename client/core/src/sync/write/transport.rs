@@ -20,7 +20,11 @@ pub use super::super::transport::TransportError;
 /// The HTTP verb a mutation is sent with. `PATCH` and `PUT` are both CAS
 /// writes (`expected_version` plus absolute sets); `POST` is a
 /// idempotent-by-id create.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` so the outbound queue (#102) can persist a
+/// queued mutation's method as part of its durable entry, rather than
+/// re-deriving it from the path at drain time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HttpMethod {
     Post,
     Patch,
