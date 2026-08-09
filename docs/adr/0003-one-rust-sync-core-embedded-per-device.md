@@ -7,11 +7,11 @@ the Linear adapter is never built, and the CORS argument is moot (the API is
 same-origin). Everything else stands: the sync engine remains a library
 embedded per device, the crate layout, persistence and web-client decisions
 are unchanged, and the domain types in `core/src/task/` extract into a
-standalone crate the server shares.
-**Amended 2026-08-09 by [ADR-0010](0010-one-core-per-origin.md):** on the web host
-the core is embedded once per *origin*, not once per document — it lives in a
-`SharedWorker`, and every tab and installed-PWA window is a view holding a
-`MessagePort`. Per-device embedding stands everywhere else.
+standalone crate the server shares. · **amended 2026-08-09 by
+[ADR-0010](0010-one-core-per-origin.md):** on the web host the core is embedded
+once per *origin*, not once per document — it lives in a `SharedWorker`, and
+every tab and installed-PWA window is a view holding a `MessagePort`.
+Per-device embedding stands everywhere else.
 **Context:** the stack grilling of 2026-08-07, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#40](https://github.com/JddAndrewLauren/hummingbird/issues/40). Implements
