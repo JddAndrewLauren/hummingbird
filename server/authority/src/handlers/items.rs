@@ -1,11 +1,11 @@
 //! `POST /api/items` and `PATCH /api/items/:id` — the S0 routes, on the
 //! shared codec.
 
-use hummingbird_domain::{
-    ConflictResponse, CreateItem, Energy, Item, ItemPatch, Size, Stage, VERSION_CONFLICT,
-};
+use hummingbird_domain::{CreateItem, Energy, Item, ItemPatch, Size, Stage};
 
-use super::{error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
+use super::{
+    conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse,
+};
 use crate::codec::{bad_cell, RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -23,6 +23,11 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     let priority = create.priority.unwrap_or(0);
     if !(0..=4).contains(&priority) {
         return Ok(error(400, "validation", "priority must be between 0 and 4"));
+    }
+    if let Some(project_id) = &create.project_id {
+        if !super::projects::project_exists(sql, project_id)? {
+            return Ok(error(400, "validation", "unknown project_id"));
+        }
     }
 
     // Idempotent by client-supplied id: a replay is answered with the
@@ -91,22 +96,20 @@ pub fn patch(
     if patch.priority.is_some_and(|p| !(0..=4).contains(&p)) {
         return Ok(error(400, "validation", "priority must be between 0 and 4"));
     }
+    if let Some(Some(project_id)) = &patch.project_id {
+        if !super::projects::project_exists(sql, project_id)? {
+            return Ok(error(400, "validation", "unknown project_id"));
+        }
+    }
 
     let Some(row) = select_item(sql, id)? else {
         return Ok(error(404, "not_found", "no such item"));
     };
     let current = item_from_row(&row)?;
     if current.version != patch.expected_version {
-        // The 409 carries the current entity so the client can rebase
-        // (ADR-0008): disjoint touched fields auto-resend, same-field loses
-        // into the client-side dead-letter journal.
-        return Ok(json(
-            409,
-            &ConflictResponse {
-                error: VERSION_CONFLICT.to_string(),
-                current,
-            },
-        ));
+        // Disjoint touched fields auto-resend against the carried entity;
+        // same-field loses into the client-side dead-letter journal.
+        return Ok(conflict(&current));
     }
 
     // Absolute-value sets only: each touched field's entire new value.
@@ -167,6 +170,10 @@ pub fn patch(
         message: "row vanished mid-update".into(),
     })?;
     Ok(json(200, &item_from_row(&row)?))
+}
+
+pub(super) fn item_exists(sql: &dyn Sql, id: &str) -> Result<bool, SqlError> {
+    Ok(select_item(sql, id)?.is_some())
 }
 
 fn select_item(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {

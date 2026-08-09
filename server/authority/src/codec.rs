@@ -29,6 +29,15 @@ impl RowReader<'_> {
     pub fn opt_int(&self, col: &str) -> Option<i64> {
         self.0.get(col).and_then(SqlValue::as_i64)
     }
+
+    /// An INTEGER 0/1 column (`steps.done`); anything else is a bad cell.
+    pub fn bool_int(&self, col: &str) -> Result<bool, SqlError> {
+        match self.int(col)? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(bad_cell(col)),
+        }
+    }
 }
 
 /// Accumulates a PATCH's absolute-value assignments and renders its UPDATE.
