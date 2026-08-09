@@ -12,19 +12,35 @@ PORT="${SMOKE_PORT:-8787}"
 BASE="http://127.0.0.1:${PORT}"
 cd "$(dirname "$0")/../worker"
 
+# A previous run's surviving workerd would answer the poll with a server
+# whose state this script is about to delete — fail fast instead.
+if curl -s -o /dev/null --max-time 2 "$BASE/"; then
+  echo "FAIL: something already listens on port $PORT — kill it first" >&2
+  exit 1
+fi
+
 # A stale local dev DB would break replay/version assertions.
 rm -rf .wrangler/state
 
-export CI=true WRANGLER_SEND_METRICS=false
-npx --yes wrangler@4 dev --port "$PORT" >/tmp/wrangler-smoke.log 2>&1 &
-WRANGLER_PID=$!
-trap 'kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
+# Pre-warm wrangler's [build] command (same invocation as wrangler.toml):
+# on a cold runner `cargo install worker-build` alone takes minutes, which
+# would eat the whole readiness budget below. Warm, wrangler's own re-run
+# of it is a fast no-op.
+cargo install -q worker-build && worker-build --release
 
-# First boot compiles the worker and downloads workerd — be generous.
+export CI=true WRANGLER_SEND_METRICS=false
+# Own process group (setsid) so the trap can kill the whole tree — killing
+# only the npx wrapper orphans the wrangler node process and its workerd,
+# which then squats the port with a state dir the next run deletes.
+setsid npx --yes wrangler@4 dev --port "$PORT" >/tmp/wrangler-smoke.log 2>&1 &
+WRANGLER_PID=$!
+trap 'kill -- "-$WRANGLER_PID" 2>/dev/null || true' EXIT
+
+# The build is warm; this budget covers the workerd download and boot.
 for _ in $(seq 1 60); do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/changes?since=0" || true)
   [ "$code" = "200" ] && break
-  sleep 3
+  sleep 5
 done
 if [ "${code:-}" != "200" ]; then
   echo "FAIL: wrangler dev never became ready; last 40 log lines:" >&2
