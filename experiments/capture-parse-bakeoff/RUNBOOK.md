@@ -165,8 +165,8 @@ integration work unblocks (or evaporates) accordingly.
 | Hosted baseline column | agent | ✅ filled (re-runs cheap; later via the runner endpoint per #41) |
 | Messy dictation batch | **you** | ✅ done 2026-08-08 (23 captures, ION-36…ION-58) |
 | Corpus import + hosted re-run | agent | ✅ done 2026-08-08 (`real-06…28`; 10 dictated `ph-*` retired; Triage cleared) |
-| Blind ground truth | **you** | ⬜ Phase 2 — **next, and now the only thing blocking** |
+| Blind ground truth | **you** | ⬜ Phase 2 — **the only thing still blocking the verdict** |
 | Nano runner app | agent | ✅ built 2026-08-08 (`nano-runner/`, + `merge_nano.py`); v1 run failed on a config bug, fixed and re-armed same day |
-| Nano run on the Pixel | **you** | 🔁 attempt 1 on 2026-08-08 lost to the app's `maxOutputTokens` bug (no inference ran); re-run with the fixed APK |
+| Nano run on the Pixel | **you** | ✅ done 2026-08-08, 42/42 offline on nano-v3 (3 attempts; ~3.6 s median per capture) |
 | Mechanical scoring + tally | agent | ⬜ after Phases 2–3 |
 | Verdict + resolution | **you** → agent | ⬜ Phase 4 |

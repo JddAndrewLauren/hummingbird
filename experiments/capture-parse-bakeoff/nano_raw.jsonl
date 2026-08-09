@@ -1,0 +1,45 @@
+{"id":"ph-01","raw_output":"```json\n{\n  \"title\": \"Email Dana the Q3 roadmap draft before Thursday standup\",\n  \"notes\": \"\",\n  \"items\": []\n}\n```","latency_ms":3732}
+{"id":"ph-03","raw_output":"```json\n{\n  \"title\": \"the thing with the fly deploy token\",\n  \"notes\": \"\"\n}\n```","latency_ms":3019}
+{"id":"ph-04","raw_output":"```json\n{\n  \"title\": \"remind me to water the plants\",\n  \"notes\": \"when I get home\",\n  \"items\": []\n}\n```","latency_ms":3614}
+{"id":"ph-05","raw_output":"```json\n{\n  \"title\": \"buy a birthday card for mom\",\n  \"notes\": \"book the oil change, and cancel the gym trial before it charges me\",\n  \"items\": [\n    \"book the oil change\",\n    \"cancel the gym trial before it charges me\"\n  ]\n}\n```","latency_ms":5270}
+{"id":"ph-06","raw_output":"```json\n{\n  \"title\": \"quarterly taxes\",\n  \"notes\": \"\"\n}\n```","latency_ms":2780}
+{"id":"ph-08","raw_output":"```json\n{\n  \"title\": \"Draft the ADR for the runner endpoint\",\n  \"notes\": \"separate Fly app, not on the sweeper, single bearer token, revisit after the bake-off\"\n}\n```","latency_ms":3773}
+{"id":"ph-11","raw_output":"```json\n{\n  \"title\": \"dentist\",\n  \"notes\": \"\"\n}\n```","latency_ms":2936}
+{"id":"ph-13","raw_output":"```json\n{\n  \"title\": \"Read the Foundation Models guided-generation docs\",\n  \"notes\": \"before starting the iPad prototype\",\n  \"items\": []\n}\n```","latency_ms":3668}
+{"id":"ph-14","raw_output":"```json\n{\n  \"title\": \"book flights for\",\n  \"notes\": \"\",\n  \"items\": []\n}\n```","latency_ms":3239}
+{"id":"ph-17","raw_output":"```json\n{\n  \"title\": \"leak under the bathroom sink\",\n  \"notes\": \"getting worse\",\n  \"items\": []\n}\n```","latency_ms":3752}
+{"id":"ph-18","raw_output":"```json\n{\n  \"title\": \"Submit the reimbursement for the conference hotel\",\n  \"notes\": \"\",\n  \"items\": []\n}\n```","latency_ms":3373}
+{"id":"ph-20","raw_output":"```json\n{\n  \"title\": \"Buy milk\",\n  \"items\": [\n    \"Buy eggs\",\n    \"Buy bread\",\n    \"Buy coffee filters\"\n  ],\n  \"notes\": \"\"\n}\n```","latency_ms":5020}
+{"id":"ph-22","raw_output":"```json\n{\n  \"title\": \"car registration and smog check\",\n  \"items\": [\n    \"car registration\",\n    \"smog check\"\n  ]\n}\n```","latency_ms":4128}
+{"id":"ph-23","raw_output":"```json\n{\n  \"title\": \"Idea: a raw-text fallback for capture-parse that never loses the utterance — couldn't parse, kept verbatim\",\n  \"notes\": \"\"\n}\n```","latency_ms":3367}
+{"id":"real-01","raw_output":"```json\n{\n  \"title\": \"Testing with voice\",\n  \"notes\": \"\"\n}\n```","latency_ms":2830}
+{"id":"real-02","raw_output":"```json\n{\n  \"title\": \"Call the dentist for new aligners\",\n  \"notes\": \"\"\n}\n```","latency_ms":3029}
+{"id":"real-03","raw_output":"```json\n{\n  \"title\": \"order clothes\",\n  \"notes\": \"\"\n}\n```","latency_ms":3017}
+{"id":"real-04","raw_output":"```json\n{\n  \"title\": \"golf practice\",\n  \"notes\": \"\"\n}\n```","latency_ms":3045}
+{"id":"real-05","raw_output":"```json\n{\n  \"title\": \"Setup hermes agent\",\n  \"notes\": \"\"\n}\n```","latency_ms":3035}
+{"id":"real-06","raw_output":"```json\n{\n  \"title\": \"return Amazon package\",\n  \"notes\": \"also buy printer paper\",\n  \"items\": [\n    \"buy printer paper\"\n  ]\n}\n```","latency_ms":4146}
+{"id":"real-07","raw_output":"```json\n{\n  \"title\": \"pick up the dry cleaning\",\n  \"notes\": \"and also get dog food and maybe grab some coffee while I'm at it\",\n  \"items\": [\n    \"get dog food\",\n    \"grab some coffee\"\n  ]\n}\n```","latency_ms":5133}
+{"id":"real-08","raw_output":"```json\n{\n  \"title\": \"Review the draft contract for the meeting\",\n  \"notes\": \"\"\n}\n```","latency_ms":2941}
+{"id":"real-09","raw_output":"```json\n{\n  \"title\": \"Buy a new USBC cable\",\n  \"notes\": \"\"\n}\n```","latency_ms":3116}
+{"id":"real-10","raw_output":"```json\n{\n  \"title\": \"Schedule the oil change for the car\",\n  \"notes\": \"\"\n}\n```","latency_ms":2990}
+{"id":"real-11","raw_output":"```json\n{\n  \"title\": \"Email Sarah about the\",\n  \"notes\": \"\"\n}\n```","latency_ms":3035}
+{"id":"real-12","raw_output":"```json\n{\n  \"title\": \"Book the flights\",\n  \"notes\": \"\"\n}\n```","latency_ms":2866}
+{"id":"real-13","raw_output":"```json\n{\n  \"title\": \"Pick up the prescription\",\n  \"notes\": \"\",\n  \"items\": []\n}\n```","latency_ms":3427}
+{"id":"real-14","raw_output":"```json\n{\n  \"title\": \"We're new the car registration\",\n  \"notes\": \"by the 15th\",\n  \"items\": []\n}\n```","latency_ms":3767}
+{"id":"real-15","raw_output":"```json\n{\n  \"title\": \"Send the revised proposal to James\",\n  \"notes\": \"\",\n  \"items\": []\n}\n```","latency_ms":3499}
+{"id":"real-16","raw_output":null,"latency_ms":27}
+{"id":"real-17","raw_output":null,"latency_ms":26}
+{"id":"real-18","raw_output":null,"latency_ms":21}
+{"id":"real-16","raw_output":"```json\n{\n  \"title\": \"Reschedule the cleaning to the 21st\",\n  \"notes\": \"Move the dentist appointment.\",\n  \"items\": [\n    \"Reschedule the cleaning to the 21st\"\n  ],\n  \"due\": \"2024-01-21\"\n}\n```","latency_ms":6316}
+{"id":"real-17","raw_output":"```json\n{\n  \"title\": \"Schedule the budget meeting to Tuesday\",\n  \"notes\": \"actually no it reschedule\",\n  \"items\": [\n    \"Schedule the budget meeting to Tuesday\"\n  ]\n}\n```","latency_ms":4332}
+{"id":"real-18","raw_output":"```json\n{\n  \"title\": \"Remind me to cancel that free trial\",\n  \"notes\": \"next Thursday\",\n  \"items\": []\n}\n```","latency_ms":3725}
+{"id":"real-19","raw_output":"```json\n{\n  \"title\": \"Remind me to water the plants\",\n  \"notes\": \"\",\n  \"items\": []\n}\n```","latency_ms":3414}
+{"id":"real-20","raw_output":"```json\n{\n  \"title\": \"Take the trash\",\n  \"notes\": \"Remind me to tackle the take the trash cans out tomorrow morning\",\n  \"items\": [\n    \"Take the trash\"\n  ],\n  \"due\": \"2024-03-11\",\n  \"label\": {\n    \"context\": \"@home\",\n    \"energy\": \"low\",\n    \"size\": \"quick\"\n  }\n}\n```","latency_ms":7665}
+{"id":"real-21","raw_output":"```json\n{\n  \"title\": \"Deal with the weird charge on the credit card\",\n  \"notes\": null,\n  \"items\": []\n}\n```","latency_ms":3628}
+{"id":"real-22","raw_output":"```json\n{\n  \"title\": \"The thing with the hotel reservation in Chicago\",\n  \"notes\": \"\"\n}\n```","latency_ms":3216}
+{"id":"real-23","raw_output":"```json\n{\n  \"title\": \"The thing with the garage door sensor\",\n  \"notes\": \"\"\n}\n```","latency_ms":3060}
+{"id":"real-24","raw_output":"```json\n{\n  \"title\": \"Finish the quarterly notes update\",\n  \"notes\": \"the server inventory and I still haven't replied to mark\",\n  \"items\": [\n    \"Finish the quarterly notes update\",\n    \"the server inventory\"\n  ]\n}\n```","latency_ms":4866}
+{"id":"real-25","raw_output":"```json\n{\n  \"title\": \"Email photographer confirm dinner reservation\",\n  \"notes\": \"and I haven't yet about a wedding gift\"\n}\n```","latency_ms":3759}
+{"id":"real-26","raw_output":"```json\n{\n  \"title\": \"Pick up milk\",\n  \"notes\": \"Replace the air filter and I haven't called the plumber yet\"\n}\n```","latency_ms":3572}
+{"id":"real-27","raw_output":"```json\n{\n  \"title\": \"Order more toner\",\n  \"notes\": \"send Rachel the updated spreadsheet and I I still haven't submitted the expense report\",\n  \"items\": [\n    \"send Rachel the updated spreadsheet\",\n    \"submit the expense report\"\n  ]\n}\n```","latency_ms":4757}
+{"id":"real-28","raw_output":"```json\n{\n  \"title\": \"go to the bank\",\n  \"notes\": \"and drop off the library books and fill up the car with gas while I'm out\",\n  \"items\": [\n    \"drop off the library books\",\n    \"fill up the car with gas\"\n  ]\n}\n```","latency_ms":5351}
