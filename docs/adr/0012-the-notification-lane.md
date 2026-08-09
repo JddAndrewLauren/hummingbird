@@ -1,6 +1,20 @@
 # ADR-0012: The notification lane — rules promote, deliveries ring, humans ack
 
-**Status:** accepted · 2026-08-09
+**Status:** accepted · 2026-08-09 · **amended 2026-08-09 by
+[ADR-0013](0013-the-rule-condition-vocabulary.md):** the condition operator
+set and typed field catalogue are decided there; `event_kind` loses its
+`CHECK` and becomes an open registry key, nullable (NULL = any kind);
+conditions gain a `negate` flag; a fifth kind `alert_raised` gives pushed
+sources a path to a delivery. · **amended 2026-08-09 by
+[ADR-0014](0014-occurrence-identity-and-the-source-key-conventions.md):**
+the `source_key` obligation below is discharged and split — only *event*
+sources encode occurrence identity, state sources name the thing and use the
+lifecycle; `deliveries.generation` is the alert's `raised_at` at send, and
+`rule_id` joins the delivery dedupe key so two rules agreeing on severity
+still ring as two; re-entering live-unacked after a dismissal *or a
+resolution* works by the `raised_at >` comparison rather than by clearing the column; and two
+rules matching one event mint one alert whose severity ratchets up, never
+down.
 **Context:** the push-notifications grilling of 2026-08-09. Companion to
 [ADR-0011](0011-context-ingestion-moves-server-side.md), which owns how
 stream events reach the rule engine; this ADR owns what a rule is, what a
@@ -50,11 +64,11 @@ reaffirmed, not repealed:
   decay machinery, a two-writer fight with human-set `priority`, and rule
   ticks racing human edits through CAS.)
 - "Top of stack until addressed" is a **read-time sort over lifecycle
-  state**: live urgent alerts (`dismissed_at IS NULL AND resolved_at IS
-  NULL`, severity urgent) rank above everything, on every surface, because
-  they are live and urgent — computed fresh at every read. The stored things
-  are facts (what severity this event was born with; whether it has been
-  addressed), not judgments. Facts don't go stale; judgments do.
+  state**: live urgent alerts (ADR-0014's live predicate, severity urgent)
+  rank above everything, on every surface, because they are live and
+  urgent — computed fresh at every read. The stored things are facts (what
+  severity this event was born with; whether it has been addressed), not
+  judgments. Facts don't go stale; judgments do.
 
 ### The Rule
 
@@ -144,10 +158,18 @@ A delivery is warranted when an alert **enters** live-unacked (first raise,
 or re-raise after resolution or dismissal — a second outage, next holiday's
 slide) or when its severity **escalates** while live. An identical re-raise
 of a live alert is absorbed silently — flapping sources cannot spam. The
-dedupe key is effectively (alert, lifecycle generation, severity level),
-and it places a design obligation already implicit in ADR-0009's "re-raise
-upserts": **`source_key` must encode occurrence identity** (this week's
-slide, not slides-in-general).
+dedupe key is effectively (alert, rule, lifecycle generation, severity
+level), and it places a design obligation already implicit in ADR-0009's
+"re-raise upserts": **`source_key` must encode occurrence identity** (this
+week's slide, not slides-in-general). **[ADR-0014] discharges this and narrows it:**
+the obligation holds for *event* sources, which have no way to report that
+an occurrence is over; a *state* source (an infra check, an item's deadline)
+names the thing instead and re-enters live through its own lifecycle.
+"Enters live-unacked" is made precise there, and the naive column test this
+ADR assumed (`dismissed_at IS NULL AND resolved_at IS NULL`) is superseded:
+each lifecycle stamp holds only until a later raise overtakes it, and expiry
+is a third clause. The rule in the dedupe key is the one that rang; the
+generation is the alert's `raised_at`.
 
 Deferred, not rejected: a nag re-ring for urgents unacked after N hours.
 The top-of-stack sort already nags visually; add the timer only if that
