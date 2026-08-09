@@ -66,6 +66,11 @@ export interface DemoRule {
   description: string;
 }
 
+export interface DemoCalendar {
+  id: string;
+  summary: string;
+}
+
 export interface DemoData {
   items: DemoItem[];
   triage: DemoCapture[];
@@ -74,6 +79,7 @@ export interface DemoData {
   snapshots: DemoSnapshot[];
   standingQuestions: DemoStandingQuestion[];
   rules: DemoRule[];
+  calendars: DemoCalendar[];
   /** The header's sync readout. Demo-only: no outbound queue exists yet. */
   syncBadge: string;
 }
@@ -124,6 +130,11 @@ export const DEMO_DATA: DemoData = {
     { name: "Sweeper run failed", tier: "urgent", description: "Two consecutive adapter failures from one source." },
     { name: "Deploy finished", tier: "normal", description: "Any Cloudflare deploy on hb.twinion.net." },
     { name: "Race start", tier: "urgent", description: "90 minutes before a standing-question race start." },
+  ],
+  calendars: [
+    { id: "andrew@…", summary: "Andrew (personal)" },
+    { id: "family@group.calendar.google.com", summary: "Family" },
+    { id: "twinion@…", summary: "twinion work" },
   ],
   syncBadge: "synced · 0 queued",
 };

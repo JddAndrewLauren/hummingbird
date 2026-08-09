@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { CSSProperties, HTMLAttributes, JSX, ReactNode } from "react";
+import type { CSSProperties, ElementType, HTMLAttributes, JSX, ReactNode } from "react";
 
 export interface CardProps extends Omit<HTMLAttributes<HTMLElement>, "style"> {
   /** 0 flat · 1 resting (default) · 2 raised · 3 floating (dialogs, menus). */
@@ -14,8 +14,13 @@ export interface CardProps extends Omit<HTMLAttributes<HTMLElement>, "style"> {
   children?: ReactNode;
 }
 
-export function Card({ elevation = 1, padding = "var(--space-6)", interactive = false, accent = false, as: Tag = "div", style = {}, children, ...rest }: CardProps) {
+export function Card({ elevation = 1, padding = "var(--space-6)", interactive = false, accent = false, as = "div", style = {}, children, ...rest }: CardProps) {
   const [hover, setHover] = useState(false);
+  // `as` keeps the design contract's `keyof JSX.IntrinsicElements`, but TS can't
+  // render the full intrinsic union: its SVG members reject the HTMLAttributes
+  // rest props. Narrow to the HTML-compatible subset for the JSX site only —
+  // a cast, because the contract's SVG tags (e.g. "symbol") are outside it.
+  const Tag = as as ElementType<HTMLAttributes<HTMLElement>>;
   const shadow = ["var(--shadow-0)", "var(--shadow-1)", "var(--shadow-2)", "var(--shadow-3)"][elevation] || "var(--shadow-1)";
   return (
     <Tag

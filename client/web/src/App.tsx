@@ -1,9 +1,20 @@
-import { useRef } from "react";
-import { CalendarPicker } from "./calendar/CalendarPicker";
-import { ContextTile } from "./calendar/ContextTile";
-import { GOOGLE_CLIENT_ID, useCalendarWiring } from "./shell/useCalendarWiring";
+import { useRef, useState } from "react";
+import { contextTileProps } from "./calendar/tile-props";
+import { demoData } from "./fixtures/demo";
+import { AlertsScreen } from "./screens/AlertsScreen";
+import { NowScreen } from "./screens/NowScreen";
+import { RoutesScreen } from "./screens/RoutesScreen";
+import { SettingsScreen } from "./screens/SettingsScreen";
+import { TriageScreen } from "./screens/TriageScreen";
+import { Header } from "./shell/Header";
+import { NavRail } from "./shell/NavRail";
+import { SCREEN_TITLES, type Screen } from "./shell/screens";
+import { coreStatusLabel } from "./shell/status-label";
+import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useStore } from "./store/useStore";
 import type { WorkerLike } from "./store/worker-client";
+import { toggledPreference } from "./theme/theme";
+import { useTheme } from "./theme/useTheme";
 
 function realWorker(): WorkerLike {
   return new Worker(new URL("./worker/core.worker.ts", import.meta.url), {
@@ -18,9 +29,15 @@ interface AppProps {
   worker?: WorkerLike;
 }
 
-// The app shell. Every decision it renders is delegated: the calendar
-// lifecycle to `useCalendarWiring`, and each display decision to a
-// unit-tested pure module.
+// The app shell (#107's decomposition): a fixed nav rail, a header, and one
+// of five screens. Screens switch on local state rather than a router —
+// there are no deep links to honour yet, and a router would be a dependency
+// carrying no weight.
+//
+// Every decision is delegated: the calendar lifecycle to `useCalendarWiring`,
+// the theme to `useTheme`, and each display decision to a unit-tested pure
+// module. What is not backed by a real feature is not rendered — demo mode
+// (dev-only) is the one place fixtures appear.
 export function App({ worker: injectedWorker }: AppProps = {}) {
   const status = useStore((state) => state.status);
   const apiVersion = useStore((state) => state.apiVersion);
@@ -31,6 +48,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   workerRef.current ??= injectedWorker ?? realWorker();
   const worker = workerRef.current;
 
+  const demoRef = useRef<ReturnType<typeof demoData> | null>(null);
+  demoRef.current ??= demoData();
+  const demo = demoRef.current;
+
+  const [screen, setScreen] = useState<Screen>("now");
+  const { preference, theme, setPreference } = useTheme();
   const {
     nowMs,
     handleConnectClick,
@@ -38,61 +61,65 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     handleRefreshClick,
   } = useCalendarWiring(worker, status, calendar);
 
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-950 p-8 text-slate-100">
-      <h1 className="text-2xl font-semibold">hummingbird</h1>
-      {status === "loading" && <p data-testid="status">Loading core…</p>}
-      {status === "ready" && (
-        <p data-testid="status">
-          Core ready (api v{apiVersion}) — worker + wasm loaded.
-        </p>
-      )}
-      {status === "error" && (
-        <p data-testid="status" className="text-red-400">
-          Core failed to load: {error}
-        </p>
-      )}
+  const tile = contextTileProps(calendar, nowMs);
 
-      {status === "ready" && GOOGLE_CLIENT_ID && (
-        <div className="flex w-full max-w-sm flex-col gap-3">
-          {!calendar.connected && (
-            <button
-              type="button"
-              onClick={() => void handleConnectClick()}
-              className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium"
-            >
-              Connect Google Calendar
-            </button>
-          )}
-          {calendar.connected && calendar.needsReconnect && (
-            <button
-              type="button"
-              onClick={() => void handleConnectClick()}
-              className="rounded-md bg-amber-800 px-3 py-2 text-sm font-medium"
-            >
-              Reconnect Google Calendar
-            </button>
-          )}
-          {calendar.connected && (
-            <>
-              <ContextTile calendar={calendar} nowMs={nowMs} />
-              <button
-                type="button"
-                data-testid="refresh-calendar"
-                onClick={handleRefreshClick}
-                className="rounded-md border border-slate-800 px-3 py-2 text-sm font-medium text-slate-300"
-              >
-                Refresh calendar
-              </button>
-              <CalendarPicker
-                calendars={calendar.availableCalendars}
-                selectedCalendarIds={calendar.selectedCalendarIds}
-                onChange={handleCalendarSelectionChange}
-              />
-            </>
+  return (
+    <div
+      style={{
+        display: "flex",
+        height: "100dvh",
+        overflow: "hidden",
+        background: "var(--surface-page)",
+      }}
+    >
+      <NavRail
+        screen={screen}
+        onScreen={setScreen}
+        counts={demo ? { triage: demo.triage.length, alerts: demo.alerts.length } : {}}
+        statusLabel={coreStatusLabel(status, apiVersion)}
+        theme={theme}
+        onToggleTheme={() => setPreference(toggledPreference(theme))}
+      />
+
+      <main style={{ display: "flex", flex: 1, minWidth: 0, flexDirection: "column" }}>
+        <Header
+          title={SCREEN_TITLES[screen]}
+          syncLabel={demo?.syncBadge}
+          onSearch={demo ? () => undefined : undefined}
+          onRefresh={handleRefreshClick}
+          onCapture={() => setScreen("triage")}
+        />
+
+        {/* The one scroll container: the design README fixes the rail and
+            the context panel, and lets only the centre column move. */}
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            padding: "0 var(--gutter-page) var(--space-11)",
+          }}
+        >
+          {screen === "now" && <NowScreen demo={demo} tile={tile} onScreen={setScreen} />}
+          {screen === "triage" && <TriageScreen demo={demo} />}
+          {screen === "routes" && <RoutesScreen demo={demo} />}
+          {screen === "alerts" && <AlertsScreen demo={demo} />}
+          {screen === "settings" && (
+            <SettingsScreen
+              demo={demo}
+              status={status}
+              apiVersion={apiVersion}
+              error={error}
+              calendar={calendar}
+              themePreference={preference}
+              onThemePreference={setPreference}
+              onConnect={() => void handleConnectClick()}
+              onSelectionChange={handleCalendarSelectionChange}
+              onRefresh={handleRefreshClick}
+            />
           )}
         </div>
-      )}
-    </main>
+      </main>
+    </div>
   );
 }

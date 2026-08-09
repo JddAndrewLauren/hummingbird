@@ -1,0 +1,132 @@
+import { Badge } from "../components/core/Badge";
+import { Icon, type IconName } from "../components/core/Icon";
+import { IconButton } from "../components/core/IconButton";
+import type { ResolvedTheme } from "../theme/theme";
+import type { Screen } from "./screens";
+
+interface NavItem {
+  screen: Screen;
+  label: string;
+  icon: IconName;
+}
+
+// Nav labels are the surface's own name; the header asks the question the
+// screen answers (see SCREEN_TITLES).
+const NAV: readonly NavItem[] = [
+  { screen: "now", label: "Now", icon: "zap" },
+  { screen: "triage", label: "Triage", icon: "inbox" },
+  { screen: "routes", label: "Routes", icon: "route" },
+  { screen: "alerts", label: "Alerts", icon: "bell" },
+  { screen: "settings", label: "Settings", icon: "settings" },
+];
+
+export interface NavRailProps {
+  screen: Screen;
+  onScreen: (screen: Screen) => void;
+  /** Per-screen counts. Absent counts render no badge — a zero pill would
+   * be decoration, and an invented one would be a lie. */
+  counts?: Partial<Record<Screen, number>>;
+  /** The core's state, already formatted (see status-label.ts). */
+  statusLabel: string;
+  theme: ResolvedTheme;
+  onToggleTheme: () => void;
+}
+
+export function NavRail({
+  screen,
+  onScreen,
+  counts = {},
+  statusLabel,
+  theme,
+  onToggleTheme,
+}: NavRailProps) {
+  return (
+    <nav
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-6)",
+        flex: "0 0 auto",
+        width: "var(--rail-width)",
+        padding: "var(--space-6) var(--space-5)",
+        background: "var(--surface-quiet)",
+        borderRight: "1px solid var(--border-subtle)",
+      }}
+    >
+      {/* The brand mark is the app icon PNG, which is not in the in-repo
+          design mirror (binary, omitted from the pull). Until it is, the
+          wordmark carries the brand alone — set in type, as the design
+          README's Wordmark card prescribes for the no-logo case. */}
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)", padding: "0 var(--space-3)" }}>
+        <span
+          style={{
+            font: "var(--weight-bold) 18px/1 var(--font-display)",
+            letterSpacing: "-0.03em",
+            color: "var(--text-primary)",
+          }}
+        >
+          hummingbird
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+        {NAV.map((item) => {
+          const active = item.screen === screen;
+          const count = counts[item.screen];
+          return (
+            <button
+              key={item.screen}
+              type="button"
+              onClick={() => onScreen(item.screen)}
+              aria-current={active ? "page" : undefined}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--space-4)",
+                height: 36,
+                padding: "0 var(--space-3)",
+                background: active ? "var(--accent-quiet)" : "transparent",
+                color: active ? "var(--text-brand)" : "var(--text-secondary)",
+                border: "1px solid transparent",
+                borderRadius: "var(--radius-control)",
+                font: `var(--weight-${active ? "semibold" : "medium"}) var(--size-body)/1 var(--font-sans)`,
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background var(--dur-fast) var(--ease-flit), color var(--dur-fast) var(--ease-flit)",
+              }}
+            >
+              <Icon name={item.icon} size={17} />
+              <span style={{ flex: 1 }}>{item.label}</span>
+              {count ? (
+                <Badge tone={item.screen === "alerts" ? "danger" : "neutral"} mono>
+                  {count}
+                </Badge>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        style={{
+          marginTop: "auto",
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-4)",
+          padding: "0 var(--space-3)",
+        }}
+      >
+        <span className="hb-meta" style={{ flex: 1 }}>
+          {statusLabel}
+        </span>
+        <IconButton
+          icon={theme === "dark" ? "sun" : "moon"}
+          label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          size="sm"
+          onClick={onToggleTheme}
+          style={{ width: 30, height: 30 }}
+        />
+      </div>
+    </nav>
+  );
+}

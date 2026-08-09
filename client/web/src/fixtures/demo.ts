@@ -10,7 +10,17 @@
 import { DEMO_DATA, type DemoData } from "./demo-data";
 import { isDemoEnabled } from "./demo-mode";
 
-export type { DemoData } from "./demo-data";
+export type {
+  DemoAlert,
+  DemoCalendar,
+  DemoCapture,
+  DemoData,
+  DemoItem,
+  DemoRoute,
+  DemoRule,
+  DemoSnapshot,
+  DemoStandingQuestion,
+} from "./demo-data";
 
 export function demoData(): DemoData | null {
   if (!import.meta.env.DEV) {
