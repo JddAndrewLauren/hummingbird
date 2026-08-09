@@ -1,0 +1,219 @@
+//! Routing, parsing and the helpers every entity handler shares. Everything
+//! here is a pure function of the request, the injected clock and the
+//! [`Sql`] seam — the shim adds nothing but transport.
+
+mod admin_tokens;
+mod alerts;
+mod auth;
+mod blocked_by;
+mod changes;
+mod fog;
+mod items;
+mod projects;
+mod routes;
+mod settings;
+mod steps;
+
+use hummingbird_domain::{ApiError, ConflictResponse, VERSION_CONFLICT};
+use serde::Serialize;
+
+use crate::entropy::Entropy;
+use crate::sql::{Sql, SqlError, SqlValue};
+
+/// The transport-agnostic request: the shim maps `worker::Request` onto
+/// this, tests build it directly.
+pub struct ApiRequest<'a> {
+    pub method: &'a str,
+    /// Path only, no query string — e.g. `/api/items/uuid-1`. Segments are
+    /// matched exactly as received (no percent-decoding): entity ids and
+    /// settings keys must be URL-safe literals — an encoded character is
+    /// stored and matched verbatim.
+    pub path: &'a str,
+    /// The raw query string, without the `?`.
+    pub query: Option<&'a str>,
+    pub body: Option<&'a str>,
+    /// The raw `Authorization` header value, if any. Parsing lives here in
+    /// the pure crate, not the shim.
+    pub authorization: Option<&'a str>,
+}
+
+/// Status + JSON body. Every response body is JSON — except the 401/403,
+/// whose bodies are empty by design (clean status, no leakage).
+#[derive(Debug, PartialEq)]
+pub struct ApiResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+/// Everything injected around a request: the clock, the `ADMIN_SECRET`
+/// Worker secret (`None` = admin routes fail closed), and the entropy
+/// source for token minting. Nothing in this crate reads a clock or an
+/// environment of its own.
+pub struct HandleContext<'a> {
+    pub now_ms: i64,
+    pub admin_secret: Option<&'a str>,
+    pub entropy: &'a dyn Entropy,
+}
+
+/// The one entry point.
+pub fn handle(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> ApiResponse {
+    let result = route(req, ctx, sql);
+    result.unwrap_or_else(|e| error(500, "internal", &e.message))
+}
+
+fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+    let Some(rest) = req.path.strip_prefix("/api/") else {
+        return Ok(error(404, "not_found", "no such route"));
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+
+    // The admin lane authenticates against ADMIN_SECRET, never the tokens
+    // table.
+    if segments.first() == Some(&"admin") {
+        if !auth::admin_ok(req.authorization, ctx.admin_secret) {
+            return Ok(empty_status(401));
+        }
+        return match (req.method, segments.as_slice()) {
+            ("POST", ["admin", "tokens"]) => admin_tokens::mint(req.body, ctx, sql),
+            ("GET", ["admin", "tokens"]) => admin_tokens::list(sql),
+            ("DELETE", ["admin", "tokens", id]) if !id.is_empty() => {
+                admin_tokens::revoke(id, ctx.now_ms, sql)
+            }
+            (_, ["admin", "tokens"]) => Ok(method_not_allowed()),
+            (_, ["admin", "tokens", id]) if !id.is_empty() => Ok(method_not_allowed()),
+            _ => Ok(error(404, "not_found", "no such route")),
+        };
+    }
+
+    // Everything else authenticates first — an unauthenticated caller never
+    // learns the route map — then passes the scope matrix before routing.
+    let Some(scope) = auth::authenticate(req.authorization, ctx.now_ms, sql)? else {
+        return Ok(empty_status(401));
+    };
+    if !auth::permitted(scope, req.method, &segments) {
+        return Ok(empty_status(403));
+    }
+
+    let now_ms = ctx.now_ms;
+    match (req.method, segments.as_slice()) {
+        ("POST", ["items"]) => items::create(req.body, now_ms, sql),
+        ("PATCH", ["items", id]) if !id.is_empty() => items::patch(id, req.body, now_ms, sql),
+        ("POST", ["projects"]) => projects::create(req.body, now_ms, sql),
+        ("PATCH", ["projects", id]) if !id.is_empty() => {
+            projects::patch(id, req.body, now_ms, sql)
+        }
+        ("PATCH", ["routes", project_id]) if !project_id.is_empty() => {
+            routes::patch(project_id, req.body, now_ms, sql)
+        }
+        ("POST", ["fog"]) => fog::create(req.body, now_ms, sql),
+        ("PATCH", ["fog", id]) if !id.is_empty() => fog::patch(id, req.body, now_ms, sql),
+        ("POST", ["steps"]) => steps::create(req.body, now_ms, sql),
+        ("PATCH", ["steps", id]) if !id.is_empty() => steps::patch(id, req.body, now_ms, sql),
+        ("POST", ["blocked_by"]) => blocked_by::create(req.body, now_ms, sql),
+        ("PATCH", ["blocked_by", item_id, blocker_id])
+            if !item_id.is_empty() && !blocker_id.is_empty() =>
+        {
+            blocked_by::patch(item_id, blocker_id, req.body, now_ms, sql)
+        }
+        ("PUT", ["settings", key]) if !key.is_empty() => {
+            settings::put(key, req.body, now_ms, sql)
+        }
+        ("POST", ["alerts"]) => alerts::ingest(req.body, now_ms, sql),
+        ("PATCH", ["alerts", id]) if !id.is_empty() => alerts::dismiss(id, req.body, now_ms, sql),
+        ("GET", ["changes"]) => changes::changes(req.query, sql),
+        ("GET", ["sweep"]) => changes::sweep(sql),
+        // A known collection or entity path with the wrong method is a 405;
+        // anything else falls through to 404.
+        (
+            _,
+            ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "changes"
+                | "sweep"],
+        ) => Ok(method_not_allowed()),
+        (_, ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts", id])
+            if !id.is_empty() =>
+        {
+            Ok(method_not_allowed())
+        }
+        (_, ["blocked_by", item_id, blocker_id])
+            if !item_id.is_empty() && !blocker_id.is_empty() =>
+        {
+            Ok(method_not_allowed())
+        }
+        _ => Ok(error(404, "not_found", "no such route")),
+    }
+}
+
+// --------------------------------------------------------------- helpers
+
+fn parse_body<T: serde::de::DeserializeOwned>(body: Option<&str>) -> Result<T, ApiResponse> {
+    let body = body
+        .filter(|b| !b.is_empty())
+        .ok_or_else(|| error(400, "bad_json", "a JSON body is required"))?;
+    serde_json::from_str(body).map_err(|e| error(400, "bad_json", &e.to_string()))
+}
+
+fn query_param<'a>(query: Option<&'a str>, name: &str) -> Option<&'a str> {
+    query?
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v)
+}
+
+fn read_meta_version(sql: &dyn Sql) -> Result<i64, SqlError> {
+    sql.exec("SELECT version FROM meta WHERE id = 1", &[])?
+        .first()
+        .and_then(|r| r.get("version").and_then(SqlValue::as_i64))
+        .ok_or_else(|| SqlError {
+            message: "meta row missing — init_schema not run".into(),
+        })
+}
+
+fn write_meta_version(sql: &dyn Sql, version: i64) -> Result<(), SqlError> {
+    sql.exec(
+        "UPDATE meta SET version = ? WHERE id = 1",
+        &[SqlValue::Integer(version)],
+    )?;
+    Ok(())
+}
+
+/// The 409: a stale `expected_version` write is answered with the current
+/// entity so the client can rebase (ADR-0008).
+fn conflict<T: Serialize>(current: &T) -> ApiResponse {
+    json(
+        409,
+        &ConflictResponse {
+            error: VERSION_CONFLICT.to_string(),
+            current,
+        },
+    )
+}
+
+fn json<T: Serialize>(status: u16, value: &T) -> ApiResponse {
+    ApiResponse {
+        status,
+        body: serde_json::to_string(value).expect("DTOs serialize"),
+    }
+}
+
+fn error(status: u16, code: &str, message: &str) -> ApiResponse {
+    json(
+        status,
+        &ApiError {
+            error: code.to_string(),
+            message: message.to_string(),
+        },
+    )
+}
+
+fn method_not_allowed() -> ApiResponse {
+    error(405, "method_not_allowed", "wrong method for this route")
+}
+
+/// The 401/403 shape: a clean status and nothing else.
+fn empty_status(status: u16) -> ApiResponse {
+    ApiResponse {
+        status,
+        body: String::new(),
+    }
+}

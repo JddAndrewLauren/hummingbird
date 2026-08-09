@@ -22,13 +22,20 @@ daily-usable.
 ## The authority server
 
 `server/` is the app-owned authority (ADR-0008/0009), its own Cargo
-workspace: `domain` (the owned-schema types both sides will compile),
-`authority` (pure handler logic over a sync `Sql` seam, fixture-tested with
-rusqlite), and `worker` (the thin `workers-rs` shim — one Worker, one
-SQLite-backed Durable Object). S0 (#113) carries only `meta` + `items` and
-three routes; no auth, no production deploy — `wrangler dev` +
-`server/scripts/smoke.sh` locally, `.github/workflows/server.yml` in CI.
-#114 grows it to the full schema and token auth.
+workspace: `domain` (the owned-schema types both sides will compile; the
+client migrates onto them at S2/S3), `authority` (pure handler logic over a
+sync `Sql` seam — plus an `Entropy` seam for token minting — fixture-tested
+with rusqlite), and `worker` (the thin `workers-rs` shim — one Worker, one
+SQLite-backed Durable Object). It carries the full amended ADR-0009 schema
+(11 tables, `SCHEMA_VERSION 2`), entity-level CAS writes (absolute sets +
+`expected_version`, 409 carries the current entity, creates idempotent by
+client id), the all-tables delta pull with `GET /api/sweep` as its
+byte-identical backstop, bearer-token auth (sha256 at rest; scopes
+`device`/`sweeper`/`ingest`; `/api/admin/tokens` gated by `ADMIN_SECRET`;
+401 = bad credential, 403 = wrong scope, both empty-bodied), and the
+`POST /api/alerts` ingest upsert. Still no production deploy (that is #95's
+human gate H3) — `wrangler dev` + `server/scripts/smoke.sh` locally,
+`.github/workflows/server.yml` in CI.
 
 ## Agent skills
 

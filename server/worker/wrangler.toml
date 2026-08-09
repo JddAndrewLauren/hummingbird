@@ -1,6 +1,12 @@
 # The authority API worker (ADR-0008): one Worker, one SQLite-backed
-# Durable Object. S0 (#113) is `wrangler dev` + CI only — no `routes`, no
-# production deploy; the hb.twinion.net/api/* routing arrives with #114+.
+# Durable Object. Still `wrangler dev` + CI only — no `routes`, no
+# production deploy; the hb.twinion.net/api/* routing arrives with the
+# human-gated deploy (#95's H3).
+#
+# ADMIN_SECRET gates /api/admin/*: locally a dev var
+# (`wrangler dev --var ADMIN_SECRET:...`, as smoke.sh does), in production
+# a real secret (`wrangler secret put ADMIN_SECRET`). Unset, the admin
+# lane fails closed with a 401.
 name = "hummingbird-authority"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-08-08"

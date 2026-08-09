@@ -11,12 +11,22 @@
 //! write pivots on. The client migrates onto these types at S2/S3.
 
 mod api;
+mod context;
 mod item;
+mod project;
+mod step;
+mod token;
 
 pub use api::{
-    ApiError, ChangesResponse, ConflictResponse, CreateItem, ItemPatch, VERSION_CONFLICT,
+    AlertIngest, AlertPatch, ApiError, BlockedByPatch, ChangesResponse, ConflictResponse,
+    CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreateStep, FogPatch, ItemPatch,
+    MintToken, ProjectPatch, PutSetting, RoutePatch, StepPatch, VERSION_CONFLICT,
 };
+pub use context::{Alert, ContextSnapshot, Setting};
 pub use item::{Energy, Item, Size, Stage};
+pub use project::{Fog, Project, Route};
+pub use step::{BlockedBy, Step};
+pub use token::{MintedToken, Scope, TokenInfo};
 
 #[cfg(test)]
 mod tests {

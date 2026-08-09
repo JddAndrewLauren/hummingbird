@@ -1,14 +1,23 @@
-//! The wire DTOs of the authority's API (ADR-0008): create, patch,
-//! delta-read, and the error shapes.
+//! The wire DTOs of the authority's API (ADR-0008): creates, patches,
+//! delta-read, token minting, and the error shapes.
+//!
+//! Every create is idempotent by its client-supplied id; every patch is
+//! `expected_version` plus absolute-value sets. Server-stamped fields
+//! (`seq`, timestamps, `version`) never appear in a request body, and
+//! `deny_unknown_fields` makes supplying one — or a typo — a 400, not a
+//! silent no-op.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::context::{Alert, ContextSnapshot, Setting};
 use crate::item::{Energy, Item, Size, Stage};
+use crate::project::{Fog, Project, Route};
+use crate::step::{BlockedBy, Step};
+use crate::token::Scope;
 
 /// `POST /api/items` body. `id` is the client-supplied deterministic id the
 /// create is idempotent by; the server stamps `seq`, timestamps and
-/// `version` — they cannot be supplied. `deny_unknown_fields` makes a typo'd
-/// (or server-stamped) field a 400, not a silent no-op.
+/// `version` — they cannot be supplied.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateItem {
@@ -67,17 +76,24 @@ where
     }
 }
 
-fn non_null_title<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    non_null(d, "title")
+/// `deserialize_with` needs a named path, so each `NOT NULL` patch field
+/// gets a shim binding [`non_null`] to its field name.
+macro_rules! non_null_shim {
+    ($fn_name:ident, $ty:ty, $field:literal) => {
+        fn $fn_name<'de, D: Deserializer<'de>>(d: D) -> Result<Option<$ty>, D::Error> {
+            non_null(d, $field)
+        }
+    };
 }
 
-fn non_null_stage<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Stage>, D::Error> {
-    non_null(d, "stage")
-}
-
-fn non_null_priority<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
-    non_null(d, "priority")
-}
+non_null_shim!(non_null_title, String, "title");
+non_null_shim!(non_null_stage, Stage, "stage");
+non_null_shim!(non_null_priority, i64, "priority");
+non_null_shim!(non_null_name, String, "name");
+non_null_shim!(non_null_question, String, "question");
+non_null_shim!(non_null_position, i64, "position");
+non_null_shim!(non_null_body, String, "body");
+non_null_shim!(non_null_done, bool, "done");
 
 /// `PATCH /api/items/:id` body: `expected_version` plus absolute-value
 /// sets. Every mutation states the entire new value of each field it
@@ -87,7 +103,6 @@ fn non_null_priority<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::
 /// Nullable columns are double-`Option`: outer = touched at all, inner =
 /// the new value (`None` clears). `NOT NULL` columns are single-`Option`
 /// and cannot be cleared — an explicit `null` on them is a 400.
-/// `deny_unknown_fields` makes a typo'd field a 400, not a silent no-op.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ItemPatch {
@@ -118,15 +133,208 @@ pub struct ItemPatch {
     pub archived_at: Option<Option<i64>>,
 }
 
-/// `GET /api/changes?since=N` response: the workspace version and every
-/// item row whose `version` is above the cursor.
+/// `POST /api/projects` body. Creating a project also creates its empty
+/// Route row — the 1:1 invariant is structural, so there is no
+/// `POST /api/routes`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProject {
+    pub id: String,
+    pub name: String,
+}
+
+/// `PATCH /api/projects/:id` body.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectPatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "non_null_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<Option<i64>>,
+}
+
+/// `PATCH /api/routes/:project_id` body.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutePatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub destination: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Option<String>>,
+}
+
+/// `POST /api/fog` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateFog {
+    pub id: String,
+    pub project_id: String,
+    pub question: String,
+    pub position: i64,
+}
+
+/// `PATCH /api/fog/:id` body.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FogPatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "non_null_question", skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default, deserialize_with = "non_null_position", skip_serializing_if = "Option::is_none")]
+    pub position: Option<i64>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<Option<i64>>,
+}
+
+/// `POST /api/steps` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateStep {
+    pub id: String,
+    pub item_id: String,
+    pub body: String,
+    pub position: i64,
+}
+
+/// `PATCH /api/steps/:id` body. Ticking a Step is `{expected_version,
+/// done: true}` — the scalar CAS write ADR-0008 exists for.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StepPatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "non_null_body", skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, deserialize_with = "non_null_done", skip_serializing_if = "Option::is_none")]
+    pub done: Option<bool>,
+    #[serde(default, deserialize_with = "non_null_position", skip_serializing_if = "Option::is_none")]
+    pub position: Option<i64>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<Option<i64>>,
+}
+
+/// `POST /api/blocked_by` body. The edge's identity is the pair itself, so
+/// the create is idempotent by construction; re-adding a removed edge
+/// clears `removed_at` on the same row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateBlockedBy {
+    pub item_id: String,
+    pub blocker_id: String,
+}
+
+/// `PATCH /api/blocked_by/:item_id/:blocker_id` body — removal (set
+/// `removed_at`) and un-removal (`null` clears) under CAS.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedByPatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<Option<i64>>,
+}
+
+/// `PUT /api/settings/:key` body. `expected_version: 0` is the create case
+/// (idempotent: a replay against the identical stored value is a no-op 200).
+/// `value` is typed JSON on the wire and stored as its canonical
+/// serialization — the stored text is valid JSON by construction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutSetting {
+    pub expected_version: i64,
+    pub value: serde_json::Value,
+}
+
+/// `POST /api/alerts` body (webhook ingest, `ingest` scope only). No
+/// `expected_version`: webhook sources cannot track versions, and the
+/// upsert on `(source, source_key)` is inherently absolute — the source is
+/// authoritative for its own fields (ADR-0009 rule 3). Every source-owned
+/// field is set from this payload on each raise (absent = NULL);
+/// `dismissed_at` is human-owned and never touched by ingest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertIngest {
+    pub source: String,
+    pub source_key: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    /// Defaults to the server clock when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raised_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+/// `PATCH /api/alerts/:id` body (`device` scope): the human-owned dismiss
+/// flag, set or cleared under CAS. The only alert field a device may write.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertPatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub dismissed_at: Option<Option<i64>>,
+}
+
+/// `POST /api/admin/tokens` body. `id` is client-supplied so the mint is
+/// idempotent — but the plaintext token is shown only on the 201; a replay
+/// returns the stored metadata without it (only the hash is kept).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MintToken {
+    pub id: String,
+    pub name: String,
+    pub scope: Scope,
+}
+
+/// `GET /api/changes?since=N` (and `GET /api/sweep`, which is the same
+/// query with `since = 0`) response: the workspace version and every synced
+/// row whose `version` is above the cursor.
+///
+/// `tokens` and `meta` are deliberately absent: tokens are per-writer
+/// machinery that never syncs to clients, and `meta`'s counter is the
+/// `version` field itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangesResponse {
     pub version: i64,
+    pub projects: Vec<Project>,
+    pub routes: Vec<Route>,
+    pub fog: Vec<Fog>,
     pub items: Vec<Item>,
+    pub steps: Vec<Step>,
+    pub blocked_by: Vec<BlockedBy>,
+    pub alerts: Vec<Alert>,
+    pub context_snapshots: Vec<ContextSnapshot>,
+    pub settings: Vec<Setting>,
 }
 
-/// Every non-2xx body except the 409: `{"error": code, "message": …}`.
+impl ChangesResponse {
+    /// The unchanged-workspace response: the current version, every table
+    /// empty.
+    pub fn empty(version: i64) -> ChangesResponse {
+        ChangesResponse {
+            version,
+            projects: vec![],
+            routes: vec![],
+            fog: vec![],
+            items: vec![],
+            steps: vec![],
+            blocked_by: vec![],
+            alerts: vec![],
+            context_snapshots: vec![],
+            settings: vec![],
+        }
+    }
+}
+
+/// Every non-2xx body except the 409 and the empty-bodied 401/403:
+/// `{"error": code, "message": …}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiError {
     pub error: String,
@@ -136,12 +344,13 @@ pub struct ApiError {
 pub const VERSION_CONFLICT: &str = "version_conflict";
 
 /// The 409 body: a stale `expected_version` write is answered with the
-/// current entity so the client can rebase (ADR-0008).
+/// current entity so the client can rebase (ADR-0008). Generic over the
+/// entity; defaults to [`Item`] so S0-era call sites keep compiling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConflictResponse {
+pub struct ConflictResponse<T = Item> {
     /// Always [`VERSION_CONFLICT`].
     pub error: String,
-    pub current: Item,
+    pub current: T,
 }
 
 #[cfg(test)]
@@ -180,6 +389,116 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ItemPatch::default()).unwrap(),
             r#"{"expected_version":0}"#
+        );
+    }
+
+    /// Every entity patch honours the same absent/null/value contract.
+    #[test]
+    fn entity_patches_share_the_touched_contract() {
+        let p: StepPatch =
+            serde_json::from_str(r#"{"expected_version": 1, "done": true, "deleted_at": null}"#)
+                .unwrap();
+        assert_eq!(p.done, Some(true));
+        assert_eq!(p.deleted_at, Some(None), "explicit null = clear");
+        assert_eq!(p.body, None, "absent = untouched");
+
+        assert!(
+            serde_json::from_str::<StepPatch>(r#"{"expected_version": 1, "done": null}"#).is_err(),
+            "NOT NULL column rejects explicit null"
+        );
+        assert!(
+            serde_json::from_str::<FogPatch>(r#"{"expected_version": 1, "question": null}"#)
+                .is_err()
+        );
+
+        let p: RoutePatch =
+            serde_json::from_str(r#"{"expected_version": 2, "destination": "shipped"}"#).unwrap();
+        assert_eq!(p.destination, Some(Some("shipped".into())));
+        assert_eq!(p.notes, None);
+    }
+
+    #[test]
+    fn scope_round_trips_and_rejects_unknown() {
+        for scope in Scope::ALL {
+            let json = serde_json::to_string(&scope).unwrap();
+            assert_eq!(json, format!("\"{}\"", scope.as_str()));
+            assert_eq!(Scope::parse(scope.as_str()), Some(scope));
+        }
+        assert_eq!(Scope::parse("admin"), None, "admin is a secret, not a scope");
+        assert!(serde_json::from_str::<MintToken>(
+            r#"{"id": "t", "name": "n", "scope": "admin"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn conflict_response_is_generic_over_the_entity() {
+        let body = ConflictResponse {
+            error: VERSION_CONFLICT.to_string(),
+            current: crate::Step {
+                id: "s-1".into(),
+                item_id: "a-1".into(),
+                body: "tick me".into(),
+                done: false,
+                position: 1,
+                deleted_at: None,
+                version: 4,
+            },
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        let back: ConflictResponse<crate::Step> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, body);
+    }
+
+    /// Pins the synced-table list: adding a table to the schema without
+    /// adding it here (and to the sweep) would silently break "the mirror
+    /// is the export".
+    #[test]
+    fn changes_response_carries_exactly_the_synced_tables() {
+        let empty = ChangesResponse {
+            version: 0,
+            projects: vec![],
+            routes: vec![],
+            fog: vec![],
+            items: vec![],
+            steps: vec![],
+            blocked_by: vec![],
+            alerts: vec![],
+            context_snapshots: vec![],
+            settings: vec![],
+        };
+        let value = serde_json::to_value(&empty).unwrap();
+        // serde_json::Map sorts keys, so compare the set, not the order.
+        let keys: Vec<&str> = value.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        let mut expected = vec![
+            "version",
+            "projects",
+            "routes",
+            "fog",
+            "items",
+            "steps",
+            "blocked_by",
+            "alerts",
+            "context_snapshots",
+            "settings",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn alert_ingest_has_no_expected_version() {
+        let a: AlertIngest = serde_json::from_str(
+            r#"{"source": "healthchecks", "source_key": "sweeper", "title": "down"}"#,
+        )
+        .unwrap();
+        assert_eq!(a.raised_at, None, "server clock fills it");
+        assert!(
+            serde_json::from_str::<AlertIngest>(
+                r#"{"source": "s", "source_key": "k", "title": "t", "expected_version": 1}"#
+            )
+            .is_err(),
+            "ingest is version-blind by design"
         );
     }
 }
