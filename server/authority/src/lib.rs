@@ -6,6 +6,7 @@
 //! discipline as `client/core`'s transport seam, in sync form (the DO is
 //! single-threaded and its SQLite API synchronous).
 
+mod codec;
 mod handlers;
 mod schema;
 mod sql;
