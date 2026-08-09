@@ -11,7 +11,7 @@ function AlertsScreen({ data }) {
           <span className="hb-meta">{live.length} unacked · default-deny</span>
         </div>
         {live.length === 0
-          ? <Card padding="0"><EmptyState icon="bell-off" title="Nothing is ringing" body="Every alert has been acked. What no rule matches stays silent." /></Card>
+          ? <Card padding="0"><EmptyState icon="bell-off" headingLevel={3} title="Nothing is ringing" body="Every alert has been acked. What no rule matches stays silent." /></Card>
           : data.alerts.map((a) => (
               <AlertCard key={a.id} {...a} acked={!!acked[a.id]} href="#"
                 onAck={() => setAcked((s) => ({ ...s, [a.id]: true }))} />

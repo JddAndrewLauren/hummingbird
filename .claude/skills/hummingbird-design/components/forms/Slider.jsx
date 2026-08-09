@@ -13,6 +13,13 @@ export function Slider({ label, options = [], value = null, onChange, optional =
     set(Math.max(0, Math.min(n - 1, Math.round((x / r.width) * (n - 1)))));
   };
   const [drag, setDrag] = React.useState(false);
+  // No dependency array, on purpose. The listeners close over `fromEvent` ->
+  // `set` -> `onChange`, and callers hand us a fresh `onChange` every render:
+  // a capture screen's closes over the current metadata object and writes the
+  // whole thing. Adding `[drag]` would pin the listeners to the `onChange`
+  // from the render that started the drag, so dragging Energy would write
+  // through stale metadata and reset Size. Re-subscribing each render is the
+  // price of always calling the current handler. Do not "clean this up".
   React.useEffect(() => {
     if (!drag) return;
     const mv = (e) => fromEvent(e);
@@ -36,13 +43,26 @@ export function Slider({ label, options = [], value = null, onChange, optional =
           ) : null}
         </span>
       </div>
+      {/* aria-valuenow is required on role="slider", so unset cannot simply omit it.
+          It reports -1: a sentinel one below the first stop, inside the declared
+          range (valuemin -1) but not one of the options — so "not set" never reads
+          as the user having picked the lowest option. aria-valuetext carries the
+          human-readable state either way. Arrows/Home/End move between real
+          options only; clearing back to unset is the ×'s job. */}
       <div ref={ref} role="slider" tabIndex={0} aria-label={label}
-        aria-valuemin={0} aria-valuemax={n - 1} aria-valuenow={value === null ? undefined : value}
+        aria-valuemin={-1} aria-valuemax={n - 1} aria-valuenow={value === null ? -1 : value}
         aria-valuetext={value === null ? "not set" : options[value]}
         onPointerDown={(e) => { fromEvent(e); setDrag(true); }}
         onKeyDown={(e) => {
-          if (e.key === "ArrowRight") set(Math.min(n - 1, (value ?? -1) + 1));
-          if (e.key === "ArrowLeft") set(Math.max(0, (value ?? 1) - 1));
+          const cur = value === null ? -1 : value;
+          let next;
+          if (e.key === "ArrowRight" || e.key === "ArrowUp") next = Math.min(n - 1, cur + 1);
+          else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = Math.max(0, cur - 1);
+          else if (e.key === "Home") next = 0;
+          else if (e.key === "End") next = n - 1;
+          else return;
+          e.preventDefault(); // otherwise adjusting the value also scrolls the page
+          set(next);
         }}
         style={{ position: "relative", height: 28, cursor: "pointer", touchAction: "none" }}>
         <div style={{ position: "absolute", top: 12, left: 0, right: 0, height: 4, borderRadius: 2, background: "var(--surface-sunken)", border: "1px solid var(--border-subtle)" }} />

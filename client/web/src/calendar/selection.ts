@@ -1,5 +1,5 @@
 // The calendar picker's pure selection logic (issue #73), separated from
-// CalendarPicker.tsx so it is unit-testable without a DOM (this repo's
+// the calendar picker so it is unit-testable without a DOM (this repo's
 // vitest config runs in the "node" environment — see vitest.config.ts).
 
 import type { CalendarListEntryDTO } from "../store/protocol";

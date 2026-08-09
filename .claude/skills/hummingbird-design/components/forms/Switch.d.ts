@@ -1,5 +1,5 @@
 import * as React from "react";
-export interface SwitchProps {
+export interface SwitchProps extends Omit<React.LabelHTMLAttributes<HTMLLabelElement>, "onChange" | "style"> {
   checked?: boolean;
   onChange?: React.ChangeEventHandler<HTMLInputElement>;
   label?: React.ReactNode;
