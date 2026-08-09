@@ -1,6 +1,11 @@
 # ADR-0004: The client's Linear credential is scoped, per-device, and host-supplied
 
-**Status:** accepted · 2026-08-07
+**Status:** accepted · 2026-08-07 · **amended 2026-08-08 by
+[ADR-0008](0008-the-authority-is-an-app-owned-server.md):** the credential is
+now a per-writer bearer token for the owned API, scoped and individually
+revocable server-side. The shape, resting places, never-persisted rule,
+401-holds-the-queue rule and OAuth revisit trigger port unchanged; the
+Linear-specific analysis is historical.
 **Context:** the credentials grilling of 2026-08-07, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#49](https://github.com/JddAndrewLauren/hummingbird/issues/49). Amends

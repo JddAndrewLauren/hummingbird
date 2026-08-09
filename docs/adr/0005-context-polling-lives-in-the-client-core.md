@@ -1,6 +1,13 @@
 # ADR-0005: Context polling lives in the client core; credentials are per-device and host-owned
 
-**Status:** accepted · 2026-08-08
+**Status:** accepted · 2026-08-08 · **re-examined 2026-08-08 during
+[ADR-0008](0008-the-authority-is-an-app-owned-server.md): stands.** An owned
+server now exists, but the deciding arguments here (M365 daemon auth,
+per-device consent and revocation, freshest mirror on the device in hand)
+were authority-independent. Calendars remain device-polled; sources with
+daemon-friendly static keys join
+[ADR-0009](0009-the-owned-schema-and-context-lanes.md)'s server-polled lane
+instead.
 **Context:** the context-polling grilling of 2026-08-08, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#50](https://github.com/JddAndrewLauren/hummingbird/issues/50). Resolves the

@@ -1,6 +1,13 @@
 # ADR-0007: Sync is one cycle — drain, then full sweep; absence demotes
 
-**Status:** accepted · 2026-08-08
+**Status:** accepted · 2026-08-08 · **amended 2026-08-08 by
+[ADR-0008](0008-the-authority-is-an-app-owned-server.md):** conflict
+enforcement moves server-side — "Linear-wins" becomes authority-adjudicated
+CAS with client rebase-on-409; absence-demotes dissolves (archival is
+explicit data, rows never vanish); delta-since-version is the normal pull
+with the full sweep as the backstop this ADR already prescribed. The cycle,
+strict-FIFO queue, atomic apply, dead-letter journal, backoff and cadence
+all stand.
 **Context:** the sync-mechanics grilling of 2026-08-08, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#57](https://github.com/JddAndrewLauren/hummingbird/issues/57). Fills in the

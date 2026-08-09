@@ -1,6 +1,10 @@
 # ADR-0001: Linear is the authority, behind a clean seam
 
-**Status:** accepted · 2026-08-07
+**Status:** accepted · 2026-08-07 · **superseded in part 2026-08-08 by
+[ADR-0008](0008-the-authority-is-an-app-owned-server.md):** the authority
+designation moved to the app-owned server via this ADR's own migration
+trigger ("the Issue model demonstrably fights a feature"). The one-authority
+doctrine and the four seam rules survive — they are what made the exit cheap.
 **Context:** the Linear-role grilling of 2026-08-07; wayfinder maps
 [#1](https://github.com/JddAndrewLauren/hummingbird/issues/1) and
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35).

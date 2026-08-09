@@ -1,0 +1,216 @@
+# ADR-0009: The owned schema — first-class domain records, and context joins by transport
+
+**Status:** accepted · 2026-08-08
+**Context:** the authority-move grilling of 2026-08-08. Companion to
+[ADR-0008](0008-the-authority-is-an-app-owned-server.md); amends
+[ADR-0002](0002-sources-join-by-role-urgency-computed-at-read-time.md)'s
+taxonomy with transport lanes. Replaces the planned "how a Linear Issue maps
+to the domain model" ADR (issue #96), which is obsolete: there is no foreign
+shape left to map. Issue #97's planned "ADR-0009" (one writer per origin)
+renumbers to ADR-0010.
+
+## Decision
+
+**The schema is the domain model, literally.** ADR-0001 seam rule 1 said the
+app's schema must be the domain model; under an owned authority that stops
+being a translation discipline and becomes the database itself. Item, Step,
+Route, Project and Fog are records. Ticking a Step is a scalar CAS write —
+the operation whose impossibility under Linear triggered ADR-0008.
+
+### The schema
+
+```sql
+-- meta: the workspace version counter (one row), bumped by every write.
+-- Every mutated row stamps its `version` from this counter; the delta pull
+-- is "WHERE version > ?" per table. Rows are never deleted, only flagged.
+CREATE TABLE meta (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  version        INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL
+);
+
+CREATE TABLE projects (
+  id          TEXT PRIMARY KEY,             -- uuid, client-supplied
+  name        TEXT NOT NULL,
+  archived_at INTEGER,                      -- ms epoch; NULL = live
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL              -- CAS target + delta cursor
+);
+
+-- Route: 1:1 with project, separate table because /to-actions owns it
+-- (glossary: Destination, Fog, Notes, ordered actions).
+CREATE TABLE routes (
+  project_id  TEXT PRIMARY KEY REFERENCES projects(id),
+  destination TEXT,
+  notes       TEXT,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL
+);
+
+-- Fog: segments not yet definable as actions, each with its open question.
+CREATE TABLE fog (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id),
+  question    TEXT NOT NULL,
+  position    INTEGER NOT NULL,
+  resolved_at INTEGER,
+  version     INTEGER NOT NULL
+);
+
+CREATE TABLE items (
+  id          TEXT PRIMARY KEY,             -- uuid; the sweeper's deterministic ids land here
+  seq         INTEGER UNIQUE,               -- HB-42 display handle, server-minted
+  title       TEXT NOT NULL CHECK (length(title) > 0),
+  description TEXT,                         -- the ONLY free-prose field; never holds Steps
+  stage       TEXT NOT NULL CHECK (stage IN
+                ('triage','grilling','ready','in_progress','blocked','done')),
+  size        TEXT CHECK (size IN ('quick','short','deep')),
+  energy      TEXT CHECK (energy IN ('low','medium','high')),
+  context     TEXT,                         -- '@computer', '@calls', … free vocab
+  priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
+  project_id  TEXT REFERENCES projects(id),
+  project_pos INTEGER,                      -- order within the Route's action list
+  due_date    TEXT,                         -- ISO date, set deliberately at triage only
+  source      TEXT,                         -- frozen namespace: 'google-tasks/v1', 'gmail/v1', 'web', …
+  source_key  TEXT,                         -- the id in that source
+  source_url  TEXT,                         -- deep link back: Gmail thread, Calendar event, …
+  archived_at INTEGER,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL
+);
+
+CREATE TABLE steps (
+  id         TEXT PRIMARY KEY,
+  item_id    TEXT NOT NULL REFERENCES items(id),
+  body       TEXT NOT NULL,
+  done       INTEGER NOT NULL DEFAULT 0,    -- ticking = one scalar CAS write
+  position   INTEGER NOT NULL,
+  deleted_at INTEGER,                       -- flagged, never erased
+  version    INTEGER NOT NULL
+);
+
+CREATE TABLE blocked_by (                   -- native sequencing edges
+  item_id    TEXT NOT NULL REFERENCES items(id),
+  blocker_id TEXT NOT NULL REFERENCES items(id),
+  version    INTEGER NOT NULL,
+  removed_at INTEGER,
+  PRIMARY KEY (item_id, blocker_id),
+  CHECK (item_id <> blocker_id)
+);
+
+-- Pushed context: discrete events raised at the app from outside.
+CREATE TABLE alerts (
+  id           TEXT PRIMARY KEY,
+  source       TEXT NOT NULL,               -- 'healthchecks', 'home-assistant', 'gmail-alert/v1', …
+  source_key   TEXT NOT NULL,               -- identity within the source; re-raise upserts
+  title        TEXT NOT NULL,
+  body         TEXT,
+  url          TEXT,
+  severity     TEXT,
+  raised_at    INTEGER NOT NULL,
+  resolved_at  INTEGER,                     -- the source said it's over (infra up-event)
+  dismissed_at INTEGER,                     -- the human waved it away (email, HA)
+  expires_at   INTEGER,                     -- source-declared TTL: auto-dismiss
+  version      INTEGER NOT NULL,
+  UNIQUE(source, source_key)
+);
+
+-- Server-polled context: gauges replaced wholesale each poll, never drained.
+CREATE TABLE context_snapshots (
+  source     TEXT NOT NULL,   -- 'anthropic-usage', 'github/hummingbird', 'photo-site', …
+  key        TEXT NOT NULL,   -- metric within the source: 'weekly_limit', 'open_prs', …
+  payload    TEXT NOT NULL,   -- JSON, source-shaped; clients render tiles from it
+  fetched_at INTEGER NOT NULL,-- drives the "as of…" staleness display (ADR-0002's alarm)
+  version    INTEGER NOT NULL,
+  PRIMARY KEY (source, key)
+);
+
+CREATE TABLE tokens (                       -- per-writer bearer auth (ADR-0008)
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,                 -- 'pixel-9', 'sweeper', 'home-assistant'
+  scope      TEXT NOT NULL CHECK (scope IN ('device','sweeper','ingest')),
+  token_hash TEXT NOT NULL,                 -- sha256; plaintext shown once at mint
+  created_at INTEGER NOT NULL,
+  last_seen  INTEGER,
+  revoked_at INTEGER
+);
+
+CREATE INDEX idx_items_version ON items(version);        -- delta pull, per table
+CREATE INDEX idx_steps_version ON steps(version);
+CREATE INDEX idx_items_live    ON items(stage) WHERE archived_at IS NULL;
+CREATE INDEX idx_steps_item    ON steps(item_id);
+CREATE INDEX idx_items_project ON items(project_id);
+```
+
+### What dissolved from the S1 model, deliberately
+
+S1 (#94) was built against Linear's shape. Under the owned schema:
+`labels: Vec<String>` → typed `size`/`energy`/`context` columns; the `extra`
+passthrough bag → gone (no foreign fields to preserve); `presence: Presence`
+→ explicit `archived_at` (absence-inference dissolves, ADR-0007 amendment);
+`url` → the server mints its own links; `identifier` → `seq`. `priority`
+survives — it is human-set intent, not a Linear-ism, and distinct from
+read-time urgency. The dead-letter journal stays **client-side only**: it is
+a mirror artifact, never truth.
+
+### Sources join by role *and transport*
+
+ADR-0002's two roles stand; context now has three lanes, distinguished by
+who can hold the credential and how the data moves:
+
+| Lane | Transport | Examples | Lifecycle |
+| --- | --- | --- | --- |
+| Capture | drained by the sweeper | Google Tasks, Gmail `hummingbird/capture` | create in authority, ack in source |
+| Context, device-polled | client core, per-device OAuth (ADR-0005) | Google Calendar, M365 | replaced in the device mirror |
+| Context, server-polled | DO cron + static keys as Worker secrets | Anthropic/OpenAI usage, GitHub repo stats, photo-site analytics | `context_snapshots` row replaced wholesale |
+| Context, pushed | webhooks at `/api/alerts`, `ingest`-scoped tokens; or a sweeper adapter for pull-only sources | infra checks (auto-resolve), Home Assistant (dismiss/expire), Gmail `hummingbird/alert` label (dismiss), GitHub events, photo-site events | `alerts` upsert on `(source, source_key)`; leaves view by resolve / dismiss / expiry |
+
+Rules that hold across every lane:
+
+1. **Urgency is still computed at read time** (ADR-0002) — no stored
+   importance, anywhere.
+2. **A machine may raise an alert; a machine may never mint an item.** The
+   gesture rule protects items, one level up: converting an alert to an item
+   is one tap, a capture with `source_key` = alert id, deterministic id,
+   double-tap a no-op. Threshold crossings on gauges ("80% of weekly cap")
+   may machine-raise alerts.
+3. **Authorities stay authoritative:** Home Assistant decides what to send;
+   the photo site decides what to push; hummingbird receives and never
+   configures their rules.
+4. **Provenance is the one shared shape.** Items, alerts and snapshots all
+   carry `(source, source_key[, source_url])`. That is the entire common
+   core — see rejected alternatives.
+
+### Sequencing
+
+Alerts, snapshots, token scopes and webhook endpoints are **in the schema
+now** (retrofitting provenance later is what cost us this migration); their
+**source wiring comes after task-parity cutover** — the move exists because
+the task domain fought its authority, and alerts must not delay the cutover.
+Caveat recorded: *API-account* usage has real endpoints at Anthropic and
+OpenAI; *subscription-plan* usage (Claude Max, ChatGPT Plus) has no official
+API — verify per source at wiring time; may be unpollable.
+
+## Rejected alternatives
+
+- **A generalized `Signal` table** (`source, type, importance, timestamp,
+  expires_at, related_person, related_project, related_task,
+  suggested_action, confidence`) — rejected on four grounds. (1) `importance`
+  stores urgency at ingest, ADR-0002's founding violation; (2) one table
+  forces one lifecycle onto three incompatible ones (drained / replaced /
+  raise-resolve-dismiss) — an `expires_at` on a capture is scheduled data
+  loss; (3) `suggested_action` + `confidence` bake an inference layer into
+  the authority — machine-minting through the back door; inference is
+  derived, decays, and is computed at read time by consumers; (4)
+  `related_person` references a concept that does not exist in this domain,
+  and relatedness flows the other way (the item records provenance when a
+  gesture mints it). Its one good part — `expires_at` for self-expiring
+  alerts — was adopted into `alerts`.
+- **Steps as markdown in `description`** — the exact shape whose
+  impossibility to edit safely under Linear triggered ADR-0008; carrying it
+  into an owned schema would re-create the problem voluntarily.
+- **A passthrough bag on items** — there is no foreign authority whose
+  unmodelled fields need preserving; "the mirror is the export" is now
+  satisfied by the schema itself.
