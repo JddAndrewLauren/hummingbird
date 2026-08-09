@@ -28,6 +28,7 @@ export function RoutesScreen({ demo }: RoutesScreenProps) {
       <Card padding="var(--space-3)" style={{ maxWidth: "var(--content-max)" }}>
         <EmptyState
           icon="route"
+          headingLevel={2}
           title="No routes yet"
           body="A Route holds a project's Destination, its Fog, and the actions minted toward it."
         />
@@ -137,7 +138,7 @@ export function RoutesScreen({ demo }: RoutesScreenProps) {
         </div>
       </Column>
 
-      <Aside>
+      <Aside label="Steps and notes">
         <span className="hb-meta">steps · ION-118</span>
         <Card
           padding="var(--space-5)"

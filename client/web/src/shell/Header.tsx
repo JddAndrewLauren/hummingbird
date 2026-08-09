@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { IconButton } from "../components/core/IconButton";
@@ -19,6 +20,22 @@ export interface HeaderProps {
 }
 
 export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: HeaderProps) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const mounted = useRef(false);
+
+  // Switching screens swaps this heading and replaces everything below it,
+  // but nothing else tells assistive tech the view changed — focus would
+  // stay parked in the nav rail. Moving focus to the new heading both
+  // announces it and puts the reading position at the top of the new
+  // content. Skipped on mount: stealing focus on load is disorienting.
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    headingRef.current?.focus();
+  }, [title]);
+
   return (
     <header
       style={{
@@ -30,12 +47,17 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
       }}
     >
       <h1
+        ref={headingRef}
+        // Focusable only programmatically, by the effect above — never a tab
+        // stop, so it is not a keyboard-operable component and shows no ring.
+        tabIndex={-1}
         style={{
           flex: 1,
           minWidth: 0,
           font: "var(--type-h1)",
           letterSpacing: "var(--tracking-heading)",
           color: "var(--text-primary)",
+          outline: "none",
         }}
       >
         {title}

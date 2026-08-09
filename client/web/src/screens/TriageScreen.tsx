@@ -129,6 +129,7 @@ export function TriageScreen({ demo }: TriageScreenProps) {
           <Card padding="0">
             <EmptyState
               icon="inbox"
+              headingLevel={3}
               title="Triage is empty"
               body={
                 demo

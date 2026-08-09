@@ -36,10 +36,15 @@ export default tseslint.config(
       // The point of adding ESLint: this must be an error, or the six
       // suppressions in useCalendarWiring.ts stay decorative.
       "react-hooks/exhaustive-deps": "error",
-      // Known, tracked violations in the ported design-system components.
-      // Warnings until HANDOFF-a11y-designsystem.md is worked.
-      "jsx-a11y/no-static-element-interactions": "warn",
-      "jsx-a11y/click-events-have-key-events": "warn",
+      // Both are errors now that the component layer is fixed. The
+      // `allowExpressionValues` option is required because `ItemRow` computes
+      // its `role` conditionally — a row is only a button when it has an
+      // `onClick` — and the rule cannot read a ternary role statically.
+      "jsx-a11y/no-static-element-interactions": [
+        "error",
+        { allowExpressionValues: true },
+      ],
+      "jsx-a11y/click-events-have-key-events": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },

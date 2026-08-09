@@ -36,9 +36,13 @@ export function Column({ children }: { children: ReactNode }) {
   );
 }
 
-export function Aside({ children }: { children: ReactNode }) {
+// `label` names the panel for assistive tech: a complementary landmark with
+// no accessible name is just "complementary", and there is one on four
+// different screens.
+export function Aside({ label, children }: { label: string; children: ReactNode }) {
   return (
     <aside
+      aria-label={label}
       style={{
         width: "var(--panel-width)",
         flex: "0 0 auto",

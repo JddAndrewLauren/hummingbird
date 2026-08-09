@@ -27,6 +27,7 @@ export function AlertsScreen({ demo }: AlertsScreenProps) {
           <Card padding="0">
             <EmptyState
               icon="bell-off"
+              headingLevel={3}
               title="Nothing is ringing"
               body={
                 demo
@@ -55,7 +56,7 @@ export function AlertsScreen({ demo }: AlertsScreenProps) {
       </Column>
 
       {demo ? (
-        <Aside>
+        <Aside label="Alert rules">
           <span className="hb-meta">rules</span>
           {demo.rules.map((rule) => (
             <Card

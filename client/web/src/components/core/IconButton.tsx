@@ -25,9 +25,14 @@ export function IconButton({ icon, label, size = "md", variant = "ghost", active
   const box = BOX[size] || BOX.md;
   const bg = active ? "var(--accent-quiet)" : hover && !disabled ? "var(--surface-quiet)" : variant === "solid" ? "var(--surface-card)" : "transparent";
   return (
-    <button type="button" aria-label={label} title={label} disabled={disabled}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setPress(false); }}
-      onMouseDown={() => setPress(true)} onMouseUp={() => setPress(false)}
+    // `rest` first so the internal pointer handlers win and call the caller's
+    // themselves; spread last, a caller's `onMouseLeave` would replace the
+    // one that clears hover/press and leave the control stuck hovered.
+    <button {...rest} type="button" aria-label={label} title={label} disabled={disabled}
+      onMouseEnter={(event) => { setHover(true); rest.onMouseEnter?.(event); }}
+      onMouseLeave={(event) => { setHover(false); setPress(false); rest.onMouseLeave?.(event); }}
+      onMouseDown={(event) => { setPress(true); rest.onMouseDown?.(event); }}
+      onMouseUp={(event) => { setPress(false); rest.onMouseUp?.(event); }}
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center",
         width: box, height: box, padding: 0, background: bg,
@@ -38,7 +43,7 @@ export function IconButton({ icon, label, size = "md", variant = "ghost", active
         transform: press ? "scale(var(--press-scale))" : "none",
         transition: "background var(--dur-fast) var(--ease-flit), color var(--dur-fast) var(--ease-flit), transform var(--dur-fast) var(--ease-hover)",
         ...style,
-      }} {...rest}>
+      }}>
       <Icon name={icon} size={size === "lg" ? 20 : size === "sm" ? 15 : 18} />
     </button>
   );

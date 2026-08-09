@@ -38,6 +38,7 @@ export function NavRail({
 }: NavRailProps) {
   return (
     <nav
+      aria-label="Surfaces"
       style={{
         display: "flex",
         flexDirection: "column",

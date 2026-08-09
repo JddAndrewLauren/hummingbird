@@ -137,7 +137,7 @@ export function SettingsScreen({
         ) : null}
       </Column>
 
-      <Aside>
+      <Aside label="Core and calendar status">
         <span className="hb-meta">core</span>
         <Card
           padding="var(--space-5)"

@@ -114,6 +114,7 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
           <Card padding="var(--space-3)">
             <EmptyState
               icon="zap"
+              headingLevel={2}
               title="Nothing to start"
               body="No actions exist yet. Ranking begins once the first one is minted from Triage."
             />
@@ -121,7 +122,7 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
         )}
       </Column>
 
-      <Aside>
+      <Aside label="Context">
         <div>
           <span className="hb-meta">calendar context</span>
           <div
@@ -163,6 +164,7 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
                 <EmptyState
                   compact
                   icon="calendar-clock"
+                  headingLevel={2}
                   title="No calendar connected"
                   body="Connect Google Calendar in Settings to see what's on now and next."
                 />

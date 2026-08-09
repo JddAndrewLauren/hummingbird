@@ -32,9 +32,15 @@ export function Button({ variant = "primary", size = "md", iconLeft, iconRight, 
   const s = SIZES[size] || SIZES.md;
   const k = skin(variant, disabled ? null : press ? "press" : hover ? "hover" : null);
   return (
-    <button type={type} disabled={disabled || loading}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setPress(false); }}
-      onMouseDown={() => setPress(true)} onMouseUp={() => setPress(false)}
+    // `rest` is spread FIRST so the pointer handlers below win, and each one
+    // calls the caller's handler itself. Spread last, a caller's
+    // `onMouseLeave` would replace the handler that clears hover/press and
+    // strand the button in a hovered state.
+    <button {...rest} type={type} disabled={disabled || loading}
+      onMouseEnter={(e) => { setHover(true); rest.onMouseEnter?.(e); }}
+      onMouseLeave={(e) => { setHover(false); setPress(false); rest.onMouseLeave?.(e); }}
+      onMouseDown={(e) => { setPress(true); rest.onMouseDown?.(e); }}
+      onMouseUp={(e) => { setPress(false); rest.onMouseUp?.(e); }}
       style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center", gap: s.gap,
         height: s.h, padding: `0 ${s.px}`, width: fullWidth ? "100%" : undefined,
@@ -46,7 +52,7 @@ export function Button({ variant = "primary", size = "md", iconLeft, iconRight, 
         transform: press ? `scale(var(--press-scale))` : hover && !disabled ? `translateY(var(--lift-hover))` : "none",
         transition: "background var(--dur-fast) var(--ease-flit), transform var(--dur-fast) var(--ease-hover), box-shadow var(--dur-fast) var(--ease-flit), border-color var(--dur-fast) var(--ease-flit)",
         whiteSpace: "nowrap", ...style,
-      }} {...rest}>
+      }}>
       {loading ? <Icon name="loader-circle" size={s.icon} style={{ animation: "hb-spin 900ms linear infinite" }} /> : iconLeft ? <Icon name={iconLeft} size={s.icon} /> : null}
       <span style={{ display: "inline-block" }}>{children}</span>
       {iconRight ? <Icon name={iconRight} size={s.icon} /> : null}
