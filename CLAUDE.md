@@ -274,7 +274,11 @@ TS to combine would put the subtraction back on the far side of the
 boundary, and the shim's busy answer is `unknown` for the same reason — a
 core that has not loaded has measured nothing. The generic pane read (for a
 source, its snapshot rows and its live alerts) is #119's and does not exist
-yet; nothing in TS consumes freshness until it does.
+yet; nothing in TS consumes freshness until it does. (That read moved to
+#245, the pane shell, after the 2026-08-10 shell grilling — it is generic by
+construction, and building it against two snapshot-lane panes at once is the
+only way to know it is. #245's waste pane is freshness's first TS consumer,
+and owns its own 26h threshold.)
 
 ## The web worker layer
 
