@@ -203,29 +203,57 @@ fn item_from_create(create: &CreateItem, now_ms: i64) -> Item {
     }
 }
 
-/// Rebuilds the overlay a previous session left mid-flight from whatever
-/// still-queued item creates [`sync::SyncCycle::load`] just loaded — so a
-/// capture made offline, then reloaded before ever syncing, is still
+/// Applies `patch_fields` onto `base` (both an item's own JSON object, per
+/// [`sync::queue::MutationIntent::Patch`]'s own doc — `base` is "the entity
+/// as this client last knew it") field-by-field, the same absolute-value
+/// overwrite [`sync::write::adapter::patch_with_rebase`] sends on the wire,
+/// and deserialises the result as an [`Item`] — [`overlay_from_queue`]'s
+/// patch-rebuild step, kept as its own function so that step is testable in
+/// isolation from queue iteration. `None` if either side is not a JSON
+/// object (never expected for an item's own `base`/`patch_fields`, but this
+/// function does not assume it).
+fn apply_item_patch(base: &serde_json::Value, patch_fields: &serde_json::Value) -> Option<Item> {
+    let mut merged = base.as_object()?.clone();
+    for (key, value) in patch_fields.as_object()? {
+        merged.insert(key.clone(), value.clone());
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).ok()
+}
+
+/// Rebuilds the overlay a previous session left mid-flight from whatever is
+/// still queued — both item creates and item patches — so a capture or an
+/// act (S11/#109) made offline, then reloaded before ever syncing, is still
 /// readable from [`Core::frontier`] rather than silently vanishing until
-/// the next successful cycle. Patches are not overlaid (out of this
-/// issue's scope — only [`Core::capture`] writes to the overlay today, and
-/// it never enqueues one).
+/// the next successful cycle. [`Core::act`] enqueues exactly such a patch;
+/// this is what keeps a completed/blocked/cancelled item's overlaid state
+/// (and its [`Core::is_pending`] answer) surviving a reload while the
+/// `PATCH` is still durably queued, not sent.
 ///
-/// A create whose body no longer deserialises as [`CreateItem`] is an
-/// `Err`, never a silently-dropped overlay entry: the same
-/// never-silently-degrade rule [`sync::SyncCycle::load`]'s own module docs
-/// state for the queue itself ("this function does not special-case either
-/// table down to 'start fresh'") applies just as much to a projection built
-/// from it — the durable queue entry is untouched either way (drain can
-/// still retry it), but silently going overlay-blind on it would tell a
-/// reader nothing is pending when something still is.
+/// A create whose body no longer deserialises as [`CreateItem`], or a patch
+/// whose `base`+`patch_fields` no longer merge into a valid [`Item`]
+/// ([`apply_item_patch`]), is an `Err`, never a silently-dropped overlay
+/// entry: the same never-silently-degrade rule [`sync::SyncCycle::load`]'s
+/// own module docs state for the queue itself ("this function does not
+/// special-case either table down to 'start fresh'") applies just as much
+/// to a projection built from it — the durable queue entry is untouched
+/// either way (drain can still retry it), but silently going
+/// overlay-blind on it would tell a reader nothing is pending when
+/// something still is.
+///
+/// Iterated in queue (FIFO) order and keyed by item id, so if more than one
+/// still-queued entry targets the same item (e.g. an act queued on top of a
+/// not-yet-confirmed capture), the later entry's rebuild wins — the same
+/// "last enqueued is the client's current best knowledge" reasoning
+/// [`Core::act`]'s own `base` (read from [`Core::overlaid_items`], the
+/// overlay-if-present view) already applies when a fresh mutation is
+/// enqueued mid-session.
 fn overlay_from_queue(
     queue: &sync::queue::OutboundQueue,
 ) -> Result<BTreeMap<String, OverlayEntry>, CoreInitError> {
     let mut overlay = BTreeMap::new();
     for entry in queue.entries() {
-        if let MutationIntent::Create { path, body } = &entry.intent {
-            if *path == sync::write::paths::items() {
+        match &entry.intent {
+            MutationIntent::Create { path, body } if *path == sync::write::paths::items() => {
                 let create: CreateItem = serde_json::from_value(body.clone()).map_err(|error| {
                     CoreInitError(format!(
                         "queue entry {} is a create for {path} whose body no longer \
@@ -241,6 +269,32 @@ fn overlay_from_queue(
                         item,
                     },
                 );
+            }
+            MutationIntent::Patch {
+                path,
+                base,
+                patch_fields,
+                ..
+            } if path.starts_with("/api/items/") => {
+                let item = apply_item_patch(base, patch_fields).ok_or_else(|| {
+                    CoreInitError(format!(
+                        "queue entry {} is a patch for {path} whose base+patch_fields no \
+                         longer merge into a valid Item",
+                        entry.id
+                    ))
+                })?;
+                overlay.insert(
+                    item.id.clone(),
+                    OverlayEntry {
+                        entry_id: entry.id.clone(),
+                        item,
+                    },
+                );
+            }
+            MutationIntent::Create { .. } | MutationIntent::Patch { .. } => {
+                // Not an item mutation (a step/project/etc create, or a
+                // patch on some other entity) — nothing this overlay
+                // projects.
             }
         }
     }
@@ -681,10 +735,29 @@ where
     /// [`sync::write::adapter::patch_with_rebase`] documents for `base`.
     ///
     /// If this entry is later dead-lettered (a same-field server-side
-    /// change already landed), [`Core::run`] reverts the overlay the same
+    /// change already landed), [`Core::run`]'s existing `entry_id`-matched
+    /// overlay revert (unchanged by this method — it already generalises to
+    /// any overlay entry, not just a capture's) reverts the overlay the same
     /// way it does for a dead-lettered capture — the UI falls back to
     /// mirror truth and [`Core::dead_letters`] carries the affordance,
     /// never a silent revert.
+    ///
+    /// **Known gap, not closed here:** the overlay map is keyed one entry
+    /// per item id, so an `act` called while that same item's own create is
+    /// still queued (unconfirmed) replaces the create's overlay entry
+    /// outright — `base` above already reads the create's own optimistic
+    /// item, so the *displayed* state is still correct, but the create's
+    /// original `entry_id` is no longer what this item's overlay entry
+    /// points at. If that create is later dead-lettered, `Core::run`'s
+    /// `entry_id` match no longer finds it via this item's overlay entry
+    /// (which now points at this patch's `entry_id` instead), so the
+    /// overlay would not revert on that specific failure. Acting on a
+    /// genuinely still-queued create is not a normal flow this UI drives
+    /// today (S11's buttons only render for items already read from
+    /// `Core::frontier`/`Core::blocked`, which excludes an unconfirmed
+    /// create's target unless it already round-tripped once), so this is
+    /// narrow — flagged rather than fixed, since closing it properly needs
+    /// the overlay to track more than one pending mutation per item.
     ///
     /// `seed` mints this mutation's own queue-entry id
     /// ([`sync::write::deterministic_id`]) — caller-supplied, same
@@ -1114,6 +1187,48 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, ActError::ItemNotFound));
+    }
+
+    /// Reviewer finding on PR #207: a queued act must survive the
+    /// `SharedWorker` (and therefore the whole `Core`) terminating before
+    /// the next cycle ever runs — routine whenever the last view closes.
+    /// Before this fix, [`overlay_from_queue`] rebuilt overlay entries for
+    /// still-queued creates only; a reload after an offline `act` silently
+    /// dropped the overlay while the `PATCH` sat durably queued, so the
+    /// item read back as its pre-mutation stage with `is_pending` false —
+    /// exactly the "tells a reader nothing is pending when something still
+    /// is" failure this module's own doc forbids.
+    #[tokio::test]
+    async fn a_queued_act_survives_a_reload_and_still_reads_as_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let id = first
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+        first
+            .act("seed-act-1", &id, ItemAction::Complete, 2_000)
+            .await
+            .unwrap();
+        // Only the queue is durable at this point (no cycle ever ran) — the
+        // `SharedWorker`, and this `Core` with it, is dropped exactly as it
+        // would be when the last view closes mid-queue.
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        assert!(
+            second.is_pending(&id),
+            "a reload must not silently lose a still-queued act's pending state"
+        );
+        assert_eq!(
+            second.frontier().len(),
+            0,
+            "the reloaded overlay must still show the acted-on state (Done), not the \
+             pre-mutation Ready that would put it back on the frontier"
+        );
     }
 
     // ------------------------------------------------- fixtures for `run`

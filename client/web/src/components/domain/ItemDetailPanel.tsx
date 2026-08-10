@@ -29,6 +29,14 @@ export interface ItemDetailPanelProps {
    * caller that only wants the read-only panel — every existing call site
    * before this slice passed none. */
   onAct?: (action: TaskActionName) => void;
+  /** Set whenever the most recent act request for THIS item resolved to
+   * anything other than `"ok"` (`TaskState.lastAct`, matched by the caller
+   * on `itemId`) — reviewer finding on PR #207: a failed act used to be
+   * recorded in the store and rendered nowhere, silently. Cleared by the
+   * caller once a fresh action is taken (a new attempt speaks for itself,
+   * per this product's "state what is true and stop" voice — an old error
+   * next to a brand-new pending badge would be confusing, not honest). */
+  actError?: string | null;
 }
 
 /** Item detail: description and Steps (issue #96), read-only from this
@@ -46,7 +54,7 @@ export interface ItemDetailPanelProps {
  * would only add a redundant request, never corrupt anything, but there is
  * nothing useful for a person to do with the item until the first one
  * resolves. */
-export function ItemDetailPanel({ item, steps, onClose, onAct }: ItemDetailPanelProps) {
+export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null }: ItemDetailPanelProps) {
   return (
     <Card
       elevation={2}
@@ -86,6 +94,10 @@ export function ItemDetailPanel({ item, steps, onClose, onAct }: ItemDetailPanel
             );
           })}
         </div>
+      ) : null}
+
+      {actError ? (
+        <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{actError}</p>
       ) : null}
 
       {item.description ? (

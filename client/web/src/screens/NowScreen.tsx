@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
@@ -10,11 +11,12 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import type { CalendarTileProps } from "../calendar/tile-props";
 import type { DemoData, DemoSnapshot } from "../fixtures/demo";
 import type { Screen } from "../shell/screens";
-import type { TaskActionName } from "../store/protocol";
+import type { TaskActionName, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { blockedReasonLabel } from "./blocked-reason";
 import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
+import { applyItemAction } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 import { computeUrgency } from "./urgency";
 
@@ -72,10 +74,54 @@ function RealFrontier({
   NowScreenProps,
   "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail" | "onAct"
 >) {
+  // Reviewer finding on PR #207: a failed `actResult` used to be recorded
+  // in `TaskState.lastAct` and rendered nowhere — this is what makes it
+  // visible, matched to the currently open item by id so a stale failure
+  // from a DIFFERENT item never bleeds into this one.
+  const actError =
+    task.lastAct && task.lastAct.itemId === selectedItemId && task.lastAct.kind !== "ok"
+      ? (task.lastAct.error ?? "That action didn't apply.")
+      : null;
+
   const allItems = [...task.frontier, ...task.blocked.map((entry) => entry.item)];
-  const selectedItem = selectedItemId
+  const liveSelectedItem = selectedItemId
     ? (allItems.find((item) => item.id === selectedItemId) ?? null)
     : null;
+
+  // S11/#109's item detail panel must stay open (reviewer finding on PR
+  // #207) even after an act moves the item somewhere neither `frontier`
+  // nor `blocked` lists — `"block"` sets `Stage::Blocked`, which is outside
+  // both queries by design (S10's own scope: neither reads a Blocked-stage
+  // item at all), so `liveSelectedItem` above goes `null` the instant a
+  // block succeeds even though the panel — and its now-reachable "Start"/
+  // "Cancel" row (`availableActions("blocked")`) — should stay showing.
+  // `optimisticItem` is the fallback: `applyItemAction` mirrors the same
+  // action->stage mapping `Core::act` itself applies, so the panel shows
+  // the real post-action state immediately rather than either freezing on
+  // stale pre-action data or going blank. Cleared whenever `selectedItemId`
+  // itself changes (a different item opened, or the panel closed) so a
+  // stale optimistic item from a PREVIOUS selection can never leak into a
+  // new one.
+  const [optimisticItem, setOptimisticItem] = useState<TaskItemDTO | null>(null);
+  // The React-docs "adjusting state when a prop changes" pattern — `setState`
+  // called during render, guarded by comparing against state (never a ref;
+  // this repo's lint config's `react-hooks/refs` forbids reading/writing a
+  // ref during render, and `react-hooks/set-state-in-effect` forbids the
+  // `useEffect` version of this same adjustment). React bails out of
+  // re-rendering with the stale props immediately when it sees a `setState`
+  // call during render, so this clears the stale optimistic item in the
+  // same render `selectedItemId` changed in, not a follow-up one.
+  const [lastSelectedItemId, setLastSelectedItemId] = useState(selectedItemId);
+  if (selectedItemId !== lastSelectedItemId) {
+    setLastSelectedItemId(selectedItemId);
+    if (optimisticItem !== null) {
+      setOptimisticItem(null);
+    }
+  }
+
+  const selectedItem =
+    liveSelectedItem ??
+    (optimisticItem && optimisticItem.id === selectedItemId ? optimisticItem : null);
 
   if (selectedItem) {
     return (
@@ -83,7 +129,11 @@ function RealFrontier({
         item={selectedItem}
         steps={task.stepsByItem[selectedItem.id] ?? []}
         onClose={onCloseItemDetail}
-        onAct={(action) => onAct(selectedItem.id, action)}
+        onAct={(action) => {
+          setOptimisticItem(applyItemAction(selectedItem, action));
+          onAct(selectedItem.id, action);
+        }}
+        actError={actError}
       />
     );
   }
