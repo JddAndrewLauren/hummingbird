@@ -8,19 +8,25 @@ import type { CalendarWorkerRequest, TaskWorkerRequest } from "../store/protocol
 // a request's destination queue apart by `type`, kept free of both the wasm
 // import and `PortRegistry` itself so it is unit-testable in isolation.
 
-const TASK_REQUEST_TYPES: ReadonlySet<TaskWorkerRequest["type"]> = new Set([
-  "pushTaskApiKey",
-  "capture",
-  "getFrontier",
-  "getTriageInbox",
-  "isPending",
-  "runSync",
-]);
+// A `Record` keyed by every `TaskWorkerRequest["type"]` literal, rather than
+// a `Set<TaskWorkerRequest["type"]>` built from a plain array: the object
+// literal below is checked against that key type at compile time, so adding
+// a new request variant to the protocol without adding it here is a type
+// error (a missing property), not a request that silently never routes
+// (PR #171 round-1 review — the previous `Set` had no such check).
+const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
+  pushTaskApiKey: true,
+  capture: true,
+  getFrontier: true,
+  getTriageInbox: true,
+  isPending: true,
+  runSync: true,
+};
 
 /** Whether `request` belongs on the task binding's queue rather than the
  * calendar binding's. */
 export function isTaskWorkerRequest(
   request: CalendarWorkerRequest | TaskWorkerRequest,
 ): request is TaskWorkerRequest {
-  return TASK_REQUEST_TYPES.has(request.type as TaskWorkerRequest["type"]);
+  return Object.hasOwn(TASK_REQUEST_TYPES, request.type);
 }

@@ -395,4 +395,261 @@ mod tests {
         assert_eq!(host.take_events(), Vec::new());
         assert_eq!(host.take_events(), Vec::new());
     }
+
+    // ---------------------------------------------------- map_run_outcome
+    //
+    // `TaskHostCore::run` can only ever be driven, in this file's own
+    // network-free tests, down the one branch an invalid `base_url` forces
+    // (`"pull_failed"`, with a fixed drain outcome). That leaves the other
+    // five `CoreCycleOutcome`/`CycleOutcome` branches, and most of
+    // `RunResponse`'s payload fields, completely unexercised without these
+    // — `map_run_outcome` is called directly, against hand-built
+    // `CoreCycleOutcome` values, the same way `client/core`'s own tests
+    // build `CycleOutcome` values without a real cycle.
+
+    use hummingbird_core::sync::{CycleOutcome, DrainOutcome};
+
+    #[test]
+    fn maps_no_credential_and_held_with_every_payload_field_empty() {
+        assert_eq!(
+            map_run_outcome(CoreCycleOutcome::NoCredential),
+            RunResponse {
+                kind: "no_credential",
+                retry_after_ms: None,
+                active_item_count: None,
+                was_full_sweep: None,
+                dead_lettered: None,
+            }
+        );
+        assert_eq!(
+            map_run_outcome(CoreCycleOutcome::Held),
+            RunResponse {
+                kind: "held",
+                retry_after_ms: None,
+                active_item_count: None,
+                was_full_sweep: None,
+                dead_lettered: None,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_a_skipped_cycle_with_every_payload_field_empty() {
+        assert_eq!(
+            map_run_outcome(CoreCycleOutcome::Cycle(CycleOutcome::Skipped)),
+            RunResponse {
+                kind: "skipped",
+                retry_after_ms: None,
+                active_item_count: None,
+                was_full_sweep: None,
+                dead_lettered: None,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_a_blocked_cycle_carrying_its_dead_letter_count_and_retry_delay() {
+        let outcome = CoreCycleOutcome::Cycle(CycleOutcome::Blocked {
+            drain: DrainOutcome::Blocked { dead_lettered: 2 },
+            retry_after_ms: 500,
+        });
+
+        assert_eq!(
+            map_run_outcome(outcome),
+            RunResponse {
+                kind: "blocked",
+                retry_after_ms: Some(500),
+                active_item_count: None,
+                was_full_sweep: None,
+                dead_lettered: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn maps_a_credential_needed_cycle_carrying_its_dead_letter_count_but_no_retry_delay() {
+        // Distinct from `Blocked`/`PullFailed`: a 401 is a hold, not a
+        // backoff, so there is no `retry_after_ms` to carry — the field
+        // must stay `None`, not accidentally default to some prior value.
+        let outcome = CoreCycleOutcome::Cycle(CycleOutcome::CredentialNeeded {
+            drain: DrainOutcome::CredentialNeeded { dead_lettered: 1 },
+        });
+
+        assert_eq!(
+            map_run_outcome(outcome),
+            RunResponse {
+                kind: "credential_needed",
+                retry_after_ms: None,
+                active_item_count: None,
+                was_full_sweep: None,
+                dead_lettered: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn maps_a_persist_failed_cycle_carrying_only_its_retry_delay() {
+        // The one variant with deliberately no `drain` (see `CycleOutcome`'s
+        // own doc) — `dead_lettered` must stay `None`, not `Some(0)`.
+        let outcome = CoreCycleOutcome::Cycle(CycleOutcome::PersistFailed {
+            message: "disk full".to_string(),
+            retry_after_ms: 750,
+        });
+
+        assert_eq!(
+            map_run_outcome(outcome),
+            RunResponse {
+                kind: "persist_failed",
+                retry_after_ms: Some(750),
+                active_item_count: None,
+                was_full_sweep: None,
+                dead_lettered: None,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_a_pull_failed_cycle_carrying_its_dead_letter_count_and_retry_delay() {
+        let outcome = CoreCycleOutcome::Cycle(CycleOutcome::PullFailed {
+            drain: DrainOutcome::Completed { dead_lettered: 3 },
+            retry_after_ms: 100,
+        });
+
+        assert_eq!(
+            map_run_outcome(outcome),
+            RunResponse {
+                kind: "pull_failed",
+                retry_after_ms: Some(100),
+                active_item_count: None,
+                was_full_sweep: None,
+                dead_lettered: Some(3),
+            }
+        );
+    }
+
+    #[test]
+    fn maps_a_completed_cycle_carrying_every_payload_field_but_no_retry_delay() {
+        let outcome = CoreCycleOutcome::Cycle(CycleOutcome::Completed {
+            drain: DrainOutcome::Completed { dead_lettered: 0 },
+            active_item_count: 5,
+            was_full_sweep: true,
+        });
+
+        assert_eq!(
+            map_run_outcome(outcome),
+            RunResponse {
+                kind: "completed",
+                retry_after_ms: None,
+                active_item_count: Some(5),
+                was_full_sweep: Some(true),
+                dead_lettered: Some(0),
+            }
+        );
+    }
+
+    // ------------------------------------------------ wire shape pinning
+    //
+    // `task-worker.ts`'s hand-written `Raw*` TypeScript interfaces parse
+    // these exact key names and `kind` string literals — nothing on that
+    // side re-derives the shape from this crate's serde output, so a field
+    // rename or a literal typo here would silently desync the two without
+    // any test failing on either side unless the shape itself is pinned.
+
+    #[test]
+    fn capture_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let ok = CaptureResponse {
+            kind: "ok",
+            id: Some("item-1".to_string()),
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&ok).unwrap(),
+            r#"{"kind":"ok","id":"item-1","error":null}"#
+        );
+
+        let failed = CaptureResponse {
+            kind: "failed",
+            id: None,
+            error: Some("boom".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_string(&failed).unwrap(),
+            r#"{"kind":"failed","id":null,"error":"boom"}"#
+        );
+    }
+
+    #[test]
+    fn item_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = ItemListResponse {
+            kind: "ok",
+            items: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","items":[]}"#
+        );
+    }
+
+    #[test]
+    fn is_pending_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = IsPendingResponse {
+            kind: "ok",
+            pending: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","pending":true}"#
+        );
+    }
+
+    #[test]
+    fn task_event_dto_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let event = TaskEventDTO {
+            kind: "credential_needed",
+            at_ms: 5_000,
+        };
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"kind":"credential_needed","at_ms":5000}"#
+        );
+    }
+
+    #[test]
+    fn run_response_serializes_with_the_exact_keys_and_kind_literals_task_worker_ts_parses() {
+        // One representative per `kind` literal `task-worker.ts` matches on
+        // — the field *names* (asserted once, on the fully-populated
+        // variant) are what a rename would silently desync; the `kind`
+        // *literals* (asserted per variant) are what a typo in
+        // `map_run_outcome`'s string constants would silently desync.
+        let completed = RunResponse {
+            kind: "completed",
+            retry_after_ms: Some(100),
+            active_item_count: Some(5),
+            was_full_sweep: Some(true),
+            dead_lettered: Some(0),
+        };
+        assert_eq!(
+            serde_json::to_string(&completed).unwrap(),
+            r#"{"kind":"completed","retry_after_ms":100,"active_item_count":5,"was_full_sweep":true,"dead_lettered":0}"#
+        );
+
+        for kind in [
+            "no_credential",
+            "held",
+            "skipped",
+            "blocked",
+            "credential_needed",
+            "persist_failed",
+            "pull_failed",
+        ] {
+            let response = run_response(kind);
+            let json = serde_json::to_string(&response).unwrap();
+            assert_eq!(
+                json,
+                format!(
+                    r#"{{"kind":"{kind}","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}}"#
+                )
+            );
+        }
+    }
 }

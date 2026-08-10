@@ -93,14 +93,38 @@ self.onconnect = (event: MessageEvent) => {
   registry.connect(port);
 };
 
+type TaskEnqueue = (request: TaskWorkerRequest) => Promise<void>;
+
 /** A `TaskWorkerRequest` handler used only when the task host itself failed
  * to construct (a corrupt durable snapshot) — reported per request rather
  * than failing calendar activation too, since the two bindings are
  * otherwise fully independent (see the module doc). */
-function failedTaskEnqueue(message: string): (request: TaskWorkerRequest) => Promise<void> {
+function failedTaskEnqueue(message: string): TaskEnqueue {
   return async (request) => {
     console.error("task host unavailable, dropping request", request.type, message);
   };
+}
+
+/** Constructs the task host and its queue in the background, without making
+ * `registry.activate` (and therefore every view's calendar-side "ready")
+ * wait on it (PR #171 round-1 review) — `createTaskHost` only touches local
+ * storage today, but the two bindings are otherwise fully independent doors
+ * into the same wasm module, and #126 deliberately decoupled their failure
+ * paths for exactly this reason: a slow or hung task host must not delay
+ * calendar activation for every connected view.
+ *
+ * Requests arriving before this resolves queue on the returned promise
+ * itself (`.then` callbacks fire in attachment order), so ordering across
+ * task requests is preserved either way — see `dispatch` below, the one
+ * caller. */
+function createTaskEnqueueDeferred(
+  createTaskHost: (namespace: string, baseUrl: string, apiKey: string) => Promise<TaskHostLike>,
+): Promise<TaskEnqueue> {
+  return createTaskHost(TASK_NAMESPACE, TASK_BASE_URL, "")
+    .then((taskHost) => createTaskRequestQueue(taskHost, (response) => registry.broadcast(response)))
+    .catch((taskErr: unknown) =>
+      failedTaskEnqueue(taskErr instanceof Error ? taskErr.message : String(taskErr)),
+    );
 }
 
 void (async () => {
@@ -120,21 +144,13 @@ void (async () => {
 
     // The task binding (#105/S7) gets its own host and its own queue — see
     // `protocol.ts`'s note on why it is not merged with the calendar one.
-    // Its failure to construct must not take calendar activation down with
-    // it: the two are otherwise fully independent doors into the wasm
-    // module, so a corrupt task snapshot is this binding's problem alone.
-    let taskEnqueue: (request: TaskWorkerRequest) => Promise<void>;
-    try {
-      const taskHost: TaskHostLike = await createTaskHost(TASK_NAMESPACE, TASK_BASE_URL, "");
-      taskEnqueue = createTaskRequestQueue(taskHost, (response) => registry.broadcast(response));
-    } catch (taskErr) {
-      taskEnqueue = failedTaskEnqueue(
-        taskErr instanceof Error ? taskErr.message : String(taskErr),
-      );
-    }
+    // Deliberately not awaited here — see `createTaskEnqueueDeferred`'s doc.
+    const taskEnqueueReady = createTaskEnqueueDeferred(createTaskHost);
 
     const dispatch = (request: CalendarWorkerRequest | TaskWorkerRequest): Promise<void> =>
-      isTaskWorkerRequest(request) ? taskEnqueue(request) : calendarEnqueue(request);
+      isTaskWorkerRequest(request)
+        ? taskEnqueueReady.then((enqueue) => enqueue(request))
+        : calendarEnqueue(request);
 
     registry.activate(dispatch, core_api_version);
   } catch (err) {

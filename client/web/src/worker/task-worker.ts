@@ -80,7 +80,12 @@ interface RawRunResponse {
   kind: TaskRunOutcomeKind;
   retry_after_ms: number | null;
   active_item_count: number | null;
-  was_full_sweep: number | boolean | null;
+  // `Option<bool>` on the Rust side (`RunResponse::was_full_sweep`,
+  // `client/ffi-web/src/task_host.rs`) serializes to a JSON boolean or
+  // `null`, never a number — pinned by that file's own
+  // `run_response_serializes_with_the_exact_keys_and_kind_literals_task_worker_ts_parses`
+  // test, so this is the real wire shape, not a defensive guess at it.
+  was_full_sweep: boolean | null;
   dead_lettered: number | null;
 }
 
@@ -190,7 +195,7 @@ export async function handleTaskRequest(
         kind: raw.kind,
         retryAfterMs: raw.retry_after_ms,
         activeItemCount: raw.active_item_count,
-        wasFullSweep: raw.was_full_sweep === null ? null : Boolean(raw.was_full_sweep),
+        wasFullSweep: raw.was_full_sweep,
         deadLettered: raw.dead_lettered,
       });
       postTaskEvents(host, post);

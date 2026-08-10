@@ -284,21 +284,23 @@ mod wasm_bindings {
     /// panic from a `RefCell` borrow held across an await poisons the whole
     /// module, not just one call).
     ///
-    /// Unlike [`Shared`], there is no `Pending` slot here: nothing on
-    /// [`TaskHostCore`] needs "apply at check-in" semantics.
-    /// [`TaskHostCore::push_api_key`] is idempotent and safe to apply
-    /// whenever it lands — a key pushed while a cycle is mid-flight simply
-    /// takes effect on the *next* `run` call, exactly the semantics
-    /// [`Core::push_api_key`]'s own doc describes, so queuing it separately
-    /// would add a slot for no different behaviour.
+    /// `pending_api_key` mirrors [`Shared`]'s own `Pending` slot (PR #171
+    /// round-1 review): a key pushed while a `run`/`capture` call holds the
+    /// host would otherwise be silently dropped on the floor rather than
+    /// merely delayed, and nothing upstream of #106 re-pushes it — the host
+    /// has no way to know its rotation was lost. Applied at
+    /// [`TaskShared::check_in`], same as [`Shared::check_in`] applies a
+    /// pending token/selection.
     struct TaskShared {
         host: RefCell<Option<TaskHostCore>>,
+        pending_api_key: RefCell<Option<String>>,
     }
 
     impl TaskShared {
         fn new(host: TaskHostCore) -> Self {
             Self {
                 host: RefCell::new(Some(host)),
+                pending_api_key: RefCell::new(None),
             }
         }
 
@@ -306,8 +308,21 @@ mod wasm_bindings {
             self.host.borrow_mut().take()
         }
 
-        fn check_in(&self, host: TaskHostCore) {
+        fn check_in(&self, mut host: TaskHostCore) {
+            if let Some(api_key) = self.pending_api_key.borrow_mut().take() {
+                host.push_api_key(api_key);
+            }
             *self.host.borrow_mut() = Some(host);
+        }
+
+        /// Pushes immediately if the host is present, or queues for the next
+        /// [`TaskShared::check_in`] if it is currently checked out — never
+        /// silently drops the key either way.
+        fn push_api_key(&self, api_key: String) {
+            match self.host.borrow_mut().as_mut() {
+                Some(host) => host.push_api_key(api_key),
+                None => *self.pending_api_key.borrow_mut() = Some(api_key),
+            }
         }
     }
 
@@ -355,17 +370,11 @@ mod wasm_bindings {
         /// The host calls this once a device token is known (startup, or a
         /// rotation) — the API key crosses main -> worker -> here exactly
         /// once per push and is never read back out by any method on this
-        /// type.
+        /// type. Queued rather than dropped if the host is currently
+        /// checked out mid-`run`/`capture` — see [`TaskShared`]'s doc.
         #[wasm_bindgen(js_name = pushApiKey)]
         pub fn push_api_key(&self, api_key: String) {
-            match self.inner.host.borrow_mut().as_mut() {
-                Some(host) => host.push_api_key(api_key),
-                // Checked out mid-cycle: dropped rather than queued (see
-                // `TaskShared`'s doc) — the host pushes again on its own
-                // rotation cadence, and `Core::push_api_key` is safe to call
-                // whenever it lands.
-                None => {}
-            }
+            self.inner.push_api_key(api_key);
         }
 
         /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item]}`.
