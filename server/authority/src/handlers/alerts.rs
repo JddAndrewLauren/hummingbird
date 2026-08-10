@@ -4,7 +4,7 @@
 //! (ADR-0009 rule 3). `PATCH /api/alerts/:id` (device scope) writes the one
 //! human-owned field, `dismissed_at`, under normal CAS.
 
-use hummingbird_domain::{Alert, AlertIngest, AlertPatch};
+use hummingbird_domain::{higher_severity, Alert, AlertIngest, AlertPatch};
 
 use super::{auth, conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
 use crate::codec::{RowReader, Sets};
@@ -64,16 +64,29 @@ pub fn ingest(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     };
 
     // Re-raise: the source-owned fields are set absolutely from the payload
-    // (an absent optional clears — the source stopped sending it), with one
-    // deliberate exception: an absent `raised_at` keeps the stored stamp,
+    // (an absent optional clears — the source stopped sending it), with two
+    // deliberate exceptions. An absent `raised_at` keeps the stored stamp,
     // so an identical replayed payload is a byte-identical state and the
     // upsert a no-op (AC1). `dismissed_at` is human-owned: never touched.
+    //
+    // `severity` is the other exception (ADR-0014): while the existing row
+    // is still live, this re-raise is the same occurrence some other rule
+    // or a later ping might also be minting against, so it may only raise
+    // severity, never blind-overwrite it downward. Once the row has left
+    // live — resolved, dismissed, or expired — the *next* raise starts a
+    // fresh occurrence, and the payload's severity is authoritative as-is,
+    // like every other source-owned field.
     let current = alert_from_row(&row)?;
+    let severity = if current.is_live(now_ms) {
+        higher_severity(current.severity.as_deref(), ingest.severity.as_deref()).map(str::to_string)
+    } else {
+        ingest.severity
+    };
     let next = Alert {
         title: ingest.title,
         body: ingest.body,
         url: ingest.url,
-        severity: ingest.severity,
+        severity,
         raised_at: ingest.raised_at.unwrap_or(current.raised_at),
         resolved_at: ingest.resolved_at,
         expires_at: ingest.expires_at,
