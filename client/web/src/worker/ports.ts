@@ -57,20 +57,67 @@ type State =
  * instead of hanging it on "Loading core…" forever, which is what a
  * dedicated Worker's `onerror` gave for free and a SharedWorker does not —
  * see main.tsx). Once resolved either way, the registry never reverts: a
- * wasm import does not retry mid-session. */
+ * wasm import does not retry mid-session.
+ *
+ * **Issue #195: a connecting port also gets a replay of the current
+ * latest-state.** Without this, a view whose port wires up after the most
+ * recent broadcast has no sync state of its own until the next cycle — and
+ * if the shared 60s timer is paused (every view hidden, S9/#191), that can
+ * be indefinitely. `broadcast` retains the latest message of each type in
+ * `LATEST_STATE_TYPES` below, and `wire` replays whatever is retained right
+ * after the `ready`/`error` handshake, before anything else can reach the
+ * port.
+ *
+ * **The rule for `LATEST_STATE_TYPES` membership**, so the next message
+ * added to the protocol has an answer: a type belongs in the set if it
+ * represents a durable fact about the core's current state — one that stays
+ * true until superseded by a later broadcast of the same type, and that a
+ * view which missed every prior broadcast still needs to know right now
+ * (`syncOutcome`'s kind/backoff/hold, `queueDepth`, `deadLetters`,
+ * `taskHostUnavailable`'s not-recoverable-this-session failure). A type is
+ * left out if it instead describes something that HAPPENED — a point-in-time
+ * event whose meaning is tied to when it fired (`pollOutcome`, one poll
+ * attempt's result; `credentialEvents`/`taskEvents`, an append-only log of
+ * moments a credential broke — replaying either to a view long after the
+ * fact would make a past event read as live) — or is a targeted answer to a
+ * request only the asking view is waiting on (`frontier`, `triageInbox`,
+ * `isPendingResult`, `calendarList`, `currentNext`, `captureResult`,
+ * `mirrorSnapshot`): a view that never asked must not receive one as if it
+ * had. Getting this classification wrong in either direction is the real
+ * risk #195's triage called out — a one-shot event cached here replays a
+ * stale moment as a live one; a durable-state type left out leaves a late
+ * view stuck on stale or fabricated state until the next broadcast. */
+/** The `WorkerResponse["type"]`s cached and replayed to a newly wired port —
+ * see the class doc above for the membership rule. */
+const LATEST_STATE_TYPES = new Set<WorkerResponse["type"]>([
+  "syncOutcome",
+  "queueDepth",
+  "deadLetters",
+  "taskHostUnavailable",
+]);
+
 export class PortRegistry {
   // Never pruned. A closed view's port is never explicitly removed from
   // this set — `postMessage` to a disconnected `MessagePort` is a silent
   // no-op per spec, and the browser tears down the whole SharedWorker
   // global scope (this registry included) once the last port disconnects,
   // so the accumulation is bounded by the core's own lifetime, not
-  // unbounded. Flagged (PR #167 round-1 review, non-blocking finding 3) as
-  // worth revisiting once #107 broadcasts sync status on every cycle
-  // instead of only on demand — a long-lived core with a drift of closed
-  // tabs would then pay a growing, if still harmless, per-cycle fan-out.
+  // unbounded. Flagged (PR #167 round-1 review, non-blocking finding 3;
+  // caveat resolved by #191) as worth revisiting: the worker now broadcasts
+  // sync status on every cycle rather than only on demand, so a long-lived
+  // core with a drift of closed tabs pays a growing, if still harmless,
+  // per-cycle fan-out — unconditionally, not just in the on-demand case
+  // this used to hedge against.
   private readonly ports = new Set<PortLike>();
   private readonly pending: PortLike[] = [];
   private state: State = { kind: "pending" };
+  // Issue #195: the last broadcast of each "latest-state" message type (see
+  // the class doc), replayed to every newly wired port right after its
+  // `ready`/`error` handshake. A type absent here has never been broadcast
+  // this session, so a connecting port gets nothing for it — the same
+  // "never fabricate a cycle that didn't happen" rule a fresh core gives
+  // for free.
+  private readonly lastByType = new Map<WorkerResponse["type"], WorkerResponse>();
 
   /** Wires a newly connecting port. While the core is still initializing,
    * the port is queued instead — never dropped, never wired twice. */
@@ -107,6 +154,9 @@ export class PortRegistry {
    * `ready`/`error` once init resolves, not by a broadcast meant for views
    * already running. */
   broadcast(response: WorkerResponse): void {
+    if (LATEST_STATE_TYPES.has(response.type)) {
+      this.lastByType.set(response.type, response);
+    }
     for (const port of this.ports) {
       port.postMessage(response);
     }
@@ -124,5 +174,13 @@ export class PortRegistry {
     port.start();
     this.ports.add(port);
     announceReady((response) => port.postMessage(response), coreApiVersion);
+    // Issue #195: replay whatever latest-state has already happened this
+    // session, right after the handshake — a port that connects before
+    // anything has broadcast gets nothing here, which is what keeps a core
+    // that has never run a cycle reading as never-synced rather than
+    // fabricating one.
+    for (const response of this.lastByType.values()) {
+      port.postMessage(response);
+    }
   }
 }

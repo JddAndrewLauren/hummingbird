@@ -97,8 +97,13 @@ export interface TaskState {
    * explicit call-out this is not a silent, unexplained deletion. */
   syncOutcomeSeq: number;
   /** The outbound queue's current depth — S9's sync-status "queued"
-   * figure. `null` until the first answer arrives (this view has not asked,
-   * or the core is still loading). */
+   * figure. `null` until the first answer arrives: an explicit
+   * `getQueueDepth` reply, the worker's own unsolicited per-cycle push
+   * (issue #191), or — issue #195 — the replay a newly connecting port gets
+   * of whatever `queueDepth` last broadcast this session
+   * (`worker/ports.ts`'s `PortRegistry`). `null` still means exactly one
+   * thing regardless of origin: nothing has answered yet, because the core
+   * is still loading or has never completed a cycle. */
   queueDepth: number | null;
   /** The whole dead-letter journal, as of the last `deadLetters` broadcast
    * — S9's "1 edit didn't apply" affordance. Kept fresh by the worker's own

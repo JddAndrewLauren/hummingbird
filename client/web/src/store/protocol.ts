@@ -284,6 +284,11 @@ export type TaskWorkerResponse =
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
+  /** What one `Core::run` cycle resolved to, broadcast to every connected
+   * port. Issue #195: also the last one is cached by `PortRegistry` and
+   * replayed to a port that connects after it — see `queueDepth`'s doc
+   * below and `ports.ts`'s class doc for the full "latest-state vs
+   * one-shot" rule this and its siblings are classified under. */
   | {
       type: "syncOutcome";
       kind: TaskRunOutcomeKind;
@@ -303,12 +308,18 @@ export type TaskWorkerResponse =
    * cycle: `worker/task-worker.ts`'s `runSync` branch reads and posts it
    * once per cycle (dropped, not posted, on a `"busy"` read), broadcast to
    * every connected port the same as `syncOutcome`. This is what keeps N
-   * connected views from each re-requesting it every cycle. */
+   * connected views from each re-requesting it every cycle. `syncOutcome`,
+   * this, `deadLetters` and `taskHostUnavailable` are also — issue #195 —
+   * cached by `PortRegistry` and replayed to a port that connects after the
+   * fact, so a view whose port wires up between cycles still starts from
+   * the current figure instead of `null` (see `ports.ts`'s class doc for
+   * which message types get this treatment and why). */
   | { type: "queueDepth"; depth: number }
   /** Answers `getDeadLetters`, AND — issue #191 — arrives unsolicited at the
    * tail of every completed `runSync`, same contract as `queueDepth` above:
    * read and posted at most once per cycle regardless of view count, never
-   * on a `"busy"` read. */
+   * on a `"busy"` read. Replayed to a late-connecting port the same as
+   * `queueDepth` — see that field's doc. */
   | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
   | { type: "mirrorSnapshot"; mirror: unknown }
   /** The task host itself failed to construct (a corrupt durable snapshot,
@@ -323,7 +334,9 @@ export type TaskWorkerResponse =
    * `console.error` nobody reads (post-batch review of PR #185). Broadcast
    * once when construction fails AND again per dropped request, since a
    * broadcast reaches only the views connected at the time and a view that
-   * connects later must still learn — its first task request tells it. */
+   * connects later must still learn — its first task request tells it, and
+   * — issue #195 — so does `PortRegistry`'s replay on connect, without
+   * waiting for that view to send one. */
   | { type: "taskHostUnavailable"; message: string };
 
 // -- worker -> main -----------------------------------------------------
