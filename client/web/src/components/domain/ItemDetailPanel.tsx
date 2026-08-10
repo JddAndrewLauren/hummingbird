@@ -2,7 +2,7 @@ import { Badge } from "../core/Badge";
 import { Card } from "../core/Card";
 import { IconButton } from "../core/IconButton";
 import { Checkbox } from "../forms/Checkbox";
-import { priorityLabel } from "../../screens/priority";
+import { hasPriority, priorityLabel } from "../../screens/priority";
 import type { StepDTO, TaskItemDTO } from "../../store/protocol";
 import { StageBadge } from "./StageBadge";
 
@@ -36,7 +36,7 @@ export function ItemDetailPanel({ item, steps, onClose }: ItemDetailPanelProps) 
 
       <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
         <StageBadge stage={item.stage} />
-        {item.priority !== 0 ? <Badge tone="brand">{priorityLabel(item.priority)}</Badge> : null}
+        {hasPriority(item.priority) ? <Badge tone="brand">{priorityLabel(item.priority)}</Badge> : null}
         {item.size ? <Badge mono>size:{item.size}</Badge> : null}
         {item.energy ? <Badge mono>energy:{item.energy}</Badge> : null}
         {item.context ? <Badge mono>{item.context}</Badge> : null}

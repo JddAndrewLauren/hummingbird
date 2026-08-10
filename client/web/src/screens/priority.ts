@@ -40,3 +40,13 @@ export function priorityRank(raw: number): number {
 export function priorityLabel(raw: number): string {
   return LABELS[raw] ?? LABELS[0];
 }
+
+/** Whether `raw` is worth rendering a priority chip for at all — `false`
+ * for an explicit 0 *and* for anything unrecognised, since both display as
+ * "No priority" (`priorityLabel`) and a chip that reads "No priority" is
+ * noise, not information. Callers should gate on this rather than
+ * `raw !== 0` directly (PR #200 review: that comparison shows a chip for an
+ * out-of-range value even though its label reads "No priority"). */
+export function hasPriority(raw: number): boolean {
+  return priorityLabel(raw) !== LABELS[0];
+}

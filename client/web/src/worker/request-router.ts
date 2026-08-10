@@ -27,6 +27,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getTriageInbox: true,
   getBlocked: true,
   getSteps: true,
+  getProjects: true,
   isPending: true,
   runSync: true,
   getQueueDepth: true,

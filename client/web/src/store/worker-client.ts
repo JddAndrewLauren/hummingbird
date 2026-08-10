@@ -122,6 +122,9 @@ export function attachWorkerClient(
       case "steps":
         store.setTaskSteps(message.itemId, message.steps);
         return;
+      case "projects":
+        store.setTaskState({ projects: message.projects });
+        return;
       case "isPendingResult":
         store.setTaskPending(message.itemId, message.pending);
         return;
@@ -275,6 +278,12 @@ export function requestBlocked(worker: WorkerLike): void {
 /** One item's Steps — item detail (issue #96, S10). */
 export function requestSteps(worker: WorkerLike, itemId: string): void {
   worker.postMessage({ type: "getSteps", itemId });
+}
+
+/** Resolves the frontier's "grouped by project" display to real names
+ * (issue #108, PR #200 review). */
+export function requestProjects(worker: WorkerLike): void {
+  worker.postMessage({ type: "getProjects" });
 }
 
 export function requestIsPending(worker: WorkerLike, itemId: string): void {

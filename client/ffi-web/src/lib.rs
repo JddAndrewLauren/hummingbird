@@ -19,9 +19,9 @@ mod task_host;
 pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
 pub use task_host::{
     BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
-    DeadLetterFieldDTO, DeadLettersResponse, IsPendingResponse, ItemListResponse,
-    MirrorSnapshotResponse, QueueDepthResponse, RunResponse, StepListResponse, TaskEventDTO,
-    TaskHostCore,
+    DeadLetterFieldDTO, DeadLettersResponse, FrontierItemDTO, IsPendingResponse, ItemListResponse,
+    MirrorSnapshotResponse, ProjectListResponse, QueueDepthResponse, RunResponse, StepListResponse,
+    TaskEventDTO, TaskHostCore,
 };
 
 use wasm_bindgen::prelude::*;
@@ -366,6 +366,7 @@ mod wasm_bindings {
     const BUSY_ITEM_LIST: &str = r#"{"kind":"busy","items":[]}"#;
     const BUSY_BLOCKED_LIST: &str = r#"{"kind":"busy","entries":[]}"#;
     const BUSY_STEP_LIST: &str = r#"{"kind":"busy","steps":[]}"#;
+    const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
@@ -425,7 +426,9 @@ mod wasm_bindings {
             self.inner.clear_api_key();
         }
 
-        /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item]}`.
+        /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item & {"pending": bool}]}`
+        /// — each item's own fields flattened alongside `pending` (issue
+        /// #108's "a pending item is marked as such").
         pub fn frontier(&self) -> String {
             match self.inner.host.borrow().as_ref() {
                 Some(host) => {
@@ -446,7 +449,7 @@ mod wasm_bindings {
         }
 
         /// Relation-blocked items with the reason visible, as JSON:
-        /// `{"kind": "ok"|"busy", "entries": [{"item": Item, "blocked_by": [Item]}]}`.
+        /// `{"kind": "ok"|"busy", "entries": [{"item": Item & {"pending": bool}, "blocked_by": [Item & {"pending": bool}]}]}`.
         pub fn blocked(&self) -> String {
             match self.inner.host.borrow().as_ref() {
                 Some(host) => {
@@ -463,6 +466,18 @@ mod wasm_bindings {
                     serde_json::to_string(&host.steps(&item_id)).expect("StepListResponse serializes")
                 }
                 None => BUSY_STEP_LIST.to_string(),
+            }
+        }
+
+        /// Every live project, as JSON: `{"kind": "ok"|"busy", "projects": [Project]}`
+        /// — resolves the frontier's "grouped by project" display to real
+        /// names (issue #108, PR #200 review).
+        pub fn projects(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.projects()).expect("ProjectListResponse serializes")
+                }
+                None => BUSY_PROJECT_LIST.to_string(),
             }
         }
 

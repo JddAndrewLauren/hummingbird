@@ -156,6 +156,25 @@ export interface TaskItemDTO {
   createdAt: number;
   updatedAt: number;
   version: number;
+  /** Whether this item is currently overlaid by an unconfirmed local
+   * mutation (`Core::is_pending`, `ffi-web`'s `FrontierItemDTO`) — S10's "a
+   * pending item is marked as such" (issue #108). Stamped by the host on
+   * every item this DTO shape carries (frontier, triage inbox, blocked and
+   * its blockers), not left to a separate `isPending` request per row. */
+  pending: boolean;
+}
+
+/** One `projects` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Project`, camelCased. Resolves a
+ * `TaskItemDTO.projectId` to a real name for the frontier's "grouped by
+ * project" display (issue #108, PR #200 review). */
+export interface ProjectDTO {
+  id: string;
+  name: string;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  version: number;
 }
 
 /** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
@@ -227,6 +246,9 @@ export type TaskWorkerRequest =
   | { type: "getBlocked" }
   /** One item's Steps — item detail (issue #96, S10). */
   | { type: "getSteps"; itemId: string }
+  /** Resolves the frontier's "grouped by project" display to real names
+   * (issue #108, PR #200 review). */
+  | { type: "getProjects" }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -284,6 +306,7 @@ export type TaskWorkerResponse =
   | { type: "triageInbox"; items: TaskItemDTO[] }
   | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }
   | { type: "steps"; itemId: string; steps: StepDTO[] }
+  | { type: "projects"; projects: ProjectDTO[] }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
   | {
       type: "syncOutcome";

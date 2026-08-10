@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { priorityLabel, priorityRank } from "./priority";
+import { hasPriority, priorityLabel, priorityRank } from "./priority";
 
 // The wire encoding (`items.priority`, ADR-0009) is Linear's own: 0 means
 // "no priority" and 1..4 are Urgent..Low — inverted (1 is most urgent, not
@@ -40,5 +40,22 @@ describe("priorityLabel", () => {
 
   it("labels an unrecognised value as 'No priority', never the raw number", () => {
     expect(priorityLabel(9)).toBe("No priority");
+  });
+});
+
+describe("hasPriority", () => {
+  it("is false for an explicit 0 (No priority)", () => {
+    expect(hasPriority(0)).toBe(false);
+  });
+
+  it.each([1, 2, 3, 4])("is true for a real priority (%i)", (raw) => {
+    expect(hasPriority(raw)).toBe(true);
+  });
+
+  it("is false for an out-of-range value, matching its 'No priority' label rather than a bare !== 0 check", () => {
+    // PR #200 review: `raw !== 0` alone would say `true` here even though
+    // `priorityLabel` renders it as "No priority" — a chip that says
+    // "No priority" is noise.
+    expect(hasPriority(9)).toBe(false);
   });
 });

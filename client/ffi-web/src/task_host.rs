@@ -13,7 +13,7 @@ use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationI
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::{Core, CoreCycleOutcome, CoreEvent, CoreInitError};
-use hummingbird_domain::{Item, Stage};
+use hummingbird_domain::{Item, Project, Stage};
 
 // The real, target-specific store `Core::init` resolves to internally is a
 // *private* type alias (`hummingbird_core::CoreStore`) — this crate cannot
@@ -56,6 +56,23 @@ pub struct CaptureResponse {
     pub error: Option<String>,
 }
 
+/// One item, plus whether it is currently overlaid by an unconfirmed local
+/// mutation (`Core::is_pending`) — S10's "a pending item is marked as such"
+/// acceptance criterion (issue #108). A wrapper around
+/// [`hummingbird_domain::Item`] rather than a field added to it: `pending`
+/// is a purely client-side, read-time fact about the overlay, never a
+/// schema column (ADR-0001 rule 1 makes the schema itself the domain
+/// model). `#[serde(flatten)]` puts `item`'s own fields at the same JSON
+/// level as `pending`, so the wire shape a frontier/blocked entry produces
+/// is one flat object — `task-worker.ts`'s `RawItem` just gains the one
+/// extra key.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FrontierItemDTO {
+    #[serde(flatten)]
+    pub item: Item,
+    pub pending: bool,
+}
+
 /// The wrapper around a live read ([`TaskHostCore::frontier`] /
 /// [`TaskHostCore::triage_inbox`]): `"busy"` when the core is checked out
 /// mid-poll, carrying no items — the same "no new information, don't blank
@@ -63,7 +80,7 @@ pub struct CaptureResponse {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ItemListResponse {
     pub kind: &'static str,
-    pub items: Vec<Item>,
+    pub items: Vec<FrontierItemDTO>,
 }
 
 /// One [`TaskHostCore::blocked`] entry: an item and the open blockers
@@ -71,8 +88,8 @@ pub struct ItemListResponse {
 /// visible" (issue #108).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct BlockedEntryDTO {
-    pub item: Item,
-    pub blocked_by: Vec<Item>,
+    pub item: FrontierItemDTO,
+    pub blocked_by: Vec<FrontierItemDTO>,
 }
 
 /// The wrapper around [`TaskHostCore::blocked`]'s answer. Same `"busy"`
@@ -89,6 +106,16 @@ pub struct BlockedListResponse {
 pub struct StepListResponse {
     pub kind: &'static str,
     pub steps: Vec<hummingbird_domain::Step>,
+}
+
+/// The wrapper around [`TaskHostCore::projects`]'s answer — resolves a
+/// `TaskItemDTO.projectId` to a real name for the frontier's "grouped by
+/// project" display (issue #108, PR #200 review). Same `"busy"` contract as
+/// [`ItemListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ProjectListResponse {
+    pub kind: &'static str,
+    pub projects: Vec<Project>,
 }
 
 /// The wrapper around [`TaskHostCore::is_pending`]'s answer.
@@ -311,24 +338,51 @@ impl TaskHostCore {
         }
     }
 
+    /// Wraps `item` with whether it is currently overlaid — the one place
+    /// every frontier/triage/blocked read stamps [`FrontierItemDTO::pending`],
+    /// so it is computed the same way (`Core::is_pending`) everywhere it
+    /// appears rather than risking the answer drifting between call sites.
+    fn with_pending(&self, item: Item) -> FrontierItemDTO {
+        let pending = self.core.is_pending(&item.id);
+        FrontierItemDTO { item, pending }
+    }
+
     /// The frontier — what can be started right now, per [`Core::frontier`].
+    /// Each item carries whether it is still an unconfirmed local capture
+    /// (issue #108's "a pending item is marked as such"): the only true
+    /// runtime source of that fact is `Core::is_pending`, so it is stamped
+    /// here rather than left to a caller that would otherwise need one
+    /// `isPending` request per item.
     pub fn frontier(&self) -> ItemListResponse {
         ItemListResponse {
             kind: "ok",
-            items: self.core.frontier(),
+            items: self
+                .core
+                .frontier()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
         }
     }
 
     /// The triage inbox — captured, not yet promoted, per
-    /// [`Core::triage_inbox`].
+    /// [`Core::triage_inbox`]. Same per-item `pending` stamp as
+    /// [`TaskHostCore::frontier`].
     pub fn triage_inbox(&self) -> ItemListResponse {
         ItemListResponse {
             kind: "ok",
-            items: self.core.triage_inbox(),
+            items: self
+                .core
+                .triage_inbox()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
         }
     }
 
     /// Relation-blocked items with the reason visible, per [`Core::blocked`].
+    /// Same per-item `pending` stamp as [`TaskHostCore::frontier`], on both
+    /// the blocked item and the blockers it is paired with.
     pub fn blocked(&self) -> BlockedListResponse {
         BlockedListResponse {
             kind: "ok",
@@ -336,7 +390,10 @@ impl TaskHostCore {
                 .core
                 .blocked()
                 .into_iter()
-                .map(|(item, blocked_by)| BlockedEntryDTO { item, blocked_by })
+                .map(|(item, blocked_by)| BlockedEntryDTO {
+                    item: self.with_pending(item),
+                    blocked_by: blocked_by.into_iter().map(|b| self.with_pending(b)).collect(),
+                })
                 .collect(),
         }
     }
@@ -346,6 +403,15 @@ impl TaskHostCore {
         StepListResponse {
             kind: "ok",
             steps: self.core.steps_for(item_id),
+        }
+    }
+
+    /// Every live project, per [`Core::projects`] — resolves the frontier's
+    /// grouping to real project names (issue #108, PR #200 review).
+    pub fn projects(&self) -> ProjectListResponse {
+        ProjectListResponse {
+            kind: "ok",
+            projects: self.core.projects(),
         }
     }
 
@@ -494,11 +560,25 @@ mod tests {
         assert!(host.is_pending(&id).pending);
         let frontier = host.frontier();
         assert_eq!(frontier.items.len(), 1);
-        assert_eq!(frontier.items[0].title, "buy milk");
+        assert_eq!(frontier.items[0].item.title, "buy milk");
+        assert!(
+            frontier.items[0].pending,
+            "a still-queued capture must be marked pending on the frontier item itself, \
+             not just answerable via a separate isPending request"
+        );
         // A `Stage::Triage` (the default in `Core`, but here explicit via
         // "ready") capture is not on the triage inbox.
         assert_eq!(host.triage_inbox().items.len(), 0);
     }
+
+    /// `Core::is_pending` itself (and the overlay-clearing behaviour once a
+    /// sweep confirms or dead-letters a capture) is exhaustively covered at
+    /// the `client/core` layer (`a_sweep_confirming_the_capture_removes_the_overlay_with_no_gap`,
+    /// `a_dead_lettered_capture_removes_the_overlay_and_reverts_to_server_truth`).
+    /// `with_pending` is a one-line pass-through with no branching logic of
+    /// its own, so what this layer needs to pin is the wire shape it
+    /// produces for both states — covered below by
+    /// `frontier_item_dto_serializes_pending_alongside_the_flattened_item_fields`.
 
     #[tokio::test]
     async fn a_triage_stage_capture_lands_on_the_inbox_not_the_frontier() {
@@ -524,6 +604,7 @@ mod tests {
 
         assert_eq!(host.blocked(), BlockedListResponse { kind: "ok", entries: Vec::new() });
         assert_eq!(host.steps("some-id"), StepListResponse { kind: "ok", steps: Vec::new() });
+        assert_eq!(host.projects(), ProjectListResponse { kind: "ok", projects: Vec::new() });
     }
 
     #[tokio::test]
@@ -959,6 +1040,66 @@ mod tests {
         );
     }
 
+    fn fixture_item(id: &str) -> Item {
+        Item {
+            id: id.to_string(),
+            seq: None,
+            title: "buy milk".to_string(),
+            description: None,
+            stage: Stage::Ready,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: None,
+            scheduled_date: None,
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+        }
+    }
+
+    /// Pins the wire shape `task-worker.ts`'s `RawItem` parses: `pending`
+    /// sits alongside the flattened `Item` fields, not nested under a
+    /// separate `item` key — and this is asserted for both `true` and
+    /// `false` so a regression that hard-codes one value would fail here.
+    #[test]
+    fn frontier_item_dto_serializes_pending_alongside_the_flattened_item_fields() {
+        let pending = FrontierItemDTO {
+            item: fixture_item("item-1"),
+            pending: true,
+        };
+        let json = serde_json::to_string(&pending).unwrap();
+        assert!(json.contains(r#""id":"item-1""#), "{json}");
+        assert!(json.contains(r#""pending":true"#), "{json}");
+        assert!(!json.contains("\"item\":{"), "pending must not nest under an `item` key: {json}");
+
+        let confirmed = FrontierItemDTO {
+            item: fixture_item("item-2"),
+            pending: false,
+        };
+        assert!(serde_json::to_string(&confirmed).unwrap().contains(r#""pending":false"#));
+    }
+
+    #[test]
+    fn blocked_entry_dto_carries_pending_on_both_the_item_and_its_blockers() {
+        let entry = BlockedEntryDTO {
+            item: FrontierItemDTO { item: fixture_item("blocked-1"), pending: true },
+            blocked_by: vec![FrontierItemDTO { item: fixture_item("blocker-1"), pending: false }],
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""item":{"id":"blocked-1""#), "{json}");
+        assert!(json.contains(r#""pending":true"#), "{json}");
+        assert!(json.contains(r#""blocked_by":[{"id":"blocker-1""#), "{json}");
+        assert!(json.contains(r#""pending":false"#), "{json}");
+    }
+
     #[test]
     fn blocked_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
         let response = BlockedListResponse {
@@ -980,6 +1121,25 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&response).unwrap(),
             r#"{"kind":"ok","steps":[]}"#
+        );
+    }
+
+    #[test]
+    fn project_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = ProjectListResponse {
+            kind: "ok",
+            projects: vec![Project {
+                id: "p-1".to_string(),
+                name: "Ship it".to_string(),
+                archived_at: None,
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","projects":[{"id":"p-1","name":"Ship it","archived_at":null,"created_at":1,"updated_at":1,"version":1}]}"#
         );
     }
 

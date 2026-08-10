@@ -169,6 +169,14 @@ impl SyncMirror {
         live(self.projects.get(id))
     }
 
+    /// Every live project — grouping the frontier by project (issue #108,
+    /// PR #200 review) needs a project's *name*, not just its id, and this
+    /// is the read that resolves it: `TaskItemDTO.projectId` alone cannot
+    /// name anything.
+    pub fn all_projects(&self) -> impl Iterator<Item = &Project> {
+        self.projects.values().filter_map(live_slot)
+    }
+
     pub fn route(&self, project_id: &str) -> Option<&Route> {
         live(self.routes.get(project_id))
     }

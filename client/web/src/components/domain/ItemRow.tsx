@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { CSSProperties, HTMLAttributes } from "react";
 import { Icon } from "../core/Icon";
-import { priorityLabel } from "../../screens/priority";
+import { hasPriority, priorityLabel } from "../../screens/priority";
 import { StageBadge } from "./StageBadge";
 import type { Stage } from "./StageBadge";
 
@@ -71,9 +71,13 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
         transition: "background var(--dur-fast) var(--ease-flit)", ...style,
       }} {...rest}>
       <span title={URGENCY_LABEL[urgency] || URGENCY_LABEL.calm} style={{ width: 6, height: 6, borderRadius: "50%", flex: "0 0 auto", background: URGENCY[urgency] || URGENCY.calm }} />
+      {/* No `opacity` change here for `pending`: the chip below is the one
+          pending indicator, deliberately, so a caller that also dims this
+          row for an unrelated reason (e.g. NowScreen's "Blocked" section)
+          never compounds two opacities into an over-muted row
+          (PR #200 review). */}
       <span style={{ flex: 1, minWidth: 0, font: "var(--type-body)", color: stage === "done" ? "var(--text-muted)" : "var(--text-primary)",
-        textDecoration: stage === "done" ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        opacity: pending ? 0.7 : 1 }}>{title}</span>
+        textDecoration: stage === "done" ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
       {pending ? (
         <span title="Not yet confirmed by the server" style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-muted)" }}>
           <Icon name="loader-circle" size={13} />Pending
@@ -90,7 +94,7 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
         </span>
       ) : null}
       {size ? <span style={{ font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-muted)" }}>{size}</span> : null}
-      {priority !== undefined && priority !== 0 ? (
+      {priority !== undefined && hasPriority(priority) ? (
         <span style={{ font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-brand)" }}>{priorityLabel(priority)}</span>
       ) : null}
       {scheduled ? (

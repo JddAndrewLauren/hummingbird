@@ -79,7 +79,7 @@ function RealFrontier({
     );
   }
 
-  const groups = groupByProject(orderFrontier(task.frontier));
+  const groups = groupByProject(orderFrontier(task.frontier), task.projects);
 
   if (groups.length === 0 && task.blocked.length === 0) {
     return (
@@ -99,7 +99,11 @@ function RealFrontier({
       {groups.map((group) => (
         <Section
           key={group.projectId ?? "unassigned"}
-          title={group.projectId ? `Project ${group.projectId}` : "No project"}
+          title={
+            group.projectId === null
+              ? "No project"
+              : (group.projectName ?? `Project ${group.projectId}`)
+          }
           meta={`${group.items.length} ${group.items.length === 1 ? "action" : "actions"}`}
         >
           <Card padding="var(--space-3)">
@@ -113,7 +117,7 @@ function RealFrontier({
                 scheduled={item.scheduledDate ?? undefined}
                 size={item.size ?? undefined}
                 priority={item.priority}
-                pending={Boolean(task.pending[item.id])}
+                pending={item.pending}
                 onClick={() => onOpenItem(item.id)}
               />
             ))}
@@ -128,13 +132,19 @@ function RealFrontier({
         >
           <Card padding="var(--space-3)">
             {task.blocked.map((entry) => (
+              // This wrapper is the ONE dimming source for a blocked row —
+              // `ItemRow`'s own `pending` indicator is a chip, never an
+              // opacity change (see that component), specifically so
+              // stacking the two here can never compound into an
+              // over-muted row for something both blocked and pending
+              // (PR #200 review).
               <div key={entry.item.id} style={{ opacity: 0.6 }}>
                 <ItemRow
                   title={entry.item.title}
                   stage={entry.item.stage}
                   size={entry.item.size ?? undefined}
                   priority={entry.item.priority}
-                  pending={Boolean(task.pending[entry.item.id])}
+                  pending={entry.item.pending}
                 />
                 <span
                   className="hb-meta"

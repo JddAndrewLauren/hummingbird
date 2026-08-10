@@ -47,7 +47,7 @@ pub mod storage;
 pub mod sync;
 pub mod task;
 
-use hummingbird_domain::{CreateItem, Item, Stage};
+use hummingbird_domain::{CreateItem, Item, Project, Stage};
 
 use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
 use sync::queue::{MutationIntent, QueueEntry};
@@ -517,6 +517,16 @@ where
             .collect();
         steps.sort_by_key(|step| step.position);
         steps
+    }
+
+    /// Every live project — what the frontier's "grouped by project"
+    /// display (issue #108) resolves a `TaskItemDTO.projectId` against to
+    /// get the project's actual *name*, rather than rendering the raw id.
+    /// Id order, for a stable list a caller can diff against its own.
+    pub fn projects(&self) -> Vec<Project> {
+        let mut projects: Vec<Project> = self.cycle.mirror().all_projects().cloned().collect();
+        projects.sort_by(|a, b| a.id.cmp(&b.id));
+        projects
     }
 
     /// Captures a new item: enqueues a `POST /api/items` create (durably,
@@ -1746,5 +1756,63 @@ mod tests {
             vec!["other"]
         );
         assert!(core.steps_for("nonexistent").is_empty());
+    }
+
+    // ------------------------------------------------- projects() (S10, #108 review)
+
+    #[tokio::test]
+    async fn projects_resolves_names_in_id_order_and_excludes_absent_ones() {
+        fn fixture_project(id: &str, name: &str) -> hummingbird_domain::Project {
+            hummingbird_domain::Project {
+                id: id.to_string(),
+                name: name.to_string(),
+                archived_at: None,
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }
+        }
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            projects: vec![fixture_project("p-2", "Second"), fixture_project("p-1", "First")],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 0.0).await;
+
+        let projects = core.projects();
+        assert_eq!(
+            projects.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            vec!["First", "Second"],
+            "projects come back in id order, not sweep order"
+        );
+
+        // A sweep that omits p-1 demotes it to absent.
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            projects: vec![fixture_project("p-2", "Second")],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(
+            core.projects().iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+            vec!["p-2"],
+            "an absent project must never appear"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_core_reports_no_projects() {
+        let core = Core::new();
+        assert!(core.projects().is_empty());
     }
 }

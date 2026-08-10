@@ -11,6 +11,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
     steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
+    projects: vi.fn().mockReturnValue('{"kind":"ok","projects":[]}'),
     isPending: vi.fn().mockReturnValue('{"kind":"ok","pending":false}'),
     takeEvents: vi.fn().mockReturnValue("[]"),
     runSync: vi.fn().mockResolvedValue(
@@ -53,6 +54,7 @@ const rawItem = {
   created_at: 1_000,
   updated_at: 1_000,
   version: 0,
+  pending: false,
 };
 
 const dtoItem = {
@@ -76,6 +78,7 @@ const dtoItem = {
   createdAt: 1_000,
   updatedAt: 1_000,
   version: 0,
+  pending: false,
 };
 
 describe("handleTaskRequest", () => {
@@ -157,6 +160,17 @@ describe("handleTaskRequest", () => {
     expect(await run({ type: "getFrontier" }, host)).toEqual([]);
   });
 
+  it("getFrontier maps a pending raw item to a pending DTO — issue #108 review", async () => {
+    const host = fakeHost({
+      frontier: vi.fn().mockReturnValue(
+        JSON.stringify({ kind: "ok", items: [{ ...rawItem, pending: true }] }),
+      ),
+    });
+    const posted = await run({ type: "getFrontier" }, host);
+
+    expect(posted).toEqual([{ type: "frontier", items: [{ ...dtoItem, pending: true }] }]);
+  });
+
   it("getTriageInbox maps every raw item to its camelCase DTO", async () => {
     const host = fakeHost({
       triageInbox: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", items: [rawItem] })),
@@ -233,6 +247,37 @@ describe("handleTaskRequest", () => {
       steps: vi.fn().mockReturnValue('{"kind":"busy","steps":[]}'),
     });
     expect(await run({ type: "getSteps", itemId: "item-1" }, host)).toEqual([]);
+  });
+
+  it("getProjects maps every raw project to its camelCase DTO", async () => {
+    const rawProject = {
+      id: "p-1",
+      name: "Ship it",
+      archived_at: null,
+      created_at: 1,
+      updated_at: 1,
+      version: 1,
+    };
+    const host = fakeHost({
+      projects: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", projects: [rawProject] })),
+    });
+    const posted = await run({ type: "getProjects" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "projects",
+        projects: [
+          { id: "p-1", name: "Ship it", archivedAt: null, createdAt: 1, updatedAt: 1, version: 1 },
+        ],
+      },
+    ]);
+  });
+
+  it('getProjects posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      projects: vi.fn().mockReturnValue('{"kind":"busy","projects":[]}'),
+    });
+    expect(await run({ type: "getProjects" }, host)).toEqual([]);
   });
 
   it("isPending posts the item id alongside the answer", async () => {

@@ -29,6 +29,7 @@ function item(overrides: Partial<TaskItemDTO> = {}): TaskItemDTO {
     createdAt: 1,
     updatedAt: 1,
     version: 0,
+    pending: false,
     ...overrides,
   };
 }

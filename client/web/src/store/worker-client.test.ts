@@ -17,6 +17,7 @@ import {
   requestFrontier,
   requestIsPending,
   requestMirrorSnapshot,
+  requestProjects,
   requestQueueDepth,
   requestSteps,
   requestTriageInbox,
@@ -43,6 +44,7 @@ const initialTask: TaskState = {
   triageInbox: [],
   blocked: [],
   stepsByItem: {},
+  projects: [],
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
@@ -253,6 +255,7 @@ describe("attachWorkerClient", () => {
       createdAt: 1,
       updatedAt: 1,
       version: 0,
+      pending: false,
     };
     worker.onmessage?.({ data: { type: "frontier", items: [item] } } as MessageEvent);
 
@@ -297,6 +300,7 @@ describe("attachWorkerClient", () => {
       createdAt: 1,
       updatedAt: 1,
       version: 0,
+      pending: false,
     };
     worker.onmessage?.({
       data: { type: "blocked", entries: [{ item, blockedBy: [item] }] },
@@ -330,6 +334,26 @@ describe("attachWorkerClient", () => {
     worker.onmessage?.({ data: { type: "steps", itemId: "item-2", steps: [] } } as MessageEvent);
 
     expect(store.getSnapshot().task.stepsByItem).toEqual({ "item-1": [step], "item-2": [] });
+  });
+
+  it("writes the projects on a projects message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const project = {
+      id: "p-1",
+      name: "Ship it",
+      archivedAt: null,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 0,
+    };
+    worker.onmessage?.({ data: { type: "projects", projects: [project] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.projects).toEqual([project]);
+    // Untouched sibling field.
+    expect(store.getSnapshot().task.frontier).toEqual([]);
   });
 
   it("merges one item's pending state on an isPendingResult message, leaving others alone", () => {
@@ -731,6 +755,12 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     requestSteps(worker, "item-1");
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getSteps", itemId: "item-1" });
+  });
+
+  it("requestProjects posts a getProjects request", () => {
+    const worker = fakeWorker();
+    requestProjects(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getProjects" });
   });
 
   it("runTaskSync posts a runSync request", () => {

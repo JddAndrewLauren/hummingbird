@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { CoreStatus } from "../store/store";
-import { requestBlocked, requestFrontier, type WorkerLike } from "../store/worker-client";
+import { requestBlocked, requestFrontier, requestProjects, type WorkerLike } from "../store/worker-client";
 
 // S10's read-side wiring (issue #108): requests the frontier and the
 // relation-blocked explanation once the core is ready, and again after
@@ -27,6 +27,7 @@ export function useFrontierWiring(
     }
     requestFrontier(worker);
     requestBlocked(worker);
+    requestProjects(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, syncOutcomeSeq]);
 }

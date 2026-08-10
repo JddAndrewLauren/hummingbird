@@ -1,6 +1,7 @@
 import type {
   BlockedFrontierEntryDTO,
   DeadLetterEntryDTO,
+  ProjectDTO,
   StepDTO,
   TaskEventDTO,
   TaskItemDTO,
@@ -28,6 +29,7 @@ export interface TaskHostLike {
   triageInbox(): string;
   blocked(): string;
   steps(itemId: string): string;
+  projects(): string;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -62,6 +64,24 @@ interface RawItem {
   created_at: number;
   updated_at: number;
   version: number;
+  /** Flattened alongside the item's own fields (`FrontierItemDTO`,
+   * `client/ffi-web/src/task_host.rs`) — issue #108's "a pending item is
+   * marked as such". */
+  pending: boolean;
+}
+
+interface RawProject {
+  id: string;
+  name: string;
+  archived_at: number | null;
+  created_at: number;
+  updated_at: number;
+  version: number;
+}
+
+interface RawProjectListResponse {
+  kind: "ok" | "busy";
+  projects: RawProject[];
 }
 
 interface RawItemListResponse {
@@ -170,6 +190,18 @@ function mapItem(raw: RawItem): TaskItemDTO {
     source: raw.source,
     sourceKey: raw.source_key,
     sourceUrl: raw.source_url,
+    archivedAt: raw.archived_at,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    version: raw.version,
+    pending: raw.pending,
+  };
+}
+
+function mapProject(raw: RawProject): ProjectDTO {
+  return {
+    id: raw.id,
+    name: raw.name,
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
@@ -294,6 +326,14 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "steps", itemId: request.itemId, steps: raw.steps.map(mapStep) });
+      return;
+    }
+    case "getProjects": {
+      const raw = JSON.parse(host.projects()) as RawProjectListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "projects", projects: raw.projects.map(mapProject) });
       return;
     }
     case "isPending": {

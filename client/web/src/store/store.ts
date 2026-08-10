@@ -9,6 +9,7 @@ import type {
   CurrentNextEventDTO,
   DeadLetterEntryDTO,
   PollOutcomeName,
+  ProjectDTO,
   RenderableCurrentNextKind,
   StepDTO,
   TaskItemDTO,
@@ -71,6 +72,9 @@ export interface TaskState {
    * grows entries a view actually asked about via `getSteps`, the same
    * "only what was asked for" shape `pending` already uses. */
   stepsByItem: Record<string, StepDTO[]>;
+  /** Every live project — resolves the frontier's "grouped by project"
+   * display to real names (issue #108, PR #200 review). */
+  projects: ProjectDTO[];
   /** Keyed by item id — only ever grows entries this view actually asked
    * about via `isPending`, never a full mirror of every pending item. */
   pending: Record<string, boolean>;
@@ -143,6 +147,7 @@ const initialTaskState: TaskState = {
   triageInbox: [],
   blocked: [],
   stepsByItem: {},
+  projects: [],
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
