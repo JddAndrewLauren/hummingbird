@@ -518,3 +518,115 @@ describe("runSync's cycle-tail push scales with view count in messages, not in w
     },
   );
 });
+
+/** A `PortLike` that records every posted `WorkerResponse`, so a test can
+ * assert on the actual *content* a view ends up holding — not just how many
+ * messages arrived. Message count alone cannot catch the frozen-badge
+ * regression the per-cycle counter (`TaskState.syncOutcomeSeq`) was
+ * originally built to close (round-2 review of PR #181): a view could
+ * receive the right number of messages every cycle and still be looking at
+ * stale content if the SAME reading were pushed twice by mistake. */
+function recordingPort(): PortLike & { messages: () => TaskWorkerResponse[] } {
+  const messages: TaskWorkerResponse[] = [];
+  return {
+    onmessage: null,
+    start: () => {},
+    postMessage: (response) => {
+      messages.push(response as TaskWorkerResponse);
+    },
+    messages: () => messages,
+  };
+}
+
+describe("runSync's cycle-tail push keeps every connected view's reading fresh across cycles (issue #191)", () => {
+  it("every connected port ends up holding the SECOND cycle's queue depth and dead letters, not the first's", async () => {
+    // Two cycles, a genuinely CHANGING host reading between them — this is
+    // the freshness assertion the frozen-badge regression (round-2 review of
+    // PR #181) demands: a fixed-count assertion alone would pass even if the
+    // second cycle re-pushed the first cycle's stale numbers.
+    const host = fakeHost({
+      queueDepth: vi
+        .fn()
+        .mockReturnValueOnce('{"kind":"ok","depth":1}')
+        .mockReturnValueOnce('{"kind":"ok","depth":7}'),
+      deadLetters: vi
+        .fn()
+        .mockReturnValueOnce('{"kind":"ok","entries":[]}')
+        .mockReturnValueOnce(
+          JSON.stringify({
+            kind: "ok",
+            entries: [
+              {
+                id: "item-9",
+                reason: "permanent",
+                message: "boom",
+                fields: [],
+                at_ms: 9_000,
+              },
+            ],
+          }),
+        ),
+    });
+    const registry = new PortRegistry();
+    registry.activate(async () => {}, () => 1);
+    // N=3, including one view connecting AFTER the first cycle already
+    // ran — the on-ready request (not this push) is what catches such a
+    // view up; this test only asserts what the cycle-tail push itself
+    // delivers to whoever is connected when it fires.
+    const earlyPorts = [recordingPort(), recordingPort()];
+    for (const port of earlyPorts) {
+      registry.connect(port);
+    }
+
+    const enqueue = createTaskRequestQueue(host, (response) => registry.broadcast(response));
+
+    await enqueue({ type: "runSync", nowMs: 1_000, trigger: "user", forceFullSweep: false, jitterUnit: 0 });
+
+    const latePort = recordingPort();
+    registry.connect(latePort);
+
+    await enqueue({ type: "runSync", nowMs: 2_000, trigger: "timer", forceFullSweep: false, jitterUnit: 0 });
+
+    for (const port of [...earlyPorts, latePort]) {
+      const queueDepthMessages = port
+        .messages()
+        .filter((message): message is Extract<TaskWorkerResponse, { type: "queueDepth" }> =>
+          message.type === "queueDepth",
+        );
+      const deadLettersMessages = port
+        .messages()
+        .filter((message): message is Extract<TaskWorkerResponse, { type: "deadLetters" }> =>
+          message.type === "deadLetters",
+        );
+
+      // The late-connecting port only sees the second cycle's tail push (it
+      // was not connected for the first); the two early ports see both.
+      const lastQueueDepth = queueDepthMessages.at(-1);
+      const lastDeadLetters = deadLettersMessages.at(-1);
+      expect(lastQueueDepth).toEqual({ type: "queueDepth", depth: 7 });
+      expect(lastDeadLetters).toEqual({
+        type: "deadLetters",
+        entries: [
+          {
+            id: "item-9",
+            reason: "permanent",
+            message: "boom",
+            fields: [],
+            atMs: 9_000,
+          },
+        ],
+      });
+    }
+
+    // The two early ports specifically must have seen BOTH readings, in
+    // order — proof the second cycle's push actually replaced the first's
+    // content rather than the first message simply never having arrived.
+    for (const port of earlyPorts) {
+      const depths = port
+        .messages()
+        .filter((message) => message.type === "queueDepth")
+        .map((message) => (message as { depth: number }).depth);
+      expect(depths).toEqual([1, 7]);
+    }
+  });
+});

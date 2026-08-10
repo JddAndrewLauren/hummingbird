@@ -369,7 +369,8 @@ describe("attachWorkerClient", () => {
       expect(task.lastSyncAtMs).toBe(1_000);
       // The last outcome that actually ran is still what the badge reads.
       expect(task.lastSyncOutcome?.kind).toBe("pull_failed");
-      // ...and the cycle still counted, so the per-cycle refresh still fires.
+      // ...and the cycle still counted, whether or not anything currently
+      // reads that count — see `TaskState.syncOutcomeSeq`'s own doc.
       expect(task.syncOutcomeSeq).toBe(2);
     },
   );
@@ -395,15 +396,22 @@ describe("attachWorkerClient", () => {
   });
 
   it("bumps syncOutcomeSeq on EVERY cycle, even when consecutive outcomes are identical", () => {
-    // Round-2 review of PR #181: the queue-depth / dead-letter refresh
-    // effect (`useSyncWiring.ts`) is keyed on this value, and
-    // `requestQueueDepth`/`requestDeadLetters` have exactly one call site
-    // app-wide — so if a second steady-state cycle did NOT change it, the
-    // Settings queue-depth badge would freeze after the first post-ready
-    // cycle and a dead letter created later in the session (it arrives
-    // inside a *completed* outcome — `deadLettered` is its own field) would
-    // never surface. Two byte-identical outcomes must yield two distinct
-    // seq values.
+    // Round-2 review of PR #181: until issue #191, the queue-depth /
+    // dead-letter refresh effect (`useSyncWiring.ts`) was keyed on this
+    // value, and `requestQueueDepth`/`requestDeadLetters` had exactly one
+    // call site app-wide — so if a second steady-state cycle did NOT change
+    // it, the Settings queue-depth badge would freeze after the first
+    // post-ready cycle and a dead letter created later in the session (it
+    // arrives inside a *completed* outcome — `deadLettered` is its own
+    // field) would never surface.
+    //
+    // Issue #191 moved that per-cycle refresh into the worker itself (an
+    // unsolicited `queueDepth`/`deadLetters` push at the tail of every
+    // `runSync`, `worker/task-worker.ts`), which removed this counter's only
+    // consumer in view code — see `TaskState.syncOutcomeSeq`'s own doc for
+    // why it is retained anyway rather than deleted. This test still pins
+    // the counter's own behaviour (two byte-identical outcomes must yield
+    // two distinct seq values), independent of who currently reads it.
     const worker = fakeWorker();
     const store = createCoreStore();
     attachWorkerClient(worker, store, () => 5_000);
