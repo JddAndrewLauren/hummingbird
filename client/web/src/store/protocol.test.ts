@@ -110,7 +110,6 @@ describe("protocol round-trips", () => {
       "pollStart",
       "pollRefresh",
       "pollTimer",
-      "getCurrentNext",
       "listCalendars",
     ];
     const taskTypes: TaskWorkerRequest["type"][] = [

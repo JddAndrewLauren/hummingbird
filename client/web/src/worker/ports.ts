@@ -101,12 +101,15 @@ type State =
  * something that HAPPENED — a point-in-time event whose meaning is tied to
  * when it fired; replaying one to a view long after the fact would make a
  * past event read as live. `frontier`, `triageInbox`, `isPendingResult`,
- * `calendarList`, `currentNext`, and `mirrorSnapshot` are excluded because
+ * `calendarList`, `paneRead`, and `mirrorSnapshot` are excluded because
  * each answers its own idempotent `getX`-shaped request
  * (`getFrontier`/`getTriageInbox`/`isPending`/`listCalendars`/
- * `getCurrentNext`/`getMirrorSnapshot`) that costs nothing to re-send — a
+ * `getPaneRead`/`getMirrorSnapshot`) that costs nothing to re-send — a
  * connecting view that wants one just asks, the same as `queueDepth` above,
- * rather than needing yesterday's broadcast replayed at it. `captureResult`
+ * rather than needing yesterday's broadcast replayed at it. (`paneRead` has
+ * a second reason on top of that one: its ages and its alert liveness were
+ * both measured against the requesting clock, so a replayed one would state
+ * a stale age as a current fact.) `captureResult`
  * is excluded for a more basic reason: it answers one specific `capture`
  * call, matched client-side by the caller's own seed (`worker-client.ts`) —
  * a view that never issued that capture has no seed to match it against and

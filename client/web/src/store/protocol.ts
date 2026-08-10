@@ -40,22 +40,6 @@ export type PollOutcomeName =
    * wasm binding reports it rather than panicking if it ever is. */
   | "busy";
 
-/** The shape of `currentOrNext`'s `"kind"` field. `"busy"` is the same
- * never-in-practice signal as the poll outcome above, and carries no
- * information about the tile — the worker drops it rather than posting it,
- * so it never reaches the store. */
-export type CurrentNextKind =
-  | "no_snapshot"
-  | "none"
-  | "in_progress"
-  | "upcoming"
-  | "busy";
-
-/** The subset of [`CurrentNextKind`] that can reach the main thread — the
- * worker never forwards `"busy"`, so no consumer downstream has to consider
- * a kind that says nothing about the tile. */
-export type RenderableCurrentNextKind = Exclude<CurrentNextKind, "busy">;
-
 /** One selectable calendar offered by the picker — the core's
  * `CalendarListEntry` (`client/core/src/calendar/google/calendar_list.rs`),
  * which fetches it over the core's own `reqwest` path (ADR-0003). Nothing on
@@ -63,16 +47,6 @@ export type RenderableCurrentNextKind = Exclude<CurrentNextKind, "busy">;
 export interface CalendarListEntryDTO {
   id: string;
   summary: string;
-}
-
-/** The event fields the context tile renders — a narrowed mirror of core's
- * `EventRecord` (issue #70), not the full provider-agnostic shape. */
-export interface CurrentNextEventDTO {
-  title: string;
-  startMs: number;
-  endMs: number;
-  allDay: boolean;
-  htmlLink: string | null;
 }
 
 // -- main -> worker ---------------------------------------------------------
@@ -83,7 +57,6 @@ export type CalendarWorkerRequest =
   | { type: "pollStart"; nowMs: number }
   | { type: "pollRefresh"; nowMs: number }
   | { type: "pollTimer"; nowMs: number }
-  | { type: "getCurrentNext"; nowMs: number }
   /** Carries no token: the core lists with the credential it was already
    * pushed, so the picker's lookup costs the host nothing extra. */
   | { type: "listCalendars" };
@@ -209,6 +182,72 @@ export interface BindingDTO {
   known: boolean;
   pending: boolean;
   value: BindingValueDTO;
+}
+
+// -- the pane read (#245, ADR-0015) ----------------------------------------
+//
+// The generic read every standing question's pane starts from:
+// `Core::pane_read` (`client/core/src/pane.rs`) for one source, camelCased by
+// `worker/task-worker.ts`'s `mapPaneRead`. Two things are already decided by
+// the time they arrive here and must never be re-derived on this side —
+// each row's measured age (`Freshness::measure`'s clock rule) and which
+// alerts are still live (ADR-0014's predicate). Everything else — the answer,
+// the band, the threshold, the `(source, subjectKey)` join onto a pane — is
+// this side's, per ADR-0015's carve-out.
+
+/** How old one answer is (`hummingbird_core::freshness::Freshness`).
+ *
+ * A tagged union, not a nullable number, because two different unknowns
+ * exist: `"unknown"` is *we do not know the age at all*, while `"age"` with
+ * `declaredCadenceMs: null` is *we know the age but not what normal looks
+ * like*. The invariant the Rust half exists to hold is that `"unknown"` must
+ * never render as fresh — so a pane's own stale check has to consider this
+ * arm explicitly (`waste.ts`'s `isStaleFreshness`), which a boolean or a
+ * zero age would let it skip. */
+export type FreshnessDTO =
+  | { kind: "unknown" }
+  | { kind: "age"; ageMs: number; declaredCadenceMs: number | null };
+
+/** One snapshot row's envelope, read shallowly (`SnapshotEnvelope`).
+ * `"malformed"` carries the reason in words a pane can render — "visibly
+ * broken, never quietly empty". `schema` is passed through untouched and is
+ * never checked against a source registry: a source this build has not heard
+ * of is a fact about the build, and the pane says so itself. */
+export type PaneEnvelopeDTO =
+  | { kind: "ok"; schema: string; polledEveryMs: number | null; body: string }
+  | { kind: "malformed"; reason: string };
+
+/** One `context_snapshots` row as a pane reads it. `body` is a **string
+ * containing JSON** all the way across the seam — opaque to everything but
+ * the pane that owns the payload shape. */
+export interface PaneSnapshotDTO {
+  key: string;
+  fetchedAtMs: number;
+  envelope: PaneEnvelopeDTO;
+  freshness: FreshnessDTO;
+}
+
+/** One live alert from a pane's own source. `subjectKey` is the pane join's
+ * client half — `(source, subjectKey)` matches `(source, key)` — and it is
+ * *additive*: an alert matching no pane is not dropped, it simply appears in
+ * `AlertsScreen` alone. `null` is a legitimate value (an alert naming no
+ * subject), not a missing field. */
+export interface PaneAlertDTO {
+  id: string;
+  subjectKey: string | null;
+  title: string;
+  body: string | null;
+  raisedAtMs: number;
+  expiresAtMs: number | null;
+}
+
+/** One source's whole pane-facing read. `liveAlerts` is named for what it
+ * is: the liveness filter already ran, core-side, against the `nowMs` the
+ * request carried. */
+export interface PaneReadDTO {
+  source: string;
+  snapshots: PaneSnapshotDTO[];
+  liveAlerts: PaneAlertDTO[];
 }
 
 /** One `projects` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
@@ -343,6 +382,11 @@ export type TaskWorkerRequest =
    * contract as `"act"`. */
   | { type: "setBinding"; seed: string; key: string; value: string; nowMs: number }
   | { type: "getBindings" }
+  /** #245's generic pane read: one source's snapshot rows and its live
+   * alerts. `nowMs` is the request's own clock — it decides both the
+   * measured ages and the liveness filter, core-side, so nothing on this
+   * side re-derives either. */
+  | { type: "getPaneRead"; source: string; nowMs: number }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
   /** Relation-blocked items with the reason visible — S10 (issue #108). */
@@ -465,6 +509,10 @@ export type TaskWorkerResponse =
       error: string | null;
     }
   | { type: "bindings"; bindings: BindingDTO[] }
+  /** Answers `getPaneRead` (#245). Never posted for a `"busy"` read: an
+   * empty pane read renders as "nothing is due", which a core that has not
+   * loaded has no standing to claim — no answer, not an empty one. */
+  | { type: "paneRead"; read: PaneReadDTO }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
   | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }
@@ -551,10 +599,4 @@ export type WorkerResponse =
    * worker drops them rather than emptying a picker that is showing real
    * options. */
   | { type: "calendarList"; calendars: CalendarListEntryDTO[] }
-  | {
-      type: "currentNext";
-      kind: RenderableCurrentNextKind;
-      event: CurrentNextEventDTO | null;
-      asOfMs: number | null;
-    }
   | TaskWorkerResponse;

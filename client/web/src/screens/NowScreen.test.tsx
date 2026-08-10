@@ -21,13 +21,19 @@ import { describe, expect, it, vi } from "vitest";
 import { NowScreen } from "./NowScreen";
 import {
   blockedEntryDTO,
+  bindingDTO,
   fireEvent,
   itemDTO,
+  paneReadDTO,
+  paneSnapshotDTO,
   projectDTO,
   render,
   screen,
   taskState,
+  wasteBody,
 } from "../test/component";
+import { DEMO_DATA } from "../fixtures/demo-data";
+import { BINDING_KEY, SOURCE } from "./waste-pane/waste";
 import type { TaskState } from "../store/store";
 
 const NOW_MS = 1_700_000_000_000;
@@ -39,7 +45,6 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
   const view = render(
     <NowScreen
       demo={null}
-      tile={null}
       onScreen={() => {}}
       task={task}
       nowMs={NOW_MS}
@@ -53,7 +58,6 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
     view.rerender(
       <NowScreen
         demo={null}
-        tile={null}
         onScreen={() => {}}
         task={next}
         nowMs={NOW_MS}
@@ -209,5 +213,65 @@ describe("NowScreen — the frontier list", () => {
   it("says nothing is startable when both queries are empty", () => {
     renderNow(taskState());
     expect(screen.getByText("Nothing to start")).toBeDefined();
+  });
+});
+
+describe("NowScreen — the aside (#245, ADR-0015)", () => {
+  const ZONE = "America/Los_Angeles";
+
+  function civilDate(dayOffset: number): string {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(NOW_MS + dayOffset * 86_400_000));
+  }
+
+  it("feeds the ranked region from task state — no context tile, no demo card", () => {
+    const day = civilDate(1);
+    renderNow(
+      taskState({
+        bindings: [
+          bindingDTO({ key: BINDING_KEY, value: { state: "text", text: "https://example.gov" } }),
+        ],
+        paneReads: {
+          [SOURCE]: paneReadDTO({
+            snapshots: [
+              paneSnapshotDTO({
+                envelope: {
+                  kind: "ok",
+                  schema: SOURCE,
+                  polledEveryMs: 86_400_000,
+                  body: wasteBody({ zone: ZONE, scheduled: day, collectedOn: day }),
+                },
+              }),
+            ],
+          }),
+        },
+      }),
+    );
+
+    expect(screen.getByText("Trash Tonight")).toBeTruthy();
+    // The calendar context tile ADR-0015 replaced is gone entirely.
+    expect(screen.queryByText("No calendar connected")).toBeNull();
+  });
+
+  it("renders the same region in demo mode, from the demo fixture", () => {
+    // `?demo` photographs the REAL shell: same component, different inputs.
+    render(
+      <NowScreen
+        demo={DEMO_DATA}
+        onScreen={() => {}}
+        task={taskState()}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Trash Tonight")).toBeTruthy();
   });
 });

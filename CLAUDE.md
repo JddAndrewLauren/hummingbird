@@ -314,9 +314,27 @@ parts (`Core::snapshot_freshness` → `task_host.rs`'s `FreshnessResponse`,
 `{"state":"unknown"}` or `{"state":"age",…}`): handing `fetched_at` over for
 TS to combine would put the subtraction back on the far side of the
 boundary, and the shim's busy answer is `unknown` for the same reason — a
-core that has not loaded has measured nothing. The generic pane read (for a
-source, its snapshot rows and its live alerts) is #119's and does not exist
-yet; nothing in TS consumes freshness until it does.
+core that has not loaded has measured nothing.
+
+`client/core/src/pane.rs` is the fourth, and the generic read every standing
+question's pane starts from (#245): `Core::pane_read(source, now_ms)` — one
+source's live `context_snapshots` rows (key order, envelope parsed, age
+measured per row) and the alerts it has raised that are **live right now**.
+Per-source, `&self`, no `Result`, no overlay (the context lanes are
+server-written, so nothing optimistic exists to overlay). The two things
+ADR-0015 carves into Rust so they cannot drift are applied here and only
+here — the age clamp and ADR-0014's `is_live` — while answer state, band,
+headline and threshold all stay in TS. `PaneEnvelope` is
+`Parsed`-or-`Malformed`-with-a-reason (`EnvelopeProblem`'s own wording), a
+broken envelope costs the cadence but not the age (one parse feeds both, so
+it cannot drift from `Freshness::of_snapshot` — pinned by test), an
+unrecognised `schema` rides through untouched with **no registry check
+ever**, and `subject_key` rides through untouched too, because the
+`(source, subject_key)` ↔ `(source, key)` join is additive and the pane owns
+it, in TS. `ffi-web`'s `PaneReadResponse` / `paneRead` is the seam, its wire
+shape pinned byte-for-byte; `BUSY_PANE_READ` matters more than most busy
+answers, since an empty pane read renders as "nothing is due" — a claim a
+core that has not loaded may not make, so the host drops it.
 
 ## The web worker layer
 
@@ -383,9 +401,19 @@ amendment to the ADR.
 The protocol now carries the whole read-and-act surface: view→worker
 `capture` / `act` / `triage` / `setBinding` and the reads `getFrontier` /
 `getTriageInbox` / `getBlocked` / `getSteps` / `getProjects` /
-`getBindings` / `isPending`; worker→view `captureResult` / `actResult` /
-`triageResult` / `setBindingResult` plus the `frontier` / `triageInbox` /
-`blocked` / `steps` / `projects` / `bindings` / `isPendingResult` pushes. A frontier or blocked entry is a
+`getBindings` / `getPaneRead` / `isPending`; worker→view `captureResult` /
+`actResult` / `triageResult` / `setBindingResult` plus the `frontier` /
+`triageInbox` / `blocked` / `steps` / `projects` / `bindings` / `paneRead` /
+`isPendingResult` pushes. `getPaneRead` carries its own `nowMs` — the clock
+both the measured ages and the alert-liveness filter are resolved against,
+core-side — which is also why `paneRead` is *not* one of the messages
+`ports.ts` replays to a late-connecting port: a replay would state a stale
+age as a current fact. The calendar lane's `getCurrentNext`/`currentNext`
+are **gone** with the context tile ADR-0015 replaced, and
+`useCalendarWiring.ts` lost its 30-second clock with them (`useSyncWiring`'s
+existing unconditional tick is the one clock Now gets); the connect flow,
+the silent re-mint, the rotation and the 15-minute poll all survive
+unchanged. A frontier or blocked entry is a
 `FrontierItemDTO` — `ffi-web/src/task_host.rs` flattens
 `hummingbird_domain::Item` and adds the computed `pending` flag, stamped in
 exactly one place (`TaskHostCore::with_pending`, applied by `frontier()`,
@@ -447,6 +475,62 @@ moves, so a pull carrying another device's edit can never leave a stale
 draft sitting over it with Save enabled to push it back, and
 `bindingWriteError`, so a failed write is words on that row rather than a
 `lastBindingWrite` nothing reads).
+
+**The pane shell is `screens/questions/`** (#245, ADR-0015), and it took
+over Now's Context aside: `RankedRegion.tsx` renders every standing
+question's pane, ordered by how much it deserves the eye. `contract.ts` is
+what a question owes the shell — an `answerState`
+(`answered | bound-but-unacquired | unbound`, three states because **a gap
+is not an absence**), a `band` from the five-word salience vocabulary, a
+`withinBand` tie-break inside it, a one-line `collapsedHeadline` and up to
+`MAX_GLYPHS` labelled glyphs — plus its whole expanded rendering and
+nothing else; `registry.ts`'s `Record<StandingQuestion, QuestionDef>` is
+compile-time exhaustive, so a question added to the vocabulary and not
+registered is a type error rather than a pane that silently never appears,
+and `requiredSources()` is what `shell/usePaneReadsWiring.ts` requests, so
+the two lists cannot drift. `sort.ts` is the cross-pane order (answerState →
+band → `withinBand`, `null` after every non-null → declared question order →
+subject key; pure, clock-free, total, `frontier-order.ts`'s own discipline).
+`collapse.ts` is device-local and **band-scoped**, in the injectable-
+`storage` idiom and never in `settings`: an override applies only while the
+pane's computed band still matches the band it was stored against, and a
+mismatch is a read-time non-match rather than a deletion — which is exactly
+what makes dormant → imminent → dormant *resurrect* it.
+
+**Order is captured in state; content is read fresh.** `RankedRegion`
+captures one ranking and re-samples it on two signals only — a completed
+cycle (`syncOutcomeSeq`), and `samePaneIdentity` failing (a pane appeared,
+vanished, or crossed between an answer and a gap) — never on band or
+`withinBand` movement, which would slide a pane out from under the reader's
+cursor on the 30-second tick. Position, band chrome, headline, glyphs and
+the collapse resolution all read from that one sample, so an override and a
+position can never disagree about the band; the expanded pane renders from
+the **live** inputs every render, so an optimistic write is instant while
+the order stands still. The collapsed row is drawn **entirely by the shell**
+and no pane ships a compact form — for the waste pane, dormant *is* the
+collapsed row.
+
+`screens/waste-pane/` is that shell's proof, bundled deliberately: a shell
+with no pane is exactly the exported, unit-tested, never-wired UI this repo
+keeps rejecting. `waste.ts` holds the parser that **pins the unfrozen
+`city-waste/v2` body**, the binary band (dormant vs imminent — the eve, the
+day, or any day of a holiday week) with a real `withinBand` even while
+dormant, `STALE_AFTER_MS = 26h` **beside the band function** (the cost of a
+wrong answer, not `2 × cadence`), the bin colours (a documented exception to
+"colour encodes status": here it encodes object identity, and every glyph
+still carries a label), and `isStaleFreshness`, where `unknown` is never
+fresh. A holiday is read off the snapshot (`collectedOn !== scheduled`) and
+**`liveAlerts` is deliberately never read** — a holiday *is* the answer, and
+the alert row still serves the notification lane. `zoned-day.ts` closes the
+one thing the prototype left open: the payload carries an IANA `zone` and
+every day-shaped question is resolved in it via `Intl.DateTimeFormat`, so
+"tonight" flips at the address's midnight and not the device's — a per-pane
+exception documented at its point of use. An unusable zone is a malformed
+payload, never a crash. (Still open, and *not* discharged by this slice:
+`city-waste/v2` is not in `server/domain/src/sources.rs` — only the retired
+`v1` is. Harmless here, since the read side never checks the registry and
+ADR-0015 forbids checking `schema` against it; the registration is
+#135–137's.)
 
 The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
 re-requests its queries once the core is ready and again on every

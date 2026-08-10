@@ -55,7 +55,12 @@ export function setMirrorSnapshotHandler(handler: ((mirror: unknown) => void) | 
 
 type Store = Pick<
   ReturnType<typeof createCoreStore>,
-  "setState" | "setCalendarState" | "setTaskState" | "setTaskPending" | "setTaskSteps"
+  | "setState"
+  | "setCalendarState"
+  | "setTaskState"
+  | "setTaskPending"
+  | "setTaskSteps"
+  | "setTaskPaneRead"
 >;
 
 // Wires a worker's response messages into the store. This is the only place
@@ -63,15 +68,11 @@ type Store = Pick<
 // the same synchronous task that constructs the Worker, so the listener is
 // attached before any worker message can be dispatched.
 //
-// `now` defaults to `Date.now` and is only overridden in tests: after every
-// poll outcome, the client also asks the worker for the fresh current/next
-// event (issue #73's tile), so the tile never trails a poll it already knows
-// completed.
-export function attachWorkerClient(
-  worker: WorkerLike,
-  store: Store,
-  now: () => number = Date.now,
-): void {
+// Takes no clock: it used to accept an injectable `now` purely to re-request
+// the context tile's current/next event after each poll outcome, and #245
+// replaced that tile with the ranked pane region, whose own reads are the
+// wiring hooks' business.
+export function attachWorkerClient(worker: WorkerLike, store: Store): void {
   // One counter per attached worker (i.e. per view). As of issue #191 this
   // has no consumer left in view code — `useSyncWiring.ts`'s per-cycle
   // refresh, the only thing that used to key on it, was replaced by the
@@ -95,7 +96,6 @@ export function attachWorkerClient(
         return;
       case "pollOutcome":
         store.setCalendarState({ lastPollOutcome: message.outcome });
-        requestCurrentNext(worker, now());
         return;
       case "credentialEvents":
         // At least one credential-needed event landed: the calendar app
@@ -108,13 +108,6 @@ export function attachWorkerClient(
         return;
       case "calendarList":
         store.setCalendarState({ availableCalendars: message.calendars });
-        return;
-      case "currentNext":
-        store.setCalendarState({
-          tileKind: message.kind,
-          tileEvent: message.event,
-          asOfMs: message.asOfMs,
-        });
         return;
       // -- task binding (#105/S7) — broadcasts fanned out to every port,
       // never a reply targeted at just the requesting view (protocol.ts).
@@ -192,6 +185,12 @@ export function attachWorkerClient(
         return;
       case "bindings":
         store.setTaskState({ bindings: message.bindings });
+        return;
+      case "paneRead":
+        // Keyed by the source the read is *for*, which the worker echoes
+        // back on the message — never by which request happened to be
+        // outstanding here, since this is a broadcast to every port.
+        store.setTaskPaneRead(message.read.source, message.read);
         return;
       case "frontier":
         store.setTaskState({ frontier: message.items });
@@ -323,10 +322,6 @@ export function pollTimer(worker: WorkerLike, nowMs: number): void {
   worker.postMessage({ type: "pollTimer", nowMs });
 }
 
-export function requestCurrentNext(worker: WorkerLike, nowMs: number): void {
-  worker.postMessage({ type: "getCurrentNext", nowMs });
-}
-
 // Asks the core to re-list the picker's options. Send this only after the
 // token that should be used has already been pushed: the worker processes
 // requests strictly in arrival order, so a `pushToken` queued first is the
@@ -434,6 +429,14 @@ export function setBinding(
 /** Every standing-question binding (#118). */
 export function requestBindings(worker: WorkerLike): void {
   worker.postMessage({ type: "getBindings" });
+}
+
+/** One source's pane read (#245). `nowMs` is the clock both the measured
+ * ages and the alert-liveness filter are resolved against, core-side — which
+ * is why it is a parameter rather than something the worker samples: the
+ * caller's own tick is what makes a re-request mean anything. */
+export function requestPaneRead(worker: WorkerLike, source: string, nowMs: number): void {
+  worker.postMessage({ type: "getPaneRead", source, nowMs });
 }
 
 export function requestFrontier(worker: WorkerLike): void {

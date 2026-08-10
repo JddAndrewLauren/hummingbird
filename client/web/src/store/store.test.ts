@@ -7,9 +7,6 @@ const initialCalendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
-  tileKind: "no_snapshot",
-  tileEvent: null,
-  asOfMs: null,
 };
 
 const initialTask: TaskState = {
@@ -19,6 +16,7 @@ const initialTask: TaskState = {
   stepsByItem: {},
   projects: [],
   bindings: null,
+  paneReads: {},
   pending: {},
   lastCapture: null,
   lastAct: null,

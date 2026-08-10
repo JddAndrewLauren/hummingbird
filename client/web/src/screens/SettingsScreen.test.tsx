@@ -24,9 +24,6 @@ const calendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
-  tileKind: "no_snapshot",
-  tileEvent: null,
-  asOfMs: null,
 };
 
 interface SettingsOptions {

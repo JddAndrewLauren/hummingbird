@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { contextTileProps } from "./calendar/tile-props";
 import { demoData } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { NowScreen } from "./screens/NowScreen";
@@ -21,6 +20,7 @@ import { useTriageWiring } from "./shell/useTriageWiring";
 import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
+import { usePaneReadsWiring } from "./shell/usePaneReadsWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
 import { taskTokenUiState } from "./task/token-ui";
@@ -74,7 +74,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const [screen, setScreen] = useState<Screen>("now");
   const { preference, theme, setPreference } = useTheme();
   const {
-    nowMs,
     handleConnectClick,
     handleCalendarSelectionChange,
     handleRefreshClick,
@@ -97,6 +96,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   } = useItemDetailWiring(worker, task.syncOutcomeSeq);
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
   const { setBinding: handleSetBinding } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
+  // #245: every source the registered standing questions need, refreshed on
+  // the same per-cycle signal as the bindings they depend on.
+  usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
 
   // #110/S12's "always-present ... plus a global hotkey that focuses it"
   // (#98, restated on #110): a counter, not a boolean — `TriageScreen`'s own
@@ -149,8 +151,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     queueDepth: task.queueDepth,
     nowMs: syncNowMs,
   });
-
-  const tile = contextTileProps(calendar, nowMs);
 
   // Issue #194: the header refresh control's gate is the union of what is
   // actually refreshable — a task token, a healthy calendar connection, or
@@ -215,10 +215,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           {screen === "now" && (
             <NowScreen
               demo={demo}
-              tile={tile}
               onScreen={setScreen}
               task={task}
-              nowMs={nowMs}
+              nowMs={syncNowMs}
               selectedItemId={selectedItemId}
               onOpenItem={handleOpenItem}
               onCloseItemDetail={handleCloseItemDetail}
