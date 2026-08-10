@@ -288,7 +288,19 @@ export type TaskWorkerResponse =
    * port. Issue #195: also the last one is cached by `PortRegistry` and
    * replayed to a port that connects after it — see `queueDepth`'s doc
    * below and `ports.ts`'s class doc for the full "latest-state vs
-   * one-shot" rule this and its siblings are classified under. */
+   * one-shot" rule this and its siblings are classified under.
+   *
+   * `atMs` is the cycle's OWN time (`worker/task-worker.ts`'s `runSync`
+   * branch posts `request.nowMs`, the same clock value `Core::run` was
+   * invoked with) — deliberately not left for the receiving view to infer
+   * from its own message-receipt clock. Issue #195 round-1 review: a live
+   * broadcast's receipt time is a safe stand-in for the cycle's real time
+   * (sub-second apart), but a REPLAYED broadcast can reach a newly
+   * connecting port arbitrarily long after the cycle it describes — a view
+   * stamping its own `now()` on receipt would render a five-hour-old cycle
+   * as "as of just now", exactly the false-freshness the badge exists to
+   * avoid (`shell/sync-status.ts`). `store/worker-client.ts` reads this
+   * field for `lastSyncAtMs` rather than calling its own clock. */
   | {
       type: "syncOutcome";
       kind: TaskRunOutcomeKind;
@@ -296,6 +308,7 @@ export type TaskWorkerResponse =
       activeItemCount: number | null;
       wasFullSweep: boolean | null;
       deadLettered: number | null;
+      atMs: number;
     }
   /** Drained from `Core::take_events` and broadcast to every connected port
    * (`PortRegistry.broadcast`, not a reply to whichever port triggered the

@@ -71,22 +71,50 @@ type State =
  * **The rule for `LATEST_STATE_TYPES` membership**, so the next message
  * added to the protocol has an answer: a type belongs in the set if it
  * represents a durable fact about the core's current state — one that stays
- * true until superseded by a later broadcast of the same type, and that a
- * view which missed every prior broadcast still needs to know right now
- * (`syncOutcome`'s kind/backoff/hold, `queueDepth`, `deadLetters`,
- * `taskHostUnavailable`'s not-recoverable-this-session failure). A type is
- * left out if it instead describes something that HAPPENED — a point-in-time
- * event whose meaning is tied to when it fired (`pollOutcome`, one poll
- * attempt's result; `credentialEvents`/`taskEvents`, an append-only log of
- * moments a credential broke — replaying either to a view long after the
- * fact would make a past event read as live) — or is a targeted answer to a
- * request only the asking view is waiting on (`frontier`, `triageInbox`,
- * `isPendingResult`, `calendarList`, `currentNext`, `captureResult`,
- * `mirrorSnapshot`): a view that never asked must not receive one as if it
- * had. Getting this classification wrong in either direction is the real
- * risk #195's triage called out — a one-shot event cached here replays a
- * stale moment as a live one; a durable-state type left out leaves a late
- * view stuck on stale or fabricated state until the next broadcast. */
+ * true until superseded by a later broadcast of the same type — AND a
+ * connecting view has no cheap way to learn it on its own. Two different
+ * reasons land a type here:
+ *
+ * - `syncOutcome` and `taskHostUnavailable` have no side-effect-free way to
+ *   ask again. There is no `getSyncOutcome` request — the only way to learn
+ *   the current outcome is to actually run a cycle (`runSync`), which is not
+ *   something a merely-connecting view should trigger on its own — and
+ *   `taskHostUnavailable` has no request type at all (construction either
+ *   succeeded or didn't; nothing to ask). Without caching, a view that
+ *   connects between cycles has literally no way to find out.
+ * - `queueDepth`/`deadLetters` DO have an on-demand read (`getQueueDepth`,
+ *   `getDeadLetters` — every connecting view already sends both once,
+ *   `shell/useSyncWiring.ts`'s ready effect), so a connecting view would
+ *   self-heal within one round trip even without this cache. They're
+ *   included anyway because issue #191 already broadcasts both unsolicited
+ *   at the tail of every cycle alongside `syncOutcome` — caching them
+ *   alongside it costs nothing extra and keeps the three consistent.
+ *
+ * Every OTHER `TaskWorkerResponse`/`WorkerResponse` type is left out, for
+ * one of two different reasons — **not** because it is a directed reply:
+ * this protocol has no directed reply anywhere (`core.worker.ts`/
+ * `task-worker.ts`/`calendar-worker.ts` broadcast every response to every
+ * connected port, `protocol.ts`'s own header). `pollOutcome` and
+ * `credentialEvents`/`taskEvents` are excluded because they describe
+ * something that HAPPENED — a point-in-time event whose meaning is tied to
+ * when it fired; replaying one to a view long after the fact would make a
+ * past event read as live. `frontier`, `triageInbox`, `isPendingResult`,
+ * `calendarList`, `currentNext`, and `mirrorSnapshot` are excluded because
+ * each answers its own idempotent `getX`-shaped request
+ * (`getFrontier`/`getTriageInbox`/`isPending`/`listCalendars`/
+ * `getCurrentNext`/`getMirrorSnapshot`) that costs nothing to re-send — a
+ * connecting view that wants one just asks, the same as `queueDepth` above,
+ * rather than needing yesterday's broadcast replayed at it. `captureResult`
+ * is excluded for a more basic reason: it answers one specific `capture`
+ * call, matched client-side by the caller's own seed (`worker-client.ts`) —
+ * a view that never issued that capture has no seed to match it against and
+ * gains nothing from receiving it.
+ *
+ * Getting this classification wrong in either direction is the real risk
+ * #195's triage called out — a one-shot event or a freely re-askable answer
+ * cached here replays a stale moment as a live one; a durable, unrepeatable
+ * fact left out leaves a late view stuck on stale or fabricated state until
+ * the next broadcast. */
 /** The `WorkerResponse["type"]`s cached and replayed to a newly wired port —
  * see the class doc above for the membership rule. */
 const LATEST_STATE_TYPES = new Set<WorkerResponse["type"]>([

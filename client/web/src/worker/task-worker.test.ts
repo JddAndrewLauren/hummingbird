@@ -226,6 +226,10 @@ describe("handleTaskRequest", () => {
     // Issue #191: the tail push — `queueDepth`/`deadLetters` come after the
     // outcome (and any drained task events), unsolicited, using the same
     // fakeHost defaults `getQueueDepth`/`getDeadLetters` themselves use.
+    // Issue #195 round-1 review: `atMs` is the cycle's own `nowMs`, not
+    // whatever clock a view later reads it with — pinned here as exactly
+    // the `nowMs` this `runSync` request carried (1_000), not e.g. a
+    // `Date.now()` call inside the handler.
     expect(posted).toEqual([
       {
         type: "syncOutcome",
@@ -234,6 +238,7 @@ describe("handleTaskRequest", () => {
         activeItemCount: 3,
         wasFullSweep: false,
         deadLettered: 0,
+        atMs: 1_000,
       },
       { type: "queueDepth", depth: 0 },
       { type: "deadLetters", entries: [] },
@@ -261,6 +266,7 @@ describe("handleTaskRequest", () => {
         activeItemCount: null,
         wasFullSweep: null,
         deadLettered: 0,
+        atMs: 9_000,
       },
       { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 9000 }] },
       { type: "queueDepth", depth: 0 },

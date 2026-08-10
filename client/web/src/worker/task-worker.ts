@@ -287,6 +287,11 @@ export async function handleTaskRequest(
         activeItemCount: raw.active_item_count,
         wasFullSweep: raw.was_full_sweep,
         deadLettered: raw.dead_lettered,
+        // Issue #195 round-1 review: the cycle's OWN time, not whatever
+        // clock happens to be running when a view later receives this (live
+        // or replayed via `PortRegistry`) — see protocol.ts's `syncOutcome`
+        // doc.
+        atMs: request.nowMs,
       });
       postTaskEvents(host, post);
       // Issue #191: pushed unsolicited at the tail of every cycle, so N

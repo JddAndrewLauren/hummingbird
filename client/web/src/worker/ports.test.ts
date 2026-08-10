@@ -111,6 +111,7 @@ describe("PortRegistry", () => {
         activeItemCount: 3,
         wasFullSweep: false,
         deadLettered: 0,
+        atMs: 5_000,
       };
       registry.broadcast(outcome);
 
