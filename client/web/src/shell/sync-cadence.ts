@@ -46,6 +46,42 @@ export function toCoreTrigger(trigger: SyncCadenceTrigger): "user" | "timer" {
   return trigger === "timer" ? "timer" : "user";
 }
 
+/** Precedence for issue #184's guard: when a trigger arrives while a run is
+ * already in flight and one is already waiting in the guard's single
+ * `pending` slot, this decides which of the two survives — never a bare
+ * "last one wins", because trigger identity is load-bearing past the guard:
+ * `core.worker.ts` reads it to decide `forceFullSweep` (ADR-0008/#193: true
+ * only on `"open"`) and `toCoreTrigger` reads it to decide whether the
+ * eventual `runSync` resets backoff (`"user"` vs `"timer"`, ADR-0007/#194).
+ * A later, lower-priority trigger silently overwriting a higher-priority one
+ * already waiting would lose real behavior, not just delay it: an
+ * `"open"` overwritten by a later `"focus"`/`"timer"` drops ADR-0008's
+ * app-open full-sweep backstop for the rest of the `SharedWorker`'s
+ * lifetime (`dispatch.ts`'s `openTrigger` only ever fires it once), and a
+ * `"manual"`/`"focus"` overwritten by a `"timer"` silently demotes a
+ * user-facing backoff reset to an unattended one.
+ *
+ * Precedence: `"open"` (ADR-0008's full-sweep backstop) beats every
+ * user-facing trigger, which in turn beats `"timer"` (the only trigger that
+ * does not reset backoff and never forces a full sweep). Among the three
+ * user-facing triggers (`"reconnect"`, `"focus"`, `"manual"`) there is no
+ * behavioral difference downstream of the guard — all three map to
+ * `"user"` and none forces a full sweep — so a tie keeps whichever is
+ * `incoming`, the same "most recent wins" rule the guard used before this
+ * fix, scoped down to only the cases where it cannot lose information. */
+export function mergePendingSyncTrigger(
+  pending: SyncCadenceTrigger,
+  incoming: SyncCadenceTrigger,
+): SyncCadenceTrigger {
+  return syncTriggerPriority(incoming) >= syncTriggerPriority(pending) ? incoming : pending;
+}
+
+function syncTriggerPriority(trigger: SyncCadenceTrigger): number {
+  if (trigger === "open") return 2;
+  if (trigger === "timer") return 0;
+  return 1; // "reconnect" | "focus" | "manual"
+}
+
 export interface SyncCadence {
   /** App open / core start (ADR-0007). Call once the core is ready and a
    * task credential is known. */
