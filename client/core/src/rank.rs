@@ -209,10 +209,10 @@ fn in_progress_boosted(item: &Item, axes: &Axes) -> bool {
     if item.stage != Stage::InProgress {
         return false;
     }
-    match (item.energy, axes.energy) {
-        (Some(item_energy), Some(declared)) if is_opposite_pole(item_energy, declared) => false,
-        _ => true,
-    }
+    !matches!(
+        (item.energy, axes.energy),
+        (Some(item_energy), Some(declared)) if is_opposite_pole(item_energy, declared)
+    )
 }
 
 fn priority_rank(raw: i64) -> i64 {
