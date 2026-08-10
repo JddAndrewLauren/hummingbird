@@ -1,0 +1,59 @@
+# The authority server's test recipe (ADR-0008), factored out so exactly one
+# copy of it exists: native fixture tests for the pure crates, a wasm32
+# typecheck of the workers-rs shim, and the wire-level smoke test against
+# `wrangler dev` (#113's CI acceptance).
+#
+# Called by two workflows and triggered by neither — `workflow_call` only:
+#   - server.yml        the PR-time and push-time gate
+#   - deploy-server.yml the gate the production deploy `needs:`
+#
+# Both callers must list this file in their own `paths:` filters, or a change
+# to the recipe below re-runs nothing. Nothing here takes a secret: the smoke
+# script drives `wrangler dev` locally and never touches a real account.
+name: server-test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # The smoke script bounds its own readiness wait, but npx download and
+    # `cargo install worker-build` on a cold cache are otherwise unbounded.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match root `rust-toolchain.toml` — see client.yml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          # worker-build is installed by wrangler.toml's [build] command;
+          # caching ~/.cargo/bin keeps that install a no-op across runs.
+          cache-bin: true
+
+      - name: cargo clippy (server workspace)
+        working-directory: server
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Native fixture tests (domain + authority)
+        working-directory: server
+        run: cargo test --workspace
+
+      - name: wasm32 build of the workers-rs shim
+        working-directory: server
+        run: cargo build --target wasm32-unknown-unknown -p hummingbird-authority-worker
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Smoke test against wrangler dev
+        working-directory: server
+        run: ./scripts/smoke.sh

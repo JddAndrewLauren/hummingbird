@@ -1,0 +1,63 @@
+# Deploy only, mirroring deploy-client.yml's test-then-deploy shape for the
+# authority server (ADR-0006's CI split). The test job is server-test.yml —
+# the same recipe server.yml gates PRs with, called rather than copied, so a
+# green PR check and a green deploy gate always mean the same thing.
+#
+# There is deliberately no `schedule:` trigger. The sweep's cadence belongs to
+# the Durable Object's own `alarm()` at `ALARM_INTERVAL_MS` (#138/ADR-0014) —
+# the same reasoning deploy.yml records for supercronic owning the sweeper's
+# cadence: an Actions cron would be a second, competing clock.
+#
+# `ADMIN_SECRET` is deliberately absent below. It is set once from the
+# operator's terminal (`wrangler secret put ADMIN_SECRET`) and read only by
+# `/api/admin/*`; putting it in Actions would widen the one credential that
+# mints every other token. `FCM_SERVICE_ACCOUNT` is absent for the same
+# reason — it carries an RSA private key, and the notification lane fails
+# closed without it by design.
+#
+# The first live run is a human step (#95's H3): creating the Cloudflare
+# Workers project and the `Authority` SQLite DO class, which is what the
+# `tag = "v1"` migration in server/worker/wrangler.toml does on its first
+# apply. Until that pass happens this workflow will fail at the
+# `wrangler deploy` step, which is expected and blocks nothing else — the
+# same posture deploy-client.yml documents for H1.
+name: deploy-server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/deploy-server.yml"
+      - ".github/workflows/server-test.yml"
+
+jobs:
+  test:
+    uses: ./.github/workflows/server-test.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-hummingbird-authority
+    # wrangler.toml's [build] runs `cargo install -q worker-build &&
+    # worker-build --release` inside the wrangler step, on a runner the test
+    # job's Swatinem/rust-cache does not reach — a multi-minute cold Rust
+    # build every time. Bounded here the way server-test.yml bounds its own.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to match root `rust-toolchain.toml`: the deployed wasm artifact
+      # should be built by the same compiler CI gated, not by whatever stable
+      # happens to be on the day of the deploy.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+          targets: wasm32-unknown-unknown
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: server/worker
+          command: deploy
