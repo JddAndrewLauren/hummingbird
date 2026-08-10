@@ -24,6 +24,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   clearTaskApiKey: true,
   capture: true,
   act: true,
+  triage: true,
   getFrontier: true,
   getTriageInbox: true,
   getBlocked: true,

@@ -48,7 +48,7 @@ pub mod storage;
 pub mod sync;
 pub mod task;
 
-use hummingbird_domain::{CreateItem, Item, Project, Stage};
+use hummingbird_domain::{CreateItem, Energy, Item, Project, Size, Stage};
 
 use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
 use sync::queue::{MutationIntent, QueueEntry};
@@ -339,6 +339,45 @@ impl ItemAction {
             ItemAction::Cancel => None,
         }
     }
+}
+
+/// S13/#111's triage destination — the only two stages triage itself may
+/// promote an item into. Deliberately not a raw [`Stage`] the caller picks
+/// (same "resolved by name from the vocabulary, never hardcoded" discipline
+/// [`ItemAction::stage`] documents): `Grilling` is where a captured item
+/// goes to have its fog worked before it can be minted, `Ready` is where it
+/// goes once it is already startable outright. There is no `Backlog`
+/// destination — the owned schema's six-stage vocabulary
+/// (`hummingbird_domain::Stage`) has no such stage; a triaged item that
+/// is not yet ready to promote simply stays in `Triage` (never calling
+/// [`Core::triage`] at all) rather than moving to a stage the schema
+/// cannot express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriageDestination {
+    Grilling,
+    Ready,
+}
+
+impl TriageDestination {
+    fn stage(self) -> Stage {
+        match self {
+            TriageDestination::Grilling => Stage::Grilling,
+            TriageDestination::Ready => Stage::Ready,
+        }
+    }
+}
+
+/// S13/#111's multi-field triage edit — every field the triage form may set
+/// alongside the destination stage, each `None` meaning "leave this field
+/// alone" rather than "clear it". `None` on every field is a legal call: a
+/// bare promotion with no other edit is still exactly one mutation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TriagePatch {
+    pub title: Option<String>,
+    pub project_id: Option<String>,
+    pub size: Option<Size>,
+    pub energy: Option<Energy>,
+    pub context: Option<String>,
 }
 
 /// [`Core::act`] failed before ever reaching the outbound queue, or while
@@ -816,6 +855,108 @@ where
         Ok(())
     }
 
+    /// Triages an already-existing (captured) item (S13/#111): edits
+    /// whatever fields `patch` sets, and promotes it to `destination`, as
+    /// **one** CAS `PATCH` — enqueued the same way [`Core::act`] enqueues
+    /// its own single-field patch (durably, via [`sync::SyncCycle::enqueue`],
+    /// never [`sync::queue::OutboundQueue::enqueue`] directly), never four
+    /// separate mutations for four separate fields. Fewer conflict surfaces
+    /// is the point: a 409 on this triage rebases (or dead-letters) the
+    /// whole edit together, not one field at a time.
+    ///
+    /// `base` for the CAS write, the optimistic overlay this stamps, the
+    /// dead-letter revert on [`Core::run`], and the "acting on a genuinely
+    /// still-queued create" gap are all exactly [`Core::act`]'s own
+    /// reasoning — see that method's doc; nothing about combining several
+    /// fields into one patch changes it.
+    ///
+    /// A triaged item leaves [`Core::triage_inbox`] and — for
+    /// [`TriageDestination::Ready`] — appears on [`Core::frontier`] the
+    /// instant this returns, through the same overlay every other read here
+    /// goes through, never a separate local bookkeeping list.
+    ///
+    /// `seed` mints this mutation's own queue-entry id
+    /// ([`sync::write::deterministic_id`]) — caller-supplied, same reasoning
+    /// as [`Core::act`]'s `seed`.
+    pub async fn triage(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        destination: TriageDestination,
+        patch: TriagePatch,
+        now_ms: i64,
+    ) -> Result<(), ActError<QS::Error>> {
+        let items = self.overlaid_items();
+        let Some(current) = items.get(item_id) else {
+            return Err(ActError::ItemNotFound);
+        };
+
+        let base = serde_json::to_value(current).expect("Item always serializes");
+        let mut optimistic = current.clone();
+        let mut patch_fields = serde_json::Map::new();
+
+        optimistic.stage = destination.stage();
+        patch_fields.insert(
+            "stage".to_string(),
+            serde_json::to_value(destination.stage()).expect("Stage always serializes"),
+        );
+
+        if let Some(title) = &patch.title {
+            optimistic.title = title.clone();
+            patch_fields.insert("title".to_string(), serde_json::json!(title));
+        }
+        if let Some(project_id) = &patch.project_id {
+            optimistic.project_id = Some(project_id.clone());
+            patch_fields.insert("project_id".to_string(), serde_json::json!(project_id));
+        }
+        if let Some(size) = patch.size {
+            optimistic.size = Some(size);
+            patch_fields.insert(
+                "size".to_string(),
+                serde_json::to_value(size).expect("Size always serializes"),
+            );
+        }
+        if let Some(energy) = patch.energy {
+            optimistic.energy = Some(energy);
+            patch_fields.insert(
+                "energy".to_string(),
+                serde_json::to_value(energy).expect("Energy always serializes"),
+            );
+        }
+        if let Some(context) = &patch.context {
+            optimistic.context = Some(context.clone());
+            patch_fields.insert("context".to_string(), serde_json::json!(context));
+        }
+        optimistic.updated_at = now_ms;
+
+        let entry_id = sync::write::deterministic_id(seed);
+        let entry = QueueEntry {
+            id: entry_id.clone(),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::item(item_id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
+                patch_fields: serde_json::Value::Object(patch_fields),
+            },
+        };
+
+        self.cycle
+            .enqueue(entry, now_ms)
+            .await
+            .map_err(ActError::Snapshot)?;
+
+        self.overlay.insert(
+            item_id.to_string(),
+            OverlayEntry {
+                entry_id,
+                item: optimistic,
+            },
+        );
+
+        Ok(())
+    }
+
     /// The host calls this at init and on every credential rotation.
     /// Always resumes (a fresh push is the only way out of a hold), the
     /// same contract [`context::ContextPoller::push_token`] documents.
@@ -1189,6 +1330,192 @@ mod tests {
         assert!(matches!(error, ActError::ItemNotFound));
     }
 
+    // -------------------------------------------------------------- triage
+
+    /// This issue's headline acceptance: "A triaged item leaves the triage
+    /// query and appears on the frontier through the mirror" — the overlay
+    /// [`Core::triage`] shares with every other mutation here, never a
+    /// separate local bookkeeping list.
+    #[tokio::test]
+    async fn promoting_to_ready_moves_the_item_from_triage_to_the_frontier_immediately() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(core.triage_inbox().len(), 1);
+        assert_eq!(core.frontier().len(), 0);
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch::default(),
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(core.triage_inbox().len(), 0);
+        let frontier = core.frontier();
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].stage, Stage::Ready);
+    }
+
+    /// Grilling is pre-action too (`CONTEXT.md`) — a triage into Grilling
+    /// leaves the triage inbox but never lands on the frontier.
+    #[tokio::test]
+    async fn sending_to_grilling_leaves_triage_without_reaching_the_frontier() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Grilling,
+            TriagePatch::default(),
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(core.triage_inbox().len(), 0);
+        assert_eq!(core.frontier().len(), 0);
+    }
+
+    /// This issue's "a multi-field triage is one mutation, not four" —
+    /// title, project, size, energy and context all land in the same
+    /// enqueued `QueueEntry`.
+    #[tokio::test]
+    async fn a_multi_field_triage_is_exactly_one_queued_mutation() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(core.queue_depth(), 1, "capture itself is the first entry");
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch {
+                title: Some("buy milk".to_string()),
+                project_id: Some("project-1".to_string()),
+                size: Some(Size::Quick),
+                energy: Some(Energy::Low),
+                context: Some("@errands".to_string()),
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            core.queue_depth(),
+            2,
+            "one triage call must enqueue exactly one more entry, whatever fields it sets"
+        );
+        let frontier = core.frontier();
+        assert_eq!(frontier.len(), 1);
+        let item = &frontier[0];
+        assert_eq!(item.title, "buy milk");
+        assert_eq!(item.project_id.as_deref(), Some("project-1"));
+        assert_eq!(item.size, Some(Size::Quick));
+        assert_eq!(item.energy, Some(Energy::Low));
+        assert_eq!(item.context.as_deref(), Some("@errands"));
+    }
+
+    /// A field `TriagePatch` leaves `None` is untouched — triage never
+    /// clears a field it was not asked to set.
+    #[tokio::test]
+    async fn an_unset_triage_patch_field_leaves_the_items_existing_value_untouched() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Grilling,
+            TriagePatch {
+                context: Some("@computer".to_string()),
+                ..TriagePatch::default()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        core.triage(
+            "seed-triage-2",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch::default(),
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let frontier = core.frontier();
+        assert_eq!(
+            frontier[0].context.as_deref(),
+            Some("@computer"),
+            "the second triage call set no context field, so the first call's value survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn triaging_an_unknown_item_id_is_item_not_found() {
+        let mut core = Core::new();
+
+        let error = core
+            .triage(
+                "seed-triage-1",
+                "no-such-item",
+                TriageDestination::Ready,
+                TriagePatch::default(),
+                1_000,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ActError::ItemNotFound));
+    }
+
+    /// This issue's "triaging offline queues correctly and reconciles on
+    /// the next cycle" — no transport is even wired up here, proving the
+    /// overlay needs no network call, exactly [`Core::act`]'s own
+    /// "completing offline" proof.
+    #[tokio::test]
+    async fn triaging_offline_is_visible_immediately_with_no_transport_wired_up() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch {
+                title: Some("buy milk".to_string()),
+                ..TriagePatch::default()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert!(core.is_pending(&id));
+        assert_eq!(core.frontier()[0].title, "buy milk");
+    }
+
     /// Reviewer finding on PR #207: a queued act must survive the
     /// `SharedWorker` (and therefore the whole `Core`) terminating before
     /// the next cycle ever runs — routine whenever the last view closes.
@@ -1229,6 +1556,49 @@ mod tests {
             "the reloaded overlay must still show the acted-on state (Done), not the \
              pre-mutation Ready that would put it back on the frontier"
         );
+    }
+
+    /// S13/#111's "triaging offline queues correctly and reconciles on the
+    /// next cycle", the reload half: [`overlay_from_queue`] is generic over
+    /// any queued item patch, not `Core::act`'s single-field one, so a
+    /// still-queued triage survives a reload exactly like a still-queued act
+    /// does (`a_queued_act_survives_a_reload_and_still_reads_as_pending`).
+    #[tokio::test]
+    async fn a_queued_triage_survives_a_reload_and_still_reads_as_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let id = first
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        first
+            .triage(
+                "seed-triage-1",
+                &id,
+                TriageDestination::Ready,
+                TriagePatch {
+                    title: Some("buy milk".to_string()),
+                    ..TriagePatch::default()
+                },
+                2_000,
+            )
+            .await
+            .unwrap();
+        // Only the queue is durable at this point (no cycle ever ran).
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        assert!(
+            second.is_pending(&id),
+            "a reload must not silently lose a still-queued triage's pending state"
+        );
+        assert_eq!(second.triage_inbox().len(), 0);
+        let frontier = second.frontier();
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].title, "buy milk");
     }
 
     // ------------------------------------------------- fixtures for `run`

@@ -71,6 +71,16 @@ export interface TaskActResult {
   error: string | null;
 }
 
+/** The result of the most recent `triage` request this view issued
+ * (S13/#111), matched back by `seed` — same broadcast-recognition contract
+ * as [`TaskActResult`]. */
+export interface TaskTriageResult {
+  seed: string;
+  itemId: string;
+  kind: "ok" | "not_found" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -94,6 +104,9 @@ export interface TaskState {
   /** The result of the most recent `act` request this view issued (S11/
    * #109) — `null` until the first one resolves. */
   lastAct: TaskActResult | null;
+  /** The result of the most recent `triage` request this view issued
+   * (S13/#111) — `null` until the first one resolves. */
+  lastTriage: TaskTriageResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
   /** When this view learned the last `Core::run` cycle happened (any
    * trigger, any outcome) — S9's "last sweep" readout. Sampled by
@@ -166,6 +179,7 @@ const initialTaskState: TaskState = {
   pending: {},
   lastCapture: null,
   lastAct: null,
+  lastTriage: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,
