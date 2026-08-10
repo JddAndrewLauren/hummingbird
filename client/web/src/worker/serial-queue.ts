@@ -1,11 +1,10 @@
 // A generic one-at-a-time request queue with an abandon-on-timeout path —
 // the fix issue #95's risk list names: "check-out/check-in solves
 // re-entrancy but not a request that never settles, and the single-file
-// queue would stall behind it." `worker/calendar-worker.ts`'s own
-// `createRequestQueue` predates this fix and is left as-is (#105 is scoped
-// to the task binding, and that queue's own tests pin its current, timeout-
-// free behaviour); `worker/task-worker.ts`'s `createTaskRequestQueue` is
-// built on this instead.
+// queue would stall behind it." `worker/task-worker.ts`'s
+// `createTaskRequestQueue` (#105) and `worker/calendar-worker.ts`'s
+// `createRequestQueue` (#173, porting #73's original queue onto this one)
+// are both built on this.
 //
 // "Abandoned" here means the *queue* moves on — the timed-out handler's
 // promise is left to float, un-awaited, rather than actually cancelled

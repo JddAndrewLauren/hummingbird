@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerResponse } from "../store/protocol";
 import {
   type CalendarHostLike,
@@ -244,5 +244,40 @@ describe("createRequestQueue", () => {
       { type: "currentNext", kind: "no_snapshot", event: null, asOfMs: null },
     ]);
     consoleError.mockRestore();
+  });
+
+  describe("a request that never settles", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("is abandoned so the queue does not wedge behind it", async () => {
+      const host = fakeHost({
+        refresh: vi.fn().mockReturnValue(new Promise<string>(() => {})),
+      });
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const posted: WorkerResponse[] = [];
+      const enqueue = createRequestQueue(host, (response) => posted.push(response));
+
+      const first = enqueue({ type: "pollRefresh", nowMs: 1_000 });
+      const second = enqueue({ type: "getCurrentNext", nowMs: 1_000 });
+
+      await vi.advanceTimersByTimeAsync(10_100);
+      await first;
+      await second;
+
+      expect(host.currentOrNext).toHaveBeenCalledWith(1_000);
+      expect(posted).toContainEqual({
+        type: "currentNext",
+        kind: "no_snapshot",
+        event: null,
+        asOfMs: null,
+      });
+      consoleError.mockRestore();
+    });
   });
 });

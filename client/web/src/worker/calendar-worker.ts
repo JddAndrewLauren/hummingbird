@@ -7,6 +7,7 @@ import type {
   PollOutcomeName,
   WorkerResponse,
 } from "../store/protocol";
+import { createSerialQueue } from "./serial-queue";
 
 // The worker's half of issue #73's calendar wiring, kept free of the wasm
 // import so vitest (node) can exercise it against a fake `CalendarHostLike`
@@ -149,6 +150,16 @@ export async function handleCalendarRequest(
   }
 }
 
+/** How long one calendar request may run before the queue abandons it rather
+ * than stalling every request behind it (issue #173, the calendar half of
+ * issue #95's named risk: "a hung request wedges the worker" — a hung
+ * `fetch` inside the Google Calendar poll, for instance). A poll trigger
+ * does exactly one Google Calendar fetch, not a multi-step sync cycle like
+ * `task-worker.ts`'s `TASK_REQUEST_TIMEOUT_MS`, so this is tighter than
+ * that 30s. See `serial-queue.ts` for what "abandoned" means and why it is
+ * safe. */
+export const CALENDAR_REQUEST_TIMEOUT_MS = 10_000;
+
 /** Serialises every request into one at-a-time chain.
  *
  * This is a correctness requirement, not a tidiness one. `CalendarHost` is
@@ -170,18 +181,26 @@ export async function handleCalendarRequest(
  * protocol (a `{type: "error"}` response means "the core failed to load" and
  * would wrongly blank the whole UI). The poll paths report their own
  * failures as outcomes, so nothing user-visible is lost here.
+ *
+ * Built on `serial-queue.ts`'s `createSerialQueue`, same as
+ * `task-worker.ts`'s `createTaskRequestQueue`, so a request that never
+ * settles (a hung `fetch`, say) is abandoned after
+ * `CALENDAR_REQUEST_TIMEOUT_MS` rather than wedging every request behind it.
  */
 export function createRequestQueue(
   host: CalendarHostLike,
   post: (response: WorkerResponse) => void,
 ): (request: CalendarWorkerRequest) => Promise<void> {
-  let tail: Promise<void> = Promise.resolve();
-  return (request) => {
-    tail = tail.then(() =>
-      handleCalendarRequest(request, host, post).catch((error: unknown) => {
+  return createSerialQueue(
+    (request: CalendarWorkerRequest) => handleCalendarRequest(request, host, post),
+    {
+      timeoutMs: CALENDAR_REQUEST_TIMEOUT_MS,
+      onTimeout: (request) => {
+        console.error("calendar worker request abandoned after timeout", request.type);
+      },
+      onError: (request, error) => {
         console.error("calendar worker request failed", request.type, error);
-      }),
-    );
-    return tail;
-  };
+      },
+    },
+  );
 }
