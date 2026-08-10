@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TaskWorkerRequest } from "../store/protocol";
+import { createSyncCadence, type SyncCadenceTrigger } from "../shell/sync-cadence";
 import { createDispatch } from "./dispatch";
 
 // `core.worker.ts`'s routing used to live inline in that file, where no test
@@ -130,5 +131,32 @@ describe("the app-open sweep waits for a credential", () => {
 
     expect(h.taskEnqueue).toHaveBeenCalledTimes(3);
     expect(h.cadence.onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // #193 review (CB4): the tests above stub `cadence` as bare `vi.fn()`s, so
+  // none of them exercise dispatch -> the real `createSyncCadence` -> `run`.
+  // This wires the actual cadence controller in, the same one
+  // `core.worker.ts` constructs, so the "open" trigger reaching `run` on the
+  // first `pushTaskApiKey` (and not on the second) is proven through the real
+  // collaborator rather than asserted only against a stub.
+  it("wired to a real createSyncCadence, the first pushTaskApiKey fires one run(\"open\") and the second fires none", async () => {
+    const run = vi.fn<(trigger: SyncCadenceTrigger) => void>();
+    const cadence = createSyncCadence(run);
+    const visibility = { setHidden: vi.fn() };
+    const taskEnqueue = vi.fn(() => Promise.resolve());
+    const calendarEnqueue = vi.fn(() => Promise.resolve());
+    const dispatch = createDispatch<string>({
+      cadence,
+      visibility,
+      taskEnqueueReady: Promise.resolve(taskEnqueue),
+      calendarEnqueue,
+    });
+
+    await dispatch(PUSH_KEY, "tab-1");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("open");
+
+    await dispatch({ type: "pushTaskApiKey", apiKey: "rotated" }, "tab-1");
+    expect(run).toHaveBeenCalledTimes(1); // still just the one call from above
   });
 });
