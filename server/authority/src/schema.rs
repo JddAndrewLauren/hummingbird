@@ -1,7 +1,8 @@
 //! The full owned schema, verbatim from ADR-0009 as amended 2026-08-09
 //! (`scheduled_date`, `settings`), plus the notification lane's three
 //! tables (ADR-0012, amended by ADR-0013) landed here in their own slice
-//! (#131). Fourteen tables and six indexes.
+//! (#131). Fourteen tables and six indexes; `tokens` gained a `source`
+//! column in #145.
 
 use crate::sql::{Sql, SqlError, SqlValue};
 
@@ -11,7 +12,11 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// `deliveries`, #131). The bump is additive-only — every pre-3 consumer is
 /// ephemeral (in-memory fixtures, a `wrangler dev` state dir the smoke
 /// script wipes), so there is no migration engine; the first breaking DDL
-/// change after a production deploy earns one.
+/// change after a production deploy earns one. `tokens.source` (#145) does
+/// not bump it: nothing is deployed yet (same doctrine #153 used for the
+/// `deadline` rename), so the fixture standing in for the frozen v2 shape
+/// is simply re-frozen to already carry the column, per the ephemeral-store
+/// doctrine — not a real ALTER TABLE-worthy migration.
 pub const SCHEMA_VERSION: i64 = 3;
 
 /// meta: the workspace version counter (one row), bumped by every write.
@@ -148,12 +153,19 @@ CREATE TABLE IF NOT EXISTS settings (
 )";
 
 /// Per-writer bearer auth (ADR-0008). Never synced: no `version` column —
-/// tokens are outside the delta contract by construction.
+/// tokens are outside the delta contract by construction. `source` (#145)
+/// binds an `ingest` token to exactly one webhook source, per ADR-0008's
+/// "one token per ingest source" — nullable at the column level (raw seams
+/// like the test rig still write rows directly), but the mint handler
+/// requires it for `ingest` and rejects it for every other scope, and the
+/// alert-ingest handler 403s a payload naming a different source than the
+/// token is bound to.
 pub const CREATE_TOKENS: &str = "\
 CREATE TABLE IF NOT EXISTS tokens (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   scope      TEXT NOT NULL CHECK (scope IN ('device','sweeper','ingest')),
+  source     TEXT,
   token_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   last_seen  INTEGER,

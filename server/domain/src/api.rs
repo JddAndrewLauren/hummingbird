@@ -332,12 +332,19 @@ pub struct AlertPatch {
 /// `POST /api/admin/tokens` body. `id` is client-supplied so the mint is
 /// idempotent — but the plaintext token is shown only on the 201; a replay
 /// returns the stored metadata without it (only the hash is kept).
+///
+/// `source` binds an `ingest` token to exactly one webhook source (#145,
+/// ADR-0008's "one token per ingest source"): required when `scope` is
+/// `ingest`, rejected for every other scope. The mint handler validates the
+/// pairing; this shape just carries it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MintToken {
     pub id: String,
     pub name: String,
     pub scope: Scope,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// `GET /api/changes?since=N` (and `GET /api/sweep`, which is the same

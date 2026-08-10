@@ -103,8 +103,21 @@ DEVICE=$(jq -r '.token' <<<"$BODY")
 case "$DEVICE" in hb_*) ;; *) fail "device token shape: $BODY";; esac
 request 201 POST /api/admin/tokens '{"id":"t-sweeper","name":"smoke sweeper","scope":"sweeper"}' "$ADMIN_SECRET"
 SWEEPER=$(jq -r '.token' <<<"$BODY")
-request 201 POST /api/admin/tokens '{"id":"t-ingest","name":"smoke ingest","scope":"ingest"}' "$ADMIN_SECRET"
+# An ingest token is bound to exactly one source (#145); every alert this
+# script raises below uses source "hc", so the smoke ingest token is minted
+# bound to it.
+request 201 POST /api/admin/tokens '{"id":"t-ingest","name":"smoke ingest","scope":"ingest","source":"hc"}' "$ADMIN_SECRET"
 INGEST=$(jq -r '.token' <<<"$BODY")
+
+# Minting an ingest token without a source, or a non-ingest token with one,
+# is a 400 (#145).
+request 400 POST /api/admin/tokens '{"id":"t-ingest-nosrc","name":"x","scope":"ingest"}' "$ADMIN_SECRET"
+request 400 POST /api/admin/tokens '{"id":"t-device-src","name":"x","scope":"device","source":"hc"}' "$ADMIN_SECRET"
+
+# The bound ingest token cannot post an alert for a different source: 403,
+# empty body.
+request 403 POST /api/alerts '{"source":"other","source_key":"k","title":"t"}' "$INGEST"
+[ -z "$BODY" ] || fail "403 leaked a body: $BODY"
 
 # A replayed mint returns metadata without the plaintext.
 request 200 POST /api/admin/tokens '{"id":"t-device","name":"smoke device","scope":"device"}' "$ADMIN_SECRET"

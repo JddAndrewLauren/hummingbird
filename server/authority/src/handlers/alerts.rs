@@ -6,11 +6,24 @@
 
 use hummingbird_domain::{Alert, AlertIngest, AlertPatch};
 
-use super::{auth, conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
+use super::{
+    auth, conflict, empty_status, error, json, parse_body, read_meta_version, write_meta_version,
+    ApiResponse,
+};
 use crate::codec::{RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
-pub fn ingest(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+/// `token_source` is the caller's bound source (#145) — `None` for a
+/// legacy/raw-seeded ingest token, always `Some` for one minted through
+/// `POST /api/admin/tokens`. A payload naming any other source is a 403
+/// with an empty body, matching the rest of the scope-matrix error
+/// semantics; it never reaches the upsert below.
+pub fn ingest(
+    body: Option<&str>,
+    now_ms: i64,
+    token_source: Option<&str>,
+    sql: &dyn Sql,
+) -> Result<ApiResponse, SqlError> {
     let ingest: AlertIngest = match parse_body(body) {
         Ok(v) => v,
         Err(resp) => return Ok(resp),
@@ -20,6 +33,9 @@ pub fn ingest(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     }
     if ingest.title.is_empty() {
         return Ok(error(400, "validation", "title must be non-empty"));
+    }
+    if token_source != Some(ingest.source.as_str()) {
+        return Ok(empty_status(403));
     }
 
     let Some(row) = select_by_identity(sql, &ingest.source, &ingest.source_key)? else {

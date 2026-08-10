@@ -100,6 +100,13 @@ fn init_schema_grows_a_schema_1_database_additively() {
 /// `ALTER TABLE` this repo's ephemeral-store doctrine does not call for.
 /// The day a real deploy happens, this file freezes at whatever shape is
 /// live then — not before.
+///
+/// **Re-frozen again for #145** (`tokens` gains `source`): same doctrine.
+/// `CREATE TABLE IF NOT EXISTS` is a no-op once a table exists, so growing
+/// a *genuinely* column-missing v2 `tokens` table forward would never pick
+/// up `source` — that would only be the right growth story for a shape
+/// that was ever really deployed. Nothing was, so the fixture is simply
+/// re-frozen to already carry the column, exactly as `deadline` was.
 const V2_TABLES: &[&str] = &[
     "\
 CREATE TABLE IF NOT EXISTS meta (
@@ -213,6 +220,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   scope      TEXT NOT NULL CHECK (scope IN ('device','sweeper','ingest')),
+  source     TEXT,
   token_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   last_seen  INTEGER,
