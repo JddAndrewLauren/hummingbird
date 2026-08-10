@@ -1,11 +1,22 @@
 //! The frozen alert-source registry (ADR-0014). One entry per `source`
-//! string ever written to `alerts.source`, `items.source` or
-//! `context_snapshots.source` — the same frozen namespace, ADR-0009 rule 4.
-//! `alerts.rs` mints an alert id as `sha256(source, source_key)`, so the
-//! `source_key` recipe *is* occurrence identity: changing it silently
-//! orphans every row already minted, or silently absorbs new occurrences
-//! into stale ones. Neither symptom rings — this registry is `sweep.py`'s
-//! frozen-namespace lesson re-learned for alerts.
+//! string that can appear on an **alert** — i.e. every source `alerts.rs`
+//! mints ids for, which is the exact table given in the #158 brief and in
+//! ADR-0014's conventions table. `alerts.rs` mints an alert id as
+//! `sha256(source, source_key)`, so the `source_key` recipe *is* occurrence
+//! identity: changing it silently orphans every row already minted, or
+//! silently absorbs new occurrences into stale ones. Neither symptom rings
+//! — this registry is `sweep.py`'s frozen-namespace lesson re-learned for
+//! alerts.
+//!
+//! **Out of scope, deliberately:** `items.source` and
+//! `context_snapshots.source` (e.g. `web/v1`, `anthropic-usage/v1`,
+//! `github-hummingbird/v1`, `f1/v1`) are the same frozen namespace by
+//! ADR-0009 rule 4 and must carry the same `/vN` version-suffix
+//! convention, but they are not alert sources, mint no `source_key`
+//! through `alerts.rs`, and are not enrolled here. `find` returning `None`
+//! for one of them means "not an alert source," not "unversioned" or
+//! "unknown to the codebase" — do not read absence from this registry as a
+//! naming-convention violation on those tables.
 //!
 //! Nothing here validates a recipe at runtime: `source_key` is opaque to
 //! the server by design (no delimiter grammar, no parsing — ADR-0009 rule
@@ -37,11 +48,28 @@ pub enum Shape {
     Event,
 }
 
+/// What a source's `expires_at` derives from, if anything (ADR-0014:
+/// "`expires_at` is set only where the occurrence has a natural end the
+/// source already knows"). Three shapes, not two — `IfProvided` is
+/// distinct from `Never`: a `Some`-shaped "none unless…" reading would
+/// make `is_some()` true for a source that in practice never expires most
+/// of the time, which is not what either variant means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expiry {
+    /// The row never carries an `expires_at`; it sits until acked (event
+    /// sources) or resolved (state sources).
+    Never,
+    /// The source always sets `expires_at`, derived as described.
+    Always(&'static str),
+    /// The source sets `expires_at` only when the event payload itself
+    /// carries one; absent that, the row never expires.
+    IfProvided(&'static str),
+}
+
 /// One registered source: its frozen, versioned `source` string, its
 /// declared [`Shape`], its `source_key` recipe (documentation — nothing
 /// machine-checks it beyond the recipe function's own frozen test vector),
-/// whether it declares an `expires_at` and what that derives from, and its
-/// retirement state.
+/// its [`Expiry`], and its retirement state.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceEntry {
     /// The versioned frozen namespace, e.g. `"gmail/v1"`. Every source
@@ -53,10 +81,7 @@ pub struct SourceEntry {
     /// the corresponding `*_key` function's frozen test vector is what
     /// actually catches drift.
     pub key_recipe: &'static str,
-    /// What the source's `expires_at` derives from, if it declares one at
-    /// all. `None` means the row never expires — it sits until acked (event
-    /// sources) or resolved (state sources).
-    pub expires_at: Option<&'static str>,
+    pub expires_at: Expiry,
     /// `Some(successor)` marks this source retired in favor of a newer
     /// version (e.g. `"city-waste/v2"`). Old rows under a retired source
     /// age out through their normal lifecycle; nothing new should be
@@ -72,13 +97,15 @@ impl SourceEntry {
 
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by [`tests::every_registered_source_is_versioned`]); every
-/// source below has at least one frozen key-vector test in this module.
+/// source below has at least one frozen key-vector test in this module,
+/// and the whole table is pinned verbatim by
+/// [`tests::registry_matches_the_frozen_adr_0014_table`].
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: "gmail/v1",
         shape: Shape::Event,
         key_recipe: "the Gmail message id",
-        expires_at: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
@@ -86,21 +113,21 @@ pub const REGISTRY: &[SourceEntry] = &[
         shape: Shape::Event,
         key_recipe: "the mail's internetMessageId — never the Graph `id`, \
                       which changes on a folder move",
-        expires_at: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: "google-calendar/v1",
         shape: Shape::Event,
         key_recipe: "<eventId or recurringEventId>:<originalStartTime>",
-        expires_at: Some("the instance's end time"),
+        expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
     },
     SourceEntry {
         source: "m365-calendar/v1",
         shape: Shape::Event,
         key_recipe: "<seriesMasterId or id>:<originalStart>",
-        expires_at: Some("the instance's end time"),
+        expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
     },
     SourceEntry {
@@ -109,49 +136,49 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: "<stream>:<scheduled-date> — the originally scheduled \
                       collection date, never whatever date a later \
                       correction slides to",
-        expires_at: Some("end of the affected collection date"),
+        expires_at: Expiry::Always("end of the affected collection date"),
         retired_as: None,
     },
     SourceEntry {
         source: "item-threshold/v1",
         shape: Shape::State,
         key_recipe: "item:<id>",
-        expires_at: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: "healthchecks/v1",
         shape: Shape::State,
         key_recipe: "the check id, authored in the webhook body",
-        expires_at: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: "home-assistant/v1",
         shape: Shape::State,
         key_recipe: "the entity id, authored in the webhook body",
-        expires_at: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: "github/v1",
         shape: Shape::Event,
         key_recipe: "the source's own event id",
-        expires_at: Some("none unless the event carries one"),
+        expires_at: Expiry::IfProvided("an expiry carried in the event payload, if any"),
         retired_as: None,
     },
     SourceEntry {
         source: "photo-site/v1",
         shape: Shape::Event,
         key_recipe: "the source's own event id",
-        expires_at: Some("none unless the event carries one"),
+        expires_at: Expiry::IfProvided("an expiry carried in the event payload, if any"),
         retired_as: None,
     },
     SourceEntry {
         source: "gmail-alert/v1",
         shape: Shape::Event,
         key_recipe: "the source's own message id",
-        expires_at: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
 ];
@@ -191,11 +218,19 @@ pub fn google_calendar_v1_key(
     recurring_event_id: Option<&str>,
     original_start_time: &str,
 ) -> String {
-    format!("{}:{}", recurring_event_id.unwrap_or(event_id), original_start_time)
+    format!(
+        "{}:{}",
+        recurring_event_id.unwrap_or(event_id),
+        original_start_time
+    )
 }
 
 /// `m365-calendar/v1`: `<seriesMasterId or id>:<originalStart>`.
-pub fn m365_calendar_v1_key(id: &str, series_master_id: Option<&str>, original_start: &str) -> String {
+pub fn m365_calendar_v1_key(
+    id: &str,
+    series_master_id: Option<&str>,
+    original_start: &str,
+) -> String {
     format!("{}:{}", series_master_id.unwrap_or(id), original_start)
 }
 
@@ -248,11 +283,96 @@ mod tests {
     #[test]
     fn every_registered_source_is_versioned() {
         for entry in REGISTRY {
-            let has_version_suffix = entry
-                .source
-                .rsplit_once("/v")
-                .is_some_and(|(_, suffix)| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()));
+            let has_version_suffix = entry.source.rsplit_once("/v").is_some_and(|(_, suffix)| {
+                !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+            });
             assert!(has_version_suffix, "{} has no /vN suffix", entry.source);
+        }
+    }
+
+    /// Frozen table-pin: every entry's `(source, shape, expires_at,
+    /// retired_as)` tuple, verbatim, in registration order. `source` and
+    /// `shape` are half of the `sha256(source, source_key)` alert id and
+    /// drive the occurrence-lifecycle mechanism
+    /// (`server/authority/src/handlers/alerts.rs`) — this is what actually
+    /// catches `"gmail/v1"` silently drifting to `"gmail/v2"`, or
+    /// `item-threshold/v1` silently flipping to `Shape::Event`, neither of
+    /// which the version-suffix check or a single spot-checked entry would
+    /// notice.
+    #[test]
+    fn registry_matches_the_frozen_adr_0014_table() {
+        let expected: &[(&str, Shape, Expiry, Option<&str>)] = &[
+            ("gmail/v1", Shape::Event, Expiry::Never, None),
+            ("m365-mail/v1", Shape::Event, Expiry::Never, None),
+            (
+                "google-calendar/v1",
+                Shape::Event,
+                Expiry::Always("the instance's end time"),
+                None,
+            ),
+            (
+                "m365-calendar/v1",
+                Shape::Event,
+                Expiry::Always("the instance's end time"),
+                None,
+            ),
+            (
+                "city-waste/v1",
+                Shape::Event,
+                Expiry::Always("end of the affected collection date"),
+                None,
+            ),
+            ("item-threshold/v1", Shape::State, Expiry::Never, None),
+            ("healthchecks/v1", Shape::State, Expiry::Never, None),
+            ("home-assistant/v1", Shape::State, Expiry::Never, None),
+            (
+                "github/v1",
+                Shape::Event,
+                Expiry::IfProvided("an expiry carried in the event payload, if any"),
+                None,
+            ),
+            (
+                "photo-site/v1",
+                Shape::Event,
+                Expiry::IfProvided("an expiry carried in the event payload, if any"),
+                None,
+            ),
+            ("gmail-alert/v1", Shape::Event, Expiry::Never, None),
+        ];
+
+        assert_eq!(
+            REGISTRY.len(),
+            expected.len(),
+            "registry gained or lost a source"
+        );
+        for (entry, (source, shape, expires_at, retired_as)) in REGISTRY.iter().zip(expected) {
+            assert_eq!(entry.source, *source);
+            assert_eq!(entry.shape, *shape, "{} shape drifted", entry.source);
+            assert_eq!(
+                entry.expires_at, *expires_at,
+                "{} expires_at drifted",
+                entry.source
+            );
+            assert_eq!(
+                entry.retired_as, *retired_as,
+                "{} retirement drifted",
+                entry.source
+            );
+        }
+    }
+
+    /// A duplicate `source` string would shadow silently in [`find`]
+    /// (`iter().find` returns only the first match) — every source must be
+    /// unique.
+    #[test]
+    fn registry_source_strings_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in REGISTRY {
+            assert!(
+                seen.insert(entry.source),
+                "duplicate source string: {}",
+                entry.source
+            );
         }
     }
 
@@ -282,11 +402,16 @@ mod tests {
             source: "city-waste/v1",
             shape: Shape::Event,
             key_recipe: "<stream>:<scheduled-date>",
-            expires_at: Some("end of the affected collection date"),
+            expires_at: Expiry::Always("end of the affected collection date"),
             retired_as: Some("city-waste/v2"),
         };
         assert!(retired.is_retired());
         assert_eq!(retired.retired_as, Some("city-waste/v2"));
+
+        // Retirement never breaks the key recipe itself — old rows must
+        // stay computable so their normal lifecycle (ack/expiry) can play
+        // out.
+        assert_eq!(city_waste_v1_key("trash", "2026-08-17"), "trash:2026-08-17");
 
         let unknown = find("city-waste/v0-does-not-exist");
         assert!(unknown.is_none());
@@ -303,14 +428,36 @@ mod tests {
     }
 
     /// Pins that the key is `internetMessageId`, unaffected by a folder
-    /// move — the Graph `id` isn't even a parameter this function can see.
+    /// move. Modeled on two real Graph API observations of the *same*
+    /// mail, before and after a move — the Graph `id` genuinely changes
+    /// (verified 2026-08-09, ADR-0014) while `internetMessageId` does not.
+    /// `m365_mail_v1_key` has no parameter for the Graph `id` at all, so
+    /// this both demonstrates the move happened and that it cannot reach
+    /// the key.
     #[test]
     fn m365_mail_v1_key_is_unchanged_by_a_folder_move() {
-        let internet_message_id = "<abc123@contoso.com>";
-        let key_before_move = m365_mail_v1_key(internet_message_id);
-        // The move changes the Graph `id` (not modeled here — the function
-        // has no parameter for it), but `internetMessageId` survives.
-        let key_after_move = m365_mail_v1_key(internet_message_id);
+        struct GraphObservation {
+            graph_id: &'static str,
+            internet_message_id: &'static str,
+        }
+        let before_move = GraphObservation {
+            graph_id: "AAMkAGI1AAA=-inbox",
+            internet_message_id: "<abc123@contoso.com>",
+        };
+        let after_move = GraphObservation {
+            // A real folder move: the Graph `id` is a different string
+            // after the mail lands in Archive, but the sender-assigned
+            // `internetMessageId` cannot change — Exchange preserves it.
+            graph_id: "AAMkAGI1AAA=-archive",
+            internet_message_id: "<abc123@contoso.com>",
+        };
+        assert_ne!(
+            before_move.graph_id, after_move.graph_id,
+            "the move must actually change the Graph id"
+        );
+
+        let key_before_move = m365_mail_v1_key(before_move.internet_message_id);
+        let key_after_move = m365_mail_v1_key(after_move.internet_message_id);
         assert_eq!(key_before_move, "<abc123@contoso.com>");
         assert_eq!(key_before_move, key_after_move);
     }
@@ -323,10 +470,14 @@ mod tests {
         let second = google_calendar_v1_key("inst-2", Some("series-abc"), "2026-08-17T09:00:00");
         assert_eq!(first, "series-abc:2026-08-10T09:00:00");
         assert_eq!(second, "series-abc:2026-08-17T09:00:00");
-        assert_ne!(first, second, "two instances of one series must key differently");
+        assert_ne!(
+            first, second,
+            "two instances of one series must key differently"
+        );
 
         // The same occurrence, re-fetched (e.g. after a lost cursor):
-        let first_again = google_calendar_v1_key("inst-1", Some("series-abc"), "2026-08-10T09:00:00");
+        let first_again =
+            google_calendar_v1_key("inst-1", Some("series-abc"), "2026-08-10T09:00:00");
         assert_eq!(first, first_again);
     }
 
@@ -351,16 +502,36 @@ mod tests {
     }
 
     /// Pins the clause that bites: a correction to the *slid-to* date must
-    /// not remint the key, because the key is built from the originally
-    /// scheduled date, a parameter the correction never touches.
+    /// not remint the key. Modeled on two real polls of the same city page
+    /// — `scheduled_date` (the fixed coordinate the key is built from)
+    /// never moves, but `slides_to` (what the correction actually
+    /// changes) genuinely does, Tuesday the 18th to Wednesday the 19th.
     #[test]
     fn city_waste_v1_keys_on_the_scheduled_date_not_a_later_correction() {
-        let originally_scheduled = "2026-08-17";
-        let key_when_first_seen = city_waste_v1_key("trash", originally_scheduled);
-        // The city corrects the pickup to slide from Tuesday to Wednesday;
-        // the *scheduled* coordinate this key is built from never changes,
-        // so the same call with the same fixed date reproduces the key.
-        let key_after_correction = city_waste_v1_key("trash", originally_scheduled);
+        struct CityPagePoll {
+            scheduled_date: &'static str,
+            /// The mutable value a correction changes; never passed to
+            /// `city_waste_v1_key` — this is the value ADR-0014 says the
+            /// key must ignore.
+            slides_to: &'static str,
+        }
+        let first_poll = CityPagePoll {
+            scheduled_date: "2026-08-17",
+            slides_to: "2026-08-18",
+        };
+        let corrected_poll = CityPagePoll {
+            scheduled_date: "2026-08-17",
+            // The city corrects the slide from Tuesday the 18th to
+            // Wednesday the 19th — a real change to the mutable value.
+            slides_to: "2026-08-19",
+        };
+        assert_ne!(
+            first_poll.slides_to, corrected_poll.slides_to,
+            "the correction must actually move the slide date"
+        );
+
+        let key_when_first_seen = city_waste_v1_key("trash", first_poll.scheduled_date);
+        let key_after_correction = city_waste_v1_key("trash", corrected_poll.scheduled_date);
         assert_eq!(key_when_first_seen, "trash:2026-08-17");
         assert_eq!(key_when_first_seen, key_after_correction);
     }
@@ -377,7 +548,10 @@ mod tests {
 
     #[test]
     fn home_assistant_v1_keys_on_the_entity_id() {
-        assert_eq!(home_assistant_v1_key("binary_sensor.front_door"), "binary_sensor.front_door");
+        assert_eq!(
+            home_assistant_v1_key("binary_sensor.front_door"),
+            "binary_sensor.front_door"
+        );
     }
 
     #[test]
