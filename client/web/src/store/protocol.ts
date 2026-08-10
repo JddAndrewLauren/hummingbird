@@ -354,12 +354,16 @@ export type SyncCadenceRequest =
    * backgrounded. */
   | { type: "setViewVisibility"; hidden: boolean }
   /** Sent on a `window` `focus` event. Deliberately not deduplicated across
-   * views the way the timer is: two tabs focusing near-simultaneously firing
-   * two cycles is the same "wasteful but never incorrect" duplicate-gesture
-   * case `core.worker.ts`'s calendar wiring already accepts for its own
-   * request queue (ADR-0010) — an unattended clock multiplying with tab
-   * count is the defect this type exists to close; a human's own actions
-   * are not. */
+   * views the way the timer is — but not because a human's own actions are
+   * exempt from that concern. Issue #190's ruling: a focus event maps onto
+   * `sync-cadence.ts`'s `toCoreTrigger("focus") === "timer"`, so it never
+   * resets ADR-0007's backoff, which is what makes duplicate focus triggers
+   * across tabs harmless rather than the human-gesture argument this type
+   * used to lean on. Two tabs focusing near-simultaneously still firing two
+   * cycles is the same "wasteful but never incorrect" duplicate-trigger case
+   * `core.worker.ts`'s calendar wiring already accepts for its own request
+   * queue (ADR-0010) — it just no longer needs the gesture framing to get
+   * there. */
   | { type: "syncFocusTrigger" }
   /** Issue #194: the header refresh control's task leg. Sent on a manual
    * refresh press, and routed through the shared cadence the same as every

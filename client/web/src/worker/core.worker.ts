@@ -76,10 +76,15 @@
 // (`protocol.ts`) instead: one visible tab keeps the cycle running even
 // while its siblings are backgrounded. A view's own `focus` event similarly
 // has no worker-side equivalent and is forwarded per view as
-// `syncFocusTrigger` — deliberately NOT deduplicated the way the timer is,
-// since two tabs focusing near-simultaneously is the same "wasteful but
-// never incorrect" duplicate-user-gesture case the calendar wiring above
-// already accepts, not the unattended-clock defect this fix closes.
+// `syncFocusTrigger` — deliberately NOT deduplicated the way the timer is.
+// This is safe not because a focus is a harmless human gesture (issue #190's
+// ruling: it is not the gesture ADR-0007's backoff-reset sentence is about
+// at all — see `sync-cadence.ts`'s `toCoreTrigger`, which maps `"focus"`
+// onto the core's `"timer"` spelling and so never resets backoff), but
+// because two tabs focusing near-simultaneously is now just two cycles that
+// each land as a no-op during backoff, the same "wasteful but never
+// incorrect" duplicate-trigger case the calendar wiring above already
+// accepts.
 
 import type { TaskWorkerRequest, TaskWorkerResponse } from "../store/protocol";
 import {
@@ -206,9 +211,11 @@ void (async () => {
     // The shared ADR-0007 cadence — see the module doc above for why this
     // is constructed exactly once here rather than once per view. `trigger`
     // is the un-collapsed `SyncCadenceTrigger` ("open" | "reconnect" |
-    // "focus" | "timer"); this is the one place that both maps it to the
-    // spelling `Core::run`'s own `Trigger` expects (`toCoreTrigger`, still
-    // "open"/"reconnect"/"focus" -> "user") AND decides `forceFullSweep`
+    // "focus" | "manual" | "timer"); this is the one place that both maps it
+    // to the spelling `Core::run`'s own `Trigger` expects (`toCoreTrigger` —
+    // "open"/"reconnect"/"manual" -> "user", but "focus" -> "timer" per
+    // issue #190's ruling: a focus event never resets backoff) AND decides
+    // `forceFullSweep`
     // from it directly (#193: ADR-0008's "on app open" backstop is only
     // `"open"` — an already-warm core's `onFocus`/`onReconnect`/timer ticks
     // stay delta-only; a NEW VIEW connecting to a live core does not re-fire

@@ -77,6 +77,10 @@ export function useSyncWiring(worker: WorkerLike, status: CoreStatus): SyncWirin
   // ADR-0007's "on window focus" trigger — forwarded to the shared cadence
   // rather than run locally; see `protocol.ts`'s `SyncCadenceRequest` doc
   // for why this one is not deduplicated across views the way the timer is.
+  // Issue #190: this still fires unconditionally on every focus — the
+  // cadence itself is unchanged — but the resulting cycle now carries the
+  // core's `"timer"` trigger (`sync-cadence.ts`'s `toCoreTrigger`), so a
+  // focus never resets ADR-0007's backoff the way open/reconnect/manual do.
   useEffect(() => {
     if (!ready) {
       return;
