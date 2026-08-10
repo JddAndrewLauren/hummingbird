@@ -8,3 +8,9 @@ server/target/
 server/worker/build/
 server/worker/.wrangler/
 
+# Throwaway prototypes are their own cargo workspaces (deliberately outside
+# `server/`'s, so CI's `--workspace` never gates on them), so they have their
+# own build dirs and lockfiles.
+server/prototypes/*/target/
+server/prototypes/*/Cargo.lock
+
