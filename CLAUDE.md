@@ -158,8 +158,29 @@ set from the operator's terminal and the first `device`-scope token minted.
 migration, verified against the API (`use_sqlite: true`, `migration_tag:
 v1`) because **the deploy output never mentions migrations at all**, and
 neither does `wrangler deployments list` or `versions view`. Local
-development is unchanged: `wrangler dev` + `server/scripts/smoke.sh`. There
-is no production smoke script yet (#239/#240). **The test recipe is shared,
+development is unchanged: `wrangler dev` + `server/scripts/smoke.sh`.
+`server/scripts/smoke-prod.sh` is its production counterpart (#239/#240) and
+is a **deploy-integrity verifier, not a second acceptance suite**: the shared
+test recipe below already proves handler logic, CAS, the scope matrix and
+sweep/delta agreement against a real SQLite DO before a deploy can land, so
+the prod script asserts only what CI structurally cannot see — that `/api/*`
+still beats the shell's SPA fallback (asserted on `content-type`, not just
+status, because the root genuinely answers `200 text/html`), that auth is on,
+that all ten sweep lanes are present so the live schema is the built one, and
+that the version cursor is live. It is **read-only, manual, and carries the
+operator's own reused `device` token**, each deliberately: there is no delete
+route anywhere in the API (ADR-0003), so a write could only ever have been
+tombstoned, not cleaned up; and `device` is the only read-capable scope, so a
+read-only script still holds a write-everything credential — which is exactly
+why it never goes into Actions, the same posture `ADMIN_SECRET` gets.
+Automating it requires minting a dedicated token *first*. The standing
+consequence: **nothing automated ever exercises a production write**, so a
+deploy that broke writes while leaving reads intact passes it green; the only
+write proof is #241's hand-run foreign-device round-trip, and #234 carries the
+unfired conditional that would close it. Unlike the local smoke it also races
+real traffic, so its byte-agreement and cursor assertions retry once and
+distinguish a concurrent capture (a higher `version`) from a genuine
+disagreement (a difference at the same one). **The test recipe is shared,
 not copied** (#229): `server-test.yml` is a `workflow_call`-only workflow
 holding clippy / native fixture tests / wasm32 build / `smoke.sh`, and both
 `server.yml` (pull requests only) and `deploy-server.yml` (`main`, `wrangler
