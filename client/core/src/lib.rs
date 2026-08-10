@@ -44,6 +44,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod calendar;
 pub mod capture;
 pub mod context;
+pub mod rank;
 pub mod storage;
 pub mod sync;
 pub mod task;
