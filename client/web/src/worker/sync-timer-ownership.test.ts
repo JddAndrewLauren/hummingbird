@@ -108,3 +108,27 @@ describe("N connected views produce exactly one cycle per shared-timer tick", ()
     expect(run).toHaveBeenCalledTimes(1);
   });
 });
+
+// #193 review (CB4): `forceFullSweep: trigger === "open"` is decided inside
+// `core.worker.ts`'s cadence `run` sink, which — like the rest of this file's
+// pins — no vitest (node) test can import (it statically imports the wasm
+// core and is a `SharedWorkerGlobalScope` script). Reverting that expression
+// to a bare `false` leaves every OTHER test in this suite green, since none
+// of them can see past the `DispatchCadence`/`SyncCadence` boundary into
+// what `core.worker.ts` actually sends on the wire — exactly the fragility
+// class #193 was filed about. This pins the source text of the exact
+// expression instead, the same technique the block above uses for timer
+// ownership.
+describe("core.worker.ts forces the ADR-0008 sweep on the open trigger, and only it", () => {
+  it("sets forceFullSweep from trigger === \"open\" — not a hardcoded false, not any other trigger", () => {
+    expect(coreWorkerSource).toContain('forceFullSweep: trigger === "open"');
+    // Guards against a revert to the pre-#193 hardcoded false, or a rewrite
+    // that silently swaps in a different (wrong) trigger spelling.
+    expect(coreWorkerSource).not.toContain("forceFullSweep: false");
+    expect(coreWorkerSource).not.toMatch(/forceFullSweep:\s*trigger\s*===\s*"(reconnect|focus|timer)"/);
+  });
+
+  it("maps the cadence's own trigger to Core::run's spelling via toCoreTrigger, not a re-derived mapping", () => {
+    expect(coreWorkerSource).toContain("trigger: toCoreTrigger(trigger)");
+  });
+});
