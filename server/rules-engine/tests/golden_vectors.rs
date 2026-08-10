@@ -375,3 +375,194 @@ fn a_disabled_rule_never_matches() {
     let event = bare_event(Some("email"));
     assert_eq!(evaluate_rule(&r, &event, "2026-08-15T09:00"), RuleOutcome::NotMatched);
 }
+
+// --- Reviewer round 1: save-time value validation ---------------------
+//
+// ADR-0013 says a malformed duration literal, and `m`/`h` on a `date`
+// field, are both "rejected at save." Before this fix `validate_rule`
+// never inspected `condition.value` at all, so both cases evaluated
+// straight through to `time_match`'s `.unwrap_or(false)` — a plain `false`
+// that a `negate: true` condition would invert into an ALWAYS-TRUE
+// condition, exactly the silent-failure shape ADR-0013 exists to prevent.
+// Every vector below is paired with its negated twin to pin that the fix
+// is "reported invalid," not "false becomes true."
+
+/// **Vector: a malformed duration literal is invalid, not silently
+/// `false`.** `"1d2h"` is a compound — ADR-0013 forbids compounds
+/// explicitly.
+#[test]
+fn malformed_duration_literal_is_invalid() {
+    let r = rule(
+        "bad-duration",
+        Some("item_threshold"),
+        vec![condition("deadline", "within_next", serde_json::json!("1d2h"), false)],
+    );
+    let event = with_extras(
+        bare_event(Some("item_threshold")),
+        vec![("deadline", FieldValue::Str("2026-08-15T09:00".to_string()))],
+    );
+    let expected = RuleOutcome::Invalid(vec![RuleProblem::MalformedValue {
+        field: "deadline".to_string(),
+        reason: "\"1d2h\" is not a valid duration literal (an integer immediately followed by \
+                  one unit letter m/h/d, no compounds, no sign)"
+            .to_string(),
+    }]);
+    assert_eq!(evaluate_rule(&r, &event, "2026-08-15T09:00"), expected);
+    assert_eq!(validate_rule(&r), match expected {
+        RuleOutcome::Invalid(problems) => problems,
+        _ => unreachable!(),
+    });
+}
+
+/// **The safety half of the vector above.** Negating a malformed-duration
+/// condition must still report Invalid — never flip the silent `false`
+/// into an always-true match on every event of the rule's kind.
+#[test]
+fn malformed_duration_literal_stays_invalid_when_negated() {
+    let r = rule(
+        "bad-duration-negated",
+        Some("item_threshold"),
+        vec![condition("deadline", "within_next", serde_json::json!("1d2h"), true)],
+    );
+    let event = with_extras(
+        bare_event(Some("item_threshold")),
+        vec![("deadline", FieldValue::Str("2026-08-15T09:00".to_string()))],
+    );
+    let outcome = evaluate_rule(&r, &event, "2026-08-15T09:00");
+    assert!(matches!(outcome, RuleOutcome::Invalid(_)), "got {outcome:?}, must not be Matched");
+}
+
+/// **Vector: `m`/`h` units on a `date`-typed field are invalid, not
+/// silently `false`.** `scheduled_date` is `date`-typed (ADR-0013: `date`
+/// fields accept `d` units only).
+#[test]
+fn hour_unit_on_a_date_typed_field_is_invalid() {
+    let r = rule(
+        "bad-unit",
+        Some("item_threshold"),
+        vec![condition("scheduled_date", "within_next", serde_json::json!("2h"), false)],
+    );
+    let event = with_extras(
+        bare_event(Some("item_threshold")),
+        vec![("scheduled_date", FieldValue::Str("2026-08-15".to_string()))],
+    );
+    let expected = RuleOutcome::Invalid(vec![RuleProblem::MalformedValue {
+        field: "scheduled_date".to_string(),
+        reason: "\"2h\": a `date`-typed field accepts `d` units only".to_string(),
+    }]);
+    assert_eq!(evaluate_rule(&r, &event, "2026-08-15T09:00"), expected);
+}
+
+/// **The safety half:** negated, still Invalid — never always-true.
+#[test]
+fn hour_unit_on_a_date_typed_field_stays_invalid_when_negated() {
+    let r = rule(
+        "bad-unit-negated",
+        Some("item_threshold"),
+        vec![condition("scheduled_date", "within_next", serde_json::json!("2h"), true)],
+    );
+    let event = with_extras(
+        bare_event(Some("item_threshold")),
+        vec![("scheduled_date", FieldValue::Str("2026-08-15".to_string()))],
+    );
+    let outcome = evaluate_rule(&r, &event, "2026-08-15T09:00");
+    assert!(matches!(outcome, RuleOutcome::Invalid(_)), "got {outcome:?}, must not be Matched");
+}
+
+/// Non-blocking item 6: a mistyped condition *literal* (not a duration)
+/// falls through the same validation shape — `eq` on a `string` field
+/// needs a string literal, and a bare number is not one.
+#[test]
+fn a_literal_of_the_wrong_json_kind_is_invalid() {
+    let r = rule("bad-literal", Some("email"), vec![condition("subject", "eq", serde_json::json!(42), false)]);
+    let event = with_extras(bare_event(Some("email")), vec![("subject", FieldValue::Str("42".to_string()))]);
+    let expected = RuleOutcome::Invalid(vec![RuleProblem::MalformedValue {
+        field: "subject".to_string(),
+        reason: "value must be a string or a list of strings".to_string(),
+    }]);
+    assert_eq!(evaluate_rule(&r, &event, "2026-08-15T09:00"), expected);
+}
+
+/// The safety half for a mistyped literal too: negated stays Invalid.
+#[test]
+fn a_literal_of_the_wrong_json_kind_stays_invalid_when_negated() {
+    let r = rule("bad-literal-negated", Some("email"), vec![condition("subject", "eq", serde_json::json!(42), true)]);
+    let event = with_extras(bare_event(Some("email")), vec![("subject", FieldValue::Str("42".to_string()))]);
+    let outcome = evaluate_rule(&r, &event, "2026-08-15T09:00");
+    assert!(matches!(outcome, RuleOutcome::Invalid(_)), "got {outcome:?}, must not be Matched");
+}
+
+// --- Non-blocking (3): within_last, the day-only/23:59 boundary, and a
+// `date`-typed field, none of which had a golden vector before. ---------
+
+/// `within_last` golden vector: a mail received 5 minutes ago matches a
+/// 10-minute window; one received 20 minutes ago does not — the two-sided
+/// contrast the earlier vectors only ran for `within_next`.
+#[test]
+fn within_last_matches_recent_and_rejects_stale() {
+    let r = rule(
+        "recent-mail",
+        Some("email"),
+        vec![condition("received_at", "within_last", serde_json::json!("10m"), false)],
+    );
+    let recent = with_extras(
+        bare_event(Some("email")),
+        vec![("received_at", FieldValue::Str("2026-08-15T08:55".to_string()))],
+    );
+    let stale = with_extras(
+        bare_event(Some("email")),
+        vec![("received_at", FieldValue::Str("2026-08-15T08:39".to_string()))],
+    );
+    assert!(matches!(evaluate_rule(&r, &recent, "2026-08-15T09:00"), RuleOutcome::Matched(_)));
+    assert_eq!(evaluate_rule(&r, &stale, "2026-08-15T09:00"), RuleOutcome::NotMatched);
+}
+
+/// The #153 day-only/23:59 contract, exercised through the rule engine
+/// end to end: a day-only `deadline` on the same calendar day as `now`
+/// must be treated as due at `23:59`, not at midnight — so a `within_next`
+/// window that only reaches to 10:00 the same day must NOT match it (the
+/// item is not due for almost the rest of the day), while a window
+/// reaching past midnight into the next day DOES match it once the
+/// resolved end-of-day instant falls inside the window.
+#[test]
+fn a_day_only_deadline_resolves_to_23_59_not_midnight() {
+    let r = rule(
+        "same-day-deadline",
+        Some("item_threshold"),
+        vec![condition("deadline", "within_next", serde_json::json!("1h"), false)],
+    );
+    let event = with_extras(
+        bare_event(Some("item_threshold")),
+        vec![("deadline", FieldValue::Str("2026-08-15".to_string()))], // day-only: means 23:59
+    );
+
+    // `now` is 09:00 the same day; `within_next '1h'` reaches only to
+    // 10:00 — nowhere near 23:59, so a day-only deadline must not match.
+    assert_eq!(evaluate_rule(&r, &event, "2026-08-15T09:00"), RuleOutcome::NotMatched);
+
+    // `now` is 23:30 the same day; `within_next '1h'` reaches to 00:30 the
+    // next day, which is past 23:59 — the day-only deadline now matches.
+    assert!(matches!(evaluate_rule(&r, &event, "2026-08-15T23:30"), RuleOutcome::Matched(_)));
+}
+
+/// `date`-typed field golden vector: `scheduled_date within_next '3d'`
+/// (`d` units only, per ADR-0013) matches a date two days out and rejects
+/// one five days out.
+#[test]
+fn date_typed_field_within_next_matches_by_calendar_day() {
+    let r = rule(
+        "soon-scheduled",
+        Some("item_threshold"),
+        vec![condition("scheduled_date", "within_next", serde_json::json!("3d"), false)],
+    );
+    let soon = with_extras(
+        bare_event(Some("item_threshold")),
+        vec![("scheduled_date", FieldValue::Str("2026-08-17".to_string()))],
+    );
+    let later = with_extras(
+        bare_event(Some("item_threshold")),
+        vec![("scheduled_date", FieldValue::Str("2026-08-20".to_string()))],
+    );
+    assert!(matches!(evaluate_rule(&r, &soon, "2026-08-15T09:00"), RuleOutcome::Matched(_)));
+    assert_eq!(evaluate_rule(&r, &later, "2026-08-15T09:00"), RuleOutcome::NotMatched);
+}

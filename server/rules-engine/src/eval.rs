@@ -21,6 +21,13 @@ pub enum RuleProblem {
     /// `op` is not a recognized operator, or is not legal for `field`'s
     /// declared type.
     IllegalOperator { field: String, op: String },
+    /// `condition.value` cannot possibly satisfy `op` against `field`'s
+    /// declared type — a malformed duration literal, an `m`/`h` unit on a
+    /// `date`-typed field (ADR-0013 rejects both "at save"), or a literal
+    /// of the wrong JSON kind entirely (e.g. a number where `eq` needs a
+    /// string). Reported here rather than left to evaluate silently to
+    /// `false` — which, negated, would make the condition **always true**.
+    MalformedValue { field: String, reason: String },
 }
 
 /// One rule's outcome against one event.
@@ -65,7 +72,14 @@ pub fn validate_rule(rule: &Rule) -> Vec<RuleProblem> {
     for condition in &rule.conditions {
         match field_type_for(kind_entry, &condition.field) {
             Ok(field_type) => match Operator::parse(&condition.op) {
-                Some(op) if op.is_legal_for(field_type) => {}
+                Some(op) if op.is_legal_for(field_type) => {
+                    if let Some(reason) = malformed_value_reason(field_type, op, &condition.value) {
+                        problems.push(RuleProblem::MalformedValue {
+                            field: condition.field.clone(),
+                            reason,
+                        });
+                    }
+                }
                 _ => problems.push(RuleProblem::IllegalOperator {
                     field: condition.field.clone(),
                     op: condition.op.clone(),
@@ -75,6 +89,56 @@ pub fn validate_rule(rule: &Rule) -> Vec<RuleProblem> {
         }
     }
     problems
+}
+
+/// `Some(reason)` when `value` cannot possibly satisfy `op` against
+/// `field_type` — ADR-0013's two save-time duration rules (a malformed
+/// duration literal; `m`/`h` on a `date` field) plus a general check that
+/// every operator's literal is at least the right JSON kind. Skipped
+/// entirely for [`FieldType::Dynamic`] fields: `snapshot_change`'s
+/// `value`/`previous` declare their real type per key, at wiring time
+/// (#135-137), which this crate does not have — legality for those is
+/// checked against the actual value at evaluation time instead (see
+/// `evaluate_condition`).
+fn malformed_value_reason(field_type: FieldType, op: Operator, value: &serde_json::Value) -> Option<String> {
+    if field_type == FieldType::Dynamic {
+        return None;
+    }
+    let literals = normalize_condition_values(value);
+    if literals.is_empty() {
+        return Some("value has no literal to compare against".to_string());
+    }
+    match op {
+        Operator::WithinNext | Operator::WithinLast => {
+            for literal in &literals {
+                let Some(s) = literal.as_str() else {
+                    return Some(format!("duration literal {literal} is not a string"));
+                };
+                let Some((_, unit)) = parse_duration(s) else {
+                    return Some(format!(
+                        "\"{s}\" is not a valid duration literal (an integer immediately \
+                         followed by one unit letter m/h/d, no compounds, no sign)"
+                    ));
+                };
+                if field_type == FieldType::Date && unit != DurationUnit::Days {
+                    return Some(format!("\"{s}\": a `date`-typed field accepts `d` units only"));
+                }
+            }
+            None
+        }
+        Operator::Eq | Operator::Contains => literals
+            .iter()
+            .all(|l| l.as_str().is_none())
+            .then(|| "value must be a string or a list of strings".to_string()),
+        Operator::Gt | Operator::Lt => literals
+            .iter()
+            .all(|l| l.as_f64().is_none())
+            .then(|| "value must be a number or a list of numbers".to_string()),
+        Operator::Is => literals
+            .iter()
+            .all(|l| l.as_bool().is_none())
+            .then(|| "value must be a bool or a list of bools".to_string()),
+    }
 }
 
 /// Evaluates one rule against one event. `now` must be a valid
@@ -196,8 +260,12 @@ fn normalize_condition_values(value: &serde_json::Value) -> Vec<serde_json::Valu
 /// `eq`/`contains` on a `String` or `StringList` field: list fields take
 /// the same two string ops applied to any element, and a list condition
 /// value means any-of — so this is a cross-product any-any match, always
-/// case-insensitive. `None` when the field's runtime value isn't a string
-/// family, or the condition carries no usable string literal.
+/// case-insensitive. Both operators fold through `to_lowercase()`
+/// (Unicode case folding, not `eq_ignore_ascii_case`'s ASCII-only fold) —
+/// one casing discipline for both, since ADR-0013 says "all string
+/// comparison is case-insensitive" without carving out non-ASCII text.
+/// `None` when the field's runtime value isn't a string family, or the
+/// condition carries no usable string literal.
 fn string_family_match(op: Operator, value: &FieldValue, condition_value: &serde_json::Value) -> Option<bool> {
     let field_strs: Vec<&str> = match value {
         FieldValue::Str(s) => vec![s.as_str()],
@@ -211,7 +279,7 @@ fn string_family_match(op: Operator, value: &FieldValue, condition_value: &serde
     }
     Some(field_strs.iter().any(|field_str| {
         cond_strs.iter().any(|cond_str| match op {
-            Operator::Eq => field_str.eq_ignore_ascii_case(cond_str),
+            Operator::Eq => field_str.to_lowercase() == cond_str.to_lowercase(),
             Operator::Contains => field_str.to_lowercase().contains(&cond_str.to_lowercase()),
             _ => false,
         })
@@ -306,10 +374,19 @@ fn single_time_match(op: Operator, field_type: FieldType, field_str: &str, durat
                 return None;
             }
             let resolved_field = deadline_sort_key(field_str);
-            let cutoff = shift(now, signed, unit)?;
+            let raw_cutoff = shift(now, signed, unit)?;
+            // `shift` only stays date-only for a whole-`Days` shift of a
+            // date-only `now` (itself already an edge case here — `now`
+            // is documented as always minute-precision). Running the
+            // cutoff through the same `deadline_sort_key` resolution the
+            // field went through guarantees both sides of this comparison
+            // share one convention, however either one arrived as
+            // date-only, rather than trusting the two callers to agree by
+            // construction.
+            let cutoff = deadline_sort_key(&raw_cutoff);
             Some(match op {
-                Operator::WithinNext => resolved_field.as_ref() <= cutoff.as_str(),
-                Operator::WithinLast => resolved_field.as_ref() >= cutoff.as_str(),
+                Operator::WithinNext => resolved_field.as_ref() <= cutoff.as_ref(),
+                Operator::WithinLast => resolved_field.as_ref() >= cutoff.as_ref(),
                 _ => unreachable!(),
             })
         }

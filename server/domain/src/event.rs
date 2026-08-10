@@ -86,6 +86,18 @@ pub struct EventKindEntry {
 /// The five kinds ADR-0013 launches with. Frozen shape per kind — see the
 /// ADR's field tables; this is their code form, and the only form, per the
 /// "registry is a `domain` artifact" decision above.
+///
+/// **Core fields always win a name collision.** `email.body`,
+/// `calendar_event.title` and `item_threshold.title` repeat a name the
+/// Event core already declares (ADR-0013's per-kind tables list them
+/// again for #140's dropdown, since a rule author browsing "calendar_event
+/// fields" expects to see `title` there); the engine's field lookup checks
+/// [`core_field_type`] first, so these kind-level entries are never the
+/// ones actually resolved — they exist for the JSON export's UI listing,
+/// not for evaluation. This is harmless only because every repeated name
+/// shares its core type (`String`); a kind declaring the same name at a
+/// *different* type would be silently shadowed rather than rejected, so a
+/// future kind must not do that.
 pub const EVENT_KINDS: &[EventKindEntry] = &[
     EventKindEntry {
         key: "email",

@@ -125,13 +125,22 @@ pub fn parse_duration(s: &str) -> Option<(i64, DurationUnit)> {
 }
 
 /// Shifts a valid deadline-shaped string (`is_valid_deadline`) by a signed
-/// number of minutes/hours/days, returning a string in the same precision
-/// as `base` (date-only stays date-only; a date-time stays a date-time).
-/// Used by the rule engine (#133) to compute `now ± D` as a string directly
-/// comparable, lexicographically, against [`deadline_sort_key`] — so
-/// relative-time evaluation shares the identical string-comparison
-/// discipline the sort and the resolved key already establish, rather than
-/// a second, numeric notion of "when this is."
+/// number of minutes/hours/days. Used by the rule engine (#133) to compute
+/// `now ± D` as a string directly comparable, lexicographically, against
+/// [`deadline_sort_key`] — so relative-time evaluation shares the identical
+/// string-comparison discipline the sort and the resolved key already
+/// establish, rather than a second, numeric notion of "when this is."
+///
+/// **A date-only `base` is anchored at that day's `T23:59` before the
+/// shift is applied — the exact same resolution [`deadline_sort_key`]
+/// uses**, so this function cannot become a second, divergent day-only
+/// convention. The output stays date-only only when the shift is
+/// whole-days-only (`unit == Days`) on a date-only `base`, since a
+/// day-granularity shift of a day-grained value is still day-grained;
+/// every other case — any `Minutes`/`Hours` shift, or a `base` that
+/// already carries a time — returns a full date-time, because the shift
+/// may have produced a sub-day component that a date-only string cannot
+/// represent without silently discarding it.
 ///
 /// `amount` may be negative (used internally for `within_last`); the wire
 /// vocabulary itself never accepts a signed literal (see
@@ -146,8 +155,11 @@ pub fn shift(base: &str, amount: i64, unit: DurationUnit) -> Option<String> {
         digits(&base[5..7])?,
         digits(&base[8..10])?,
     );
+    // A date-only base is anchored at end-of-day (23:59), matching
+    // `deadline_sort_key` exactly — never a second, silently different
+    // day-only convention (00:00 would be one).
     let (hour, minute) = if date_only {
-        (0, 0)
+        (23, 59)
     } else {
         (digits(&base[11..13])?, digits(&base[14..16])?)
     };
@@ -167,7 +179,11 @@ pub fn shift(base: &str, amount: i64, unit: DurationUnit) -> Option<String> {
     let (y, mo, d) = civil_from_days(shifted_days);
     let (h, mi) = (minute_of_day / 60, minute_of_day % 60);
 
-    Some(if date_only {
+    // Stay date-only only when the shift itself is whole-days: adding N
+    // days to an end-of-day anchor still lands on end-of-day, so the date
+    // component alone carries the result with nothing discarded. Any
+    // sub-day unit must render the full date-time it computed.
+    Some(if date_only && unit == DurationUnit::Days {
         format!("{y:04}-{mo:02}-{d:02}")
     } else {
         format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}")
@@ -346,5 +362,52 @@ mod tests {
     #[test]
     fn shift_rejects_an_invalid_base() {
         assert_eq!(shift("not-a-date", 1, DurationUnit::Days), None);
+    }
+
+    /// The blocking bug this pins: a date-only base shifted by an
+    /// `Hours`/`Minutes` unit must anchor at that day's `T23:59` — the same
+    /// resolution `deadline_sort_key` uses — and must render the full
+    /// date-time it computed, never silently collapse back to date-only
+    /// and discard the shift. Before the fix, `shift("2026-08-15", 2,
+    /// Hours)` returned `"2026-08-15"` (the +2h vanished entirely) instead
+    /// of the correct `"2026-08-16T01:59"`.
+    #[test]
+    fn shift_anchors_a_date_only_base_at_end_of_day_for_an_hours_shift() {
+        assert_eq!(
+            shift("2026-08-15", 2, DurationUnit::Hours),
+            Some("2026-08-16T01:59".to_string())
+        );
+    }
+
+    /// The companion case: subtracting stays within the same day and still
+    /// renders full precision, anchored at `T23:59`.
+    #[test]
+    fn shift_anchors_a_date_only_base_at_end_of_day_for_a_negative_hours_shift() {
+        assert_eq!(
+            shift("2026-08-15", -1, DurationUnit::Hours),
+            Some("2026-08-15T22:59".to_string())
+        );
+    }
+
+    /// A `Minutes` shift on a date-only base behaves identically —
+    /// end-of-day anchor, full-precision output.
+    #[test]
+    fn shift_anchors_a_date_only_base_at_end_of_day_for_a_minutes_shift() {
+        assert_eq!(
+            shift("2026-08-15", 5, DurationUnit::Minutes),
+            Some("2026-08-16T00:04".to_string())
+        );
+    }
+
+    /// A whole-`Days` shift on a date-only base still resolves through the
+    /// `T23:59` anchor internally, but the anchor's own time-of-day cancels
+    /// out of a whole-day shift, so the result stays date-only and agrees
+    /// with [`deadline_sort_key`]'s resolution of that same date-only
+    /// result — one convention, checked at both ends here.
+    #[test]
+    fn shift_on_a_whole_day_unit_agrees_with_deadline_sort_key() {
+        let shifted = shift("2026-08-15", 1, DurationUnit::Days).unwrap();
+        assert_eq!(shifted, "2026-08-16");
+        assert_eq!(deadline_sort_key(&shifted), deadline_sort_key("2026-08-16T23:59"));
     }
 }
