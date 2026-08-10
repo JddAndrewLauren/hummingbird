@@ -63,6 +63,39 @@ caller-injected on every call — bare `wasm32-unknown-unknown` has no clock or
 RNG that does not panic. There is no `docs/sync.md`; the map is the module
 docs in `client/core/src/sync/mod.rs` and each submodule's own header.
 
+`Core` (`client/core/src/lib.rs`) is the one door onto all of that, and it
+has exactly **three mutation entry points**: `Core::capture` (a create,
+whose `title` goes through `capture::parse_seam` — #110/#42's named no-op —
+and reaches the mutation verbatim regardless), `Core::act` (S11's closed
+`ItemAction` vocabulary: start / complete / block / cancel, where cancel
+sets `archived_at` and never a stage, because the owned schema has no
+"canceled"), and `Core::triage` (S13's `TriageDestination` + `TriagePatch`:
+a multi-field triage is exactly ONE queued CAS `PATCH`, never one per
+field, so a 409 rebases or dead-letters the whole edit together). **All
+three enqueue through `SyncCycle::enqueue` and none of them may reach
+`OutboundQueue::enqueue`** — the durability rule above is not per-caller
+advice, it is what makes an offline capture, act or triage survive at all.
+All three take a caller-minted `seed` (deterministic id, same no-clock/no-RNG
+reasoning). The reads are `frontier` / `triage_inbox` / `blocked` /
+`steps_for` / `projects`; the three item queries are each a filter over one
+shared `overlaid_items` view, while `steps_for` and `projects` (over
+`SyncMirror::all_projects`) read the mirror directly — no mutation entry
+point mints a Step or a Project, so there is nothing optimistic to overlay
+there.
+
+**The overlay is one representation, not one per mutation kind.**
+`overlay_from_queue` rebuilds it at `Core::init` from whatever the durable
+queue still holds — `MutationIntent::Create` through `item_from_create`,
+`MutationIntent::Patch` through `apply_item_patch` (the same absolute-value
+field overwrite the wire sends) — so a capture, an act or a triage made
+offline and then reloaded is still readable, still `is_pending`, rather
+than vanishing until the next successful cycle. A queue entry that no
+longer projects is an `Err`, never a silently dropped overlay entry: going
+overlay-blind would tell a reader nothing is pending while something still
+is. It is keyed one entry per item id in FIFO order (last enqueued wins),
+which leaves the narrow `entry_id` gap `Core::act`'s own doc records —
+flagged there, not fixed.
+
 ## The web worker layer
 
 `client/web/src/worker/` is where the device half meets the browser: **one
@@ -87,6 +120,26 @@ device token: entry, rest, re-prompt — the key crosses into the core and is
 never read back out through any response), and `shell/sync-status.ts` (the
 staleness readout; an outcome that did not run must never read as success).
 
+The protocol now carries the whole read-and-act surface: view→worker
+`capture` / `act` / `triage` and the reads `getFrontier` /
+`getTriageInbox` / `getBlocked` / `getSteps` / `getProjects` / `isPending`;
+worker→view `captureResult` / `actResult` / `triageResult` plus the
+`frontier` / `triageInbox` / `blocked` / `steps` / `projects` /
+`isPendingResult` pushes. A frontier or blocked entry is a
+`FrontierItemDTO` — `ffi-web/src/task_host.rs` flattens
+`hummingbird_domain::Item` and adds the computed `pending` flag, stamped in
+exactly one place (`TaskHostCore::with_pending`, applied by `frontier()`,
+`triage_inbox()` and `blocked()`) so the answer cannot drift between call
+sites; `pending` is a read-time fact about the overlay, never a schema
+column. Every wire string is resolved by name before the seam
+(`parse_action`, `parse_destination`, `Stage::parse`, `Size::parse`,
+`Energy::parse`), so an unrecognised name fails without ever reaching
+`Core`. On an `ok` result `store/worker-client.ts` re-requests the affected
+queries itself — `actResult` re-reads frontier, blocked and that item's
+`isPending`; `triageResult` re-reads the triage inbox and the frontier —
+which is what makes a mutation taken offline visible immediately, without
+waiting for a cycle.
+
 **The invariant: no top-level `await` may enter `core.worker.ts`'s static
 import graph.** `vite-plugin-top-level-await` wraps such a module in an
 async IIFE, which pushes the `self.onconnect` assignment past the first
@@ -98,6 +151,57 @@ file, or a top-level `await` to anything it imports, re-breaks it;
 `worker/sync-timer-ownership.test.ts` pins what it can from the source text,
 but the real proof is the built bundle (zero `await` at function-depth ≤ 1
 before `self.onconnect =`).
+
+## The screens and shell layer
+
+`client/web/src/screens/` and `client/web/src/shell/` are the read-and-act
+surface S10–S13 built over that protocol — Now renders the frontier, its
+project groups and item detail; Triage renders the capture box and the
+inbox. **Everything decidable is a pure `screens/*.ts` module a vitest
+(node) test can execute, and the `.tsx` components only thread React state
+through them**, the same split `worker/*` already uses: `frontier-order.ts`
+(priority rank, then deadline, then id) over `priority.ts` (Linear's
+inverted, holed 0..4 encoding survives in the schema, so nothing sorts or
+renders the raw number — ADR-0002 leaves ranking to consumers),
+`frontier-groups.ts` (group by `projectId`, names resolved from the
+`getProjects` answer, unassigned last), `urgency.ts` (CONTEXT.md's
+read-time urgency, computed fresh per render and never written back onto a
+`TaskItemDTO`; `deadlineSortKey` is the TS twin of the domain crate's, and
+a day-only deadline resolves to `T23:59` local wall clock, never a UTC
+instant), `blocked-reason.ts`, `capture-validation.ts` (an empty or
+whitespace-only capture is refused here, because `Core::capture` has no
+opinion of its own and would enqueue it), `triage-order.ts` (capture order,
+by `createdAt`, which reads the same before and after the overlay clears),
+`item-actions.ts` (which actions a stage offers, the optimistic
+`applyItemAction` projection, and `resolveFallbackPending` for an item that
+has left every live query) and `triage-form.ts` (which drafted fields are
+actually changes — `null` means "leave this field alone", never an empty
+string sent as an edit).
+
+The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
+re-requests its queries once the core is ready and again on every
+`TaskState.syncOutcomeSeq` bump, because ADR-0007's single 60-second
+interval in the SharedWorker is the only timer the origin gets.
+`useCaptureWiring`'s exported `submitCaptureRequest` posts `capture` and
+then `getTriageInbox` right behind it — `task-worker.ts`'s serial queue
+makes the second land only after `Core::capture` has already returned — so
+the optimistic item is on screen before any network call, which the
+per-cycle effect alone can never do (it fires after a cycle, the exact
+inverse). `capture-hotkey.ts` is deliberately DOM-free, the caller
+extracting the facts from the real `KeyboardEvent`: plain "c", never with a
+modifier, never while an editable control has focus or an IME composition
+is in progress.
+
+**There is no component-test infrastructure in this repo.**
+`client/web/vitest.config.ts` runs `environment: "node"`, and
+`client/web/package.json` carries no jsdom and no `@testing-library/react`
+— no test mounts a component, anywhere. React threading is therefore
+covered by pure-function tests plus `pnpm typecheck`, and by nothing else.
+That leaves one recurring hole, and it is why three of this batch's four
+PRs were rejected on first review: **typecheck cannot see that something
+has no caller.** A pure module, a `use*` hook or a prop that is exported,
+unit-tested and never wired compiles clean and passes clean. Grep for the
+call site before calling any of this done.
 
 ## The design system
 

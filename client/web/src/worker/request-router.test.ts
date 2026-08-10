@@ -8,6 +8,18 @@ describe("isTaskWorkerRequest", () => {
     { type: "clearTaskApiKey" },
     { type: "capture", seed: "s", title: "t", stage: "triage", nowMs: 1 },
     { type: "act", seed: "s", itemId: "i", action: "start", nowMs: 1 },
+    {
+      type: "triage",
+      seed: "s",
+      itemId: "i",
+      destination: "ready",
+      title: null,
+      projectId: null,
+      size: null,
+      energy: null,
+      context: null,
+      nowMs: 1,
+    },
     { type: "getFrontier" },
     { type: "getTriageInbox" },
     { type: "getBlocked" },
@@ -15,6 +27,9 @@ describe("isTaskWorkerRequest", () => {
     { type: "getProjects" },
     { type: "isPending", itemId: "i" },
     { type: "runSync", nowMs: 1, trigger: "user", forceFullSweep: false, jitterUnit: 0 },
+    { type: "getQueueDepth" },
+    { type: "getDeadLetters" },
+    { type: "getMirrorSnapshot" },
   ])("routes every task request type ($type) to the task queue", (request) => {
     expect(isTaskWorkerRequest(request)).toBe(true);
   });
