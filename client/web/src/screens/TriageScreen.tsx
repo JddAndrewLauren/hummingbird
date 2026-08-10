@@ -106,7 +106,11 @@ export function TriageScreen({ demo, task, onSubmitCapture, focusRequestId }: Tr
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") {
+              // `isComposing` guards an IME composition commit (e.g. an
+              // Enter that confirms a candidate while typing Japanese/
+              // Chinese/Korean) from being read as "submit" — that Enter
+              // belongs to the composition, not to this form.
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                 submit();
               }
             }}

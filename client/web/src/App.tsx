@@ -129,6 +129,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           metaKey: event.metaKey,
           altKey: event.altKey,
           targetIsEditable,
+          isComposing: event.isComposing,
         })
       ) {
         event.preventDefault();

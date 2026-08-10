@@ -23,9 +23,18 @@ export interface CaptureHotkeyInput {
   /** Whether the event's target is already an editable control (an input,
    * textarea, select, or a `contenteditable` element). */
   targetIsEditable: boolean;
+  /** The native `KeyboardEvent.isComposing` — set while an IME composition
+   * (e.g. typing Japanese/Chinese/Korean) is in progress. A composition can
+   * fire `keydown` events for keys that never reach `key`'s plain meaning,
+   * "c" included, so this must hold the hotkey off the same way it holds
+   * off a plain Enter-to-submit (round-2 review of PR #206). */
+  isComposing: boolean;
 }
 
 export function isCaptureHotkey(input: CaptureHotkeyInput): boolean {
+  if (input.isComposing) {
+    return false;
+  }
   if (input.ctrlKey || input.metaKey || input.altKey) {
     return false;
   }

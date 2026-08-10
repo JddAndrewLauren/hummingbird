@@ -38,6 +38,34 @@ function mintSeed(): string {
   return `seed-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** The wire-level half of a submit: posts the capture, then immediately
+ * re-requests the triage inbox right behind it. `task-worker.ts`'s
+ * single-file serial queue (issue #105/S7) is what makes the second request
+ * land only AFTER `Core::capture` has already returned and the durable
+ * enqueue has happened — so the `triageInbox` reply this provokes already
+ * carries the fresh optimistic overlay.
+ *
+ * This is load-bearing, not a nicety: without it, the only thing that ever
+ * re-requests the inbox is `useEffect` above, keyed on `syncOutcomeSeq` —
+ * which bumps only once a `syncOutcome` broadcast arrives, i.e. AFTER a
+ * network cycle. That is the exact inverse of #110's "a capture is visible
+ * in the list before any network call" (round-2 review of PR #206).
+ *
+ * Exported standalone, not inlined in the hook body, so it is testable
+ * without rendering a component — the view-side twin of the `worker/*`
+ * pure-module split this repo already uses for cadence/routing logic.
+ * `seed` defaults to a freshly minted one; a test supplies its own for a
+ * deterministic assertion. */
+export function submitCaptureRequest(
+  worker: WorkerLike,
+  title: string,
+  nowMs: number,
+  seed: string = mintSeed(),
+): void {
+  captureTask(worker, seed, title, "triage", nowMs);
+  requestTriageInbox(worker);
+}
+
 export function useCaptureWiring(
   worker: WorkerLike,
   status: CoreStatus,
@@ -58,7 +86,7 @@ export function useCaptureWiring(
 
   return {
     submitCapture: (title: string, nowMs: number) => {
-      captureTask(worker, mintSeed(), title, "triage", nowMs);
+      submitCaptureRequest(worker, title, nowMs);
     },
   };
 }

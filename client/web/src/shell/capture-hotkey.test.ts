@@ -8,6 +8,7 @@ function keyEvent(overrides: Partial<Parameters<typeof isCaptureHotkey>[0]> = {}
     metaKey: false,
     altKey: false,
     targetIsEditable: false,
+    isComposing: false,
     ...overrides,
   };
 }
@@ -34,5 +35,9 @@ describe("isCaptureHotkey", () => {
   it("does not match any other key", () => {
     expect(isCaptureHotkey(keyEvent({ key: "v" }))).toBe(false);
     expect(isCaptureHotkey(keyEvent({ key: "Enter" }))).toBe(false);
+  });
+
+  it("never fires mid IME composition — a composing 'c' keydown is not a real 'c'", () => {
+    expect(isCaptureHotkey(keyEvent({ isComposing: true }))).toBe(false);
   });
 });
