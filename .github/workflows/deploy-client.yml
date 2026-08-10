@@ -8,7 +8,19 @@
 # calendar opt-in surface, which is the correct never-opted-in state.
 name: deploy-client
 
+# `workflow_dispatch` is here so a deploy can be re-run on demand without
+# inventing a commit to trip the `paths:` filter with — redeploying the
+# current `main` after a rollback, or after a change that lives entirely in
+# Cloudflare (a Custom Domain binding, a secret) and touches no file here.
+# `paths:` does not apply to a dispatch, which is exactly the point.
+#
+# The deploy job is guarded to `main` rather than the trigger being left
+# open: `gh workflow run --ref <branch>` would otherwise ship an arbitrary
+# branch to the production hostname, and this Worker serves a permanent
+# origin (ADR-0006) that devices key their stored state to. A dispatch from
+# another ref still runs the tests, and stops before deploying.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -75,6 +87,7 @@ jobs:
 
   deploy:
     needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-hummingbird-web
