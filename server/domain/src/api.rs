@@ -361,6 +361,10 @@ pub struct ChangesResponse {
     pub alerts: Vec<Alert>,
     pub context_snapshots: Vec<ContextSnapshot>,
     pub settings: Vec<Setting>,
+    /// `#[serde(default)]`: a server response predating #131 (or a fixture
+    /// written before it) carries no `rules` key at all — absent, not
+    /// empty, and must still deserialize rather than fail the whole pull.
+    #[serde(default)]
     pub rules: Vec<Rule>,
 }
 

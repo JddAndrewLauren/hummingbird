@@ -67,18 +67,192 @@ fn init_schema_grows_a_schema_1_database_additively() {
     assert_eq!(rows.len(), 1, "existing rows survive the growth");
 }
 
-/// The 2→3 growth path (#131): a schema-2 database (the full pre-notification
-/// ADR-0009 DDL) gains `rules`, `push_targets` and `deliveries` additively,
-/// and ends up with a schema identical to a fresh store's — same table set,
-/// same `schema_version`.
+/// The frozen pre-#131 DDL, byte-for-byte the `CREATE_META`..`CREATE_TOKENS`
+/// / `CREATE_INDEXES` constants `schema.rs` held before this slice landed
+/// (`SCHEMA_VERSION` 2: the full ADR-0009 shape, eleven tables, five
+/// indexes, no notification lane) — including their `IF NOT EXISTS` and
+/// exact whitespace, so a table `init_schema` leaves untouched during
+/// growth (every one of these eleven; `CREATE TABLE IF NOT EXISTS` is a
+/// no-op once the table exists) still lands in `sqlite_master.sql` with the
+/// identical text a fresh store would produce for it. A real v2 store is
+/// frozen by definition — written and deployed before #131 existed — so
+/// hardcoding its DDL here, rather than reusing anything from the current
+/// `schema` module, is what makes the growth path underneath it a genuine
+/// test rather than a no-op: `RusqliteSql::new()` runs the *current*
+/// `init_schema` at construction, so downgrading only `meta.schema_version`
+/// on top of it (the shape of the 1→2 test above) would leave `rules`,
+/// `push_targets` and `deliveries` already present before growth even runs.
+const V2_TABLES: &[&str] = &[
+    "\
+CREATE TABLE IF NOT EXISTS meta (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  version        INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS projects (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  archived_at INTEGER,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS routes (
+  project_id  TEXT PRIMARY KEY REFERENCES projects(id),
+  destination TEXT,
+  notes       TEXT,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS fog (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id),
+  question    TEXT NOT NULL,
+  position    INTEGER NOT NULL,
+  resolved_at INTEGER,
+  version     INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS items (
+  id          TEXT PRIMARY KEY,
+  seq         INTEGER UNIQUE,
+  title       TEXT NOT NULL CHECK (length(title) > 0),
+  description TEXT,
+  stage       TEXT NOT NULL CHECK (stage IN
+                ('triage','grilling','ready','in_progress','blocked','done')),
+  size        TEXT CHECK (size IN ('quick','short','deep')),
+  energy      TEXT CHECK (energy IN ('low','medium','high')),
+  context     TEXT,
+  priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
+  project_id  TEXT REFERENCES projects(id),
+  project_pos INTEGER,
+  due_date    TEXT,
+  scheduled_date TEXT,
+  source      TEXT,
+  source_key  TEXT,
+  source_url  TEXT,
+  archived_at INTEGER,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS steps (
+  id         TEXT PRIMARY KEY,
+  item_id    TEXT NOT NULL REFERENCES items(id),
+  body       TEXT NOT NULL,
+  done       INTEGER NOT NULL DEFAULT 0,
+  position   INTEGER NOT NULL,
+  deleted_at INTEGER,
+  version    INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS blocked_by (
+  item_id    TEXT NOT NULL REFERENCES items(id),
+  blocker_id TEXT NOT NULL REFERENCES items(id),
+  version    INTEGER NOT NULL,
+  removed_at INTEGER,
+  PRIMARY KEY (item_id, blocker_id),
+  CHECK (item_id <> blocker_id)
+)",
+    "\
+CREATE TABLE IF NOT EXISTS alerts (
+  id           TEXT PRIMARY KEY,
+  source       TEXT NOT NULL,
+  source_key   TEXT NOT NULL,
+  title        TEXT NOT NULL,
+  body         TEXT,
+  url          TEXT,
+  severity     TEXT,
+  raised_at    INTEGER NOT NULL,
+  resolved_at  INTEGER,
+  dismissed_at INTEGER,
+  expires_at   INTEGER,
+  version      INTEGER NOT NULL,
+  UNIQUE(source, source_key)
+)",
+    "\
+CREATE TABLE IF NOT EXISTS context_snapshots (
+  source     TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL,
+  version    INTEGER NOT NULL,
+  PRIMARY KEY (source, key)
+)",
+    "\
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  version    INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS tokens (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  scope      TEXT NOT NULL CHECK (scope IN ('device','sweeper','ingest')),
+  token_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_seen  INTEGER,
+  revoked_at INTEGER
+)",
+];
+
+const V2_INDEXES: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_items_version ON items(version)",
+    "CREATE INDEX IF NOT EXISTS idx_steps_version ON steps(version)",
+    "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
+    "CREATE INDEX IF NOT EXISTS idx_steps_item    ON steps(item_id)",
+    "CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id)",
+];
+
+/// A store built straight from the frozen v2 DDL above — never touched by
+/// the current `init_schema` — with `meta` seeded exactly as a real v2
+/// store's would be.
+fn v2_store() -> RusqliteSql {
+    let sql = RusqliteSql {
+        conn: rusqlite::Connection::open_in_memory().expect("in-memory sqlite opens"),
+    };
+    for ddl in V2_TABLES.iter().chain(V2_INDEXES.iter()) {
+        sql.exec(ddl, &[]).expect("v2 DDL applies");
+    }
+    sql.exec(
+        "INSERT INTO meta (id, version, schema_version) VALUES (1, 0, 2)",
+        &[],
+    )
+    .expect("v2 meta row seeds");
+    sql
+}
+
+/// The 2→3 growth path (#131), against a genuine v2 database (never
+/// initialized at the current `SCHEMA_VERSION`): `rules`, `push_targets`
+/// and `deliveries` appear additively, and the grown schema is
+/// byte-for-byte identical to a fresh store's — not just the same table
+/// names, but the same `sqlite_master.sql` for every table and index
+/// (which is what actually pins `idx_rules_version` existing, not merely
+/// the table set).
 #[test]
 fn init_schema_grows_a_schema_2_database_additively() {
-    let migrated = RusqliteSql::new();
-    sql_exec_ok(&migrated, "UPDATE meta SET schema_version = 2 WHERE id = 1");
+    let migrated = v2_store();
+    assert_eq!(schema_version(&migrated), 2, "starts genuinely at v2");
+    assert!(
+        !table_names(&migrated).contains(&"rules".to_string()),
+        "the v2 fixture must not already carry the notification lane"
+    );
 
     init_schema(&migrated).expect("growth init succeeds");
 
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    for table in ["rules", "push_targets", "deliveries"] {
+        assert!(
+            table_names(&migrated).contains(&table.to_string()),
+            "migrated store missing `{table}`",
+        );
+    }
 
     let fresh = RusqliteSql::new();
     assert_eq!(
@@ -86,16 +260,12 @@ fn init_schema_grows_a_schema_2_database_additively() {
         table_names(&fresh),
         "a migrated v2 store and a fresh store end up with identical table sets",
     );
-    for table in ["rules", "push_targets", "deliveries"] {
-        assert!(
-            table_names(&migrated).contains(&table.to_string()),
-            "migrated store missing `{table}`",
-        );
-    }
-}
-
-fn sql_exec_ok(sql: &dyn Sql, stmt: &str) {
-    sql.exec(stmt, &[]).unwrap();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v2 store and a fresh store end up with byte-identical DDL, \
+         including every index (idx_rules_version among them)",
+    );
 }
 
 fn schema_version(sql: &dyn Sql) -> i64 {
@@ -115,5 +285,25 @@ fn table_names(sql: &dyn Sql) -> Vec<String> {
     .unwrap()
     .iter()
     .map(|r| r.get("name").unwrap().as_text().unwrap().to_string())
+    .collect()
+}
+
+/// Every table's and index's own `CREATE` statement, name-ordered — the
+/// full schema shape, not just which objects exist.
+fn schema_ddl(sql: &dyn Sql) -> Vec<(String, String)> {
+    sql.exec(
+        "SELECT name, sql FROM sqlite_master \
+         WHERE type IN ('table', 'index') AND sql IS NOT NULL \
+         ORDER BY name",
+        &[],
+    )
+    .unwrap()
+    .iter()
+    .map(|r| {
+        (
+            r.get("name").unwrap().as_text().unwrap().to_string(),
+            r.get("sql").unwrap().as_text().unwrap().to_string(),
+        )
+    })
     .collect()
 }

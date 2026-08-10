@@ -107,11 +107,15 @@ pub struct PushTarget {
 }
 
 /// One delivery-log row, exactly the `deliveries` columns. The dedupe key
-/// `(alert_id, generation, severity)` — enforced as a `UNIQUE` constraint in
-/// the DDL — is what #139's transitions-only dedupe reads: a delivery is
-/// warranted only when an alert enters live-unacked or its severity
-/// escalates, never on an identical re-raise. No `version`: an append-only
-/// log, outside the delta-pull contract like `push_targets`.
+/// `(alert_id, rule_id, generation, severity)` — enforced as a `UNIQUE`
+/// constraint in the DDL — is what #139's transitions-only dedupe reads: a
+/// delivery is warranted only when an alert enters live-unacked or its
+/// severity escalates, never on an identical re-raise of the *same rule*.
+/// `rule_id` is in the key deliberately (ADR-0014): a delivery is one
+/// rule's ring, not the alert's, so two rules matching one event — even
+/// agreeing on severity — must both persist as distinct rows. No
+/// `version`: an append-only log, outside the delta-pull contract like
+/// `push_targets`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delivery {
     pub id: String,

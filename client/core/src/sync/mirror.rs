@@ -451,6 +451,7 @@ mod tests {
             alerts: vec![],
             context_snapshots: vec![],
             settings: vec![],
+            rules: vec![],
         }
     }
 

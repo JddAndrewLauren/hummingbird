@@ -261,9 +261,9 @@ fn push_target_can_be_revoked_individually() {
     );
 }
 
-/// `deliveries` enforces its `(alert, generation, severity)` dedupe key —
-/// #139's transitions-only dedupe reads this constraint; here it is pinned
-/// as a schema-level guarantee.
+/// `deliveries` enforces its `(alert, rule, generation, severity)` dedupe
+/// key (ADR-0014) — #139's transitions-only dedupe reads this constraint;
+/// here it is pinned as a schema-level guarantee.
 #[test]
 fn deliveries_enforces_the_dedupe_key() {
     let sql = RusqliteSql::new();
@@ -272,7 +272,10 @@ fn deliveries_enforces_the_dedupe_key() {
 
     seed_delivery_raw(&sql, "d-1", "al-1", &rule.id, 100, "high").expect("first delivery inserts");
     let dup = seed_delivery_raw(&sql, "d-2", "al-1", &rule.id, 100, "high");
-    assert!(dup.is_err(), "an identical (alert, generation, severity) must be rejected");
+    assert!(
+        dup.is_err(),
+        "an identical (alert, rule, generation, severity) must be rejected"
+    );
 
     // A different generation (a later re-raise) or a different severity
     // (an escalation) is a distinct, permitted delivery.
@@ -283,4 +286,26 @@ fn deliveries_enforces_the_dedupe_key() {
 
     let rows = sql.exec("SELECT id FROM deliveries", &[]).unwrap();
     assert_eq!(rows.len(), 3, "the duplicate never landed");
+}
+
+/// ADR-0014's rejected alternative, pinned directly: a delivery dedupe key
+/// without `rule_id` "collapses two rules that happen to agree on
+/// severity." Two different rules matching the same event on the same
+/// generation and severity must both persist as distinct delivery rows —
+/// the "N matching rules, N deliveries" contract holds regardless of
+/// whether the rules' severities happen to coincide.
+#[test]
+fn deliveries_key_does_not_collapse_two_rules_agreeing_on_severity() {
+    let sql = RusqliteSql::new();
+    seed_alert_raw(&sql, "al-1", "healthchecks", "sweeper");
+    let rule_a = seed_rule(&sql, "r-a");
+    let rule_b = seed_rule(&sql, "r-b");
+
+    seed_delivery_raw(&sql, "d-1", "al-1", &rule_a.id, 100, "high")
+        .expect("rule a's delivery inserts");
+    seed_delivery_raw(&sql, "d-2", "al-1", &rule_b.id, 100, "high")
+        .expect("rule b's delivery, same generation and severity, is a distinct row");
+
+    let rows = sql.exec("SELECT id, rule_id FROM deliveries", &[]).unwrap();
+    assert_eq!(rows.len(), 2, "both rules' rings persist");
 }

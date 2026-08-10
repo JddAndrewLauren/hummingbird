@@ -197,10 +197,14 @@ CREATE TABLE IF NOT EXISTS push_targets (
 )";
 
 /// The delivery log (ADR-0012, amended by ADR-0014): the durable memory of
-/// what rang. `UNIQUE(alert_id, generation, severity)` is the dedupe key
-/// #139's transitions-only dedupe reads — an identical re-raise of a live
-/// alert must not insert a second row. No `version`: an append-only log,
-/// outside the delta-pull contract like `push_targets`.
+/// what rang. `UNIQUE(alert_id, rule_id, generation, severity)` is the
+/// dedupe key #139's transitions-only dedupe reads — an identical re-raise
+/// of a live alert must not insert a second row for the *same* rule.
+/// `rule_id` is in the key deliberately (ADR-0014): a delivery is one
+/// rule's ring, not the alert's — N matching rules produce N delivery rows
+/// even when they agree on severity, so `rule_id` must not collapse them.
+/// No `version`: an append-only log, outside the delta-pull contract like
+/// `push_targets`.
 pub const CREATE_DELIVERIES: &str = "\
 CREATE TABLE IF NOT EXISTS deliveries (
   id         TEXT PRIMARY KEY,
@@ -210,7 +214,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   severity   TEXT NOT NULL,
   tier       TEXT NOT NULL,
   sent_at    INTEGER NOT NULL,
-  UNIQUE(alert_id, generation, severity)
+  UNIQUE(alert_id, rule_id, generation, severity)
 )";
 
 const CREATE_INDEXES: [&str; 6] = [
