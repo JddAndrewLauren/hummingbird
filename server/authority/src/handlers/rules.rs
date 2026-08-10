@@ -1,14 +1,55 @@
 //! `POST /api/rules` and `PATCH /api/rules/:id` — the notification lane's
 //! rule table (ADR-0012, amended by ADR-0013), on the same idempotent-create
-//! and CAS-patch shape as `items`. Validating `field`/`op`/`value` against
-//! the typed catalogue is #133's job, not this handler's: `conditions` is
-//! stored and returned exactly as given.
+//! and CAS-patch shape as `items`. `field`/`op`/`value` are validated
+//! against the typed catalogue by #133's `hummingbird-rules-engine` before
+//! either write persists (#186) — a malformed condition is rejected at save
+//! rather than only discovered at fire time.
 
 use hummingbird_domain::{CreateRule, Rule, RulePatch, Tier};
+use hummingbird_rules_engine::{validate_rule, RuleProblem};
 
 use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
 use crate::codec::{bad_cell, RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
+
+/// Problems worth rejecting a save over. `UnknownKind` is deliberately
+/// excluded: `event_kind` is an open registry key, not a closed vocabulary
+/// (ADR-0013; `hummingbird_domain::Rule::event_kind`'s own doc — "a kind
+/// the code does not yet know is legal") — a rule may name a source that
+/// hasn't been wired up yet. ADR-0013 only requires *field* and *value*
+/// problems to be rejected at save ("an unknown field is rejected at
+/// save", "[a malformed duration] rejected at save", "`m`/`h` on a `date`
+/// field are rejected at save"); an unrecognized kind is instead flagged
+/// invalid at load/fire time (`rules-engine`'s own `evaluate_rule`), never
+/// blocked at save.
+fn save_time_problems(rule: &Rule) -> Vec<RuleProblem> {
+    validate_rule(rule)
+        .into_iter()
+        .filter(|p| !matches!(p, RuleProblem::UnknownKind { .. }))
+        .collect()
+}
+
+fn describe_problem(problem: &RuleProblem) -> String {
+    match problem {
+        RuleProblem::UnknownField { field } => format!("unknown field `{field}`"),
+        RuleProblem::UnknownKind { event_kind } => format!("unknown event_kind `{event_kind}`"),
+        RuleProblem::IllegalOperator { field, op } => {
+            format!("operator `{op}` is not legal for field `{field}`")
+        }
+        RuleProblem::MalformedValue { field, reason } => format!("field `{field}`: {reason}"),
+    }
+}
+
+/// `Some(400 response)` when `rule` has a save-time problem, `None` when
+/// it is clean to persist.
+fn validation_error(rule: &Rule) -> Option<ApiResponse> {
+    let problems = save_time_problems(rule);
+    if problems.is_empty() {
+        return None;
+    }
+    let reason = problems.iter().map(describe_problem).collect::<Vec<_>>().join("; ");
+    Some(error(400, "validation", &reason))
+}
 
 pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
     let create: CreateRule = match parse_body(body) {
@@ -44,6 +85,9 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         updated_at: now_ms,
         version,
     };
+    if let Some(resp) = validation_error(&rule) {
+        return Ok(resp);
+    }
     sql.exec(
         "INSERT INTO rules (id, name, event_kind, conditions, severity, tier, enabled, \
          updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -78,6 +122,23 @@ pub fn patch(
         // A 409 carrying the current rule so the client can rebase
         // (ADR-0008), the same contract as every other CAS write.
         return Ok(conflict(&current));
+    }
+
+    // Validate the *post-patch* condition set, not just what changed — a
+    // patch must not be able to smuggle in a condition a create would
+    // reject (#186), e.g. patching only `event_kind` onto a rule whose
+    // untouched `conditions` are only legal under the old kind.
+    let candidate = Rule {
+        name: patch.name.clone().unwrap_or_else(|| current.name.clone()),
+        event_kind: patch.event_kind.clone().unwrap_or_else(|| current.event_kind.clone()),
+        conditions: patch.conditions.clone().unwrap_or_else(|| current.conditions.clone()),
+        severity: patch.severity.clone().unwrap_or_else(|| current.severity.clone()),
+        tier: patch.tier.unwrap_or(current.tier),
+        enabled: patch.enabled.unwrap_or(current.enabled),
+        ..current.clone()
+    };
+    if let Some(resp) = validation_error(&candidate) {
+        return Ok(resp);
     }
 
     let mut sets = Sets::new();
