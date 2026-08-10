@@ -224,11 +224,17 @@ export type TaskWorkerRequest =
       forceFullSweep: boolean;
       jitterUnit: number;
     }
-  /** S9's sync-status "queued" figure. */
+  /** S9's sync-status "queued" figure. As of issue #191, sent only once —
+   * on becoming ready — rather than after every cycle: a view connecting
+   * mid-session still needs an initial answer, but the per-cycle refresh
+   * this used to also drive is now the worker's own unsolicited `queueDepth`
+   * push at the tail of every `runSync` (`worker/task-worker.ts`'s `runSync`
+   * branch), not a re-request from each view. */
   | { type: "getQueueDepth" }
-  /** S9's "1 edit didn't apply" affordance — fetched on demand rather than
-   * pushed on every cycle, since the journal is small but the full
-   * field/local/server detail is more than a status badge needs. */
+  /** S9's "1 edit didn't apply" affordance. As of issue #191, sent only
+   * once — on becoming ready, same as `getQueueDepth` above — since the
+   * per-cycle case is now the worker's own unsolicited `deadLetters` push at
+   * the tail of every cycle. */
   | { type: "getDeadLetters" }
   /** S9's mirror download button. */
   | { type: "getMirrorSnapshot" };
@@ -292,7 +298,17 @@ export type TaskWorkerResponse =
    * single-reader drain would let the first tab to poll swallow an event
    * every other tab needed too. */
   | { type: "taskEvents"; events: TaskEventDTO[] }
+  /** Answers `getQueueDepth`, AND — issue #191 — arrives unsolicited at the
+   * tail of every completed `runSync`, whether or not any view asked this
+   * cycle: `worker/task-worker.ts`'s `runSync` branch reads and posts it
+   * once per cycle (dropped, not posted, on a `"busy"` read), broadcast to
+   * every connected port the same as `syncOutcome`. This is what keeps N
+   * connected views from each re-requesting it every cycle. */
   | { type: "queueDepth"; depth: number }
+  /** Answers `getDeadLetters`, AND — issue #191 — arrives unsolicited at the
+   * tail of every completed `runSync`, same contract as `queueDepth` above:
+   * read and posted at most once per cycle regardless of view count, never
+   * on a `"busy"` read. */
   | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
   | { type: "mirrorSnapshot"; mirror: unknown }
   /** The task host itself failed to construct (a corrupt durable snapshot,

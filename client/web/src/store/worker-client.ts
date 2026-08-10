@@ -58,9 +58,13 @@ export function attachWorkerClient(
   store: Store,
   now: () => number = Date.now,
 ): void {
-  // One counter per attached worker (i.e. per view): see
-  // `TaskState.syncOutcomeSeq`'s doc for why the per-cycle refresh keys on
-  // this rather than on the outcome itself.
+  // One counter per attached worker (i.e. per view). As of issue #191 this
+  // has no consumer left in view code — `useSyncWiring.ts`'s per-cycle
+  // refresh, the only thing that used to key on it, was replaced by the
+  // worker's own unsolicited `queueDepth`/`deadLetters` push at the tail of
+  // every cycle (`worker/task-worker.ts`'s `runSync` branch). Kept anyway,
+  // deliberately, not silently dropped — see `TaskState.syncOutcomeSeq`'s
+  // own doc for why.
   let syncOutcomeSeq = 0;
   worker.onmessage = (event) => {
     const message = event.data;
@@ -120,10 +124,11 @@ export function attachWorkerClient(
         store.setTaskPending(message.itemId, message.pending);
         return;
       case "syncOutcome":
-        // The counter bumps on EVERY broadcast, whatever the kind — it is
-        // what `useSyncWiring.ts` keys its per-cycle refresh on, and a
-        // cycle that did not run is still a cycle that happened
-        // (`TaskState.syncOutcomeSeq`).
+        // The counter bumps on EVERY broadcast, whatever the kind — a cycle
+        // that did not run is still a cycle that happened. As of issue #191
+        // nothing in view code reads it (see this function's own doc on
+        // `syncOutcomeSeq` above); it is retained rather than deleted — see
+        // `TaskState.syncOutcomeSeq`'s doc for why.
         syncOutcomeSeq += 1;
         if (!isInformativeSyncOutcome(message.kind)) {
           // `"skipped"`/`"busy"`: nothing was attempted at all, so this
@@ -165,9 +170,16 @@ export function attachWorkerClient(
         }
         return;
       case "queueDepth":
+        // Arrives both in reply to `getQueueDepth` (once, on becoming
+        // ready) and unsolicited at the tail of every cycle (issue #191,
+        // protocol.ts's `queueDepth` doc) — this handler does not need to
+        // tell the two apart, since both are the same "here is the current
+        // depth" fact.
         store.setTaskState({ queueDepth: message.depth });
         return;
       case "deadLetters":
+        // Same dual origin as `queueDepth` above — see protocol.ts's
+        // `deadLetters` doc.
         store.setTaskState({ deadLetters: message.entries });
         return;
       case "taskHostUnavailable":

@@ -188,6 +188,34 @@ function postTaskEvents(host: TaskHostLike, post: (response: TaskWorkerResponse)
   }
 }
 
+/** Reads and posts the outbound queue's current depth, unless the host
+ * reports itself busy — "no answer, not an empty answer" (same contract as
+ * every other `"busy"` read in this module). Shared between the
+ * request-driven `getQueueDepth` case and the `runSync` tail push (issue
+ * #191) so there is exactly one place this response is built, and the tail
+ * push can never drift from what an explicit request would have produced. */
+function postQueueDepth(host: TaskHostLike, post: (response: TaskWorkerResponse) => void): void {
+  const raw = JSON.parse(host.queueDepth()) as RawQueueDepthResponse;
+  if (raw.kind === "busy") {
+    return;
+  }
+  post({ type: "queueDepth", depth: raw.depth });
+}
+
+/** Reads and posts the whole dead-letter journal, unless the host reports
+ * itself busy — same contract as [`postQueueDepth`]. Shared between
+ * `getDeadLetters` and the `runSync` tail push (issue #191): called at most
+ * once per cycle regardless of how many connected views end up seeing the
+ * broadcast, which is what keeps the journal's serialization from scaling
+ * with view count the way the per-view refresh this replaces did. */
+function postDeadLetters(host: TaskHostLike, post: (response: TaskWorkerResponse) => void): void {
+  const raw = JSON.parse(host.deadLetters()) as RawDeadLettersResponse;
+  if (raw.kind === "busy") {
+    return;
+  }
+  post({ type: "deadLetters", entries: mapDeadLetters(raw.entries) });
+}
+
 /** Handles one `TaskWorkerRequest`, posting whatever `TaskWorkerResponse`(s)
  * it produces. Callers should go through [`createTaskRequestQueue`] rather
  * than calling this directly — see that function's own doc for why. */
@@ -261,24 +289,24 @@ export async function handleTaskRequest(
         deadLettered: raw.dead_lettered,
       });
       postTaskEvents(host, post);
+      // Issue #191: pushed unsolicited at the tail of every cycle, so N
+      // connected views cost one `queueDepth()`/`deadLetters()` wasm call
+      // pair per cycle — not one pair per view, per the triage ruling's
+      // "unsolicited push" shape. Each is still broadcast to every port
+      // (`PortRegistry.broadcast`), so the message count still scales with
+      // view count — only the wasm-call count and the journal
+      // serialization are now constant per cycle. See protocol.ts's
+      // `getQueueDepth`/`getDeadLetters`/`queueDepth`/`deadLetters` docs.
+      postQueueDepth(host, post);
+      postDeadLetters(host, post);
       return;
     }
-    case "getQueueDepth": {
-      const raw = JSON.parse(host.queueDepth()) as RawQueueDepthResponse;
-      if (raw.kind === "busy") {
-        return;
-      }
-      post({ type: "queueDepth", depth: raw.depth });
+    case "getQueueDepth":
+      postQueueDepth(host, post);
       return;
-    }
-    case "getDeadLetters": {
-      const raw = JSON.parse(host.deadLetters()) as RawDeadLettersResponse;
-      if (raw.kind === "busy") {
-        return;
-      }
-      post({ type: "deadLetters", entries: mapDeadLetters(raw.entries) });
+    case "getDeadLetters":
+      postDeadLetters(host, post);
       return;
-    }
     case "getMirrorSnapshot": {
       const raw = JSON.parse(host.mirrorSnapshot()) as RawMirrorSnapshotResponse;
       if (raw.kind === "busy") {
