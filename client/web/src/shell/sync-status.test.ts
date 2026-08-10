@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSyncOutcome } from "../store/store";
-import { syncStatusLabel, syncStatusTone } from "./sync-status";
+import { deadLetterHeading, SYNC_STATUS_TONE_LABEL, syncStatusLabel, syncStatusTone } from "./sync-status";
 
 function outcome(kind: TaskSyncOutcome["kind"]): TaskSyncOutcome {
   return { kind, retryAfterMs: null, activeItemCount: null, wasFullSweep: null, deadLettered: null };
@@ -193,5 +193,28 @@ describe("syncStatusTone", () => {
         nowMs: 0,
       }),
     ).toBe("success");
+  });
+});
+
+describe("SYNC_STATUS_TONE_LABEL", () => {
+  it("has a distinct word for every SyncStatusTone value", () => {
+    const words = Object.values(SYNC_STATUS_TONE_LABEL);
+    expect(new Set(words).size).toBe(words.length);
+    expect(SYNC_STATUS_TONE_LABEL).toEqual({
+      neutral: "not syncing",
+      warn: "held",
+      danger: "stale",
+      success: "synced",
+    });
+  });
+});
+
+describe("deadLetterHeading", () => {
+  it("uses the singular for exactly one entry", () => {
+    expect(deadLetterHeading(1)).toBe("1 edit didn't apply");
+  });
+
+  it.each([0, 2, 5])("pluralises for any count other than one (%i)", (count) => {
+    expect(deadLetterHeading(count)).toBe(`${count} edits didn't apply`);
   });
 });

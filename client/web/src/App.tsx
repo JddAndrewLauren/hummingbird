@@ -80,7 +80,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
 
   const online = useOnlineStatus();
-  const { nowMs: syncNowMs, handleDownloadMirror } = useSyncWiring(worker, status, hasTaskToken, task);
+  const { nowMs: syncNowMs, handleDownloadMirror } = useSyncWiring(
+    worker,
+    status,
+    task.lastSyncOutcome?.kind ?? null,
+  );
   const syncLabel = syncStatusLabel({
     online,
     lastSyncOutcome: task.lastSyncOutcome,

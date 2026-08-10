@@ -21,7 +21,6 @@ const initialTask: TaskState = {
   lastSyncAtMs: null,
   queueDepth: null,
   deadLetters: [],
-  mirrorSnapshot: null,
   needsReconnect: false,
 };
 

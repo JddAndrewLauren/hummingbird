@@ -1010,6 +1010,45 @@ mod tests {
         assert!(snapshot.is_object());
     }
 
+    /// S9 round-1 review: `mirror_snapshot` and `dead_letters` are two new
+    /// surfaces a whole mirror/journal crosses on its way out to a UI —
+    /// the same "grep the bytes" proof
+    /// `the_api_key_never_reaches_the_durable_snapshot_bytes` above already
+    /// applies to persisted snapshots, extended to these two in-memory reads
+    /// (`SyncMirror`/`DeadLetterEntry` carry no credential field by
+    /// construction, but a mechanical proof outlives that fact staying
+    /// true).
+    #[tokio::test]
+    async fn the_api_key_never_reaches_the_mirror_snapshot() {
+        let mut core = Core::new();
+        let secret = "sk-do-not-leak-into-the-mirror";
+        core.push_api_key(secret);
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        let serialized = serde_json::to_string(&core.mirror_snapshot()).unwrap();
+        assert!(!serialized.contains(secret));
+    }
+
+    #[tokio::test]
+    async fn the_api_key_never_reaches_a_dead_lettered_entry() {
+        let mut core = Core::new();
+        let secret = "sk-do-not-leak-into-the-journal";
+        core.push_api_key(secret);
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let write = ScriptedWrite::new(vec![ok(400, r#"{"error":"validation"}"#)]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(core.dead_letters().len(), 1, "the run above must have dead-lettered exactly one entry");
+        let serialized = serde_json::to_string(core.dead_letters()).unwrap();
+        assert!(!serialized.contains(secret));
+    }
+
     #[tokio::test]
     async fn a_pull_side_401_holds_every_subsequent_run_until_a_fresh_key_is_pushed() {
         let mut core = Core::new();

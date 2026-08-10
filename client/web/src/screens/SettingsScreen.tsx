@@ -10,7 +10,12 @@ import { Switch } from "../components/forms/Switch";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
-import { syncStatusLabel, syncStatusTone } from "../shell/sync-status";
+import {
+  deadLetterHeading,
+  SYNC_STATUS_TONE_LABEL,
+  syncStatusLabel,
+  syncStatusTone,
+} from "../shell/sync-status";
 import type { DeadLetterEntryDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenSubmitOutcome } from "../task/token";
@@ -389,29 +394,26 @@ export function SettingsScreen({
                 </span>
                 <Badge mono>{task.queueDepth ?? 0} queued</Badge>
               </div>
-              <p
-                style={{
-                  font: "var(--type-body-sm)",
-                  color:
-                    syncStatusTone({
-                      online,
-                      lastSyncOutcome: task.lastSyncOutcome,
-                      lastSyncAtMs: task.lastSyncAtMs,
-                      queueDepth: task.queueDepth,
-                      nowMs: syncNowMs,
-                    }) === "danger"
-                      ? "var(--status-danger-fg)"
-                      : "var(--text-secondary)",
-                }}
-              >
-                {syncStatusLabel({
+              {(() => {
+                const syncStatusInput = {
                   online,
                   lastSyncOutcome: task.lastSyncOutcome,
                   lastSyncAtMs: task.lastSyncAtMs,
                   queueDepth: task.queueDepth,
                   nowMs: syncNowMs,
-                })}
-              </p>
+                };
+                const tone = syncStatusTone(syncStatusInput);
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                    <Badge dot mono tone={tone} style={{ alignSelf: "flex-start" }}>
+                      {SYNC_STATUS_TONE_LABEL[tone]}
+                    </Badge>
+                    <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+                      {syncStatusLabel(syncStatusInput)}
+                    </p>
+                  </div>
+                );
+              })()}
               <Button
                 variant="secondary"
                 iconLeft="download"
@@ -424,7 +426,7 @@ export function SettingsScreen({
 
             {task.deadLetters.length > 0 ? (
               <>
-                <span className="hb-meta">1 edit didn&rsquo;t apply</span>
+                <span className="hb-meta">{deadLetterHeading(task.deadLetters.length)}</span>
                 <Card padding="var(--space-5)">
                   {task.deadLetters.map((entry) => (
                     <DeadLetterRow key={`${entry.id}-${entry.atMs}`} entry={entry} />

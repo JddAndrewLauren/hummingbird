@@ -82,3 +82,21 @@ export function syncStatusLabel(input: SyncStatusInput): string {
   const state = failed ? "Stale" : "Synced";
   return `${state} — as of ${age}${queuedSuffix(input.queueDepth)}`;
 }
+
+/** The short word `SettingsScreen.tsx` badges `syncStatusTone` with — round-1
+ * review: a 4-valued tone with a 1-valued consumer (only ever checked for
+ * `"danger"`) defeats the point of computing it. Every tone gets its own
+ * word here so the badge actually renders all four. */
+export const SYNC_STATUS_TONE_LABEL: Record<SyncStatusTone, string> = {
+  neutral: "not syncing",
+  warn: "held",
+  danger: "stale",
+  success: "synced",
+};
+
+/** The dead-letter affordance's heading — pluralised off the real count
+ * (round-1 review: the fixed "1 edit didn't apply" string was wrong for
+ * any count other than exactly one). */
+export function deadLetterHeading(count: number): string {
+  return `${count} edit${count === 1 ? "" : "s"} didn't apply`;
+}

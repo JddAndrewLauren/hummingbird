@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { CalendarWorkerRequest, TaskWorkerRequest } from "../store/protocol";
-import { isTaskWorkerRequest } from "./request-router";
+import type { CalendarWorkerRequest, SyncCadenceRequest, TaskWorkerRequest } from "../store/protocol";
+import { isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
 
 describe("isTaskWorkerRequest", () => {
   it.each<TaskWorkerRequest>([
@@ -26,4 +26,34 @@ describe("isTaskWorkerRequest", () => {
   ])("routes every calendar request type ($type) to the calendar queue", (request) => {
     expect(isTaskWorkerRequest(request)).toBe(false);
   });
+
+  it.each<SyncCadenceRequest>([
+    { type: "setViewVisibility", hidden: true },
+    { type: "syncFocusTrigger" },
+  ])("never routes a sync-cadence request ($type) to the task queue", (request) => {
+    expect(isTaskWorkerRequest(request)).toBe(false);
+  });
+});
+
+describe("isSyncCadenceRequest", () => {
+  it.each<SyncCadenceRequest>([
+    { type: "setViewVisibility", hidden: true },
+    { type: "syncFocusTrigger" },
+  ])("recognises every sync-cadence request type ($type)", (request) => {
+    expect(isSyncCadenceRequest(request)).toBe(true);
+  });
+
+  it.each<TaskWorkerRequest>([
+    { type: "getFrontier" },
+    { type: "runSync", nowMs: 1, trigger: "user", forceFullSweep: false, jitterUnit: 0 },
+  ])("does not mistake a task request ($type) for a sync-cadence one", (request) => {
+    expect(isSyncCadenceRequest(request)).toBe(false);
+  });
+
+  it.each<CalendarWorkerRequest>([{ type: "listCalendars" }, { type: "pollTimer", nowMs: 1 }])(
+    "does not mistake a calendar request ($type) for a sync-cadence one",
+    (request) => {
+      expect(isSyncCadenceRequest(request)).toBe(false);
+    },
+  );
 });

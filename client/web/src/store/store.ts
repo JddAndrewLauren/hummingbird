@@ -66,9 +66,15 @@ export interface TaskState {
   pending: Record<string, boolean>;
   lastCapture: TaskCaptureResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
-  /** When the last `Core::run` cycle happened (any trigger, any outcome) —
-   * S9's "last sweep" readout. Set alongside `lastSyncOutcome`, from the
-   * same `nowMs` the cycle was invoked with, so the two never drift apart. */
+  /** When this view learned the last `Core::run` cycle happened (any
+   * trigger, any outcome) — S9's "last sweep" readout. Sampled by
+   * `worker-client.ts` at the moment it processes the `syncOutcome`
+   * broadcast, using this view's own clock — the wire message carries no
+   * `nowMs` of its own (the cycle's real invocation time, sampled inside
+   * `core.worker.ts`, is never round-tripped back), and every view's
+   * broadcast-processing clock reads within a few milliseconds of every
+   * other's regardless, so this is an accurate-enough proxy for "just now"
+   * without needing to widen the protocol. */
   lastSyncAtMs: number | null;
   /** The outbound queue's current depth — S9's sync-status "queued"
    * figure. `null` until the first answer arrives (this view has not asked,
@@ -80,9 +86,6 @@ export interface TaskState {
    * doc), so this only ever grows until a re-apply flow exists to shrink
    * it. */
   deadLetters: DeadLetterEntryDTO[];
-  /** The last `getMirrorSnapshot` answer, for S9's mirror download button.
-   * `null` until requested. */
-  mirrorSnapshot: unknown | null;
   /** Set once a `taskEvents` broadcast carries a `credential_needed` event;
    * mirrors `CalendarState.needsReconnect`'s own contract. */
   needsReconnect: boolean;
@@ -118,7 +121,6 @@ const initialTaskState: TaskState = {
   lastSyncAtMs: null,
   queueDepth: null,
   deadLetters: [],
-  mirrorSnapshot: null,
   needsReconnect: false,
 };
 

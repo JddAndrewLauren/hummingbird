@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CalendarState, type TaskState, createCoreStore } from "./store";
 import {
   attachWorkerClient,
@@ -9,6 +9,7 @@ import {
   clearTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
+  reportViewVisibility,
   requestCalendarList,
   requestCurrentNext,
   requestDeadLetters,
@@ -19,6 +20,8 @@ import {
   requestTriageInbox,
   runTaskSync,
   setCalendarIdsOnWorker,
+  setMirrorSnapshotHandler,
+  triggerSyncFocus,
   type WorkerLike,
 } from "./worker-client";
 
@@ -42,7 +45,6 @@ const initialTask: TaskState = {
   lastSyncAtMs: null,
   queueDepth: null,
   deadLetters: [],
-  mirrorSnapshot: null,
   needsReconnect: false,
 };
 
@@ -352,16 +354,58 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.deadLetters).toEqual(entries);
   });
 
-  it("records the mirror snapshot on a mirrorSnapshot message", () => {
-    const worker = fakeWorker();
-    const store = createCoreStore();
-    attachWorkerClient(worker, store);
+  describe("mirrorSnapshot handling (round-1 review: never retained in the store)", () => {
+    afterEach(() => {
+      // Every `attachWorkerClient` call below registers a real handler on
+      // the module-level slot (`worker-client.ts`'s own doc explains why it
+      // is a single slot, not per-store) — left registered, it would leak
+      // into whichever test runs next.
+      setMirrorSnapshotHandler(null);
+    });
 
-    worker.onmessage?.({
-      data: { type: "mirrorSnapshot", mirror: { version: 1 } },
-    } as MessageEvent);
+    it("hands the mirror straight to the registered handler and writes nothing to the store", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+      const received: unknown[] = [];
+      setMirrorSnapshotHandler((mirror) => received.push(mirror));
 
-    expect(store.getSnapshot().task.mirrorSnapshot).toEqual({ version: 1 });
+      worker.onmessage?.({
+        data: { type: "mirrorSnapshot", mirror: { version: 1 } },
+      } as MessageEvent);
+
+      expect(received).toEqual([{ version: 1 }]);
+      expect(store.getSnapshot().task).not.toHaveProperty("mirrorSnapshot");
+    });
+
+    it("drops the mirror silently when no handler is registered — never throws, never stored", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+
+      expect(() =>
+        worker.onmessage?.({
+          data: { type: "mirrorSnapshot", mirror: { version: 1 } },
+        } as MessageEvent),
+      ).not.toThrow();
+    });
+
+    it("a later registration replaces the earlier one rather than accumulating", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+      const first = vi.fn();
+      const second = vi.fn();
+      setMirrorSnapshotHandler(first);
+      setMirrorSnapshotHandler(second);
+
+      worker.onmessage?.({
+        data: { type: "mirrorSnapshot", mirror: { version: 1 } },
+      } as MessageEvent);
+
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith({ version: 1 });
+    });
   });
 
   it("flags task needsReconnect on a taskEvents message carrying a credential_needed event", () => {
@@ -512,5 +556,20 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     requestMirrorSnapshot(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getMirrorSnapshot" });
+  });
+
+  it("reportViewVisibility posts a setViewVisibility request with this view's own hidden state", () => {
+    const worker = fakeWorker();
+    reportViewVisibility(worker, true);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "setViewVisibility", hidden: true });
+
+    reportViewVisibility(worker, false);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "setViewVisibility", hidden: false });
+  });
+
+  it("triggerSyncFocus posts a syncFocusTrigger request", () => {
+    const worker = fakeWorker();
+    triggerSyncFocus(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "syncFocusTrigger" });
   });
 });

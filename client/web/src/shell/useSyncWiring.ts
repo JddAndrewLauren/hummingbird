@@ -1,32 +1,31 @@
 import { useEffect, useRef, useState } from "react";
 import { downloadMirrorSnapshot } from "./mirror-download";
-import { createSyncCadence, SYNC_TIMER_MS } from "./sync-cadence";
-import type { CoreStatus, TaskState } from "../store/store";
+import type { CoreStatus } from "../store/store";
 import {
+  reportViewVisibility,
   requestDeadLetters,
   requestMirrorSnapshot,
   requestQueueDepth,
-  runTaskSync,
+  setMirrorSnapshotHandler,
+  triggerSyncFocus,
   type WorkerLike,
 } from "../store/worker-client";
 
-// S9's ADR-0007 cadence, wired: on open, on reconnect, on window focus, and
-// the 60-second foreground timer — see `sync-cadence.ts` for the pure
-// decision logic and why "at the tail of every queue drain" needs no wiring
-// here (it is built into `Core::run` itself). Thin wire-up over that tested
-// module, the same shape `useCalendarWiring.ts` and `useTaskTokenWiring.ts`
-// already use.
-//
-// Gated on `hasToken`: a device with no task credential yet has nothing for
-// a cycle to do (`Core::run` reports `no_credential` without ever reaching
-// the network), so there is no reason to run a timer or attach listeners
-// before one exists.
+// S9's shell wiring for the sync-status affordance. As of round-1 review of
+// PR #181, this file does NOT own ADR-0007's cadence — a per-view
+// `setInterval` used to multiply cycles with open-tab count, which
+// contradicts ADR-0010's "a second tab is a view, not a second cycle".
+// `core.worker.ts` now owns the shared timer and the open/reconnect
+// triggers itself; this hook's only remaining cadence-related job is
+// reporting the two facts the worker's global scope cannot observe on its
+// own — this view's page visibility, and this view's own focus events —
+// and requesting the read-only sync-status data (queue depth, dead
+// letters, the mirror) that Settings renders.
 
 export interface SyncWiring {
-  /** Re-sampled every 30s (independent of `useCalendarWiring.ts`'s own
-   * clock, which freezes on a device with no calendar opt-in) so the sync
-   * status's "as of" label stays live for every device, not just ones with
-   * a connected calendar. */
+  /** Re-sampled every 30s so the sync status's "as of" label stays live —
+   * independent of `useCalendarWiring.ts`'s own clock, which freezes on a
+   * device with no calendar opt-in. */
   nowMs: number;
   /** Requests the current mirror and, once it answers, writes it to disk.
    * S9's mirror download button. */
@@ -42,35 +41,12 @@ const STATUS_CLOCK_TICK_MS = 30 * 1000;
 export function useSyncWiring(
   worker: WorkerLike,
   status: CoreStatus,
-  hasToken: boolean,
-  task: Pick<TaskState, "lastSyncOutcome" | "mirrorSnapshot">,
+  lastSyncOutcomeKind: string | null,
 ): SyncWiring {
-  // A plain function declaration, not an inline closure passed to a hook —
-  // same shape `useCalendarWiring.ts`'s own handlers use, and what keeps the
-  // per-cycle clock/jitter sampling (below) from reading as render-time
-  // impurity: it only ever runs later, from an effect or an event listener.
-  function runCycle(trigger: "user" | "timer") {
-    // `forceFullSweep: false` — the normal pull is the delta since the
-    // mirror's own version (ADR-0008 amendment); a full sweep is the
-    // correctness backstop `adapter`'s own module docs describe as running
-    // "on app open and daily", which is a separate, unbuilt cadence this
-    // hook does not yet own (see the PR/issue notes). `Math.random()` is
-    // the caller-injected jitter `Core::run` requires on bare wasm32 (no
-    // panic-free RNG of its own).
-    runTaskSync(worker, Date.now(), trigger, false, Math.random());
-  }
-
-  // A ref, not a `useMemo`: the cadence closure must stay stable across
-  // renders (it is what every effect below attaches as a listener).
-  const cadenceRef = useRef<ReturnType<typeof createSyncCadence> | null>(null);
-  cadenceRef.current ??= createSyncCadence(runCycle);
-  const cadence = cadenceRef.current;
-
-  const ready = status === "ready" && hasToken;
+  const ready = status === "ready";
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // The status clock — see `SyncWiring.nowMs`'s own doc for why this is
-  // independent of the calendar wiring's clock.
+  // The status clock — see `SyncWiring.nowMs`'s own doc.
   useEffect(() => {
     if (!ready) {
       return;
@@ -79,54 +55,35 @@ export function useSyncWiring(
     return () => window.clearInterval(id);
   }, [ready]);
 
-  // On open / core start (ADR-0007).
+  // Reports this view's own page visibility to the shared cadence
+  // (`core.worker.ts`'s `VisibilityTracker`) — sent once on mount (the
+  // worker has no other way to learn the current state) and again on every
+  // `visibilitychange`.
   useEffect(() => {
     if (!ready) {
       return;
     }
-    cadence.onOpen();
+    reportViewVisibility(worker, document.hidden);
+    function handleVisibilityChange() {
+      reportViewVisibility(worker, document.hidden);
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // On reconnect — the browser's own connectivity signal (ADR-0007), not
-  // the Google Calendar credential's reconnect flow.
-  useEffect(() => {
-    if (!ready) {
-      return;
-    }
-    function handleOnline() {
-      cadence.onReconnect();
-    }
-    window.addEventListener("online", handleOnline);
-    return () => window.removeEventListener("online", handleOnline);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
-
-  // On window focus (ADR-0007). Exactly one listener for the document's
-  // lifetime while ready — `sync-cadence.ts`'s own doc is what keeps one
-  // focus event mapping to exactly one cycle.
+  // ADR-0007's "on window focus" trigger — forwarded to the shared cadence
+  // rather than run locally; see `protocol.ts`'s `SyncCadenceRequest` doc
+  // for why this one is not deduplicated across views the way the timer is.
   useEffect(() => {
     if (!ready) {
       return;
     }
     function handleFocus() {
-      cadence.onFocus();
+      triggerSyncFocus(worker);
     }
     window.addEventListener("focus", handleFocus);
     return () => window.removeEventListener("focus", handleFocus);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
-
-  // The 60-second foreground timer (ADR-0007), paused while hidden or
-  // offline per `shouldRunTimerTick` — proven in `sync-cadence.test.ts`.
-  useEffect(() => {
-    if (!ready) {
-      return;
-    }
-    const id = window.setInterval(() => {
-      cadence.onTimerTick(document.hidden, navigator.onLine);
-    }, SYNC_TIMER_MS);
-    return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
@@ -141,23 +98,23 @@ export function useSyncWiring(
     requestQueueDepth(worker);
     requestDeadLetters(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, task.lastSyncOutcome]);
+  }, [ready, lastSyncOutcomeKind]);
 
   // The download itself is a one-off action, not durable UI state: a click
-  // requests a fresh snapshot and this effect writes it to disk the moment
-  // the broadcast lands, rather than routing the click through a
-  // request/response pairing this protocol doesn't have (every
-  // worker->view message is a broadcast, not a reply to one sender —
-  // protocol.ts). `pendingRef` distinguishes "a download is owed" from any
-  // other view's snapshot arriving first.
+  // requests a fresh snapshot and this registration writes it to disk the
+  // moment the broadcast lands, rather than routing the value through the
+  // store — see `worker-client.ts`'s `mirrorSnapshotHandler` doc for why a
+  // shared broadcast with no directed reply must not be retained there.
   const pendingDownloadRef = useRef(false);
   useEffect(() => {
-    if (!pendingDownloadRef.current || task.mirrorSnapshot === null) {
-      return;
-    }
-    pendingDownloadRef.current = false;
-    downloadMirrorSnapshot(task.mirrorSnapshot, Date.now());
-  }, [task.mirrorSnapshot]);
+    setMirrorSnapshotHandler((mirror) => {
+      if (pendingDownloadRef.current) {
+        pendingDownloadRef.current = false;
+        downloadMirrorSnapshot(mirror, Date.now());
+      }
+    });
+    return () => setMirrorSnapshotHandler(null);
+  }, []);
 
   function handleDownloadMirror() {
     pendingDownloadRef.current = true;

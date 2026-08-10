@@ -1,16 +1,27 @@
-import type { CalendarWorkerRequest, WorkerResponse } from "../store/protocol";
+import type {
+  CalendarWorkerRequest,
+  SyncCadenceRequest,
+  TaskWorkerRequest,
+  WorkerResponse,
+} from "../store/protocol";
 import { announceReady } from "./announce";
+
+type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest;
 
 // The narrow slice of `MessagePort` the registry needs — narrow enough that
 // tests can pass a plain object instead of a real port (same discipline as
 // `store/worker-client.ts`'s `WorkerLike`).
 export interface PortLike {
   postMessage(response: WorkerResponse): void;
-  onmessage: ((event: MessageEvent<CalendarWorkerRequest>) => void) | null;
+  onmessage: ((event: MessageEvent<AnyWorkerRequest>) => void) | null;
   start(): void;
 }
 
-type Enqueue = (request: CalendarWorkerRequest) => Promise<void>;
+/** `port` is the port the request arrived on — S9 round-1 review: the
+ * shared cadence's `setViewVisibility` needs to know WHICH view is
+ * reporting, since the `SharedWorker` global scope has no `document` of its
+ * own to read visibility from directly. Every other request ignores it. */
+type Enqueue = (request: AnyWorkerRequest, port: PortLike) => Promise<void>;
 
 type State =
   | { kind: "pending" }
@@ -108,7 +119,7 @@ export class PortRegistry {
     }
     const { enqueue, coreApiVersion } = state;
     port.onmessage = (event) => {
-      void enqueue(event.data);
+      void enqueue(event.data, port);
     };
     port.start();
     this.ports.add(port);
