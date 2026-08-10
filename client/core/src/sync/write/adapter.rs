@@ -113,17 +113,36 @@ where
     }
 }
 
-/// `PATCH`/`PUT` a CAS write, resolving a 409 automatically when it is safe
-/// (see [`rebase::decide`]) by reissuing the identical touched-field intent
-/// at the current version — exactly once. A second 409 on that retry, or a
-/// same-field collision on the first, is reported as a
-/// [`WriteError::Conflict`] naming every colliding field.
+/// The total number of `send`s [`patch_with_rebase`] will ever make for one
+/// logical write: the original attempt, the one unconditional retry a
+/// `Safe` first 409 earns, and one further bounded retry for a `Safe`
+/// *second* 409 (genuine contention, #163) — never a fourth.
+const MAX_ATTEMPTS: u32 = 3;
+
+/// `PATCH`/`PUT` a CAS write, resolving a 409 automatically per
+/// [`rebase::decide`] (#163):
+/// - `Achieved` — every touched field already holds its intended value (this
+///   write already landed, or coincidentally matches). Returns the carried
+///   entity as the outcome; issues no further request.
+/// - `Safe` — at least one touched field needs reapplying and nothing
+///   collides. Reissues the identical touched-field intent at the 409's
+///   version.
+/// - `Collision` — reported as [`WriteError::Conflict`], naming every
+///   colliding field. Never retried.
+///
+/// A `Safe` decision on the first 409 earns exactly one retry; a `Safe`
+/// decision on that retry's own 409 is genuine contention and earns exactly
+/// one further bounded retry (see [`MAX_ATTEMPTS`]) before dead-lettering as
+/// [`WriteError::Contention`] rather than a conflict with an empty field
+/// list. Each rebase diffs against the point this attempt was actually
+/// rebased onto — never the original `base` — so a field that moved *back*
+/// to `base`'s value between two attempts is still caught as a genuine
+/// collision (#103 forwarded-review fix, preserved here).
 ///
 /// `base` is the entity this client last knew, as JSON (`serde_json::to_
 /// value` of whatever `hummingbird_domain` entity the caller holds).
-/// `build_patch` receives the `expected_version` to use — called once for
-/// the original attempt, and again (with the version the 409 carried) only
-/// if the rebase is safe.
+/// `build_patch` receives the `expected_version` to use — called once per
+/// attempt, at whichever version that attempt is rebased onto.
 pub async fn patch_with_rebase<P, T>(
     transport: &impl MutationTransport,
     access_token: &str,
@@ -148,57 +167,65 @@ where
         ));
     };
 
-    let patch = build_patch(base_version);
-    let patch_value = serde_json::to_value(&patch)
-        .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
-    let body = serde_json::to_string(&patch)
-        .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
+    // What this attempt's `current` is diffed against, and the version to
+    // send at. Starts at the caller's `base`; after each `Safe` 409, both
+    // become the 409's own `current` — the point that attempt was rebased
+    // onto (#103 forwarded-review fix).
+    let mut compare_against = base.clone();
+    let mut version = base_version;
 
-    match send(transport, access_token, method, path, body).await {
-        Sent::Success(_, body) => parse(&body),
-        Sent::Failed(error) => Err(error),
-        Sent::Conflict(current) => match rebase::decide(&patch_value, base, &current) {
-            RebaseDecision::Collision(fields) => Err(WriteError::Conflict { fields, current }),
-            RebaseDecision::Safe => {
-                // #103 forwarded-review fix: a `current` with no numeric
-                // `version` is a malformed 409 body — the server's own
-                // contract guarantees `current.version` on every conflict.
-                // Silently falling back to `base_version` would resend the
-                // exact version this client already knows is stale, hiding
-                // the malformed body behind a second, spurious 409 instead
-                // of surfacing it here.
-                let Some(current_version) = current.get("version").and_then(Value::as_i64) else {
-                    return Err(WriteError::InvalidResponse(
-                        "409 conflict body has no numeric \"version\" field".to_string(),
-                    ));
-                };
-                let retry_patch = build_patch(current_version);
-                let retry_value = serde_json::to_value(&retry_patch)
-                    .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
-                let retry_body = serde_json::to_string(&retry_patch)
-                    .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
+    for attempt_number in 1..=MAX_ATTEMPTS {
+        let patch = build_patch(version);
+        let patch_value = serde_json::to_value(&patch)
+            .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
+        let body = serde_json::to_string(&patch)
+            .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
 
-                match send(transport, access_token, method, path, retry_body).await {
-                    Sent::Success(_, body) => parse(&body),
-                    Sent::Failed(error) => Err(error),
-                    Sent::Conflict(current2) => {
-                        // #103 forwarded-review fix: diff against `current`
-                        // — the point this retry was actually rebased onto
-                        // — never the original `base` two versions back. See
-                        // `a_second_conflict_is_diffed_against_the_rebased_onto_current_not_the_original_base`.
-                        let fields = match rebase::decide(&retry_value, &current, &current2) {
-                            RebaseDecision::Collision(fields) => fields,
-                            RebaseDecision::Safe => Vec::new(),
+        match send(transport, access_token, method, path, body).await {
+            Sent::Success(_, body) => return parse(&body),
+            Sent::Failed(error) => return Err(error),
+            Sent::Conflict(current) => {
+                match rebase::decide(&patch_value, &compare_against, &current) {
+                    RebaseDecision::Collision(fields) => {
+                        return Err(WriteError::Conflict { fields, current })
+                    }
+                    RebaseDecision::Achieved => {
+                        // The write already landed — return the carried
+                        // entity as the outcome, no further request.
+                        return serde_json::from_value(current)
+                            .map_err(|source| WriteError::InvalidResponse(source.to_string()));
+                    }
+                    RebaseDecision::Safe => {
+                        if attempt_number == MAX_ATTEMPTS {
+                            // The bounded retry budget is spent and this is
+                            // still genuinely disjoint — contention, not a
+                            // fabricated conflict with no fields to show.
+                            return Err(WriteError::Contention { current });
+                        }
+                        // #103 forwarded-review fix: a `current` with no
+                        // numeric `version` is a malformed 409 body — the
+                        // server's own contract guarantees `current.version`
+                        // on every conflict. Silently falling back to the
+                        // last known version would resend a version this
+                        // client already knows is stale, hiding the
+                        // malformed body behind a spurious further 409
+                        // instead of surfacing it here.
+                        let Some(current_version) =
+                            current.get("version").and_then(Value::as_i64)
+                        else {
+                            return Err(WriteError::InvalidResponse(
+                                "409 conflict body has no numeric \"version\" field".to_string(),
+                            ));
                         };
-                        Err(WriteError::Conflict {
-                            fields,
-                            current: current2,
-                        })
+                        version = current_version;
+                        compare_against = current;
                     }
                 }
             }
-        },
+        }
     }
+
+    unreachable!("the loop always returns by MAX_ATTEMPTS: Success, Failed, Collision, Achieved, or the last Safe becomes Contention")
 }
 
 #[cfg(test)]
@@ -522,16 +549,19 @@ mod tests {
         );
     }
 
-    /// #101 acceptance: "replaying any mutation twice leaves the same end
-    /// state" — a crash swallows the ack, the client replays the identical
-    /// patch against the identical (now stale) base. The retry lands on
-    /// the value it already set.
+    /// #101/#163 acceptance: "replaying any mutation twice leaves the same
+    /// end state" — a crash swallows the ack, the client replays the
+    /// identical patch against the identical (now stale) base. The 409's
+    /// `current` already holds exactly what this patch intends
+    /// (`RebaseDecision::Achieved`), so the replay converges on that
+    /// carried entity with **no resend at all** — the real authority would
+    /// answer any actual retry with the *next* version, never the same one,
+    /// which is exactly why there is nothing scripted here to (wrongly)
+    /// rely on.
     #[tokio::test]
     async fn replaying_a_patch_after_a_swallowed_ack_converges() {
         let conflict_body = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy oat milk","version":2}}"#;
-        let retry_success = r#"{"id":"a-1","title":"buy oat milk","version":3}"#;
-        let transport =
-            ScriptedTransport::new(vec![ok(200, retry_success), ok(409, conflict_body)]);
+        let transport = ScriptedTransport::new(vec![ok(409, conflict_body)]);
         let base = json!({"id": "a-1", "title": "buy milk", "version": 1});
 
         let result: FakeItem = patch_with_rebase(
@@ -546,6 +576,141 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.title, "buy oat milk");
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "an already-achieved 409 must never be resent"
+        );
+    }
+
+    /// #163 acceptance: "A first 409 whose patch is fully achieved returns
+    /// the carried entity and issues no second request."
+    #[tokio::test]
+    async fn a_fully_achieved_first_409_returns_the_carried_entity_with_no_second_request() {
+        let conflict_body = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy oat milk","version":2}}"#;
+        let transport = ScriptedTransport::new(vec![ok(409, conflict_body)]);
+        let base = json!({"id": "a-1", "title": "buy milk", "version": 1});
+
+        let result: FakeItem = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Patch,
+            "/api/items/a-1",
+            &base,
+            |v| json!({"expected_version": v, "title": "buy oat milk"}),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.title, "buy oat milk");
+        assert_eq!(result.version, 2);
+        assert_eq!(transport.call_count(), 1, "no second request");
+    }
+
+    /// #163 acceptance: "A second 409 that is fully achieved resolves as
+    /// success, not a dead-letter." The rebased retry's own 409 is exactly
+    /// what this client already intended — the write landed while this
+    /// client was rebasing, and that must not lose the edit.
+    #[tokio::test]
+    async fn a_fully_achieved_second_409_is_success_not_a_conflict() {
+        let first_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy milk","version":2}}"#;
+        let second_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy oat milk","version":3}}"#;
+        let transport =
+            ScriptedTransport::new(vec![ok(409, second_conflict), ok(409, first_conflict)]);
+        let base = json!({"id": "a-1", "title": "buy milk", "version": 1});
+
+        let result: FakeItem = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Patch,
+            "/api/items/a-1",
+            &base,
+            |v| json!({"expected_version": v, "title": "buy oat milk"}),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.title, "buy oat milk");
+        assert_eq!(result.version, 3);
+        assert_eq!(
+            transport.call_count(),
+            2,
+            "an achieved second 409 resolves without a third request"
+        );
+    }
+
+    /// #163 acceptance: "A second 409 that is genuinely disjoint retries
+    /// once more" — and if that further retry succeeds outright, the write
+    /// lands normally.
+    #[tokio::test]
+    async fn a_disjoint_second_409_earns_one_further_bounded_retry_that_can_still_succeed() {
+        let first_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"someone bumped this","version":2}}"#;
+        let second_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"someone bumped this again","version":3}}"#;
+        let third_success = r#"{"id":"a-1","priority":2,"title":"someone bumped this again","version":4}"#;
+        let transport = ScriptedTransport::new(vec![
+            ok(200, third_success),
+            ok(409, second_conflict),
+            ok(409, first_conflict),
+        ]);
+        let base = json!({"id": "a-1", "priority": 1, "title": "buy milk", "version": 1});
+
+        let result: FakeItem = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Patch,
+            "/api/items/a-1",
+            &base,
+            |v| json!({"expected_version": v, "priority": 2}),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.version, 4);
+        assert_eq!(
+            transport.call_count(),
+            3,
+            "original attempt, one retry, one further bounded retry"
+        );
+    }
+
+    /// #163 acceptance: "if that also fails disjoint, dead-letter as
+    /// contention, never as a conflict with an empty field list."
+    #[tokio::test]
+    async fn a_disjoint_third_attempt_dead_letters_as_contention_not_an_empty_conflict() {
+        let first_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"someone bumped this","version":2}}"#;
+        let second_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"someone bumped this again","version":3}}"#;
+        let third_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"and again","version":4}}"#;
+        let transport = ScriptedTransport::new(vec![
+            ok(409, third_conflict),
+            ok(409, second_conflict),
+            ok(409, first_conflict),
+        ]);
+        let base = json!({"id": "a-1", "priority": 1, "title": "buy milk", "version": 1});
+
+        let err = patch_with_rebase::<_, FakeItem>(
+            &transport,
+            "token",
+            HttpMethod::Patch,
+            "/api/items/a-1",
+            &base,
+            |v| json!({"expected_version": v, "priority": 2}),
+        )
+        .await
+        .unwrap_err();
+
+        match err {
+            WriteError::Contention { current } => assert_eq!(
+                current,
+                json!({"id": "a-1", "priority": 1, "title": "and again", "version": 4}),
+                "the current entity must reach the caller, not be dropped"
+            ),
+            other => panic!("expected contention, got {other:?}"),
+        }
+        assert_eq!(
+            transport.call_count(),
+            3,
+            "original attempt, one retry, one bounded further retry — never a fourth"
+        );
     }
 
     /// A second 409 on the rebased retry is reported as a conflict too,
@@ -574,27 +739,33 @@ mod tests {
         assert_eq!(transport.call_count(), 2, "capped at one retry");
     }
 
-    /// #103 forwarded-review fix: the second conflict's rebase diff must
-    /// compare against the *first* 409's `current` (the point this retry was
-    /// actually rebased onto), never the original `base` two versions back.
-    /// Fixture: the field is achieved-then-churned — `title` is "oat milk"
-    /// (already achieved, hence `Safe`) at the first 409, then a second
-    /// intervening write moves it back to the *original* `base`'s value
-    /// ("buy milk") by the second 409. Diffing against the stale `base`
-    /// would see `current2.title == base.title` and wrongly call that
-    /// "untouched since we last rebased" (`Safe`, `fields: []`) — a real
-    /// collision (someone reverted the field between the two attempts)
-    /// reported with nothing the user can act on. Diffing against the first
-    /// `current` catches it: that field moved away from what this retry was
-    /// rebased onto.
+    /// #103 forwarded-review fix (still true under #163's three-way rebase):
+    /// the second conflict's rebase diff must compare against the *first*
+    /// 409's `current` (the point this retry was actually rebased onto),
+    /// never the original `base` two versions back.
+    ///
+    /// Fixture: a two-field patch (`title`, `context`) so the first 409 is
+    /// `Safe`, not `Achieved` — `title` already matches what this patch
+    /// intends, but `context` is still untouched since `base` and needs
+    /// reapplying, so at least one field genuinely needs resending and the
+    /// retry actually happens (an all-achieved first 409 would return
+    /// immediately with no second request at all, per #163, and never reach
+    /// this scenario). By the second 409 a further intervening write has
+    /// moved `title` back to the *original* `base`'s value ("buy milk").
+    /// Diffing against the stale `base` would see `current2.title ==
+    /// base.title` and wrongly call that "untouched since we last rebased"
+    /// — a real collision (someone reverted the field between the two
+    /// attempts) reported with nothing the user can act on. Diffing against
+    /// the first `current` catches it: that field moved away from what this
+    /// retry was rebased onto.
     #[tokio::test]
     async fn a_second_conflict_is_diffed_against_the_rebased_onto_current_not_the_original_base()
     {
-        let first_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy oat milk","version":2}}"#;
-        let second_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy milk","version":3}}"#;
+        let first_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy oat milk","context":"@calls","version":2}}"#;
+        let second_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy milk","context":"@computer","version":3}}"#;
         let transport =
             ScriptedTransport::new(vec![ok(409, second_conflict), ok(409, first_conflict)]);
-        let base = json!({"id": "a-1", "title": "buy milk", "version": 1});
+        let base = json!({"id": "a-1", "title": "buy milk", "context": "@calls", "version": 1});
 
         let err = patch_with_rebase::<_, FakeItem>(
             &transport,
@@ -602,7 +773,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
-            |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            |v| json!({"expected_version": v, "title": "buy oat milk", "context": "@computer"}),
         )
         .await
         .unwrap_err();
@@ -615,6 +786,7 @@ mod tests {
             ),
             other => panic!("expected a named collision, got {other:?}"),
         }
+        assert_eq!(transport.call_count(), 2, "capped at one retry per attempt");
     }
 
     /// #103 forwarded-review fix: a `base` with no numeric `version` field
