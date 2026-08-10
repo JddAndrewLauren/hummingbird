@@ -23,7 +23,16 @@
 # same posture deploy-client.yml documents for H1.
 name: deploy-server
 
+# `workflow_dispatch` for the same reason as deploy-client.yml: a deploy that
+# needs re-running when no file under `server/**` changed — after a rollback,
+# or after a secret was set from the operator's terminal — otherwise has no
+# trigger at all. `paths:` does not apply to a dispatch.
+#
+# The deploy job is guarded to `main` so `--ref <branch>` cannot ship an
+# unmerged branch to the authority devices sync against; a dispatch from
+# another ref still runs the full `server-test.yml` gate and stops there.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -38,6 +47,7 @@ jobs:
 
   deploy:
     needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-hummingbird-authority

@@ -36,6 +36,27 @@ export default defineConfig({
         // requires a directory to descend into, so it silently misses a
         // top-level file (verified against the emitted sw.js, not assumed).
         globIgnores: ["app-icon-512.png"],
+        // Workbox refuses to precache a file over 2 MiB and, in
+        // vite-plugin-pwa, that refusal is a *build error*, not a warning.
+        // The wasm core crossed it by under 4 KB (2,101,037 bytes against
+        // 2,097,152) when ADR-0015 grew `hummingbird-domain`, which the
+        // client compiles too — so a server-side change turned the client
+        // build red, and `deploy-client.yml`'s deploy job (`needs: test`)
+        // stopped being reachable at all.
+        //
+        // Raised rather than worked around: the glob above deliberately
+        // includes `wasm` because the "installed PWA loads with the network
+        // disabled" criterion needs the core precached, so excluding it to
+        // get a green build would trade a broken build for a broken
+        // offline app — the failure the acceptance criterion exists to
+        // catch, moved somewhere it is not checked.
+        //
+        // 4 MiB, not 2.1: the binary has been creeping toward the default
+        // for a while and arrived under 4 KB clear of it. A limit set just
+        // above today's size would re-break on the next domain type added,
+        // in a client build, for a reason written in the server crate.
+        // There is still a ceiling, so genuine bloat fails loudly.
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       manifest: {
         name: "hummingbird",
