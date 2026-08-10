@@ -44,9 +44,16 @@
 //! partial one, so a transport failure mid-pull never reaches `apply_*` at
 //! all and the mirror this cycle started with is what a caller sees after.
 //!
-//! **Persisted immediately, not deferred.** The queue is durably saved right
-//! after `drain` returns — regardless of what `drain` did — and the mirror
-//! is durably saved right after a pull applies, both before `run` returns.
+//! **Persisted immediately, not deferred — and, where it can be, persisted
+//! first.** The queue is durably saved right after `drain` returns —
+//! regardless of what `drain` did — and the mirror is durably saved right
+//! after a pull applies, both before `run` returns. Where nothing has yet
+//! been sent, the persist goes *before* the in-memory swap rather than
+//! after it: [`SyncCycle::enqueue`] writes a candidate queue and installs
+//! it only on success, and a pull applies to a candidate mirror that is
+//! written before it (and the sweep clock, and the delta cursor it carries)
+//! is installed. A failed write therefore leaves memory exactly where disk
+//! is, instead of one step ahead of it.
 //! This closes the #102-reviewer-forwarded gap: `enqueue`/`drain` alone only
 //! mutate the in-memory value, and it was previously a caller convention,
 //! not something the type system enforced, that a persist always followed.
@@ -313,15 +320,26 @@ where
     /// wrong, or skip the persist, with no compiler or test catching it.
     /// Every capture should reach for this rather than call `enqueue`
     /// directly.
+    ///
+    /// Persist-then-swap, not swap-then-persist: the entry is added to a
+    /// *candidate* queue, that candidate is written, and only a successful
+    /// write installs it as `self.queue`. #102's criterion is literal —
+    /// "the queue is written and readable back **before** the transport is
+    /// ever called" — and mutating memory first would leave a later `run`
+    /// draining an entry that was never durable, which is the one ordering
+    /// this method exists to make unrepresentable.
     pub async fn enqueue(&mut self, entry: QueueEntry, as_of_ms: i64) -> Result<(), SnapshotError<QS::Error>> {
-        self.queue.enqueue(entry);
+        let mut candidate = self.queue.clone();
+        candidate.enqueue(entry);
         save_snapshot(
             &self.queue_store,
             QUEUE_SCHEMA_VERSION,
             as_of_ms.max(0) as u64,
-            self.queue.clone(),
+            candidate.clone(),
         )
-        .await
+        .await?;
+        self.queue = candidate;
+        Ok(())
     }
 
     /// Runs one ADR-0007 cycle: drain, persist the queue, then (unless the
@@ -400,19 +418,24 @@ where
 
         match pull_result {
             Ok(pull) => {
+                // One commit, in ADR-0007's sense: the applied mirror, its
+                // snapshot, and the sweep clock move together or not at
+                // all. The apply lands on a *candidate* mirror that is
+                // persisted first; only a successful write installs it and
+                // advances `last_full_sweep_at_ms`. Mutating in place
+                // first would leave memory and the delta cursor ahead of
+                // what is durable after a persist failure.
                 let was_full_sweep = matches!(pull, PullResponse::Sweep(_));
+                let mut candidate = self.mirror.clone();
                 match pull {
-                    PullResponse::Sweep(response) => {
-                        self.mirror.apply_sweep(response, now_ms);
-                        self.last_full_sweep_at_ms = Some(now_ms);
-                    }
-                    PullResponse::Delta(response) => self.mirror.apply_delta(response),
+                    PullResponse::Sweep(response) => candidate.apply_sweep(response, now_ms),
+                    PullResponse::Delta(response) => candidate.apply_delta(response),
                 }
                 if let Err(error) = save_snapshot(
                     &self.mirror_store,
                     SYNC_MIRROR_SCHEMA_VERSION,
                     now_ms.max(0) as u64,
-                    self.mirror.clone(),
+                    candidate.clone(),
                 )
                 .await
                 {
@@ -421,6 +444,10 @@ where
                         message: error.to_string(),
                         retry_after_ms,
                     };
+                }
+                self.mirror = candidate;
+                if was_full_sweep {
+                    self.last_full_sweep_at_ms = Some(now_ms);
                 }
                 self.backoff.reset();
                 CycleOutcome::Completed {
@@ -453,7 +480,7 @@ enum PullResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{load_snapshot, MemorySnapshotStore};
+    use crate::storage::{load_snapshot, InstrumentedSnapshotStore, MemorySnapshotStore};
     use crate::sync::queue::MutationIntent;
     use crate::sync::transport::TransportError;
     use crate::sync::write::transport::{HttpMethod, RawResponse};
@@ -1167,6 +1194,86 @@ mod tests {
         assert!(
             loaded.item("a-1").is_some(),
             "the persisted mirror must actually hold the applied sweep"
+        );
+    }
+
+    /// #102 acceptance, taken literally: "the queue is written and readable
+    /// back *before* the transport is ever called." If the write fails, the
+    /// entry was never durable — so it must not be sitting in the in-memory
+    /// queue for the next `run` to drain. Only reachable through the
+    /// fallible store fake: with `MemorySnapshotStore`'s `Infallible` error
+    /// this branch could not be entered at all, which is how the
+    /// swap-then-persist ordering cleared four reviews.
+    #[tokio::test]
+    async fn a_failed_enqueue_persist_leaves_nothing_drainable_behind() {
+        let mut cycle = SyncCycle::new(InstrumentedSnapshotStore::failing(), MemorySnapshotStore::default());
+
+        let result = cycle.enqueue(create_entry("m-1", "a-1"), 1_000).await;
+
+        assert!(result.is_err(), "a failing store must surface as an error");
+        assert!(
+            cycle.queue().is_empty(),
+            "an entry that never reached the store must never become drainable"
+        );
+        assert_eq!(
+            cycle.queue_store().write_count(),
+            1,
+            "sanity: the write really was attempted"
+        );
+    }
+
+    /// The mirror half of the same rule (ADR-0007: "one commit"; #103:
+    /// "commits mirror, snapshot and publish in one step"). A persist
+    /// failure after a successful pull must leave the in-memory mirror —
+    /// and with it the delta cursor `run` sends as `since`, and the
+    /// full-sweep clock — exactly where the store still is, not one pull
+    /// ahead of it. Seeds durably first, then breaks the store, so the
+    /// "unchanged" being asserted is real content rather than emptiness.
+    #[tokio::test]
+    async fn a_failed_mirror_persist_leaves_the_mirror_and_its_cursor_where_the_store_is() {
+        let log = CallLog::default();
+        let write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), InstrumentedSnapshotStore::new());
+
+        let seed_body = serde_json::to_string(&ChangesResponse {
+            version: 1,
+            items: vec![item_fixture("a-1", hummingbird_domain::Stage::Ready)],
+            ..ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let seed_read = ScriptedRead::sweep_only(&log, Ok(seed_body));
+        cycle
+            .run(&seed_read, &write, "token", 1_000, Trigger::User, true, 0.0)
+            .await;
+        let before = cycle.mirror().clone();
+        assert!(before.item("a-1").is_some(), "sanity: the seed landed");
+
+        // The store breaks, and the next pull is a full sweep that would
+        // otherwise wipe `a-1` and advance the cursor to version 2.
+        cycle.mirror_store().set_failing(true);
+        let failing_read = ScriptedRead::sweep_only(&log, Ok(empty_body(2)));
+        let outcome = cycle
+            .run(&failing_read, &write, "token", 2_000, Trigger::User, true, 1.0)
+            .await;
+
+        match outcome {
+            CycleOutcome::PersistFailed { retry_after_ms, .. } => {
+                assert!(retry_after_ms > 0, "a persist failure records a backoff delay")
+            }
+            other => panic!("expected PersistFailed, got {other:?}"),
+        }
+        assert_eq!(
+            cycle.mirror(),
+            &before,
+            "an unpersisted apply must not be published to memory — disk and memory move together"
+        );
+        assert_eq!(
+            cycle.mirror().version(),
+            1,
+            "the cursor must not advance past a pull that never became durable"
         );
     }
 

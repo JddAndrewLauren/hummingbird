@@ -25,6 +25,11 @@ pub use envelope::{Envelope, Persistable};
 /// `impl PersistableSealed`.
 pub(crate) use envelope::sealed::PersistableSealed;
 pub use memory::MemorySnapshotStore;
+// The fallible, counting `MemorySnapshotStore` twin — test-only, and
+// necessarily `core`-internal: `sealed::Sealed` is unnameable outside this
+// crate, so no integration test or benchmark could implement one.
+#[cfg(test)]
+pub(crate) use memory::InstrumentedSnapshotStore;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use fs::FsSnapshotStore;
