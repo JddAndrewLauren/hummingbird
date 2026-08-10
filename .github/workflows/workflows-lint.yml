@@ -1,0 +1,65 @@
+# Lints the workflows themselves — nothing else in this repo checks workflow
+# YAML, and the server gate is now spread across three coupled files:
+# server-test.yml holds the recipe, and both server.yml and deploy-server.yml
+# must keep it listed in their own `paths:` filters or a change to the recipe
+# re-runs nothing. actionlint is what catches the mechanical half of that
+# class of mistake — a `uses: ./.github/workflows/...` path that does not
+# resolve, an input a callee does not declare, a bad `needs:`, a shell error
+# in a `run:` block.
+#
+# actionlint is run bare from the repo root, with no file arguments, so it
+# sweeps the whole `.github/workflows` directory in one pass: a local
+# `uses: ./.github/workflows/x.yml` reference is only validated when the
+# callee is part of the same sweep, which is exactly the coupling above.
+#
+# The binary is fetched from a pinned release tarball and checksum-verified
+# rather than run through a third-party action. This repo pins every
+# toolchain (see client.yml's rust-toolchain and wasm-pack notes), and the
+# alternatives both float: the published actionlint action tracks its own
+# refs and its download step resolves "latest" by default, and the docker
+# image adds a pull of a tag that can be moved. A URL plus a sha256 is the
+# smallest thing that cannot change under us. Bump both together,
+# deliberately.
+name: workflows-lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+
+# Superseded PR pushes cancel their stale runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: "1.7.7"
+  ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    # A download and one Go binary over a handful of files; anything slower
+    # than this is a hung fetch, not a slow lint.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSLf -o "$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar xzf "$tarball" actionlint
+
+      # Bare, from the repo root: see the header. `-oneline` keeps each
+      # finding greppable in the log; `-no-color` because the Actions log is
+      # not a terminal.
+      - name: actionlint
+        run: ./actionlint -no-color -oneline

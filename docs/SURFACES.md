@@ -87,8 +87,11 @@ across every screen, not only the ones a diff touched.
 ## Surface: the authority server
 
 No visual surface. `server/` is an API — Worker + Durable Object — with no
-rendered output. Gated by `server/scripts/smoke.sh` and
-`.github/workflows/server.yml`, not by anything in this file.
+rendered output. Gated by `.github/workflows/server-test.yml` — the shared
+recipe that runs `server/scripts/smoke.sh`, called by
+`.github/workflows/server.yml` on pull requests and by
+`.github/workflows/deploy-server.yml` on `main` — not by anything in this
+file.
 
 ## Planned, not built
 
