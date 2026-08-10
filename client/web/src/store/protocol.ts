@@ -185,10 +185,25 @@ export type TaskRunOutcomeKind =
   | "busy";
 
 export type TaskWorkerRequest =
-  /** The host calls this once a device token is known (startup, or a
-   * rotation) — never in response to anything the worker posted back,
-   * because nothing the worker posts back ever carries the key. */
+  /** The host calls this on a genuinely new or re-entered token — a
+   * first-run entry, or a deliberate re-submit through the 401 re-prompt —
+   * never in response to anything the worker posted back, because nothing
+   * the worker posts back ever carries the key. This is the only message
+   * that resumes a held credential (issue #196: shape 2 splits rehydration
+   * from rotation at this protocol level precisely so that only THIS one
+   * can). */
   | { type: "pushTaskApiKey"; apiKey: string }
+  /** Issue #196 (shape 2): the rehydration counterpart to `pushTaskApiKey`
+   * — the host calls this at core start, and every time a view reaches
+   * `ready` under #126's one-shared-core-per-origin
+   * (`useTaskTokenWiring.ts`'s core-start effect), to re-supply whatever
+   * device token is already stored. Deliberately NOT `pushTaskApiKey`: a
+   * later view rehydrating the very token that just got 401'd must not be
+   * able to resume the hold that rejection set, or the client silently
+   * retries a credential already known to be dead and drops the pending
+   * re-auth prompt. Still reaches the core's credential slot when nothing
+   * is held — a first-run device's stored token must still become usable. */
+  | { type: "initTaskApiKey"; apiKey: string }
   /** "Forget token" (#106/S8): clears the core's in-memory credential.
    * Carries nothing — there is no key to carry — and gets no reply; the
    * host fires this and moves on. Never touches the mirror or the queue. */

@@ -62,7 +62,7 @@ export function createDispatch<Port>(deps: DispatchDeps<Port>): Dispatch<Port> {
     }
     return deps.taskEnqueueReady.then(async (enqueue) => {
       await enqueue(request);
-      if (request.type === "pushTaskApiKey") {
+      if (request.type === "pushTaskApiKey" || request.type === "initTaskApiKey") {
         open.credentialPushed();
       }
     });
@@ -73,20 +73,24 @@ export function createDispatch<Port>(deps: DispatchDeps<Port>): Dispatch<Port> {
  * — but NOT at core activation, which is what PR #181 shipped and a
  * post-batch review caught: `sync-cadence.ts` documents `onOpen` as "call
  * once the core is ready **and a task credential is known**", and at
- * activation no view has had a chance to `pushTaskApiKey` yet
+ * activation no view has had a chance to supply one yet
  * (`useTaskTokenWiring.ts` only loads the stored token once its own view
  * observes `ready`). Every session's first cycle therefore returned
  * `no_credential` and Settings showed "Held — device token needed" until
  * the next 60s tick, on a device with a perfectly good stored token.
  *
- * Hanging it off the first `pushTaskApiKey` instead honours the contract
- * literally: the open sweep fires the moment a credential is actually
- * known, which is also the moment a first-run token entry completes (so
- * entering a token starts syncing immediately rather than up to a minute
- * later). A never-entered device pushes no key and gets no open sweep — the
- * 60s timer surfaces its `no_credential` within the minute, and its
- * Settings screen already knows it has no token from its own local state,
- * so nothing waits on the badge. */
+ * Hanging it off the first `initTaskApiKey` OR `pushTaskApiKey` instead
+ * honours the contract literally: the open sweep fires the moment a
+ * credential is actually known, whichever message carries it. Issue #196
+ * split `pushTaskApiKey` into a rotation-only message and this rehydration
+ * one, and the open trigger deliberately follows BOTH — a stored-token
+ * device's rehydration on core start (so it still gets its open sweep, not
+ * just a never-entered device's own fresh `pushTaskApiKey`), and a
+ * first-run token entry, which still starts syncing immediately rather than
+ * up to a minute later. A never-entered device sends neither message and
+ * gets no open sweep — the 60s timer surfaces its `no_credential` within
+ * the minute, and its Settings screen already knows it has no token from
+ * its own local state, so nothing waits on the badge. */
 function openTrigger(cadence: DispatchCadence): { credentialPushed: () => void } {
   let fired = false;
   return {

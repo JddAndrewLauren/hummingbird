@@ -21,6 +21,7 @@ type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceR
 // (PR #171 round-1 review — the previous `Set` had no such check).
 const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   pushTaskApiKey: true,
+  initTaskApiKey: true,
   clearTaskApiKey: true,
   capture: true,
   getFrontier: true,

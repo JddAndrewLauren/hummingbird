@@ -20,6 +20,9 @@ import { createSerialQueue } from "./serial-queue";
  * place. */
 export interface TaskHostLike {
   pushApiKey(apiKey: string): void;
+  /** Issue #196 (shape 2)'s rehydration counterpart to `pushApiKey` — see
+   * `protocol.ts`'s `initTaskApiKey` doc for the full contract. */
+  rehydrateApiKey(apiKey: string): void;
   clearApiKey(): void;
   capture(seed: string, title: string, stage: string, nowMs: number): Promise<string>;
   frontier(): string;
@@ -198,6 +201,11 @@ export async function handleTaskRequest(
       // Forwarded and never echoed: no branch below, or anywhere else in
       // this module, ever posts a message carrying an API key.
       host.pushApiKey(request.apiKey);
+      return;
+    case "initTaskApiKey":
+      // Issue #196 (shape 2): rehydration, never rotation — forwarded to
+      // the host method that never resumes a hold. Also never echoed.
+      host.rehydrateApiKey(request.apiKey);
       return;
     case "clearTaskApiKey":
       // "Forget token" (#106/S8): forwarded and never acknowledged with a

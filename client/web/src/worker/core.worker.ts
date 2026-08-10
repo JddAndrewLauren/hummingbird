@@ -67,10 +67,10 @@
 // module constructs exactly one `sync-cadence.ts` cadence and exactly one
 // `setInterval` for the whole origin below; `onOpen`/`onReconnect` fire
 // once each, for the same reason — `onReconnect` on this worker's own
-// `online` event, and `onOpen` on the first `pushTaskApiKey` any view sends
-// (`dispatch.ts`, which owns that rule: at core activation no credential is
-// known yet, which is not what `onOpen`'s contract asks for). The one thing
-// this global scope genuinely cannot
+// `online` event, and `onOpen` on the first `initTaskApiKey`/`pushTaskApiKey`
+// any view sends (`dispatch.ts`, which owns that rule: at core activation no
+// credential is known yet, which is not what `onOpen`'s contract asks for).
+// The one thing this global scope genuinely cannot
 // observe on its own is page visibility — no `document` exists here — so
 // `VisibilityTracker` aggregates each view's own `setViewVisibility` report
 // (`protocol.ts`) instead: one visible tab keeps the cycle running even
@@ -229,11 +229,11 @@ void (async () => {
     // The three-way routing (shared cadence / task queue / calendar queue)
     // and ADR-0007's "on app open" trigger both live in `dispatch.ts` as
     // pure logic a node test can execute — see that module's doc. In
-    // particular the open sweep fires on the FIRST `pushTaskApiKey`, not
-    // here at activation: `onOpen` is documented as "call once the core is
-    // ready and a task credential is known", and at activation no view has
-    // had the chance to push one yet, so firing it here made every
-    // session's first cycle a spurious `no_credential`.
+    // particular the open sweep fires on the FIRST `initTaskApiKey` or
+    // `pushTaskApiKey`, not here at activation: `onOpen` is documented as
+    // "call once the core is ready and a task credential is known", and at
+    // activation no view has had the chance to supply one yet, so firing it
+    // here made every session's first cycle a spurious `no_credential`.
     const dispatch = createDispatch<PortLike>({
       cadence,
       visibility,

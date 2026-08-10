@@ -226,11 +226,24 @@ export function requestCalendarList(worker: WorkerLike): void {
 // never at construction time" rule as the calendar helpers above, and the
 // same one-request-one-postMessage shape.
 
-/** The host calls this at startup, once a stored device token is known, and
- * on every rotation — the key crosses this boundary exactly once per call
- * and is never read back out through any `WorkerResponse` (protocol.ts). */
+/** The host calls this on a genuinely new or re-entered token — first-run
+ * entry, or a deliberate re-submit through the 401 re-prompt — never at
+ * core-start rehydration (see `initTaskApiKey` below; issue #196: only this
+ * one resumes a held credential). The key crosses this boundary exactly
+ * once per call and is never read back out through any `WorkerResponse`
+ * (protocol.ts). */
 export function pushTaskApiKey(worker: WorkerLike, apiKey: string): void {
   worker.postMessage({ type: "pushTaskApiKey", apiKey });
+}
+
+/** Issue #196 (shape 2): the host calls this — never `pushTaskApiKey` — to
+ * rehydrate whatever device token is already stored: at core start, and
+ * every time a view reaches `ready` under #126's one-shared-core-per-origin
+ * (`useTaskTokenWiring.ts`'s core-start effect). See `protocol.ts`'s
+ * `initTaskApiKey` doc for the full contract this closes — a later view
+ * rehydrating an already-rejected token must not resume the hold it set. */
+export function initTaskApiKey(worker: WorkerLike, apiKey: string): void {
+  worker.postMessage({ type: "initTaskApiKey", apiKey });
 }
 
 /** "Forget token" (#106/S8): tells the core to clear whatever credential it
