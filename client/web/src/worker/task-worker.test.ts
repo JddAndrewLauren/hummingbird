@@ -7,6 +7,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     pushApiKey: vi.fn(),
     clearApiKey: vi.fn(),
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
+    act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
@@ -126,6 +127,47 @@ describe("handleTaskRequest", () => {
 
     expect(posted).toEqual([
       { type: "captureResult", seed: "seed-1", kind: "failed", id: null, error: "boom" },
+    ]);
+  });
+
+  it("act posts an ok result keyed by seed, item and action", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      { type: "act", seed: "seed-act-1", itemId: "item-1", action: "complete", nowMs: 2_000 },
+      host,
+    );
+
+    expect(host.act).toHaveBeenCalledWith("seed-act-1", "item-1", "complete", 2_000);
+    expect(posted).toEqual([
+      {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "item-1",
+        action: "complete",
+        kind: "ok",
+        error: null,
+      },
+    ]);
+  });
+
+  it("act posts a not_found result with its error message", async () => {
+    const host = fakeHost({
+      act: vi.fn().mockResolvedValue('{"kind":"not_found","error":"item not found"}'),
+    });
+    const posted = await run(
+      { type: "act", seed: "seed-act-1", itemId: "no-such-item", action: "start", nowMs: 2_000 },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "no-such-item",
+        action: "start",
+        kind: "not_found",
+        error: "item not found",
+      },
     ]);
   });
 

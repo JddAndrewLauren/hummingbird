@@ -15,6 +15,7 @@ import { syncStatusLabel } from "./shell/sync-status";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
+import { useItemActions } from "./shell/useItemActions";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { useSyncWiring } from "./shell/useSyncWiring";
@@ -94,7 +95,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     selectedItemId,
     openItem: handleOpenItem,
     closeItem: handleCloseItemDetail,
-  } = useItemDetailWiring(worker);
+  } = useItemDetailWiring(worker, task.syncOutcomeSeq);
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
 
   // #110/S12's "always-present ... plus a global hotkey that focuses it"
@@ -139,6 +140,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+  const { act: handleAct } = useItemActions(worker);
   const syncLabel = syncStatusLabel({
     online,
     lastSyncOutcome: task.lastSyncOutcome,
@@ -204,6 +206,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               selectedItemId={selectedItemId}
               onOpenItem={handleOpenItem}
               onCloseItemDetail={handleCloseItemDetail}
+              onAct={handleAct}
             />
           )}
           {screen === "triage" && (

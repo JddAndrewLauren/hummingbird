@@ -18,7 +18,7 @@ mod task_host;
 
 pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
 pub use task_host::{
-    BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
+    ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
     DeadLetterFieldDTO, DeadLettersResponse, FrontierItemDTO, IsPendingResponse, ItemListResponse,
     MirrorSnapshotResponse, ProjectListResponse, QueueDepthResponse, RunResponse, StepListResponse,
     TaskEventDTO, TaskHostCore,
@@ -369,6 +369,7 @@ mod wasm_bindings {
     const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    const BUSY_ACT: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
     const BUSY_QUEUE_DEPTH: &str = r#"{"kind":"busy","depth":0}"#;
     const BUSY_DEAD_LETTERS: &str = r#"{"kind":"busy","entries":[]}"#;
@@ -516,6 +517,23 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CaptureResponse serializes"),
+                ))
+            })
+        }
+
+        /// Acts on an already-existing item (S11/#109: start, complete,
+        /// block, cancel). Resolves to JSON:
+        /// `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
+        pub fn act(&self, seed: String, item_id: String, action: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_ACT));
+                };
+                let response = host.act(&seed, &item_id, &action, now_ms as i64).await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("ActResponse serializes"),
                 ))
             })
         }

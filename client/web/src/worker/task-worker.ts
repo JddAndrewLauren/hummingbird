@@ -25,6 +25,7 @@ export interface TaskHostLike {
   pushApiKey(apiKey: string): void;
   clearApiKey(): void;
   capture(seed: string, title: string, stage: string, nowMs: number): Promise<string>;
+  act(seed: string, itemId: string, action: string, nowMs: number): Promise<string>;
   frontier(): string;
   triageInbox(): string;
   blocked(): string;
@@ -122,6 +123,11 @@ interface RawIsPendingResponse {
 interface RawCaptureResponse {
   kind: "ok" | "failed" | "busy";
   id: string | null;
+  error: string | null;
+}
+
+interface RawActResponse {
+  kind: "ok" | "not_found" | "failed" | "busy";
   error: string | null;
 }
 
@@ -291,6 +297,20 @@ export async function handleTaskRequest(
       ) as RawCaptureResponse;
       post({ type: "captureResult", seed: request.seed, kind: raw.kind, id: raw.id, error: raw.error });
       postTaskEvents(host, post);
+      return;
+    }
+    case "act": {
+      const raw = JSON.parse(
+        await host.act(request.seed, request.itemId, request.action, request.nowMs),
+      ) as RawActResponse;
+      post({
+        type: "actResult",
+        seed: request.seed,
+        itemId: request.itemId,
+        action: request.action,
+        kind: raw.kind,
+        error: raw.error,
+      });
       return;
     }
     case "getFrontier": {

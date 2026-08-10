@@ -3,6 +3,7 @@ import type { createCoreStore } from "./store";
 import type {
   CalendarWorkerRequest,
   SyncCadenceRequest,
+  TaskActionName,
   TaskStageName,
   TaskWorkerRequest,
   WorkerResponse,
@@ -109,6 +110,33 @@ export function attachWorkerClient(
             error: message.error,
           },
         });
+        return;
+      case "actResult":
+        store.setTaskState({
+          lastAct: {
+            seed: message.seed,
+            itemId: message.itemId,
+            action: message.action,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::act`'s overlay already updated synchronously — this is
+          // the same re-read `useFrontierWiring.ts` does per sync cycle,
+          // triggered immediately instead of waiting for the next one, so
+          // an act taken offline is visible right away (this issue's
+          // "Completing offline shows Done immediately").
+          requestFrontier(worker);
+          requestBlocked(worker);
+          // PR #207 round-2 fix: the acted-on item's `pending` must render
+          // from a LIVE source. The task worker's serial queue guarantees
+          // the act was applied before this reads, so `TaskState.pending`
+          // gets `true` now and `false` once a sync cycle drains the queue
+          // (`useItemDetailWiring` re-reads it per cycle) — which is what
+          // re-enables a blocked item's Start/Cancel row.
+          requestIsPending(worker, message.itemId);
+        }
         return;
       case "frontier":
         store.setTaskState({ frontier: message.items });
@@ -260,6 +288,19 @@ export function captureTask(
   nowMs: number,
 ): void {
   worker.postMessage({ type: "capture", seed, title, stage, nowMs });
+}
+
+/** S11/#109's act mutation: start, complete, block, cancel. `seed` mints
+ * `Core::act`'s own queue-entry id — same caller-mints contract as
+ * `captureTask`'s. */
+export function actOnTask(
+  worker: WorkerLike,
+  seed: string,
+  itemId: string,
+  action: TaskActionName,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "act", seed, itemId, action, nowMs });
 }
 
 export function requestFrontier(worker: WorkerLike): void {

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
@@ -10,10 +11,12 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import type { CalendarTileProps } from "../calendar/tile-props";
 import type { DemoData, DemoSnapshot } from "../fixtures/demo";
 import type { Screen } from "../shell/screens";
+import type { TaskActionName, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { blockedReasonLabel } from "./blocked-reason";
 import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
+import { applyItemAction, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 import { computeUrgency } from "./urgency";
 
@@ -50,6 +53,9 @@ export interface NowScreenProps {
   selectedItemId: string | null;
   onOpenItem: (itemId: string) => void;
   onCloseItemDetail: () => void;
+  /** S11/#109's act affordances (start/complete/block/cancel), forwarded to
+   * whichever item is currently open in detail. */
+  onAct: (itemId: string, action: TaskActionName) => void;
 }
 
 /** Real-data frontier/blocked rendering (issue #108) — kept out of the
@@ -63,11 +69,90 @@ function RealFrontier({
   selectedItemId,
   onOpenItem,
   onCloseItemDetail,
-}: Pick<NowScreenProps, "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail">) {
+  onAct,
+}: Pick<
+  NowScreenProps,
+  "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail" | "onAct"
+>) {
+  // Reviewer finding on PR #207: a failed `actResult` used to be recorded
+  // in `TaskState.lastAct` and rendered nowhere — this is what makes it
+  // visible, matched to the currently open item by id so a stale failure
+  // from a DIFFERENT item never bleeds into this one.
+  const actError =
+    task.lastAct && task.lastAct.itemId === selectedItemId && task.lastAct.kind !== "ok"
+      ? (task.lastAct.error ?? "That action didn't apply.")
+      : null;
+
   const allItems = [...task.frontier, ...task.blocked.map((entry) => entry.item)];
-  const selectedItem = selectedItemId
+  const liveSelectedItem = selectedItemId
     ? (allItems.find((item) => item.id === selectedItemId) ?? null)
     : null;
+
+  // S11/#109's item detail panel must stay open (reviewer finding on PR
+  // #207) even after an act moves the item somewhere neither `frontier`
+  // nor `blocked` lists — `"block"` sets `Stage::Blocked`, which is outside
+  // both queries by design (S10's own scope: neither reads a Blocked-stage
+  // item at all), so `liveSelectedItem` above goes `null` the instant a
+  // block succeeds even though the panel — and its "Start"/"Cancel" row
+  // (`availableActions("blocked")`) — should stay showing AND become
+  // clickable once the mutation drains. `optimisticItem` is the fallback:
+  // `applyItemAction` mirrors the same action->stage mapping `Core::act`
+  // itself applies, so the panel shows the real post-action state
+  // immediately rather than either freezing on stale pre-action data or
+  // going blank. Its frozen `pending: true` is NOT what renders, though —
+  // round 2 of PR #207's review found that frozen flag kept the row
+  // disabled forever. The rendered `pending` comes from
+  // `resolveFallbackPending` over the LIVE `task.pending[id]` (fed by
+  // `worker-client.ts` on every ok act and by `useItemDetailWiring` per
+  // sync cycle), so the row enables the moment the queued mutation
+  // confirms. Cleared whenever `selectedItemId` itself changes (a
+  // different item opened, or the panel closed) so a stale optimistic item
+  // from a PREVIOUS selection can never leak into a new one.
+  const [optimisticItem, setOptimisticItem] = useState<TaskItemDTO | null>(null);
+  // True from an act click until the live `isPending` read confirms that
+  // act queued — see `resolveFallbackPending`'s doc for the stale-`false`
+  // window this bridges.
+  const [awaitingPendingConfirm, setAwaitingPendingConfirm] = useState(false);
+  // The React-docs "adjusting state when a prop changes" pattern — `setState`
+  // called during render, guarded by comparing against state (never a ref;
+  // this repo's lint config's `react-hooks/refs` forbids reading/writing a
+  // ref during render, and `react-hooks/set-state-in-effect` forbids the
+  // `useEffect` version of this same adjustment). React bails out of
+  // re-rendering with the stale props immediately when it sees a `setState`
+  // call during render, so this clears the stale optimistic item in the
+  // same render `selectedItemId` changed in, not a follow-up one.
+  const [lastSelectedItemId, setLastSelectedItemId] = useState(selectedItemId);
+  if (selectedItemId !== lastSelectedItemId) {
+    setLastSelectedItemId(selectedItemId);
+    if (optimisticItem !== null) {
+      setOptimisticItem(null);
+    }
+    if (awaitingPendingConfirm) {
+      setAwaitingPendingConfirm(false);
+    }
+  }
+
+  const fallbackItem =
+    optimisticItem && optimisticItem.id === selectedItemId ? optimisticItem : null;
+  const fallbackResolution = fallbackItem
+    ? resolveFallbackPending(
+        fallbackItem.pending,
+        task.pending[fallbackItem.id],
+        awaitingPendingConfirm,
+      )
+    : null;
+  // Same guarded setState-during-render pattern as `lastSelectedItemId`
+  // above: the confirm flag clears in the render that observes the live
+  // `true`, never via an effect.
+  if (fallbackResolution && fallbackResolution.awaitingConfirm !== awaitingPendingConfirm) {
+    setAwaitingPendingConfirm(fallbackResolution.awaitingConfirm);
+  }
+
+  const selectedItem =
+    liveSelectedItem ??
+    (fallbackItem && fallbackResolution
+      ? { ...fallbackItem, pending: fallbackResolution.pending }
+      : null);
 
   if (selectedItem) {
     return (
@@ -75,6 +160,12 @@ function RealFrontier({
         item={selectedItem}
         steps={task.stepsByItem[selectedItem.id] ?? []}
         onClose={onCloseItemDetail}
+        onAct={(action) => {
+          setOptimisticItem(applyItemAction(selectedItem, action));
+          setAwaitingPendingConfirm(true);
+          onAct(selectedItem.id, action);
+        }}
+        actError={actError}
       />
     );
   }
@@ -174,6 +265,7 @@ export function NowScreen({
   selectedItemId,
   onOpenItem,
   onCloseItemDetail,
+  onAct,
 }: NowScreenProps) {
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
@@ -256,6 +348,7 @@ export function NowScreen({
             selectedItemId={selectedItemId}
             onOpenItem={onOpenItem}
             onCloseItemDetail={onCloseItemDetail}
+            onAct={onAct}
           />
         )}
       </Column>

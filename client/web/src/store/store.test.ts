@@ -20,6 +20,7 @@ const initialTask: TaskState = {
   projects: [],
   pending: {},
   lastCapture: null,
+  lastAct: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,
