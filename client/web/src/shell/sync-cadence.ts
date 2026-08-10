@@ -28,17 +28,19 @@ export function shouldRunTimerTick(hidden: boolean, online: boolean): boolean {
 }
 
 /** What triggered one sync cycle — carried through only for tests and
- * logging; `runTaskSync` (worker-client.ts) itself only distinguishes
- * `"user"` from `"timer"` (`Core::run`'s own `Trigger`), which `toCoreTrigger`
- * below maps this onto. */
-export type SyncCadenceTrigger = "open" | "reconnect" | "focus" | "timer";
+ * logging; the `runSync` request `core.worker.ts`'s cadence sink actually
+ * posts to the task queue only distinguishes `"user"` from `"timer"`
+ * (`Core::run`'s own `Trigger`), which `toCoreTrigger` below maps this
+ * onto. */
+export type SyncCadenceTrigger = "open" | "reconnect" | "focus" | "manual" | "timer";
 
 /** `Core::run`'s own `Trigger` only has two spellings — "backoff is reset by
- * any user-facing trigger" (ADR-0007), and open/reconnect/focus are each a
- * user-facing signal, so all three map to `"user"`; only the unattended
- * foreground timer maps to `"timer"`. This is also what makes "a focus event
- * resets backoff" true for free: it costs nothing beyond sending the right
- * trigger spelling, because `Core::run` already resets backoff on `"user"`
+ * any user-facing trigger" (ADR-0007), and open/reconnect/focus/manual are
+ * each a user-facing signal, so all four map to `"user"`; only the
+ * unattended foreground timer maps to `"timer"`. This is also what makes "a
+ * focus event resets backoff" (and, per issue #194, a manual refresh too)
+ * true for free: it costs nothing beyond sending the right trigger spelling,
+ * because `Core::run` already resets backoff on `"user"`
  * (`client/core/src/sync/cycle.rs`). */
 export function toCoreTrigger(trigger: SyncCadenceTrigger): "user" | "timer" {
   return trigger === "timer" ? "timer" : "user";
@@ -56,6 +58,12 @@ export interface SyncCadence {
    * function does not itself debounce repeated calls, so a caller must wire
    * exactly one DOM listener per document, not one per component. */
   onFocus: () => void;
+  /** Manual refresh (ADR-0007: "the same cycle, user-invoked; no special
+   * path", issue #194). Routed through the shared cadence rather than posted
+   * straight to the task queue, so a manual press stays the same one cycle
+   * every other trigger uses, and any future in-flight coalescing (#184)
+   * covers it too. */
+  onManual: () => void;
   /** One foreground-timer tick. No-ops per [`shouldRunTimerTick`] rather
    * than firing and letting the cycle itself discover there is nothing
    * useful to do — a paused tick must cost nothing, not even a message to
@@ -79,6 +87,7 @@ export function createSyncCadence(run: (trigger: SyncCadenceTrigger) => void): S
     onOpen: () => fire("open"),
     onReconnect: () => fire("reconnect"),
     onFocus: () => fire("focus"),
+    onManual: () => fire("manual"),
     onTimerTick: (hidden, online) => {
       if (shouldRunTimerTick(hidden, online)) {
         fire("timer");

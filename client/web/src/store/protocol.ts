@@ -259,7 +259,13 @@ export type SyncCadenceRequest =
    * request queue (ADR-0010) — an unattended clock multiplying with tab
    * count is the defect this type exists to close; a human's own actions
    * are not. */
-  | { type: "syncFocusTrigger" };
+  | { type: "syncFocusTrigger" }
+  /** Issue #194: the header refresh control's task leg. Sent on a manual
+   * refresh press, and routed through the shared cadence the same as every
+   * other trigger — never posted straight to the task queue as a bespoke
+   * `runSync` — so it stays ADR-0007's "same cycle, user-invoked; no special
+   * path", and any future in-flight coalescing (#184) covers it too. */
+  | { type: "manualSyncTrigger" };
 
 export type TaskWorkerResponse =
   | {

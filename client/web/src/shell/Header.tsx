@@ -13,8 +13,11 @@ export interface HeaderProps {
    * would work. */
   onSearch?: () => void;
   /** Refresh polls the worker, and `worker-client.ts` may only be called once
-   * the core reports `ready`. The affordance appears only where it would work:
-   * omit it and no button renders. */
+   * the core reports `ready`. The affordance appears only where it would
+   * work: omit it and no button renders. Issue #194: this now runs the
+   * ADR-0007 task sync cycle, the calendar context poll, or both, depending
+   * on what `App.tsx`'s `refresh-gate.ts` found refreshable — never just the
+   * calendar, even on a device with both. */
   onRefresh?: () => void;
   onCapture: () => void;
 }
@@ -69,7 +72,7 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
       ) : null}
       {onSearch ? <IconButton icon="search" label="Search" onClick={onSearch} /> : null}
       {onRefresh ? (
-        <IconButton icon="refresh-cw" label="Refresh calendar context" onClick={onRefresh} />
+        <IconButton icon="refresh-cw" label="Refresh" onClick={onRefresh} />
       ) : null}
       {/* The shell owns capture (#107): the box itself lives on Triage, and
           this is the always-present way to reach it from any screen. The

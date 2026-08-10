@@ -8,6 +8,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import { Header } from "./shell/Header";
 import { NavRail } from "./shell/NavRail";
+import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
 import { syncStatusLabel } from "./shell/sync-status";
@@ -80,7 +81,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
 
   const online = useOnlineStatus();
-  const { nowMs: syncNowMs, handleDownloadMirror } = useSyncWiring(
+  const { nowMs: syncNowMs, handleDownloadMirror, handleManualSync } = useSyncWiring(
     worker,
     status,
     task.syncOutcomeSeq,
@@ -95,11 +96,26 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
 
   const tile = contextTileProps(calendar, nowMs);
 
-  // `worker-client.ts`'s postMessage wrappers may only be called once the core
-  // reports `ready`, and a refresh on a device with no calendar opt-in would
-  // poll an empty selection — the one thing the wiring hook works to prevent.
-  // No usable refresh, no button.
-  const canRefresh = status === "ready" && calendar.connected && !calendar.needsReconnect;
+  // Issue #194: the header refresh control's gate is the union of what is
+  // actually refreshable — a task token, a healthy calendar connection, or
+  // both — not the calendar alone. See `refresh-gate.ts`'s own doc for why
+  // the calendar-only gate was a bug: it hid the button entirely on a
+  // task-only device, the default and the state the owned-stack path
+  // actually cares about.
+  const refreshEnabled = canRefresh(status, hasTaskToken, calendar.connected, calendar.needsReconnect);
+
+  // Fires whichever legs are actually usable. Keeps the calendar refresh
+  // exactly as it was (`handleRefreshClick`) — this adds a second leg
+  // (`handleManualSync`, routed through the shared cadence), it does not
+  // replace one; a device with both refreshes both from one press.
+  function handleRefresh() {
+    if (calendar.connected && !calendar.needsReconnect) {
+      handleRefreshClick();
+    }
+    if (hasTaskToken) {
+      handleManualSync();
+    }
+  }
 
   return (
     <div
@@ -126,7 +142,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // everywhere else this is now backed by one (S9) — see
           // `sync-status.ts`.
           syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
-          onRefresh={canRefresh ? handleRefreshClick : undefined}
+          onRefresh={refreshEnabled ? handleRefresh : undefined}
           onCapture={() => setScreen("triage")}
         />
 

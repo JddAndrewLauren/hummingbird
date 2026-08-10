@@ -31,6 +31,7 @@ describe("isTaskWorkerRequest", () => {
   it.each<SyncCadenceRequest>([
     { type: "setViewVisibility", hidden: true },
     { type: "syncFocusTrigger" },
+    { type: "manualSyncTrigger" },
   ])("never routes a sync-cadence request ($type) to the task queue", (request) => {
     expect(isTaskWorkerRequest(request)).toBe(false);
   });
@@ -40,6 +41,7 @@ describe("isSyncCadenceRequest", () => {
   it.each<SyncCadenceRequest>([
     { type: "setViewVisibility", hidden: true },
     { type: "syncFocusTrigger" },
+    { type: "manualSyncTrigger" },
   ])("recognises every sync-cadence request type ($type)", (request) => {
     expect(isSyncCadenceRequest(request)).toBe(true);
   });

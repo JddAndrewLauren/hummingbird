@@ -38,6 +38,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
 const SYNC_CADENCE_REQUEST_TYPES: Record<SyncCadenceRequest["type"], true> = {
   setViewVisibility: true,
   syncFocusTrigger: true,
+  manualSyncTrigger: true,
 };
 
 /** Whether `request` belongs on the task binding's queue rather than the

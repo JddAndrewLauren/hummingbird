@@ -19,10 +19,10 @@ import {
   requestMirrorSnapshot,
   requestQueueDepth,
   requestTriageInbox,
-  runTaskSync,
   setCalendarIdsOnWorker,
   setMirrorSnapshotHandler,
   triggerSyncFocus,
+  triggerSyncManual,
   type WorkerLike,
 } from "./worker-client";
 
@@ -666,18 +666,6 @@ describe("the task send helpers (#105/S7)", () => {
     });
   });
 
-  it("runTaskSync posts a runSync request", () => {
-    const worker = fakeWorker();
-    runTaskSync(worker, 1_000, "timer", false, 0.5);
-    expect(worker.postMessage).toHaveBeenCalledWith({
-      type: "runSync",
-      nowMs: 1_000,
-      trigger: "timer",
-      forceFullSweep: false,
-      jitterUnit: 0.5,
-    });
-  });
-
   it("requestQueueDepth posts a getQueueDepth request", () => {
     const worker = fakeWorker();
     requestQueueDepth(worker);
@@ -709,5 +697,11 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     triggerSyncFocus(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "syncFocusTrigger" });
+  });
+
+  it("triggerSyncManual posts a manualSyncTrigger request", () => {
+    const worker = fakeWorker();
+    triggerSyncManual(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "manualSyncTrigger" });
   });
 });
