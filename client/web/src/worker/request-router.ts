@@ -22,6 +22,9 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getTriageInbox: true,
   isPending: true,
   runSync: true,
+  getQueueDepth: true,
+  getDeadLetters: true,
+  getMirrorSnapshot: true,
 };
 
 /** Whether `request` belongs on the task binding's queue rather than the

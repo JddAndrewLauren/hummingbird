@@ -143,6 +143,30 @@ export interface TaskEventDTO {
   atMs: number;
 }
 
+/** One field a dead-lettered conflict disagreed on — S9's "1 edit didn't
+ * apply" affordance (`client/ffi-web/src/task_host.rs`'s
+ * `DeadLetterFieldDTO`). `local`/`server` are whatever JSON value that field
+ * held on each side; deliberately `unknown` rather than a narrower type —
+ * this is a display-only diff over an arbitrary entity's fields, not a
+ * value this app ever reads structurally. */
+export interface DeadLetterFieldDTO {
+  field: string;
+  local: unknown;
+  server: unknown;
+}
+
+/** One dead-lettered outbound mutation, as the web host's JSON shape
+ * (`DeadLetterEntryDTO`). `"permanent"` carries `message` and an empty
+ * `fields`; `"conflict"` carries `fields` and no `message` — the two never
+ * both have something to show. */
+export interface DeadLetterEntryDTO {
+  id: string;
+  reason: "permanent" | "conflict";
+  message: string | null;
+  fields: DeadLetterFieldDTO[];
+  atMs: number;
+}
+
 /** What one `Core::run` cycle resolved to — the stable string names
  * `hummingbird-ffi-web`'s `TaskHost::runSync` (`client/ffi-web/src/lib.rs`)
  * resolves to, plus whatever payload S9's sync-status / "1 edit didn't
@@ -184,7 +208,15 @@ export type TaskWorkerRequest =
       trigger: "user" | "timer";
       forceFullSweep: boolean;
       jitterUnit: number;
-    };
+    }
+  /** S9's sync-status "queued" figure. */
+  | { type: "getQueueDepth" }
+  /** S9's "1 edit didn't apply" affordance — fetched on demand rather than
+   * pushed on every cycle, since the journal is small but the full
+   * field/local/server detail is more than a status badge needs. */
+  | { type: "getDeadLetters" }
+  /** S9's mirror download button. */
+  | { type: "getMirrorSnapshot" };
 
 export type TaskWorkerResponse =
   | {
@@ -210,7 +242,10 @@ export type TaskWorkerResponse =
    * drain) — the fix for #104's review finding that a destructive
    * single-reader drain would let the first tab to poll swallow an event
    * every other tab needed too. */
-  | { type: "taskEvents"; events: TaskEventDTO[] };
+  | { type: "taskEvents"; events: TaskEventDTO[] }
+  | { type: "queueDepth"; depth: number }
+  | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
+  | { type: "mirrorSnapshot"; mirror: unknown };
 
 // -- worker -> main -----------------------------------------------------
 

@@ -102,6 +102,10 @@ export function attachWorkerClient(
             wasFullSweep: message.wasFullSweep,
             deadLettered: message.deadLettered,
           },
+          // Every cycle attempt counts as a "sweep" for S9's status readout,
+          // whatever it resolved to — a held or failed cycle is still
+          // information about how stale the mirror now is.
+          lastSyncAtMs: now(),
         });
         return;
       case "taskEvents":
@@ -113,6 +117,15 @@ export function attachWorkerClient(
         if (message.events.some((event) => event.kind === "credential_needed")) {
           store.setTaskState({ needsReconnect: true });
         }
+        return;
+      case "queueDepth":
+        store.setTaskState({ queueDepth: message.depth });
+        return;
+      case "deadLetters":
+        store.setTaskState({ deadLetters: message.entries });
+        return;
+      case "mirrorSnapshot":
+        store.setTaskState({ mirrorSnapshot: message.mirror });
         return;
     }
   };
@@ -207,4 +220,18 @@ export function runTaskSync(
   jitterUnit: number,
 ): void {
   worker.postMessage({ type: "runSync", nowMs, trigger, forceFullSweep, jitterUnit });
+}
+
+// -- S9's sync-status reads --------------------------------------------
+
+export function requestQueueDepth(worker: WorkerLike): void {
+  worker.postMessage({ type: "getQueueDepth" });
+}
+
+export function requestDeadLetters(worker: WorkerLike): void {
+  worker.postMessage({ type: "getDeadLetters" });
+}
+
+export function requestMirrorSnapshot(worker: WorkerLike): void {
+  worker.postMessage({ type: "getMirrorSnapshot" });
 }

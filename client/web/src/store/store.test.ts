@@ -18,6 +18,10 @@ const initialTask: TaskState = {
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
+  lastSyncAtMs: null,
+  queueDepth: null,
+  deadLetters: [],
+  mirrorSnapshot: null,
   needsReconnect: false,
 };
 

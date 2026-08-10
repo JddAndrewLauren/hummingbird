@@ -11,8 +11,11 @@ import {
   pushTokenToWorker,
   requestCalendarList,
   requestCurrentNext,
+  requestDeadLetters,
   requestFrontier,
   requestIsPending,
+  requestMirrorSnapshot,
+  requestQueueDepth,
   requestTriageInbox,
   runTaskSync,
   setCalendarIdsOnWorker,
@@ -36,6 +39,10 @@ const initialTask: TaskState = {
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
+  lastSyncAtMs: null,
+  queueDepth: null,
+  deadLetters: [],
+  mirrorSnapshot: null,
   needsReconnect: false,
 };
 
@@ -271,10 +278,10 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.pending).toEqual({ "item-1": true, "item-2": false });
   });
 
-  it("records the sync outcome on a syncOutcome message", () => {
+  it("records the sync outcome and the sweep time on a syncOutcome message", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store);
+    attachWorkerClient(worker, store, () => 5_000);
 
     worker.onmessage?.({
       data: {
@@ -294,6 +301,67 @@ describe("attachWorkerClient", () => {
       wasFullSweep: true,
       deadLettered: 0,
     });
+    expect(store.getSnapshot().task.lastSyncAtMs).toBe(5_000);
+  });
+
+  it("records the sweep time on a held or failed outcome too — staleness must not freeze", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store, () => 7_000);
+
+    worker.onmessage?.({
+      data: {
+        type: "syncOutcome",
+        kind: "held",
+        retryAfterMs: null,
+        activeItemCount: null,
+        wasFullSweep: null,
+        deadLettered: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastSyncAtMs).toBe(7_000);
+  });
+
+  it("records the queue depth on a queueDepth message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({ data: { type: "queueDepth", depth: 3 } } as MessageEvent);
+
+    expect(store.getSnapshot().task.queueDepth).toBe(3);
+  });
+
+  it("records the dead-letter journal on a deadLetters message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+    const entries = [
+      {
+        id: "item-1",
+        reason: "conflict" as const,
+        message: null,
+        fields: [{ field: "title", local: "buy oat milk", server: "someone else's" }],
+        atMs: 1_000,
+      },
+    ];
+
+    worker.onmessage?.({ data: { type: "deadLetters", entries } } as MessageEvent);
+
+    expect(store.getSnapshot().task.deadLetters).toEqual(entries);
+  });
+
+  it("records the mirror snapshot on a mirrorSnapshot message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "mirrorSnapshot", mirror: { version: 1 } },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.mirrorSnapshot).toEqual({ version: 1 });
   });
 
   it("flags task needsReconnect on a taskEvents message carrying a credential_needed event", () => {
@@ -426,5 +494,23 @@ describe("the task send helpers (#105/S7)", () => {
       forceFullSweep: false,
       jitterUnit: 0.5,
     });
+  });
+
+  it("requestQueueDepth posts a getQueueDepth request", () => {
+    const worker = fakeWorker();
+    requestQueueDepth(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getQueueDepth" });
+  });
+
+  it("requestDeadLetters posts a getDeadLetters request", () => {
+    const worker = fakeWorker();
+    requestDeadLetters(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getDeadLetters" });
+  });
+
+  it("requestMirrorSnapshot posts a getMirrorSnapshot request", () => {
+    const worker = fakeWorker();
+    requestMirrorSnapshot(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getMirrorSnapshot" });
   });
 });

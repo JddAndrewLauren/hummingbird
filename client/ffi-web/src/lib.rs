@@ -17,7 +17,11 @@ mod calendar_host;
 mod task_host;
 
 pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
-pub use task_host::{CaptureResponse, IsPendingResponse, ItemListResponse, RunResponse, TaskEventDTO, TaskHostCore};
+pub use task_host::{
+    CaptureResponse, DeadLetterEntryDTO, DeadLetterFieldDTO, DeadLettersResponse,
+    IsPendingResponse, ItemListResponse, MirrorSnapshotResponse, QueueDepthResponse, RunResponse,
+    TaskEventDTO, TaskHostCore,
+};
 
 use wasm_bindgen::prelude::*;
 
@@ -362,6 +366,9 @@ mod wasm_bindings {
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
+    const BUSY_QUEUE_DEPTH: &str = r#"{"kind":"busy","depth":0}"#;
+    const BUSY_DEAD_LETTERS: &str = r#"{"kind":"busy","entries":[]}"#;
+    const BUSY_MIRROR_SNAPSHOT: &str = r#"{"kind":"busy","mirror":null}"#;
 
     /// The owned-schema task binding, wrapped for TypeScript (#105/S7) — the
     /// shape [`CalendarHost`] above already proved, one door into #104's
@@ -497,6 +504,43 @@ mod wasm_bindings {
                     &serde_json::to_string(&response).expect("RunResponse serializes"),
                 ))
             })
+        }
+
+        /// The outbound queue's current depth, as JSON:
+        /// `{"kind": "ok"|"busy", "depth": number}`. S9's sync-status
+        /// "queued" figure.
+        #[wasm_bindgen(js_name = queueDepth)]
+        pub fn queue_depth(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.queue_depth()).expect("QueueDepthResponse serializes")
+                }
+                None => BUSY_QUEUE_DEPTH.to_string(),
+            }
+        }
+
+        /// Every dead-lettered entry, as JSON:
+        /// `{"kind": "ok"|"busy", "entries": [DeadLetterEntryDTO]}`. S9's "1
+        /// edit didn't apply" affordance.
+        #[wasm_bindgen(js_name = deadLetters)]
+        pub fn dead_letters(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.dead_letters()).expect("DeadLettersResponse serializes")
+                }
+                None => BUSY_DEAD_LETTERS.to_string(),
+            }
+        }
+
+        /// The local mirror, as JSON: `{"kind": "ok"|"busy", "mirror":
+        /// object|null}`. S9's mirror download button.
+        #[wasm_bindgen(js_name = mirrorSnapshot)]
+        pub fn mirror_snapshot(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.mirror_snapshot())
+                    .expect("MirrorSnapshotResponse serializes"),
+                None => BUSY_MIRROR_SNAPSHOT.to_string(),
+            }
         }
     }
 }

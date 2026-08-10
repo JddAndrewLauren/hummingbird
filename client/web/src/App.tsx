@@ -10,7 +10,10 @@ import { Header } from "./shell/Header";
 import { NavRail } from "./shell/NavRail";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
+import { syncStatusLabel } from "./shell/sync-status";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
+import { useOnlineStatus } from "./shell/useOnlineStatus";
+import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
 import { taskTokenUiState } from "./task/token-ui";
 import { useStore } from "./store/useStore";
@@ -76,6 +79,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   } = useTaskTokenWiring(worker, status);
   const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
 
+  const online = useOnlineStatus();
+  const { nowMs: syncNowMs, handleDownloadMirror } = useSyncWiring(worker, status, hasTaskToken, task);
+  const syncLabel = syncStatusLabel({
+    online,
+    lastSyncOutcome: task.lastSyncOutcome,
+    lastSyncAtMs: task.lastSyncAtMs,
+    queueDepth: task.queueDepth,
+    nowMs: syncNowMs,
+  });
+
   const tile = contextTileProps(calendar, nowMs);
 
   // `worker-client.ts`'s postMessage wrappers may only be called once the core
@@ -105,7 +118,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       <main style={{ display: "flex", flex: 1, minWidth: 0, flexDirection: "column" }}>
         <Header
           title={SCREEN_TITLES[screen]}
-          syncLabel={demo?.syncBadge}
+          // The demo badge stands in for a real cycle only in demo mode;
+          // everywhere else this is now backed by one (S9) — see
+          // `sync-status.ts`.
+          syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={canRefresh ? handleRefreshClick : undefined}
           onCapture={() => setScreen("triage")}
         />
@@ -140,6 +156,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               taskTokenEnteredAtMs={taskTokenEnteredAtMs}
               onSubmitTaskToken={handleSubmitTaskToken}
               onForgetTaskToken={() => void handleForgetTaskToken()}
+              task={task}
+              online={online}
+              syncNowMs={syncNowMs}
+              onDownloadMirror={handleDownloadMirror}
             />
           )}
         </div>
