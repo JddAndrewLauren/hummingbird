@@ -111,11 +111,29 @@ const CALENDAR_NAMESPACE = "hummingbird-calendar";
 const TASK_NAMESPACE = "hummingbird-task";
 
 // The authority's origin (ADR-0003: `core` invents no deployment address of
-// its own). Unset in dev by default, same posture as `VITE_GOOGLE_CLIENT_ID`
-// (App.tsx) — an empty string builds a relative, `reqwest`-rejected URL, so
-// every `runSync` request fails fast (network-free) as `"pull_failed"`
-// rather than the task binding silently doing nothing.
-const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+// its own — the *host* supplies one, and this is the host).
+//
+// ADR-0006/0008 put the API same-origin with the shell at
+// `hb.twinion.net/api/*`, so the origin the host should supply is, always
+// and by definition, its own — which a `SharedWorker` knows at runtime
+// without anything being configured or baked in. `self.location.origin` is
+// `https://hb.twinion.net` in the deployed bundle and
+// `http://localhost:5173` under `vite dev` (where `vite.config.ts` proxies
+// `/api` on to `wrangler dev`), so dev and production exercise the same
+// same-origin path rather than two different shapes.
+//
+// It must not be `""`: the transports build `{base}/api/...` verbatim
+// (`client/core/src/sync/reqwest_transport.rs`), and an empty base yields a
+// *relative* URL, which `reqwest` rejects before opening a socket — every
+// cycle would fail as `"pull_failed"` forever. That is the correct
+// never-configured state for a host with nowhere to point, but it is not
+// this host, which always has an origin.
+//
+// `VITE_API_BASE_URL` stays as a build-time override for the one case the
+// rule above does not cover — pointing a bundle at an authority that is
+// deliberately not its own origin (a staging DO, a second workspace). It is
+// unset in every checked-in configuration.
+const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? self.location.origin;
 
 const registry = new PortRegistry();
 

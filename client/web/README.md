@@ -13,8 +13,15 @@ affordances (start / complete / block / cancel), triage promotion with its
 one-mutation multi-field edit, the device token, and ADR-0007's sync
 cadence with its status readout. A Linear client adapter is never
 built. Calendar context and its Google auth landed with #73 and are real.
-Nothing is deployed yet — `VITE_API_BASE_URL` is unset by default, so every
-cycle fast-fails as `pull_failed` until #95's H3 human gate.
+The API is same-origin with the shell by decision (ADR-0006/0008), so
+`src/worker/core.worker.ts` takes the authority's base URL from
+`self.location.origin` at runtime and `VITE_API_BASE_URL` is an unset
+override, not a setting: under `vite dev` the dev-server proxy forwards
+`/api` to `wrangler dev` on 127.0.0.1:8787, and in production a path-scoped
+Worker route puts `hb.twinion.net/api/*` on the authority worker. Nothing is
+deployed yet — until #95's H3 human gate there is no `hb.twinion.net`
+authority to reach, and with no local `wrangler dev` running a cycle fails
+its connection as `pull_failed`.
 
 ## Local development
 

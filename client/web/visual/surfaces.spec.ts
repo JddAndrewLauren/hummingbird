@@ -14,8 +14,10 @@ import { expect, test, type Page } from "@playwright/test";
 //    and that the theme switch reaches the page. These fail the run.
 //
 // Everything renders in `?demo` mode: the fixtures are deterministic and
-// populated, where real data on a dev machine is an empty mirror (no
-// deployed authority yet — `VITE_API_BASE_URL` is unset, #95's H3 gate). The
+// populated, where real data on a dev machine is an empty mirror — the shell
+// takes the authority's origin from its own (`src/worker/core.worker.ts`),
+// and `vite dev` proxies `/api` to a local `wrangler dev` this run does not
+// start, with no deployed authority behind it either (#95's H3 gate). The
 // honest empty states are captured too, from the same screens without the
 // flag.
 
