@@ -1,8 +1,12 @@
 import type { createCoreStore } from "./store";
 import type { CalendarWorkerRequest, WorkerResponse } from "./protocol";
 
-// The narrow slice of the DOM Worker interface the client needs — narrow
-// enough that tests can pass a plain object instead of a real Worker.
+// The narrow slice of the DOM `MessagePort` interface a view needs — narrow
+// enough that tests can pass a plain object instead of a real port. Under
+// ADR-0010 (#126) the core lives in a `SharedWorker`; each view talks to it
+// over `sharedWorker.port`, which this interface's shape already matches
+// (it's also close enough to a dedicated `Worker`'s own message surface that
+// the type carried that name through the migration).
 export interface WorkerLike {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
   postMessage(message: CalendarWorkerRequest): void;

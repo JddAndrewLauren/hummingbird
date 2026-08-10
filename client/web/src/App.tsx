@@ -17,15 +17,19 @@ import { toggledPreference } from "./theme/theme";
 import { useTheme } from "./theme/useTheme";
 
 function realWorker(): WorkerLike {
-  return new Worker(new URL("./worker/core.worker.ts", import.meta.url), {
+  // ADR-0010 (#126): one core per origin, in a `SharedWorker`. This
+  // component talks to its `port`, not the `SharedWorker` object itself.
+  const shared = new SharedWorker(new URL("./worker/core.worker.ts", import.meta.url), {
     type: "module",
-  }) as unknown as WorkerLike;
+  });
+  return shared.port as unknown as WorkerLike;
 }
 
 interface AppProps {
-  /** The worker `App` talks to. Defaults to a lazily-constructed real Web
-   * Worker; overridable so this component could be driven by a fake in a
-   * future DOM-environment test without touching production wiring. */
+  /** The port `App` talks to. Defaults to a lazily-constructed connection to
+   * the real `SharedWorker`; overridable so this component could be driven
+   * by a fake in a future DOM-environment test without touching production
+   * wiring. */
   worker?: WorkerLike;
 }
 
