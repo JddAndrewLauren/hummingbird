@@ -37,9 +37,7 @@ fn changes_since(since: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
     // table's primary key.
     let response = ChangesResponse {
         version,
-        projects: pull(sql, since, "projects", "id", |r| {
-            super::projects::project_from_row(r)
-        })?,
+        projects: pull(sql, since, "projects", "id", super::projects::project_from_row)?,
         routes: pull(sql, since, "routes", "project_id", super::routes::route_from_row)?,
         fog: pull(sql, since, "fog", "id", super::fog::fog_from_row)?,
         items: pull(sql, since, "items", "id", super::items::item_from_row)?,
@@ -47,9 +45,7 @@ fn changes_since(since: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
         blocked_by: pull(sql, since, "blocked_by", "item_id, blocker_id", super::blocked_by::edge_from_row)?,
         alerts: pull(sql, since, "alerts", "id", super::alerts::alert_from_row)?,
         context_snapshots: pull(sql, since, "context_snapshots", "source, key", snapshot_from_row)?,
-        settings: pull(sql, since, "settings", "key", |r| {
-            super::settings::setting_from_row(r)
-        })?,
+        settings: pull(sql, since, "settings", "key", super::settings::setting_from_row)?,
     };
     Ok(json(200, &response))
 }
