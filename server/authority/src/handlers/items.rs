@@ -1,7 +1,7 @@
 //! `POST /api/items` and `PATCH /api/items/:id` — the S0 routes, on the
 //! shared codec.
 
-use hummingbird_domain::{CreateItem, Energy, Item, ItemPatch, Size, Stage};
+use hummingbird_domain::{is_valid_deadline, CreateItem, Energy, Item, ItemPatch, Size, Stage};
 
 use super::{
     conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse,
@@ -40,6 +40,11 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
             return Ok(error(400, "validation", "unknown project_id"));
         }
     }
+    if let Some(deadline) = &create.deadline {
+        if !is_valid_deadline(deadline) {
+            return Ok(error(400, "validation", "deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM"));
+        }
+    }
 
     let version = read_meta_version(sql)? + 1;
     let seq = sql
@@ -62,7 +67,7 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         priority,
         project_id: create.project_id,
         project_pos: create.project_pos,
-        due_date: create.due_date,
+        deadline: create.deadline,
         scheduled_date: create.scheduled_date,
         source: create.source,
         source_key: create.source_key,
@@ -74,7 +79,7 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     };
     sql.exec(
         "INSERT INTO items (id, seq, title, description, stage, size, energy, context, \
-         priority, project_id, project_pos, due_date, scheduled_date, source, source_key, \
+         priority, project_id, project_pos, deadline, scheduled_date, source, source_key, \
          source_url, archived_at, created_at, updated_at, version) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &item_params(&item),
@@ -102,6 +107,11 @@ pub fn patch(
     if let Some(Some(project_id)) = &patch.project_id {
         if !super::projects::project_exists(sql, project_id)? {
             return Ok(error(400, "validation", "unknown project_id"));
+        }
+    }
+    if let Some(Some(deadline)) = &patch.deadline {
+        if !is_valid_deadline(deadline) {
+            return Ok(error(400, "validation", "deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM"));
         }
     }
 
@@ -144,8 +154,8 @@ pub fn patch(
     if let Some(project_pos) = patch.project_pos {
         sets.set("project_pos", SqlValue::from_opt_i64(project_pos));
     }
-    if let Some(due_date) = &patch.due_date {
-        sets.set("due_date", SqlValue::from_opt_text(due_date.as_deref()));
+    if let Some(deadline) = &patch.deadline {
+        sets.set("deadline", SqlValue::from_opt_text(deadline.as_deref()));
     }
     if let Some(scheduled_date) = &patch.scheduled_date {
         sets.set("scheduled_date", SqlValue::from_opt_text(scheduled_date.as_deref()));
@@ -203,7 +213,7 @@ fn item_params(item: &Item) -> Vec<SqlValue> {
         SqlValue::Integer(item.priority),
         SqlValue::from_opt_text(item.project_id.as_deref()),
         SqlValue::from_opt_i64(item.project_pos),
-        SqlValue::from_opt_text(item.due_date.as_deref()),
+        SqlValue::from_opt_text(item.deadline.as_deref()),
         SqlValue::from_opt_text(item.scheduled_date.as_deref()),
         SqlValue::from_opt_text(item.source.as_deref()),
         SqlValue::from_opt_text(item.source_key.as_deref()),
@@ -230,7 +240,7 @@ pub(super) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
         priority: r.int("priority")?,
         project_id: r.opt_text("project_id"),
         project_pos: r.opt_int("project_pos"),
-        due_date: r.opt_text("due_date"),
+        deadline: r.opt_text("deadline"),
         scheduled_date: r.opt_text("scheduled_date"),
         source: r.opt_text("source"),
         source_key: r.opt_text("source_key"),

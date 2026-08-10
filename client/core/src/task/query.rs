@@ -8,6 +8,8 @@
 //! ([`by_priority_then_due`]) that consumers opt into, rather than an order
 //! silently baked into the query.
 
+use hummingbird_domain::deadline_sort_key;
+
 use super::item::{Item, Stage};
 use super::mirror::Mirror;
 
@@ -94,20 +96,24 @@ impl Mirror {
     }
 }
 
-/// A stable display order: most urgent priority first, then soonest due date,
-/// then identifier as the tie-break.
+/// A stable display order: most urgent priority first, then soonest
+/// deadline, then identifier as the tie-break.
 ///
 /// Separate from the queries on purpose (ADR-0002 — consumers rank). Sorts on
 /// [`super::item::Priority::rank`], never the raw wire value, which is
-/// inverted and holed.
+/// inverted and holed. Deadlines compare on [`deadline_sort_key`], not the
+/// raw string: ADR-0013 requires a day-only deadline to resolve to end of
+/// day before comparing, so it ranks after an explicit same-day time rather
+/// than before it — the one comparison key `domain` defines, shared with
+/// #133's rule evaluator so the two can never disagree on the same rows.
 pub fn by_priority_then_due(items: &mut [&Item]) {
     items.sort_by(|a, b| {
         a.priority
             .rank()
             .cmp(&b.priority.rank())
-            // `None` sorts last: no due date is not an infinitely near one.
-            .then_with(|| match (&a.due_date, &b.due_date) {
-                (Some(x), Some(y)) => x.cmp(y),
+            // `None` sorts last: no deadline is not an infinitely near one.
+            .then_with(|| match (&a.deadline, &b.deadline) {
+                (Some(x), Some(y)) => deadline_sort_key(x).cmp(&deadline_sort_key(y)),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
@@ -297,7 +303,7 @@ mod tests {
         urgent.priority = Priority::Urgent;
         let mut low_soon = item("3", Stage::Ready);
         low_soon.priority = Priority::Low;
-        low_soon.due_date = Some("2026-08-09".to_string());
+        low_soon.deadline = Some("2026-08-09".to_string());
         let mut low_undated = item("4", Stage::Ready);
         low_undated.priority = Priority::Low;
 
@@ -306,5 +312,43 @@ mod tests {
         by_priority_then_due(&mut items);
 
         assert_eq!(ids(&items), vec!["2", "3", "4", "1"]);
+    }
+
+    /// The ordering comparison goes through [`deadline_sort_key`], not a
+    /// raw string `cmp` — this pins that the widened field (a calendar
+    /// date, or a minute-precision date-time — #153) keeps sorting
+    /// chronologically per ADR-0013: a day-only deadline means *end* of
+    /// day, so it ranks *after* an explicit same-day time, not before it,
+    /// and chronological order otherwise holds across the mixed set.
+    #[test]
+    fn same_priority_items_sort_chronologically_across_mixed_deadline_forms() {
+        let mut same_day_early = item("2", Stage::Ready);
+        same_day_early.priority = Priority::Low;
+        same_day_early.deadline = Some("2026-08-09T00:01".to_string());
+
+        let mut same_day_late = item("3", Stage::Ready);
+        same_day_late.priority = Priority::Low;
+        same_day_late.deadline = Some("2026-08-09T18:00".to_string());
+
+        // Day-only: resolves to 23:59 that day, so it ranks after every
+        // explicit same-day time, however late.
+        let mut same_day_dated = item("1", Stage::Ready);
+        same_day_dated.priority = Priority::Low;
+        same_day_dated.deadline = Some("2026-08-09".to_string());
+
+        let mut next_day = item("4", Stage::Ready);
+        next_day.priority = Priority::Low;
+        next_day.deadline = Some("2026-08-10".to_string());
+
+        let mirror = mirror_of(vec![next_day, same_day_dated, same_day_late, same_day_early]);
+        let mut items = mirror.frontier();
+        by_priority_then_due(&mut items);
+
+        assert_eq!(
+            ids(&items),
+            vec!["2", "3", "1", "4"],
+            "an explicit same-day time sorts before a day-only deadline (which means end \
+             of day), and chronological order otherwise holds across the mixed set",
+        );
     }
 }

@@ -174,10 +174,12 @@ pub struct Item {
     /// format before the decision exists.
     pub labels: Vec<String>,
     pub priority: Priority,
-    /// `YYYY-MM-DD`, verbatim from Linear. A calendar date, not an instant —
-    /// parsing it to a timestamp requires a timezone this record has no
-    /// business choosing.
-    pub due_date: Option<String>,
+    /// `YYYY-MM-DD` verbatim from Linear (day-grained; Linear's own
+    /// `dueDate` carries no time), or a minute-precision naive date-time
+    /// once a record round-trips through the owned schema (ADR-0013). A
+    /// calendar date is not an instant — parsing it to a timestamp requires
+    /// a timezone this record has no business choosing.
+    pub deadline: Option<String>,
     pub created_at_ms: i64,
     /// The base for ADR-0007's field-level conflict detection: a queued
     /// mutation records the value it saw here, and a sweep returning a newer
@@ -216,7 +218,7 @@ impl Item {
             project: None,
             labels: Vec::new(),
             priority: Priority::None,
-            due_date: None,
+            deadline: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             blockers: Vec::new(),

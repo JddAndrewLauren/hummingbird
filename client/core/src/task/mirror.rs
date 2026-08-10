@@ -22,11 +22,29 @@ use super::route::Route;
 
 /// The schema version written into the snapshot envelope.
 ///
-/// Bump it when the payload shape changes. Note the failure mode this guards
-/// against is *not* silent: `load_snapshot` surfaces a shape change as
-/// `SnapshotError::Deserialize`, never as an empty mirror — a caller that
-/// maps that error to "start fresh" is the thing that would lose data.
-pub const MIRROR_SCHEMA_VERSION: u32 = 1;
+/// Bump it when the payload shape changes. An *incompatible* shape change
+/// surfaces on its own, without this constant: `load_snapshot` returns
+/// `SnapshotError::Deserialize`, never an empty mirror — a caller that maps
+/// that error to "start fresh" is the thing that would lose data. This
+/// constant exists for the shape changes serde *cannot* see, which load
+/// cleanly while meaning something else.
+///
+/// Bumped to 2 for #153's `Item.due_date` → `Item.deadline` rename, which
+/// is exactly one of those: `deadline` has no `#[serde(default)]` but
+/// `Option<T>` still deserializes a missing key as `None`, and the struct
+/// carries no `deny_unknown_fields`, so a v1 snapshot's stale `due_date`
+/// key is dropped and every stored deadline comes back `None` with no
+/// error.
+///
+/// **The bump only helps a caller that compares it.** This S1 type has no
+/// production load path — nothing outside this module's own tests calls
+/// `load_snapshot::<Mirror, _>`; the live read model is
+/// [`crate::sync::mirror::SyncMirror`], and it is
+/// [`crate::sync::cycle::SyncCycle::load`] that does the comparing, by
+/// discarding a mirror stored at any other version. Any future loader of
+/// *this* type must do the same; carrying the constant into the envelope is
+/// what leaves that option open, not a guarantee in itself.
+pub const MIRROR_SCHEMA_VERSION: u32 = 2;
 
 /// The result of applying one complete sweep.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

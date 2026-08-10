@@ -211,7 +211,7 @@ mod tests {
                 "id": "a-1", "seq": 1, "title": "hi", "description": null,
                 "stage": "triage", "size": null, "energy": null, "context": null,
                 "priority": 0, "project_id": null, "project_pos": null,
-                "due_date": null, "scheduled_date": null, "source": null,
+                "deadline": null, "scheduled_date": null, "source": null,
                 "source_key": null, "source_url": null, "archived_at": null,
                 "created_at": 1, "updated_at": 1, "version": 1,
                 "some_future_field": "the client has never heard of this"

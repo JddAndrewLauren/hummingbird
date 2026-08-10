@@ -82,6 +82,24 @@ fn init_schema_grows_a_schema_1_database_additively() {
 /// `init_schema` at construction, so downgrading only `meta.schema_version`
 /// on top of it (the shape of the 1→2 test above) would leave `rules`,
 /// `push_targets` and `deliveries` already present before growth even runs.
+///
+/// **Re-frozen for #153** (`items.due_date` → `items.deadline`): "frozen by
+/// definition — written and deployed" is aspirational, not actual — #95's
+/// human gate H3 has not fired, so *no* schema-2 store has ever really been
+/// deployed. This snapshot is a test fixture standing in for one, not an
+/// artifact of a real release, so it carries no more claim to `due_date`
+/// than any other source file did. #153's rename is free exactly because
+/// nothing is deployed (ADR-0013); leaving `due_date` here on the theory
+/// that this fixture is somehow already "shipped" would smuggle a
+/// migration's worth of caution into a codebase that has explicitly not
+/// earned it yet, and would make this test assert a stale, wrong claim —
+/// that a fresh store and a grown-from-v2 store diverge on this column —
+/// which is not the invariant it exists to hold. Renaming here keeps
+/// `deadline` a genuine textbook rename (no `SCHEMA_VERSION` bump, no
+/// migration, per #153's acceptance criteria) rather than inventing an
+/// `ALTER TABLE` this repo's ephemeral-store doctrine does not call for.
+/// The day a real deploy happens, this file freezes at whatever shape is
+/// live then — not before.
 const V2_TABLES: &[&str] = &[
     "\
 CREATE TABLE IF NOT EXISTS meta (
@@ -129,7 +147,7 @@ CREATE TABLE IF NOT EXISTS items (
   priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
   project_id  TEXT REFERENCES projects(id),
   project_pos INTEGER,
-  due_date    TEXT,
+  deadline    TEXT,
   scheduled_date TEXT,
   source      TEXT,
   source_key  TEXT,

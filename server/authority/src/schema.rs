@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS items (
   priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
   project_id  TEXT REFERENCES projects(id),
   project_pos INTEGER,
-  due_date    TEXT,
+  deadline    TEXT,
   scheduled_date TEXT,
   source      TEXT,
   source_key  TEXT,
