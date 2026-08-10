@@ -13,6 +13,7 @@
 mod api;
 mod context;
 mod deadline;
+mod event;
 mod item;
 mod live;
 mod project;
@@ -29,7 +30,11 @@ pub use api::{
     VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, Setting};
-pub use deadline::{deadline_sort_key, is_valid_deadline};
+pub use deadline::{deadline_sort_key, is_valid_deadline, parse_duration, shift, DurationUnit};
+pub use event::{
+    core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
+    FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
+};
 pub use item::{Energy, Item, Size, Stage};
 pub use live::is_live;
 pub use project::{Fog, Project, Route};
