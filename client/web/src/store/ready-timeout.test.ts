@@ -43,6 +43,7 @@ describe("watchForReadyTimeout", () => {
       apiVersion: 1,
       error: null,
       calendar: store.getSnapshot().calendar,
+      task: store.getSnapshot().task,
     });
   });
 

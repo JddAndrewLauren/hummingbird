@@ -1,5 +1,10 @@
 import type { createCoreStore } from "./store";
-import type { CalendarWorkerRequest, WorkerResponse } from "./protocol";
+import type {
+  CalendarWorkerRequest,
+  TaskStageName,
+  TaskWorkerRequest,
+  WorkerResponse,
+} from "./protocol";
 
 // The narrow slice of the DOM `MessagePort` interface a view needs — narrow
 // enough that tests can pass a plain object instead of a real port. Under
@@ -9,10 +14,13 @@ import type { CalendarWorkerRequest, WorkerResponse } from "./protocol";
 // the type carried that name through the migration).
 export interface WorkerLike {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
-  postMessage(message: CalendarWorkerRequest): void;
+  postMessage(message: CalendarWorkerRequest | TaskWorkerRequest): void;
 }
 
-type Store = Pick<ReturnType<typeof createCoreStore>, "setState" | "setCalendarState">;
+type Store = Pick<
+  ReturnType<typeof createCoreStore>,
+  "setState" | "setCalendarState" | "setTaskState" | "setTaskPending"
+>;
 
 // Wires a worker's response messages into the store. This is the only place
 // that translates the worker protocol into store writes. Must be called in
@@ -64,6 +72,48 @@ export function attachWorkerClient(
           asOfMs: message.asOfMs,
         });
         return;
+      // -- task binding (#105/S7) — broadcasts fanned out to every port,
+      // never a reply targeted at just the requesting view (protocol.ts).
+      case "captureResult":
+        store.setTaskState({
+          lastCapture: {
+            seed: message.seed,
+            kind: message.kind,
+            id: message.id,
+            error: message.error,
+          },
+        });
+        return;
+      case "frontier":
+        store.setTaskState({ frontier: message.items });
+        return;
+      case "triageInbox":
+        store.setTaskState({ triageInbox: message.items });
+        return;
+      case "isPendingResult":
+        store.setTaskPending(message.itemId, message.pending);
+        return;
+      case "syncOutcome":
+        store.setTaskState({
+          lastSyncOutcome: {
+            kind: message.kind,
+            retryAfterMs: message.retryAfterMs,
+            activeItemCount: message.activeItemCount,
+            wasFullSweep: message.wasFullSweep,
+            deadLettered: message.deadLettered,
+          },
+        });
+        return;
+      case "taskEvents":
+        // Same contract as the calendar binding's `credentialEvents`: at
+        // least one credential-needed event landed, so reconnecting is now
+        // needed. `Core::take_events` today only ever produces this one
+        // kind, but the switch stays exhaustive over `TaskEventDTO["kind"]`
+        // rather than assuming that never changes.
+        if (message.events.some((event) => event.kind === "credential_needed")) {
+          store.setTaskState({ needsReconnect: true });
+        }
+        return;
     }
   };
 }
@@ -104,4 +154,50 @@ export function requestCurrentNext(worker: WorkerLike, nowMs: number): void {
 // credential this listing goes out with.
 export function requestCalendarList(worker: WorkerLike): void {
   worker.postMessage({ type: "listCalendars" });
+}
+
+// -- the task binding's send helpers (#105/S7) — same "only after ready,
+// never at construction time" rule as the calendar helpers above, and the
+// same one-request-one-postMessage shape.
+
+/** The host calls this at startup, once a stored device token is known, and
+ * on every rotation — the key crosses this boundary exactly once per call
+ * and is never read back out through any `WorkerResponse` (protocol.ts). */
+export function pushTaskApiKey(worker: WorkerLike, apiKey: string): void {
+  worker.postMessage({ type: "pushTaskApiKey", apiKey });
+}
+
+/** `seed` mints the deterministic id `Core::capture` derives from it; the
+ * caller keeps its own seed to match the eventual `captureResult` broadcast
+ * back to this specific call (see `TaskCaptureResult`, store.ts). */
+export function captureTask(
+  worker: WorkerLike,
+  seed: string,
+  title: string,
+  stage: TaskStageName,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "capture", seed, title, stage, nowMs });
+}
+
+export function requestFrontier(worker: WorkerLike): void {
+  worker.postMessage({ type: "getFrontier" });
+}
+
+export function requestTriageInbox(worker: WorkerLike): void {
+  worker.postMessage({ type: "getTriageInbox" });
+}
+
+export function requestIsPending(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "isPending", itemId });
+}
+
+export function runTaskSync(
+  worker: WorkerLike,
+  nowMs: number,
+  trigger: "user" | "timer",
+  forceFullSweep: boolean,
+  jitterUnit: number,
+): void {
+  worker.postMessage({ type: "runSync", nowMs, trigger, forceFullSweep, jitterUnit });
 }

@@ -1,13 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { type CalendarState, createCoreStore } from "./store";
+import { type CalendarState, type TaskState, createCoreStore } from "./store";
 import {
   attachWorkerClient,
+  captureTask,
   pollRefresh,
   pollStart,
   pollTimer,
+  pushTaskApiKey,
   pushTokenToWorker,
   requestCalendarList,
   requestCurrentNext,
+  requestFrontier,
+  requestIsPending,
+  requestTriageInbox,
+  runTaskSync,
   setCalendarIdsOnWorker,
   type WorkerLike,
 } from "./worker-client";
@@ -21,6 +27,15 @@ const initialCalendar: CalendarState = {
   tileKind: "no_snapshot",
   tileEvent: null,
   asOfMs: null,
+};
+
+const initialTask: TaskState = {
+  frontier: [],
+  triageInbox: [],
+  pending: {},
+  lastCapture: null,
+  lastSyncOutcome: null,
+  needsReconnect: false,
 };
 
 // A minimal fake of the Worker surface the client needs: an assignable
@@ -60,6 +75,7 @@ describe("attachWorkerClient", () => {
       apiVersion: 3,
       error: null,
       calendar: initialCalendar,
+      task: initialTask,
     });
   });
 
@@ -77,6 +93,7 @@ describe("attachWorkerClient", () => {
       apiVersion: null,
       error: "wasm init failed",
       calendar: initialCalendar,
+      task: initialTask,
     });
   });
 
@@ -174,6 +191,131 @@ describe("attachWorkerClient", () => {
       availableCalendars: [{ id: "primary", summary: "john@twinion.net" }],
     });
   });
+
+  // -- task binding (#105/S7) -----------------------------------------
+
+  it("records a captureResult keyed by its seed", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "captureResult", seed: "seed-1", kind: "ok", id: "item-1", error: null },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastCapture).toEqual({
+      seed: "seed-1",
+      kind: "ok",
+      id: "item-1",
+      error: null,
+    });
+  });
+
+  it("writes the frontier on a frontier message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const item = {
+      id: "item-1",
+      seq: null,
+      title: "buy milk",
+      description: null,
+      stage: "ready" as const,
+      size: null,
+      energy: null,
+      context: null,
+      priority: 0,
+      projectId: null,
+      projectPos: null,
+      dueDate: null,
+      scheduledDate: null,
+      source: null,
+      sourceKey: null,
+      sourceUrl: null,
+      archivedAt: null,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 0,
+    };
+    worker.onmessage?.({ data: { type: "frontier", items: [item] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.frontier).toEqual([item]);
+    // Untouched sibling field.
+    expect(store.getSnapshot().task.triageInbox).toEqual([]);
+  });
+
+  it("writes the triage inbox on a triageInbox message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({ data: { type: "triageInbox", items: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.triageInbox).toEqual([]);
+  });
+
+  it("merges one item's pending state on an isPendingResult message, leaving others alone", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "isPendingResult", itemId: "item-1", pending: true },
+    } as MessageEvent);
+    worker.onmessage?.({
+      data: { type: "isPendingResult", itemId: "item-2", pending: false },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.pending).toEqual({ "item-1": true, "item-2": false });
+  });
+
+  it("records the sync outcome on a syncOutcome message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "syncOutcome",
+        kind: "completed",
+        retryAfterMs: null,
+        activeItemCount: 2,
+        wasFullSweep: true,
+        deadLettered: 0,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastSyncOutcome).toEqual({
+      kind: "completed",
+      retryAfterMs: null,
+      activeItemCount: 2,
+      wasFullSweep: true,
+      deadLettered: 0,
+    });
+  });
+
+  it("flags task needsReconnect on a taskEvents message carrying a credential_needed event", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 1_000 }] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.needsReconnect).toBe(true);
+  });
+
+  it("does not flag task needsReconnect on an empty taskEvents message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({ data: { type: "taskEvents", events: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.needsReconnect).toBe(false);
+  });
 });
 
 describe("the calendar send helpers", () => {
@@ -227,5 +369,55 @@ describe("the calendar send helpers", () => {
     const worker = fakeWorker();
     requestCalendarList(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "listCalendars" });
+  });
+});
+
+describe("the task send helpers (#105/S7)", () => {
+  it("pushTaskApiKey posts a pushTaskApiKey request", () => {
+    const worker = fakeWorker();
+    pushTaskApiKey(worker, "device-token-1");
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "pushTaskApiKey",
+      apiKey: "device-token-1",
+    });
+  });
+
+  it("captureTask posts a capture request carrying its seed", () => {
+    const worker = fakeWorker();
+    captureTask(worker, "seed-1", "buy milk", "ready", 1_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "capture",
+      seed: "seed-1",
+      title: "buy milk",
+      stage: "ready",
+      nowMs: 1_000,
+    });
+  });
+
+  it("requestFrontier/requestTriageInbox/requestIsPending post their matching request", () => {
+    const worker = fakeWorker();
+
+    requestFrontier(worker);
+    requestTriageInbox(worker);
+    requestIsPending(worker, "item-1");
+
+    expect(worker.postMessage).toHaveBeenNthCalledWith(1, { type: "getFrontier" });
+    expect(worker.postMessage).toHaveBeenNthCalledWith(2, { type: "getTriageInbox" });
+    expect(worker.postMessage).toHaveBeenNthCalledWith(3, {
+      type: "isPending",
+      itemId: "item-1",
+    });
+  });
+
+  it("runTaskSync posts a runSync request", () => {
+    const worker = fakeWorker();
+    runTaskSync(worker, 1_000, "timer", false, 0.5);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "runSync",
+      nowMs: 1_000,
+      trigger: "timer",
+      forceFullSweep: false,
+      jitterUnit: 0.5,
+    });
   });
 });
