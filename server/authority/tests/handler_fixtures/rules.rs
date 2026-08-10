@@ -267,7 +267,7 @@ fn push_target_can_be_revoked_individually() {
 #[test]
 fn deliveries_enforces_the_dedupe_key() {
     let sql = RusqliteSql::new();
-    seed_alert_raw(&sql, "al-1", "healthchecks", "sweeper");
+    seed_alert_raw(&sql, "al-1", "healthchecks/v1", "sweeper");
     let rule = seed_rule(&sql, "r-1");
 
     seed_delivery_raw(&sql, "d-1", "al-1", &rule.id, 100, "high").expect("first delivery inserts");
@@ -297,7 +297,7 @@ fn deliveries_enforces_the_dedupe_key() {
 #[test]
 fn deliveries_key_does_not_collapse_two_rules_agreeing_on_severity() {
     let sql = RusqliteSql::new();
-    seed_alert_raw(&sql, "al-1", "healthchecks", "sweeper");
+    seed_alert_raw(&sql, "al-1", "healthchecks/v1", "sweeper");
     let rule_a = seed_rule(&sql, "r-a");
     let rule_b = seed_rule(&sql, "r-b");
 

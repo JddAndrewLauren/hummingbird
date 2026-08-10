@@ -10,7 +10,7 @@ fn first_raise_201_with_deterministic_id_and_bump() {
     let sql = RusqliteSql::new();
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "healthchecks", "source_key": "sweeper", "title": "sweeper is down",
+        r#"{"source": "healthchecks/v1", "source_key": "sweeper", "title": "sweeper is down",
             "severity": "high", "url": "https://hc.example/check/1"}"#,
         1000,
     );
@@ -18,7 +18,7 @@ fn first_raise_201_with_deterministic_id_and_bump() {
     let alert: Alert = body_as(&resp);
     // The preimage length-prefixes the source, so shifted-colon identities
     // cannot collide (see `identity_shifted_colon_mints_distinct_ids`).
-    let expected_id = &sha256_hex("alert:12:healthchecks:sweeper")[..32];
+    let expected_id = &sha256_hex("alert:15:healthchecks/v1:sweeper")[..32];
     assert_eq!(alert.id, expected_id, "id is a pure function of the identity");
     assert_eq!(alert.raised_at, 1000, "server clock fills an absent raised_at");
     assert_eq!(alert.dismissed_at, None);

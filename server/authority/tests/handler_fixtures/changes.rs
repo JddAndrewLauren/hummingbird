@@ -32,8 +32,8 @@ fn seed_all_nine_tables(sql: &dyn Sql) -> i64 {
     ); // v6
     post_to(sql, "/api/blocked_by", r#"{"item_id": "a-1", "blocker_id": "a-2"}"#, 0); // v7
     put_setting(sql, "k", r#"{"expected_version": 0, "value": true}"#, 0); // v8
-    seed_alert_raw(sql, "al-1", "healthchecks", "sweeper"); // v9
-    seed_snapshot_raw(sql, "f1", "schedule") // v10
+    seed_alert_raw(sql, "al-1", "healthchecks/v1", "sweeper"); // v9
+    seed_snapshot_raw(sql, "f1/v1", "schedule") // v10
 }
 
 #[test]

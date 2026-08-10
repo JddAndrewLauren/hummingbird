@@ -96,10 +96,10 @@ impl SourceEntry {
 }
 
 /// The frozen registry. Every entry's `source` carries a version suffix
-/// (enforced by [`tests::every_registered_source_is_versioned`]); every
+/// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
 /// and the whole table is pinned verbatim by
-/// [`tests::registry_matches_the_frozen_adr_0014_table`].
+/// `tests::registry_matches_the_frozen_adr_0014_table`.
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: "gmail/v1",

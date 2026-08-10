@@ -10,7 +10,7 @@ export interface ItemRowProps extends Omit<HTMLAttributes<HTMLDivElement>, "styl
   /** Derived at read time, never stored — see CONTEXT.md "Urgency". */
   urgency?: "calm" | "soon" | "now" | "overdue";
   /** Deadline the world imposes. Rendered with a flag. */
-  due?: string;
+  deadline?: string;
   /** Do-date the human chose. Rendered with a calendar glyph, always muted. */
   scheduled?: string;
   /** Size label: quick · normal · deep. */
@@ -28,7 +28,7 @@ const URGENCY: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "va
 // the stored enum is not what a reader wants hovering a coloured dot.
 const URGENCY_LABEL: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "Calm", soon: "Due soon", now: "Due now", overdue: "Overdue" };
 
-export function ItemRow({ title, stage = "ready", urgency = "calm", due, scheduled, size, blockedBy, steps, selected = false, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
+export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, blockedBy, steps, selected = false, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
   const [hover, setHover] = useState(false);
   // No onClick, no affordance: a row that does nothing must not take focus,
   // announce itself as a button, or claim a pointer.
@@ -77,10 +77,10 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", due, schedul
           <Icon name="calendar" size={13} />{scheduled}
         </span>
       ) : null}
-      {due ? (
+      {deadline ? (
         <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)",
           color: urgency === "overdue" ? "var(--urgency-overdue)" : urgency === "now" ? "var(--urgency-now)" : "var(--text-secondary)" }}>
-          <Icon name="flag" size={13} />{due}
+          <Icon name="flag" size={13} />{deadline}
         </span>
       ) : null}
       <StageBadge stage={stage} />

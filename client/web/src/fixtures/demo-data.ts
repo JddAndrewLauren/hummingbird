@@ -13,7 +13,7 @@ export interface DemoItem {
   title: string;
   stage: Stage;
   urgency: Urgency;
-  due?: string;
+  deadline?: string;
   scheduled?: string;
   size?: string;
   steps?: string;
@@ -89,7 +89,7 @@ export interface DemoData {
 
 export const DEMO_DATA: DemoData = {
   items: [
-    { id: "ION-142", title: "Order the replacement sensor", stage: "ready", urgency: "soon", due: "Fri", size: "quick", steps: "2/5", project: "Greenhouse" },
+    { id: "ION-142", title: "Order the replacement sensor", stage: "ready", urgency: "soon", deadline: "Fri", size: "quick", steps: "2/5", project: "Greenhouse" },
     { id: "ION-118", title: "Rewrite the sweeper's Gmail adapter", stage: "in_progress", urgency: "now", size: "deep", steps: "3/7", project: "Hummingbird", note: "Started 40 minutes ago. Three of seven steps ticked; the next one is 'delete the two dead label cases'." },
     { id: "ION-151", title: "Hear back from the shop about the part", stage: "blocked", urgency: "calm", blockedBy: "ION-142", project: "Greenhouse" },
     { id: "ION-160", title: "Book the annual boiler service", stage: "ready", urgency: "calm", scheduled: "Mon", size: "quick", project: "House" },

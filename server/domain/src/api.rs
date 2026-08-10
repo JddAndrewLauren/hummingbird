@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn alert_ingest_has_no_expected_version() {
         let a: AlertIngest = serde_json::from_str(
-            r#"{"source": "healthchecks", "source_key": "sweeper", "title": "down"}"#,
+            r#"{"source": "healthchecks/v1", "source_key": "sweeper", "title": "down"}"#,
         )
         .unwrap();
         assert_eq!(a.raised_at, None, "server clock fills it");

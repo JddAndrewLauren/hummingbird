@@ -13,7 +13,9 @@ pub struct Alert {
     /// Server-minted deterministic id — a re-raise of the same
     /// `(source, source_key)` lands on the same row by construction.
     pub id: String,
-    /// 'healthchecks', 'home-assistant', 'gmail-alert/v1', …
+    /// 'healthchecks/v1', 'home-assistant/v1', 'gmail-alert/v1', … — the
+    /// versioned frozen namespace of [`crate::REGISTRY`], which registers
+    /// every source that can appear here.
     pub source: String,
     /// Identity within the source; re-raise upserts.
     pub source_key: String,
@@ -49,7 +51,12 @@ impl Alert {
 /// client that renders the tile, never by the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextSnapshot {
-    /// 'anthropic-usage', 'github/hummingbird', 'photo-site', …
+    /// 'anthropic-usage/v1', 'github-hummingbird/v1', 'photo-site/v1', … —
+    /// the same frozen namespace as `items.source` (ADR-0009 rule 4), so
+    /// the `/vN` suffix is mandatory here too. The suffix claims the slash:
+    /// a source naming a sub-scope folds it into the name
+    /// ('github-hummingbird/v1', never 'github/hummingbird', which would
+    /// read as version 'hummingbird' — ADR-0014).
     pub source: String,
     /// Metric within the source: 'weekly_limit', 'open_prs', …
     pub key: String,
