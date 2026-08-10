@@ -14,8 +14,10 @@ mod api;
 mod context;
 mod deadline;
 mod item;
+mod live;
 mod project;
 mod rule;
+mod severity;
 mod step;
 mod token;
 
@@ -28,8 +30,10 @@ pub use api::{
 pub use context::{Alert, ContextSnapshot, Setting};
 pub use deadline::{deadline_sort_key, is_valid_deadline};
 pub use item::{Energy, Item, Size, Stage};
+pub use live::is_live;
 pub use project::{Fog, Project, Route};
 pub use rule::{Condition, Delivery, Platform, PushTarget, Rule, Tier};
+pub use severity::{higher_severity, severity_rank, SEVERITIES};
 pub use step::{BlockedBy, Step};
 pub use token::{MintedToken, Scope, TokenInfo};
 

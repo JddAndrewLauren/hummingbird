@@ -294,9 +294,16 @@ pub struct PutSetting {
 /// `expected_version`: webhook sources cannot track versions, and the
 /// upsert on `(source, source_key)` is inherently absolute — the source is
 /// authoritative for its own fields (ADR-0009 rule 3). Every source-owned
-/// field is set from this payload on each raise (absent = NULL), except
-/// that an absent `raised_at` keeps the stored stamp on a re-raise;
-/// `dismissed_at` is human-owned and never touched by ingest.
+/// field is set from this payload on each raise (absent = NULL), with two
+/// exceptions: an absent `raised_at` keeps the stored stamp on a re-raise,
+/// and an absent `severity` keeps the stored value, rather than clearing
+/// it, while the existing alert is still live (ADR-0014's ratchet) — a
+/// mint against a live alert may only raise severity, and clearing on
+/// absence would let a second, lower-severity mint quietly downgrade it,
+/// since the handler cannot tell that mint apart from the source's own
+/// next ping. Once the alert has left live, an absent `severity` clears
+/// like every other optional. `dismissed_at` is human-owned and never
+/// touched by ingest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlertIngest {
