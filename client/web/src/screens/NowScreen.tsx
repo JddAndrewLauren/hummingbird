@@ -10,6 +10,7 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import type { CalendarTileProps } from "../calendar/tile-props";
 import type { DemoData, DemoSnapshot } from "../fixtures/demo";
 import type { Screen } from "../shell/screens";
+import type { TaskActionName } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { blockedReasonLabel } from "./blocked-reason";
 import { groupByProject } from "./frontier-groups";
@@ -50,6 +51,9 @@ export interface NowScreenProps {
   selectedItemId: string | null;
   onOpenItem: (itemId: string) => void;
   onCloseItemDetail: () => void;
+  /** S11/#109's act affordances (start/complete/block/cancel), forwarded to
+   * whichever item is currently open in detail. */
+  onAct: (itemId: string, action: TaskActionName) => void;
 }
 
 /** Real-data frontier/blocked rendering (issue #108) — kept out of the
@@ -63,7 +67,11 @@ function RealFrontier({
   selectedItemId,
   onOpenItem,
   onCloseItemDetail,
-}: Pick<NowScreenProps, "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail">) {
+  onAct,
+}: Pick<
+  NowScreenProps,
+  "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail" | "onAct"
+>) {
   const allItems = [...task.frontier, ...task.blocked.map((entry) => entry.item)];
   const selectedItem = selectedItemId
     ? (allItems.find((item) => item.id === selectedItemId) ?? null)
@@ -75,6 +83,7 @@ function RealFrontier({
         item={selectedItem}
         steps={task.stepsByItem[selectedItem.id] ?? []}
         onClose={onCloseItemDetail}
+        onAct={(action) => onAct(selectedItem.id, action)}
       />
     );
   }
@@ -174,6 +183,7 @@ export function NowScreen({
   selectedItemId,
   onOpenItem,
   onCloseItemDetail,
+  onAct,
 }: NowScreenProps) {
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
@@ -256,6 +266,7 @@ export function NowScreen({
             selectedItemId={selectedItemId}
             onOpenItem={onOpenItem}
             onCloseItemDetail={onCloseItemDetail}
+            onAct={onAct}
           />
         )}
       </Column>

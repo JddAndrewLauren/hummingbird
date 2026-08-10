@@ -12,7 +12,7 @@
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
-use hummingbird_core::{Core, CoreCycleOutcome, CoreEvent, CoreInitError};
+use hummingbird_core::{ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction};
 use hummingbird_domain::{Item, Project, Stage};
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -54,6 +54,32 @@ pub struct CaptureResponse {
     pub kind: &'static str,
     pub id: Option<String>,
     pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::act`] resolves to. `"not_found"` is distinct from
+/// `"failed"`: the former is "no such item to act on" (a caller mistake —
+/// `Core::act`'s [`ActError::ItemNotFound`]), the latter every other
+/// failure (an unrecognised `action` string, or a durability failure
+/// enqueueing the mutation).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ActResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// Maps S11/#109's wire action name to [`ItemAction`] — the one place a
+/// string crossing the JS boundary becomes the closed act vocabulary, the
+/// same "reject before the seam" discipline [`TaskHostCore::capture`]
+/// already applies to `stage`. Never a raw [`hummingbird_domain::Stage`]:
+/// there is no wire action that lets a caller send an arbitrary stage id.
+fn parse_action(action: &str) -> Option<ItemAction> {
+    match action {
+        "start" => Some(ItemAction::Start),
+        "complete" => Some(ItemAction::Complete),
+        "block" => Some(ItemAction::Block),
+        "cancel" => Some(ItemAction::Cancel),
+        _ => None,
+    }
 }
 
 /// One item, plus whether it is currently overlaid by an unconfirmed local
@@ -453,6 +479,31 @@ impl TaskHostCore {
         }
     }
 
+    /// Acts on an already-existing item (S11/#109: start, complete, block,
+    /// cancel). `action` is the wire's snake_case action name
+    /// ([`parse_action`]); an unrecognised one fails without ever touching
+    /// [`Core::act`], the same "reject before the seam" discipline
+    /// [`TaskHostCore::capture`] uses for `stage`.
+    pub async fn act(&mut self, seed: &str, item_id: &str, action: &str, now_ms: i64) -> ActResponse {
+        let Some(action) = parse_action(action) else {
+            return ActResponse {
+                kind: "failed",
+                error: Some(format!("unrecognised action {action:?}")),
+            };
+        };
+        match self.core.act(seed, item_id, action, now_ms).await {
+            Ok(()) => ActResponse { kind: "ok", error: None },
+            Err(ActError::ItemNotFound) => ActResponse {
+                kind: "not_found",
+                error: Some("item not found".to_string()),
+            },
+            Err(error) => ActResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
     /// Runs one [`Core::run`] cycle against the live `reqwest` transports.
     pub async fn run(
         &mut self,
@@ -503,6 +554,117 @@ impl TaskHostCore {
             kind: "ok",
             mirror: self.core.mirror_snapshot(),
         }
+    }
+}
+
+#[cfg(test)]
+mod act_tests {
+    use super::*;
+
+    #[test]
+    fn act_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let ok = ActResponse { kind: "ok", error: None };
+        assert_eq!(serde_json::to_string(&ok).unwrap(), r#"{"kind":"ok","error":null}"#);
+
+        let not_found = ActResponse {
+            kind: "not_found",
+            error: Some("item not found".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_string(&not_found).unwrap(),
+            r#"{"kind":"not_found","error":"item not found"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn acting_with_an_unrecognised_action_never_reaches_core_act() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "not-an-action", 2_000).await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.error.is_some());
+        // The item is untouched: still Ready, not overlaid by a second
+        // mutation.
+        assert_eq!(host.frontier().items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn acting_on_an_unknown_item_id_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host.act("seed-act-1", "no-such-item", "start", 1_000).await;
+
+        assert_eq!(response.kind, "not_found");
+        assert!(response.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn completing_a_captured_item_shows_done_immediately_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "complete", 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.error.is_none());
+        assert!(host.is_pending(&id).pending);
+        assert_eq!(
+            host.frontier().items.len(),
+            0,
+            "a completed item drops off the frontier immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_an_item_never_shows_up_as_a_relation_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-4");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "block", 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(
+            host.blocked(),
+            BlockedListResponse { kind: "ok", entries: Vec::new() },
+            "Stage::Blocked is never expressed through the relation-blocked query"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_item_drops_it_from_the_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-5");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "cancel", 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.frontier().items.len(), 0);
     }
 }
 

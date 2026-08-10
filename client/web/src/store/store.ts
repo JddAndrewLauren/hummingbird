@@ -12,6 +12,7 @@ import type {
   ProjectDTO,
   RenderableCurrentNextKind,
   StepDTO,
+  TaskActionName,
   TaskItemDTO,
   TaskRunOutcomeKind,
 } from "./protocol";
@@ -59,6 +60,17 @@ export interface TaskCaptureResult {
   error: string | null;
 }
 
+/** The result of the most recent `act` request this view issued (S11/#109),
+ * matched back by `seed` — same broadcast-recognition contract as
+ * [`TaskCaptureResult`]. */
+export interface TaskActResult {
+  seed: string;
+  itemId: string;
+  action: TaskActionName;
+  kind: "ok" | "not_found" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -79,6 +91,9 @@ export interface TaskState {
    * about via `isPending`, never a full mirror of every pending item. */
   pending: Record<string, boolean>;
   lastCapture: TaskCaptureResult | null;
+  /** The result of the most recent `act` request this view issued (S11/
+   * #109) — `null` until the first one resolves. */
+  lastAct: TaskActResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
   /** When this view learned the last `Core::run` cycle happened (any
    * trigger, any outcome) — S9's "last sweep" readout. Sampled by
@@ -150,6 +165,7 @@ const initialTaskState: TaskState = {
   projects: [],
   pending: {},
   lastCapture: null,
+  lastAct: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,

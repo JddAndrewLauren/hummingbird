@@ -111,6 +111,18 @@ export type TaskStageName =
   | "blocked"
   | "done";
 
+/** S11/#109's closed act vocabulary — every affordance the UI offers on an
+ * already-existing item (`client/ffi-web/src/task_host.rs`'s `parse_action`,
+ * which maps this exact string set onto `hummingbird_core::ItemAction`).
+ * Deliberately NOT a `TaskStageName`: this is the one place a UI action
+ * crosses into the core, and it never carries a raw stage id — the state
+ * `Core::act` sets is resolved from this name, server-side vocabulary
+ * (Stage's own enum), never hardcoded here. There is no `"pick"`/`"depend"`
+ * action: `"block"` sets `Stage::Blocked`, which means an external wait and
+ * nothing else — expressing one action's dependency on another is a
+ * `blocked_by` relation edge (S10's `getBlocked`), never this. */
+export type TaskActionName = "start" | "complete" | "block" | "cancel";
+
 /** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
  * checklist (issue #96, S10) — read-only from this binding; ticking one is
@@ -240,6 +252,11 @@ export type TaskWorkerRequest =
    * `captureResult` broadcast (see `TaskWorkerResponse`), since the
    * worker->view direction never replies to just one sender. */
   | { type: "capture"; seed: string; title: string; stage: TaskStageName; nowMs: number }
+  /** S11/#109's act mutation: start, complete, block, cancel. `seed` is the
+   * same "caller-mints, matches its own broadcast back" contract
+   * `"capture"` documents above — `Core::act`'s own queue-entry id derives
+   * from it. */
+  | { type: "act"; seed: string; itemId: string; action: TaskActionName; nowMs: number }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
   /** Relation-blocked items with the reason visible — S10 (issue #108). */
@@ -300,6 +317,21 @@ export type TaskWorkerResponse =
       seed: string;
       kind: "ok" | "failed" | "busy";
       id: string | null;
+      error: string | null;
+    }
+  /** S11/#109's act result, matched back by `seed` — same broadcast-not-reply
+   * contract as `captureResult`. `"not_found"` is a caller mistake (no such
+   * item); `"failed"` is everything else (an unrecognised action, or a
+   * durability failure enqueueing the mutation). A successful act needs no
+   * item payload here: `Core::act`'s overlay already updated, so the
+   * existing per-cycle `frontier`/`blocked` refresh (`useFrontierWiring.ts`)
+   * is what a caller re-reads to see it. */
+  | {
+      type: "actResult";
+      seed: string;
+      itemId: string;
+      action: TaskActionName;
+      kind: "ok" | "not_found" | "failed" | "busy";
       error: string | null;
     }
   | { type: "frontier"; items: TaskItemDTO[] }

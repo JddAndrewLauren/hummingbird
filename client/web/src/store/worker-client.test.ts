@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CalendarState, type TaskState, createCoreStore } from "./store";
 import {
+  actOnTask,
   attachWorkerClient,
   captureTask,
   pollRefresh,
@@ -47,6 +48,7 @@ const initialTask: TaskState = {
   projects: [],
   pending: {},
   lastCapture: null,
+  lastAct: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,
@@ -227,6 +229,63 @@ describe("attachWorkerClient", () => {
       id: "item-1",
       error: null,
     });
+  });
+
+  it("records an actResult keyed by seed/item/action and re-requests the frontier and blocked queries on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "item-1",
+        action: "complete",
+        kind: "ok",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastAct).toEqual({
+      seed: "seed-act-1",
+      itemId: "item-1",
+      action: "complete",
+      kind: "ok",
+      error: null,
+    });
+    // `Core::act`'s overlay updates synchronously — an `ok` result
+    // immediately re-requests the frontier/blocked queries so the
+    // completed item drops off the list without waiting for the next sync
+    // cycle (this issue's "Completing offline shows Done immediately").
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
+  });
+
+  it("records a failed actResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "no-such-item",
+        action: "start",
+        kind: "not_found",
+        error: "item not found",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastAct).toEqual({
+      seed: "seed-act-1",
+      itemId: "no-such-item",
+      action: "start",
+      kind: "not_found",
+      error: "item not found",
+    });
+    expect(worker.postMessage).not.toHaveBeenCalled();
   });
 
   it("writes the frontier on a frontier message", () => {
@@ -727,6 +786,18 @@ describe("the task send helpers (#105/S7)", () => {
       title: "buy milk",
       stage: "ready",
       nowMs: 1_000,
+    });
+  });
+
+  it("actOnTask posts an act request carrying its seed, item and action", () => {
+    const worker = fakeWorker();
+    actOnTask(worker, "seed-act-1", "item-1", "block", 2_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "act",
+      seed: "seed-act-1",
+      itemId: "item-1",
+      action: "block",
+      nowMs: 2_000,
     });
   });
 

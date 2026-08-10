@@ -53,7 +53,7 @@ use hummingbird_domain::{CreateItem, Item, Project, Stage};
 use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
 use sync::queue::{MutationIntent, QueueEntry};
 use sync::transport::ChangesTransport;
-use sync::write::transport::MutationTransport;
+use sync::write::transport::{HttpMethod, MutationTransport};
 use sync::{CycleOutcome, LoadError, SyncCycle, Trigger};
 
 /// The public API version both FFI crates surface.
@@ -247,6 +247,71 @@ fn overlay_from_queue(
     Ok(overlay)
 }
 
+/// S11/#109's act vocabulary — every affordance the frontier/item-detail UI
+/// offers on an already-existing item. Deliberately closed (never a raw
+/// `Stage` the caller picks): [`ItemAction::stage`] is the one place a
+/// UI action maps onto ADR-0009's stage vocabulary, so no caller ever sends
+/// a hardcoded stage id of its own — the brief's "state ids are resolved by
+/// name from the vocabulary, never hardcoded".
+///
+/// **`Blocked` means an external wait and nothing else** (`CONTEXT.md`):
+/// there is no `ItemAction` for "depends on another item" — that is a
+/// `blocked_by` relation edge (already covered by [`Core::blocked`]'s read
+/// side), never this stage. Conflating the two here would let the UI
+/// express an inter-item dependency as `Blocked`, which the brief
+/// explicitly forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemAction {
+    /// Ready/Triage/Grilling → `InProgress`.
+    Start,
+    /// → `Done`.
+    Complete,
+    /// → `Blocked` — an external wait, never an inter-item dependency.
+    Block,
+    /// Archives the item (`archived_at`), never a stage change — the owned
+    /// schema's six-stage vocabulary has no "canceled" stage, and archiving
+    /// is how every other entity in ADR-0009 is soft-removed.
+    Cancel,
+}
+
+impl ItemAction {
+    /// The stage this action sets, or `None` for [`ItemAction::Cancel`]
+    /// (which touches `archived_at` instead of `stage`).
+    fn stage(self) -> Option<Stage> {
+        match self {
+            ItemAction::Start => Some(Stage::InProgress),
+            ItemAction::Complete => Some(Stage::Done),
+            ItemAction::Block => Some(Stage::Blocked),
+            ItemAction::Cancel => None,
+        }
+    }
+}
+
+/// [`Core::act`] failed before ever reaching the outbound queue, or while
+/// durably enqueueing. Only [`Debug`](std::fmt::Debug) derives — same as
+/// [`storage::SnapshotError`] itself, which this wraps and which carries no
+/// `Clone`/`PartialEq` for its own store-error payload.
+#[derive(Debug)]
+pub enum ActError<E> {
+    /// No live item with this id is known locally (mirror or overlay) —
+    /// nothing to act on. A caller mistake, not a durability failure.
+    ItemNotFound,
+    /// [`sync::SyncCycle::enqueue`] itself failed to persist the candidate
+    /// queue.
+    Snapshot(SnapshotError<E>),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for ActError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActError::ItemNotFound => write!(f, "item not found"),
+            ActError::Snapshot(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for ActError<E> {}
+
 /// One host-visible signal, drained rather than delivered by callback
 /// (ADR-0003 rules out a host-implemented callback into the core).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -436,6 +501,11 @@ where
         let mirror = self.cycle.mirror();
         self.overlaid_items()
             .into_values()
+            // A cancel (S11/#109) archives an overlaid item without
+            // changing its stage, so this filter — not just the mirror's
+            // own `live()` — is what makes a just-cancelled item drop off
+            // the frontier immediately, offline or not.
+            .filter(|item| item.archived_at.is_none())
             .filter(|item| matches!(item.stage, Stage::Ready | Stage::InProgress))
             .filter(|item| {
                 !mirror.blockers_of(&item.id).any(|blocker_id| {
@@ -455,6 +525,7 @@ where
     pub fn triage_inbox(&self) -> Vec<Item> {
         self.overlaid_items()
             .into_values()
+            .filter(|item| item.archived_at.is_none())
             .filter(|item| item.stage == Stage::Triage)
             .collect()
     }
@@ -486,6 +557,7 @@ where
         let mut result: Vec<(Item, Vec<Item>)> = self
             .overlaid_items()
             .into_values()
+            .filter(|item| item.archived_at.is_none())
             .filter(|item| matches!(item.stage, Stage::Ready | Stage::InProgress))
             .filter_map(|item| {
                 let blockers: Vec<Item> = mirror
@@ -594,6 +666,81 @@ where
         );
 
         Ok(id)
+    }
+
+    /// Acts on an already-existing item (S11/#109): enqueues a CAS `PATCH`
+    /// (durably, via [`sync::SyncCycle::enqueue`] — never
+    /// [`sync::queue::OutboundQueue::enqueue`] directly, the same rule
+    /// [`Core::capture`] follows) and overlays the item's post-mutation
+    /// value so a reader sees the change immediately, offline or not
+    /// (this issue's "Completing offline shows Done immediately").
+    ///
+    /// `base` for the CAS write is [`Core::overlaid_items`]'s view of the
+    /// item — the entity as this client last knew it, including any of its
+    /// own still-queued create, exactly the contract
+    /// [`sync::write::adapter::patch_with_rebase`] documents for `base`.
+    ///
+    /// If this entry is later dead-lettered (a same-field server-side
+    /// change already landed), [`Core::run`] reverts the overlay the same
+    /// way it does for a dead-lettered capture — the UI falls back to
+    /// mirror truth and [`Core::dead_letters`] carries the affordance,
+    /// never a silent revert.
+    ///
+    /// `seed` mints this mutation's own queue-entry id
+    /// ([`sync::write::deterministic_id`]) — caller-supplied, same
+    /// reasoning as [`Core::capture`]'s `seed`.
+    pub async fn act(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        action: ItemAction,
+        now_ms: i64,
+    ) -> Result<(), ActError<QS::Error>> {
+        let items = self.overlaid_items();
+        let Some(current) = items.get(item_id) else {
+            return Err(ActError::ItemNotFound);
+        };
+
+        let base = serde_json::to_value(current).expect("Item always serializes");
+        let mut optimistic = current.clone();
+        let patch_fields = match action.stage() {
+            Some(stage) => {
+                optimistic.stage = stage;
+                serde_json::json!({ "stage": stage })
+            }
+            None => {
+                optimistic.archived_at = Some(now_ms);
+                serde_json::json!({ "archived_at": now_ms })
+            }
+        };
+        optimistic.updated_at = now_ms;
+
+        let entry_id = sync::write::deterministic_id(seed);
+        let entry = QueueEntry {
+            id: entry_id.clone(),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::item(item_id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
+                patch_fields,
+            },
+        };
+
+        self.cycle
+            .enqueue(entry, now_ms)
+            .await
+            .map_err(ActError::Snapshot)?;
+
+        self.overlay.insert(
+            item_id.to_string(),
+            OverlayEntry {
+                entry_id,
+                item: optimistic,
+            },
+        );
+
+        Ok(())
     }
 
     /// The host calls this at init and on every credential rotation.
@@ -871,6 +1018,104 @@ mod tests {
         assert!(!core.is_pending("some-other-id"));
     }
 
+    // ---------------------------------------------------------------- act
+
+    /// This issue's headline acceptance: "Completing offline shows Done
+    /// immediately". No transport is even wired up — proving the overlay
+    /// needs no network call to appear.
+    #[tokio::test]
+    async fn completing_offline_shows_done_immediately() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Complete, 2_000)
+            .await
+            .unwrap();
+
+        assert!(core.is_pending(&id));
+        let frontier = core.frontier();
+        assert!(
+            frontier.is_empty(),
+            "a Done item is no longer Ready/InProgress, so it drops off the frontier \
+             immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn starting_an_item_moves_it_to_in_progress_immediately() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Start, 2_000)
+            .await
+            .unwrap();
+
+        let frontier = core.frontier();
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].stage, Stage::InProgress);
+    }
+
+    #[tokio::test]
+    async fn blocking_an_item_sets_the_blocked_stage_never_a_relation() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Block, 2_000)
+            .await
+            .unwrap();
+
+        let items = core.overlaid_items();
+        assert_eq!(items.get(&id).unwrap().stage, Stage::Blocked);
+        assert!(
+            core.blocked().is_empty(),
+            "Core::blocked is the relation-blocked query (blocked_by edges) — an item \
+             carrying Stage::Blocked is a different fact and must never show up there"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_item_archives_it_rather_than_setting_a_stage() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Cancel, 2_000)
+            .await
+            .unwrap();
+
+        let items = core.overlaid_items();
+        let item = items.get(&id).unwrap();
+        assert_eq!(item.stage, Stage::Ready, "cancel never touches stage");
+        assert_eq!(item.archived_at, Some(2_000));
+        assert!(
+            core.frontier().is_empty(),
+            "an archived item must drop off the frontier immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn acting_on_an_unknown_item_id_is_item_not_found() {
+        let mut core = Core::new();
+
+        let error = core
+            .act("seed-act-1", "no-such-item", ItemAction::Start, 1_000)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ActError::ItemNotFound));
+    }
+
     // ------------------------------------------------- fixtures for `run`
 
     #[derive(Default)]
@@ -1036,6 +1281,107 @@ mod tests {
         assert!(
             core.frontier().is_empty(),
             "with no server-side item and no overlay, the frontier reverts to server truth"
+        );
+    }
+
+    /// This issue's second acceptance: "A server-side change to the same
+    /// field while the mutation is queued produces a dead-letter entry and
+    /// the UI reverts with the affordance visible — never silently."
+    #[tokio::test]
+    async fn a_same_field_conflict_on_a_queued_act_dead_letters_and_reverts_the_overlay_visibly() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        // Cycle 1: the create lands and is confirmed by the sweep, so
+        // `act` below is patching a real, mirror-backed item.
+        let confirmed_item = hummingbird_domain::Item {
+            id: id.clone(),
+            seq: Some(1),
+            title: "buy milk".to_string(),
+            description: None,
+            stage: Stage::Ready,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: None,
+            scheduled_date: None,
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            created_at: 1_000,
+            updated_at: 1_000,
+            version: 1,
+        };
+        let sweep1 = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![confirmed_item.clone()],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read1 = ScriptedRead::sweep_only(vec![Ok(sweep1)]);
+        let write1 = ScriptedWrite::new(vec![ok(201, format!(r#"{{"id":"{id}","version":1}}"#))]);
+        core.run(&read1, &write1, 2_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(!core.is_pending(&id));
+
+        // Complete it — queued, overlaid as Done immediately.
+        core.act("seed-act-1", &id, ItemAction::Complete, 3_000)
+            .await
+            .unwrap();
+        assert!(core.is_pending(&id));
+        assert_eq!(core.frontier().len(), 0, "Done drops off the frontier");
+
+        // Cycle 2: someone else already moved the same item's `stage` to
+        // `blocked` server-side — a genuine same-field collision, reported
+        // as a conflict on the first attempt (never retried).
+        let conflicting_current = hummingbird_domain::Item {
+            stage: Stage::Blocked,
+            version: 2,
+            ..confirmed_item.clone()
+        };
+        let conflict_body = serde_json::to_string(&serde_json::json!({
+            "error": "version_conflict",
+            "current": conflicting_current,
+        }))
+        .unwrap();
+        let sweep2 = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            items: vec![conflicting_current],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read2 = ScriptedRead::sweep_only(vec![Ok(sweep2)]);
+        let write2 = ScriptedWrite::new(vec![ok(409, conflict_body)]);
+
+        let outcome2 = core
+            .run(&read2, &write2, 4_000, Trigger::User, true, 0.0)
+            .await;
+
+        assert!(matches!(
+            outcome2,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        assert!(
+            !core.is_pending(&id),
+            "a dead-lettered act must clear the overlay, never leave a stale optimistic view"
+        );
+        let frontier = core.frontier();
+        assert!(
+            frontier.is_empty(),
+            "the item reverts to server truth (Blocked), not the optimistic Done"
+        );
+        assert_eq!(
+            core.dead_letters().len(),
+            1,
+            "the dead-letter journal is the never-silent affordance"
         );
     }
 
