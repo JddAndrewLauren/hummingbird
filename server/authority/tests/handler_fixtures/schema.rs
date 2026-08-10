@@ -1,7 +1,8 @@
 //! Schema lifecycle: idempotent init, the full table set, and the additive
-//! growth path (1→2, then 2→3 for the notification lane, #131).
+//! growth path (1→2, then 2→3 for the notification lane, #131, then 3→4 for
+//! ADR-0015's `alerts.subject_key`).
 
-use hummingbird_authority::{init_schema, SCHEMA_VERSION};
+use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
 use crate::rig::*;
 
@@ -107,6 +108,13 @@ fn init_schema_grows_a_schema_1_database_additively() {
 /// up `source` — that would only be the right growth story for a shape
 /// that was ever really deployed. Nothing was, so the fixture is simply
 /// re-frozen to already carry the column, exactly as `deadline` was.
+///
+/// **Deliberately *not* re-frozen for ADR-0015's `alerts.subject_key`.**
+/// That doctrine applies where there is no migration to exercise; 3→4 has
+/// one (`init_schema`'s `ALTER TABLE`), so leaving this `alerts` genuinely
+/// column-less makes the 2→3 test above pass through it too — a second,
+/// free covering of the growth path. Re-freezing here would quietly delete
+/// that coverage.
 const V2_TABLES: &[&str] = &[
     "\
 CREATE TABLE IF NOT EXISTS meta (
@@ -294,6 +302,141 @@ fn init_schema_grows_a_schema_2_database_additively() {
     );
 }
 
+/// What 2→3 added (#131): the notification lane, frozen here exactly as
+/// `schema.rs` held it before ADR-0015 — three tables and one index. A real
+/// v3 store is a v2 store plus these, which is what [`v3_store`] builds.
+const V3_ADDED_TABLES: &[&str] = &[
+    "\
+CREATE TABLE IF NOT EXISTS rules (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  event_kind TEXT,
+  conditions TEXT NOT NULL,
+  severity   TEXT NOT NULL,
+  tier       TEXT NOT NULL CHECK (tier IN ('urgent','normal')),
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL,
+  version    INTEGER NOT NULL
+)",
+    "\
+CREATE TABLE IF NOT EXISTS push_targets (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  platform   TEXT NOT NULL CHECK (platform IN ('android','ios')),
+  fcm_token  TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_seen  INTEGER,
+  revoked_at INTEGER
+)",
+    "\
+CREATE TABLE IF NOT EXISTS deliveries (
+  id         TEXT PRIMARY KEY,
+  alert_id   TEXT NOT NULL REFERENCES alerts(id),
+  rule_id    TEXT NOT NULL REFERENCES rules(id),
+  generation INTEGER NOT NULL,
+  severity   TEXT NOT NULL,
+  tier       TEXT NOT NULL,
+  sent_at    INTEGER NOT NULL,
+  UNIQUE(alert_id, rule_id, generation, severity)
+)",
+];
+
+const V3_ADDED_INDEXES: &[&str] =
+    &["CREATE INDEX IF NOT EXISTS idx_rules_version ON rules(version)"];
+
+/// A store built straight from the frozen v2 + v3 DDL — never touched by the
+/// current `init_schema`, so its `alerts` table genuinely lacks
+/// `subject_key`, which is the whole point. Downgrading only
+/// `meta.schema_version` on top of a current store would not do: the column
+/// would already be there and the growth path underneath would be a no-op.
+fn v3_store() -> RusqliteSql {
+    let sql = RusqliteSql {
+        conn: rusqlite::Connection::open_in_memory().expect("in-memory sqlite opens"),
+    };
+    for ddl in V2_TABLES
+        .iter()
+        .chain(V3_ADDED_TABLES.iter())
+        .chain(V2_INDEXES.iter())
+        .chain(V3_ADDED_INDEXES.iter())
+    {
+        sql.exec(ddl, &[]).expect("v3 DDL applies");
+    }
+    sql.exec(
+        "INSERT INTO meta (id, version, schema_version) VALUES (1, 0, 3)",
+        &[],
+    )
+    .expect("v3 meta row seeds");
+    sql
+}
+
+/// The 3→4 growth path (ADR-0015), against a genuine v3 database: the first
+/// growth that adds a **column to an existing table** rather than a whole
+/// table. `CREATE TABLE IF NOT EXISTS alerts (…)` is a silent no-op on a
+/// store that already has an `alerts` table, so without the `ALTER TABLE` in
+/// `init_schema` the column would simply never appear while
+/// `schema_version` marched to 4 regardless — nothing would fail loudly.
+/// That is why this test asserts the column's actual presence and not only
+/// the DDL text.
+#[test]
+fn init_schema_grows_a_schema_3_database_additively() {
+    let migrated = v3_store();
+    assert_eq!(schema_version(&migrated), 3, "starts genuinely at v3");
+    assert!(
+        !column_names(&migrated, "alerts").contains(&"subject_key".to_string()),
+        "the v3 fixture must not already carry subject_key",
+    );
+    // A row written before the growth, to prove the ALTER keeps data.
+    migrated
+        .exec(
+            "INSERT INTO alerts (id, source, source_key, title, raised_at, version) \
+             VALUES ('a', 'hc/v1', 'k', 't', 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(
+        column_names(&migrated, "alerts").contains(&"subject_key".to_string()),
+        "the migrated store actually has the column, not just a bumped version",
+    );
+    let rows = migrated.exec("SELECT id, subject_key FROM alerts", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+    assert_eq!(
+        rows[0].get("subject_key"),
+        Some(&SqlValue::Null),
+        "an alert minted before ADR-0015 names no subject",
+    );
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v3 store and a fresh store end up with byte-identical DDL — which is \
+         why CREATE_ALERTS declares subject_key last and inline, matching what ALTER TABLE \
+         ADD COLUMN splices in",
+    );
+}
+
+/// Running `init_schema` twice over a grown store must not attempt the
+/// `ALTER` again — a duplicate column is a hard SQLite error, and
+/// `init_schema` runs on every Durable Object construction.
+#[test]
+fn the_column_migration_is_idempotent() {
+    let migrated = v3_store();
+    init_schema(&migrated).expect("first growth succeeds");
+    init_schema(&migrated).expect("second init is a no-op, not a duplicate-column error");
+    assert_eq!(
+        column_names(&migrated, "alerts")
+            .iter()
+            .filter(|name| *name == "subject_key")
+            .count(),
+        1,
+        "exactly one subject_key column",
+    );
+}
+
 fn schema_version(sql: &dyn Sql) -> i64 {
     sql.exec("SELECT schema_version FROM meta WHERE id = 1", &[])
         .unwrap()[0]
@@ -332,4 +475,16 @@ fn schema_ddl(sql: &dyn Sql) -> Vec<(String, String)> {
         )
     })
     .collect()
+}
+
+/// One table's column names, in declaration order. `PRAGMA table_info` is
+/// fine *here* — the test rig is rusqlite only; `schema.rs` itself reads
+/// `sqlite_master` instead, because the Durable Object allows far fewer
+/// pragmas than a local SQLite does.
+fn column_names(sql: &dyn Sql, table: &str) -> Vec<String> {
+    sql.exec(&format!("PRAGMA table_info({table})"), &[])
+        .unwrap()
+        .iter()
+        .map(|r| r.get("name").unwrap().as_text().unwrap().to_string())
+        .collect()
 }

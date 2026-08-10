@@ -207,6 +207,11 @@ pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
         let ingest = AlertIngest {
             source: ITEM_THRESHOLD_V1.to_string(),
             source_key,
+            // Always `None` (ADR-0015). An item is not a standing question
+            // and has no pane, so there is no `context_snapshots` row for
+            // this alert to join to; `source_key` stays `item:<id>` as
+            // occurrence identity and is never read as a subject.
+            subject_key: None,
             title: item.title.clone(),
             body: item.description.clone(),
             url: item.source_url.clone(),

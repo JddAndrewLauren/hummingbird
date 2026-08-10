@@ -392,3 +392,65 @@ fn ingest_validation_400() {
     }
     assert_eq!(meta_version(&sql), 0);
 }
+
+/// ADR-0015: the optional `subject_key` names the `context_snapshots` row a
+/// pane is reading — `(source, subject_key)` ↔ `(source, key)`. It is a
+/// source-owned field like body and url, so it is set absolutely on every
+/// re-raise, and `source_key` is left alone as occurrence identity.
+#[test]
+fn an_ingest_carries_a_subject_key_and_re_raises_set_it_absolutely() {
+    let sql = RusqliteSql::new();
+    let resp = ingest_alert(
+        &sql,
+        r#"{"source": "race-schedule", "source_key": "f1:2026-08-16:delay",
+            "subject_key": "f1", "title": "practice delayed"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    let alert: Alert = body_as(&resp);
+    assert_eq!(alert.subject_key, Some("f1".into()));
+    assert_eq!(
+        alert.source_key, "f1:2026-08-16:delay",
+        "source_key is untouched occurrence identity — the join never parses it",
+    );
+
+    // The source stops naming a subject: the join clears rather than
+    // leaving the alert bound to a subject it no longer claims.
+    let resp = ingest_alert(
+        &sql,
+        r#"{"source": "race-schedule", "source_key": "f1:2026-08-16:delay",
+            "title": "practice delayed"}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let alert: Alert = body_as(&resp);
+    assert_eq!(alert.subject_key, None, "absent optional clears, like every source-owned field");
+    assert_eq!(alert.version, 2, "a real change bumps");
+}
+
+#[test]
+fn an_alert_naming_no_subject_is_the_norm_and_not_an_error() {
+    let sql = RusqliteSql::new();
+    let resp = ingest_alert(
+        &sql,
+        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    assert_eq!(body_as::<Alert>(&resp).subject_key, None);
+}
+
+#[test]
+fn an_empty_subject_key_is_rejected() {
+    // A `context_snapshots.key` that names nothing would join to no
+    // subject in silence — visibly broken beats quietly empty.
+    let sql = RusqliteSql::new();
+    let resp = ingest_alert(
+        &sql,
+        r#"{"source": "hc", "source_key": "k", "subject_key": "", "title": "down"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    let rows = sql.exec("SELECT id FROM alerts", &[]).unwrap();
+    assert!(rows.is_empty(), "nothing was written");
+}
