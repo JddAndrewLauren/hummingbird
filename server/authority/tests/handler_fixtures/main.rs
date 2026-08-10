@@ -11,6 +11,7 @@ mod auth;
 mod blocked_by;
 mod changes;
 mod delivery;
+mod fcm;
 mod fog;
 mod items;
 mod projects_routes;

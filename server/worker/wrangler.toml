@@ -7,6 +7,16 @@
 # (`wrangler dev --var ADMIN_SECRET:...`, as smoke.sh does), in production
 # a real secret (`wrangler secret put ADMIN_SECRET`). Unset, the admin
 # lane fails closed with a 401.
+#
+# FCM_SERVICE_ACCOUNT is the notification lane's send credential (#219):
+# the Google service-account JSON key, whole, as
+# `wrangler secret put FCM_SERVICE_ACCOUNT`. Deliberately a secret and not
+# a var — it carries an RSA private key, so it must never appear in this
+# file, in `--var`, or in the repo. Unset (the state of every local
+# `wrangler dev` and of CI), the send leg fails closed: the DO alarm still
+# evaluates rules and still logs deliveries, and each one it cannot send is
+# reported with `console_error!`. Nothing here is needed until a real
+# device registers a push target.
 name = "hummingbird-authority"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-08-08"

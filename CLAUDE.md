@@ -80,9 +80,27 @@ or `rules` — a tick is read-then-mint, never a write to what it read. The
 worker shim (`hummingbird-authority-worker`) supplies the DO's `alarm()`
 handler: it drives `sweep_tick`, reschedules the next tick unconditionally
 (even if the tick itself errored, so one bad tick can't stop the clock),
-and is where a future issue wires the actual FCM HTTP send for each
-`DeliveryOutcome::Logged` target — `sweep_tick` only decides and hands back
-what to send, exactly as `deliver` does one layer down. **Not yet built,
+and makes the actual FCM HTTP send for each `DeliveryOutcome::Logged`
+target — `sweep_tick` only decides and hands back what to send, exactly as
+`deliver` does one layer down. That send leg (#219) keeps the same split:
+everything decidable is pure and natively tested in
+`authority/src/fcm.rs` (the OAuth assertion's bytes, the FCM v1 message
+body — ADR-0012's two tiers mapping onto Android's transport priority *and*
+channel id — how to read a response, and the one write a send may make),
+while `worker/src/fcm.rs` holds only `crypto.subtle` (RS256 over the
+service-account key) and `fetch`, because `server/worker` has no test
+harness of any kind and anything expressed there is untested by
+construction. The credential is the `FCM_SERVICE_ACCOUNT` **Worker
+secret** — never a var, never in `wrangler.toml`, and unset (every
+`wrangler dev`, and CI) the lane fails closed: rules still evaluate,
+deliveries still log, and each unsendable one is a `console_error!`.
+**Policy: no retry, ever.** `deliver` commits the claim row before the send
+is attempted, so a retry that re-sent would be the double-ring ADR-0012
+says destroys trust in the channel; a failure is logged and dropped. The
+one exception is FCM's `UNREGISTERED` error code, which revokes that
+`push_targets` row — and it is matched on the `FcmError` detail alone,
+never on the 404 status, because a wrong `project_id` 404s identically and
+would otherwise revoke every device the operator owns. **Not yet built,
 and not a small gap:** ADR-0014's separate "resolution pass" (stamping
 `resolved_at` on a live `item-threshold/v1` alert once its item is done,
 archived, deleted, or no longer matches). Without it, an item whose alert
