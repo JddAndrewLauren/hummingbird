@@ -72,6 +72,16 @@ describe("protocol round-trips", () => {
           fields: [],
           atMs: 6_000,
         },
+        // #163's third reason. `map_dead_letter` mints it in Rust and it
+        // crosses a JSON boundary, so nothing but a case like this holds
+        // the TS union open for it.
+        {
+          id: "item-3",
+          reason: "contention",
+          message: null,
+          fields: [],
+          atMs: 7_000,
+        },
       ],
     },
     { type: "mirrorSnapshot", mirror: { version: 1 } },

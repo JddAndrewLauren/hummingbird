@@ -221,10 +221,17 @@ export interface DeadLetterFieldDTO {
 /** One dead-lettered outbound mutation, as the web host's JSON shape
  * (`DeadLetterEntryDTO`). `"permanent"` carries `message` and an empty
  * `fields`; `"conflict"` carries `fields` and no `message` — the two never
- * both have something to show. */
+ * both have something to show. `"contention"` (#163) carries NEITHER: a
+ * second 409 that stayed genuinely disjoint after the one bounded rebase
+ * retry has no colliding field name and no server message, only repeated
+ * churn. This union is closed on the TS side but the value arrives across a
+ * JSON boundary, so typecheck cannot see a Rust variant that is missing
+ * here — `client/ffi-web/src/task_host.rs`'s `map_dead_letter` is the one
+ * place that mints these strings, and `protocol.test.ts` pins each of them
+ * as accepted. */
 export interface DeadLetterEntryDTO {
   id: string;
-  reason: "permanent" | "conflict";
+  reason: "permanent" | "conflict" | "contention";
   message: string | null;
   fields: DeadLetterFieldDTO[];
   atMs: number;

@@ -185,7 +185,10 @@ interface RawDeadLetterField {
 
 interface RawDeadLetterEntry {
   id: string;
-  reason: "permanent" | "conflict";
+  // Kept in step with `protocol.ts`'s `DeadLetterEntryDTO["reason"]`;
+  // `"contention"` is #163's third variant, carrying neither `message` nor
+  // any `fields`.
+  reason: "permanent" | "conflict" | "contention";
   message: string | null;
   fields: RawDeadLetterField[];
   at_ms: number;
