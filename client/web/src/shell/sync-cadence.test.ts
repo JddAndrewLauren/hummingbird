@@ -114,28 +114,53 @@ describe("mergePendingSyncTrigger", () => {
     expect(mergePendingSyncTrigger("timer", "open")).toBe("open");
   });
 
-  // Issue #194: a pending user-facing trigger (which resets backoff via
-  // `toCoreTrigger`'s "user" spelling) must not be silently demoted to
-  // "timer" (which does not) by a later, unattended timer tick.
-  it("keeps a pending user-facing trigger against a later \"timer\"", () => {
+  // Issue #194: a pending trigger must not be silently demoted by a later,
+  // unattended timer tick — for "reconnect"/"manual" that would lose a
+  // backoff reset outright; for "focus" it only loses identity, but the
+  // merged spelling is still the one tests and logging read.
+  it("keeps any pending non-timer trigger against a later \"timer\"", () => {
     expect(mergePendingSyncTrigger("focus", "timer")).toBe("focus");
     expect(mergePendingSyncTrigger("reconnect", "timer")).toBe("reconnect");
     expect(mergePendingSyncTrigger("manual", "timer")).toBe("manual");
   });
 
-  it("a later user-facing trigger replaces a pending \"timer\"", () => {
+  it("a later user-facing trigger or focus replaces a pending \"timer\"", () => {
     expect(mergePendingSyncTrigger("timer", "focus")).toBe("focus");
     expect(mergePendingSyncTrigger("timer", "reconnect")).toBe("reconnect");
     expect(mergePendingSyncTrigger("timer", "manual")).toBe("manual");
   });
 
-  // Among the three user-facing triggers there is no caller-visible
-  // behavioral difference downstream of the guard (all map to "user", none
-  // forces a full sweep), so ties fall back to "most recent wins".
-  it("a later user-facing trigger replaces a different pending user-facing trigger", () => {
+  // Issue #190 round 2: "focus" maps to "timer" via `toCoreTrigger`, so a
+  // later focus overwriting a pending "reconnect"/"manual" would demote a
+  // backoff reset to an unattended cycle — the outage-recovery path (#184's
+  // guard holding "reconnect" while the user alt-tabs) and #194's manual
+  // escape hatch both depend on the pending trigger surviving.
+  it("keeps a pending \"reconnect\"/\"manual\" against a later \"focus\"", () => {
+    expect(mergePendingSyncTrigger("reconnect", "focus")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("manual", "focus")).toBe("manual");
+  });
+
+  it("a later user-facing trigger replaces a pending \"focus\"", () => {
     expect(mergePendingSyncTrigger("focus", "manual")).toBe("manual");
+    expect(mergePendingSyncTrigger("focus", "reconnect")).toBe("reconnect");
+  });
+
+  // Between the two backoff-resetting triggers there is no caller-visible
+  // difference downstream of the guard (both map to "user", neither forces
+  // a full sweep), so ties fall back to "most recent wins".
+  it("a later backoff-resetting trigger replaces the other pending one", () => {
     expect(mergePendingSyncTrigger("manual", "reconnect")).toBe("reconnect");
-    expect(mergePendingSyncTrigger("reconnect", "focus")).toBe("focus");
+    expect(mergePendingSyncTrigger("reconnect", "manual")).toBe("manual");
+  });
+
+  // The end-to-end pin for the round-2 blocker: whatever survives the merge
+  // must still spell "user" at the core seam, so the follow-up cycle resets
+  // backoff and a recovered network does not sit out the backoff window.
+  it("the survivor of merging a reconnect/manual with a focus still resets backoff", () => {
+    expect(toCoreTrigger(mergePendingSyncTrigger("reconnect", "focus"))).toBe("user");
+    expect(toCoreTrigger(mergePendingSyncTrigger("manual", "focus"))).toBe("user");
+    expect(toCoreTrigger(mergePendingSyncTrigger("focus", "reconnect"))).toBe("user");
+    expect(toCoreTrigger(mergePendingSyncTrigger("focus", "manual"))).toBe("user");
   });
 
   it("a later \"timer\" replaces a pending \"timer\"", () => {

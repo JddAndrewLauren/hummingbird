@@ -73,17 +73,24 @@ export function toCoreTrigger(trigger: SyncCadenceTrigger): "user" | "timer" {
  * `"open"` overwritten by a later `"focus"`/`"timer"` drops ADR-0008's
  * app-open full-sweep backstop for the rest of the `SharedWorker`'s
  * lifetime (`dispatch.ts`'s `openTrigger` only ever fires it once), and a
- * `"manual"`/`"focus"` overwritten by a `"timer"` silently demotes a
- * user-facing backoff reset to an unattended one.
+ * `"reconnect"`/`"manual"` overwritten by a later `"focus"` or `"timer"`
+ * silently demotes a user-facing backoff reset to an unattended one — the
+ * exact outage-recovery path this precedence exists to protect: network
+ * returns while a run is in flight, `"reconnect"` waits in the pending
+ * slot, the user alt-tabs, and the follow-up cycle must still reset
+ * backoff.
  *
- * Precedence: `"open"` (ADR-0008's full-sweep backstop) beats every
- * user-facing trigger, which in turn beats `"timer"` (the only trigger that
- * does not reset backoff and never forces a full sweep). Among the three
- * user-facing triggers (`"reconnect"`, `"focus"`, `"manual"`) there is no
- * behavioral difference downstream of the guard — all three map to
- * `"user"` and none forces a full sweep — so a tie keeps whichever is
- * `incoming`, the same "most recent wins" rule the guard used before this
- * fix, scoped down to only the cases where it cannot lose information. */
+ * Precedence: `"open"` (ADR-0008's full-sweep backstop) beats the two
+ * user-facing triggers (`"reconnect"`, `"manual"` — the ones
+ * `toCoreTrigger` maps to `"user"`, resetting backoff), which beat
+ * `"focus"` (issue #190: an ambient signal that maps to `"timer"` and
+ * leaves backoff alone, but still kept above the unattended timer so the
+ * merged trigger's identity survives for logging/tests), which beats
+ * `"timer"`. Between the two user-facing triggers there is no behavioral
+ * difference downstream of the guard — both map to `"user"` and neither
+ * forces a full sweep — so a tie keeps whichever is `incoming`, the same
+ * "most recent wins" rule the guard used before this fix, scoped down to
+ * only the cases where it cannot lose information. */
 export function mergePendingSyncTrigger(
   pending: SyncCadenceTrigger,
   incoming: SyncCadenceTrigger,
@@ -92,9 +99,10 @@ export function mergePendingSyncTrigger(
 }
 
 function syncTriggerPriority(trigger: SyncCadenceTrigger): number {
-  if (trigger === "open") return 2;
+  if (trigger === "open") return 3;
+  if (trigger === "focus") return 1; // below "reconnect"/"manual": never demotes a backoff reset
   if (trigger === "timer") return 0;
-  return 1; // "reconnect" | "focus" | "manual"
+  return 2; // "reconnect" | "manual" — the backoff-resetting pair
 }
 
 export interface SyncCadence {
