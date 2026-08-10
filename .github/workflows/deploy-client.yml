@@ -93,6 +93,24 @@ jobs:
       group: deploy-hummingbird-web
     steps:
       - uses: actions/checkout@v4
+      # wrangler-action installs wrangler with whatever package manager the
+      # `workingDirectory` declares, and `client/web` declares pnpm — so this
+      # job needs pnpm and Node on PATH even though it installs no
+      # dependencies of its own and deploys a `dist/` it downloads rather
+      # than builds. Without them the action fails before it ever reaches
+      # Cloudflare, with `Unable to locate executable file: pnpm`.
+      #
+      # The deploy job had this hole from the start; nothing could surface it
+      # until a deploy first got past the `needs: test` gate, which only
+      # happened once the PWA precache ceiling was raised (#246).
+      # `deploy-server.yml` does not need the same treatment: `server/worker`
+      # has no `package.json`, so the action falls back to npm there.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: client/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: actions/download-artifact@v4
         with:
           name: client-web-dist
