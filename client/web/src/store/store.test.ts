@@ -100,7 +100,7 @@ describe("createCoreStore", () => {
           priority: 0,
           projectId: null,
           projectPos: null,
-          dueDate: null,
+          deadline: null,
           scheduledDate: null,
           source: null,
           sourceKey: null,

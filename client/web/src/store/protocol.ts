@@ -125,7 +125,7 @@ export interface TaskItemDTO {
   priority: number;
   projectId: string | null;
   projectPos: number | null;
-  dueDate: string | null;
+  deadline: string | null;
   scheduledDate: string | null;
   source: string | null;
   sourceKey: string | null;
