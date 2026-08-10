@@ -27,7 +27,7 @@
 // `runSync` — no DOM, no wasm.
 
 /** Configuration for [`createSyncRunGuard`]. */
-export interface SyncRunGuardOptions {
+export interface SyncRunGuardOptions<Trigger> {
   /** The guard's own release bound: how long an in-flight run may hold the
    * slot before the guard gives up waiting on it and treats the slot as
    * free again, even though the run's promise has not settled. Chosen to
@@ -49,6 +49,19 @@ export interface SyncRunGuardOptions {
    * comes) is a no-op against the guard, guarded by generation below, so it
    * cannot corrupt whatever run has taken its place. */
   releaseMs: number;
+
+  /** How to combine a trigger already waiting in the `pending` slot with a
+   * new one arriving before the in-flight run resolves. Trigger identity
+   * can be load-bearing to the caller (`core.worker.ts` reads it for
+   * `forceFullSweep` and `toCoreTrigger`'s backoff-reset decision), so bare
+   * "last one wins" is only safe when the caller has confirmed no two
+   * trigger values it uses differ in caller-visible behavior. When omitted,
+   * this guard defaults to last-wins (`(_pending, incoming) => incoming`)
+   * — the original, simpler behavior — and it is the caller's job to supply
+   * a real precedence function whenever trigger identity actually matters,
+   * as `core.worker.ts` does with `mergePendingSyncTrigger`
+   * (`shell/sync-cadence.ts`). */
+  mergePending?: (pending: Trigger, incoming: Trigger) => Trigger;
 }
 
 /** Wraps an async `runSync` (a `SyncCadenceTrigger => Promise<void>`, e.g.
@@ -57,15 +70,24 @@ export interface SyncRunGuardOptions {
  * of the same shape `createSyncCadence`'s `run` parameter expects.
  *
  * At most one call to `runSync` is in flight at a time. A trigger arriving
- * while one is in flight does not start a second one — it becomes (or
- * replaces) the single pending follow-up, so any number of triggers arriving
- * during one in-flight run still produce exactly one follow-up run, which
- * starts the instant the in-flight one resolves (or is released — see
- * `SyncRunGuardOptions.releaseMs`). A trigger arriving once no run is in
- * flight starts immediately, synchronously, with no added latency. */
+ * while one is in flight does not start a second one — it becomes (or is
+ * combined with, via `options.mergePending`) the single pending follow-up,
+ * so any number of triggers arriving during one in-flight run still produce
+ * exactly one follow-up run, which starts the instant the in-flight one
+ * resolves (or is released — see `SyncRunGuardOptions.releaseMs`). A trigger
+ * arriving once no run is in flight starts immediately, synchronously, with
+ * no added latency. */
+/** The default `mergePending`: the incoming trigger always replaces
+ * whatever was waiting. Only safe when the caller's `Trigger` values are
+ * behaviorally interchangeable past this guard — see
+ * `SyncRunGuardOptions.mergePending`'s doc. */
+function lastWins<Trigger>(_pending: Trigger, incoming: Trigger): Trigger {
+  return incoming;
+}
+
 export function createSyncRunGuard<Trigger>(
   runSync: (trigger: Trigger) => Promise<void>,
-  options: SyncRunGuardOptions,
+  options: SyncRunGuardOptions<Trigger>,
 ): (trigger: Trigger) => void {
   let inFlight = false;
   let pending: Trigger | null = null;
@@ -114,7 +136,7 @@ export function createSyncRunGuard<Trigger>(
 
   return (trigger: Trigger) => {
     if (inFlight) {
-      pending = trigger;
+      pending = pending === null ? trigger : (options.mergePending ?? lastWins)(pending, trigger);
       return;
     }
     start(trigger);

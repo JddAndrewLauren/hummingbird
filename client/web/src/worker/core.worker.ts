@@ -82,7 +82,12 @@
 // already accepts, not the unattended-clock defect this fix closes.
 
 import type { TaskWorkerRequest, TaskWorkerResponse } from "../store/protocol";
-import { createSyncCadence, SYNC_TIMER_MS, toCoreTrigger } from "../shell/sync-cadence";
+import {
+  createSyncCadence,
+  mergePendingSyncTrigger,
+  SYNC_TIMER_MS,
+  toCoreTrigger,
+} from "../shell/sync-cadence";
 import { createRequestQueue } from "./calendar-worker";
 import { createDispatch } from "./dispatch";
 import { PortRegistry, type PortLike } from "./ports";
@@ -219,7 +224,12 @@ void (async () => {
     // resolves, and the guard's own release bound — reused from
     // `TASK_REQUEST_TIMEOUT_MS`, the same bound the underlying task queue
     // already uses to abandon a hung request — keeps a `runSync` whose
-    // promise never settles from wedging the cadence forever.
+    // promise never settles from wedging the cadence forever. `mergePending`
+    // is `mergePendingSyncTrigger` rather than the guard's bare last-wins
+    // default: trigger identity survives the guard into this very callback
+    // (`forceFullSweep`/`toCoreTrigger` above both read it), so a later,
+    // lower-priority trigger arriving while e.g. an `"open"` is still
+    // waiting in the guard's pending slot must not silently overwrite it.
     const cadence = createSyncCadence(
       createSyncRunGuard(
         (trigger) =>
@@ -232,7 +242,7 @@ void (async () => {
               jitterUnit: Math.random(),
             }),
           ),
-        { releaseMs: TASK_REQUEST_TIMEOUT_MS },
+        { releaseMs: TASK_REQUEST_TIMEOUT_MS, mergePending: mergePendingSyncTrigger },
       ),
     );
 

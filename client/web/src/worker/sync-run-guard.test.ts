@@ -66,6 +66,65 @@ describe("createSyncRunGuard", () => {
     expect(calls).toEqual(["open", "timer"]);
   });
 
+  it("defaults to last-wins when no mergePending is supplied", async () => {
+    const { runSync, calls, resolveNext } = deferredRunSync();
+    const guarded = createSyncRunGuard(runSync, { releaseMs: 30_000 });
+
+    guarded("open");
+    guarded("focus");
+    guarded("timer");
+
+    resolveNext();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // no custom precedence: the last trigger to arrive is what runs next,
+    // even though "open" arrived first.
+    expect(calls).toEqual(["open", "timer"]);
+  });
+
+  it("uses a caller-supplied mergePending to decide the pending slot instead of last-wins", async () => {
+    const { runSync, calls, resolveNext } = deferredRunSync();
+    // A stand-in precedence: "open" always beats any other trigger.
+    const mergePending = vi.fn((pending: string, incoming: string) =>
+      pending === "open" || incoming === "open" ? "open" : incoming,
+    );
+    const guarded = createSyncRunGuard(runSync, { releaseMs: 30_000, mergePending });
+
+    guarded("open");
+    guarded("focus");
+    guarded("open");
+    guarded("timer");
+
+    expect(calls).toEqual(["open"]);
+    // mergePending is only consulted once a pending slot already holds a
+    // trigger — "focus" was the first to land in the empty slot, so it is
+    // the first call's `pending` argument, not the initial "open" itself
+    // (that "open" started immediately and was never pending).
+    expect(mergePending).toHaveBeenNthCalledWith(1, "focus", "open");
+    expect(mergePending).toHaveBeenNthCalledWith(2, "open", "timer");
+
+    resolveNext();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // the higher-priority pending "open" survived being merged against the
+    // later "timer", so it — not "timer" — is what runs next.
+    expect(calls).toEqual(["open", "open"]);
+  });
+
+  it("does not call mergePending when the pending slot is empty — the first trigger to arrive while in flight just takes the slot", () => {
+    const { runSync, calls } = deferredRunSync();
+    const mergePending = vi.fn((_pending: string, incoming: string) => incoming);
+    const guarded = createSyncRunGuard(runSync, { releaseMs: 30_000, mergePending });
+
+    guarded("open");
+    guarded("focus");
+
+    expect(calls).toEqual(["open"]);
+    expect(mergePending).not.toHaveBeenCalled();
+  });
+
   it("starts a new run immediately, with no added latency, once the in-flight one resolves and nothing was pending", async () => {
     const { runSync, calls, resolveNext } = deferredRunSync();
     const guarded = createSyncRunGuard(runSync, { releaseMs: 30_000 });

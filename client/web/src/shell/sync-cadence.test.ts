@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSyncCadence, shouldRunTimerTick, toCoreTrigger } from "./sync-cadence";
+import {
+  createSyncCadence,
+  mergePendingSyncTrigger,
+  shouldRunTimerTick,
+  toCoreTrigger,
+} from "./sync-cadence";
 
 describe("shouldRunTimerTick", () => {
   it("runs when visible and online", () => {
@@ -29,6 +34,56 @@ describe("toCoreTrigger", () => {
 
   it('maps the unattended timer to "timer"', () => {
     expect(toCoreTrigger("timer")).toBe("timer");
+  });
+});
+
+describe("mergePendingSyncTrigger", () => {
+  // Issue #184 round 2: a pending "open" carries ADR-0008/#193's
+  // app-open full-sweep backstop — dropping it is not merely a delay, it is
+  // lost for the whole SharedWorker lifetime (`openTrigger` only fires
+  // once). It must survive being merged against every other trigger,
+  // arriving either before or after it.
+  it("keeps a pending \"open\" against every later trigger", () => {
+    expect(mergePendingSyncTrigger("open", "focus")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "reconnect")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "manual")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "timer")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "open")).toBe("open");
+  });
+
+  it("an incoming \"open\" always wins, regardless of what is pending", () => {
+    expect(mergePendingSyncTrigger("focus", "open")).toBe("open");
+    expect(mergePendingSyncTrigger("reconnect", "open")).toBe("open");
+    expect(mergePendingSyncTrigger("manual", "open")).toBe("open");
+    expect(mergePendingSyncTrigger("timer", "open")).toBe("open");
+  });
+
+  // Issue #194: a pending user-facing trigger (which resets backoff via
+  // `toCoreTrigger`'s "user" spelling) must not be silently demoted to
+  // "timer" (which does not) by a later, unattended timer tick.
+  it("keeps a pending user-facing trigger against a later \"timer\"", () => {
+    expect(mergePendingSyncTrigger("focus", "timer")).toBe("focus");
+    expect(mergePendingSyncTrigger("reconnect", "timer")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("manual", "timer")).toBe("manual");
+  });
+
+  it("a later user-facing trigger replaces a pending \"timer\"", () => {
+    expect(mergePendingSyncTrigger("timer", "focus")).toBe("focus");
+    expect(mergePendingSyncTrigger("timer", "reconnect")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("timer", "manual")).toBe("manual");
+  });
+
+  // Among the three user-facing triggers there is no caller-visible
+  // behavioral difference downstream of the guard (all map to "user", none
+  // forces a full sweep), so ties fall back to "most recent wins".
+  it("a later user-facing trigger replaces a different pending user-facing trigger", () => {
+    expect(mergePendingSyncTrigger("focus", "manual")).toBe("manual");
+    expect(mergePendingSyncTrigger("manual", "reconnect")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("reconnect", "focus")).toBe("focus");
+  });
+
+  it("a later \"timer\" replaces a pending \"timer\"", () => {
+    expect(mergePendingSyncTrigger("timer", "timer")).toBe("timer");
   });
 });
 
