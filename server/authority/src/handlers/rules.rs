@@ -144,27 +144,45 @@ pub fn patch(
         return Ok(resp);
     }
 
+    // Compared typed against `current` (already the deserialized row) —
+    // never a bare SQL-value `==`, which the integer/real hazard on a DO
+    // cursor would make silently unequal on `f64` vs `Integer` (see the
+    // sql module doc for `SqlValue::as_i64`). A field whose submitted
+    // value already matches the stored one is left out of `sets` entirely,
+    // same as an untouched field (#166, #221).
     let mut sets = Sets::new();
     if let Some(name) = &patch.name {
-        sets.set("name", SqlValue::Text(name.clone()));
+        if *name != current.name {
+            sets.set("name", SqlValue::Text(name.clone()));
+        }
     }
     if let Some(event_kind) = &patch.event_kind {
-        sets.set("event_kind", SqlValue::from_opt_text(event_kind.as_deref()));
+        if *event_kind != current.event_kind {
+            sets.set("event_kind", SqlValue::from_opt_text(event_kind.as_deref()));
+        }
     }
     if let Some(conditions) = &patch.conditions {
-        let encoded = serde_json::to_string(conditions).map_err(|e| SqlError {
-            message: format!("conditions did not encode: {e}"),
-        })?;
-        sets.set("conditions", SqlValue::Text(encoded));
+        if *conditions != current.conditions {
+            let encoded = serde_json::to_string(conditions).map_err(|e| SqlError {
+                message: format!("conditions did not encode: {e}"),
+            })?;
+            sets.set("conditions", SqlValue::Text(encoded));
+        }
     }
     if let Some(severity) = &patch.severity {
-        sets.set("severity", SqlValue::Text(severity.clone()));
+        if *severity != current.severity {
+            sets.set("severity", SqlValue::Text(severity.clone()));
+        }
     }
     if let Some(tier) = patch.tier {
-        sets.set("tier", SqlValue::Text(tier.as_str().to_string()));
+        if tier != current.tier {
+            sets.set("tier", SqlValue::Text(tier.as_str().to_string()));
+        }
     }
     if let Some(enabled) = patch.enabled {
-        sets.set("enabled", SqlValue::Integer(enabled as i64));
+        if enabled != current.enabled {
+            sets.set("enabled", SqlValue::Integer(enabled as i64));
+        }
     }
     if sets.is_empty() {
         return Ok(json(200, &current));
