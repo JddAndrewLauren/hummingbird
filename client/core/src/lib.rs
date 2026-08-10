@@ -42,6 +42,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod calendar;
+pub mod capture;
 pub mod context;
 pub mod storage;
 pub mod sync;
@@ -539,6 +540,11 @@ where
     /// sampled, the same "no clock or RNG that does not panic on bare
     /// wasm32" reasoning every other caller-injected value in `sync`
     /// documents. Returns the minted id.
+    ///
+    /// Runs `title` through [`capture::parse_seam`] (issue #110/#42's named
+    /// no-op) and discards the result: the `title` that reaches the
+    /// mutation below is the caller's own string, verbatim, never the
+    /// seam's output.
     pub async fn capture(
         &mut self,
         seed: &str,
@@ -548,6 +554,7 @@ where
     ) -> Result<String, SnapshotError<QS::Error>> {
         let id = sync::write::deterministic_id(seed);
         let title = title.into();
+        let _ = capture::parse_seam(&title);
 
         let create = CreateItem {
             id: id.clone(),
@@ -1546,6 +1553,90 @@ mod tests {
         let inbox = core.triage_inbox();
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].title, "someday maybe");
+    }
+
+    /// #110 acceptance: "The raw string reaches the mutation unmodified."
+    /// Deliberately pathological — leading/trailing padding, internal
+    /// whitespace, mixed case — none of which a "helpful" parser would
+    /// leave alone, so this fails loudly if `capture::parse_seam`'s output
+    /// is ever wired in instead of being discarded.
+    #[tokio::test]
+    async fn the_raw_capture_string_reaches_the_mutation_unmodified() {
+        let raw = "  Buy   OAT milk\tand   eggs  ";
+        let mut core = Core::new();
+
+        core.capture("seed-1", raw, Stage::Triage, 1_000).await.unwrap();
+
+        let inbox = core.triage_inbox();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(
+            inbox[0].title, raw,
+            "the title an item overlays with must be byte-for-byte what was typed"
+        );
+    }
+
+    /// #110 acceptance: "Offline, three captures then reconnecting produces
+    /// three Triage items in order, with no duplicates." Three captures are
+    /// enqueued with no credential ever reaching the transport (offline);
+    /// reconnecting is one `run` whose write transport accepts all three
+    /// creates and whose read transport's sweep echoes them back as
+    /// confirmed server truth. `capture`'s deterministic id (from each
+    /// distinct seed) is what rules out a duplicate: the same three seeds
+    /// enqueued would collapse to fewer than three ids, and this test would
+    /// fail on the `len()` assertion below.
+    #[tokio::test]
+    async fn three_offline_captures_then_reconnecting_produce_three_distinct_triage_items(
+    ) {
+        let mut core = Core::new();
+        // No `push_api_key` call yet — every capture below is enqueued
+        // durably (`SyncCycle::enqueue`) with no transport ever touched,
+        // which is offline capture end to end.
+        let id1 = core.capture("seed-a", "buy milk", Stage::Triage, 1_000).await.unwrap();
+        let id2 = core.capture("seed-b", "call dentist", Stage::Triage, 2_000).await.unwrap();
+        let id3 = core.capture("seed-c", "water plants", Stage::Triage, 3_000).await.unwrap();
+        assert_eq!(core.queue_depth(), 3, "all three must be durably queued before any network call");
+        assert_eq!(core.triage_inbox().len(), 3, "a capture is visible in the list before any network call");
+
+        // Reconnecting: a credential arrives and one cycle drains the queue,
+        // then pulls a sweep reflecting all three now-confirmed items.
+        core.push_api_key("device-token");
+        let sweep = hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![
+                fixture_item(&id1, Stage::Triage),
+                fixture_item(&id2, Stage::Triage),
+                fixture_item(&id3, Stage::Triage),
+            ],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        };
+        let read = ScriptedRead::sweep_only(vec![Ok(serde_json::to_string(&sweep).unwrap())]);
+        let write = ScriptedWrite::new(vec![
+            ok(201, format!(r#"{{"id":"{id1}","version":1}}"#)),
+            ok(201, format!(r#"{{"id":"{id2}","version":1}}"#)),
+            ok(201, format!(r#"{{"id":"{id3}","version":1}}"#)),
+        ]);
+        let outcome = core.run(&read, &write, 10_000, Trigger::User, true, 0.0).await;
+
+        assert!(
+            matches!(outcome, CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })),
+            "expected a completed reconnect cycle, got {outcome:?}"
+        );
+        assert_eq!(core.queue_depth(), 0, "every queued capture must have drained");
+
+        let inbox = core.triage_inbox();
+        let mut ids: Vec<&str> = inbox.iter().map(|item| item.id.as_str()).collect();
+        ids.sort();
+        let mut expected = vec![id1.as_str(), id2.as_str(), id3.as_str()];
+        expected.sort();
+        assert_eq!(
+            ids, expected,
+            "reconnecting must produce exactly the three captured items, no duplicates and none lost"
+        );
+        assert_eq!(
+            inbox.len(),
+            3,
+            "no duplicates: three offline captures must never collapse into or expand past three items"
+        );
     }
 
     // ------------------------------------------------- blocked() (S10, issue #108)
