@@ -1,7 +1,8 @@
-# The authority server (ADR-0008): native fixture tests for the pure
-# crates, a wasm32 typecheck of the workers-rs shim, and the wire-level
-# smoke test against `wrangler dev` (#113's CI acceptance). No deploy —
-# S0 is local-dev + CI only.
+# The authority server (ADR-0008): the PR-time and push-time test gate.
+# The recipe itself lives in server-test.yml, shared with deploy-server.yml
+# so the gate a PR sees and the gate the production deploy `needs:` cannot
+# drift apart. No deploy here — deploy-server.yml (ADR-0006's CI split)
+# calls the same tests on `main` and runs `wrangler deploy` behind them.
 name: server
 
 on:
@@ -11,11 +12,13 @@ on:
       - "server/**"
       - "rust-toolchain.toml"
       - ".github/workflows/server.yml"
+      - ".github/workflows/server-test.yml"
   pull_request:
     paths:
       - "server/**"
       - "rust-toolchain.toml"
       - ".github/workflows/server.yml"
+      - ".github/workflows/server-test.yml"
 
 # Superseded PR pushes cancel their stale runs.
 concurrency:
@@ -24,43 +27,4 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    # The smoke script bounds its own readiness wait, but npx download and
-    # `cargo install worker-build` on a cold cache are otherwise unbounded.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      # Pinned to match root `rust-toolchain.toml` — see client.yml.
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.97.1"
-          components: clippy
-          targets: wasm32-unknown-unknown
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: server
-          # worker-build is installed by wrangler.toml's [build] command;
-          # caching ~/.cargo/bin keeps that install a no-op across runs.
-          cache-bin: true
-
-      - name: cargo clippy (server workspace)
-        working-directory: server
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Native fixture tests (domain + authority)
-        working-directory: server
-        run: cargo test --workspace
-
-      - name: wasm32 build of the workers-rs shim
-        working-directory: server
-        run: cargo build --target wasm32-unknown-unknown -p hummingbird-authority-worker
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Smoke test against wrangler dev
-        working-directory: server
-        run: ./scripts/smoke.sh
+    uses: ./.github/workflows/server-test.yml
