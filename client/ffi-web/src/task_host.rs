@@ -12,8 +12,11 @@
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
-use hummingbird_core::{Core, CoreCycleOutcome, CoreEvent, CoreInitError};
-use hummingbird_domain::{Item, Stage};
+use hummingbird_core::{
+    ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction, TriageDestination,
+    TriagePatch,
+};
+use hummingbird_domain::{Energy, Item, Project, Size, Stage};
 
 // The real, target-specific store `Core::init` resolves to internally is a
 // *private* type alias (`hummingbird_core::CoreStore`) — this crate cannot
@@ -56,6 +59,95 @@ pub struct CaptureResponse {
     pub error: Option<String>,
 }
 
+/// What [`TaskHostCore::act`] resolves to. `"not_found"` is distinct from
+/// `"failed"`: the former is "no such item to act on" (a caller mistake —
+/// `Core::act`'s [`ActError::ItemNotFound`]), the latter every other
+/// failure (an unrecognised `action` string, or a durability failure
+/// enqueueing the mutation).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ActResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::triage`] resolves to: `"ok"`, `"not_found"` (no such
+/// item — [`ActError::ItemNotFound`]) or `"failed"` (an unrecognised
+/// `destination`, an unrecognised `size`/`energy` name, or a durability
+/// failure enqueueing the mutation — the caller has no differing recovery
+/// for any of those). Same three-way split as [`ActResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TriageResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wire-string fields a triage request carries beyond `destination` —
+/// [`TaskHostCore::triage`]'s own parameter list already reads long, so
+/// grouping the optional edit fields here keeps that signature to one
+/// struct plus the four "which item, which mutation" scalars every other
+/// method here takes individually (`seed`, `item_id`, `now_ms`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct TriageEdits {
+    pub title: Option<String>,
+    pub project_id: Option<String>,
+    /// The wire's snake_case size name (`hummingbird_domain::Size::parse`);
+    /// resolved by name through the vocabulary, never a raw index or a
+    /// hardcoded id.
+    pub size: Option<String>,
+    /// Same "resolved by name" contract as `size`
+    /// (`hummingbird_domain::Energy::parse`).
+    pub energy: Option<String>,
+    pub context: Option<String>,
+}
+
+/// Maps S11/#109's wire action name to [`ItemAction`] — the one place a
+/// string crossing the JS boundary becomes the closed act vocabulary, the
+/// same "reject before the seam" discipline [`TaskHostCore::capture`]
+/// already applies to `stage`. Never a raw [`hummingbird_domain::Stage`]:
+/// there is no wire action that lets a caller send an arbitrary stage id.
+fn parse_action(action: &str) -> Option<ItemAction> {
+    match action {
+        "start" => Some(ItemAction::Start),
+        "complete" => Some(ItemAction::Complete),
+        "block" => Some(ItemAction::Block),
+        "cancel" => Some(ItemAction::Cancel),
+        _ => None,
+    }
+}
+
+/// Maps S13/#111's wire destination name to [`TriageDestination`] — the one
+/// place a triage promotion's target crosses the JS boundary and becomes
+/// the closed destination vocabulary, same "reject before the seam"
+/// discipline [`parse_action`] applies to its own wire strings. Never a raw
+/// [`hummingbird_domain::Stage`]: there is no wire name that lets a caller
+/// send an arbitrary stage id, and there is deliberately no `"backlog"`
+/// spelling here — the owned schema has no such stage (see
+/// [`TriageDestination`]'s own doc).
+fn parse_destination(destination: &str) -> Option<TriageDestination> {
+    match destination {
+        "grilling" => Some(TriageDestination::Grilling),
+        "ready" => Some(TriageDestination::Ready),
+        _ => None,
+    }
+}
+
+/// One item, plus whether it is currently overlaid by an unconfirmed local
+/// mutation (`Core::is_pending`) — S10's "a pending item is marked as such"
+/// acceptance criterion (issue #108). A wrapper around
+/// [`hummingbird_domain::Item`] rather than a field added to it: `pending`
+/// is a purely client-side, read-time fact about the overlay, never a
+/// schema column (ADR-0001 rule 1 makes the schema itself the domain
+/// model). `#[serde(flatten)]` puts `item`'s own fields at the same JSON
+/// level as `pending`, so the wire shape a frontier/blocked entry produces
+/// is one flat object — `task-worker.ts`'s `RawItem` just gains the one
+/// extra key.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FrontierItemDTO {
+    #[serde(flatten)]
+    pub item: Item,
+    pub pending: bool,
+}
+
 /// The wrapper around a live read ([`TaskHostCore::frontier`] /
 /// [`TaskHostCore::triage_inbox`]): `"busy"` when the core is checked out
 /// mid-poll, carrying no items — the same "no new information, don't blank
@@ -63,7 +155,42 @@ pub struct CaptureResponse {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ItemListResponse {
     pub kind: &'static str,
-    pub items: Vec<Item>,
+    pub items: Vec<FrontierItemDTO>,
+}
+
+/// One [`TaskHostCore::blocked`] entry: an item and the open blockers
+/// [`Core::blocked`] paired it with — S10's "relation-blocked … the reason
+/// visible" (issue #108).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BlockedEntryDTO {
+    pub item: FrontierItemDTO,
+    pub blocked_by: Vec<FrontierItemDTO>,
+}
+
+/// The wrapper around [`TaskHostCore::blocked`]'s answer. Same `"busy"`
+/// contract as [`ItemListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BlockedListResponse {
+    pub kind: &'static str,
+    pub entries: Vec<BlockedEntryDTO>,
+}
+
+/// The wrapper around [`TaskHostCore::steps`]'s answer — item detail's
+/// checklist (issue #96, S10). Same `"busy"` contract as [`ItemListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct StepListResponse {
+    pub kind: &'static str,
+    pub steps: Vec<hummingbird_domain::Step>,
+}
+
+/// The wrapper around [`TaskHostCore::projects`]'s answer — resolves a
+/// `TaskItemDTO.projectId` to a real name for the frontier's "grouped by
+/// project" display (issue #108, PR #200 review). Same `"busy"` contract as
+/// [`ItemListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ProjectListResponse {
+    pub kind: &'static str,
+    pub projects: Vec<Project>,
 }
 
 /// The wrapper around [`TaskHostCore::is_pending`]'s answer.
@@ -295,20 +422,80 @@ impl TaskHostCore {
         }
     }
 
+    /// Wraps `item` with whether it is currently overlaid — the one place
+    /// every frontier/triage/blocked read stamps [`FrontierItemDTO::pending`],
+    /// so it is computed the same way (`Core::is_pending`) everywhere it
+    /// appears rather than risking the answer drifting between call sites.
+    fn with_pending(&self, item: Item) -> FrontierItemDTO {
+        let pending = self.core.is_pending(&item.id);
+        FrontierItemDTO { item, pending }
+    }
+
     /// The frontier — what can be started right now, per [`Core::frontier`].
+    /// Each item carries whether it is still an unconfirmed local capture
+    /// (issue #108's "a pending item is marked as such"): the only true
+    /// runtime source of that fact is `Core::is_pending`, so it is stamped
+    /// here rather than left to a caller that would otherwise need one
+    /// `isPending` request per item.
     pub fn frontier(&self) -> ItemListResponse {
         ItemListResponse {
             kind: "ok",
-            items: self.core.frontier(),
+            items: self
+                .core
+                .frontier()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
         }
     }
 
     /// The triage inbox — captured, not yet promoted, per
-    /// [`Core::triage_inbox`].
+    /// [`Core::triage_inbox`]. Same per-item `pending` stamp as
+    /// [`TaskHostCore::frontier`].
     pub fn triage_inbox(&self) -> ItemListResponse {
         ItemListResponse {
             kind: "ok",
-            items: self.core.triage_inbox(),
+            items: self
+                .core
+                .triage_inbox()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
+        }
+    }
+
+    /// Relation-blocked items with the reason visible, per [`Core::blocked`].
+    /// Same per-item `pending` stamp as [`TaskHostCore::frontier`], on both
+    /// the blocked item and the blockers it is paired with.
+    pub fn blocked(&self) -> BlockedListResponse {
+        BlockedListResponse {
+            kind: "ok",
+            entries: self
+                .core
+                .blocked()
+                .into_iter()
+                .map(|(item, blocked_by)| BlockedEntryDTO {
+                    item: self.with_pending(item),
+                    blocked_by: blocked_by.into_iter().map(|b| self.with_pending(b)).collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// One item's Steps, per [`Core::steps_for`] — item detail (issue #96).
+    pub fn steps(&self, item_id: &str) -> StepListResponse {
+        StepListResponse {
+            kind: "ok",
+            steps: self.core.steps_for(item_id),
+        }
+    }
+
+    /// Every live project, per [`Core::projects`] — resolves the frontier's
+    /// grouping to real project names (issue #108, PR #200 review).
+    pub fn projects(&self) -> ProjectListResponse {
+        ProjectListResponse {
+            kind: "ok",
+            projects: self.core.projects(),
         }
     }
 
@@ -345,6 +532,99 @@ impl TaskHostCore {
             Err(error) => CaptureResponse {
                 kind: "failed",
                 id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Acts on an already-existing item (S11/#109: start, complete, block,
+    /// cancel). `action` is the wire's snake_case action name
+    /// ([`parse_action`]); an unrecognised one fails without ever touching
+    /// [`Core::act`], the same "reject before the seam" discipline
+    /// [`TaskHostCore::capture`] uses for `stage`.
+    pub async fn act(&mut self, seed: &str, item_id: &str, action: &str, now_ms: i64) -> ActResponse {
+        let Some(action) = parse_action(action) else {
+            return ActResponse {
+                kind: "failed",
+                error: Some(format!("unrecognised action {action:?}")),
+            };
+        };
+        match self.core.act(seed, item_id, action, now_ms).await {
+            Ok(()) => ActResponse { kind: "ok", error: None },
+            Err(ActError::ItemNotFound) => ActResponse {
+                kind: "not_found",
+                error: Some("item not found".to_string()),
+            },
+            Err(error) => ActResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Triages an already-captured item (S13/#111): edits whatever
+    /// `edits` sets and promotes it to `destination`, as one CAS `PATCH`
+    /// (never four separate mutations — [`Core::triage`]'s own doc).
+    /// `destination` is the wire's snake_case destination name
+    /// ([`parse_destination`]); `edits.size`/`edits.energy` are each
+    /// resolved by name through `hummingbird_domain`'s own vocabulary
+    /// (`Size::parse`/`Energy::parse`). Any unrecognised name fails without
+    /// ever touching [`Core::triage`], the same "reject before the seam"
+    /// discipline [`TaskHostCore::capture`]/[`TaskHostCore::act`] use for
+    /// their own inputs.
+    pub async fn triage(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        destination: &str,
+        edits: TriageEdits,
+        now_ms: i64,
+    ) -> TriageResponse {
+        let Some(destination) = parse_destination(destination) else {
+            return TriageResponse {
+                kind: "failed",
+                error: Some(format!("unrecognised triage destination {destination:?}")),
+            };
+        };
+        let size = match edits.size {
+            Some(raw) => match Size::parse(&raw) {
+                Some(size) => Some(size),
+                None => {
+                    return TriageResponse {
+                        kind: "failed",
+                        error: Some(format!("unrecognised size {raw:?}")),
+                    };
+                }
+            },
+            None => None,
+        };
+        let energy = match edits.energy {
+            Some(raw) => match Energy::parse(&raw) {
+                Some(energy) => Some(energy),
+                None => {
+                    return TriageResponse {
+                        kind: "failed",
+                        error: Some(format!("unrecognised energy {raw:?}")),
+                    };
+                }
+            },
+            None => None,
+        };
+        let patch = TriagePatch {
+            title: edits.title,
+            project_id: edits.project_id,
+            size,
+            energy,
+            context: edits.context,
+        };
+        match self.core.triage(seed, item_id, destination, patch, now_ms).await {
+            Ok(()) => TriageResponse { kind: "ok", error: None },
+            Err(ActError::ItemNotFound) => TriageResponse {
+                kind: "not_found",
+                error: Some("item not found".to_string()),
+            },
+            Err(error) => TriageResponse {
+                kind: "failed",
                 error: Some(error.to_string()),
             },
         }
@@ -404,6 +684,249 @@ impl TaskHostCore {
 }
 
 #[cfg(test)]
+mod act_tests {
+    use super::*;
+
+    #[test]
+    fn act_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let ok = ActResponse { kind: "ok", error: None };
+        assert_eq!(serde_json::to_string(&ok).unwrap(), r#"{"kind":"ok","error":null}"#);
+
+        let not_found = ActResponse {
+            kind: "not_found",
+            error: Some("item not found".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_string(&not_found).unwrap(),
+            r#"{"kind":"not_found","error":"item not found"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn acting_with_an_unrecognised_action_never_reaches_core_act() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "not-an-action", 2_000).await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.error.is_some());
+        // The item is untouched: still Ready, not overlaid by a second
+        // mutation.
+        assert_eq!(host.frontier().items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn acting_on_an_unknown_item_id_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host.act("seed-act-1", "no-such-item", "start", 1_000).await;
+
+        assert_eq!(response.kind, "not_found");
+        assert!(response.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn completing_a_captured_item_shows_done_immediately_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "complete", 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.error.is_none());
+        assert!(host.is_pending(&id).pending);
+        assert_eq!(
+            host.frontier().items.len(),
+            0,
+            "a completed item drops off the frontier immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_an_item_never_shows_up_as_a_relation_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-4");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "block", 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(
+            host.blocked(),
+            BlockedListResponse { kind: "ok", entries: Vec::new() },
+            "Stage::Blocked is never expressed through the relation-blocked query"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_item_drops_it_from_the_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-5");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        let response = host.act("seed-act-1", &id, "cancel", 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.frontier().items.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod triage_tests {
+    use super::*;
+
+    #[test]
+    fn triage_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let ok = TriageResponse { kind: "ok", error: None };
+        assert_eq!(serde_json::to_string(&ok).unwrap(), r#"{"kind":"ok","error":null}"#);
+    }
+
+    #[tokio::test]
+    async fn triaging_with_an_unrecognised_destination_never_reaches_core_triage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage("seed-triage-1", &id, "backlog", TriageEdits::default(), 2_000)
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.error.is_some());
+        assert_eq!(host.triage_inbox().items.len(), 1, "the item is untouched");
+    }
+
+    #[tokio::test]
+    async fn triaging_with_an_unrecognised_size_never_reaches_core_triage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage(
+                "seed-triage-1",
+                &id,
+                "ready",
+                TriageEdits { size: Some("giant".to_string()), ..TriageEdits::default() },
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.error.is_some());
+        assert_eq!(host.triage_inbox().items.len(), 1, "the item is untouched");
+    }
+
+    #[tokio::test]
+    async fn triaging_on_an_unknown_item_id_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host
+            .triage("seed-triage-1", "no-such-item", "ready", TriageEdits::default(), 1_000)
+            .await;
+
+        assert_eq!(response.kind, "not_found");
+        assert!(response.error.is_some());
+    }
+
+    /// This issue's headline acceptance: a triaged item leaves the triage
+    /// query and appears on the frontier — through the same `Core` overlay
+    /// every other read here goes through.
+    #[tokio::test]
+    async fn promoting_to_ready_moves_the_item_from_triage_to_the_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-4");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage(
+                "seed-triage-1",
+                &id,
+                "ready",
+                TriageEdits {
+                    title: Some("buy milk".to_string()),
+                    project_id: Some("project-1".to_string()),
+                    size: Some("quick".to_string()),
+                    energy: Some("low".to_string()),
+                    context: Some("@errands".to_string()),
+                },
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.triage_inbox().items.len(), 0);
+        let frontier = host.frontier();
+        assert_eq!(frontier.items.len(), 1);
+        let item = &frontier.items[0].item;
+        assert_eq!(item.title, "buy milk");
+        assert_eq!(item.project_id.as_deref(), Some("project-1"));
+        assert!(item.size.is_some());
+        assert!(item.energy.is_some());
+        assert_eq!(item.context.as_deref(), Some("@errands"));
+        assert!(frontier.items[0].pending, "an unconfirmed triage must read as pending");
+    }
+
+    #[tokio::test]
+    async fn sending_to_grilling_leaves_the_triage_inbox_without_reaching_the_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-5");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage("seed-triage-1", &id, "grilling", TriageEdits::default(), 2_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.triage_inbox().items.len(), 0);
+        assert_eq!(host.frontier().items.len(), 0);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -457,11 +980,25 @@ mod tests {
         assert!(host.is_pending(&id).pending);
         let frontier = host.frontier();
         assert_eq!(frontier.items.len(), 1);
-        assert_eq!(frontier.items[0].title, "buy milk");
+        assert_eq!(frontier.items[0].item.title, "buy milk");
+        assert!(
+            frontier.items[0].pending,
+            "a still-queued capture must be marked pending on the frontier item itself, \
+             not just answerable via a separate isPending request"
+        );
         // A `Stage::Triage` (the default in `Core`, but here explicit via
         // "ready") capture is not on the triage inbox.
         assert_eq!(host.triage_inbox().items.len(), 0);
     }
+
+    /// `Core::is_pending` itself (and the overlay-clearing behaviour once a
+    /// sweep confirms or dead-letters a capture) is exhaustively covered at
+    /// the `client/core` layer (`a_sweep_confirming_the_capture_removes_the_overlay_with_no_gap`,
+    /// `a_dead_lettered_capture_removes_the_overlay_and_reverts_to_server_truth`).
+    /// `with_pending` is a one-line pass-through with no branching logic of
+    /// its own, so what this layer needs to pin is the wire shape it
+    /// produces for both states — covered below by
+    /// `frontier_item_dto_serializes_pending_alongside_the_flattened_item_fields`.
 
     #[tokio::test]
     async fn a_triage_stage_capture_lands_on_the_inbox_not_the_frontier() {
@@ -475,6 +1012,19 @@ mod tests {
 
         assert_eq!(host.frontier().items.len(), 0);
         assert_eq!(host.triage_inbox().items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_host_reports_no_blocked_items_and_no_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-blocked-1");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        assert_eq!(host.blocked(), BlockedListResponse { kind: "ok", entries: Vec::new() });
+        assert_eq!(host.steps("some-id"), StepListResponse { kind: "ok", steps: Vec::new() });
+        assert_eq!(host.projects(), ProjectListResponse { kind: "ok", projects: Vec::new() });
     }
 
     #[tokio::test]
@@ -907,6 +1457,109 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&response).unwrap(),
             r#"{"kind":"ok","items":[]}"#
+        );
+    }
+
+    fn fixture_item(id: &str) -> Item {
+        Item {
+            id: id.to_string(),
+            seq: None,
+            title: "buy milk".to_string(),
+            description: None,
+            stage: Stage::Ready,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: None,
+            scheduled_date: None,
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+        }
+    }
+
+    /// Pins the wire shape `task-worker.ts`'s `RawItem` parses: `pending`
+    /// sits alongside the flattened `Item` fields, not nested under a
+    /// separate `item` key — and this is asserted for both `true` and
+    /// `false` so a regression that hard-codes one value would fail here.
+    #[test]
+    fn frontier_item_dto_serializes_pending_alongside_the_flattened_item_fields() {
+        let pending = FrontierItemDTO {
+            item: fixture_item("item-1"),
+            pending: true,
+        };
+        let json = serde_json::to_string(&pending).unwrap();
+        assert!(json.contains(r#""id":"item-1""#), "{json}");
+        assert!(json.contains(r#""pending":true"#), "{json}");
+        assert!(!json.contains("\"item\":{"), "pending must not nest under an `item` key: {json}");
+
+        let confirmed = FrontierItemDTO {
+            item: fixture_item("item-2"),
+            pending: false,
+        };
+        assert!(serde_json::to_string(&confirmed).unwrap().contains(r#""pending":false"#));
+    }
+
+    #[test]
+    fn blocked_entry_dto_carries_pending_on_both_the_item_and_its_blockers() {
+        let entry = BlockedEntryDTO {
+            item: FrontierItemDTO { item: fixture_item("blocked-1"), pending: true },
+            blocked_by: vec![FrontierItemDTO { item: fixture_item("blocker-1"), pending: false }],
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""item":{"id":"blocked-1""#), "{json}");
+        assert!(json.contains(r#""pending":true"#), "{json}");
+        assert!(json.contains(r#""blocked_by":[{"id":"blocker-1""#), "{json}");
+        assert!(json.contains(r#""pending":false"#), "{json}");
+    }
+
+    #[test]
+    fn blocked_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = BlockedListResponse {
+            kind: "ok",
+            entries: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","entries":[]}"#
+        );
+    }
+
+    #[test]
+    fn step_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = StepListResponse {
+            kind: "ok",
+            steps: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","steps":[]}"#
+        );
+    }
+
+    #[test]
+    fn project_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = ProjectListResponse {
+            kind: "ok",
+            projects: vec![Project {
+                id: "p-1".to_string(),
+                name: "Ship it".to_string(),
+                archived_at: None,
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","projects":[{"id":"p-1","name":"Ship it","archived_at":null,"created_at":1,"updated_at":1,"version":1}]}"#
         );
     }
 

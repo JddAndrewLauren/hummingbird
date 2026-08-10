@@ -6,9 +6,12 @@ one core per origin, N views (ADR-0010, #126) — PWA offline shell, served
 from Cloudflare Workers static assets at `hb.twinion.net` (ADR-0006). The
 shell is built on the Hummingbird Design System (see the repo `CLAUDE.md`):
 a fixed nav rail over five surfaces — Now, Triage, Routes, Alerts, Settings.
-Task sync against the owned authority (ADR-0008) is live as of S6–S9:
-capture, the frontier and triage inbox, the device token, and ADR-0007's
-sync cadence with its status readout. A Linear client adapter is never
+Task sync against the owned authority (ADR-0008) is live as of S6–S13:
+capture (plus the global "c" focus hotkey), the frontier with its project
+groups, item detail and the relation-blocked explanation, the act
+affordances (start / complete / block / cancel), triage promotion with its
+one-mutation multi-field edit, the device token, and ADR-0007's sync
+cadence with its status readout. A Linear client adapter is never
 built. Calendar context and its Google auth landed with #73 and are real.
 Nothing is deployed yet — `VITE_API_BASE_URL` is unset by default, so every
 cycle fast-fails as `pull_failed` until #95's H3 human gate.
@@ -27,8 +30,24 @@ pnpm dev            # build the wasm core, then vite dev
 ## Commands
 
 - `pnpm build` — wasm core build, `tsc -b`, then `vite build` into `dist/`.
-- `pnpm test` — vitest over the store, worker-protocol, and CSP-worker unit
-  tests (`src/**/*.test.ts`, `csp-worker/**/*.test.ts`).
+- `pnpm test` — vitest over the store, worker-protocol, screen/shell
+  pure-logic and CSP-worker unit tests (`src/**/*.test.ts`,
+  `csp-worker/**/*.test.ts`), plus the component tests
+  (`src/**/*.test.tsx`). `environment: "node"` stays the default — the
+  `worker/*` tests assert against a `SharedWorker`-shaped world with no
+  `document` — and a component test opts into jsdom per file with a
+  `// @vitest-environment jsdom` docblock. Mount through
+  `src/test/component.tsx`, never `@testing-library/react` directly: it
+  registers the `afterEach(cleanup)` RTL skips without `globals: true`.
+  Component tests exist because **typecheck cannot tell you a module has no
+  caller** — see that file's header.
+- `pnpm visual` — the Playwright visual gate: five screens x three widths x
+  two themes, plus Now's empty state, captured to `visual/.captures/` for
+  review. Fails on horizontal overflow, an unresolved brand token, or a
+  theme switch that does not reach the page; everything else is for human
+  eyes, since there is no committed golden. Needs a one-time `pnpm exec
+  playwright install chromium`, and is deliberately not in CI. The registry
+  is `docs/SURFACES.md`.
 - `pnpm typecheck` — `tsc -b --noEmit` across the app and the Cloudflare
   Worker script. Note `tsc -p tsconfig.json` checks **nothing** — the root
   config is solution-style (`"files": []`); always go through this script.
@@ -60,10 +79,19 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   `useCalendarWiring` (consent, token rotation, the 15-minute poll and the
   staleness clock), `useTaskTokenWiring` (the device token's entry, rest and
   re-prompt, #106), `useSyncWiring` (the per-cycle reads and the view's own
-  visibility/focus reports — it owns no timer; see below), plus the pure
-  readouts `sync-cadence.ts` and `sync-status.ts`.
+  visibility/focus reports — it owns no timer; see below),
+  `useFrontierWiring` / `useItemDetailWiring` / `useCaptureWiring` (the same
+  once-ready-then-per-cycle refresh, keyed on `syncOutcomeSeq`, never a
+  timer of their own) and the one-line send wrappers `useItemActions` /
+  `useTriageWiring`, plus the pure readouts `sync-cadence.ts`,
+  `sync-status.ts` and `capture-hotkey.ts` (DOM-free: the caller extracts
+  the facts from the real `KeyboardEvent`).
 - `src/screens/` — the five surfaces. They switch on local state: there are
-  no deep links to honour yet, so no router is installed.
+  no deep links to honour yet, so no router is installed. Everything
+  decidable is a sibling pure module the `.tsx` only threads state through
+  — `frontier-order.ts`, `frontier-groups.ts`, `priority.ts`, `urgency.ts`,
+  `blocked-reason.ts`, `capture-validation.ts`, `triage-order.ts`,
+  `item-actions.ts`, `triage-form.ts`.
 - `src/theme/` — the `light | dark | system` preference, persisted at
   `hb.theme` and resolved onto `[data-theme]`. "Follow system" is resolved in
   JS because the stylesheet only knows `[data-theme="dark"]`.

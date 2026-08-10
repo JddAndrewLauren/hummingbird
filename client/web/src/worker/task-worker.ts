@@ -1,5 +1,8 @@
 import type {
+  BlockedFrontierEntryDTO,
   DeadLetterEntryDTO,
+  ProjectDTO,
+  StepDTO,
   TaskEventDTO,
   TaskItemDTO,
   TaskRunOutcomeKind,
@@ -25,8 +28,27 @@ export interface TaskHostLike {
   rehydrateApiKey(apiKey: string): void;
   clearApiKey(): void;
   capture(seed: string, title: string, stage: string, nowMs: number): Promise<string>;
+  act(seed: string, itemId: string, action: string, nowMs: number): Promise<string>;
+  /** S13/#111's triage mutation. Mirrors `hummingbird-ffi-web`'s
+   * `TaskHost::triage` exactly (`client/ffi-web/src/lib.rs`) — five
+   * `undefined`-or-`string` edit fields plus `destination`, resolved to
+   * JSON: `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`. */
+  triage(
+    seed: string,
+    itemId: string,
+    destination: string,
+    title: string | null,
+    projectId: string | null,
+    size: string | null,
+    energy: string | null,
+    context: string | null,
+    nowMs: number,
+  ): Promise<string>;
   frontier(): string;
   triageInbox(): string;
+  blocked(): string;
+  steps(itemId: string): string;
+  projects(): string;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -61,11 +83,54 @@ interface RawItem {
   created_at: number;
   updated_at: number;
   version: number;
+  /** Flattened alongside the item's own fields (`FrontierItemDTO`,
+   * `client/ffi-web/src/task_host.rs`) — issue #108's "a pending item is
+   * marked as such". */
+  pending: boolean;
+}
+
+interface RawProject {
+  id: string;
+  name: string;
+  archived_at: number | null;
+  created_at: number;
+  updated_at: number;
+  version: number;
+}
+
+interface RawProjectListResponse {
+  kind: "ok" | "busy";
+  projects: RawProject[];
 }
 
 interface RawItemListResponse {
   kind: "ok" | "busy";
   items: RawItem[];
+}
+
+interface RawBlockedEntry {
+  item: RawItem;
+  blocked_by: RawItem[];
+}
+
+interface RawBlockedListResponse {
+  kind: "ok" | "busy";
+  entries: RawBlockedEntry[];
+}
+
+interface RawStep {
+  id: string;
+  item_id: string;
+  body: string;
+  done: boolean;
+  position: number;
+  deleted_at: number | null;
+  version: number;
+}
+
+interface RawStepListResponse {
+  kind: "ok" | "busy";
+  steps: RawStep[];
 }
 
 interface RawIsPendingResponse {
@@ -76,6 +141,16 @@ interface RawIsPendingResponse {
 interface RawCaptureResponse {
   kind: "ok" | "failed" | "busy";
   id: string | null;
+  error: string | null;
+}
+
+interface RawActResponse {
+  kind: "ok" | "not_found" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawTriageResponse {
+  kind: "ok" | "not_found" | "failed" | "busy";
   error: string | null;
 }
 
@@ -147,6 +222,37 @@ function mapItem(raw: RawItem): TaskItemDTO {
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+    version: raw.version,
+    pending: raw.pending,
+  };
+}
+
+function mapProject(raw: RawProject): ProjectDTO {
+  return {
+    id: raw.id,
+    name: raw.name,
+    archivedAt: raw.archived_at,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    version: raw.version,
+  };
+}
+
+function mapBlockedEntries(raw: RawBlockedEntry[]): BlockedFrontierEntryDTO[] {
+  return raw.map((entry) => ({
+    item: mapItem(entry.item),
+    blockedBy: entry.blocked_by.map(mapItem),
+  }));
+}
+
+function mapStep(raw: RawStep): StepDTO {
+  return {
+    id: raw.id,
+    itemId: raw.item_id,
+    body: raw.body,
+    done: raw.done,
+    position: raw.position,
+    deletedAt: raw.deleted_at,
     version: raw.version,
   };
 }
@@ -249,6 +355,43 @@ export async function handleTaskRequest(
       postTaskEvents(host, post);
       return;
     }
+    case "act": {
+      const raw = JSON.parse(
+        await host.act(request.seed, request.itemId, request.action, request.nowMs),
+      ) as RawActResponse;
+      post({
+        type: "actResult",
+        seed: request.seed,
+        itemId: request.itemId,
+        action: request.action,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "triage": {
+      const raw = JSON.parse(
+        await host.triage(
+          request.seed,
+          request.itemId,
+          request.destination,
+          request.title,
+          request.projectId,
+          request.size,
+          request.energy,
+          request.context,
+          request.nowMs,
+        ),
+      ) as RawTriageResponse;
+      post({
+        type: "triageResult",
+        seed: request.seed,
+        itemId: request.itemId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
     case "getFrontier": {
       const raw = JSON.parse(host.frontier()) as RawItemListResponse;
       if (raw.kind === "busy") {
@@ -266,6 +409,30 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "triageInbox", items: raw.items.map(mapItem) });
+      return;
+    }
+    case "getBlocked": {
+      const raw = JSON.parse(host.blocked()) as RawBlockedListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "blocked", entries: mapBlockedEntries(raw.entries) });
+      return;
+    }
+    case "getSteps": {
+      const raw = JSON.parse(host.steps(request.itemId)) as RawStepListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "steps", itemId: request.itemId, steps: raw.steps.map(mapStep) });
+      return;
+    }
+    case "getProjects": {
+      const raw = JSON.parse(host.projects()) as RawProjectListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "projects", projects: raw.projects.map(mapProject) });
       return;
     }
     case "isPending": {

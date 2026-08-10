@@ -51,7 +51,12 @@ fn create_replay_same_id_returns_200_current_rule_without_bump() {
 
 /// The ADR-0013 amendment this brief is easiest to get wrong by copying
 /// ADR-0012 alone: `event_kind` is nullable with no `CHECK` — both `NULL`
-/// and a kind the code does not yet know must be accepted.
+/// and a kind the code does not yet know must be accepted. Still true
+/// post-#186: `validate_rule`'s `UnknownKind` problem is deliberately
+/// excluded from the save-time check (see `rules::save_time_problems`) —
+/// `Rule::event_kind`'s own doc says a kind the code does not yet know is
+/// legal, and ADR-0013 only requires *field*/*value* problems rejected at
+/// save, leaving kind drift to be flagged at load/fire time instead.
 #[test]
 fn event_kind_accepts_null_and_an_unknown_kind() {
     let sql = RusqliteSql::new();
@@ -74,13 +79,15 @@ fn event_kind_accepts_null_and_an_unknown_kind() {
 }
 
 /// A `conditions` payload round-trips through the handler with `negate`
-/// preserved on every condition.
+/// preserved on every condition. `event_kind: "email"` is required here
+/// (#186): `labels`/`subject` are `email`-declared fields, not core ones,
+/// and `validate_rule` now rejects an unknown field at save.
 #[test]
 fn conditions_round_trip_with_negate_through_the_handler() {
     let sql = RusqliteSql::new();
     let resp = post_rule(
         &sql,
-        r#"{"id": "r-1", "name": "n",
+        r#"{"id": "r-1", "name": "n", "event_kind": "email",
             "conditions": [
               {"field": "labels", "op": "contains", "value": "alert-high", "negate": true},
               {"field": "subject", "op": "contains", "value": ["urgent", "asap"], "negate": false}
@@ -100,6 +107,110 @@ fn conditions_round_trip_with_negate_through_the_handler() {
     assert_eq!(pulled.rules.len(), 1);
     assert!(pulled.rules[0].conditions[0].negate);
     assert!(!pulled.rules[0].conditions[1].negate);
+}
+
+/// ADR-0013's two save-time duration rules (#186): a malformed duration
+/// literal, and an `m`/`h` unit on a `date`-typed field — both rejected at
+/// `POST /api/rules`, and neither reaches a write (`meta_version` stays
+/// at 0). Each is exercised negated too, so the always-true path #133
+/// fixed at fire time (a malformed condition evaluating to `false`, then
+/// inverted by `negate: true`) can never be reached through the API.
+#[test]
+fn create_rejects_a_malformed_duration_literal() {
+    let sql = RusqliteSql::new();
+    for negate in [false, true] {
+        let resp = post_rule(
+            &sql,
+            &format!(
+                r#"{{"id": "r-1", "name": "n", "event_kind": "item_threshold",
+                    "conditions": [
+                      {{"field": "scheduled_date", "op": "within_next", "value": "1d2h", "negate": {negate}}}
+                    ],
+                    "severity": "s", "tier": "normal"}}"#
+            ),
+            0,
+        );
+        assert_eq!(resp.status, 400, "negate={negate}: {}", resp.body);
+        assert!(resp.body.contains("scheduled_date"), "{}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 0, "no write happened");
+    let rows = sql.exec("SELECT id FROM rules", &[]).unwrap();
+    assert!(rows.is_empty(), "no row landed");
+}
+
+#[test]
+fn create_rejects_an_hour_unit_on_a_date_typed_field() {
+    let sql = RusqliteSql::new();
+    for negate in [false, true] {
+        let resp = post_rule(
+            &sql,
+            &format!(
+                r#"{{"id": "r-1", "name": "n", "event_kind": "item_threshold",
+                    "conditions": [
+                      {{"field": "scheduled_date", "op": "within_next", "value": "2h", "negate": {negate}}}
+                    ],
+                    "severity": "s", "tier": "normal"}}"#
+            ),
+            0,
+        );
+        assert_eq!(resp.status, 400, "negate={negate}: {}", resp.body);
+        assert!(resp.body.contains("scheduled_date"), "{}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 0, "no write happened");
+    let rows = sql.exec("SELECT id FROM rules", &[]).unwrap();
+    assert!(rows.is_empty(), "no row landed");
+}
+
+/// `RuleProblem::RetiredSource` (#189) is not `UnknownKind` — it is not
+/// excluded from `save_time_problems`, so it is rejected at save exactly
+/// like a malformed value, negated or not. `city-waste/v1` is the
+/// registry's real retired entry (ADR-0014).
+#[test]
+fn create_rejects_a_condition_naming_a_retired_source() {
+    let sql = RusqliteSql::new();
+    for negate in [false, true] {
+        let resp = post_rule(
+            &sql,
+            &format!(
+                r#"{{"id": "r-1", "name": "n",
+                    "conditions": [
+                      {{"field": "source", "op": "eq", "value": "city-waste/v1", "negate": {negate}}}
+                    ],
+                    "severity": "s", "tier": "normal"}}"#
+            ),
+            0,
+        );
+        assert_eq!(resp.status, 400, "negate={negate}: {}", resp.body);
+        assert!(resp.body.contains("city-waste/v1"), "{}", resp.body);
+        assert!(resp.body.contains("city-waste/v2"), "names the successor: {}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 0, "no write happened");
+    let rows = sql.exec("SELECT id FROM rules", &[]).unwrap();
+    assert!(rows.is_empty(), "no row landed");
+}
+
+/// A **live** or **unregistered** source is not rejected — only a
+/// resolved-and-retired one is a save-time problem.
+#[test]
+fn create_accepts_a_live_or_unregistered_source_condition() {
+    let sql = RusqliteSql::new();
+    let resp = post_rule(
+        &sql,
+        r#"{"id": "r-live", "name": "n",
+            "conditions": [{"field": "source", "op": "eq", "value": "gmail/v1", "negate": false}],
+            "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    assert_eq!(resp.status, 201, "live source: {}", resp.body);
+
+    let resp = post_rule(
+        &sql,
+        r#"{"id": "r-web", "name": "n",
+            "conditions": [{"field": "source", "op": "eq", "value": "web/v1", "negate": false}],
+            "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    assert_eq!(resp.status, 201, "unregistered source: {}", resp.body);
 }
 
 #[test]
@@ -192,6 +303,85 @@ fn patch_null_on_not_null_field_400() {
         assert_eq!(resp.status, 400, "null `{field}`: {}", resp.body);
     }
     assert_eq!(meta_version(&sql), 1, "no write happened");
+}
+
+/// The patch counterpart of `create_rejects_a_malformed_duration_literal`
+/// (#186): a patch must not be able to smuggle in a condition a create
+/// would reject.
+#[test]
+fn patch_rejects_a_malformed_duration_literal() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "n", "event_kind": "item_threshold", "conditions": [],
+            "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    for negate in [false, true] {
+        let resp = patch_rule(
+            &sql,
+            "r-1",
+            &format!(
+                r#"{{"expected_version": 1,
+                    "conditions": [
+                      {{"field": "scheduled_date", "op": "within_next", "value": "1d2h", "negate": {negate}}}
+                    ]}}"#
+            ),
+            2000,
+        );
+        assert_eq!(resp.status, 400, "negate={negate}: {}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 1, "no write happened beyond the create");
+}
+
+/// The patch counterpart of `create_rejects_an_hour_unit_on_a_date_typed_field`.
+#[test]
+fn patch_rejects_an_hour_unit_on_a_date_typed_field() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "n", "event_kind": "item_threshold", "conditions": [],
+            "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    for negate in [false, true] {
+        let resp = patch_rule(
+            &sql,
+            "r-1",
+            &format!(
+                r#"{{"expected_version": 1,
+                    "conditions": [
+                      {{"field": "scheduled_date", "op": "within_next", "value": "2h", "negate": {negate}}}
+                    ]}}"#
+            ),
+            2000,
+        );
+        assert_eq!(resp.status, 400, "negate={negate}: {}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 1, "no write happened beyond the create");
+}
+
+/// A patch that leaves `conditions` untouched must still be validated
+/// against its *post-patch* `event_kind` (#186): the seeded rule's
+/// `scheduled_date` condition is legal under `item_threshold`, but
+/// re-kinding to `email` (which declares no `scheduled_date`) must reject
+/// even though the patch body never mentions `conditions` itself.
+#[test]
+fn patch_validates_untouched_conditions_against_a_new_event_kind() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "n", "event_kind": "item_threshold",
+            "conditions": [
+              {"field": "scheduled_date", "op": "within_next", "value": "3d", "negate": false}
+            ],
+            "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    let resp = patch_rule(&sql, "r-1", r#"{"expected_version": 1, "event_kind": "email"}"#, 2000);
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    assert!(resp.body.contains("scheduled_date"), "{}", resp.body);
+    assert_eq!(meta_version(&sql), 1, "no write happened beyond the create");
 }
 
 #[test]

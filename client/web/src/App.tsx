@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { contextTileProps } from "./calendar/tile-props";
 import { demoData } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
@@ -6,6 +6,7 @@ import { NowScreen } from "./screens/NowScreen";
 import { RoutesScreen } from "./screens/RoutesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TriageScreen } from "./screens/TriageScreen";
+import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { Header } from "./shell/Header";
 import { NavRail } from "./shell/NavRail";
 import { canRefresh } from "./shell/refresh-gate";
@@ -13,6 +14,11 @@ import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
 import { syncStatusLabel } from "./shell/sync-status";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
+import { useCaptureWiring } from "./shell/useCaptureWiring";
+import { useFrontierWiring } from "./shell/useFrontierWiring";
+import { useItemActions } from "./shell/useItemActions";
+import { useTriageWiring } from "./shell/useTriageWiring";
+import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
@@ -82,6 +88,58 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
 
   const online = useOnlineStatus();
   const { nowMs: syncNowMs, handleDownloadMirror, handleManualSync } = useSyncWiring(worker, status);
+  useFrontierWiring(worker, status, task.syncOutcomeSeq);
+  const {
+    selectedItemId,
+    openItem: handleOpenItem,
+    closeItem: handleCloseItemDetail,
+  } = useItemDetailWiring(worker, task.syncOutcomeSeq);
+  const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
+
+  // #110/S12's "always-present ... plus a global hotkey that focuses it"
+  // (#98, restated on #110): a counter, not a boolean — `TriageScreen`'s own
+  // effect keys off it changing, so a second hotkey press while already on
+  // Triage re-focuses the input instead of being a no-op. Bumped by both the
+  // hotkey below and the header's Capture button, since both are "take me to
+  // the capture box" gestures.
+  const [captureFocusRequestId, setCaptureFocusRequestId] = useState(0);
+  const requestCaptureFocus = () => {
+    setScreen("triage");
+    setCaptureFocusRequestId((id) => id + 1);
+  };
+
+  // The global focus hotkey (#107's decision: shell level, not a leaf
+  // component — `src/App.tsx` is that level). One `keydown` listener for the
+  // whole app; the matching rule itself is `capture-hotkey.ts`'s pure
+  // `isCaptureHotkey`, so this effect is only ever DOM plumbing.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target;
+      const targetIsEditable =
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (
+        isCaptureHotkey({
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          altKey: event.altKey,
+          targetIsEditable,
+          isComposing: event.isComposing,
+        })
+      ) {
+        event.preventDefault();
+        requestCaptureFocus();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+  const { act: handleAct } = useItemActions(worker);
+  const { triage: handleTriage } = useTriageWiring(worker);
   const syncLabel = syncStatusLabel({
     online,
     lastSyncOutcome: task.lastSyncOutcome,
@@ -139,7 +197,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // `sync-status.ts`.
           syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
-          onCapture={() => setScreen("triage")}
+          onCapture={requestCaptureFocus}
         />
 
         {/* The one scroll container: the design README fixes the rail and
@@ -152,8 +210,28 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
             padding: "0 var(--gutter-page) var(--space-11)",
           }}
         >
-          {screen === "now" && <NowScreen demo={demo} tile={tile} onScreen={setScreen} />}
-          {screen === "triage" && <TriageScreen demo={demo} />}
+          {screen === "now" && (
+            <NowScreen
+              demo={demo}
+              tile={tile}
+              onScreen={setScreen}
+              task={task}
+              nowMs={nowMs}
+              selectedItemId={selectedItemId}
+              onOpenItem={handleOpenItem}
+              onCloseItemDetail={handleCloseItemDetail}
+              onAct={handleAct}
+            />
+          )}
+          {screen === "triage" && (
+            <TriageScreen
+              demo={demo}
+              task={task}
+              onSubmitCapture={submitCapture}
+              onTriage={demo ? undefined : handleTriage}
+              focusRequestId={captureFocusRequestId}
+            />
+          )}
           {screen === "routes" && <RoutesScreen demo={demo} />}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
           {screen === "settings" && (

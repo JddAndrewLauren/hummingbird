@@ -76,7 +76,9 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
       ) : null}
       {/* The shell owns capture (#107): the box itself lives on Triage, and
           this is the always-present way to reach it from any screen. The
-          global focus hotkey lands with S12 (#110). */}
+          global focus hotkey (#110/S12) is `App.tsx`'s `capture-hotkey.ts`
+          listener — this button fires the identical "focus the box"
+          request. */}
       <Button iconLeft="feather" onClick={onCapture}>
         Capture
       </Button>

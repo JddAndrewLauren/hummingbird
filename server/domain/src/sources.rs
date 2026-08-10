@@ -100,6 +100,19 @@ impl SourceEntry {
 /// source below has at least one frozen key-vector test in this module,
 /// and the whole table is pinned verbatim by
 /// `tests::registry_matches_the_frozen_adr_0014_table`.
+/// `item-threshold/v1`'s frozen namespace, named as a `const` (not just a
+/// literal in the registry array below) so #138's DO alarm sweep — the one
+/// caller that mints under this source without going through a webhook —
+/// references this exact string rather than an independent copy. A
+/// hand-typed second literal in `authority`'s sweep would drift silently
+/// past the registry's own retirement tripwire the moment this source is
+/// ever retired to `/v2`: `find` would still resolve the old string
+/// (nothing would 400 or warn, since nothing calls `find` on a hardcoded
+/// mint the way `validate_rule` does for a rule condition), and the sweep
+/// would keep minting under a source the registry already flags as dead.
+/// One `const`, two consumers, makes that drift a compile error instead.
+pub const ITEM_THRESHOLD_V1: &str = "item-threshold/v1";
+
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: "gmail/v1",
@@ -130,6 +143,22 @@ pub const REGISTRY: &[SourceEntry] = &[
         expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
     },
+    // Retired, deliberately, to give ADR-0014's second registry job (a
+    // rule or an ingest token naming a retired source is flagged, never
+    // silently inert) something real to exercise end-to-end — this is the
+    // ADR's own worked example verbatim ("`source eq 'city-waste/v1'`
+    // matching nothing forever after a bump", ADR-0014). Safe to retire
+    // for real: nothing is deployed yet and the city-waste poller
+    // (#135-137) is unbuilt, so no adapter has ever minted a row under
+    // it. `city_waste_v1_key` stays defined and tested below regardless —
+    // retirement never breaks the recipe old rows still need.
+    //
+    // No `city-waste/v2` entry exists here yet — that lands with #135-137,
+    // whichever poller actually produces `/v2` rows. Until then `city-waste`
+    // is entirely unmintable as an ingest-token source (`v1` 400s as
+    // retired, `v2` 400s as unregistered): correct per ADR-0014, and loud
+    // rather than silent, but worth knowing going in rather than
+    // rediscovering at that poller's `POST /api/admin/tokens` step.
     SourceEntry {
         source: "city-waste/v1",
         shape: Shape::Event,
@@ -137,10 +166,10 @@ pub const REGISTRY: &[SourceEntry] = &[
                       collection date, never whatever date a later \
                       correction slides to",
         expires_at: Expiry::Always("end of the affected collection date"),
-        retired_as: None,
+        retired_as: Some("city-waste/v2"),
     },
     SourceEntry {
-        source: "item-threshold/v1",
+        source: ITEM_THRESHOLD_V1,
         shape: Shape::State,
         key_recipe: "item:<id>",
         expires_at: Expiry::Never,
@@ -320,7 +349,7 @@ mod tests {
                 "city-waste/v1",
                 Shape::Event,
                 Expiry::Always("end of the affected collection date"),
-                None,
+                Some("city-waste/v2"),
             ),
             ("item-threshold/v1", Shape::State, Expiry::Never, None),
             ("healthchecks/v1", Shape::State, Expiry::Never, None),
@@ -391,11 +420,24 @@ mod tests {
         assert!(!entry.is_retired());
     }
 
+    /// `city-waste/v1` is the registry's one real retired entry (#189) —
+    /// `find` resolves it, and it reports retired with its successor,
+    /// through the actual production path (not a locally-built fixture).
+    #[test]
+    fn find_resolves_the_one_retired_registry_entry() {
+        let entry = find("city-waste/v1").expect("city-waste/v1 is registered");
+        assert!(entry.is_retired());
+        assert_eq!(entry.retired_as, Some("city-waste/v2"));
+    }
+
     /// Acceptance: a retired source is representable, and distinguishable
     /// from an unknown one — `Some(entry)` with `is_retired() == true`
-    /// versus `find`'s `None` for a string never registered at all. No
-    /// shipped source is retired yet, so this exercises the mechanism
-    /// directly on a locally built entry rather than on `REGISTRY`.
+    /// versus `find`'s `None` for a string never registered at all.
+    /// `city-waste/v1` above is now genuinely retired (#189), but this
+    /// test still exercises the mechanism on a locally built entry rather
+    /// than on `REGISTRY` — it is about `SourceEntry`/`is_retired` in
+    /// isolation; `find_resolves_the_one_retired_registry_entry` above is
+    /// the one that goes through the real registry.
     #[test]
     fn a_retired_source_is_representable_and_distinct_from_unknown() {
         let retired = SourceEntry {

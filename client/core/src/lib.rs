@@ -42,17 +42,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod calendar;
+pub mod capture;
 pub mod context;
 pub mod storage;
 pub mod sync;
 pub mod task;
 
-use hummingbird_domain::{CreateItem, Item, Stage};
+use hummingbird_domain::{CreateItem, Energy, Item, Project, Size, Stage};
 
 use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
 use sync::queue::{MutationIntent, QueueEntry};
 use sync::transport::ChangesTransport;
-use sync::write::transport::MutationTransport;
+use sync::write::transport::{HttpMethod, MutationTransport};
 use sync::{CycleOutcome, LoadError, SyncCycle, Trigger};
 
 /// The public API version both FFI crates surface.
@@ -208,29 +209,57 @@ fn item_from_create(create: &CreateItem, now_ms: i64) -> Item {
     }
 }
 
-/// Rebuilds the overlay a previous session left mid-flight from whatever
-/// still-queued item creates [`sync::SyncCycle::load`] just loaded — so a
-/// capture made offline, then reloaded before ever syncing, is still
+/// Applies `patch_fields` onto `base` (both an item's own JSON object, per
+/// [`sync::queue::MutationIntent::Patch`]'s own doc — `base` is "the entity
+/// as this client last knew it") field-by-field, the same absolute-value
+/// overwrite [`sync::write::adapter::patch_with_rebase`] sends on the wire,
+/// and deserialises the result as an [`Item`] — [`overlay_from_queue`]'s
+/// patch-rebuild step, kept as its own function so that step is testable in
+/// isolation from queue iteration. `None` if either side is not a JSON
+/// object (never expected for an item's own `base`/`patch_fields`, but this
+/// function does not assume it).
+fn apply_item_patch(base: &serde_json::Value, patch_fields: &serde_json::Value) -> Option<Item> {
+    let mut merged = base.as_object()?.clone();
+    for (key, value) in patch_fields.as_object()? {
+        merged.insert(key.clone(), value.clone());
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).ok()
+}
+
+/// Rebuilds the overlay a previous session left mid-flight from whatever is
+/// still queued — both item creates and item patches — so a capture or an
+/// act (S11/#109) made offline, then reloaded before ever syncing, is still
 /// readable from [`Core::frontier`] rather than silently vanishing until
-/// the next successful cycle. Patches are not overlaid (out of this
-/// issue's scope — only [`Core::capture`] writes to the overlay today, and
-/// it never enqueues one).
+/// the next successful cycle. [`Core::act`] enqueues exactly such a patch;
+/// this is what keeps a completed/blocked/cancelled item's overlaid state
+/// (and its [`Core::is_pending`] answer) surviving a reload while the
+/// `PATCH` is still durably queued, not sent.
 ///
-/// A create whose body no longer deserialises as [`CreateItem`] is an
-/// `Err`, never a silently-dropped overlay entry: the same
-/// never-silently-degrade rule [`sync::SyncCycle::load`]'s own module docs
-/// state for the queue itself ("this function does not special-case either
-/// table down to 'start fresh'") applies just as much to a projection built
-/// from it — the durable queue entry is untouched either way (drain can
-/// still retry it), but silently going overlay-blind on it would tell a
-/// reader nothing is pending when something still is.
+/// A create whose body no longer deserialises as [`CreateItem`], or a patch
+/// whose `base`+`patch_fields` no longer merge into a valid [`Item`]
+/// ([`apply_item_patch`]), is an `Err`, never a silently-dropped overlay
+/// entry: the same never-silently-degrade rule [`sync::SyncCycle::load`]'s
+/// own module docs state for the queue itself ("this function does not
+/// special-case either table down to 'start fresh'") applies just as much
+/// to a projection built from it — the durable queue entry is untouched
+/// either way (drain can still retry it), but silently going
+/// overlay-blind on it would tell a reader nothing is pending when
+/// something still is.
+///
+/// Iterated in queue (FIFO) order and keyed by item id, so if more than one
+/// still-queued entry targets the same item (e.g. an act queued on top of a
+/// not-yet-confirmed capture), the later entry's rebuild wins — the same
+/// "last enqueued is the client's current best knowledge" reasoning
+/// [`Core::act`]'s own `base` (read from [`Core::overlaid_items`], the
+/// overlay-if-present view) already applies when a fresh mutation is
+/// enqueued mid-session.
 fn overlay_from_queue(
     queue: &sync::queue::OutboundQueue,
 ) -> Result<BTreeMap<String, OverlayEntry>, CoreInitError> {
     let mut overlay = BTreeMap::new();
     for entry in queue.entries() {
-        if let MutationIntent::Create { path, body } = &entry.intent {
-            if *path == sync::write::paths::items() {
+        match &entry.intent {
+            MutationIntent::Create { path, body } if *path == sync::write::paths::items() => {
                 let create: CreateItem = serde_json::from_value(body.clone()).map_err(|error| {
                     CoreInitError(format!(
                         "queue entry {} is a create for {path} whose body no longer \
@@ -247,10 +276,140 @@ fn overlay_from_queue(
                     },
                 );
             }
+            MutationIntent::Patch {
+                path,
+                base,
+                patch_fields,
+                ..
+            } if path.starts_with("/api/items/") => {
+                let item = apply_item_patch(base, patch_fields).ok_or_else(|| {
+                    CoreInitError(format!(
+                        "queue entry {} is a patch for {path} whose base+patch_fields no \
+                         longer merge into a valid Item",
+                        entry.id
+                    ))
+                })?;
+                overlay.insert(
+                    item.id.clone(),
+                    OverlayEntry {
+                        entry_id: entry.id.clone(),
+                        item,
+                    },
+                );
+            }
+            MutationIntent::Create { .. } | MutationIntent::Patch { .. } => {
+                // Not an item mutation (a step/project/etc create, or a
+                // patch on some other entity) — nothing this overlay
+                // projects.
+            }
         }
     }
     Ok(overlay)
 }
+
+/// S11/#109's act vocabulary — every affordance the frontier/item-detail UI
+/// offers on an already-existing item. Deliberately closed (never a raw
+/// `Stage` the caller picks): [`ItemAction::stage`] is the one place a
+/// UI action maps onto ADR-0009's stage vocabulary, so no caller ever sends
+/// a hardcoded stage id of its own — the brief's "state ids are resolved by
+/// name from the vocabulary, never hardcoded".
+///
+/// **`Blocked` means an external wait and nothing else** (`CONTEXT.md`):
+/// there is no `ItemAction` for "depends on another item" — that is a
+/// `blocked_by` relation edge (already covered by [`Core::blocked`]'s read
+/// side), never this stage. Conflating the two here would let the UI
+/// express an inter-item dependency as `Blocked`, which the brief
+/// explicitly forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemAction {
+    /// Ready/Triage/Grilling → `InProgress`.
+    Start,
+    /// → `Done`.
+    Complete,
+    /// → `Blocked` — an external wait, never an inter-item dependency.
+    Block,
+    /// Archives the item (`archived_at`), never a stage change — the owned
+    /// schema's six-stage vocabulary has no "canceled" stage, and archiving
+    /// is how every other entity in ADR-0009 is soft-removed.
+    Cancel,
+}
+
+impl ItemAction {
+    /// The stage this action sets, or `None` for [`ItemAction::Cancel`]
+    /// (which touches `archived_at` instead of `stage`).
+    fn stage(self) -> Option<Stage> {
+        match self {
+            ItemAction::Start => Some(Stage::InProgress),
+            ItemAction::Complete => Some(Stage::Done),
+            ItemAction::Block => Some(Stage::Blocked),
+            ItemAction::Cancel => None,
+        }
+    }
+}
+
+/// S13/#111's triage destination — the only two stages triage itself may
+/// promote an item into. Deliberately not a raw [`Stage`] the caller picks
+/// (same "resolved by name from the vocabulary, never hardcoded" discipline
+/// [`ItemAction::stage`] documents): `Grilling` is where a captured item
+/// goes to have its fog worked before it can be minted, `Ready` is where it
+/// goes once it is already startable outright. There is no `Backlog`
+/// destination — the owned schema's six-stage vocabulary
+/// (`hummingbird_domain::Stage`) has no such stage; a triaged item that
+/// is not yet ready to promote simply stays in `Triage` (never calling
+/// [`Core::triage`] at all) rather than moving to a stage the schema
+/// cannot express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriageDestination {
+    Grilling,
+    Ready,
+}
+
+impl TriageDestination {
+    fn stage(self) -> Stage {
+        match self {
+            TriageDestination::Grilling => Stage::Grilling,
+            TriageDestination::Ready => Stage::Ready,
+        }
+    }
+}
+
+/// S13/#111's multi-field triage edit — every field the triage form may set
+/// alongside the destination stage, each `None` meaning "leave this field
+/// alone" rather than "clear it". `None` on every field is a legal call: a
+/// bare promotion with no other edit is still exactly one mutation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TriagePatch {
+    pub title: Option<String>,
+    pub project_id: Option<String>,
+    pub size: Option<Size>,
+    pub energy: Option<Energy>,
+    pub context: Option<String>,
+}
+
+/// [`Core::act`] failed before ever reaching the outbound queue, or while
+/// durably enqueueing. Only [`Debug`](std::fmt::Debug) derives — same as
+/// [`storage::SnapshotError`] itself, which this wraps and which carries no
+/// `Clone`/`PartialEq` for its own store-error payload.
+#[derive(Debug)]
+pub enum ActError<E> {
+    /// No live item with this id is known locally (mirror or overlay) —
+    /// nothing to act on. A caller mistake, not a durability failure.
+    ItemNotFound,
+    /// [`sync::SyncCycle::enqueue`] itself failed to persist the candidate
+    /// queue.
+    Snapshot(SnapshotError<E>),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for ActError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActError::ItemNotFound => write!(f, "item not found"),
+            ActError::Snapshot(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for ActError<E> {}
 
 /// One host-visible signal, drained rather than delivered by callback
 /// (ADR-0003 rules out a host-implemented callback into the core).
@@ -441,6 +600,11 @@ where
         let mirror = self.cycle.mirror();
         self.overlaid_items()
             .into_values()
+            // A cancel (S11/#109) archives an overlaid item without
+            // changing its stage, so this filter — not just the mirror's
+            // own `live()` — is what makes a just-cancelled item drop off
+            // the frontier immediately, offline or not.
+            .filter(|item| item.archived_at.is_none())
             .filter(|item| matches!(item.stage, Stage::Ready | Stage::InProgress))
             .filter(|item| {
                 !mirror.blockers_of(&item.id).any(|blocker_id| {
@@ -460,8 +624,81 @@ where
     pub fn triage_inbox(&self) -> Vec<Item> {
         self.overlaid_items()
             .into_values()
+            .filter(|item| item.archived_at.is_none())
             .filter(|item| item.stage == Stage::Triage)
             .collect()
+    }
+
+    /// The items [`Core::frontier`] excludes because they carry an open
+    /// relation blocker (ADR-0009 `blocked_by`), each paired with the
+    /// blockers still open — S10's "relation-blocked items … marked and
+    /// the reason visible" (issue #108), so a short frontier can be
+    /// explained rather than merely being short.
+    ///
+    /// Distinct from [`Stage::Blocked`]: that stage means an *external*
+    /// wait (`CONTEXT.md`), never a relation to another item, and — like
+    /// [`Core::frontier`] — this query only ever considers `Ready`/
+    /// `InProgress` items. A blocker counts while it is not `Stage::Done`;
+    /// the owned schema's six-stage vocabulary has no separate "canceled"
+    /// (unlike the S1/Linear mirror's `crate::task::Mirror::open_blockers`,
+    /// which also treats `Canceled` as shut). An id this mirror has never
+    /// seen, or one that has gone absent, does not block — [`SyncMirror::item`]
+    /// already filters to live records only, so such an id is silently
+    /// excluded from the blockers list precisely like [`Core::frontier`]'s
+    /// own filter treats it.
+    ///
+    /// Sorted by item id — a stable order for a query with no `priority`/
+    /// `deadline` ranking opinion of its own; ordering the *entries* is a
+    /// display concern the caller applies the same way it orders the
+    /// frontier.
+    pub fn blocked(&self) -> Vec<(Item, Vec<Item>)> {
+        let mirror = self.cycle.mirror();
+        let mut result: Vec<(Item, Vec<Item>)> = self
+            .overlaid_items()
+            .into_values()
+            .filter(|item| item.archived_at.is_none())
+            .filter(|item| matches!(item.stage, Stage::Ready | Stage::InProgress))
+            .filter_map(|item| {
+                let blockers: Vec<Item> = mirror
+                    .blockers_of(&item.id)
+                    .filter_map(|blocker_id| mirror.item(blocker_id))
+                    .filter(|blocker| blocker.stage != Stage::Done)
+                    .cloned()
+                    .collect();
+                if blockers.is_empty() {
+                    None
+                } else {
+                    Some((item, blockers))
+                }
+            })
+            .collect();
+        result.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+        result
+    }
+
+    /// Every live Step attached to `item_id`, position order — item
+    /// detail's checklist (issue #96, S10). Read straight from the mirror,
+    /// never overlaid: [`Core::capture`] never mints a Step, so there is no
+    /// optimistic Step to overlay.
+    pub fn steps_for(&self, item_id: &str) -> Vec<hummingbird_domain::Step> {
+        let mut steps: Vec<hummingbird_domain::Step> = self
+            .cycle
+            .mirror()
+            .steps_for_item(item_id)
+            .cloned()
+            .collect();
+        steps.sort_by_key(|step| step.position);
+        steps
+    }
+
+    /// Every live project — what the frontier's "grouped by project"
+    /// display (issue #108) resolves a `TaskItemDTO.projectId` against to
+    /// get the project's actual *name*, rather than rendering the raw id.
+    /// Id order, for a stable list a caller can diff against its own.
+    pub fn projects(&self) -> Vec<Project> {
+        let mut projects: Vec<Project> = self.cycle.mirror().all_projects().cloned().collect();
+        projects.sort_by(|a, b| a.id.cmp(&b.id));
+        projects
     }
 
     /// Captures a new item: enqueues a `POST /api/items` create (durably,
@@ -474,6 +711,11 @@ where
     /// sampled, the same "no clock or RNG that does not panic on bare
     /// wasm32" reasoning every other caller-injected value in `sync`
     /// documents. Returns the minted id.
+    ///
+    /// Runs `title` through [`capture::parse_seam`] (issue #110/#42's named
+    /// no-op) and discards the result: the `title` that reaches the
+    /// mutation below is the caller's own string, verbatim, never the
+    /// seam's output.
     pub async fn capture(
         &mut self,
         seed: &str,
@@ -483,6 +725,7 @@ where
     ) -> Result<String, SnapshotError<QS::Error>> {
         let id = sync::write::deterministic_id(seed);
         let title = title.into();
+        let _ = capture::parse_seam(&title);
 
         let create = CreateItem {
             id: id.clone(),
@@ -522,6 +765,202 @@ where
         );
 
         Ok(id)
+    }
+
+    /// Acts on an already-existing item (S11/#109): enqueues a CAS `PATCH`
+    /// (durably, via [`sync::SyncCycle::enqueue`] — never
+    /// [`sync::queue::OutboundQueue::enqueue`] directly, the same rule
+    /// [`Core::capture`] follows) and overlays the item's post-mutation
+    /// value so a reader sees the change immediately, offline or not
+    /// (this issue's "Completing offline shows Done immediately").
+    ///
+    /// `base` for the CAS write is [`Core::overlaid_items`]'s view of the
+    /// item — the entity as this client last knew it, including any of its
+    /// own still-queued create, exactly the contract
+    /// [`sync::write::adapter::patch_with_rebase`] documents for `base`.
+    ///
+    /// If this entry is later dead-lettered (a same-field server-side
+    /// change already landed), [`Core::run`]'s existing `entry_id`-matched
+    /// overlay revert (unchanged by this method — it already generalises to
+    /// any overlay entry, not just a capture's) reverts the overlay the same
+    /// way it does for a dead-lettered capture — the UI falls back to
+    /// mirror truth and [`Core::dead_letters`] carries the affordance,
+    /// never a silent revert.
+    ///
+    /// **Known gap, not closed here:** the overlay map is keyed one entry
+    /// per item id, so an `act` called while that same item's own create is
+    /// still queued (unconfirmed) replaces the create's overlay entry
+    /// outright — `base` above already reads the create's own optimistic
+    /// item, so the *displayed* state is still correct, but the create's
+    /// original `entry_id` is no longer what this item's overlay entry
+    /// points at. If that create is later dead-lettered, `Core::run`'s
+    /// `entry_id` match no longer finds it via this item's overlay entry
+    /// (which now points at this patch's `entry_id` instead), so the
+    /// overlay would not revert on that specific failure. Acting on a
+    /// genuinely still-queued create is not a normal flow this UI drives
+    /// today (S11's buttons only render for items already read from
+    /// `Core::frontier`/`Core::blocked`, which excludes an unconfirmed
+    /// create's target unless it already round-tripped once), so this is
+    /// narrow — flagged rather than fixed, since closing it properly needs
+    /// the overlay to track more than one pending mutation per item.
+    ///
+    /// `seed` mints this mutation's own queue-entry id
+    /// ([`sync::write::deterministic_id`]) — caller-supplied, same
+    /// reasoning as [`Core::capture`]'s `seed`.
+    pub async fn act(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        action: ItemAction,
+        now_ms: i64,
+    ) -> Result<(), ActError<QS::Error>> {
+        let items = self.overlaid_items();
+        let Some(current) = items.get(item_id) else {
+            return Err(ActError::ItemNotFound);
+        };
+
+        let base = serde_json::to_value(current).expect("Item always serializes");
+        let mut optimistic = current.clone();
+        let patch_fields = match action.stage() {
+            Some(stage) => {
+                optimistic.stage = stage;
+                serde_json::json!({ "stage": stage })
+            }
+            None => {
+                optimistic.archived_at = Some(now_ms);
+                serde_json::json!({ "archived_at": now_ms })
+            }
+        };
+        optimistic.updated_at = now_ms;
+
+        let entry_id = sync::write::deterministic_id(seed);
+        let entry = QueueEntry {
+            id: entry_id.clone(),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::item(item_id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
+                patch_fields,
+            },
+        };
+
+        self.cycle
+            .enqueue(entry, now_ms)
+            .await
+            .map_err(ActError::Snapshot)?;
+
+        self.overlay.insert(
+            item_id.to_string(),
+            OverlayEntry {
+                entry_id,
+                item: optimistic,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Triages an already-existing (captured) item (S13/#111): edits
+    /// whatever fields `patch` sets, and promotes it to `destination`, as
+    /// **one** CAS `PATCH` — enqueued the same way [`Core::act`] enqueues
+    /// its own single-field patch (durably, via [`sync::SyncCycle::enqueue`],
+    /// never [`sync::queue::OutboundQueue::enqueue`] directly), never four
+    /// separate mutations for four separate fields. Fewer conflict surfaces
+    /// is the point: a 409 on this triage rebases (or dead-letters) the
+    /// whole edit together, not one field at a time.
+    ///
+    /// `base` for the CAS write, the optimistic overlay this stamps, the
+    /// dead-letter revert on [`Core::run`], and the "acting on a genuinely
+    /// still-queued create" gap are all exactly [`Core::act`]'s own
+    /// reasoning — see that method's doc; nothing about combining several
+    /// fields into one patch changes it.
+    ///
+    /// A triaged item leaves [`Core::triage_inbox`] and — for
+    /// [`TriageDestination::Ready`] — appears on [`Core::frontier`] the
+    /// instant this returns, through the same overlay every other read here
+    /// goes through, never a separate local bookkeeping list.
+    ///
+    /// `seed` mints this mutation's own queue-entry id
+    /// ([`sync::write::deterministic_id`]) — caller-supplied, same reasoning
+    /// as [`Core::act`]'s `seed`.
+    pub async fn triage(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        destination: TriageDestination,
+        patch: TriagePatch,
+        now_ms: i64,
+    ) -> Result<(), ActError<QS::Error>> {
+        let items = self.overlaid_items();
+        let Some(current) = items.get(item_id) else {
+            return Err(ActError::ItemNotFound);
+        };
+
+        let base = serde_json::to_value(current).expect("Item always serializes");
+        let mut optimistic = current.clone();
+        let mut patch_fields = serde_json::Map::new();
+
+        optimistic.stage = destination.stage();
+        patch_fields.insert(
+            "stage".to_string(),
+            serde_json::to_value(destination.stage()).expect("Stage always serializes"),
+        );
+
+        if let Some(title) = &patch.title {
+            optimistic.title = title.clone();
+            patch_fields.insert("title".to_string(), serde_json::json!(title));
+        }
+        if let Some(project_id) = &patch.project_id {
+            optimistic.project_id = Some(project_id.clone());
+            patch_fields.insert("project_id".to_string(), serde_json::json!(project_id));
+        }
+        if let Some(size) = patch.size {
+            optimistic.size = Some(size);
+            patch_fields.insert(
+                "size".to_string(),
+                serde_json::to_value(size).expect("Size always serializes"),
+            );
+        }
+        if let Some(energy) = patch.energy {
+            optimistic.energy = Some(energy);
+            patch_fields.insert(
+                "energy".to_string(),
+                serde_json::to_value(energy).expect("Energy always serializes"),
+            );
+        }
+        if let Some(context) = &patch.context {
+            optimistic.context = Some(context.clone());
+            patch_fields.insert("context".to_string(), serde_json::json!(context));
+        }
+        optimistic.updated_at = now_ms;
+
+        let entry_id = sync::write::deterministic_id(seed);
+        let entry = QueueEntry {
+            id: entry_id.clone(),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::item(item_id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
+                patch_fields: serde_json::Value::Object(patch_fields),
+            },
+        };
+
+        self.cycle
+            .enqueue(entry, now_ms)
+            .await
+            .map_err(ActError::Snapshot)?;
+
+        self.overlay.insert(
+            item_id.to_string(),
+            OverlayEntry {
+                entry_id,
+                item: optimistic,
+            },
+        );
+
+        Ok(())
     }
 
     /// The host calls this at init and on every credential rotation.
@@ -818,6 +1257,375 @@ mod tests {
         assert!(!core.is_pending("some-other-id"));
     }
 
+    // ---------------------------------------------------------------- act
+
+    /// This issue's headline acceptance: "Completing offline shows Done
+    /// immediately". No transport is even wired up — proving the overlay
+    /// needs no network call to appear.
+    #[tokio::test]
+    async fn completing_offline_shows_done_immediately() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Complete, 2_000)
+            .await
+            .unwrap();
+
+        assert!(core.is_pending(&id));
+        let frontier = core.frontier();
+        assert!(
+            frontier.is_empty(),
+            "a Done item is no longer Ready/InProgress, so it drops off the frontier \
+             immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn starting_an_item_moves_it_to_in_progress_immediately() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Start, 2_000)
+            .await
+            .unwrap();
+
+        let frontier = core.frontier();
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].stage, Stage::InProgress);
+    }
+
+    #[tokio::test]
+    async fn blocking_an_item_sets_the_blocked_stage_never_a_relation() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Block, 2_000)
+            .await
+            .unwrap();
+
+        let items = core.overlaid_items();
+        assert_eq!(items.get(&id).unwrap().stage, Stage::Blocked);
+        assert!(
+            core.blocked().is_empty(),
+            "Core::blocked is the relation-blocked query (blocked_by edges) — an item \
+             carrying Stage::Blocked is a different fact and must never show up there"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_item_archives_it_rather_than_setting_a_stage() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        core.act("seed-act-1", &id, ItemAction::Cancel, 2_000)
+            .await
+            .unwrap();
+
+        let items = core.overlaid_items();
+        let item = items.get(&id).unwrap();
+        assert_eq!(item.stage, Stage::Ready, "cancel never touches stage");
+        assert_eq!(item.archived_at, Some(2_000));
+        assert!(
+            core.frontier().is_empty(),
+            "an archived item must drop off the frontier immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn acting_on_an_unknown_item_id_is_item_not_found() {
+        let mut core = Core::new();
+
+        let error = core
+            .act("seed-act-1", "no-such-item", ItemAction::Start, 1_000)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ActError::ItemNotFound));
+    }
+
+    // -------------------------------------------------------------- triage
+
+    /// This issue's headline acceptance: "A triaged item leaves the triage
+    /// query and appears on the frontier through the mirror" — the overlay
+    /// [`Core::triage`] shares with every other mutation here, never a
+    /// separate local bookkeeping list.
+    #[tokio::test]
+    async fn promoting_to_ready_moves_the_item_from_triage_to_the_frontier_immediately() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(core.triage_inbox().len(), 1);
+        assert_eq!(core.frontier().len(), 0);
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch::default(),
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(core.triage_inbox().len(), 0);
+        let frontier = core.frontier();
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].stage, Stage::Ready);
+    }
+
+    /// Grilling is pre-action too (`CONTEXT.md`) — a triage into Grilling
+    /// leaves the triage inbox but never lands on the frontier.
+    #[tokio::test]
+    async fn sending_to_grilling_leaves_triage_without_reaching_the_frontier() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Grilling,
+            TriagePatch::default(),
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(core.triage_inbox().len(), 0);
+        assert_eq!(core.frontier().len(), 0);
+    }
+
+    /// This issue's "a multi-field triage is one mutation, not four" —
+    /// title, project, size, energy and context all land in the same
+    /// enqueued `QueueEntry`.
+    #[tokio::test]
+    async fn a_multi_field_triage_is_exactly_one_queued_mutation() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(core.queue_depth(), 1, "capture itself is the first entry");
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch {
+                title: Some("buy milk".to_string()),
+                project_id: Some("project-1".to_string()),
+                size: Some(Size::Quick),
+                energy: Some(Energy::Low),
+                context: Some("@errands".to_string()),
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            core.queue_depth(),
+            2,
+            "one triage call must enqueue exactly one more entry, whatever fields it sets"
+        );
+        let frontier = core.frontier();
+        assert_eq!(frontier.len(), 1);
+        let item = &frontier[0];
+        assert_eq!(item.title, "buy milk");
+        assert_eq!(item.project_id.as_deref(), Some("project-1"));
+        assert_eq!(item.size, Some(Size::Quick));
+        assert_eq!(item.energy, Some(Energy::Low));
+        assert_eq!(item.context.as_deref(), Some("@errands"));
+    }
+
+    /// A field `TriagePatch` leaves `None` is untouched — triage never
+    /// clears a field it was not asked to set.
+    #[tokio::test]
+    async fn an_unset_triage_patch_field_leaves_the_items_existing_value_untouched() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Grilling,
+            TriagePatch {
+                context: Some("@computer".to_string()),
+                ..TriagePatch::default()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        core.triage(
+            "seed-triage-2",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch::default(),
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let frontier = core.frontier();
+        assert_eq!(
+            frontier[0].context.as_deref(),
+            Some("@computer"),
+            "the second triage call set no context field, so the first call's value survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn triaging_an_unknown_item_id_is_item_not_found() {
+        let mut core = Core::new();
+
+        let error = core
+            .triage(
+                "seed-triage-1",
+                "no-such-item",
+                TriageDestination::Ready,
+                TriagePatch::default(),
+                1_000,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ActError::ItemNotFound));
+    }
+
+    /// This issue's "triaging offline queues correctly and reconciles on
+    /// the next cycle" — no transport is even wired up here, proving the
+    /// overlay needs no network call, exactly [`Core::act`]'s own
+    /// "completing offline" proof.
+    #[tokio::test]
+    async fn triaging_offline_is_visible_immediately_with_no_transport_wired_up() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch {
+                title: Some("buy milk".to_string()),
+                ..TriagePatch::default()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        assert!(core.is_pending(&id));
+        assert_eq!(core.frontier()[0].title, "buy milk");
+    }
+
+    /// Reviewer finding on PR #207: a queued act must survive the
+    /// `SharedWorker` (and therefore the whole `Core`) terminating before
+    /// the next cycle ever runs — routine whenever the last view closes.
+    /// Before this fix, [`overlay_from_queue`] rebuilt overlay entries for
+    /// still-queued creates only; a reload after an offline `act` silently
+    /// dropped the overlay while the `PATCH` sat durably queued, so the
+    /// item read back as its pre-mutation stage with `is_pending` false —
+    /// exactly the "tells a reader nothing is pending when something still
+    /// is" failure this module's own doc forbids.
+    #[tokio::test]
+    async fn a_queued_act_survives_a_reload_and_still_reads_as_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-act-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let id = first
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+        first
+            .act("seed-act-1", &id, ItemAction::Complete, 2_000)
+            .await
+            .unwrap();
+        // Only the queue is durable at this point (no cycle ever ran) — the
+        // `SharedWorker`, and this `Core` with it, is dropped exactly as it
+        // would be when the last view closes mid-queue.
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        assert!(
+            second.is_pending(&id),
+            "a reload must not silently lose a still-queued act's pending state"
+        );
+        assert_eq!(
+            second.frontier().len(),
+            0,
+            "the reloaded overlay must still show the acted-on state (Done), not the \
+             pre-mutation Ready that would put it back on the frontier"
+        );
+    }
+
+    /// S13/#111's "triaging offline queues correctly and reconciles on the
+    /// next cycle", the reload half: [`overlay_from_queue`] is generic over
+    /// any queued item patch, not `Core::act`'s single-field one, so a
+    /// still-queued triage survives a reload exactly like a still-queued act
+    /// does (`a_queued_act_survives_a_reload_and_still_reads_as_pending`).
+    #[tokio::test]
+    async fn a_queued_triage_survives_a_reload_and_still_reads_as_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let id = first
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        first
+            .triage(
+                "seed-triage-1",
+                &id,
+                TriageDestination::Ready,
+                TriagePatch {
+                    title: Some("buy milk".to_string()),
+                    ..TriagePatch::default()
+                },
+                2_000,
+            )
+            .await
+            .unwrap();
+        // Only the queue is durable at this point (no cycle ever ran).
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        assert!(
+            second.is_pending(&id),
+            "a reload must not silently lose a still-queued triage's pending state"
+        );
+        assert_eq!(second.triage_inbox().len(), 0);
+        let frontier = second.frontier();
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].title, "buy milk");
+    }
+
     // ------------------------------------------------- fixtures for `run`
 
     #[derive(Default)]
@@ -983,6 +1791,107 @@ mod tests {
         assert!(
             core.frontier().is_empty(),
             "with no server-side item and no overlay, the frontier reverts to server truth"
+        );
+    }
+
+    /// This issue's second acceptance: "A server-side change to the same
+    /// field while the mutation is queued produces a dead-letter entry and
+    /// the UI reverts with the affordance visible — never silently."
+    #[tokio::test]
+    async fn a_same_field_conflict_on_a_queued_act_dead_letters_and_reverts_the_overlay_visibly() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        // Cycle 1: the create lands and is confirmed by the sweep, so
+        // `act` below is patching a real, mirror-backed item.
+        let confirmed_item = hummingbird_domain::Item {
+            id: id.clone(),
+            seq: Some(1),
+            title: "buy milk".to_string(),
+            description: None,
+            stage: Stage::Ready,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: None,
+            scheduled_date: None,
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            created_at: 1_000,
+            updated_at: 1_000,
+            version: 1,
+        };
+        let sweep1 = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![confirmed_item.clone()],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read1 = ScriptedRead::sweep_only(vec![Ok(sweep1)]);
+        let write1 = ScriptedWrite::new(vec![ok(201, format!(r#"{{"id":"{id}","version":1}}"#))]);
+        core.run(&read1, &write1, 2_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(!core.is_pending(&id));
+
+        // Complete it — queued, overlaid as Done immediately.
+        core.act("seed-act-1", &id, ItemAction::Complete, 3_000)
+            .await
+            .unwrap();
+        assert!(core.is_pending(&id));
+        assert_eq!(core.frontier().len(), 0, "Done drops off the frontier");
+
+        // Cycle 2: someone else already moved the same item's `stage` to
+        // `blocked` server-side — a genuine same-field collision, reported
+        // as a conflict on the first attempt (never retried).
+        let conflicting_current = hummingbird_domain::Item {
+            stage: Stage::Blocked,
+            version: 2,
+            ..confirmed_item.clone()
+        };
+        let conflict_body = serde_json::to_string(&serde_json::json!({
+            "error": "version_conflict",
+            "current": conflicting_current,
+        }))
+        .unwrap();
+        let sweep2 = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            items: vec![conflicting_current],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read2 = ScriptedRead::sweep_only(vec![Ok(sweep2)]);
+        let write2 = ScriptedWrite::new(vec![ok(409, conflict_body)]);
+
+        let outcome2 = core
+            .run(&read2, &write2, 4_000, Trigger::User, true, 0.0)
+            .await;
+
+        assert!(matches!(
+            outcome2,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        assert!(
+            !core.is_pending(&id),
+            "a dead-lettered act must clear the overlay, never leave a stale optimistic view"
+        );
+        let frontier = core.frontier();
+        assert!(
+            frontier.is_empty(),
+            "the item reverts to server truth (Blocked), not the optimistic Done"
+        );
+        assert_eq!(
+            core.dead_letters().len(),
+            1,
+            "the dead-letter journal is the never-silent affordance"
         );
     }
 
@@ -1592,5 +2501,357 @@ mod tests {
         let inbox = core.triage_inbox();
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].title, "someday maybe");
+    }
+
+    /// #110 acceptance: "The raw string reaches the mutation unmodified."
+    /// Deliberately pathological — leading/trailing padding, internal
+    /// whitespace, mixed case — none of which a "helpful" parser would
+    /// leave alone, so this fails loudly if `capture::parse_seam`'s output
+    /// is ever wired in instead of being discarded.
+    #[tokio::test]
+    async fn the_raw_capture_string_reaches_the_mutation_unmodified() {
+        let raw = "  Buy   OAT milk\tand   eggs  ";
+        let mut core = Core::new();
+
+        core.capture("seed-1", raw, Stage::Triage, 1_000).await.unwrap();
+
+        let inbox = core.triage_inbox();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(
+            inbox[0].title, raw,
+            "the title an item overlays with must be byte-for-byte what was typed"
+        );
+    }
+
+    /// #110 acceptance: "Offline, three captures then reconnecting produces
+    /// three Triage items in order, with no duplicates." Three captures are
+    /// enqueued with no credential ever reaching the transport (offline);
+    /// reconnecting is one `run` whose write transport accepts all three
+    /// creates and whose read transport's sweep echoes them back as
+    /// confirmed server truth. `capture`'s deterministic id (from each
+    /// distinct seed) is what rules out a duplicate: the same three seeds
+    /// enqueued would collapse to fewer than three ids, and this test would
+    /// fail on the `len()` assertion below.
+    #[tokio::test]
+    async fn three_offline_captures_then_reconnecting_produce_three_distinct_triage_items(
+    ) {
+        let mut core = Core::new();
+        // No `push_api_key` call yet — every capture below is enqueued
+        // durably (`SyncCycle::enqueue`) with no transport ever touched,
+        // which is offline capture end to end.
+        let id1 = core.capture("seed-a", "buy milk", Stage::Triage, 1_000).await.unwrap();
+        let id2 = core.capture("seed-b", "call dentist", Stage::Triage, 2_000).await.unwrap();
+        let id3 = core.capture("seed-c", "water plants", Stage::Triage, 3_000).await.unwrap();
+        assert_eq!(core.queue_depth(), 3, "all three must be durably queued before any network call");
+        assert_eq!(core.triage_inbox().len(), 3, "a capture is visible in the list before any network call");
+
+        // Reconnecting: a credential arrives and one cycle drains the queue,
+        // then pulls a sweep reflecting all three now-confirmed items.
+        core.push_api_key("device-token");
+        let sweep = hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![
+                fixture_item(&id1, Stage::Triage),
+                fixture_item(&id2, Stage::Triage),
+                fixture_item(&id3, Stage::Triage),
+            ],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        };
+        let read = ScriptedRead::sweep_only(vec![Ok(serde_json::to_string(&sweep).unwrap())]);
+        let write = ScriptedWrite::new(vec![
+            ok(201, format!(r#"{{"id":"{id1}","version":1}}"#)),
+            ok(201, format!(r#"{{"id":"{id2}","version":1}}"#)),
+            ok(201, format!(r#"{{"id":"{id3}","version":1}}"#)),
+        ]);
+        let outcome = core.run(&read, &write, 10_000, Trigger::User, true, 0.0).await;
+
+        assert!(
+            matches!(outcome, CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })),
+            "expected a completed reconnect cycle, got {outcome:?}"
+        );
+        assert_eq!(core.queue_depth(), 0, "every queued capture must have drained");
+
+        let inbox = core.triage_inbox();
+        let mut ids: Vec<&str> = inbox.iter().map(|item| item.id.as_str()).collect();
+        ids.sort();
+        let mut expected = vec![id1.as_str(), id2.as_str(), id3.as_str()];
+        expected.sort();
+        assert_eq!(
+            ids, expected,
+            "reconnecting must produce exactly the three captured items, no duplicates and none lost"
+        );
+        assert_eq!(
+            inbox.len(),
+            3,
+            "no duplicates: three offline captures must never collapse into or expand past three items"
+        );
+    }
+
+    // ------------------------------------------------- blocked() (S10, issue #108)
+
+    fn fixture_item(id: &str, stage: Stage) -> hummingbird_domain::Item {
+        hummingbird_domain::Item {
+            id: id.to_string(),
+            seq: Some(1),
+            title: format!("item {id}"),
+            description: None,
+            stage,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: None,
+            scheduled_date: None,
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+        }
+    }
+
+    fn fixture_blocked_by(item_id: &str, blocker_id: &str) -> hummingbird_domain::BlockedBy {
+        hummingbird_domain::BlockedBy {
+            item_id: item_id.to_string(),
+            blocker_id: blocker_id.to_string(),
+            version: 1,
+            removed_at: None,
+        }
+    }
+
+    /// Runs one full-sweep cycle seeding `items`/`blocked_by`, against a
+    /// fresh `Core` — the same `ScriptedRead`/`ScriptedWrite` fixture shape
+    /// the capture-confirmation tests above use, reused here so `blocked()`
+    /// and `steps_for` are exercised over a real mirror rather than a
+    /// hand-built one this file has no other legal way to construct
+    /// (`SyncCycle` exposes no `mirror_mut`).
+    async fn seeded_core(
+        items: Vec<hummingbird_domain::Item>,
+        blocked_by: Vec<hummingbird_domain::BlockedBy>,
+    ) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items,
+            blocked_by,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        let outcome = core
+            .run(&read, &write, 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    #[tokio::test]
+    async fn an_open_blocker_keeps_an_item_off_the_frontier_and_explains_why_in_blocked() {
+        let core = seeded_core(
+            vec![fixture_item("a-1", Stage::Ready), fixture_item("a-2", Stage::Ready)],
+            vec![fixture_blocked_by("a-2", "a-1")],
+        )
+        .await;
+
+        assert_eq!(
+            core.frontier().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"]
+        );
+
+        let blocked = core.blocked();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].0.id, "a-2");
+        assert_eq!(
+            blocked[0].1.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"]
+        );
+    }
+
+    /// Acceptance criterion: "Blocked-by direction is proven by a fixture:
+    /// a closed blocker does not block."
+    #[tokio::test]
+    async fn a_closed_blocker_does_not_block() {
+        let core = seeded_core(
+            vec![fixture_item("a-1", Stage::Done), fixture_item("a-2", Stage::Ready)],
+            vec![fixture_blocked_by("a-2", "a-1")],
+        )
+        .await;
+
+        assert_eq!(
+            core.frontier().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-2"],
+            "a-2's only blocker is Done, so a-2 must be on the frontier"
+        );
+        assert!(
+            core.blocked().is_empty(),
+            "no item is explained as blocked once its only blocker is Done"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_externally_blocked_stage_item_never_appears_in_blocked_either() {
+        // Stage::Blocked means an external wait (CONTEXT.md) — a different
+        // fact from a relation blocker, and `blocked()` must not conflate
+        // the two: it only considers Ready/InProgress, same as `frontier()`.
+        let core = seeded_core(vec![fixture_item("a-1", Stage::Blocked)], vec![]).await;
+
+        assert!(core.frontier().is_empty());
+        assert!(core.blocked().is_empty());
+    }
+
+    /// Acceptance criterion: "Absent items never appear." An archived
+    /// (soft-deleted) blocker must stop blocking, exactly like a Done one —
+    /// and an archived item must never itself appear on the frontier or in
+    /// the blocked explanation.
+    #[tokio::test]
+    async fn an_absent_item_never_appears_in_the_frontier_or_blocked() {
+        let mut core = seeded_core(
+            vec![fixture_item("a-1", Stage::Ready), fixture_item("a-2", Stage::Ready)],
+            vec![fixture_blocked_by("a-2", "a-1")],
+        )
+        .await;
+        assert_eq!(core.blocked().len(), 1, "a-2 starts out blocked by a-1");
+
+        // A full sweep that omits a-1 demotes it to absent.
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            items: vec![fixture_item("a-2", Stage::Ready)],
+            blocked_by: vec![fixture_blocked_by("a-2", "a-1")],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 3_000, Trigger::User, true, 0.0).await;
+
+        assert!(
+            core.frontier().iter().all(|item| item.id != "a-1"),
+            "an absent item must never appear in the frontier"
+        );
+        assert_eq!(
+            core.frontier().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-2"],
+            "a-1 going absent must clear it as a-2's blocker, same as it going Done"
+        );
+        assert!(
+            core.blocked().is_empty(),
+            "an absent blocker no longer explains anything as blocked"
+        );
+    }
+
+    // ------------------------------------------------- steps_for (S10, #96)
+
+    #[tokio::test]
+    async fn steps_for_an_item_come_back_in_position_order() {
+        fn fixture_step(id: &str, item_id: &str, position: i64) -> hummingbird_domain::Step {
+            hummingbird_domain::Step {
+                id: id.to_string(),
+                item_id: item_id.to_string(),
+                body: format!("step {id}"),
+                done: false,
+                position,
+                deleted_at: None,
+                version: 1,
+            }
+        }
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("a-1", Stage::Ready)],
+            steps: vec![
+                fixture_step("s-2", "a-1", 2),
+                fixture_step("s-1", "a-1", 1),
+                fixture_step("other", "a-2", 1),
+            ],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 0.0).await;
+
+        let steps = core.steps_for("a-1");
+        assert_eq!(
+            steps.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            vec!["s-1", "s-2"],
+            "steps come back in position order, not insertion order"
+        );
+        assert_eq!(
+            core.steps_for("a-2")
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["other"]
+        );
+        assert!(core.steps_for("nonexistent").is_empty());
+    }
+
+    // ------------------------------------------------- projects() (S10, #108 review)
+
+    #[tokio::test]
+    async fn projects_resolves_names_in_id_order_and_excludes_absent_ones() {
+        fn fixture_project(id: &str, name: &str) -> hummingbird_domain::Project {
+            hummingbird_domain::Project {
+                id: id.to_string(),
+                name: name.to_string(),
+                archived_at: None,
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }
+        }
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            projects: vec![fixture_project("p-2", "Second"), fixture_project("p-1", "First")],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 0.0).await;
+
+        let projects = core.projects();
+        assert_eq!(
+            projects.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            vec!["First", "Second"],
+            "projects come back in id order, not sweep order"
+        );
+
+        // A sweep that omits p-1 demotes it to absent.
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            projects: vec![fixture_project("p-2", "Second")],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(
+            core.projects().iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+            vec!["p-2"],
+            "an absent project must never appear"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_core_reports_no_projects() {
+        let core = Core::new();
+        assert!(core.projects().is_empty());
     }
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CalendarState, type TaskState, createCoreStore } from "./store";
 import {
+  actOnTask,
   attachWorkerClient,
   captureTask,
   pollRefresh,
@@ -14,10 +15,13 @@ import {
   requestCalendarList,
   requestCurrentNext,
   requestDeadLetters,
+  requestBlocked,
   requestFrontier,
   requestIsPending,
   requestMirrorSnapshot,
+  requestProjects,
   requestQueueDepth,
+  requestSteps,
   requestTriageInbox,
   setCalendarIdsOnWorker,
   setMirrorSnapshotHandler,
@@ -40,8 +44,13 @@ const initialCalendar: CalendarState = {
 const initialTask: TaskState = {
   frontier: [],
   triageInbox: [],
+  blocked: [],
+  stepsByItem: {},
+  projects: [],
   pending: {},
   lastCapture: null,
+  lastAct: null,
+  lastTriage: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,
@@ -224,6 +233,121 @@ describe("attachWorkerClient", () => {
     });
   });
 
+  it("records an actResult keyed by seed/item/action and re-requests the frontier and blocked queries on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "item-1",
+        action: "complete",
+        kind: "ok",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastAct).toEqual({
+      seed: "seed-act-1",
+      itemId: "item-1",
+      action: "complete",
+      kind: "ok",
+      error: null,
+    });
+    // `Core::act`'s overlay updates synchronously — an `ok` result
+    // immediately re-requests the frontier/blocked queries so the
+    // completed item drops off the list without waiting for the next sync
+    // cycle (this issue's "Completing offline shows Done immediately").
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
+    // PR #207 round-2 fix: the acted-on item's `pending` must come from a
+    // LIVE source (`task.pending`), so an ok act immediately asks the core
+    // `isPending` — the task worker's serial queue guarantees the act was
+    // applied first, so this reads back `true` until a sync cycle drains it.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "isPending", itemId: "item-1" });
+  });
+
+  it("records a failed actResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "no-such-item",
+        action: "start",
+        kind: "not_found",
+        error: "item not found",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastAct).toEqual({
+      seed: "seed-act-1",
+      itemId: "no-such-item",
+      action: "start",
+      kind: "not_found",
+      error: "item not found",
+    });
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("records a triageResult keyed by seed/item and re-requests the triage inbox and frontier on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        kind: "ok",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastTriage).toEqual({
+      seed: "seed-triage-1",
+      itemId: "item-1",
+      kind: "ok",
+      error: null,
+    });
+    // `Core::triage`'s overlay updates synchronously — an `ok` result
+    // immediately re-requests the triage inbox/frontier so a promoted item
+    // leaves triage and appears on the frontier without waiting for the
+    // next sync cycle (this issue's acceptance).
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getTriageInbox" });
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
+  });
+
+  it("records a failed triageResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "no-such-item",
+        kind: "not_found",
+        error: "item not found",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastTriage).toEqual({
+      seed: "seed-triage-1",
+      itemId: "no-such-item",
+      kind: "not_found",
+      error: "item not found",
+    });
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
   it("writes the frontier on a frontier message", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
@@ -250,6 +374,7 @@ describe("attachWorkerClient", () => {
       createdAt: 1,
       updatedAt: 1,
       version: 0,
+      pending: false,
     };
     worker.onmessage?.({ data: { type: "frontier", items: [item] } } as MessageEvent);
 
@@ -266,6 +391,88 @@ describe("attachWorkerClient", () => {
     worker.onmessage?.({ data: { type: "triageInbox", items: [] } } as MessageEvent);
 
     expect(store.getSnapshot().task.triageInbox).toEqual([]);
+  });
+
+  it("writes the blocked entries on a blocked message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const item = {
+      id: "item-1",
+      seq: null,
+      title: "buy milk",
+      description: null,
+      stage: "ready" as const,
+      size: null,
+      energy: null,
+      context: null,
+      priority: 0,
+      projectId: null,
+      projectPos: null,
+      deadline: null,
+      scheduledDate: null,
+      source: null,
+      sourceKey: null,
+      sourceUrl: null,
+      archivedAt: null,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 0,
+      pending: false,
+    };
+    worker.onmessage?.({
+      data: { type: "blocked", entries: [{ item, blockedBy: [item] }] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.blocked).toEqual([{ item, blockedBy: [item] }]);
+    // Untouched sibling field.
+    expect(store.getSnapshot().task.frontier).toEqual([]);
+  });
+
+  it("writes the steps for the requested item on a steps message, keyed by item id", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const step = {
+      id: "step-1",
+      itemId: "item-1",
+      body: "do the thing",
+      done: false,
+      position: 1,
+      deletedAt: null,
+      version: 0,
+    };
+    worker.onmessage?.({
+      data: { type: "steps", itemId: "item-1", steps: [step] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.stepsByItem).toEqual({ "item-1": [step] });
+
+    worker.onmessage?.({ data: { type: "steps", itemId: "item-2", steps: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.stepsByItem).toEqual({ "item-1": [step], "item-2": [] });
+  });
+
+  it("writes the projects on a projects message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const project = {
+      id: "p-1",
+      name: "Ship it",
+      archivedAt: null,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 0,
+    };
+    worker.onmessage?.({ data: { type: "projects", projects: [project] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.projects).toEqual([project]);
+    // Untouched sibling field.
+    expect(store.getSnapshot().task.frontier).toEqual([]);
   });
 
   it("merges one item's pending state on an isPendingResult message, leaving others alone", () => {
@@ -698,6 +905,18 @@ describe("the task send helpers (#105/S7)", () => {
     });
   });
 
+  it("actOnTask posts an act request carrying its seed, item and action", () => {
+    const worker = fakeWorker();
+    actOnTask(worker, "seed-act-1", "item-1", "block", 2_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "act",
+      seed: "seed-act-1",
+      itemId: "item-1",
+      action: "block",
+      nowMs: 2_000,
+    });
+  });
+
   it("requestFrontier/requestTriageInbox/requestIsPending post their matching request", () => {
     const worker = fakeWorker();
 
@@ -711,6 +930,24 @@ describe("the task send helpers (#105/S7)", () => {
       type: "isPending",
       itemId: "item-1",
     });
+  });
+
+  it("requestBlocked posts a getBlocked request", () => {
+    const worker = fakeWorker();
+    requestBlocked(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
+  });
+
+  it("requestSteps posts a getSteps request carrying the item id", () => {
+    const worker = fakeWorker();
+    requestSteps(worker, "item-1");
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getSteps", itemId: "item-1" });
+  });
+
+  it("requestProjects posts a getProjects request", () => {
+    const worker = fakeWorker();
+    requestProjects(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getProjects" });
   });
 
   it("requestQueueDepth posts a getQueueDepth request", () => {

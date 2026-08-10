@@ -204,6 +204,23 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Renders a millisecond epoch timestamp as a minute-precision, UTC
+/// deadline-shaped string (`YYYY-MM-DDTHH:MM`) — the `now` shape
+/// `hummingbird_rules_engine::evaluate_rule` requires, and the one
+/// timezone ADR-0013 mandates ("the Worker runs UTC. Not per-rule, not
+/// per-device."). The DO alarm sweep (#138) is this function's one caller:
+/// every other consumer of "now" for rule evaluation is a fixture test
+/// that already writes the string by hand. Seconds are truncated, never
+/// rounded, matching [`is_valid_deadline`]'s minute-only grammar.
+pub fn now_as_deadline(now_ms: i64) -> String {
+    let total_minutes = now_ms.div_euclid(60_000);
+    let days = total_minutes.div_euclid(1440);
+    let minute_of_day = total_minutes.rem_euclid(1440);
+    let (year, month, day) = civil_from_days(days);
+    let (hour, minute) = (minute_of_day / 60, minute_of_day % 60);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}")
+}
+
 /// The inverse of [`days_from_civil`]: the proleptic-Gregorian calendar
 /// date for a day count since the epoch.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
@@ -404,6 +421,24 @@ mod tests {
     /// out of a whole-day shift, so the result stays date-only and agrees
     /// with [`deadline_sort_key`]'s resolution of that same date-only
     /// result — one convention, checked at both ends here.
+    #[test]
+    fn now_as_deadline_renders_a_known_epoch_ms_in_utc() {
+        // 2026-08-15T09:30:00 UTC.
+        assert_eq!(now_as_deadline(1786786200000), "2026-08-15T09:30");
+    }
+
+    #[test]
+    fn now_as_deadline_truncates_seconds_rather_than_rounding() {
+        // 2026-08-15T09:30:59 UTC — the trailing 59s must not round up to
+        // :31, matching the minute-only grammar `is_valid_deadline` accepts.
+        assert_eq!(now_as_deadline(1786786259000), "2026-08-15T09:30");
+    }
+
+    #[test]
+    fn now_as_deadline_output_is_itself_a_valid_deadline() {
+        assert!(is_valid_deadline(&now_as_deadline(1786786200000)));
+    }
+
     #[test]
     fn shift_on_a_whole_day_unit_agrees_with_deadline_sort_key() {
         let shifted = shift("2026-08-15", 1, DurationUnit::Days).unwrap();

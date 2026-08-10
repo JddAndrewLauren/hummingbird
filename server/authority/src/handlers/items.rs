@@ -126,46 +126,77 @@ pub fn patch(
     }
 
     // Absolute-value sets only: each touched field's entire new value.
+    // Compared typed against `current` (already the deserialized row) —
+    // never a bare SQL-value `==`, which the integer/real hazard on a DO
+    // cursor would make silently unequal on `f64` vs `Integer` (see the
+    // sql module doc for `SqlValue::as_i64`). A field whose submitted value
+    // already matches the stored one is left out of `sets` entirely, same
+    // as an untouched field.
     let mut sets = Sets::new();
     if let Some(title) = &patch.title {
-        sets.set("title", SqlValue::Text(title.clone()));
+        if *title != current.title {
+            sets.set("title", SqlValue::Text(title.clone()));
+        }
     }
     if let Some(description) = &patch.description {
-        sets.set("description", SqlValue::from_opt_text(description.as_deref()));
+        if *description != current.description {
+            sets.set("description", SqlValue::from_opt_text(description.as_deref()));
+        }
     }
     if let Some(stage) = patch.stage {
-        sets.set("stage", SqlValue::Text(stage.as_str().to_string()));
+        if stage != current.stage {
+            sets.set("stage", SqlValue::Text(stage.as_str().to_string()));
+        }
     }
     if let Some(size) = patch.size {
-        sets.set("size", SqlValue::from_opt_text(size.map(Size::as_str)));
+        if size != current.size {
+            sets.set("size", SqlValue::from_opt_text(size.map(Size::as_str)));
+        }
     }
     if let Some(energy) = patch.energy {
-        sets.set("energy", SqlValue::from_opt_text(energy.map(Energy::as_str)));
+        if energy != current.energy {
+            sets.set("energy", SqlValue::from_opt_text(energy.map(Energy::as_str)));
+        }
     }
     if let Some(context) = &patch.context {
-        sets.set("context", SqlValue::from_opt_text(context.as_deref()));
+        if *context != current.context {
+            sets.set("context", SqlValue::from_opt_text(context.as_deref()));
+        }
     }
     if let Some(priority) = patch.priority {
-        sets.set("priority", SqlValue::Integer(priority));
+        if priority != current.priority {
+            sets.set("priority", SqlValue::Integer(priority));
+        }
     }
     if let Some(project_id) = &patch.project_id {
-        sets.set("project_id", SqlValue::from_opt_text(project_id.as_deref()));
+        if *project_id != current.project_id {
+            sets.set("project_id", SqlValue::from_opt_text(project_id.as_deref()));
+        }
     }
     if let Some(project_pos) = patch.project_pos {
-        sets.set("project_pos", SqlValue::from_opt_i64(project_pos));
+        if project_pos != current.project_pos {
+            sets.set("project_pos", SqlValue::from_opt_i64(project_pos));
+        }
     }
     if let Some(deadline) = &patch.deadline {
-        sets.set("deadline", SqlValue::from_opt_text(deadline.as_deref()));
+        if *deadline != current.deadline {
+            sets.set("deadline", SqlValue::from_opt_text(deadline.as_deref()));
+        }
     }
     if let Some(scheduled_date) = &patch.scheduled_date {
-        sets.set("scheduled_date", SqlValue::from_opt_text(scheduled_date.as_deref()));
+        if *scheduled_date != current.scheduled_date {
+            sets.set("scheduled_date", SqlValue::from_opt_text(scheduled_date.as_deref()));
+        }
     }
     if let Some(archived_at) = patch.archived_at {
-        sets.set("archived_at", SqlValue::from_opt_i64(archived_at));
+        if archived_at != current.archived_at {
+            sets.set("archived_at", SqlValue::from_opt_i64(archived_at));
+        }
     }
 
-    // No settable field touched: answer with the current row, no UPDATE —
-    // a version bump here would force every peer to re-pull an unchanged row.
+    // No settable field actually changes the stored value: answer with the
+    // current row, no UPDATE — a version bump here would force every peer
+    // to re-pull an unchanged row.
     if sets.is_empty() {
         return Ok(json(200, &current));
     }
@@ -225,7 +256,7 @@ fn item_params(item: &Item) -> Vec<SqlValue> {
     ]
 }
 
-pub(super) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
+pub(crate) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
     let r = RowReader(row);
     let stage_text = r.text("stage")?;
     Ok(Item {
