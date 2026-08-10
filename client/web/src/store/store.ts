@@ -4,11 +4,15 @@
 // only writer.
 
 import type {
+  BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CurrentNextEventDTO,
   DeadLetterEntryDTO,
   PollOutcomeName,
+  ProjectDTO,
   RenderableCurrentNextKind,
+  StepDTO,
+  TaskActionName,
   TaskItemDTO,
   TaskRunOutcomeKind,
 } from "./protocol";
@@ -56,15 +60,53 @@ export interface TaskCaptureResult {
   error: string | null;
 }
 
+/** The result of the most recent `act` request this view issued (S11/#109),
+ * matched back by `seed` — same broadcast-recognition contract as
+ * [`TaskCaptureResult`]. */
+export interface TaskActResult {
+  seed: string;
+  itemId: string;
+  action: TaskActionName;
+  kind: "ok" | "not_found" | "failed" | "busy";
+  error: string | null;
+}
+
+/** The result of the most recent `triage` request this view issued
+ * (S13/#111), matched back by `seed` — same broadcast-recognition contract
+ * as [`TaskActResult`]. */
+export interface TaskTriageResult {
+  seed: string;
+  itemId: string;
+  kind: "ok" | "not_found" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
   frontier: TaskItemDTO[];
   triageInbox: TaskItemDTO[];
+  /** Relation-blocked items with the reason visible — S10's frontier list
+   * (issue #108). Populated by `getBlocked`, same "last full answer wins"
+   * contract as `frontier`. */
+  blocked: BlockedFrontierEntryDTO[];
+  /** Item detail's checklist (issue #96, S10), keyed by item id — only ever
+   * grows entries a view actually asked about via `getSteps`, the same
+   * "only what was asked for" shape `pending` already uses. */
+  stepsByItem: Record<string, StepDTO[]>;
+  /** Every live project — resolves the frontier's "grouped by project"
+   * display to real names (issue #108, PR #200 review). */
+  projects: ProjectDTO[];
   /** Keyed by item id — only ever grows entries this view actually asked
    * about via `isPending`, never a full mirror of every pending item. */
   pending: Record<string, boolean>;
   lastCapture: TaskCaptureResult | null;
+  /** The result of the most recent `act` request this view issued (S11/
+   * #109) — `null` until the first one resolves. */
+  lastAct: TaskActResult | null;
+  /** The result of the most recent `triage` request this view issued
+   * (S13/#111) — `null` until the first one resolves. */
+  lastTriage: TaskTriageResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
   /** When this view learned the last `Core::run` cycle happened (any
    * trigger, any outcome) — S9's "last sweep" readout. Sampled by
@@ -131,8 +173,13 @@ const initialCalendarState: CalendarState = {
 const initialTaskState: TaskState = {
   frontier: [],
   triageInbox: [],
+  blocked: [],
+  stepsByItem: {},
+  projects: [],
   pending: {},
   lastCapture: null,
+  lastAct: null,
+  lastTriage: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,
@@ -183,6 +230,11 @@ export function createCoreStore() {
     setTaskState({ pending: { ...state.task.pending, [itemId]: pending } });
   }
 
+  // Same idea for `stepsByItem` (item detail, issue #96/S10).
+  function setTaskSteps(itemId: string, steps: StepDTO[]): void {
+    setTaskState({ stepsByItem: { ...state.task.stepsByItem, [itemId]: steps } });
+  }
+
   // A stable reference: this closure is created once, when the store is
   // created, and never reallocated per call. useSyncExternalStore relies on
   // that stability to avoid resubscribing every render.
@@ -193,7 +245,15 @@ export function createCoreStore() {
     };
   }
 
-  return { getSnapshot, setState, setCalendarState, setTaskState, setTaskPending, subscribe };
+  return {
+    getSnapshot,
+    setState,
+    setCalendarState,
+    setTaskState,
+    setTaskPending,
+    setTaskSteps,
+    subscribe,
+  };
 }
 
 // The one module-level singleton the app renders from.

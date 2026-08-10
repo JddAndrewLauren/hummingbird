@@ -7,8 +7,13 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     pushApiKey: vi.fn(),
     clearApiKey: vi.fn(),
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
+    act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
+    blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
+    steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
+    projects: vi.fn().mockReturnValue('{"kind":"ok","projects":[]}'),
     isPending: vi.fn().mockReturnValue('{"kind":"ok","pending":false}'),
     takeEvents: vi.fn().mockReturnValue("[]"),
     runSync: vi.fn().mockResolvedValue(
@@ -51,6 +56,7 @@ const rawItem = {
   created_at: 1_000,
   updated_at: 1_000,
   version: 0,
+  pending: false,
 };
 
 const dtoItem = {
@@ -74,6 +80,7 @@ const dtoItem = {
   createdAt: 1_000,
   updatedAt: 1_000,
   version: 0,
+  pending: false,
 };
 
 describe("handleTaskRequest", () => {
@@ -124,6 +131,143 @@ describe("handleTaskRequest", () => {
     ]);
   });
 
+  it("act posts an ok result keyed by seed, item and action", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      { type: "act", seed: "seed-act-1", itemId: "item-1", action: "complete", nowMs: 2_000 },
+      host,
+    );
+
+    expect(host.act).toHaveBeenCalledWith("seed-act-1", "item-1", "complete", 2_000);
+    expect(posted).toEqual([
+      {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "item-1",
+        action: "complete",
+        kind: "ok",
+        error: null,
+      },
+    ]);
+  });
+
+  it("act posts a not_found result with its error message", async () => {
+    const host = fakeHost({
+      act: vi.fn().mockResolvedValue('{"kind":"not_found","error":"item not found"}'),
+    });
+    const posted = await run(
+      { type: "act", seed: "seed-act-1", itemId: "no-such-item", action: "start", nowMs: 2_000 },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "actResult",
+        seed: "seed-act-1",
+        itemId: "no-such-item",
+        action: "start",
+        kind: "not_found",
+        error: "item not found",
+      },
+    ]);
+  });
+
+  it("triage forwards every field to the host and posts an ok result keyed by seed and item", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      {
+        type: "triage",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        destination: "ready",
+        title: "buy milk",
+        projectId: "project-1",
+        size: "quick",
+        energy: "low",
+        context: "@errands",
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(host.triage).toHaveBeenCalledWith(
+      "seed-triage-1",
+      "item-1",
+      "ready",
+      "buy milk",
+      "project-1",
+      "quick",
+      "low",
+      "@errands",
+      2_000,
+    );
+    expect(posted).toEqual([
+      { type: "triageResult", seed: "seed-triage-1", itemId: "item-1", kind: "ok", error: null },
+    ]);
+  });
+
+  it("triage posts a failed result with its error message", async () => {
+    const host = fakeHost({
+      triage: vi.fn().mockResolvedValue('{"kind":"failed","error":"unrecognised size \\"giant\\""}'),
+    });
+    const posted = await run(
+      {
+        type: "triage",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        destination: "ready",
+        title: null,
+        projectId: null,
+        size: "giant" as never,
+        energy: null,
+        context: null,
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        kind: "failed",
+        error: 'unrecognised size "giant"',
+      },
+    ]);
+  });
+
+  it("triage posts a not_found result for an unknown item id", async () => {
+    const host = fakeHost({
+      triage: vi.fn().mockResolvedValue('{"kind":"not_found","error":"item not found"}'),
+    });
+    const posted = await run(
+      {
+        type: "triage",
+        seed: "seed-triage-1",
+        itemId: "no-such-item",
+        destination: "ready",
+        title: null,
+        projectId: null,
+        size: null,
+        energy: null,
+        context: null,
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "no-such-item",
+        kind: "not_found",
+        error: "item not found",
+      },
+    ]);
+  });
+
   it("capture also drains and posts any credential event the cycle recorded", async () => {
     const host = fakeHost({
       takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_needed","at_ms":5000}]'),
@@ -155,6 +299,17 @@ describe("handleTaskRequest", () => {
     expect(await run({ type: "getFrontier" }, host)).toEqual([]);
   });
 
+  it("getFrontier maps a pending raw item to a pending DTO — issue #108 review", async () => {
+    const host = fakeHost({
+      frontier: vi.fn().mockReturnValue(
+        JSON.stringify({ kind: "ok", items: [{ ...rawItem, pending: true }] }),
+      ),
+    });
+    const posted = await run({ type: "getFrontier" }, host);
+
+    expect(posted).toEqual([{ type: "frontier", items: [{ ...dtoItem, pending: true }] }]);
+  });
+
   it("getTriageInbox maps every raw item to its camelCase DTO", async () => {
     const host = fakeHost({
       triageInbox: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", items: [rawItem] })),
@@ -169,6 +324,99 @@ describe("handleTaskRequest", () => {
       triageInbox: vi.fn().mockReturnValue('{"kind":"busy","items":[]}'),
     });
     expect(await run({ type: "getTriageInbox" }, host)).toEqual([]);
+  });
+
+  it("getBlocked maps every raw entry to its camelCase DTO", async () => {
+    const host = fakeHost({
+      blocked: vi.fn().mockReturnValue(
+        JSON.stringify({ kind: "ok", entries: [{ item: rawItem, blocked_by: [rawItem] }] }),
+      ),
+    });
+    const posted = await run({ type: "getBlocked" }, host);
+
+    expect(posted).toEqual([
+      { type: "blocked", entries: [{ item: dtoItem, blockedBy: [dtoItem] }] },
+    ]);
+  });
+
+  it('getBlocked posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      blocked: vi.fn().mockReturnValue('{"kind":"busy","entries":[]}'),
+    });
+    expect(await run({ type: "getBlocked" }, host)).toEqual([]);
+  });
+
+  it("getSteps maps every raw step to its camelCase DTO, alongside the requested item id", async () => {
+    const rawStep = {
+      id: "step-1",
+      item_id: "item-1",
+      body: "do the thing",
+      done: false,
+      position: 1,
+      deleted_at: null,
+      version: 0,
+    };
+    const host = fakeHost({
+      steps: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", steps: [rawStep] })),
+    });
+    const posted = await run({ type: "getSteps", itemId: "item-1" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "steps",
+        itemId: "item-1",
+        steps: [
+          {
+            id: "step-1",
+            itemId: "item-1",
+            body: "do the thing",
+            done: false,
+            position: 1,
+            deletedAt: null,
+            version: 0,
+          },
+        ],
+      },
+    ]);
+    expect(host.steps).toHaveBeenCalledWith("item-1");
+  });
+
+  it('getSteps posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      steps: vi.fn().mockReturnValue('{"kind":"busy","steps":[]}'),
+    });
+    expect(await run({ type: "getSteps", itemId: "item-1" }, host)).toEqual([]);
+  });
+
+  it("getProjects maps every raw project to its camelCase DTO", async () => {
+    const rawProject = {
+      id: "p-1",
+      name: "Ship it",
+      archived_at: null,
+      created_at: 1,
+      updated_at: 1,
+      version: 1,
+    };
+    const host = fakeHost({
+      projects: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", projects: [rawProject] })),
+    });
+    const posted = await run({ type: "getProjects" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "projects",
+        projects: [
+          { id: "p-1", name: "Ship it", archivedAt: null, createdAt: 1, updatedAt: 1, version: 1 },
+        ],
+      },
+    ]);
+  });
+
+  it('getProjects posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      projects: vi.fn().mockReturnValue('{"kind":"busy","projects":[]}'),
+    });
+    expect(await run({ type: "getProjects" }, host)).toEqual([]);
   });
 
   it("isPending posts the item id alongside the answer", async () => {

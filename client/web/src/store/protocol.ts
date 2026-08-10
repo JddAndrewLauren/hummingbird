@@ -111,6 +111,50 @@ export type TaskStageName =
   | "blocked"
   | "done";
 
+/** S11/#109's closed act vocabulary — every affordance the UI offers on an
+ * already-existing item (`client/ffi-web/src/task_host.rs`'s `parse_action`,
+ * which maps this exact string set onto `hummingbird_core::ItemAction`).
+ * Deliberately NOT a `TaskStageName`: this is the one place a UI action
+ * crosses into the core, and it never carries a raw stage id — the state
+ * `Core::act` sets is resolved from this name, server-side vocabulary
+ * (Stage's own enum), never hardcoded here. There is no `"pick"`/`"depend"`
+ * action: `"block"` sets `Stage::Blocked`, which means an external wait and
+ * nothing else — expressing one action's dependency on another is a
+ * `blocked_by` relation edge (S10's `getBlocked`), never this. */
+export type TaskActionName = "start" | "complete" | "block" | "cancel";
+
+/** S13/#111's triage promotion vocabulary — the only two stages a triage
+ * mutation may promote a captured item into (`TriageDestination`,
+ * `client/core/src/lib.rs`). Deliberately not a `TaskStageName`, same
+ * "reject before the seam" discipline `TaskActionName` documents for its
+ * own vocabulary — and deliberately no `"backlog"` spelling: the owned
+ * schema's six-stage vocabulary has no such stage, so an item not yet ready
+ * to promote simply stays in `"triage"` rather than sending a destination
+ * the server cannot express. */
+export type TriageDestinationName = "grilling" | "ready";
+
+/** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
+ * checklist (issue #96, S10) — read-only from this binding; ticking one is
+ * S11's concern. */
+export interface StepDTO {
+  id: string;
+  itemId: string;
+  body: string;
+  done: boolean;
+  position: number;
+  deletedAt: number | null;
+  version: number;
+}
+
+/** One [`TaskHostCore::blocked`] entry: an item and the open blockers
+ * excluding it from the frontier — S10's "relation-blocked … the reason
+ * visible" (issue #108). */
+export interface BlockedFrontierEntryDTO {
+  item: TaskItemDTO;
+  blockedBy: TaskItemDTO[];
+}
+
 /** One `items` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Item`, camelCased. */
 export interface TaskItemDTO {
@@ -130,6 +174,25 @@ export interface TaskItemDTO {
   source: string | null;
   sourceKey: string | null;
   sourceUrl: string | null;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  version: number;
+  /** Whether this item is currently overlaid by an unconfirmed local
+   * mutation (`Core::is_pending`, `ffi-web`'s `FrontierItemDTO`) — S10's "a
+   * pending item is marked as such" (issue #108). Stamped by the host on
+   * every item this DTO shape carries (frontier, triage inbox, blocked and
+   * its blockers), not left to a separate `isPending` request per row. */
+  pending: boolean;
+}
+
+/** One `projects` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Project`, camelCased. Resolves a
+ * `TaskItemDTO.projectId` to a real name for the frontier's "grouped by
+ * project" display (issue #108, PR #200 review). */
+export interface ProjectDTO {
+  id: string;
+  name: string;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -199,8 +262,40 @@ export type TaskWorkerRequest =
    * `captureResult` broadcast (see `TaskWorkerResponse`), since the
    * worker->view direction never replies to just one sender. */
   | { type: "capture"; seed: string; title: string; stage: TaskStageName; nowMs: number }
+  /** S11/#109's act mutation: start, complete, block, cancel. `seed` is the
+   * same "caller-mints, matches its own broadcast back" contract
+   * `"capture"` documents above — `Core::act`'s own queue-entry id derives
+   * from it. */
+  | { type: "act"; seed: string; itemId: string; action: TaskActionName; nowMs: number }
+  /** S13/#111's triage mutation: edits whatever `title`/`projectId`/`size`/
+   * `energy`/`context` set (each `null` meaning "leave this field alone",
+   * never "clear it" — `TriagePatch`'s own contract) and promotes to
+   * `destination`, as one CAS `PATCH` — never four separate mutations for
+   * four separate fields. `size`/`energy` are the wire's snake_case
+   * vocabulary names, resolved by name through
+   * `hummingbird_domain::Size`/`Energy::parse` on the way in, never a raw
+   * index. Same caller-mints-`seed` contract as `"act"`. */
+  | {
+      type: "triage";
+      seed: string;
+      itemId: string;
+      destination: TriageDestinationName;
+      title: string | null;
+      projectId: string | null;
+      size: "quick" | "short" | "deep" | null;
+      energy: "low" | "medium" | "high" | null;
+      context: string | null;
+      nowMs: number;
+    }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
+  /** Relation-blocked items with the reason visible — S10 (issue #108). */
+  | { type: "getBlocked" }
+  /** One item's Steps — item detail (issue #96, S10). */
+  | { type: "getSteps"; itemId: string }
+  /** Resolves the frontier's "grouped by project" display to real names
+   * (issue #108, PR #200 review). */
+  | { type: "getProjects" }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -254,8 +349,40 @@ export type TaskWorkerResponse =
       id: string | null;
       error: string | null;
     }
+  /** S11/#109's act result, matched back by `seed` — same broadcast-not-reply
+   * contract as `captureResult`. `"not_found"` is a caller mistake (no such
+   * item); `"failed"` is everything else (an unrecognised action, or a
+   * durability failure enqueueing the mutation). A successful act needs no
+   * item payload here: `Core::act`'s overlay already updated, so the
+   * existing per-cycle `frontier`/`blocked` refresh (`useFrontierWiring.ts`)
+   * is what a caller re-reads to see it. */
+  | {
+      type: "actResult";
+      seed: string;
+      itemId: string;
+      action: TaskActionName;
+      kind: "ok" | "not_found" | "failed" | "busy";
+      error: string | null;
+    }
+  /** S13/#111's triage result, matched back by `seed` — same
+   * broadcast-not-reply contract as `actResult`. `"not_found"` is a caller
+   * mistake (no such item); `"failed"` is everything else (an unrecognised
+   * `destination`/`size`/`energy` name, or a durability failure enqueueing
+   * the mutation). A successful triage needs no item payload here either:
+   * `Core::triage`'s overlay already updated, so the existing
+   * `triageInbox`/`frontier` refresh is what a caller re-reads to see it. */
+  | {
+      type: "triageResult";
+      seed: string;
+      itemId: string;
+      kind: "ok" | "not_found" | "failed" | "busy";
+      error: string | null;
+    }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
+  | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }
+  | { type: "steps"; itemId: string; steps: StepDTO[] }
+  | { type: "projects"; projects: ProjectDTO[] }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
   | {
       type: "syncOutcome";

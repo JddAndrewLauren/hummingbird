@@ -3,10 +3,24 @@ import type { createCoreStore } from "./store";
 import type {
   CalendarWorkerRequest,
   SyncCadenceRequest,
+  TaskActionName,
   TaskStageName,
   TaskWorkerRequest,
+  TriageDestinationName,
   WorkerResponse,
 } from "./protocol";
+
+/** The optional edit fields a triage mutation may carry (S13/#111) — a
+ * caller-facing convenience shape over the wire message's individually
+ * nullable fields (`TaskWorkerRequest`'s `"triage"` variant): an omitted key
+ * here means "leave this field alone", same as an explicit `null`. */
+export interface TriageEdits {
+  title?: string | null;
+  projectId?: string | null;
+  size?: "quick" | "short" | "deep" | null;
+  energy?: "low" | "medium" | "high" | null;
+  context?: string | null;
+}
 
 // The narrow slice of the DOM `MessagePort` interface a view needs — narrow
 // enough that tests can pass a plain object instead of a real port. Under
@@ -41,7 +55,7 @@ export function setMirrorSnapshotHandler(handler: ((mirror: unknown) => void) | 
 
 type Store = Pick<
   ReturnType<typeof createCoreStore>,
-  "setState" | "setCalendarState" | "setTaskState" | "setTaskPending"
+  "setState" | "setCalendarState" | "setTaskState" | "setTaskPending" | "setTaskSteps"
 >;
 
 // Wires a worker's response messages into the store. This is the only place
@@ -110,11 +124,66 @@ export function attachWorkerClient(
           },
         });
         return;
+      case "actResult":
+        store.setTaskState({
+          lastAct: {
+            seed: message.seed,
+            itemId: message.itemId,
+            action: message.action,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::act`'s overlay already updated synchronously — this is
+          // the same re-read `useFrontierWiring.ts` does per sync cycle,
+          // triggered immediately instead of waiting for the next one, so
+          // an act taken offline is visible right away (this issue's
+          // "Completing offline shows Done immediately").
+          requestFrontier(worker);
+          requestBlocked(worker);
+          // PR #207 round-2 fix: the acted-on item's `pending` must render
+          // from a LIVE source. The task worker's serial queue guarantees
+          // the act was applied before this reads, so `TaskState.pending`
+          // gets `true` now and `false` once a sync cycle drains the queue
+          // (`useItemDetailWiring` re-reads it per cycle) — which is what
+          // re-enables a blocked item's Start/Cancel row.
+          requestIsPending(worker, message.itemId);
+        }
+        return;
+      case "triageResult":
+        store.setTaskState({
+          lastTriage: {
+            seed: message.seed,
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::triage`'s overlay already updated synchronously — same
+          // immediate re-read `actResult` triggers, so a triage taken
+          // offline is visible right away (this issue's acceptance: a
+          // triaged item leaves the triage query and appears on the
+          // frontier through the mirror, not local bookkeeping).
+          requestTriageInbox(worker);
+          requestFrontier(worker);
+        }
+        return;
       case "frontier":
         store.setTaskState({ frontier: message.items });
         return;
       case "triageInbox":
         store.setTaskState({ triageInbox: message.items });
+        return;
+      case "blocked":
+        store.setTaskState({ blocked: message.entries });
+        return;
+      case "steps":
+        store.setTaskSteps(message.itemId, message.steps);
+        return;
+      case "projects":
+        store.setTaskState({ projects: message.projects });
         return;
       case "isPendingResult":
         store.setTaskPending(message.itemId, message.pending);
@@ -253,12 +322,66 @@ export function captureTask(
   worker.postMessage({ type: "capture", seed, title, stage, nowMs });
 }
 
+/** S11/#109's act mutation: start, complete, block, cancel. `seed` mints
+ * `Core::act`'s own queue-entry id — same caller-mints contract as
+ * `captureTask`'s. */
+export function actOnTask(
+  worker: WorkerLike,
+  seed: string,
+  itemId: string,
+  action: TaskActionName,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "act", seed, itemId, action, nowMs });
+}
+
+/** S13/#111's triage mutation: edits whatever fields `edits` sets and
+ * promotes to `destination`, as one CAS `PATCH`. `seed` mints `Core::triage`'s
+ * own queue-entry id — same caller-mints contract as `actOnTask`'s. */
+export function triageItem(
+  worker: WorkerLike,
+  seed: string,
+  itemId: string,
+  destination: TriageDestinationName,
+  edits: TriageEdits,
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "triage",
+    seed,
+    itemId,
+    destination,
+    title: edits.title ?? null,
+    projectId: edits.projectId ?? null,
+    size: edits.size ?? null,
+    energy: edits.energy ?? null,
+    context: edits.context ?? null,
+    nowMs,
+  });
+}
+
 export function requestFrontier(worker: WorkerLike): void {
   worker.postMessage({ type: "getFrontier" });
 }
 
 export function requestTriageInbox(worker: WorkerLike): void {
   worker.postMessage({ type: "getTriageInbox" });
+}
+
+/** Relation-blocked items with the reason visible — S10 (issue #108). */
+export function requestBlocked(worker: WorkerLike): void {
+  worker.postMessage({ type: "getBlocked" });
+}
+
+/** One item's Steps — item detail (issue #96, S10). */
+export function requestSteps(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "getSteps", itemId });
+}
+
+/** Resolves the frontier's "grouped by project" display to real names
+ * (issue #108, PR #200 review). */
+export function requestProjects(worker: WorkerLike): void {
+  worker.postMessage({ type: "getProjects" });
 }
 
 export function requestIsPending(worker: WorkerLike, itemId: string): void {

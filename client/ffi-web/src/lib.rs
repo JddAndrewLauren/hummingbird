@@ -18,9 +18,10 @@ mod task_host;
 
 pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
 pub use task_host::{
-    CaptureResponse, DeadLetterEntryDTO, DeadLetterFieldDTO, DeadLettersResponse,
-    IsPendingResponse, ItemListResponse, MirrorSnapshotResponse, QueueDepthResponse, RunResponse,
-    TaskEventDTO, TaskHostCore,
+    ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
+    DeadLetterFieldDTO, DeadLettersResponse, FrontierItemDTO, IsPendingResponse, ItemListResponse,
+    MirrorSnapshotResponse, ProjectListResponse, QueueDepthResponse, RunResponse, StepListResponse,
+    TaskEventDTO, TaskHostCore, TriageEdits, TriageResponse,
 };
 
 use wasm_bindgen::prelude::*;
@@ -280,7 +281,7 @@ mod wasm_bindings {
 
     // ------------------------------------------------------------ TaskHost
 
-    use super::task_host::TaskHostCore;
+    use super::task_host::{TaskHostCore, TriageEdits};
 
     /// The same check-out/check-in shape as [`Shared`] above, generic over
     /// which host it wraps rather than a second copy of the borrow-safety
@@ -363,8 +364,13 @@ mod wasm_bindings {
     /// await, but must still answer *something* if a concurrent async call
     /// happens to be mid-flight; see `TaskHost::frontier`).
     const BUSY_ITEM_LIST: &str = r#"{"kind":"busy","items":[]}"#;
+    const BUSY_BLOCKED_LIST: &str = r#"{"kind":"busy","entries":[]}"#;
+    const BUSY_STEP_LIST: &str = r#"{"kind":"busy","steps":[]}"#;
+    const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    const BUSY_ACT: &str = r#"{"kind":"busy","error":null}"#;
+    const BUSY_TRIAGE: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
     const BUSY_QUEUE_DEPTH: &str = r#"{"kind":"busy","depth":0}"#;
     const BUSY_DEAD_LETTERS: &str = r#"{"kind":"busy","entries":[]}"#;
@@ -422,7 +428,9 @@ mod wasm_bindings {
             self.inner.clear_api_key();
         }
 
-        /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item]}`.
+        /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item & {"pending": bool}]}`
+        /// — each item's own fields flattened alongside `pending` (issue
+        /// #108's "a pending item is marked as such").
         pub fn frontier(&self) -> String {
             match self.inner.host.borrow().as_ref() {
                 Some(host) => {
@@ -439,6 +447,39 @@ mod wasm_bindings {
                 Some(host) => serde_json::to_string(&host.triage_inbox())
                     .expect("ItemListResponse serializes"),
                 None => BUSY_ITEM_LIST.to_string(),
+            }
+        }
+
+        /// Relation-blocked items with the reason visible, as JSON:
+        /// `{"kind": "ok"|"busy", "entries": [{"item": Item & {"pending": bool}, "blocked_by": [Item & {"pending": bool}]}]}`.
+        pub fn blocked(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.blocked()).expect("BlockedListResponse serializes")
+                }
+                None => BUSY_BLOCKED_LIST.to_string(),
+            }
+        }
+
+        /// One item's Steps, as JSON: `{"kind": "ok"|"busy", "steps": [Step]}`.
+        pub fn steps(&self, item_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.steps(&item_id)).expect("StepListResponse serializes")
+                }
+                None => BUSY_STEP_LIST.to_string(),
+            }
+        }
+
+        /// Every live project, as JSON: `{"kind": "ok"|"busy", "projects": [Project]}`
+        /// — resolves the frontier's "grouped by project" display to real
+        /// names (issue #108, PR #200 review).
+        pub fn projects(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.projects()).expect("ProjectListResponse serializes")
+                }
+                None => BUSY_PROJECT_LIST.to_string(),
             }
         }
 
@@ -477,6 +518,64 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CaptureResponse serializes"),
+                ))
+            })
+        }
+
+        /// Acts on an already-existing item (S11/#109: start, complete,
+        /// block, cancel). Resolves to JSON:
+        /// `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
+        pub fn act(&self, seed: String, item_id: String, action: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_ACT));
+                };
+                let response = host.act(&seed, &item_id, &action, now_ms as i64).await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("ActResponse serializes"),
+                ))
+            })
+        }
+
+        /// Triages an already-captured item (S13/#111: edit title/project/
+        /// size/energy/context and promote to Grilling or Ready), as one
+        /// CAS `PATCH`. Resolves to JSON:
+        /// `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
+        /// `size`/`energy` are the wire's snake_case vocabulary names
+        /// (`"quick"`/`"short"`/`"deep"`, `"low"`/`"medium"`/`"high"`),
+        /// resolved by name — never a raw id — on the way in.
+        #[allow(clippy::too_many_arguments)]
+        pub fn triage(
+            &self,
+            seed: String,
+            item_id: String,
+            destination: String,
+            title: Option<String>,
+            project_id: Option<String>,
+            size: Option<String>,
+            energy: Option<String>,
+            context: Option<String>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_TRIAGE));
+                };
+                let response = host
+                    .triage(
+                        &seed,
+                        &item_id,
+                        &destination,
+                        TriageEdits { title, project_id, size, energy, context },
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("TriageResponse serializes"),
                 ))
             })
         }
