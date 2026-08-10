@@ -1,6 +1,12 @@
 import { Badge } from "../components/core/Badge";
 import { Icon, type IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
+import markDark1x from "../design/brand/app-icon-dark-26.png";
+import markDark2x from "../design/brand/app-icon-dark-52.png";
+import markDark3x from "../design/brand/app-icon-dark-78.png";
+import markLight1x from "../design/brand/app-icon-light-26.png";
+import markLight2x from "../design/brand/app-icon-light-52.png";
+import markLight3x from "../design/brand/app-icon-light-78.png";
 import type { ResolvedTheme } from "../theme/theme";
 import { SCREENS, type Screen } from "./screens";
 
@@ -50,11 +56,30 @@ export function NavRail({
         borderRight: "1px solid var(--border-subtle)",
       }}
     >
-      {/* The brand mark is the app icon PNG, which is not in the in-repo
-          design mirror (binary, omitted from the pull). Until it is, the
-          wordmark carries the brand alone — set in type, as the design
-          README's Wordmark card prescribes for the no-logo case. */}
+      {/* Mark + wordmark, as the design system's own NavRail draws it: the app
+          icon at 26px, squircled with --radius-icon-app, and no plate or
+          border of its own ("never on a coloured plate of its own"). The mark
+          is decorative — the wordmark beside it already names the app, so
+          alt="" keeps screen readers from announcing the brand twice.
+          See design/brand/README.md for where the artwork comes from. */}
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)", padding: "0 var(--space-3)" }}>
+        <img
+          src={theme === "dark" ? markDark1x : markLight1x}
+          // Raster art, so hidpi needs real pixels rather than an upscale.
+          srcSet={
+            theme === "dark"
+              ? `${markDark1x} 1x, ${markDark2x} 2x, ${markDark3x} 3x`
+              : `${markLight1x} 1x, ${markLight2x} 2x, ${markLight3x} 3x`
+          }
+          alt=""
+          width={26}
+          height={26}
+          style={{
+            display: "block",
+            flex: "0 0 auto",
+            borderRadius: "var(--radius-icon-app)",
+          }}
+        />
         <span
           style={{
             font: "var(--weight-bold) 18px/1 var(--font-display)",
