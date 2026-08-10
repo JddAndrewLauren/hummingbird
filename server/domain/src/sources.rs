@@ -139,6 +139,13 @@ pub const REGISTRY: &[SourceEntry] = &[
     // (#135-137) is unbuilt, so no adapter has ever minted a row under
     // it. `city_waste_v1_key` stays defined and tested below regardless —
     // retirement never breaks the recipe old rows still need.
+    //
+    // No `city-waste/v2` entry exists here yet — that lands with #135-137,
+    // whichever poller actually produces `/v2` rows. Until then `city-waste`
+    // is entirely unmintable as an ingest-token source (`v1` 400s as
+    // retired, `v2` 400s as unregistered): correct per ADR-0014, and loud
+    // rather than silent, but worth knowing going in rather than
+    // rediscovering at that poller's `POST /api/admin/tokens` step.
     SourceEntry {
         source: "city-waste/v1",
         shape: Shape::Event,
@@ -412,9 +419,12 @@ mod tests {
 
     /// Acceptance: a retired source is representable, and distinguishable
     /// from an unknown one — `Some(entry)` with `is_retired() == true`
-    /// versus `find`'s `None` for a string never registered at all. No
-    /// shipped source is retired yet, so this exercises the mechanism
-    /// directly on a locally built entry rather than on `REGISTRY`.
+    /// versus `find`'s `None` for a string never registered at all.
+    /// `city-waste/v1` above is now genuinely retired (#189), but this
+    /// test still exercises the mechanism on a locally built entry rather
+    /// than on `REGISTRY` — it is about `SourceEntry`/`is_retired` in
+    /// isolation; `find_resolves_the_one_retired_registry_entry` above is
+    /// the one that goes through the real registry.
     #[test]
     fn a_retired_source_is_representable_and_distinct_from_unknown() {
         let retired = SourceEntry {

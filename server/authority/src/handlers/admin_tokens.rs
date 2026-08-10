@@ -60,15 +60,17 @@ pub fn mint(
                     &format!("`{source}` is not a registered alert source"),
                 ));
             }
-            Some(entry) if entry.is_retired() => {
-                let successor = entry.retired_as.unwrap_or_default();
-                return Ok(error(
-                    400,
-                    "validation",
-                    &format!("`{source}` is retired (bumped to `{successor}`); nothing new may be minted under it"),
-                ));
+            Some(entry) => {
+                if let Some(successor) = entry.retired_as {
+                    return Ok(error(
+                        400,
+                        "validation",
+                        &format!(
+                            "`{source}` is retired (bumped to `{successor}`); nothing new may be minted under it"
+                        ),
+                    ));
+                }
             }
-            Some(_) => {}
         }
     }
 
