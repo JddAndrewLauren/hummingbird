@@ -1,0 +1,8 @@
+[package]
+name = "hummingbird-rules-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hummingbird-domain = { path = "../domain" }
+serde_json = "1.0"
