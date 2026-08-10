@@ -19,6 +19,7 @@ mod steps;
 // Re-exported for #138's sweep module, which mints/ratchets
 // `item-threshold/v1` alerts and reads item/rule rows through these exact
 // functions rather than a parallel implementation of either.
+pub(crate) use alerts::find_by_identity as find_alert_by_identity;
 pub(crate) use alerts::upsert as upsert_alert;
 pub(crate) use items::item_from_row;
 pub(crate) use rules::rule_from_row;

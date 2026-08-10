@@ -8,33 +8,83 @@
 //! seam this sweep hangs off. **Never writes to `items` or `rules`**: a
 //! tick is read-then-mint, never a write to what it read.
 //!
+//! # One mint per item, order-independent (ADR-0014)
+//!
+//! When more than one rule matches the same item on one tick, every
+//! matching verdict is collected **before** any write: [`upsert_alert`] is
+//! called exactly once, at the highest severity among the matches, and only
+//! then does [`deliver`] run once per matching rule against that one
+//! already-ratcheted alert. Interleaving mint-then-deliver per rule instead
+//! would let the *first* rule deliver at a pre-ratchet severity and then
+//! fire again on a later tick once the ratchet moved the dedupe
+//! generation — a spurious re-ring with nothing changed in the world, and
+//! rule order would silently decide how many times a device's phone buzzes.
+//! ADR-0014 is explicit that this must not depend on order: "two rules
+//! matching one event mint one alert whose severity ratchets up... never
+//! down."
+//!
 //! # Repeat ticks don't re-ring — routed through the frozen dedupe key
 //!
 //! `item-threshold/v1` is a *state* source (ADR-0014): its `source_key` is
-//! `item:<id>`, naming the thing, not the tick. Every tick that still finds
-//! an item matching calls [`crate::handlers::upsert_alert`] with
-//! `raised_at: None` — "keep the stored stamp" — so an unchanged match is a
-//! byte-identical upsert (a no-op, same as an identical webhook replay) and
-//! `deliver`'s dedupe key `(alert_id, rule_id, generation, severity)` sees
-//! the same `generation` (the alert's `raised_at`) it logged on the tick
-//! that first minted the row. That already-logged check is what makes a
-//! repeat tick distinguishable from a fresh occurrence: nothing about this
-//! sweep bypasses or widens #139's frozen dedupe key, it simply calls it
-//! every tick, on every match, exactly as `deliver`'s own doc anticipates.
-//! An item whose matching rule's *severity* changes — not possible today,
-//! since a rule's `severity` is static, but the same path a future
-//! per-item severity would ride — ratchets the alert and rings again
-//! through the ordinary escalation path, not a new mechanism.
+//! `item:<id>`, naming the thing, not the tick. This sweep is the "source"
+//! for that state, which carries ADR-0014's wiring-time obligation
+//! verbatim: *"`raised_at` is the moment the condition began, never the
+//! moment the webhook fired."* Concretely: before minting, the sweep reads
+//! whatever alert already exists under `item:<id>` and asks whether it is
+//! still live *right now*.
+//!
+//! - **Still live:** the match is a continuation of the same occurrence.
+//!   `raised_at` is passed as `None` — "keep the stored stamp" — so an
+//!   unchanged match is a byte-identical upsert (a no-op) and lands on the
+//!   same `generation` `deliver`'s dedupe key already logged. This is what
+//!   makes a repeat tick distinguishable from a fresh occurrence, entirely
+//!   inside #139's existing, unwidened dedupe key.
+//! - **Not live (no row yet, or the row is dismissed/resolved/expired):**
+//!   the match is a *new* occurrence. `raised_at` is stamped `now_ms`,
+//!   overtaking whatever `dismissed_at`/`resolved_at` made it settled — the
+//!   exact mechanism ADR-0014's "Live: how a settled alert rings again"
+//!   describes for a re-committed deadline re-raising the same row. Without
+//!   this, an item that is ever hand-dismissed once could never ring again:
+//!   `raised_at` would stay frozen at its original mint forever, so the
+//!   live predicate (`raised_at > dismissed_at`) could never flip back true
+//!   no matter how many times the condition later re-triggers.
+//!
+//! **What this does not fix:** ADR-0014 also assigns the DO alarm a
+//! *separate* "resolution pass" — iterating live `item-threshold/v1`
+//! alerts (not items) and stamping `resolved_at` once an item is done,
+//! archived, deleted, or no longer matches. That pass is not implemented
+//! here (see `tick`'s own doc and the tracking issue named in the PR). Two
+//! concrete consequences follow, both accepted deliberately for this issue
+//! and not silently absorbed:
+//!
+//! 1. An item whose alert was never dismissed, and whose item later stops
+//!    matching (done, archived, or edited past the threshold) without a
+//!    human ever hand-acking it, has **no path back to live-and-quiet**: no
+//!    resolution pass ever runs to close it, so it sits live and
+//!    top-of-stack forever until a human dismisses it by hand. This sweep
+//!    cannot detect "the condition ended" — only "the condition still
+//!    holds" or "nothing to report" — which is exactly the gap ADR-0014
+//!    names as the reason the resolution pass has to exist.
+//! 2. Even after that pass exists, it will not compose for free with this
+//!    mint path as written: every call here passes `resolved_at: None`,
+//!    and `upsert_alert` (`handlers/alerts.rs`) sets a source-owned field
+//!    *absolutely* from what it is given — an absent optional clears. If
+//!    the item is still matching on the tick right after the resolution
+//!    pass stamps `resolved_at`, this sweep's next `upsert_alert` call
+//!    erases that stamp on the very next tick. Wiring the two together
+//!    correctly is part of that future issue's job, not a side effect of
+//!    reading this module.
 
 use std::collections::BTreeMap;
 
 use hummingbird_domain::{
-    item_threshold_v1_key, now_as_deadline, AlertIngest, Energy, Event, FieldValue, Item, Size,
+    higher_severity, item_threshold_v1_key, now_as_deadline, AlertIngest, Energy, Event,
+    FieldValue, Item, Size, ITEM_THRESHOLD_V1,
 };
-use hummingbird_rules_engine::{evaluate_rules, RuleOutcome};
+use hummingbird_rules_engine::{evaluate_rules, RuleOutcome, Verdict};
 
 use crate::delivery::{deliver, DeliveryOutcome};
-use crate::handlers::{item_from_row, rule_from_row, upsert_alert};
+use crate::handlers::{find_alert_by_identity, item_from_row, rule_from_row, upsert_alert};
 use crate::sql::{Row, Sql, SqlError};
 
 /// The alarm's tick interval — a real, readable parameter (ADR-0013: "the
@@ -58,19 +108,24 @@ pub struct TickMatch {
 }
 
 /// Runs one alarm tick: every enabled rule against every non-archived item,
-/// presented as an `item_threshold` event. Matches mint/ratchet through
-/// [`crate::handlers::upsert_alert`] (the same upsert `POST /api/alerts`
-/// uses) and are routed through [`deliver`] once per matching rule, per
-/// the module doc. Returns one [`TickMatch`] per (item, rule) match,
-/// regardless of whether `deliver` decided to log or suppress it — the
-/// caller (the worker's `alarm()` handler) only needs to act on `Logged`,
-/// but every outcome is reported so a fixture can assert on suppression
-/// too.
+/// presented as an `item_threshold` event. All of one item's matching
+/// verdicts are resolved to a single mint/ratchet (see module doc's "one
+/// mint per item" section) before [`deliver`] runs once per matching rule
+/// against that one alert. Returns one [`TickMatch`] per (item, rule)
+/// match, regardless of whether `deliver` decided to log or suppress it —
+/// the caller (the worker's `alarm()` handler) only needs to act on
+/// `Logged`, but every outcome is reported so a fixture can assert on
+/// suppression too.
+///
+/// A single malformed row (`item_from_row`/`rule_from_row` failing to parse
+/// a cell) is skipped rather than aborting the whole tick — a poisoned row
+/// must not become a poison pill that blocks every other item, forever,
+/// once the alarm reschedules and tries again. This should never happen in
+/// practice (every row was written by this crate's own handlers against
+/// its own DDL); it is defensive, not an expected path.
 pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
-    let rules: Vec<_> = load_enabled_rules(sql)?
-        .into_iter()
-        .map(|row| rule_from_row(&row))
-        .collect::<Result<_, _>>()?;
+    let rules: Vec<_> =
+        load_enabled_rules(sql)?.iter().filter_map(|row| rule_from_row(row).ok()).collect();
     if rules.is_empty() {
         return Ok(Vec::new());
     }
@@ -78,33 +133,58 @@ pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
     let now = now_as_deadline(now_ms);
     let mut matches = Vec::new();
     for row in load_live_items(sql)? {
-        let item = item_from_row(&row)?;
+        let Ok(item) = item_from_row(&row) else { continue };
         let event = item_threshold_event(&item);
-        for (rule_id, outcome) in evaluate_rules(&rules, &event, &now) {
-            let RuleOutcome::Matched(verdict) = outcome else {
-                continue;
-            };
-            let ingest = AlertIngest {
-                source: "item-threshold/v1".to_string(),
-                source_key: item_threshold_v1_key(&item.id),
-                title: item.title.clone(),
-                body: item.description.clone(),
-                url: item.source_url.clone(),
-                severity: Some(verdict.severity.clone()),
-                // `None`: a repeat tick that still matches keeps the
-                // stored `raised_at`, so it lands on the same `deliver`
-                // dedupe generation instead of minting a fresh one (see
-                // module doc). Absent on a genuine first raise too, in
-                // which case `upsert_alert` stamps `now_ms` itself.
-                raised_at: None,
-                // `item-threshold/v1` never sets `resolved_at`/`expires_at`
-                // from this sweep — resolving an alert whose item stopped
-                // matching is ADR-0014's separate "resolution pass" over
-                // live alerts, out of #138's acceptance criteria.
-                resolved_at: None,
-                expires_at: None,
-            };
-            let (_status, alert) = upsert_alert(sql, now_ms, ingest)?;
+
+        let verdicts: Vec<(String, Verdict)> = evaluate_rules(&rules, &event, &now)
+            .into_iter()
+            .filter_map(|(rule_id, outcome)| match outcome {
+                RuleOutcome::Matched(verdict) => Some((rule_id, verdict)),
+                _ => None,
+            })
+            .collect();
+        if verdicts.is_empty() {
+            continue;
+        }
+
+        let source_key = item_threshold_v1_key(&item.id);
+        let existing = find_alert_by_identity(sql, ITEM_THRESHOLD_V1, &source_key)?;
+        // Still live: this tick's match is a continuation of the same
+        // occurrence, so keep the stored `raised_at` (module doc). Not
+        // live, or no row yet: a fresh occurrence starts now — the
+        // mechanism that lets a settled alert ring again.
+        let raised_at = match &existing {
+            Some(alert) if alert.is_live(now_ms) => None,
+            _ => Some(now_ms),
+        };
+        // ADR-0014: N matching rules mint ONE alert at the highest
+        // severity among them, never N mints — order-independent, since
+        // `higher_severity` folded over any order converges on the same
+        // maximum.
+        let severity = verdicts
+            .iter()
+            .fold(None, |acc: Option<&str>, (_, v)| higher_severity(acc, Some(v.severity.as_str())))
+            .map(str::to_string);
+
+        let ingest = AlertIngest {
+            source: ITEM_THRESHOLD_V1.to_string(),
+            source_key,
+            title: item.title.clone(),
+            body: item.description.clone(),
+            url: item.source_url.clone(),
+            severity,
+            raised_at,
+            // `item-threshold/v1` never sets `resolved_at`/`expires_at`
+            // from this sweep — resolving an alert whose item stopped
+            // matching is ADR-0014's separate "resolution pass" over live
+            // alerts, out of #138's acceptance criteria (see module doc's
+            // "what this does not fix").
+            resolved_at: None,
+            expires_at: None,
+        };
+        let (_status, alert) = upsert_alert(sql, now_ms, ingest)?;
+
+        for (rule_id, verdict) in verdicts {
             let outcome = deliver(sql, now_ms, &alert, &rule_id, verdict.tier)?;
             matches.push(TickMatch { item_id: item.id.clone(), rule_id, outcome });
         }
@@ -118,7 +198,12 @@ fn load_enabled_rules(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
 
 /// Archived items are excluded from evaluation entirely (ADR-0014): the
 /// sweep never mutates or re-classes an item, and an archived item is the
-/// operator's own signal that it is no longer live work.
+/// operator's own signal that it is no longer live work. A `done`-but-not-
+/// archived item is deliberately *not* excluded here in addition: ADR-0014
+/// names `archived_at` as the one evaluation boundary, `stage` is a
+/// separate lifecycle axis it never gates on, and inventing a second
+/// exclusion criterion with no ADR or acceptance-criterion anchor would be
+/// scope creep past what this issue was asked to decide.
 fn load_live_items(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
     sql.exec("SELECT * FROM items WHERE archived_at IS NULL", &[])
 }
@@ -129,7 +214,9 @@ fn load_live_items(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
 /// identity `item-threshold/v1`/`item:<id>` minted above — the two are
 /// deliberately different namespaces answering different questions (where
 /// did this item come from, vs. which alert row does a matching rule
-/// ratchet).
+/// ratchet). A rule naming no `event_kind` at all (`NULL` = "any kind",
+/// ADR-0013) evaluates against this event's core fields exactly like every
+/// other kind — nothing here special-cases that away.
 fn item_threshold_event(item: &Item) -> Event {
     let mut extras = BTreeMap::new();
     if let Some(deadline) = &item.deadline {

@@ -60,28 +60,44 @@ caller's synchronous half: the DO alarm's repeat-tick evaluation, at the
 `ALARM_INTERVAL_MS` interval (15 minutes, a readable `const` rather than a
 buried literal, so #140 can warn when a rule duration is shorter than it).
 Every enabled rule against every non-archived item, presented as a
-synthetic `item_threshold` event; each match mints/ratchets the alert
-through the exact same upsert `POST /api/alerts` uses (`item-threshold/v1`,
-`source_key` = `item:<id>`, ADR-0014's state-source convention — occurrence
-identity lives in the alert's lifecycle, not the tick), then calls
-`deliver` once per matching rule. A repeat tick that still matches is
-therefore just another call into #139's frozen dedupe key, not a new
-mechanism: the re-raise keeps the alert's `raised_at`, so `deliver` finds
-the same `(alert_id, rule_id, generation, severity)` already logged and
-suppresses it. The sweep never writes to `items` or `rules` — a tick is
-read-then-mint, never a write to what it read. The worker shim
-(`hummingbird-authority-worker`) supplies the DO's `alarm()` handler:
-it drives `sweep_tick`, reschedules the next tick unconditionally (even if
-the tick itself errored, so one bad tick can't stop the clock), and is
-where a future issue wires the actual FCM HTTP send for each
+synthetic `item_threshold` event; **every matching rule for one item is
+collected before any write** — one `upsert_alert` call at the highest
+matched severity (never one call per rule, which would deliver a rule at a
+pre-ratchet severity and then re-fire once the ratchet moved the dedupe
+generation), through the exact same upsert `POST /api/alerts` uses
+(`item-threshold/v1`, `source_key` = `item:<id>`, ADR-0014's state-source
+convention — occurrence identity lives in the alert's lifecycle, not the
+tick) — then `deliver` runs once per matching rule against that one
+already-ratcheted alert. Before minting, the sweep reads whatever alert
+already exists under `item:<id>` and asks whether it is still live right
+now: **still live** passes `raised_at: None` (keep the stored stamp, so an
+unchanged match is a no-op landing on the same `deliver` dedupe generation
+and staying quiet); **not live** — no row yet, or the row is
+dismissed/resolved/expired — stamps `raised_at` fresh, which is what lets a
+hand-dismissed alert ring again once its item next matches (ADR-0014's
+"Live: how a settled alert rings again"). The sweep never writes to `items`
+or `rules` — a tick is read-then-mint, never a write to what it read. The
+worker shim (`hummingbird-authority-worker`) supplies the DO's `alarm()`
+handler: it drives `sweep_tick`, reschedules the next tick unconditionally
+(even if the tick itself errored, so one bad tick can't stop the clock),
+and is where a future issue wires the actual FCM HTTP send for each
 `DeliveryOutcome::Logged` target — `sweep_tick` only decides and hands back
-what to send, exactly as `deliver` does one layer down. Not yet built:
-ADR-0014's separate "resolution pass" (stamping `resolved_at` on an
-`item-threshold/v1` alert once its item is done, archived, deleted, or no
-longer matches) — until it lands, an alert minted for an item that stops
-matching stays live until hand-acked. Still no production deploy (that is
-#95's human gate H3) — `wrangler dev` + `server/scripts/smoke.sh` locally,
-`.github/workflows/server.yml` in CI.
+what to send, exactly as `deliver` does one layer down. **Not yet built,
+and not a small gap:** ADR-0014's separate "resolution pass" (stamping
+`resolved_at` on a live `item-threshold/v1` alert once its item is done,
+archived, deleted, or no longer matches). Without it, an item whose alert
+was never hand-dismissed, and whose item later stops matching on its own
+(done, archived, edited past the threshold), has **no path back to
+quiet — ever** — that alert sits live and top-of-stack permanently until a
+human dismisses it by hand; the sweep can detect "still matches" or
+"nothing to report," never "the condition ended." And the fix is not
+just "add the pass": `sweep_tick` calls `upsert_alert` with
+`resolved_at: None` on every tick, which sets that column *absolutely* —
+so a still-matching item's very next tick would silently erase a
+`resolved_at` the pass had just written, unless the pass and the sweep are
+wired together deliberately. Tracked in #217. Still no production deploy
+(that is #95's human gate H3) — `wrangler dev` + `server/scripts/smoke.sh`
+locally, `.github/workflows/server.yml` in CI.
 
 ## The client sync engine
 

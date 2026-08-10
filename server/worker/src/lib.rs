@@ -116,16 +116,18 @@ mod shim {
                     return json_response(500, body);
                 }
                 self.schema_ready.set(true);
-                // The DO alarm sweep (#138): the very first time this
-                // instance stands up its schema, make sure the recurring
-                // tick is actually scheduled. A restarted/evicted-then-
-                // recreated instance re-runs the constructor with a fresh
-                // `schema_ready`, so this re-checks on every wake — but
-                // `get_alarm` returning `Some` (the normal case; Cloudflare
-                // persists a DO's alarm across restarts) makes it a no-op,
-                // never a double-schedule.
-                ensure_alarm_scheduled(&self.state.storage()).await?;
             }
+            // The DO alarm sweep (#138): make sure the recurring tick is
+            // actually scheduled. Deliberately **not** folded into the
+            // `schema_ready` gate above — `get_alarm` is cheap and
+            // idempotent (the normal case, `Some`, is a no-op), so this
+            // runs on every request rather than only the first one per
+            // instance wake. Gating it behind `schema_ready` would wedge
+            // the clock silently forever: if this call ever failed on that
+            // one first request, `schema_ready` would already be `true`,
+            // every later request would skip the whole block, and nothing
+            // would ever retry scheduling the alarm.
+            ensure_alarm_scheduled(&self.state.storage()).await?;
 
             let method = req.method().to_string().to_uppercase();
             let url = req.url()?;

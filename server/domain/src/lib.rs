@@ -45,7 +45,8 @@ pub use severity::{higher_severity, severity_rank, SEVERITIES};
 pub use sources::{
     city_waste_v1_key, find as find_source, github_v1_key, gmail_alert_v1_key, gmail_v1_key,
     google_calendar_v1_key, healthchecks_v1_key, home_assistant_v1_key, item_threshold_v1_key,
-    m365_calendar_v1_key, m365_mail_v1_key, photo_site_v1_key, Expiry, Shape, SourceEntry, REGISTRY,
+    m365_calendar_v1_key, m365_mail_v1_key, photo_site_v1_key, Expiry, Shape, SourceEntry,
+    ITEM_THRESHOLD_V1, REGISTRY,
 };
 pub use step::{BlockedBy, Step};
 pub use token::{MintedToken, Scope, TokenInfo};

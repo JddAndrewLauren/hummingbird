@@ -206,6 +206,18 @@ fn deterministic_id(source: &str, source_key: &str) -> String {
     id
 }
 
+/// The mint/ratchet core's own identity read, exposed so a caller can
+/// decide something *before* calling [`upsert`] — #138's sweep uses this to
+/// tell "still live, keep the stamp" apart from "settled or absent, a fresh
+/// occurrence starts now" ahead of picking what `raised_at` to pass in.
+pub(crate) fn find_by_identity(
+    sql: &dyn Sql,
+    source: &str,
+    source_key: &str,
+) -> Result<Option<Alert>, SqlError> {
+    select_by_identity(sql, source, source_key)?.map(|row| alert_from_row(&row)).transpose()
+}
+
 fn select_by_identity(sql: &dyn Sql, source: &str, source_key: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(

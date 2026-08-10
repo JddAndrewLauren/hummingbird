@@ -100,6 +100,19 @@ impl SourceEntry {
 /// source below has at least one frozen key-vector test in this module,
 /// and the whole table is pinned verbatim by
 /// `tests::registry_matches_the_frozen_adr_0014_table`.
+/// `item-threshold/v1`'s frozen namespace, named as a `const` (not just a
+/// literal in the registry array below) so #138's DO alarm sweep — the one
+/// caller that mints under this source without going through a webhook —
+/// references this exact string rather than an independent copy. A
+/// hand-typed second literal in `authority`'s sweep would drift silently
+/// past the registry's own retirement tripwire the moment this source is
+/// ever retired to `/v2`: `find` would still resolve the old string
+/// (nothing would 400 or warn, since nothing calls `find` on a hardcoded
+/// mint the way `validate_rule` does for a rule condition), and the sweep
+/// would keep minting under a source the registry already flags as dead.
+/// One `const`, two consumers, makes that drift a compile error instead.
+pub const ITEM_THRESHOLD_V1: &str = "item-threshold/v1";
+
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: "gmail/v1",
@@ -156,7 +169,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         retired_as: Some("city-waste/v2"),
     },
     SourceEntry {
-        source: "item-threshold/v1",
+        source: ITEM_THRESHOLD_V1,
         shape: Shape::State,
         key_recipe: "item:<id>",
         expires_at: Expiry::Never,
