@@ -284,6 +284,23 @@ export type TaskWorkerResponse =
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
+  /** What one `Core::run` cycle resolved to, broadcast to every connected
+   * port. Issue #195: also the last one is cached by `PortRegistry` and
+   * replayed to a port that connects after it — see `queueDepth`'s doc
+   * below and `ports.ts`'s class doc for the full "latest-state vs
+   * one-shot" rule this and its siblings are classified under.
+   *
+   * `atMs` is the cycle's OWN time (`worker/task-worker.ts`'s `runSync`
+   * branch posts `request.nowMs`, the same clock value `Core::run` was
+   * invoked with) — deliberately not left for the receiving view to infer
+   * from its own message-receipt clock. Issue #195 round-1 review: a live
+   * broadcast's receipt time is a safe stand-in for the cycle's real time
+   * (sub-second apart), but a REPLAYED broadcast can reach a newly
+   * connecting port arbitrarily long after the cycle it describes — a view
+   * stamping its own `now()` on receipt would render a five-hour-old cycle
+   * as "as of just now", exactly the false-freshness the badge exists to
+   * avoid (`shell/sync-status.ts`). `store/worker-client.ts` reads this
+   * field for `lastSyncAtMs` rather than calling its own clock. */
   | {
       type: "syncOutcome";
       kind: TaskRunOutcomeKind;
@@ -291,6 +308,7 @@ export type TaskWorkerResponse =
       activeItemCount: number | null;
       wasFullSweep: boolean | null;
       deadLettered: number | null;
+      atMs: number;
     }
   /** Drained from `Core::take_events` and broadcast to every connected port
    * (`PortRegistry.broadcast`, not a reply to whichever port triggered the
@@ -303,12 +321,18 @@ export type TaskWorkerResponse =
    * cycle: `worker/task-worker.ts`'s `runSync` branch reads and posts it
    * once per cycle (dropped, not posted, on a `"busy"` read), broadcast to
    * every connected port the same as `syncOutcome`. This is what keeps N
-   * connected views from each re-requesting it every cycle. */
+   * connected views from each re-requesting it every cycle. `syncOutcome`,
+   * this, `deadLetters` and `taskHostUnavailable` are also — issue #195 —
+   * cached by `PortRegistry` and replayed to a port that connects after the
+   * fact, so a view whose port wires up between cycles still starts from
+   * the current figure instead of `null` (see `ports.ts`'s class doc for
+   * which message types get this treatment and why). */
   | { type: "queueDepth"; depth: number }
   /** Answers `getDeadLetters`, AND — issue #191 — arrives unsolicited at the
    * tail of every completed `runSync`, same contract as `queueDepth` above:
    * read and posted at most once per cycle regardless of view count, never
-   * on a `"busy"` read. */
+   * on a `"busy"` read. Replayed to a late-connecting port the same as
+   * `queueDepth` — see that field's doc. */
   | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
   | { type: "mirrorSnapshot"; mirror: unknown }
   /** The task host itself failed to construct (a corrupt durable snapshot,
@@ -323,7 +347,9 @@ export type TaskWorkerResponse =
    * `console.error` nobody reads (post-batch review of PR #185). Broadcast
    * once when construction fails AND again per dropped request, since a
    * broadcast reaches only the views connected at the time and a view that
-   * connects later must still learn — its first task request tells it. */
+   * connects later must still learn — its first task request tells it, and
+   * — issue #195 — so does `PortRegistry`'s replay on connect, without
+   * waiting for that view to send one. */
   | { type: "taskHostUnavailable"; message: string };
 
 // -- worker -> main -----------------------------------------------------

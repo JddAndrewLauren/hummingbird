@@ -97,6 +97,92 @@ describe("PortRegistry", () => {
     });
   });
 
+  describe("cache-and-replay of latest-state broadcasts (issue #195)", () => {
+    it("replays the last sync outcome to a port connecting after it was broadcast", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      const first = fakePort();
+      registry.connect(first);
+
+      const outcome: WorkerResponse = {
+        type: "syncOutcome",
+        kind: "completed",
+        retryAfterMs: null,
+        activeItemCount: 3,
+        wasFullSweep: false,
+        deadLettered: 0,
+        atMs: 5_000,
+      };
+      registry.broadcast(outcome);
+
+      const second = fakePort();
+      registry.connect(second);
+
+      expect(second.postMessage).toHaveBeenCalledWith(outcome);
+    });
+
+    it("does not replay anything to a port connecting before any broadcast — a core that never ran a cycle stays never-synced", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      const port = fakePort();
+
+      registry.connect(port);
+
+      expect(port.postMessage).toHaveBeenCalledTimes(1);
+      expect(port.postMessage).toHaveBeenCalledWith({ type: "ready", apiVersion: 1 });
+    });
+
+    it("does not replay a one-shot broadcast (e.g. pollOutcome) to a later-connecting port", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      const first = fakePort();
+      registry.connect(first);
+
+      registry.broadcast({ type: "pollOutcome", outcome: "succeeded" });
+
+      const second = fakePort();
+      registry.connect(second);
+
+      expect(second.postMessage).toHaveBeenCalledTimes(1);
+      expect(second.postMessage).toHaveBeenCalledWith({ type: "ready", apiVersion: 1 });
+    });
+
+    it("replays the latest broadcast of a type, not the first, once it has changed", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      const first = fakePort();
+      registry.connect(first);
+
+      registry.broadcast({ type: "queueDepth", depth: 5 });
+      registry.broadcast({ type: "queueDepth", depth: 2 });
+
+      const second = fakePort();
+      registry.connect(second);
+
+      expect(second.postMessage).toHaveBeenCalledWith({ type: "queueDepth", depth: 2 });
+      expect(second.postMessage).not.toHaveBeenCalledWith({ type: "queueDepth", depth: 5 });
+    });
+
+    it("replays every distinct latest-state type broadcast so far, not just the most recent one", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      const first = fakePort();
+      registry.connect(first);
+
+      registry.broadcast({ type: "queueDepth", depth: 5 });
+      registry.broadcast({
+        type: "deadLetters",
+        entries: [],
+      });
+
+      const second = fakePort();
+      registry.connect(second);
+
+      expect(second.postMessage).toHaveBeenCalledWith({ type: "queueDepth", depth: 5 });
+      expect(second.postMessage).toHaveBeenCalledWith({ type: "deadLetters", entries: [] });
+    });
+  });
+
   describe("before the core has finished initializing", () => {
     // The regression this covers: core.worker.ts's wasm import is async, so
     // the view that STARTS the SharedWorker can connect before `activate` is

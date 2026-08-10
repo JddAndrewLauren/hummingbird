@@ -66,15 +66,16 @@ export interface TaskState {
   pending: Record<string, boolean>;
   lastCapture: TaskCaptureResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
-  /** When this view learned the last `Core::run` cycle happened (any
-   * trigger, any outcome) — S9's "last sweep" readout. Sampled by
-   * `worker-client.ts` at the moment it processes the `syncOutcome`
-   * broadcast, using this view's own clock — the wire message carries no
-   * `nowMs` of its own (the cycle's real invocation time, sampled inside
-   * `core.worker.ts`, is never round-tripped back), and every view's
-   * broadcast-processing clock reads within a few milliseconds of every
-   * other's regardless, so this is an accurate-enough proxy for "just now"
-   * without needing to widen the protocol. */
+  /** When the last `Core::run` cycle actually happened (any trigger, any
+   * outcome) — S9's "last sweep" readout. Copied by `worker-client.ts`
+   * straight from the `syncOutcome` message's own `atMs`, which
+   * `task-worker.ts` stamps from the cycle's clock (`atMs: request.nowMs`,
+   * the same value `core.worker.ts` passes to `host.runSync`) — NOT sampled
+   * from this view's clock at broadcast-processing time. That distinction is
+   * what issue #195's cache-and-replay depends on: a `syncOutcome` replayed
+   * to a late-connecting port must read at its true age, and a view stamping
+   * its own clock on a replay would launder a stale outcome into a fresh
+   * success. */
   lastSyncAtMs: number | null;
   /** Monotonic count of `syncOutcome` broadcasts this view has processed —
    * incremented by `worker-client.ts` on EVERY cycle, whatever its `kind`.
@@ -97,8 +98,13 @@ export interface TaskState {
    * explicit call-out this is not a silent, unexplained deletion. */
   syncOutcomeSeq: number;
   /** The outbound queue's current depth — S9's sync-status "queued"
-   * figure. `null` until the first answer arrives (this view has not asked,
-   * or the core is still loading). */
+   * figure. `null` until the first answer arrives: an explicit
+   * `getQueueDepth` reply, the worker's own unsolicited per-cycle push
+   * (issue #191), or — issue #195 — the replay a newly connecting port gets
+   * of whatever `queueDepth` last broadcast this session
+   * (`worker/ports.ts`'s `PortRegistry`). `null` still means exactly one
+   * thing regardless of origin: nothing has answered yet, because the core
+   * is still loading or has never completed a cycle. */
   queueDepth: number | null;
   /** The whole dead-letter journal, as of the last `deadLetters` broadcast
    * — S9's "1 edit didn't apply" affordance. Kept fresh by the worker's own

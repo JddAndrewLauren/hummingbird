@@ -45,6 +45,7 @@ describe("protocol round-trips", () => {
       activeItemCount: 3,
       wasFullSweep: false,
       deadLettered: 0,
+      atMs: 5_000,
     },
     { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 5_000 }] },
     { type: "queueDepth", depth: 3 },

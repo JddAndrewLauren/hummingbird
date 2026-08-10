@@ -156,7 +156,20 @@ export function attachWorkerClient(
           // Every cycle that was actually ATTEMPTED counts as a "sweep" for
           // S9's status readout, whatever it resolved to — a held or failed
           // cycle is still information about how stale the mirror now is.
-          lastSyncAtMs: now(),
+          //
+          // Issue #195 round-1 review: this used to be `now()` — this
+          // view's own receipt-time clock. That is a safe stand-in for a
+          // LIVE broadcast (worker posts, view receives, sub-second apart),
+          // but `worker/ports.ts`'s `PortRegistry` also REPLAYS the last
+          // `syncOutcome` to a port that connects long after the cycle it
+          // describes; a view stamping its own clock on a replay would
+          // render an hours-old cycle as "as of just now" — the exact
+          // false-freshness `isInformativeSyncOutcome`/`OUTCOME_CLASS`
+          // exist to prevent, two paragraphs up. `message.atMs` is the
+          // cycle's OWN time (`worker/task-worker.ts` posts
+          // `request.nowMs`), so it reads correctly whether this message
+          // arrived live or as a replay.
+          lastSyncAtMs: message.atMs,
         });
         return;
       case "taskEvents":

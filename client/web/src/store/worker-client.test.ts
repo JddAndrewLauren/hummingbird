@@ -296,6 +296,7 @@ describe("attachWorkerClient", () => {
         activeItemCount: 2,
         wasFullSweep: true,
         deadLettered: 0,
+        atMs: 5_000,
       },
     } as MessageEvent);
 
@@ -322,10 +323,46 @@ describe("attachWorkerClient", () => {
         activeItemCount: null,
         wasFullSweep: null,
         deadLettered: null,
+        atMs: 7_000,
       },
     } as MessageEvent);
 
     expect(store.getSnapshot().task.lastSyncAtMs).toBe(7_000);
+  });
+
+  // Issue #195 round-1 review (blocking finding 1): `PortRegistry` (ports.ts)
+  // replays the last `syncOutcome` broadcast to a port that connects long
+  // after the cycle it describes. If this handler stamped `lastSyncAtMs`
+  // from its OWN receipt clock, a replay would read as though the cycle had
+  // just happened — the exact false-freshness `isInformativeSyncOutcome` /
+  // `OUTCOME_CLASS` exist to prevent (see their own doc: a backed-off tick
+  // used to re-green a "Stale" badge to "Synced — as of just now" every
+  // minute during an outage). `atMs` is the cycle's OWN time
+  // (`worker/task-worker.ts` posts `request.nowMs`), so `lastSyncAtMs` must
+  // come from the message, never from this view's receipt-time clock — this
+  // test's `now` returns a wildly different value specifically to prove
+  // that.
+  it("stamps lastSyncAtMs from the message's own atMs, not the receiving view's clock — a replayed outcome must read at its true age", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    // A view connecting hours after the cycle this outcome describes — its
+    // own receipt-time clock is nowhere near the cycle's real time.
+    attachWorkerClient(worker, store, () => 999_999_999);
+
+    const cycleTimeMs = 5_000;
+    worker.onmessage?.({
+      data: {
+        type: "syncOutcome",
+        kind: "completed",
+        retryAfterMs: null,
+        activeItemCount: 2,
+        wasFullSweep: true,
+        deadLettered: 0,
+        atMs: cycleTimeMs,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastSyncAtMs).toBe(cycleTimeMs);
   });
 
   // Post-batch review of PR #185. `lastSyncAtMs` used to be stamped
@@ -340,8 +377,7 @@ describe("attachWorkerClient", () => {
     (kind) => {
       const worker = fakeWorker();
       const store = createCoreStore();
-      let clock = 1_000;
-      attachWorkerClient(worker, store, () => clock);
+      attachWorkerClient(worker, store);
 
       worker.onmessage?.({
         data: {
@@ -351,9 +387,9 @@ describe("attachWorkerClient", () => {
           activeItemCount: null,
           wasFullSweep: null,
           deadLettered: null,
+          atMs: 1_000,
         },
       } as MessageEvent);
-      clock = 61_000;
       worker.onmessage?.({
         data: {
           type: "syncOutcome",
@@ -362,6 +398,7 @@ describe("attachWorkerClient", () => {
           activeItemCount: null,
           wasFullSweep: null,
           deadLettered: null,
+          atMs: 61_000,
         },
       } as MessageEvent);
 
@@ -378,7 +415,7 @@ describe("attachWorkerClient", () => {
   it("leaves lastSyncAtMs null when the very first cycle of the session is skipped", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store, () => 9_000);
+    attachWorkerClient(worker, store);
 
     worker.onmessage?.({
       data: {
@@ -388,6 +425,7 @@ describe("attachWorkerClient", () => {
         activeItemCount: null,
         wasFullSweep: null,
         deadLettered: null,
+        atMs: 9_000,
       },
     } as MessageEvent);
 
@@ -422,6 +460,7 @@ describe("attachWorkerClient", () => {
       activeItemCount: 2,
       wasFullSweep: false,
       deadLettered: 0,
+      atMs: 5_000,
     };
 
     worker.onmessage?.({ data: steadyStateOutcome } as MessageEvent);
