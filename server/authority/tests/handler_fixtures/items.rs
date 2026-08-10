@@ -217,6 +217,95 @@ fn patch_with_only_expected_version_is_a_noop() {
 }
 
 #[test]
+fn patch_setting_every_field_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1");
+    post(
+        &sql,
+        r#"{"id": "a-1", "title": "hello", "priority": 2, "project_id": "p-1",
+            "project_pos": 3}"#,
+        1000,
+    ); // version 2 (p-1 already claimed version 1)
+    let resp = patch(
+        &sql,
+        "a-1",
+        r#"{"expected_version": 2, "title": "hello", "priority": 2,
+            "project_id": "p-1", "project_pos": 3, "archived_at": null}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged = item(&resp);
+    assert_eq!(unchanged.version, 2, "no version bump for a value-identical patch");
+    assert_eq!(unchanged.updated_at, 1000, "no updated_at restamp");
+    assert_eq!(meta_version(&sql), 2, "no global bump either");
+}
+
+#[test]
+fn patch_mixing_changed_and_unchanged_fields_writes_only_the_changed_ones() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello", "priority": 2}"#, 1000); // version 1
+    let resp = patch(
+        &sql,
+        "a-1",
+        r#"{"expected_version": 1, "title": "hello", "priority": 3}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let updated = item(&resp);
+    assert_eq!(updated.title, "hello", "the unchanged field is left as-is");
+    assert_eq!(updated.priority, 3, "the changed field is written");
+    assert_eq!(updated.version, 2, "a mixed patch still bumps");
+    assert_eq!(updated.updated_at, 2000);
+    assert_eq!(meta_version(&sql), 2);
+}
+
+// The integer/real representation hazard (#166): a Durable Object cursor
+// may surface an INTEGER column as a whole f64, so a comparison that goes
+// through the raw `SqlValue` (`Integer(2) != Real(2.0)`) would silently
+// never fire the no-op short-circuit in production while passing under
+// rusqlite in CI. `RealCoercingSql` stands in for that cursor so these
+// fixtures actually exercise the hazard instead of relying on rusqlite
+// happening to agree with production.
+#[test]
+fn patch_value_identical_priority_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello", "priority": 2}"#, 1000); // version 1
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch(&wrapped, "a-1", r#"{"expected_version": 1, "priority": 2}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).version, 1, "priority: Integer(2) vs Real(2.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 1);
+}
+
+#[test]
+fn patch_value_identical_project_pos_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1");
+    post(
+        &sql,
+        r#"{"id": "a-1", "title": "hello", "project_id": "p-1", "project_pos": 4}"#,
+        1000,
+    ); // version 2
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch(&wrapped, "a-1", r#"{"expected_version": 2, "project_pos": 4}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).version, 2, "project_pos: Integer(4) vs Real(4.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
+fn patch_value_identical_archived_at_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000); // version 1
+    patch(&sql, "a-1", r#"{"expected_version": 1, "archived_at": 5000}"#, 2000); // version 2
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch(&wrapped, "a-1", r#"{"expected_version": 2, "archived_at": 5000}"#, 3000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).version, 2, "archived_at: Integer(5000) vs Real(5000.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
 fn patch_null_on_not_null_field_400() {
     let sql = RusqliteSql::new();
     post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
