@@ -256,7 +256,7 @@ fn item_params(item: &Item) -> Vec<SqlValue> {
     ]
 }
 
-pub(super) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
+pub(crate) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
     let r = RowReader(row);
     let stage_text = r.text("stage")?;
     Ok(Item {

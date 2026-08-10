@@ -213,7 +213,7 @@ fn rule_params(rule: &Rule) -> Result<Vec<SqlValue>, SqlError> {
     ])
 }
 
-pub(super) fn rule_from_row(row: &Row) -> Result<Rule, SqlError> {
+pub(crate) fn rule_from_row(row: &Row) -> Result<Rule, SqlError> {
     let r = RowReader(row);
     let tier_text = r.text("tier")?;
     let conditions_text = r.text("conditions")?;

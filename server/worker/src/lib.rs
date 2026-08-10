@@ -117,6 +117,17 @@ mod shim {
                 }
                 self.schema_ready.set(true);
             }
+            // The DO alarm sweep (#138): make sure the recurring tick is
+            // actually scheduled. Deliberately **not** folded into the
+            // `schema_ready` gate above — `get_alarm` is cheap and
+            // idempotent (the normal case, `Some`, is a no-op), so this
+            // runs on every request rather than only the first one per
+            // instance wake. Gating it behind `schema_ready` would wedge
+            // the clock silently forever: if this call ever failed on that
+            // one first request, `schema_ready` would already be `true`,
+            // every later request would skip the whole block, and nothing
+            // would ever retry scheduling the alarm.
+            ensure_alarm_scheduled(&self.state.storage()).await?;
 
             let method = req.method().to_string().to_uppercase();
             let url = req.url()?;
@@ -139,6 +150,64 @@ mod shim {
             );
             json_response(api.status, api.body)
         }
+
+        /// The DO alarm handler (#138): evaluates every item already held
+        /// in the authority against every enabled rule, through
+        /// [`hummingbird_authority::sweep_tick`] — the pure crate owns
+        /// every decision (which items, which rules, mint-or-ratchet,
+        /// dedupe); this shim only supplies the clock, drives the actual
+        /// FCM send for whatever `sweep_tick` decided is `Logged`, and
+        /// reschedules the next tick.
+        ///
+        /// **Rescheduling happens unconditionally, even if the tick itself
+        /// errors** — a single failed tick must never silently stop the
+        /// clock; the next tick gets another chance.
+        async fn alarm(&self) -> Result<Response> {
+            let sql = WorkersSql {
+                sql: self.state.storage().sql(),
+            };
+            if !self.schema_ready.get() {
+                init_schema(&sql).map_err(|e| Error::RustError(e.message))?;
+                self.schema_ready.set(true);
+            }
+
+            let now_ms = Date::now().as_millis() as i64;
+            let tick_result = hummingbird_authority::sweep_tick(&sql, now_ms);
+
+            self.state
+                .storage()
+                .set_alarm(hummingbird_authority::ALARM_INTERVAL_MS)
+                .await?;
+
+            let matches = tick_result.map_err(|e| Error::RustError(e.message))?;
+            for tick_match in matches {
+                if let hummingbird_authority::DeliveryOutcome::Logged { targets, notification, .. } =
+                    tick_match.outcome
+                {
+                    for _target in targets {
+                        // The real FCM HTTP send (async, per target) is not
+                        // part of this seam's job — `sweep_tick` only
+                        // decides and logs (see `deliver`'s module doc);
+                        // sending is future wiring (push_targets' own FCM
+                        // client) with `notification` and `_target`
+                        // already resolved and waiting here.
+                        let _ = &notification;
+                    }
+                }
+            }
+            Response::empty()
+        }
+    }
+
+    /// Schedules the first tick if this instance has none pending. A
+    /// restart/eviction never loses the pending alarm itself (Cloudflare
+    /// persists it), so this only ever fires real work on a truly fresh
+    /// object.
+    async fn ensure_alarm_scheduled(storage: &Storage) -> Result<()> {
+        if storage.get_alarm().await?.is_none() {
+            storage.set_alarm(hummingbird_authority::ALARM_INTERVAL_MS).await?;
+        }
+        Ok(())
     }
 
     fn json_response(status: u16, body: String) -> Result<Response> {
