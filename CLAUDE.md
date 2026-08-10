@@ -27,9 +27,11 @@ client migrates onto them at S2/S3), `authority` (pure handler logic over a
 sync `Sql` seam — plus an `Entropy` seam for token minting — fixture-tested
 with rusqlite), `rules-engine` (fire-time evaluation of the ADR-0013
 condition vocabulary, over the Event kind registry that lives in `domain`;
-rules are validated at save, so a malformed condition is rejected rather
-than silently never firing), and `worker` (the thin `workers-rs` shim — one
-Worker, one SQLite-backed Durable Object). It carries the full ADR-0009 schema
+its `validate_rule` exists but is not yet wired into `POST /api/rules` —
+`authority` does not depend on the crate — so a malformed condition is
+currently caught only at fire time), and `worker` (the thin `workers-rs`
+shim — one Worker, one SQLite-backed Durable Object). It carries the full
+amended ADR-0009 schema
 plus the notification lane's `rules`/`push_targets`/`deliveries` (14 tables,
 `SCHEMA_VERSION 3`, ADR-0012/0013/0014), entity-level CAS writes (absolute
 sets + `expected_version`, 409 carries the current entity, creates
