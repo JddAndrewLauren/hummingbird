@@ -12,6 +12,11 @@
 //! - **retryable**: network failure, 429, or any 5xx.
 //! - **conflict**: 409 — carries the current entity, handled by
 //!   [`super::rebase`], never surfaced as a bare status.
+//! - **contention**: a second 409, still genuinely disjoint after the one
+//!   bounded rebase retry — not a field collision (that stays `Conflict`),
+//!   but repeated churn this adapter gives up reissuing against. Carries
+//!   the current entity so the dead-letter journal has material, never an
+//!   empty field list masquerading as a conflict (#163).
 //! - **unauthorized**: 401 — the credential itself is bad, never permanent
 //!   (a fresh token can still succeed).
 //! - **permanent**: any other 4xx — no retry can fix it.
@@ -40,6 +45,11 @@ pub enum WriteError {
     /// the 409 could not be attributed to specific fields at all (e.g. a
     /// create, which carries no `expected_version` to rebase against).
     Conflict { fields: Vec<String>, current: Value },
+    /// A second 409 that is still genuinely disjoint after the one bounded
+    /// rebase retry (#163): not a field collision — no field name to give
+    /// the conflict journal — just repeated churn. Carries the current
+    /// entity so the dead-letter journal still has material to show.
+    Contention { current: Value },
     /// The body was not the JSON shape the status promised.
     InvalidResponse(String),
 }
@@ -53,6 +63,7 @@ impl fmt::Display for WriteError {
             WriteError::Conflict { fields, .. } => {
                 write!(f, "conflict on field(s): {}", fields.join(", "))
             }
+            WriteError::Contention { .. } => write!(f, "contention"),
             WriteError::InvalidResponse(message) => write!(f, "invalid response: {message}"),
         }
     }

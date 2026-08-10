@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSyncCadence, shouldRunTimerTick, toCoreTrigger } from "./sync-cadence";
+import {
+  createSyncCadence,
+  mergePendingSyncTrigger,
+  shouldRunTimerTick,
+  toCoreTrigger,
+  type SyncCadenceTrigger,
+} from "./sync-cadence";
 
 describe("shouldRunTimerTick", () => {
   it("runs when visible and online", () => {
@@ -20,15 +26,145 @@ describe("shouldRunTimerTick", () => {
 });
 
 describe("toCoreTrigger", () => {
-  it("maps every user-facing trigger to \"user\" — ADR-0007 resets backoff on a user trigger", () => {
+  // Issue #190's ruling: "on window focus" is one of ADR-0007's four cadence
+  // triggers, but it is not the "user-facing" gesture the backoff-reset
+  // sentence is about — that language is reserved for a genuine request
+  // (open, reconnect, manual refresh). A focus event says a window came
+  // forward, nothing more, so it maps onto "timer" and must not reset
+  // backoff.
+  it('maps "open", "reconnect" and "manual" to "user" — ADR-0007 resets backoff on a user-facing trigger', () => {
     expect(toCoreTrigger("open")).toBe("user");
     expect(toCoreTrigger("reconnect")).toBe("user");
-    expect(toCoreTrigger("focus")).toBe("user");
     expect(toCoreTrigger("manual")).toBe("user");
+  });
+
+  it('maps "focus" to "timer" — issue #190: a focus event never resets backoff', () => {
+    expect(toCoreTrigger("focus")).toBe("timer");
   });
 
   it('maps the unattended timer to "timer"', () => {
     expect(toCoreTrigger("timer")).toBe("timer");
+  });
+
+  it("asserts the mapping for all four cadence trigger names in one table", () => {
+    const cases: Array<[SyncCadenceTrigger, "user" | "timer"]> = [
+      ["open", "user"],
+      ["reconnect", "user"],
+      ["manual", "user"],
+      ["focus", "timer"],
+    ];
+    for (const [trigger, expected] of cases) {
+      expect(toCoreTrigger(trigger)).toBe(expected);
+    }
+  });
+});
+
+describe("toCoreTrigger backoff bound (issue #190)", () => {
+  // A tiny model of ADR-0007's backoff rule — reset to 0 on a "user"
+  // trigger, otherwise grow — driven purely by `toCoreTrigger`'s output, to
+  // prove the mapping actually bounds the behavior the issue is about
+  // rather than just asserting the table above in isolation.
+  function driveBackoff(triggers: SyncCadenceTrigger[]): number {
+    let backoff = 3;
+    for (const trigger of triggers) {
+      backoff = toCoreTrigger(trigger) === "user" ? 0 : backoff + 1;
+    }
+    return backoff;
+  }
+
+  it("any number of focus triggers during backoff never reset it", () => {
+    expect(driveBackoff(["focus", "focus", "focus", "focus", "focus"])).toBe(8);
+  });
+
+  it("a manual-refresh trigger resets backoff even amid focus triggers", () => {
+    expect(driveBackoff(["focus", "focus", "manual", "focus"])).toBe(1);
+  });
+
+  it("an open trigger resets backoff", () => {
+    expect(driveBackoff(["focus", "open"])).toBe(0);
+  });
+
+  it("a focus after a genuine idle gap (backoff not active) still starts a cycle promptly", () => {
+    // Outside backoff there is nothing to bound: a focus is a plain "timer"
+    // cycle that fires unconditionally, same as `createSyncCadence.onFocus`
+    // below proves at the cadence level.
+    expect(toCoreTrigger("focus")).toBe("timer");
+    expect(driveBackoff(["focus"])).toBe(4); // starts from idle (3), grows — never blocked
+  });
+});
+
+describe("mergePendingSyncTrigger", () => {
+  // Issue #184 round 2: a pending "open" carries ADR-0008/#193's
+  // app-open full-sweep backstop — dropping it is not merely a delay, it is
+  // lost for the whole SharedWorker lifetime (`openTrigger` only fires
+  // once). It must survive being merged against every other trigger,
+  // arriving either before or after it.
+  it("keeps a pending \"open\" against every later trigger", () => {
+    expect(mergePendingSyncTrigger("open", "focus")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "reconnect")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "manual")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "timer")).toBe("open");
+    expect(mergePendingSyncTrigger("open", "open")).toBe("open");
+  });
+
+  it("an incoming \"open\" always wins, regardless of what is pending", () => {
+    expect(mergePendingSyncTrigger("focus", "open")).toBe("open");
+    expect(mergePendingSyncTrigger("reconnect", "open")).toBe("open");
+    expect(mergePendingSyncTrigger("manual", "open")).toBe("open");
+    expect(mergePendingSyncTrigger("timer", "open")).toBe("open");
+  });
+
+  // Issue #194: a pending trigger must not be silently demoted by a later,
+  // unattended timer tick — for "reconnect"/"manual" that would lose a
+  // backoff reset outright; for "focus" it only loses identity, but the
+  // merged spelling is still the one tests and logging read.
+  it("keeps any pending non-timer trigger against a later \"timer\"", () => {
+    expect(mergePendingSyncTrigger("focus", "timer")).toBe("focus");
+    expect(mergePendingSyncTrigger("reconnect", "timer")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("manual", "timer")).toBe("manual");
+  });
+
+  it("a later user-facing trigger or focus replaces a pending \"timer\"", () => {
+    expect(mergePendingSyncTrigger("timer", "focus")).toBe("focus");
+    expect(mergePendingSyncTrigger("timer", "reconnect")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("timer", "manual")).toBe("manual");
+  });
+
+  // Issue #190 round 2: "focus" maps to "timer" via `toCoreTrigger`, so a
+  // later focus overwriting a pending "reconnect"/"manual" would demote a
+  // backoff reset to an unattended cycle — the outage-recovery path (#184's
+  // guard holding "reconnect" while the user alt-tabs) and #194's manual
+  // escape hatch both depend on the pending trigger surviving.
+  it("keeps a pending \"reconnect\"/\"manual\" against a later \"focus\"", () => {
+    expect(mergePendingSyncTrigger("reconnect", "focus")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("manual", "focus")).toBe("manual");
+  });
+
+  it("a later user-facing trigger replaces a pending \"focus\"", () => {
+    expect(mergePendingSyncTrigger("focus", "manual")).toBe("manual");
+    expect(mergePendingSyncTrigger("focus", "reconnect")).toBe("reconnect");
+  });
+
+  // Between the two backoff-resetting triggers there is no caller-visible
+  // difference downstream of the guard (both map to "user", neither forces
+  // a full sweep), so ties fall back to "most recent wins".
+  it("a later backoff-resetting trigger replaces the other pending one", () => {
+    expect(mergePendingSyncTrigger("manual", "reconnect")).toBe("reconnect");
+    expect(mergePendingSyncTrigger("reconnect", "manual")).toBe("manual");
+  });
+
+  // The end-to-end pin for the round-2 blocker: whatever survives the merge
+  // must still spell "user" at the core seam, so the follow-up cycle resets
+  // backoff and a recovered network does not sit out the backoff window.
+  it("the survivor of merging a reconnect/manual with a focus still resets backoff", () => {
+    expect(toCoreTrigger(mergePendingSyncTrigger("reconnect", "focus"))).toBe("user");
+    expect(toCoreTrigger(mergePendingSyncTrigger("manual", "focus"))).toBe("user");
+    expect(toCoreTrigger(mergePendingSyncTrigger("focus", "reconnect"))).toBe("user");
+    expect(toCoreTrigger(mergePendingSyncTrigger("focus", "manual"))).toBe("user");
+  });
+
+  it("a later \"timer\" replaces a pending \"timer\"", () => {
+    expect(mergePendingSyncTrigger("timer", "timer")).toBe("timer");
   });
 });
 

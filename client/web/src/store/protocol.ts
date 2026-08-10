@@ -221,10 +221,17 @@ export interface DeadLetterFieldDTO {
 /** One dead-lettered outbound mutation, as the web host's JSON shape
  * (`DeadLetterEntryDTO`). `"permanent"` carries `message` and an empty
  * `fields`; `"conflict"` carries `fields` and no `message` — the two never
- * both have something to show. */
+ * both have something to show. `"contention"` (#163) carries NEITHER: a
+ * second 409 that stayed genuinely disjoint after the one bounded rebase
+ * retry has no colliding field name and no server message, only repeated
+ * churn. This union is closed on the TS side but the value arrives across a
+ * JSON boundary, so typecheck cannot see a Rust variant that is missing
+ * here — `client/ffi-web/src/task_host.rs`'s `map_dead_letter` is the one
+ * place that mints these strings, and `protocol.test.ts` pins each of them
+ * as accepted. */
 export interface DeadLetterEntryDTO {
   id: string;
-  reason: "permanent" | "conflict";
+  reason: "permanent" | "conflict" | "contention";
   message: string | null;
   fields: DeadLetterFieldDTO[];
   atMs: number;
@@ -354,12 +361,16 @@ export type SyncCadenceRequest =
    * backgrounded. */
   | { type: "setViewVisibility"; hidden: boolean }
   /** Sent on a `window` `focus` event. Deliberately not deduplicated across
-   * views the way the timer is: two tabs focusing near-simultaneously firing
-   * two cycles is the same "wasteful but never incorrect" duplicate-gesture
-   * case `core.worker.ts`'s calendar wiring already accepts for its own
-   * request queue (ADR-0010) — an unattended clock multiplying with tab
-   * count is the defect this type exists to close; a human's own actions
-   * are not. */
+   * views the way the timer is — but not because a human's own actions are
+   * exempt from that concern. Issue #190's ruling: a focus event maps onto
+   * `sync-cadence.ts`'s `toCoreTrigger("focus") === "timer"`, so it never
+   * resets ADR-0007's backoff, which is what makes duplicate focus triggers
+   * across tabs harmless rather than the human-gesture argument this type
+   * used to lean on. Two tabs focusing near-simultaneously still firing two
+   * cycles is the same "wasteful but never incorrect" duplicate-trigger case
+   * `core.worker.ts`'s calendar wiring already accepts for its own request
+   * queue (ADR-0010) — it just no longer needs the gesture framing to get
+   * there. */
   | { type: "syncFocusTrigger" }
   /** Issue #194: the header refresh control's task leg. Sent on a manual
    * refresh press, and routed through the shared cadence the same as every

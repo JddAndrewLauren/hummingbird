@@ -58,7 +58,19 @@ to the owned API).
   `client/core` transport pattern); the `workers-rs` shim stays thin.
 - **Same-origin:** `hb.twinion.net/api/*` routes to the API worker; the
   static shell keeps its worker (ADR-0006). No CORS anywhere;
-  `connect-src 'self'`.
+  `connect-src 'self'`. *(Mechanism settled 2026-08-10, before H3: the
+  shell holds the hostname as a **Custom Domain** and the API worker takes
+  `hb.twinion.net/api/*` as a narrower **route in front of it** — Cloudflare
+  resolves the more specific pattern first and treats a Custom Domain worker
+  as the origin behind any route. Zero client code, no service binding, no
+  second hostname, and the shell never sees API traffic. Rejected: a service
+  binding from the shell worker, which would put the static shell in the
+  request path of every API call and couple the two deploys — kept as the
+  flip condition should the route arrangement misbehave at H3; and a second
+  hostname plus CORS, which contradicts `connect-src 'self'`. Written out in
+  full in `server/worker/wrangler.toml`. The client half: the host supplies
+  `self.location.origin` as the base URL, so dev — `vite.config.ts` proxies
+  `/api` to `wrangler dev` — and production run the same same-origin path.)*
 - **Commitment gate:** a walking-skeleton spike — one DO, one CAS write, one
   version-gated read, `wrangler dev` + CI. If `workers-rs` fights for more
   than a day, fall back to TypeScript + `ts-rs`-generated types on the same

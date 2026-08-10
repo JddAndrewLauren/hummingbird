@@ -1,7 +1,54 @@
 # The authority API worker (ADR-0008): one Worker, one SQLite-backed
-# Durable Object. Still `wrangler dev` + CI only — no `routes`, no
-# production deploy; the hb.twinion.net/api/* routing arrives with the
-# human-gated deploy (#95's H3).
+# Durable Object.
+#
+# ## How `hb.twinion.net/api/*` reaches this worker, and not the shell
+#
+# ADR-0006/0008 fix the API as *same-origin* with the static shell —
+# `connect-src 'self'`, no CORS anywhere, and the authority sends no
+# `Access-Control-*` header at all — so the two workers must share one
+# hostname. `client/web/wrangler.toml` already claims that hostname as a
+# **Custom Domain**, which is hostname-exact and takes no path into account.
+#
+# The mechanism is a narrower **route in front of it**. Cloudflare permits a
+# path-scoped route on the same hostname as another Worker's Custom Domain,
+# resolves the more specific pattern first, and treats the Custom Domain
+# worker as the *origin* sitting behind it ("a Worker running on a Custom
+# Domain is treated as an origin. Any Workers running on routes before your
+# Custom Domain can optionally call the Worker registered on your Custom
+# Domain by issuing `fetch(request)`" — the documented `api.example.com/auth`
+# route in front of the `api.example.com` Custom Domain is this exact shape).
+# So `/api/*` is intercepted here and answered here; this worker never calls
+# on to the shell, and the shell worker never sees API traffic — the CSP
+# header it adds is for documents, and JSON has no use for it.
+#
+# Why this and not the two alternatives:
+#   - **Service binding from `csp-worker`** (the shell fronts the API and
+#     forwards `/api/*`): also correct, and it would make the routing
+#     testable code rather than platform config — but it puts the static
+#     shell in the request path of every API call, so a shell bug or a bad
+#     shell deploy takes the authority down with it, and it couples the two
+#     deploys in a fixed order forever. Kept as the **flip condition**: if
+#     the route-in-front-of-Custom-Domain arrangement misbehaves at H3
+#     (symptom: an `/api/...` call answered with 200 `text/html` — the
+#     shell's SPA fallback — instead of JSON), move the routing into
+#     `csp-worker/worker.ts` behind a `[[services]]` binding and delete the
+#     `routes` below.
+#   - **A second hostname (`api.twinion.net`) + CORS**: rejected upstream.
+#     It contradicts `connect-src 'self'` and would require building the
+#     CORS/preflight lane ADR-0008 exists to avoid.
+#
+# The route needs no DNS record of its own: the shell's Custom Domain
+# already creates and proxies `hb.twinion.net`, which is the record this
+# pattern matches against. `wrangler dev` ignores `routes` entirely, so
+# local dev and `server/scripts/smoke.sh` are unaffected.
+#
+# The production deploy itself is still a human step (#95's H3): creating
+# the Workers project and setting `ADMIN_SECRET`. Until then this block is
+# inert — nothing deploys this worker yet.
+routes = [
+  { pattern = "hb.twinion.net/api/*", zone_name = "twinion.net" },
+]
+
 #
 # ADMIN_SECRET gates /api/admin/*: locally a dev var
 # (`wrangler dev --var ADMIN_SECRET:...`, as smoke.sh does), in production

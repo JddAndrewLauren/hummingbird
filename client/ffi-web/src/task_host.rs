@@ -287,7 +287,9 @@ pub struct DeadLetterFieldDTO {
 /// One dead-lettered entry, as the web host's JSON shape. `"permanent"`
 /// carries `message` and no `fields` (there is no local/server disagreement
 /// to show — the write itself was rejected outright); `"conflict"` carries
-/// `fields` and no `message`.
+/// `fields` and no `message`; `"contention"` (#163) carries neither — a
+/// genuinely disjoint second 409 has no colliding field name to show, only
+/// repeated churn.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DeadLetterEntryDTO {
     pub id: String,
@@ -351,6 +353,13 @@ fn map_dead_letter(entry: &DeadLetterEntry) -> DeadLetterEntryDTO {
                 at_ms: entry.at_ms,
             }
         }
+        DeadLetterReason::Contention { .. } => DeadLetterEntryDTO {
+            id: entry.entry.id.clone(),
+            reason: "contention",
+            message: None,
+            fields: Vec::new(),
+            at_ms: entry.at_ms,
+        },
     }
 }
 

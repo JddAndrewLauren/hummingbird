@@ -79,6 +79,27 @@ export default defineConfig({
       },
     }),
   ],
+  // The dev half of ADR-0006/0008's same-origin API. In production a
+  // path-scoped Worker route puts `hb.twinion.net/api/*` on the authority
+  // worker in front of the shell's Custom Domain (see
+  // `server/worker/wrangler.toml`); here the dev server plays that role, so
+  // `core.worker.ts` can supply `self.location.origin` as the authority's
+  // base URL in both places and nothing has to be configured per
+  // environment. Cross-origin would not work anyway: the authority sends no
+  // `Access-Control-*` header at all, by decision (ADR-0008, "No CORS
+  // anywhere").
+  //
+  // 8787 is `wrangler dev`'s default port and `smoke.sh`'s `SMOKE_PORT`
+  // default. With no `wrangler dev` running, `/api` calls fail connection —
+  // which is the honest offline state, and the shell is built for it.
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8787",
+        changeOrigin: false,
+      },
+    },
+  },
   worker: {
     format: "es",
     plugins: () => [wasm(), topLevelAwait()],

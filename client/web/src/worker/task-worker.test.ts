@@ -603,6 +603,35 @@ describe("handleTaskRequest", () => {
     ]);
   });
 
+  // #163: `map_dead_letter` (`client/ffi-web/src/task_host.rs`) gained a
+  // third `reason`, `"contention"` — a second 409 still genuinely disjoint
+  // after the one bounded rebase retry. It crosses a JSON boundary, so
+  // typecheck is structurally blind to a Rust variant this side does not
+  // admit; this pins the string itself, and that the entry carries neither
+  // a `message` nor any `fields` (there is no colliding field to name).
+  it('getDeadLetters accepts "contention", which carries neither message nor fields', async () => {
+    const host = fakeHost({
+      deadLetters: vi.fn().mockReturnValue(
+        JSON.stringify({
+          kind: "ok",
+          entries: [
+            { id: "item-2", reason: "contention", message: null, fields: [], at_ms: 7_000 },
+          ],
+        }),
+      ),
+    });
+    const posted = await run({ type: "getDeadLetters" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "deadLetters",
+        entries: [
+          { id: "item-2", reason: "contention", message: null, fields: [], atMs: 7_000 },
+        ],
+      },
+    ]);
+  });
+
   it('getDeadLetters posts nothing when the host answers "busy"', async () => {
     const host = fakeHost({
       deadLetters: vi.fn().mockReturnValue('{"kind":"busy","entries":[]}'),

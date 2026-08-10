@@ -76,17 +76,28 @@
 // (`protocol.ts`) instead: one visible tab keeps the cycle running even
 // while its siblings are backgrounded. A view's own `focus` event similarly
 // has no worker-side equivalent and is forwarded per view as
-// `syncFocusTrigger` — deliberately NOT deduplicated the way the timer is,
-// since two tabs focusing near-simultaneously is the same "wasteful but
-// never incorrect" duplicate-user-gesture case the calendar wiring above
-// already accepts, not the unattended-clock defect this fix closes.
+// `syncFocusTrigger` — deliberately NOT deduplicated the way the timer is.
+// This is safe not because a focus is a harmless human gesture (issue #190's
+// ruling: it is not the gesture ADR-0007's backoff-reset sentence is about
+// at all — see `sync-cadence.ts`'s `toCoreTrigger`, which maps `"focus"`
+// onto the core's `"timer"` spelling and so never resets backoff), but
+// because two tabs focusing near-simultaneously is now just two cycles that
+// each land as a no-op during backoff, the same "wasteful but never
+// incorrect" duplicate-trigger case the calendar wiring above already
+// accepts.
 
 import type { TaskWorkerRequest, TaskWorkerResponse } from "../store/protocol";
-import { createSyncCadence, SYNC_TIMER_MS, toCoreTrigger } from "../shell/sync-cadence";
+import {
+  createSyncCadence,
+  mergePendingSyncTrigger,
+  SYNC_TIMER_MS,
+  toCoreTrigger,
+} from "../shell/sync-cadence";
 import { createRequestQueue } from "./calendar-worker";
 import { createDispatch } from "./dispatch";
 import { PortRegistry, type PortLike } from "./ports";
-import { createTaskRequestQueue, type TaskHostLike } from "./task-worker";
+import { createSyncRunGuard } from "./sync-run-guard";
+import { createTaskRequestQueue, TASK_REQUEST_TIMEOUT_MS, type TaskHostLike } from "./task-worker";
 import { VisibilityTracker } from "./visibility-tracker";
 
 // The IndexedDB database name (ADR-0003: the host contributes exactly one
@@ -100,11 +111,29 @@ const CALENDAR_NAMESPACE = "hummingbird-calendar";
 const TASK_NAMESPACE = "hummingbird-task";
 
 // The authority's origin (ADR-0003: `core` invents no deployment address of
-// its own). Unset in dev by default, same posture as `VITE_GOOGLE_CLIENT_ID`
-// (App.tsx) — an empty string builds a relative, `reqwest`-rejected URL, so
-// every `runSync` request fails fast (network-free) as `"pull_failed"`
-// rather than the task binding silently doing nothing.
-const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+// its own — the *host* supplies one, and this is the host).
+//
+// ADR-0006/0008 put the API same-origin with the shell at
+// `hb.twinion.net/api/*`, so the origin the host should supply is, always
+// and by definition, its own — which a `SharedWorker` knows at runtime
+// without anything being configured or baked in. `self.location.origin` is
+// `https://hb.twinion.net` in the deployed bundle and
+// `http://localhost:5173` under `vite dev` (where `vite.config.ts` proxies
+// `/api` on to `wrangler dev`), so dev and production exercise the same
+// same-origin path rather than two different shapes.
+//
+// It must not be `""`: the transports build `{base}/api/...` verbatim
+// (`client/core/src/sync/reqwest_transport.rs`), and an empty base yields a
+// *relative* URL, which `reqwest` rejects before opening a socket — every
+// cycle would fail as `"pull_failed"` forever. That is the correct
+// never-configured state for a host with nowhere to point, but it is not
+// this host, which always has an origin.
+//
+// `VITE_API_BASE_URL` stays as a build-time override for the one case the
+// rule above does not cover — pointing a bundle at an authority that is
+// deliberately not its own origin (a staging DO, a second workspace). It is
+// unset in every checked-in configuration.
+const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? self.location.origin;
 
 const registry = new PortRegistry();
 
@@ -200,9 +229,11 @@ void (async () => {
     // The shared ADR-0007 cadence — see the module doc above for why this
     // is constructed exactly once here rather than once per view. `trigger`
     // is the un-collapsed `SyncCadenceTrigger` ("open" | "reconnect" |
-    // "focus" | "timer"); this is the one place that both maps it to the
-    // spelling `Core::run`'s own `Trigger` expects (`toCoreTrigger`, still
-    // "open"/"reconnect"/"focus" -> "user") AND decides `forceFullSweep`
+    // "focus" | "manual" | "timer"); this is the one place that both maps it
+    // to the spelling `Core::run`'s own `Trigger` expects (`toCoreTrigger` —
+    // "open"/"reconnect"/"manual" -> "user", but "focus" -> "timer" per
+    // issue #190's ruling: a focus event never resets backoff) AND decides
+    // `forceFullSweep`
     // from it directly (#193: ADR-0008's "on app open" backstop is only
     // `"open"` — an already-warm core's `onFocus`/`onReconnect`/timer ticks
     // stay delta-only; a NEW VIEW connecting to a live core does not re-fire
@@ -210,21 +241,35 @@ void (async () => {
     // new core, and the core it connects to has already swept" (ADR-0010)).
     // `Math.random()`/`Date.now()` are the caller-injected clock/jitter
     // `Core::run` requires (this global scope is a real JS runtime, unlike
-    // bare wasm32, so both are safe to call directly here). No in-flight
-    // guard yet: a cycle still running when `task-worker.ts`'s 30s abandon
-    // fires can overlap the next 60s tick's `runSync` and surface as
-    // `"busy"` — tracked as issue #184.
-    const cadence = createSyncCadence((trigger) => {
-      void taskEnqueueReady.then((enqueue) =>
-        enqueue({
-          type: "runSync",
-          nowMs: Date.now(),
-          trigger: toCoreTrigger(trigger),
-          forceFullSweep: trigger === "open",
-          jitterUnit: Math.random(),
-        }),
-      );
-    });
+    // bare wasm32, so both are safe to call directly here). Issue #184's
+    // in-flight guard (`sync-run-guard.ts`) wraps this `run` sink rather
+    // than living inside `sync-cadence.ts` itself: at most one `runSync` is
+    // in flight at a time, any triggers arriving meanwhile coalesce into
+    // exactly one follow-up run that starts the instant the in-flight one
+    // resolves, and the guard's own release bound — reused from
+    // `TASK_REQUEST_TIMEOUT_MS`, the same bound the underlying task queue
+    // already uses to abandon a hung request — keeps a `runSync` whose
+    // promise never settles from wedging the cadence forever. `mergePending`
+    // is `mergePendingSyncTrigger` rather than the guard's bare last-wins
+    // default: trigger identity survives the guard into this very callback
+    // (`forceFullSweep`/`toCoreTrigger` above both read it), so a later,
+    // lower-priority trigger arriving while e.g. an `"open"` is still
+    // waiting in the guard's pending slot must not silently overwrite it.
+    const cadence = createSyncCadence(
+      createSyncRunGuard(
+        (trigger) =>
+          taskEnqueueReady.then((enqueue) =>
+            enqueue({
+              type: "runSync",
+              nowMs: Date.now(),
+              trigger: toCoreTrigger(trigger),
+              forceFullSweep: trigger === "open",
+              jitterUnit: Math.random(),
+            }),
+          ),
+        { releaseMs: TASK_REQUEST_TIMEOUT_MS, mergePending: mergePendingSyncTrigger },
+      ),
+    );
 
     // The three-way routing (shared cadence / task queue / calendar queue)
     // and ADR-0007's "on app open" trigger both live in `dispatch.ts` as

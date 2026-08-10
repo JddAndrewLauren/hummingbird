@@ -15,6 +15,15 @@ compatibility_date = "2026-08-08"
 # deploy. `wrangler dev` ignores routes, so local builds are unaffected;
 # `wrangler deploy` fails until the human step (Cloudflare project + DNS)
 # binds the domain, which deploy-client.yml already documents as expected.
+#
+# This Custom Domain is hostname-exact and claims no path, which is what
+# leaves room for the authority worker to take `hb.twinion.net/api/*` as a
+# narrower route in front of it (ADR-0008's same-origin API; the mechanism
+# and its flip condition are written out in `server/worker/wrangler.toml`).
+# Cloudflare resolves the more specific pattern first, so an API request is
+# answered by the authority and never reaches the asset worker below — which
+# matters, because `not_found_handling` would otherwise turn a missing
+# `/api/...` into a 200 `text/html` SPA shell rather than an error.
 routes = [
   { pattern = "hb.twinion.net", custom_domain = true }
 ]

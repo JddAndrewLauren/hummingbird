@@ -15,4 +15,5 @@ mod snapshot;
 
 pub use event::{EventRecord, EventStatus, EventTime};
 pub use query::{current_or_next_event, events_overlapping_interval, CurrentOrNext, Interval};
+pub(crate) use query::is_actionable;
 pub use snapshot::CalendarSnapshot;

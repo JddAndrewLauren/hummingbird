@@ -35,7 +35,7 @@ impl Interval {
 /// instances are also stored with `start == end` (only `originalStartTime`
 /// exists to place them), and that zero-length placeholder is not an event
 /// anyone is attending.
-fn is_actionable(event: &EventRecord) -> bool {
+pub(crate) fn is_actionable(event: &EventRecord) -> bool {
     event.status != EventStatus::Cancelled
 }
 
