@@ -34,17 +34,19 @@
 //!    task/item.rs`'s `Priority::rank`, `client/web/src/screens/
 //!    priority.ts`'s `priorityRank`): 1..4 most-urgent-first, 0 last.
 //! 5. **Energy / size fit, plus the 30-minute nudge** — a candidate whose
-//!    `energy`/`size` matches the declared axes outranks one that does
-//!    not; within an otherwise-tied group, a `size: Quick` candidate is
-//!    nudged ahead when [`next_start_ms`] (calendar-masking aware) is
-//!    within 30 minutes of `now`.
+//!    `energy` matches the declared axis, or whose `size` **fits within**
+//!    the declared time (no larger — `Quick` fits a declared `Short`),
+//!    outranks one that does not; within an otherwise-tied group, a
+//!    `size: Quick` candidate is nudged ahead when [`next_start_ms`]
+//!    (calendar-masking aware, cancelled instances excluded) is within 30
+//!    minutes of `now`.
 //! 6. **Oldest first** — `created_at` ascending, then `id` as the final,
 //!    total-order tie-break so [`rank`] is byte-identical on a repeat call.
 
 use hummingbird_domain::{deadline_sort_key, Energy, Item, Size, Stage};
 use serde::{Deserialize, Serialize};
 
-use crate::calendar::{CurrentOrNext, EventRecord};
+use crate::calendar::{is_actionable, CurrentOrNext, EventRecord};
 
 /// The 30-minute window step 5's calendar nudge fires inside.
 const NUDGE_WINDOW_MS: i64 = 30 * 60 * 1000;
@@ -104,13 +106,19 @@ pub enum ReasonCode {
     Priority(i64),
     /// Step 5: `Item::energy` matches the declared [`Axes::energy`].
     EnergyMatch,
-    /// Step 5: `Item::size` matches the declared [`Axes::size`].
+    /// Step 5: `Item::size` fits within the declared [`Axes::size`] — no
+    /// larger than the declared time (`Quick < Short < Deep`), not
+    /// necessarily equal to it.
     SizeFits,
     /// Step 5: the 30-minute nudge, applied because this candidate is
     /// `size: Quick` and the next start is inside the window.
     QuickBeforeNextStart,
-    /// Step 6: `created_at` (and, on a full tie, `id`) was the tie-break
-    /// that placed this candidate relative to its neighbors.
+    /// Step 6: this candidate reached the final `created_at`-then-`id`
+    /// tie-break. Carried by **every** ranked candidate — step 6 always
+    /// runs — so it marks the terminal rule, never a claim that age was
+    /// the decisive difference against a neighbor. #116's "why" line
+    /// should cite it only when no earlier reason separates the pick from
+    /// its runner-up.
     OldestFirst,
 }
 
@@ -172,12 +180,15 @@ fn deadline_bucket(item: &Item, now: &Now) -> DeadlineBucket {
     let Some(deadline) = item.deadline.as_deref() else {
         return DeadlineBucket::Other;
     };
-    if deadline.len() < 10 || now.local.len() < 10 {
+    // `get(..10)` is the total form of `[..10]`: `None` on a too-short
+    // value *and* on a byte-10 char boundary a raw slice would panic on —
+    // this function's contract is a bucket for any input, never a panic.
+    let (Some(deadline_day), Some(today)) = (deadline.get(..10), now.local.get(..10)) else {
         return DeadlineBucket::Other;
-    }
+    };
     if deadline_sort_key(deadline) < deadline_sort_key(&now.local) {
         DeadlineBucket::Overdue
-    } else if deadline[..10] == now.local[..10] {
+    } else if deadline_day == today {
         DeadlineBucket::DueToday
     } else {
         DeadlineBucket::Other
@@ -218,8 +229,28 @@ fn energy_matches(item: &Item, axes: &Axes) -> bool {
     matches!((item.energy, axes.energy), (Some(a), Some(b)) if a == b)
 }
 
+/// The duration ordering behind [`size_fits`]: `Quick < Short < Deep`.
+/// Local because `hummingbird_domain::Size` deliberately derives no `Ord` —
+/// how sizes compare is a consumer's ranking concern, not schema.
+fn size_duration_rank(size: Size) -> u8 {
+    match size {
+        Size::Quick => 0,
+        Size::Short => 1,
+        Size::Deep => 2,
+    }
+}
+
+/// Step 5's size rule is a size that **fits** the declared time
+/// (SKILL.md's "a `size` that fits the declared time"), never exact
+/// equality: declare a short block and a `Quick` item fits it just as a
+/// `Short` one does, while a `Deep` one does not. Equality would invert
+/// the skill's own worked example — the smaller item losing the fit to
+/// the exactly-matching one.
 fn size_fits(item: &Item, axes: &Axes) -> bool {
-    matches!((item.size, axes.size), (Some(a), Some(b)) if a == b)
+    matches!(
+        (item.size, axes.size),
+        (Some(a), Some(b)) if size_duration_rank(a) <= size_duration_rank(b)
+    )
 }
 
 /// The next event start after `now`, reading `today` instead of
@@ -227,6 +258,12 @@ fn size_fits(item: &Item, axes: &Axes) -> bool {
 /// [`CurrentOrNext::InProgress`] covers both) would otherwise mask it.
 /// `None` when nothing is upcoming, or when no calendar context was
 /// supplied at all.
+///
+/// The masked scan filters `today` through the exact predicate
+/// [`crate::calendar::query`]'s own reads use ([`is_actionable`]) — the
+/// snapshot keeps cancelled instances (`showDeleted=true`, stored with
+/// `start == end`), and that module's invariant is explicit: a cancelled
+/// future instance must never become "Next" or bias task ranking.
 fn next_start_ms(calendar: Option<&CalendarContext>, now: &Now) -> Option<i64> {
     let calendar = calendar?;
     match calendar.current_or_next {
@@ -234,6 +271,7 @@ fn next_start_ms(calendar: Option<&CalendarContext>, now: &Now) -> Option<i64> {
         CurrentOrNext::InProgress(_) => calendar
             .today
             .iter()
+            .filter(|event| is_actionable(event))
             .filter(|event| event.start.instant_ms > now.epoch_ms)
             .min_by(|a, b| {
                 a.start
@@ -500,6 +538,22 @@ mod tests {
         assert_eq!(results[0].reasons.first(), Some(&ReasonCode::DueToday));
     }
 
+    /// `deadline_bucket`'s contract is totality: garbage in, `Other` out,
+    /// never a panic. `"2026-08-1é!!"` puts a two-byte `é` across byte
+    /// index 10, so a byte-length guard alone would let `deadline[..10]`
+    /// split the char and panic.
+    #[test]
+    fn a_non_char_boundary_deadline_is_other_not_a_panic() {
+        let mut garbled = item("garbled");
+        garbled.deadline = Some("2026-08-1é!!".to_string());
+        let axes = Axes::default();
+        let now = now("2026-08-10T09:00", 0);
+
+        let results = rank(&[garbled], &axes, &now, None);
+        assert!(!results[0].reasons.contains(&ReasonCode::Overdue));
+        assert!(!results[0].reasons.contains(&ReasonCode::DueToday));
+    }
+
     // -- step 3: In Progress bias --------------------------------------
 
     #[test]
@@ -635,6 +689,41 @@ mod tests {
         );
     }
 
+    /// SKILL.md's worked example, decided *before* any calendar signal:
+    /// with a short block declared, a `Quick` item **fits** the declared
+    /// time and a larger one does not — "fits", not "equals". Under exact
+    /// equality the smaller item would get no fit at all and lose to the
+    /// older, larger one on step 6, the inverse of the source rule.
+    #[test]
+    fn a_smaller_item_size_fits_the_declared_time() {
+        let quick = {
+            let mut i = item("quick");
+            i.size = Some(Size::Quick);
+            i.created_at = 500; // newer — must win on fit, not on age
+            i
+        };
+        let deep = {
+            let mut i = item("deep");
+            i.size = Some(Size::Deep);
+            i.created_at = 100;
+            i
+        };
+
+        let axes = Axes {
+            size: Some(Size::Short), // "I have 30 minutes"
+            ..Axes::default()
+        };
+        let now = now("2026-08-10T09:00", 0);
+
+        let results = rank(&[deep, quick], &axes, &now, None);
+        assert_eq!(
+            ids(&results),
+            vec!["quick".to_string(), "deep".to_string()]
+        );
+        assert!(results[0].reasons.contains(&ReasonCode::SizeFits));
+        assert!(!results[1].reasons.contains(&ReasonCode::SizeFits));
+    }
+
     #[test]
     fn the_30_minute_nudge_promotes_a_quick_candidate_when_upcoming_is_close() {
         let quick = {
@@ -745,6 +834,60 @@ mod tests {
         );
     }
 
+    /// The masking test one status field away: the 11:00 review is
+    /// **cancelled**. The snapshot keeps it (`showDeleted=true`, stored
+    /// with `start == end` at its original start), but
+    /// `calendar::query`'s invariant is explicit — a cancelled future
+    /// instance must never become "Next" *or bias task ranking* — so the
+    /// masked `today` scan must skip it exactly as `current_or_next_event`
+    /// does, and the nudge must not fire.
+    #[test]
+    fn a_cancelled_event_in_today_never_fires_the_nudge() {
+        let ten_am = 10 * 60 * 60 * 1000_i64;
+        let ten_fifty = ten_am + 50 * 60 * 1000;
+        let eleven_am = 11 * 60 * 60 * 1000_i64;
+
+        let standup = timed_event("standup", ten_am, eleven_am);
+        let cancelled_review = {
+            // Cancelled instances arrive with start == end at the
+            // original start — a zero-length placeholder, not an event.
+            let mut e = timed_event("review", eleven_am, eleven_am);
+            e.status = EventStatus::Cancelled;
+            e
+        };
+
+        let quick = {
+            let mut i = item("quick");
+            i.size = Some(Size::Quick);
+            i.created_at = 500;
+            i
+        };
+        let older_non_quick = {
+            let mut i = item("older");
+            i.size = Some(Size::Short);
+            i.created_at = 100;
+            i
+        };
+
+        let axes = Axes::default();
+        let now = now("2026-08-10T10:50", ten_fifty);
+        let calendar = CalendarContext {
+            current_or_next: CurrentOrNext::InProgress(&standup),
+            today: &[standup.clone(), cancelled_review],
+        };
+
+        let results = rank(&[older_non_quick, quick], &axes, &now, Some(&calendar));
+        // No live upcoming start: the nudge stays off and the older item
+        // keeps its step-6 win.
+        assert_eq!(
+            ids(&results),
+            vec!["older".to_string(), "quick".to_string()]
+        );
+        assert!(!results
+            .iter()
+            .any(|c| c.reasons.contains(&ReasonCode::QuickBeforeNextStart)));
+    }
+
     #[test]
     fn an_all_day_event_masks_the_next_start_the_same_way_as_in_progress() {
         // An all-day event reports `InProgress` for any instant inside its
@@ -827,6 +970,26 @@ mod tests {
             ids(&results),
             vec!["older".to_string(), "newer".to_string()]
         );
+    }
+
+    /// Pins [`ReasonCode::OldestFirst`]'s documented contract: a terminal
+    /// marker on *every* ranked candidate (step 6 always runs), never a
+    /// claim of decisiveness — an item that won outright on an earlier
+    /// step still carries it, last.
+    #[test]
+    fn every_candidate_carries_oldest_first_as_its_final_reason() {
+        let mut overdue = item("overdue");
+        overdue.deadline = Some("2026-08-09T12:00".to_string());
+        let plain = item("plain");
+
+        let axes = Axes::default();
+        let now = now("2026-08-10T09:00", 0);
+
+        let results = rank(&[overdue, plain], &axes, &now, None);
+        assert_eq!(results.len(), 2);
+        for candidate in &results {
+            assert_eq!(candidate.reasons.last(), Some(&ReasonCode::OldestFirst));
+        }
     }
 
     // -- zero Linear vocabulary (structural) -------------------------------
