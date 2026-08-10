@@ -11,6 +11,8 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    setBinding: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
@@ -653,6 +655,71 @@ describe("handleTaskRequest", () => {
       mirrorSnapshot: vi.fn().mockReturnValue('{"kind":"busy","mirror":null}'),
     });
     expect(await run({ type: "getMirrorSnapshot" }, host)).toEqual([]);
+  });
+
+  // -- #118's bindings -------------------------------------------------
+
+  it("setBinding forwards the key and value to the host and posts a result keyed by seed", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      { type: "setBinding", seed: "seed-b-1", key: "race-series", value: "f1", nowMs: 5_000 },
+      host,
+    );
+
+    expect(host.setBinding).toHaveBeenCalledWith("seed-b-1", "race-series", "f1", 5_000);
+    expect(posted).toEqual([
+      {
+        type: "setBindingResult",
+        seed: "seed-b-1",
+        key: "race-series",
+        kind: "ok",
+        error: null,
+      },
+    ]);
+  });
+
+  it("setBinding surfaces the seam's own rejection of a key outside the vocabulary", async () => {
+    const host = fakeHost({
+      setBinding: vi
+        .fn()
+        .mockResolvedValue('{"kind":"unknown_key","error":"unrecognised binding key \\"nope\\""}'),
+    });
+    const posted = await run(
+      { type: "setBinding", seed: "seed-b-2", key: "nope", value: "x", nowMs: 5_000 },
+      host,
+    );
+
+    expect(posted[0]).toMatchObject({ type: "setBindingResult", kind: "unknown_key" });
+  });
+
+  it("getBindings posts every binding, values carried through as their tagged states", async () => {
+    const host = fakeHost({
+      bindings: vi
+        .fn()
+        .mockReturnValue(
+          '{"kind":"ok","bindings":[{"key":"race-series","known":true,"pending":true,"value":{"state":"text","text":"f1"}},{"key":"trips-calendar","known":true,"pending":false,"value":{"state":"unset"}},{"key":"x","known":false,"pending":false,"value":{"state":"other","raw":"7"}}]}',
+        ),
+    });
+
+    expect(await run({ type: "getBindings" }, host)).toEqual([
+      {
+        type: "bindings",
+        bindings: [
+          { key: "race-series", known: true, pending: true, value: { state: "text", text: "f1" } },
+          { key: "trips-calendar", known: true, pending: false, value: { state: "unset" } },
+          { key: "x", known: false, pending: false, value: { state: "other", raw: "7" } },
+        ],
+      },
+    ]);
+  });
+
+  it('getBindings posts nothing when the host answers "busy"', async () => {
+    // An empty list would read as "nothing is bound" — an answer, and the
+    // wrong one. Busy says nothing at all.
+    const host = fakeHost({
+      bindings: vi.fn().mockReturnValue('{"kind":"busy","bindings":[]}'),
+    });
+    expect(await run({ type: "getBindings" }, host)).toEqual([]);
   });
 });
 

@@ -8,6 +8,13 @@ import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
+import {
+  bindingCopy,
+  bindingDraftSeed,
+  bindingSubmitValue,
+  bindingValueLabel,
+  canSubmitBinding,
+} from "./bindings";
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import {
@@ -16,7 +23,7 @@ import {
   syncStatusTone,
   syncStatusToneWord,
 } from "../shell/sync-status";
-import type { DeadLetterEntryDTO } from "../store/protocol";
+import type { BindingDTO, DeadLetterEntryDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenSubmitOutcome } from "../task/token";
 import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
@@ -140,6 +147,74 @@ function TokenEntryForm({
   );
 }
 
+/** One binding row (#118): what it is for, what it currently holds, and a
+ * field to change it. The current value is stated in words above the field
+ * rather than only pre-filled into it, because "Not set" and an empty field
+ * read identically once typing starts — and the value the pane will actually
+ * use is the stored one until a cycle drains this write.
+ *
+ * A row for a key this build cannot write renders the value and stops: no
+ * field, no button. `settings` has no DELETE, so a key this build cannot
+ * name is one it must not overwrite either. */
+function BindingRow({
+  binding,
+  onSetBinding,
+}: {
+  binding: BindingDTO;
+  onSetBinding?: (key: string, value: string) => void;
+}) {
+  const copy = bindingCopy(binding);
+  const [draft, setDraft] = useState(() => bindingDraftSeed(binding.value));
+  const canSubmit = canSubmitBinding(binding, draft) && onSetBinding !== undefined;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-4)" }}>
+        <span className="hb-meta">{binding.key}</span>
+        {binding.pending ? (
+          <Badge dot mono tone="warn">
+            queued
+          </Badge>
+        ) : null}
+      </div>
+      <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+        {bindingValueLabel(binding.value)}
+      </p>
+      {binding.known ? (
+        // The help line sits under the whole row rather than inside the
+        // field's own `hint`: with a hint, the field's box grows downward and
+        // the Save button — bottom-aligned to the tallest item — drifts below
+        // the input it belongs to, worst at the 768px wrap point.
+        <>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-4)" }}>
+            <Input
+              label={copy.label}
+              value={draft}
+              style={{ flex: 1, minWidth: 0 }}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+            <Button
+              variant="secondary"
+              disabled={!canSubmit}
+              onClick={() => {
+                if (!canSubmit) {
+                  return;
+                }
+                onSetBinding?.(binding.key, bindingSubmitValue(draft));
+              }}
+            >
+              Save
+            </Button>
+          </div>
+          <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{copy.help}</p>
+        </>
+      ) : (
+        <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{copy.help}</p>
+      )}
+    </div>
+  );
+}
+
 /** One dead-lettered entry's field-level detail — S9's "1 edit didn't
  * apply" affordance. No dedicated Table component exists in the kit (16
  * components, none of them tabular), so this renders as a bordered list of
@@ -208,8 +283,13 @@ export interface SettingsScreenProps {
   onSubmitTaskToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
   onForgetTaskToken: () => void;
   /** S9's sync-status affordance: last sweep, queue depth, the dead-letter
-   * journal, and the mirror download. */
+   * journal, and the mirror download — and #118's bindings, read from
+   * `task.bindings`. */
   task: TaskState;
+  /** #118's binding write. Absent (a demo render, a core that never came
+   * up) renders every binding read-only rather than a Save button that
+   * silently does nothing. */
+  onSetBinding?: (key: string, value: string) => void;
   online: boolean;
   syncNowMs: number;
   onDownloadMirror: () => void;
@@ -231,6 +311,7 @@ export function SettingsScreen({
   onSubmitTaskToken,
   onForgetTaskToken,
   task,
+  onSetBinding,
   online,
   syncNowMs,
   onDownloadMirror,
@@ -276,6 +357,33 @@ export function SettingsScreen({
               No calendars have been listed yet — nothing to choose from until Google Calendar
               returns a list.
             </Note>
+          )}
+        </Section>
+
+        <Section title="Standing questions">
+          {demo === null && status !== "ready" ? (
+            <Note>Bindings are unavailable until the local core loads.</Note>
+          ) : demo === null && task.bindings === null ? (
+            <Note>Reading the bindings.</Note>
+          ) : (
+            <Card
+              padding="var(--space-6)"
+              style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}
+            >
+              <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+                What each standing question is about. These are workspace facts — a change here
+                reaches every device on its next sync.
+              </p>
+              {(demo === null ? (task.bindings ?? []) : demo.bindings).map((binding) => (
+                <BindingRow
+                  key={binding.key}
+                  binding={binding}
+                  // Demo rows are fixtures, not real `settings` rows: a Save
+                  // here would enqueue a CAS write for a key nobody bound.
+                  onSetBinding={demo === null ? onSetBinding : undefined}
+                />
+              ))}
+            </Card>
           )}
         </Section>
 

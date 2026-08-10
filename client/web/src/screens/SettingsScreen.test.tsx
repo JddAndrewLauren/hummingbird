@@ -1,0 +1,177 @@
+// @vitest-environment jsdom
+
+// The regression suite for #118's bindings editor threading.
+//
+// The pure module under it is separately tested: `canSubmitBinding` refuses
+// a blank draft, a no-op draft and any key this build cannot write;
+// `bindingValueLabel` reads the three value states apart. What no node test
+// can reach is whether the screen actually CALLS them — whether Save really
+// consults `canSubmitBinding`, whether an unwritable row really renders no
+// field at all, whether the value that leaves is the trimmed one. That
+// thread is what these mount, for exactly the reason `test/component.tsx`
+// records: three of the S10-S13 PRs shipped UI state with no reader, and
+// typecheck cannot see a missing caller.
+
+import { describe, expect, it, vi } from "vitest";
+import { SettingsScreen } from "./SettingsScreen";
+import { bindingDTO, fireEvent, render, screen, taskState } from "../test/component";
+import type { BindingDTO } from "../store/protocol";
+import type { CalendarState, CoreStatus, TaskState } from "../store/store";
+
+const calendar: CalendarState = {
+  connected: false,
+  needsReconnect: false,
+  selectedCalendarIds: [],
+  availableCalendars: [],
+  lastPollOutcome: null,
+  tileKind: "no_snapshot",
+  tileEvent: null,
+  asOfMs: null,
+};
+
+function renderSettings(
+  options: {
+    bindings?: BindingDTO[] | null;
+    status?: CoreStatus;
+    withSetBinding?: boolean;
+    task?: Partial<TaskState>;
+  } = {},
+) {
+  const onSetBinding = vi.fn();
+  render(
+    <SettingsScreen
+      demo={null}
+      status={options.status ?? "ready"}
+      apiVersion={1}
+      error={null}
+      calendar={calendar}
+      themePreference="system"
+      onThemePreference={vi.fn()}
+      onConnect={vi.fn()}
+      onSelectionChange={vi.fn()}
+      onRefresh={vi.fn()}
+      taskTokenState="resting"
+      taskTokenEnteredAtMs={null}
+      onSubmitTaskToken={vi.fn()}
+      onForgetTaskToken={vi.fn()}
+      task={taskState({ bindings: options.bindings ?? null, ...options.task })}
+      onSetBinding={options.withSetBinding === false ? undefined : onSetBinding}
+      online
+      syncNowMs={10_000}
+      onDownloadMirror={vi.fn()}
+    />,
+  );
+  return { onSetBinding };
+}
+
+function saveButton(name: RegExp | string = /save/i): HTMLElement {
+  const buttons = screen.getAllByRole("button", { name });
+  // "Save token" is the device-token form's own button; the binding rows'
+  // are the plain "Save" ones.
+  const binding = buttons.filter((button) => button.textContent?.trim() === "Save");
+  if (binding.length !== 1) {
+    throw new Error(`expected exactly one binding Save button, found ${binding.length}`);
+  }
+  return binding[0];
+}
+
+describe("SettingsScreen — the bindings editor", () => {
+  it("says the bindings are unavailable rather than empty while the core is loading", () => {
+    renderSettings({ status: "loading" });
+    expect(screen.getByText(/bindings are unavailable/i)).toBeDefined();
+  });
+
+  it("distinguishes 'no answer yet' from 'nothing is bound'", () => {
+    // `bindings: null` is "nobody has answered"; it must not render as a
+    // list of unset rows a person could act on.
+    renderSettings({ bindings: null });
+    expect(screen.getByText(/reading the bindings/i)).toBeDefined();
+    expect(screen.queryByLabelText("Race series")).toBeNull();
+  });
+
+  it("renders each binding's current value in words, unset ones included", () => {
+    renderSettings({
+      bindings: [
+        bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } }),
+        bindingDTO({ key: "trips-calendar", value: { state: "unset" } }),
+      ],
+    });
+
+    expect(screen.getByText("f1")).toBeDefined();
+    expect(screen.getByText("Not set")).toBeDefined();
+  });
+
+  it("refuses a blank draft and accepts a real one, sending the trimmed value", () => {
+    const { onSetBinding } = renderSettings({
+      bindings: [bindingDTO({ key: "race-series", value: { state: "unset" } })],
+    });
+    const input = screen.getByLabelText("Race series");
+
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(input, { target: { value: "   " } });
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(input, { target: { value: "  motogp  " } });
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(saveButton());
+    expect(onSetBinding).toHaveBeenCalledTimes(1);
+    expect(onSetBinding).toHaveBeenCalledWith("race-series", "motogp");
+  });
+
+  it("refuses a draft identical to the stored value — a CAS write with no change", () => {
+    const { onSetBinding } = renderSettings({
+      bindings: [bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } })],
+    });
+
+    // The field starts at the stored value, so Save starts disabled.
+    expect((screen.getByLabelText("Race series") as HTMLInputElement).value).toBe("f1");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    expect(onSetBinding).not.toHaveBeenCalled();
+  });
+
+  it("marks a queued write and still shows the value it wrote", () => {
+    renderSettings({
+      bindings: [
+        bindingDTO({ key: "race-series", pending: true, value: { state: "text", text: "motogp" } }),
+      ],
+    });
+
+    expect(screen.getByText("queued")).toBeDefined();
+    expect(screen.getByText("motogp")).toBeDefined();
+  });
+
+  it("renders a key this build cannot write read-only — no field, no button", () => {
+    // `settings` has no DELETE, so a key this build cannot name is one it
+    // must not overwrite either.
+    renderSettings({
+      bindings: [
+        bindingDTO({
+          key: "some-future-binding",
+          known: false,
+          value: { state: "other", raw: "7" },
+        }),
+      ],
+    });
+
+    expect(screen.getByText(/not a text value: 7/i)).toBeDefined();
+    expect(screen.queryByLabelText("some-future-binding")).toBeNull();
+    expect(
+      screen.queryAllByRole("button").filter((button) => button.textContent?.trim() === "Save"),
+    ).toEqual([]);
+  });
+
+  it("offers no Save at all when the host cannot write bindings", () => {
+    renderSettings({
+      bindings: [bindingDTO({ key: "race-series" })],
+      withSetBinding: false,
+    });
+    const input = screen.getByLabelText("Race series");
+    fireEvent.change(input, { target: { value: "motogp" } });
+
+    // A Save that silently does nothing is worse than one that says it
+    // cannot — it stays disabled rather than pretending.
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+});

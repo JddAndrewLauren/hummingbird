@@ -186,6 +186,31 @@ export interface TaskItemDTO {
   pending: boolean;
 }
 
+/** What one binding is currently set to (#118, ADR-0015) — the wire shape of
+ * `hummingbird_core::bindings::BindingValue`. A tagged union, deliberately
+ * not `string | null`: "nobody has set this" and "this holds something that
+ * is not text" are different facts, and collapsing the second into the first
+ * would let the editor offer to overwrite a value it never showed anyone.
+ * `"other"` carries the stored JSON verbatim so it can be displayed —
+ * visibly odd, never quietly empty. */
+export type BindingValueDTO =
+  | { state: "unset" }
+  | { state: "text"; text: string }
+  | { state: "other"; raw: string };
+
+/** One `settings` row as the bindings editor sees it (#118). `known` is
+ * whether this build can WRITE the key (`BindingKey::parse` resolved it) —
+ * an unknown key is a real row a newer build wrote and is shown read-only,
+ * since `settings` has no DELETE and a key minted by mistake can never be
+ * taken back out. `pending` is the same read-time overlay fact
+ * `TaskItemDTO.pending` carries for an item, never a stored column. */
+export interface BindingDTO {
+  key: string;
+  known: boolean;
+  pending: boolean;
+  value: BindingValueDTO;
+}
+
 /** One `projects` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Project`, camelCased. Resolves a
  * `TaskItemDTO.projectId` to a real name for the frontier's "grouped by
@@ -309,6 +334,15 @@ export type TaskWorkerRequest =
       context: string | null;
       nowMs: number;
     }
+  /** #118's binding write: one absolute-value CAS `PUT /api/settings/:key`,
+   * enqueued durably like every other mutation. `key` is the kebab-case,
+   * unversioned binding name (ADR-0015), resolved by name in
+   * `client/ffi-web/src/task_host.rs`'s `set_binding` before it can reach
+   * `Core` — an unrecognised one is refused at the seam rather than minting
+   * a row into a table that has no DELETE. Same caller-mints-`seed`
+   * contract as `"act"`. */
+  | { type: "setBinding"; seed: string; key: string; value: string; nowMs: number }
+  | { type: "getBindings" }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
   /** Relation-blocked items with the reason visible — S10 (issue #108). */
@@ -416,6 +450,21 @@ export type TaskWorkerResponse =
       kind: "ok" | "not_found" | "failed" | "busy";
       error: string | null;
     }
+  /** #118's binding write result, matched back by `seed` — same
+   * broadcast-not-reply contract as `actResult`. `"unknown_key"` is a caller
+   * mistake the seam refused (not in ADR-0015's closed vocabulary);
+   * `"failed"` is a durability failure enqueueing the write. A successful
+   * write needs no payload: `Core::set_binding`'s overlay already updated,
+   * and `store/worker-client.ts` re-requests `getBindings` behind an `ok`
+   * exactly as it re-reads the frontier behind an `actResult`. */
+  | {
+      type: "setBindingResult";
+      seed: string;
+      key: string;
+      kind: "ok" | "unknown_key" | "failed" | "busy";
+      error: string | null;
+    }
+  | { type: "bindings"; bindings: BindingDTO[] }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
   | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }

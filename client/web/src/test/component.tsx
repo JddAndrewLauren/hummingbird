@@ -23,6 +23,7 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 import type {
+  BindingDTO,
   BlockedFrontierEntryDTO,
   ProjectDTO,
   TaskItemDTO,
@@ -66,6 +67,18 @@ export function itemDTO(overrides: Partial<TaskItemDTO> = {}): TaskItemDTO {
   };
 }
 
+/** One `BindingDTO` at a boring default (#118): a known, unset, not-pending
+ * `race-series`. Spelled out for the same reason `itemDTO` is. */
+export function bindingDTO(overrides: Partial<BindingDTO> = {}): BindingDTO {
+  return {
+    key: "race-series",
+    known: true,
+    pending: false,
+    value: { state: "unset" },
+    ...overrides,
+  };
+}
+
 export function projectDTO(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   return {
     id: "project-1",
@@ -97,10 +110,12 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     blocked: [],
     stepsByItem: {},
     projects: [],
+    bindings: null,
     pending: {},
     lastCapture: null,
     lastAct: null,
     lastTriage: null,
+    lastBindingWrite: null,
     lastSyncOutcome: null,
     lastSyncAtMs: null,
     syncOutcomeSeq: 0,

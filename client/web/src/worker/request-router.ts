@@ -26,6 +26,8 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   capture: true,
   act: true,
   triage: true,
+  setBinding: true,
+  getBindings: true,
   getFrontier: true,
   getTriageInbox: true,
   getBlocked: true,

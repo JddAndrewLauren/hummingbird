@@ -856,6 +856,7 @@ mod tests {
                 base: serde_json::json!({"id": "a-1", "title": "buy milk", "version": 1}),
                 base_updated_at: 1_000,
                 patch_fields: serde_json::json!({"title": "buy oat milk"}),
+                rebase_fields: None,
             },
         });
 
@@ -897,6 +898,7 @@ mod tests {
                 base: serde_json::json!({"id": "a-1", "title": "buy milk", "context": "@calls", "version": 1}),
                 base_updated_at: 1_000,
                 patch_fields: serde_json::json!({"title": "buy oat milk"}),
+                rebase_fields: None,
             },
         });
 

@@ -174,6 +174,25 @@ export function attachWorkerClient(
           requestFrontier(worker);
         }
         return;
+      case "setBindingResult":
+        store.setTaskState({
+          lastBindingWrite: {
+            seed: message.seed,
+            key: message.key,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::set_binding`'s overlay already updated synchronously —
+          // the same immediate re-read `actResult` triggers, so a binding
+          // set offline is on screen without waiting for a cycle.
+          requestBindings(worker);
+        }
+        return;
+      case "bindings":
+        store.setTaskState({ bindings: message.bindings });
+        return;
       case "frontier":
         store.setTaskState({ frontier: message.items });
         return;
@@ -396,6 +415,25 @@ export function triageItem(
     context: edits.context ?? null,
     nowMs,
   });
+}
+
+/** #118's binding write: one absolute-value CAS `PUT`, enqueued durably.
+ * `seed` mints `Core::set_binding`'s own queue-entry id — same caller-mints
+ * contract as `actOnTask`'s. `key` is the kebab-case binding name; the seam
+ * refuses one it cannot resolve rather than minting it. */
+export function setBinding(
+  worker: WorkerLike,
+  seed: string,
+  key: string,
+  value: string,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "setBinding", seed, key, value, nowMs });
+}
+
+/** Every standing-question binding (#118). */
+export function requestBindings(worker: WorkerLike): void {
+  worker.postMessage({ type: "getBindings" });
 }
 
 export function requestFrontier(worker: WorkerLike): void {

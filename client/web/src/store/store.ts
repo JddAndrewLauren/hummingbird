@@ -4,6 +4,7 @@
 // only writer.
 
 import type {
+  BindingDTO,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CurrentNextEventDTO,
@@ -81,6 +82,17 @@ export interface TaskTriageResult {
   error: string | null;
 }
 
+/** The result of the most recent `setBinding` request this view issued
+ * (#118), matched back by `seed` — same broadcast-recognition contract as
+ * [`TaskActResult`]. `key` is echoed so a per-row editor can tell which of
+ * its fields the outcome belongs to without keeping its own seed map. */
+export interface TaskBindingResult {
+  seed: string;
+  key: string;
+  kind: "ok" | "unknown_key" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -97,6 +109,11 @@ export interface TaskState {
   /** Every live project — resolves the frontier's "grouped by project"
    * display to real names (issue #108, PR #200 review). */
   projects: ProjectDTO[];
+  /** Every standing-question binding (#118) — every known key, set or not,
+   * plus any `settings` row this build cannot write. `null` until the first
+   * `bindings` answer arrives: an empty array is a real answer ("the table
+   * is empty"), and the editor must not render it before one exists. */
+  bindings: BindingDTO[] | null;
   /** Keyed by item id — only ever grows entries this view actually asked
    * about via `isPending`, never a full mirror of every pending item. */
   pending: Record<string, boolean>;
@@ -107,6 +124,9 @@ export interface TaskState {
   /** The result of the most recent `triage` request this view issued
    * (S13/#111) — `null` until the first one resolves. */
   lastTriage: TaskTriageResult | null;
+  /** The result of the most recent `setBinding` request this view issued
+   * (#118) — `null` until the first one resolves. */
+  lastBindingWrite: TaskBindingResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
   /** When the last `Core::run` cycle actually happened (any trigger, any
    * outcome) — S9's "last sweep" readout. Copied by `worker-client.ts`
@@ -194,10 +214,12 @@ const initialTaskState: TaskState = {
   blocked: [],
   stepsByItem: {},
   projects: [],
+  bindings: null,
   pending: {},
   lastCapture: null,
   lastAct: null,
   lastTriage: null,
+  lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,

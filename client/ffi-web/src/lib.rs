@@ -406,6 +406,10 @@ mod wasm_bindings {
     const BUSY_STEP_LIST: &str = r#"{"kind":"busy","steps":[]}"#;
     const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
+    // #118: an empty binding list would read as "nothing is bound", which
+    // is an answer — and the wrong one. Busy says nothing at all.
+    const BUSY_BINDINGS: &str = r#"{"kind":"busy","bindings":[]}"#;
+    const BUSY_SET_BINDING: &str = r#"{"kind":"busy","error":null}"#;
     // ADR-0015: a core that has not loaded has measured nothing, so busy is
     // `unknown` — never `{"age_ms":0}`, which would render as fresh.
     const BUSY_FRESHNESS: &str = r#"{"kind":"busy","freshness":{"state":"unknown"}}"#;
@@ -553,6 +557,44 @@ mod wasm_bindings {
                 }
                 None => BUSY_FRESHNESS.to_string(),
             }
+        }
+
+        /// Every standing-question binding (#118), as JSON:
+        /// `{"kind": "ok"|"busy", "bindings": [{"key": string, "known":
+        /// bool, "pending": bool, "value": {"state":"unset"} |
+        /// {"state":"text","text":string} | {"state":"other","raw":string}}]}`.
+        pub fn bindings(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.bindings())
+                    .expect("BindingListResponse serializes"),
+                None => BUSY_BINDINGS.to_string(),
+            }
+        }
+
+        /// Sets one binding (#118), as one absolute-value CAS `PUT`.
+        /// Resolves to JSON:
+        /// `{"kind": "ok"|"unknown_key"|"failed"|"busy", "error": string|null}`.
+        /// `key` is the kebab-case binding name, resolved by name — never a
+        /// raw `settings` key a caller invented.
+        #[wasm_bindgen(js_name = setBinding)]
+        pub fn set_binding(
+            &self,
+            seed: String,
+            key: String,
+            value: String,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_SET_BINDING));
+                };
+                let response = host.set_binding(&seed, &key, &value, now_ms as i64).await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("SetBindingResponse serializes"),
+                ))
+            })
         }
 
         /// Whether `item_id` has an unconfirmed capture overlaid, as JSON:

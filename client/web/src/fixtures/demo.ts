@@ -12,6 +12,7 @@ import { isDemoEnabled } from "./demo-mode";
 
 export type {
   DemoAlert,
+  DemoBinding,
   DemoCalendar,
   DemoCapture,
   DemoData,

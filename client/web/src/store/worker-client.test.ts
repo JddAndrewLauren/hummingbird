@@ -47,10 +47,12 @@ const initialTask: TaskState = {
   blocked: [],
   stepsByItem: {},
   projects: [],
+  bindings: null,
   pending: {},
   lastCapture: null,
   lastAct: null,
   lastTriage: null,
+  lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,
@@ -346,6 +348,73 @@ describe("attachWorkerClient", () => {
       error: "item not found",
     });
     expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("records a setBindingResult keyed by seed/key and re-reads the bindings on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "setBindingResult",
+        seed: "seed-b-1",
+        key: "race-series",
+        kind: "ok",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastBindingWrite).toEqual({
+      seed: "seed-b-1",
+      key: "race-series",
+      kind: "ok",
+      error: null,
+    });
+    // `Core::set_binding`'s overlay updates synchronously — the re-read is
+    // what puts the new value on screen without waiting for a cycle (#118).
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBindings" });
+  });
+
+  it("records a refused setBindingResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "setBindingResult",
+        seed: "seed-b-2",
+        key: "nope",
+        kind: "unknown_key",
+        error: "unrecognised binding key \"nope\"",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastBindingWrite?.kind).toBe("unknown_key");
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("writes the bindings on a bindings message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    // `null` until an answer arrives — an empty array is a real answer.
+    expect(store.getSnapshot().task.bindings).toBeNull();
+
+    worker.onmessage?.({
+      data: {
+        type: "bindings",
+        bindings: [
+          { key: "race-series", known: true, pending: false, value: { state: "text", text: "f1" } },
+        ],
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.bindings).toEqual([
+      { key: "race-series", known: true, pending: false, value: { state: "text", text: "f1" } },
+    ]);
   });
 
   it("writes the frontier on a frontier message", () => {
