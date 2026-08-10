@@ -7,6 +7,7 @@ import {
   pollStart,
   pollTimer,
   clearTaskApiKey,
+  initTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
   reportViewVisibility,
@@ -619,6 +620,15 @@ describe("the task send helpers (#105/S7)", () => {
     pushTaskApiKey(worker, "device-token-1");
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: "pushTaskApiKey",
+      apiKey: "device-token-1",
+    });
+  });
+
+  it("initTaskApiKey posts an initTaskApiKey request (issue #196's rehydration path)", () => {
+    const worker = fakeWorker();
+    initTaskApiKey(worker, "device-token-1");
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "initTaskApiKey",
       apiKey: "device-token-1",
     });
   });

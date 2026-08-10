@@ -5,6 +5,7 @@ import { isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
 describe("isTaskWorkerRequest", () => {
   it.each<TaskWorkerRequest>([
     { type: "pushTaskApiKey", apiKey: "k" },
+    { type: "initTaskApiKey", apiKey: "k" },
     { type: "clearTaskApiKey" },
     { type: "capture", seed: "s", title: "t", stage: "triage", nowMs: 1 },
     { type: "getFrontier" },

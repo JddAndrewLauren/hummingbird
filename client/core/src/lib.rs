@@ -133,6 +133,12 @@ impl AccessTokenSlot {
         self.held = false;
     }
 
+    /// Issue #196: rehydrates a key WITHOUT resuming a hold — see
+    /// [`Core::rehydrate_api_key`] for the full contract this backs.
+    fn rehydrate(&mut self, key: String) {
+        self.key = Some(key);
+    }
+
     fn token(&self) -> Option<&str> {
         if self.held {
             None
@@ -530,6 +536,25 @@ where
         self.credential.push(api_key.into());
         self.events
             .retain(|event| !matches!(event, CoreEvent::CredentialNeeded { .. }));
+    }
+
+    /// Issue #196 (shape 2): the REHYDRATION half of what used to be a
+    /// single `push_api_key` call site — a host reloading a token it
+    /// already had stored (core start, or a later view reaching `ready`
+    /// under #126's one-shared-core-per-origin), not a genuinely new or
+    /// re-entered one. Unlike [`Core::push_api_key`], never resumes a hold
+    /// and never drops a pending [`CoreEvent::CredentialNeeded`]: those two
+    /// side effects are the rotation contract, and a second view rehydrating
+    /// the very token that just got rejected must not be able to trigger
+    /// them, or the client silently retries a credential already known to
+    /// be dead and Settings loses the prompt it was about to show.
+    ///
+    /// Still sets the token when nothing is held — a first-run device with
+    /// a stored (never-yet-rejected) token still needs this to actually
+    /// reach the credential slot, exactly as [`Core::push_api_key`] would.
+    /// Only a genuinely fresh [`Core::push_api_key`] call resumes a hold.
+    pub fn rehydrate_api_key(&mut self, api_key: impl Into<String>) {
+        self.credential.rehydrate(api_key.into());
     }
 
     /// "Forget token" (#106/S8): discards the in-memory credential outright
@@ -1366,6 +1391,98 @@ mod tests {
             Vec::new(),
             "a fresh push must retract a prompt for a hold it just resolved"
         );
+    }
+
+    // --------------------------------------------------- rehydrate_api_key
+    //
+    // Issue #196: under one shared core (#126), every view that reaches
+    // `ready` reloads its stored token and re-supplies it. These pin that a
+    // SECOND (or later) view's rehydration can never do what only a real
+    // `push_api_key` may — resume a hold or retract its prompt — while a
+    // first-run device still gets its stored token into the credential slot.
+
+    #[tokio::test]
+    async fn rehydrating_a_held_credential_does_not_resume_it_or_retract_its_prompt() {
+        let mut core = Core::new();
+        core.push_api_key("stale-token");
+
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0)
+            .await;
+
+        // A second view connecting reloads and re-supplies the very token
+        // that was just rejected — this must not resume anything.
+        core.rehydrate_api_key("stale-token");
+
+        let held_read = ScriptedRead::default();
+        let held_write = ScriptedWrite::default();
+        let held = core
+            .run(&held_read, &held_write, 2_000, Trigger::User, true, 1.0)
+            .await;
+        assert_eq!(held, CoreCycleOutcome::Held);
+
+        // Nor does it retract the pending prompt — Settings must still see
+        // it on whichever view drains next.
+        assert_eq!(
+            core.take_events(),
+            vec![CoreEvent::CredentialNeeded { at_ms: 1_000 }],
+            "a rehydration must never retract a hold prompt it did not resolve"
+        );
+    }
+
+    #[tokio::test]
+    async fn rehydrating_repeatedly_while_held_still_never_resumes_only_a_real_push_does() {
+        let mut core = Core::new();
+        core.push_api_key("stale-token");
+
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0)
+            .await;
+
+        // Three more views connecting in turn, all reloading the same
+        // stored (rejected) token.
+        core.rehydrate_api_key("stale-token");
+        core.rehydrate_api_key("stale-token");
+        core.rehydrate_api_key("stale-token");
+
+        let held_read = ScriptedRead::default();
+        let held_write = ScriptedWrite::default();
+        let held = core
+            .run(&held_read, &held_write, 2_000, Trigger::User, true, 1.0)
+            .await;
+        assert_eq!(held, CoreCycleOutcome::Held);
+
+        // Only a genuine push resumes.
+        core.push_api_key("fresh-token");
+        let resumed_read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let resumed_write = ScriptedWrite::new(vec![]);
+        let resumed = core
+            .run(&resumed_read, &resumed_write, 3_000, Trigger::User, true, 1.0)
+            .await;
+        assert!(matches!(
+            resumed,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_first_run_devices_rehydration_still_reaches_the_credential_slot() {
+        // No `push_api_key` call at all here — this is the never-held,
+        // never-pushed case a first-run device's core-start rehydration
+        // hits, and it must still make the token usable.
+        let mut core = Core::new();
+        core.rehydrate_api_key("device-token");
+
+        let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let write = ScriptedWrite::new(vec![]);
+        let outcome = core.run(&read, &write, 1_000, Trigger::User, true, 1.0).await;
+
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
     }
 
     // ------------------------------------------------------- clear_api_key

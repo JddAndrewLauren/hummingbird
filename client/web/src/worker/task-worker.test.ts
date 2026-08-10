@@ -5,6 +5,7 @@ import { createTaskRequestQueue, handleTaskRequest, type TaskHostLike } from "./
 function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
   return {
     pushApiKey: vi.fn(),
+    rehydrateApiKey: vi.fn(),
     clearApiKey: vi.fn(),
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
@@ -86,6 +87,20 @@ describe("handleTaskRequest", () => {
     // No message this handler ever posts carries the string it was pushed —
     // check every posted response's serialized form as a defensive-in-depth
     // net, not just the empty-array assertion above.
+    expect(JSON.stringify(posted)).not.toContain("device-token-1");
+  });
+
+  it("initTaskApiKey forwards to host.rehydrateApiKey — never host.pushApiKey — and posts nothing back", async () => {
+    // Issue #196: this is the rehydration path every view's core-start
+    // effect uses, including a SECOND (or later) view connecting while a
+    // first view's hold is live. Routing it to `pushApiKey` — the resuming
+    // operation — is exactly the regression this test pins against.
+    const host = fakeHost();
+    const posted = await run({ type: "initTaskApiKey", apiKey: "device-token-1" }, host);
+
+    expect(host.rehydrateApiKey).toHaveBeenCalledWith("device-token-1");
+    expect(host.pushApiKey).not.toHaveBeenCalled();
+    expect(posted).toEqual([]);
     expect(JSON.stringify(posted)).not.toContain("device-token-1");
   });
 

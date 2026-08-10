@@ -282,38 +282,42 @@ mod wasm_bindings {
 
     use super::task_host::TaskHostCore;
 
+    /// Whatever a synchronous setter had to defer because [`TaskShared`]'s
+    /// host was checked out — mutually exclusive, since only the most
+    /// recent request matters: whichever of push/rehydrate/clear landed
+    /// *last* while checked out is what [`TaskShared::check_in`] applies,
+    /// matching what would have happened had the host not been busy.
+    enum PendingApiKeyOp {
+        Push(String),
+        /// Issue #196 (shape 2): the rehydration counterpart to `Push` —
+        /// see [`TaskShared::rehydrate_api_key`].
+        Rehydrate(String),
+        Clear,
+    }
+
     /// The same check-out/check-in shape as [`Shared`] above, generic over
     /// which host it wraps rather than a second copy of the borrow-safety
     /// logic — see `Shared`'s own docs for why this exists at all (a wasm
     /// panic from a `RefCell` borrow held across an await poisons the whole
     /// module, not just one call).
     ///
-    /// `pending_api_key` mirrors [`Shared`]'s own `Pending` slot (PR #171
-    /// round-1 review): a key pushed while a `run`/`capture` call holds the
-    /// host would otherwise be silently dropped on the floor rather than
-    /// merely delayed, and nothing upstream of #106 re-pushes it — the host
-    /// has no way to know its rotation was lost. Applied at
-    /// [`TaskShared::check_in`], same as [`Shared::check_in`] applies a
-    /// pending token/selection.
-    ///
-    /// `pending_clear` is the same idea for "forget token" (#106/S8): a
-    /// clear requested while checked out must not be dropped either, and
-    /// the two pending slots are kept mutually exclusive — whichever of
-    /// push/clear is requested *last*, while checked out, is what
-    /// [`TaskShared::check_in`] applies, matching what would have happened
-    /// had the host not been busy.
+    /// `pending_op` mirrors [`Shared`]'s own `Pending` slot (PR #171
+    /// round-1 review): a push/rehydrate/clear requested while a
+    /// `run`/`capture` call holds the host would otherwise be silently
+    /// dropped on the floor rather than merely delayed, and nothing
+    /// upstream of #106 re-sends it — the host has no way to know its
+    /// request was lost. Applied at [`TaskShared::check_in`], same as
+    /// [`Shared::check_in`] applies a pending token/selection.
     struct TaskShared {
         host: RefCell<Option<TaskHostCore>>,
-        pending_api_key: RefCell<Option<String>>,
-        pending_clear: RefCell<bool>,
+        pending_op: RefCell<Option<PendingApiKeyOp>>,
     }
 
     impl TaskShared {
         fn new(host: TaskHostCore) -> Self {
             Self {
                 host: RefCell::new(Some(host)),
-                pending_api_key: RefCell::new(None),
-                pending_clear: RefCell::new(false),
+                pending_op: RefCell::new(None),
             }
         }
 
@@ -322,10 +326,11 @@ mod wasm_bindings {
         }
 
         fn check_in(&self, mut host: TaskHostCore) {
-            if std::mem::take(&mut *self.pending_clear.borrow_mut()) {
-                host.clear_api_key();
-            } else if let Some(api_key) = self.pending_api_key.borrow_mut().take() {
-                host.push_api_key(api_key);
+            match self.pending_op.borrow_mut().take() {
+                Some(PendingApiKeyOp::Clear) => host.clear_api_key(),
+                Some(PendingApiKeyOp::Push(api_key)) => host.push_api_key(api_key),
+                Some(PendingApiKeyOp::Rehydrate(api_key)) => host.rehydrate_api_key(api_key),
+                None => {}
             }
             *self.host.borrow_mut() = Some(host);
         }
@@ -333,27 +338,32 @@ mod wasm_bindings {
         /// Pushes immediately if the host is present, or queues for the next
         /// [`TaskShared::check_in`] if it is currently checked out — never
         /// silently drops the key either way. A queued push supersedes any
-        /// queued clear: this is the more recent request.
+        /// other queued op: this is the more recent request.
         fn push_api_key(&self, api_key: String) {
             match self.host.borrow_mut().as_mut() {
                 Some(host) => host.push_api_key(api_key),
-                None => {
-                    *self.pending_clear.borrow_mut() = false;
-                    *self.pending_api_key.borrow_mut() = Some(api_key);
-                }
+                None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Push(api_key)),
+            }
+        }
+
+        /// Issue #196 (shape 2): the rehydration counterpart to
+        /// [`TaskShared::push_api_key`] — applies immediately if the host is
+        /// present, or queues otherwise, same as a push, but never resumes a
+        /// hold either way. See [`TaskHostCore::rehydrate_api_key`].
+        fn rehydrate_api_key(&self, api_key: String) {
+            match self.host.borrow_mut().as_mut() {
+                Some(host) => host.rehydrate_api_key(api_key),
+                None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Rehydrate(api_key)),
             }
         }
 
         /// "Forget token" (#106/S8): clears immediately if the host is
         /// present, or queues for the next [`TaskShared::check_in`]
-        /// otherwise. A queued clear supersedes any queued push.
+        /// otherwise. A queued clear supersedes any other queued op.
         fn clear_api_key(&self) {
             match self.host.borrow_mut().as_mut() {
                 Some(host) => host.clear_api_key(),
-                None => {
-                    *self.pending_api_key.borrow_mut() = None;
-                    *self.pending_clear.borrow_mut() = true;
-                }
+                None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Clear),
             }
         }
     }
@@ -410,6 +420,22 @@ mod wasm_bindings {
         #[wasm_bindgen(js_name = pushApiKey)]
         pub fn push_api_key(&self, api_key: String) {
             self.inner.push_api_key(api_key);
+        }
+
+        /// Issue #196 (shape 2): the host calls this — never `pushApiKey` —
+        /// to rehydrate whatever device token it already has stored: at
+        /// core start, and every time a view reaches `ready` under #126's
+        /// one-shared-core-per-origin (`useTaskTokenWiring.ts`'s core-start
+        /// effect). Unlike `pushApiKey`, this NEVER resumes a hold and never
+        /// retracts a pending re-auth prompt — a later view rehydrating the
+        /// very token that just got rejected must not be able to trigger a
+        /// retry of a credential already known to be dead. Only a genuinely
+        /// re-entered or changed token, submitted through `pushApiKey`,
+        /// resumes. Queued rather than dropped if the host is currently
+        /// checked out mid-`run`/`capture` — see [`TaskShared`]'s doc.
+        #[wasm_bindgen(js_name = rehydrateApiKey)]
+        pub fn rehydrate_api_key(&self, api_key: String) {
+            self.inner.rehydrate_api_key(api_key);
         }
 
         /// "Forget token" (#106/S8): clears the in-memory credential. Never
