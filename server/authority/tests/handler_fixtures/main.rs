@@ -17,6 +17,7 @@ mod items;
 mod projects_routes;
 mod push_targets;
 mod rebase;
+mod resolution;
 mod routing;
 mod rules;
 mod schema;
