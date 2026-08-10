@@ -34,16 +34,31 @@ export function shouldRunTimerTick(hidden: boolean, online: boolean): boolean {
  * onto. */
 export type SyncCadenceTrigger = "open" | "reconnect" | "focus" | "manual" | "timer";
 
-/** `Core::run`'s own `Trigger` only has two spellings — "backoff is reset by
- * any user-facing trigger" (ADR-0007), and open/reconnect/focus/manual are
- * each a user-facing signal, so all four map to `"user"`; only the
- * unattended foreground timer maps to `"timer"`. This is also what makes "a
- * focus event resets backoff" (and, per issue #194, a manual refresh too)
- * true for free: it costs nothing beyond sending the right trigger spelling,
- * because `Core::run` already resets backoff on `"user"`
- * (`client/core/src/sync/cycle.rs`). */
+/** `Core::run`'s own `Trigger` only has two spellings, and the mapping is
+ * NOT "every ADR-0007 cadence trigger except the timer is user-facing".
+ * ADR-0007 lists "on window focus" among its four cadence triggers in one
+ * sentence, and states "backoff is reset by any user-facing trigger" in a
+ * separate one — and per issue #190's triage ruling, a window-focus event
+ * was never the gesture that second sentence is about. A focus event says a
+ * window came forward; it is an ambient signal, not a request, and the ADR
+ * reserves gesture language for manual refresh ("Manual refresh is the same
+ * cycle, user-invoked"). So `"focus"` joins `"timer"` on the right-hand
+ * side here, alongside the unattended foreground timer — both leave backoff
+ * alone. Only `"open"`, `"reconnect"` and `"manual"` are genuine
+ * user-facing requests and map to `"user"`, which is what makes issue #194's
+ * "a manual refresh resets backoff" true for free: it costs nothing beyond
+ * sending the right trigger spelling, because `Core::run` already resets
+ * backoff on `"user"` (`client/core/src/sync/cycle.rs`).
+ *
+ * Consequence, all intended (issue #190): outside backoff a focus behaves
+ * exactly as before (a prompt cycle); during backoff a focus produces a
+ * cycle the core declines as "not ready yet" instead of collapsing the
+ * backoff window, so alt-tabbing at any rate can no longer extend an
+ * outage's request rate beyond the backoff schedule. This does not amend
+ * ADR-0007 — it is an interpretation of it, recorded here rather than in the
+ * ADR itself. */
 export function toCoreTrigger(trigger: SyncCadenceTrigger): "user" | "timer" {
-  return trigger === "timer" ? "timer" : "user";
+  return trigger === "timer" || trigger === "focus" ? "timer" : "user";
 }
 
 /** Precedence for issue #184's guard: when a trigger arrives while a run is
@@ -58,17 +73,24 @@ export function toCoreTrigger(trigger: SyncCadenceTrigger): "user" | "timer" {
  * `"open"` overwritten by a later `"focus"`/`"timer"` drops ADR-0008's
  * app-open full-sweep backstop for the rest of the `SharedWorker`'s
  * lifetime (`dispatch.ts`'s `openTrigger` only ever fires it once), and a
- * `"manual"`/`"focus"` overwritten by a `"timer"` silently demotes a
- * user-facing backoff reset to an unattended one.
+ * `"reconnect"`/`"manual"` overwritten by a later `"focus"` or `"timer"`
+ * silently demotes a user-facing backoff reset to an unattended one — the
+ * exact outage-recovery path this precedence exists to protect: network
+ * returns while a run is in flight, `"reconnect"` waits in the pending
+ * slot, the user alt-tabs, and the follow-up cycle must still reset
+ * backoff.
  *
- * Precedence: `"open"` (ADR-0008's full-sweep backstop) beats every
- * user-facing trigger, which in turn beats `"timer"` (the only trigger that
- * does not reset backoff and never forces a full sweep). Among the three
- * user-facing triggers (`"reconnect"`, `"focus"`, `"manual"`) there is no
- * behavioral difference downstream of the guard — all three map to
- * `"user"` and none forces a full sweep — so a tie keeps whichever is
- * `incoming`, the same "most recent wins" rule the guard used before this
- * fix, scoped down to only the cases where it cannot lose information. */
+ * Precedence: `"open"` (ADR-0008's full-sweep backstop) beats the two
+ * user-facing triggers (`"reconnect"`, `"manual"` — the ones
+ * `toCoreTrigger` maps to `"user"`, resetting backoff), which beat
+ * `"focus"` (issue #190: an ambient signal that maps to `"timer"` and
+ * leaves backoff alone, but still kept above the unattended timer so the
+ * merged trigger's identity survives for logging/tests), which beats
+ * `"timer"`. Between the two user-facing triggers there is no behavioral
+ * difference downstream of the guard — both map to `"user"` and neither
+ * forces a full sweep — so a tie keeps whichever is `incoming`, the same
+ * "most recent wins" rule the guard used before this fix, scoped down to
+ * only the cases where it cannot lose information. */
 export function mergePendingSyncTrigger(
   pending: SyncCadenceTrigger,
   incoming: SyncCadenceTrigger,
@@ -77,9 +99,10 @@ export function mergePendingSyncTrigger(
 }
 
 function syncTriggerPriority(trigger: SyncCadenceTrigger): number {
-  if (trigger === "open") return 2;
+  if (trigger === "open") return 3;
+  if (trigger === "focus") return 1; // below "reconnect"/"manual": never demotes a backoff reset
   if (trigger === "timer") return 0;
-  return 1; // "reconnect" | "focus" | "manual"
+  return 2; // "reconnect" | "manual" — the backoff-resetting pair
 }
 
 export interface SyncCadence {
