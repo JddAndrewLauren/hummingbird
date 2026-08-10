@@ -8,3 +8,10 @@ src/wasm/pkg
 
 .wrangler
 *.tsbuildinfo
+
+# the visual gate's output (docs/SURFACES.md). Captures are for review, not
+# for review-by-diff: there is no committed golden and no pixel comparison,
+# so checking these in would add ~7 MB of churn per run and prove nothing.
+visual/.captures
+visual/.output
+visual/.snapshots

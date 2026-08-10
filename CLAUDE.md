@@ -192,16 +192,36 @@ extracting the facts from the real `KeyboardEvent`: plain "c", never with a
 modifier, never while an editable control has focus or an IME composition
 is in progress.
 
-**There is no component-test infrastructure in this repo.**
-`client/web/vitest.config.ts` runs `environment: "node"`, and
-`client/web/package.json` carries no jsdom and no `@testing-library/react`
-— no test mounts a component, anywhere. React threading is therefore
-covered by pure-function tests plus `pnpm typecheck`, and by nothing else.
-That leaves one recurring hole, and it is why three of this batch's four
-PRs were rejected on first review: **typecheck cannot see that something
-has no caller.** A pure module, a `use*` hook or a prop that is exported,
-unit-tested and never wired compiles clean and passes clean. Grep for the
-call site before calling any of this done.
+**Component tests are the gate on that threading, and they exist because
+typecheck cannot see that something has no caller.** A pure module, a
+`use*` hook or a prop that is exported, unit-tested and never wired
+compiles clean and passes clean — which is why three of the S10–S13 PRs
+were rejected on first review for shipping UI state with no reader (the
+worst, `disabled={item.pending}` on a permanently-frozen flag, survived two
+rounds). `client/web/vitest.config.ts` keeps `environment: "node"` as the
+DEFAULT — the `worker/*` tests assert against a `SharedWorker`-shaped world
+with no `document`, and handing them a jsdom global would let a test pass
+on a `document` the real runtime lacks. A `*.test.tsx` opts into jsdom per
+file with a `// @vitest-environment jsdom` docblock. Everything mounts
+through `src/test/component.tsx`, which registers the `afterEach(cleanup)`
+RTL would otherwise skip (this repo runs vitest without `globals: true`,
+and unclean teardown reads as a flaky assertion) and carries the
+`itemDTO`/`taskState` builders so a test states only the fields it is
+about. Pure-module tests still cover the deciding logic; the component
+tests cover the wiring between them, and neither replaces the other.
+
+**The visual gate is Playwright, and it is local-only.** `pnpm visual` in
+`client/web` drives three real viewports (1440 / 1024 / 768 — the third is
+the wrap point of `screens/layout.tsx`'s `TwoColumn`, which uses no media
+query) across both themes, writing captures to `visual/.captures/` for
+review. There is no committed golden and no pixel diff: what it *fails* on
+is the machine-decidable subset — horizontal overflow, an unresolved brand
+token, a theme switch that never reaches the page. It is deliberately not
+in `.github/workflows/client.yml` (`pnpm typecheck` already rebuilds the
+wasm core and is that workflow's slow step), and it needs a one-time
+`pnpm exec playwright install chromium`. Never `chrome --headless
+--screenshot` for this UI — the viewport renders wrong. The registry
+`/wrapup` reads is `docs/SURFACES.md`.
 
 ## The design system
 

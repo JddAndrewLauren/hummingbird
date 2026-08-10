@@ -244,13 +244,24 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
                 <Card
                   key={capture.id}
                   padding="var(--space-5)"
-                  style={{ display: "flex", alignItems: "center", gap: "var(--space-5)" }}
+                  style={{ display: "flex", alignItems: "center", gap: "var(--space-5)", flexWrap: "wrap" }}
                 >
                   <StageBadge stage="triage" />
-                  <span style={{ flex: 1, minWidth: 0, font: "var(--type-body)", color: "var(--text-primary)" }}>
+                  {/* Found by the G2 visual gate at 768 (`docs/SURFACES.md`):
+                      with a plain `flex: 1, minWidth: 0` and no overflow
+                      rule, the meta and the button strip take the whole row
+                      and this span is squeezed to a few pixels — its text
+                      wrapped one word per line and rendered straight through
+                      the meta beside it. The `220px` basis is a floor, not a
+                      width: the row wraps the meta and buttons onto their own
+                      line before the title is starved, and the ellipsis (the
+                      same contract `ItemRow` uses) handles what is still too
+                      long after that. */}
+                  <span style={{ flex: "1 1 220px", minWidth: 0, font: "var(--type-body)", color: "var(--text-primary)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {capture.title}
                   </span>
-                  <span className="hb-meta">
+                  <span className="hb-meta" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>
                     {capture.source} · {capture.age}
                   </span>
                   <div
@@ -299,10 +310,14 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
                   padding="var(--space-5)"
                   style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-5)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-5)", flexWrap: "wrap" }}>
                     <StageBadge stage="triage" />
+                    {/* Same wrap-then-ellipsis contract as the demo row above
+                        — a real capture's title is whatever someone typed, so
+                        it is at least as likely to be long as a fixture's. */}
                     <span
-                      style={{ flex: 1, minWidth: 0, font: "var(--type-body)", color: "var(--text-primary)" }}
+                      style={{ flex: "1 1 220px", minWidth: 0, font: "var(--type-body)", color: "var(--text-primary)",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                     >
                       {item.title}
                     </span>
@@ -310,7 +325,7 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
                       <span
                         title="Not yet confirmed by the server"
                         className="hb-meta"
-                        style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)" }}
+                        style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", flex: "0 0 auto", whiteSpace: "nowrap" }}
                       >
                         <Icon name="loader-circle" size={13} />
                         Pending

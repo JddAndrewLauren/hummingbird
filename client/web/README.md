@@ -31,11 +31,23 @@ pnpm dev            # build the wasm core, then vite dev
 
 - `pnpm build` — wasm core build, `tsc -b`, then `vite build` into `dist/`.
 - `pnpm test` — vitest over the store, worker-protocol, screen/shell
-  pure-logic, and CSP-worker unit tests (`src/**/*.test.ts`,
-  `csp-worker/**/*.test.ts`). `environment: "node"`, and there is no jsdom
-  and no `@testing-library/react` here: **no test mounts a component**, so
-  a `.tsx` is covered only by the pure modules it calls plus `typecheck` —
-  neither of which can tell you a module has no caller.
+  pure-logic and CSP-worker unit tests (`src/**/*.test.ts`,
+  `csp-worker/**/*.test.ts`), plus the component tests
+  (`src/**/*.test.tsx`). `environment: "node"` stays the default — the
+  `worker/*` tests assert against a `SharedWorker`-shaped world with no
+  `document` — and a component test opts into jsdom per file with a
+  `// @vitest-environment jsdom` docblock. Mount through
+  `src/test/component.tsx`, never `@testing-library/react` directly: it
+  registers the `afterEach(cleanup)` RTL skips without `globals: true`.
+  Component tests exist because **typecheck cannot tell you a module has no
+  caller** — see that file's header.
+- `pnpm visual` — the Playwright visual gate: five screens x three widths x
+  two themes, plus Now's empty state, captured to `visual/.captures/` for
+  review. Fails on horizontal overflow, an unresolved brand token, or a
+  theme switch that does not reach the page; everything else is for human
+  eyes, since there is no committed golden. Needs a one-time `pnpm exec
+  playwright install chromium`, and is deliberately not in CI. The registry
+  is `docs/SURFACES.md`.
 - `pnpm typecheck` — `tsc -b --noEmit` across the app and the Cloudflare
   Worker script. Note `tsc -p tsconfig.json` checks **nothing** — the root
   config is solution-style (`"files": []`); always go through this script.
