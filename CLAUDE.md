@@ -125,9 +125,12 @@ evaluation boundary is still `archived_at` alone. Still no production deploy
 locally, `.github/workflows/server.yml` in CI. **The test recipe is shared,
 not copied** (#229): `server-test.yml` is a `workflow_call`-only workflow
 holding clippy / native fixture tests / wasm32 build / `smoke.sh`, and both
-`server.yml` (PRs and `main`) and `deploy-server.yml` (`main`, `wrangler
+`server.yml` (pull requests only) and `deploy-server.yml` (`main`, `wrangler
 deploy` behind `needs: test`) call it, so the gate a PR sees and the gate the
-deploy passes cannot drift. `deploy-server.yml` carries no `schedule:` — the
+deploy passes cannot drift. `server.yml` carries no `push:` trigger for
+exactly that reason — `main` is gated by the deploy workflow's own test job,
+and a second copy would run the same 30-minute job concurrently for no extra
+signal. `deploy-server.yml` carries no `schedule:` — the
 DO's own `alarm()` owns the cadence — and no `ADMIN_SECRET`/
 `FCM_SERVICE_ACCOUNT`; it is red-by-design until H3 creates the Workers
 project.
