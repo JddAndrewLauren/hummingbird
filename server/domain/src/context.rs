@@ -183,7 +183,15 @@ impl SnapshotEnvelope {
 /// Why an envelope could not be read — the "reason" half of ADR-0015's
 /// "malformed *with a reason*". Every arm carries enough to say what was
 /// wrong without quoting the payload back at the reader.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Serialize` but deliberately **not** `Deserialize`: this is produced
+/// here and read downstream, never parsed back off a wire. The derive would
+/// compile — and then fail at every real call site, since serde can only
+/// deserialize the `&'static str` arms below from a `'static` input, so
+/// anything holding an owned `String` gets a lifetime error rather than an
+/// honest "this is not deserializable". If a consumer ever needs the round
+/// trip, change these to `String` first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum EnvelopeProblem {
     /// Not JSON at all; carries serde's own message (line/column included).
     NotJson(String),

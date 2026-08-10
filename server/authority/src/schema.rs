@@ -319,9 +319,7 @@ pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
 ///
 /// Presence is read from `sqlite_master` rather than `PRAGMA table_info`,
 /// because the Durable Object's SQL storage permits only a narrow set of
-/// pragmas and a plain `SELECT` is the portable question. The match is a
-/// substring of one table's own DDL text, which is ours and holds no other
-/// occurrence of the name.
+/// pragmas and a plain `SELECT` is the portable question.
 fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     if !column_exists(sql, "alerts", "subject_key")? {
         sql.exec("ALTER TABLE alerts ADD COLUMN subject_key TEXT", &[])?;
@@ -329,6 +327,14 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     Ok(())
 }
 
+/// Whether one table's stored DDL declares `column`.
+///
+/// The match is on whole identifiers, not a substring, and that is the
+/// difference between a correct answer and a silently skipped migration:
+/// `contains("key")` is true of any table carrying a `source_key`, so a
+/// later growth adding a genuinely absent `key` column would decide it was
+/// already there and never run its `ALTER`. Nothing would fail loudly —
+/// exactly the failure mode this whole function exists to close.
 fn column_exists(sql: &dyn Sql, table: &str, column: &str) -> Result<bool, SqlError> {
     let rows = sql.exec(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -339,5 +345,31 @@ fn column_exists(sql: &dyn Sql, table: &str, column: &str) -> Result<bool, SqlEr
             message: format!("`{table}` is missing from sqlite_master after the create loop"),
         });
     };
-    Ok(ddl.contains(column))
+    Ok(ddl_declares_column(ddl, column))
+}
+
+/// The identifier match itself, split out so it is testable without a
+/// database — it is the part with a wrong answer available.
+fn ddl_declares_column(ddl: &str, column: &str) -> bool {
+    ddl.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|token| token == column)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_column_is_matched_as_a_whole_identifier_not_a_substring() {
+        let alerts = CREATE_ALERTS;
+        assert!(ddl_declares_column(alerts, "subject_key"));
+        assert!(ddl_declares_column(alerts, "source_key"));
+        // The bug this replaced: `contains` would call every one of these
+        // present, and `add_missing_columns` would skip an ALTER that was
+        // genuinely needed — silently, which is the failure mode the whole
+        // function exists to close.
+        for absent in ["key", "subject", "ubject_ke", "id_"] {
+            assert!(!ddl_declares_column(alerts, absent), "`{absent}` is not a column of alerts");
+        }
+    }
 }
