@@ -13,9 +13,7 @@ mod handlers;
 mod schema;
 mod sql;
 
-pub use delivery::{
-    deliver, DeliveryOutcome, PushError, PushFailure, PushNotification, Pusher, SuppressReason,
-};
+pub use delivery::{deliver, DeliveryOutcome, PushNotification, SuppressReason};
 pub use entropy::Entropy;
 pub use handlers::{handle, ApiRequest, ApiResponse, HandleContext};
 pub use schema::{init_schema, SCHEMA_VERSION};

@@ -1,14 +1,21 @@
 //! `POST /api/push_targets` and `DELETE /api/push_targets/:id` (#139): FCM
 //! registration and individual revocation — the notification lane's
 //! sibling to `tokens` (ADR-0012), minted by #131's schema with its HTTP
-//! surface deferred here. Idempotent create by client-supplied id, the
-//! same rule as `rules::create`; revoke is a flag, never a delete, and
-//! idempotent like `admin_tokens::revoke`.
+//! surface deferred here. Create is idempotent by client-supplied id, like
+//! `rules::create`, with one deliberate departure: unlike an item or rule
+//! id, a `push_target` id names a *device slot* whose `fcm_token` FCM
+//! rotates over the device's lifetime with no new id minted for it, so a
+//! replay that names a changed `name`/`platform`/`fcm_token` adopts the new
+//! values rather than silently keeping the stale ones — and, since a fresh
+//! registration is the device announcing it is live again, it also revives
+//! a target that had been revoked (the operator can always re-revoke it).
+//! `revoke` is a flag, never a delete, and idempotent like
+//! `admin_tokens::revoke`.
 
 use hummingbird_domain::{CreatePushTarget, Platform, PushTarget};
 
 use super::{error, json, parse_body, ApiResponse};
-use crate::codec::{bad_cell, RowReader};
+use crate::codec::{bad_cell, RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
 pub fn register(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
@@ -20,8 +27,36 @@ pub fn register(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRes
         return Ok(error(400, "validation", "id must be non-empty"));
     }
 
-    // Idempotent by client id, same rule as rules::create/items::create.
     if let Some(row) = select(sql, &create.id)? {
+        let current = push_target_from_row(&row)?;
+        let unchanged = current.name == create.name
+            && current.platform == create.platform
+            && current.fcm_token == create.fcm_token
+            && current.revoked_at.is_none();
+        if unchanged {
+            return Ok(json(200, &current));
+        }
+        if create.name.is_empty() {
+            return Ok(error(400, "validation", "name must be non-empty"));
+        }
+        if create.fcm_token.is_empty() {
+            return Ok(error(400, "validation", "fcm_token must be non-empty"));
+        }
+        // A changed token/name/platform, or a fresh registration on a
+        // revoked id, is the device re-announcing itself live: adopt the
+        // new values and clear any revocation.
+        let mut sets = Sets::new();
+        sets.set("name", SqlValue::Text(create.name.clone()));
+        sets.set("platform", SqlValue::Text(create.platform.as_str().to_string()));
+        sets.set("fcm_token", SqlValue::Text(create.fcm_token.clone()));
+        sets.set("revoked_at", SqlValue::Null);
+        let update = sets.update_sql("push_targets", "id = ?");
+        let mut params = sets.into_params();
+        params.push(SqlValue::Text(create.id.clone()));
+        sql.exec(&update, &params)?;
+        let row = select(sql, &create.id)?.ok_or_else(|| SqlError {
+            message: "row vanished mid-update".into(),
+        })?;
         return Ok(json(200, &push_target_from_row(&row)?));
     }
 

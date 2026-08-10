@@ -70,6 +70,81 @@ fn register_rejects_an_empty_name_or_token() {
     assert!(rows.is_empty());
 }
 
+/// Non-blocking review finding on round 1: FCM tokens rotate over a
+/// device's lifetime without a new registration id, so a replay under the
+/// same id carrying a *different* `fcm_token` must adopt it — silently
+/// discarding it would keep pushing to a token FCM has already invalidated.
+#[test]
+fn register_replay_with_a_rotated_token_adopts_the_new_token() {
+    let sql = RusqliteSql::new();
+    post_push_target(
+        &sql,
+        r#"{"id": "pt-1", "name": "pixel-9", "platform": "android", "fcm_token": "tok-1"}"#,
+        1000,
+    );
+    let resp = post_push_target(
+        &sql,
+        r#"{"id": "pt-1", "name": "pixel-9", "platform": "android", "fcm_token": "tok-2"}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let target: hummingbird_domain::PushTarget = body_as(&resp);
+    assert_eq!(target.fcm_token, "tok-2", "the rotated token is adopted");
+    assert_eq!(target.created_at, 1000, "the identity's created_at is untouched");
+    let rows = sql.exec("SELECT id FROM push_targets", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "still no duplicate row");
+}
+
+/// Non-blocking review finding on round 1: re-registering under a revoked
+/// id must not answer 200 while quietly leaving the target revoked — a
+/// fresh registration (the device came back, was reset, or re-installed)
+/// revives it, and the operator can always re-revoke.
+#[test]
+fn register_replay_on_a_revoked_target_revives_it() {
+    let sql = RusqliteSql::new();
+    post_push_target(
+        &sql,
+        r#"{"id": "pt-1", "name": "pixel-9", "platform": "android", "fcm_token": "tok-1"}"#,
+        1000,
+    );
+    delete_push_target(&sql, "pt-1", 2000);
+
+    let resp = post_push_target(
+        &sql,
+        r#"{"id": "pt-1", "name": "pixel-9", "platform": "android", "fcm_token": "tok-1"}"#,
+        3000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let target: hummingbird_domain::PushTarget = body_as(&resp);
+    assert!(target.revoked_at.is_none(), "a fresh registration revives it");
+}
+
+#[test]
+fn delete_gets_401_for_a_bad_credential_and_403_for_the_wrong_scope() {
+    let sql = RusqliteSql::new();
+    post_push_target(
+        &sql,
+        r#"{"id": "pt-1", "name": "pixel-9", "platform": "android", "fcm_token": "tok-1"}"#,
+        0,
+    );
+
+    let anon = req_anon(&sql, "DELETE", "/api/push_targets/pt-1", None, None);
+    assert_eq!(anon.status, 401);
+    assert!(anon.body.is_empty());
+
+    let ingest = req_as(&sql, INGEST_TOKEN, "DELETE", "/api/push_targets/pt-1", None, None, 0);
+    assert_eq!(ingest.status, 403, "{}", ingest.body);
+    assert!(ingest.body.is_empty());
+
+    let rows = sql
+        .exec("SELECT revoked_at FROM push_targets WHERE id = 'pt-1'", &[])
+        .unwrap();
+    assert!(
+        rows[0].get("revoked_at").unwrap().as_i64().is_none(),
+        "neither rejected request touched the row"
+    );
+}
+
 #[test]
 fn revoking_one_target_leaves_a_sibling_untouched() {
     let sql = RusqliteSql::new();

@@ -41,8 +41,23 @@ idempotent by client id), the all-tables delta pull with `GET /api/sweep`
 as its byte-identical backstop, bearer-token auth (sha256 at rest; scopes
 `device`/`sweeper`/`ingest`; `/api/admin/tokens` gated by `ADMIN_SECRET`;
 401 = bad credential, 403 = wrong scope or — for an `ingest` token, which is
-bound to one alert source — a source mismatch, all empty-bodied), and the
-`POST /api/alerts` ingest upsert. Still no production deploy (that is #95's
+bound to one alert source — a source mismatch, all empty-bodied), the
+`POST /api/alerts` ingest upsert, and `POST`/`DELETE /api/push_targets`
+(idempotent registration — a replay adopts a rotated `fcm_token` and
+revives a revoked target, since neither event mints a new device id — and
+individual, idempotent revocation). The notification lane's delivery leg
+(#139) is `hummingbird_authority::deliver`: a **sync** function, not an
+HTTP route — the real FCM send is necessarily async (the `workers-rs`
+shim's `fetch`, on wasm32, where a sync trait cannot block on a future), so
+`deliver` only decides and logs the transitions-only dedupe against
+`deliveries` (`UNIQUE(alert_id, rule_id, generation, severity)`,
+ADR-0012/0014) and hands the caller back exactly which live `push_targets`
+rows to send to; the delivery row commits before the caller can possibly
+begin sending, so a crash or retry never double-rings, and zero live
+targets suppresses without logging rather than permanently burning the
+transition. #138 (the periodic sweep, unbuilt) is the intended async
+caller: mint/ratchet the alert, then call `deliver` once per matching rule
+with rules-engine's `Verdict::tier`. Still no production deploy (that is #95's
 human gate H3) — `wrangler dev` + `server/scripts/smoke.sh` locally,
 `.github/workflows/server.yml` in CI.
 
