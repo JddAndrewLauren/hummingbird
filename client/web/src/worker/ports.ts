@@ -4,6 +4,7 @@ import type {
   TaskWorkerRequest,
   WorkerResponse,
 } from "../store/protocol";
+import { isInformativeSyncOutcome } from "../shell/sync-status";
 import { announceReady } from "./announce";
 
 type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest;
@@ -64,9 +65,10 @@ type State =
  * recent broadcast has no sync state of its own until the next cycle — and
  * if the shared 60s timer is paused (every view hidden, S9/#191), that can
  * be indefinitely. `broadcast` retains the latest message of each type in
- * `LATEST_STATE_TYPES` below, and `wire` replays whatever is retained right
- * after the `ready`/`error` handshake, before anything else can reach the
- * port.
+ * `LATEST_STATE_TYPES` below — filtered by `isRetainable`, so a non-event
+ * cannot displace the real state it is standing in for — and `wire` replays
+ * whatever is retained right after the `ready`/`error` handshake, before
+ * anything else can reach the port.
  *
  * **The rule for `LATEST_STATE_TYPES` membership**, so the next message
  * added to the protocol has an answer: a type belongs in the set if it
@@ -123,6 +125,30 @@ const LATEST_STATE_TYPES = new Set<WorkerResponse["type"]>([
   "deadLetters",
   "taskHostUnavailable",
 ]);
+
+/** Membership in `LATEST_STATE_TYPES` says a type carries durable state;
+ * this says whether THIS particular message is the durable fact worth
+ * retaining, or a non-event that must not displace the one already cached.
+ *
+ * Only `syncOutcome` has that distinction, and it is the same one
+ * `store/worker-client.ts` already makes on the receiving side: a
+ * `"skipped"`/`"busy"` cycle attempted nothing, so it says nothing about
+ * how stale the mirror is, and a live view deliberately drops it rather
+ * than overwrite `lastSyncOutcome`. Caching it here would defeat that from
+ * the other end — during an ADR-0007 backoff every 60s tick broadcasts
+ * `"skipped"`, so the cache would hold nothing but non-events and a view
+ * connecting mid-outage would replay one, drop it as uninformative, and
+ * render "Not yet synced" while every view already running still shows the
+ * real "Stale" (issue #195: a late view must read the SAME status as its
+ * siblings — ADR-0010's whole point). Retaining the last informative
+ * outcome instead means the replay carries the last thing that actually
+ * happened, with its own `atMs`, exactly as a live broadcast would have.
+ *
+ * A session in which nothing informative has EVER been broadcast still
+ * caches nothing, which is correct: "Not yet synced" is then true. */
+function isRetainable(response: WorkerResponse): boolean {
+  return response.type !== "syncOutcome" || isInformativeSyncOutcome(response.kind);
+}
 
 export class PortRegistry {
   // Never pruned. A closed view's port is never explicitly removed from
@@ -182,7 +208,7 @@ export class PortRegistry {
    * `ready`/`error` once init resolves, not by a broadcast meant for views
    * already running. */
   broadcast(response: WorkerResponse): void {
-    if (LATEST_STATE_TYPES.has(response.type)) {
+    if (LATEST_STATE_TYPES.has(response.type) && isRetainable(response)) {
       this.lastByType.set(response.type, response);
     }
     for (const port of this.ports) {

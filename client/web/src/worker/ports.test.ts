@@ -181,6 +181,87 @@ describe("PortRegistry", () => {
       expect(second.postMessage).toHaveBeenCalledWith({ type: "queueDepth", depth: 5 });
       expect(second.postMessage).toHaveBeenCalledWith({ type: "deadLetters", entries: [] });
     });
+
+    // The defect this closes: during an ADR-0007 backoff every 60s tick
+    // broadcasts `"skipped"`. Caching those replaced the real failure in the
+    // replay cache, so a view opened mid-outage replayed a `"skipped"`,
+    // dropped it as uninformative (`store/worker-client.ts`), and rendered
+    // "Not yet synced" while every view already running still read "Stale" —
+    // the opposite of ADR-0010's one-status-per-origin.
+    it("keeps the last informative outcome cached when a backed-off cycle reports skipped", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      registry.connect(fakePort());
+
+      const failure: WorkerResponse = {
+        type: "syncOutcome",
+        kind: "pull_failed",
+        retryAfterMs: 30_000,
+        activeItemCount: 0,
+        wasFullSweep: false,
+        deadLettered: 0,
+        atMs: 5_000,
+      };
+      const skipped: WorkerResponse = {
+        type: "syncOutcome",
+        kind: "skipped",
+        retryAfterMs: 30_000,
+        activeItemCount: 0,
+        wasFullSweep: false,
+        deadLettered: 0,
+        atMs: 65_000,
+      };
+      registry.broadcast(failure);
+      registry.broadcast(skipped);
+
+      const late = fakePort();
+      registry.connect(late);
+
+      expect(late.postMessage).toHaveBeenCalledWith(failure);
+      expect(late.postMessage).not.toHaveBeenCalledWith(skipped);
+    });
+
+    it("caches nothing when only non-attempts have been broadcast — never-synced is then the truth", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      registry.connect(fakePort());
+
+      registry.broadcast({
+        type: "syncOutcome",
+        kind: "busy",
+        retryAfterMs: null,
+        activeItemCount: 0,
+        wasFullSweep: false,
+        deadLettered: 0,
+        atMs: 5_000,
+      });
+
+      const late = fakePort();
+      registry.connect(late);
+
+      expect(late.postMessage).toHaveBeenCalledTimes(1);
+      expect(late.postMessage).toHaveBeenCalledWith({ type: "ready", apiVersion: 1 });
+    });
+
+    it("still broadcasts a skipped outcome live — only the replay cache skips it", () => {
+      const registry = new PortRegistry();
+      registry.activate(vi.fn().mockResolvedValue(undefined), () => 1);
+      const live = fakePort();
+      registry.connect(live);
+
+      const skipped: WorkerResponse = {
+        type: "syncOutcome",
+        kind: "skipped",
+        retryAfterMs: 30_000,
+        activeItemCount: 0,
+        wasFullSweep: false,
+        deadLettered: 0,
+        atMs: 65_000,
+      };
+      registry.broadcast(skipped);
+
+      expect(live.postMessage).toHaveBeenCalledWith(skipped);
+    });
   });
 
   describe("before the core has finished initializing", () => {
