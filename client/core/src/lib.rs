@@ -458,6 +458,67 @@ where
             .collect()
     }
 
+    /// The items [`Core::frontier`] excludes because they carry an open
+    /// relation blocker (ADR-0009 `blocked_by`), each paired with the
+    /// blockers still open — S10's "relation-blocked items … marked and
+    /// the reason visible" (issue #108), so a short frontier can be
+    /// explained rather than merely being short.
+    ///
+    /// Distinct from [`Stage::Blocked`]: that stage means an *external*
+    /// wait (`CONTEXT.md`), never a relation to another item, and — like
+    /// [`Core::frontier`] — this query only ever considers `Ready`/
+    /// `InProgress` items. A blocker counts while it is not `Stage::Done`;
+    /// the owned schema's six-stage vocabulary has no separate "canceled"
+    /// (unlike the S1/Linear mirror's `crate::task::Mirror::open_blockers`,
+    /// which also treats `Canceled` as shut). An id this mirror has never
+    /// seen, or one that has gone absent, does not block — [`SyncMirror::item`]
+    /// already filters to live records only, so such an id is silently
+    /// excluded from the blockers list precisely like [`Core::frontier`]'s
+    /// own filter treats it.
+    ///
+    /// Sorted by item id — a stable order for a query with no `priority`/
+    /// `deadline` ranking opinion of its own; ordering the *entries* is a
+    /// display concern the caller applies the same way it orders the
+    /// frontier.
+    pub fn blocked(&self) -> Vec<(Item, Vec<Item>)> {
+        let mirror = self.cycle.mirror();
+        let mut result: Vec<(Item, Vec<Item>)> = self
+            .overlaid_items()
+            .into_values()
+            .filter(|item| matches!(item.stage, Stage::Ready | Stage::InProgress))
+            .filter_map(|item| {
+                let blockers: Vec<Item> = mirror
+                    .blockers_of(&item.id)
+                    .filter_map(|blocker_id| mirror.item(blocker_id))
+                    .filter(|blocker| blocker.stage != Stage::Done)
+                    .cloned()
+                    .collect();
+                if blockers.is_empty() {
+                    None
+                } else {
+                    Some((item, blockers))
+                }
+            })
+            .collect();
+        result.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+        result
+    }
+
+    /// Every live Step attached to `item_id`, position order — item
+    /// detail's checklist (issue #96, S10). Read straight from the mirror,
+    /// never overlaid: [`Core::capture`] never mints a Step, so there is no
+    /// optimistic Step to overlay.
+    pub fn steps_for(&self, item_id: &str) -> Vec<hummingbird_domain::Step> {
+        let mut steps: Vec<hummingbird_domain::Step> = self
+            .cycle
+            .mirror()
+            .steps_for_item(item_id)
+            .cloned()
+            .collect();
+        steps.sort_by_key(|step| step.position);
+        steps
+    }
+
     /// Captures a new item: enqueues a `POST /api/items` create (durably,
     /// via [`sync::SyncCycle::enqueue`] — never [`sync::queue::OutboundQueue::enqueue`]
     /// directly, per that module's own durability rule) and overlays an
@@ -1475,5 +1536,215 @@ mod tests {
         let inbox = core.triage_inbox();
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].title, "someday maybe");
+    }
+
+    // ------------------------------------------------- blocked() (S10, issue #108)
+
+    fn fixture_item(id: &str, stage: Stage) -> hummingbird_domain::Item {
+        hummingbird_domain::Item {
+            id: id.to_string(),
+            seq: Some(1),
+            title: format!("item {id}"),
+            description: None,
+            stage,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: None,
+            scheduled_date: None,
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+        }
+    }
+
+    fn fixture_blocked_by(item_id: &str, blocker_id: &str) -> hummingbird_domain::BlockedBy {
+        hummingbird_domain::BlockedBy {
+            item_id: item_id.to_string(),
+            blocker_id: blocker_id.to_string(),
+            version: 1,
+            removed_at: None,
+        }
+    }
+
+    /// Runs one full-sweep cycle seeding `items`/`blocked_by`, against a
+    /// fresh `Core` — the same `ScriptedRead`/`ScriptedWrite` fixture shape
+    /// the capture-confirmation tests above use, reused here so `blocked()`
+    /// and `steps_for` are exercised over a real mirror rather than a
+    /// hand-built one this file has no other legal way to construct
+    /// (`SyncCycle` exposes no `mirror_mut`).
+    async fn seeded_core(
+        items: Vec<hummingbird_domain::Item>,
+        blocked_by: Vec<hummingbird_domain::BlockedBy>,
+    ) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items,
+            blocked_by,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        let outcome = core
+            .run(&read, &write, 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    #[tokio::test]
+    async fn an_open_blocker_keeps_an_item_off_the_frontier_and_explains_why_in_blocked() {
+        let core = seeded_core(
+            vec![fixture_item("a-1", Stage::Ready), fixture_item("a-2", Stage::Ready)],
+            vec![fixture_blocked_by("a-2", "a-1")],
+        )
+        .await;
+
+        assert_eq!(
+            core.frontier().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"]
+        );
+
+        let blocked = core.blocked();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].0.id, "a-2");
+        assert_eq!(
+            blocked[0].1.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"]
+        );
+    }
+
+    /// Acceptance criterion: "Blocked-by direction is proven by a fixture:
+    /// a closed blocker does not block."
+    #[tokio::test]
+    async fn a_closed_blocker_does_not_block() {
+        let core = seeded_core(
+            vec![fixture_item("a-1", Stage::Done), fixture_item("a-2", Stage::Ready)],
+            vec![fixture_blocked_by("a-2", "a-1")],
+        )
+        .await;
+
+        assert_eq!(
+            core.frontier().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-2"],
+            "a-2's only blocker is Done, so a-2 must be on the frontier"
+        );
+        assert!(
+            core.blocked().is_empty(),
+            "no item is explained as blocked once its only blocker is Done"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_externally_blocked_stage_item_never_appears_in_blocked_either() {
+        // Stage::Blocked means an external wait (CONTEXT.md) — a different
+        // fact from a relation blocker, and `blocked()` must not conflate
+        // the two: it only considers Ready/InProgress, same as `frontier()`.
+        let core = seeded_core(vec![fixture_item("a-1", Stage::Blocked)], vec![]).await;
+
+        assert!(core.frontier().is_empty());
+        assert!(core.blocked().is_empty());
+    }
+
+    /// Acceptance criterion: "Absent items never appear." An archived
+    /// (soft-deleted) blocker must stop blocking, exactly like a Done one —
+    /// and an archived item must never itself appear on the frontier or in
+    /// the blocked explanation.
+    #[tokio::test]
+    async fn an_absent_item_never_appears_in_the_frontier_or_blocked() {
+        let mut core = seeded_core(
+            vec![fixture_item("a-1", Stage::Ready), fixture_item("a-2", Stage::Ready)],
+            vec![fixture_blocked_by("a-2", "a-1")],
+        )
+        .await;
+        assert_eq!(core.blocked().len(), 1, "a-2 starts out blocked by a-1");
+
+        // A full sweep that omits a-1 demotes it to absent.
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            items: vec![fixture_item("a-2", Stage::Ready)],
+            blocked_by: vec![fixture_blocked_by("a-2", "a-1")],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 3_000, Trigger::User, true, 0.0).await;
+
+        assert!(
+            core.frontier().iter().all(|item| item.id != "a-1"),
+            "an absent item must never appear in the frontier"
+        );
+        assert_eq!(
+            core.frontier().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-2"],
+            "a-1 going absent must clear it as a-2's blocker, same as it going Done"
+        );
+        assert!(
+            core.blocked().is_empty(),
+            "an absent blocker no longer explains anything as blocked"
+        );
+    }
+
+    // ------------------------------------------------- steps_for (S10, #96)
+
+    #[tokio::test]
+    async fn steps_for_an_item_come_back_in_position_order() {
+        fn fixture_step(id: &str, item_id: &str, position: i64) -> hummingbird_domain::Step {
+            hummingbird_domain::Step {
+                id: id.to_string(),
+                item_id: item_id.to_string(),
+                body: format!("step {id}"),
+                done: false,
+                position,
+                deleted_at: None,
+                version: 1,
+            }
+        }
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("a-1", Stage::Ready)],
+            steps: vec![
+                fixture_step("s-2", "a-1", 2),
+                fixture_step("s-1", "a-1", 1),
+                fixture_step("other", "a-2", 1),
+            ],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 0.0).await;
+
+        let steps = core.steps_for("a-1");
+        assert_eq!(
+            steps.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            vec!["s-1", "s-2"],
+            "steps come back in position order, not insertion order"
+        );
+        assert_eq!(
+            core.steps_for("a-2")
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["other"]
+        );
+        assert!(core.steps_for("nonexistent").is_empty());
     }
 }

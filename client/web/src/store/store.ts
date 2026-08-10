@@ -4,11 +4,13 @@
 // only writer.
 
 import type {
+  BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CurrentNextEventDTO,
   DeadLetterEntryDTO,
   PollOutcomeName,
   RenderableCurrentNextKind,
+  StepDTO,
   TaskItemDTO,
   TaskRunOutcomeKind,
 } from "./protocol";
@@ -61,6 +63,14 @@ export interface TaskCaptureResult {
 export interface TaskState {
   frontier: TaskItemDTO[];
   triageInbox: TaskItemDTO[];
+  /** Relation-blocked items with the reason visible — S10's frontier list
+   * (issue #108). Populated by `getBlocked`, same "last full answer wins"
+   * contract as `frontier`. */
+  blocked: BlockedFrontierEntryDTO[];
+  /** Item detail's checklist (issue #96, S10), keyed by item id — only ever
+   * grows entries a view actually asked about via `getSteps`, the same
+   * "only what was asked for" shape `pending` already uses. */
+  stepsByItem: Record<string, StepDTO[]>;
   /** Keyed by item id — only ever grows entries this view actually asked
    * about via `isPending`, never a full mirror of every pending item. */
   pending: Record<string, boolean>;
@@ -131,6 +141,8 @@ const initialCalendarState: CalendarState = {
 const initialTaskState: TaskState = {
   frontier: [],
   triageInbox: [],
+  blocked: [],
+  stepsByItem: {},
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
@@ -183,6 +195,11 @@ export function createCoreStore() {
     setTaskState({ pending: { ...state.task.pending, [itemId]: pending } });
   }
 
+  // Same idea for `stepsByItem` (item detail, issue #96/S10).
+  function setTaskSteps(itemId: string, steps: StepDTO[]): void {
+    setTaskState({ stepsByItem: { ...state.task.stepsByItem, [itemId]: steps } });
+  }
+
   // A stable reference: this closure is created once, when the store is
   // created, and never reallocated per call. useSyncExternalStore relies on
   // that stability to avoid resubscribing every render.
@@ -193,7 +210,15 @@ export function createCoreStore() {
     };
   }
 
-  return { getSnapshot, setState, setCalendarState, setTaskState, setTaskPending, subscribe };
+  return {
+    getSnapshot,
+    setState,
+    setCalendarState,
+    setTaskState,
+    setTaskPending,
+    setTaskSteps,
+    subscribe,
+  };
 }
 
 // The one module-level singleton the app renders from.

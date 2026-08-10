@@ -111,6 +111,28 @@ export type TaskStageName =
   | "blocked"
   | "done";
 
+/** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
+ * checklist (issue #96, S10) — read-only from this binding; ticking one is
+ * S11's concern. */
+export interface StepDTO {
+  id: string;
+  itemId: string;
+  body: string;
+  done: boolean;
+  position: number;
+  deletedAt: number | null;
+  version: number;
+}
+
+/** One [`TaskHostCore::blocked`] entry: an item and the open blockers
+ * excluding it from the frontier — S10's "relation-blocked … the reason
+ * visible" (issue #108). */
+export interface BlockedFrontierEntryDTO {
+  item: TaskItemDTO;
+  blockedBy: TaskItemDTO[];
+}
+
 /** One `items` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Item`, camelCased. */
 export interface TaskItemDTO {
@@ -201,6 +223,10 @@ export type TaskWorkerRequest =
   | { type: "capture"; seed: string; title: string; stage: TaskStageName; nowMs: number }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
+  /** Relation-blocked items with the reason visible — S10 (issue #108). */
+  | { type: "getBlocked" }
+  /** One item's Steps — item detail (issue #96, S10). */
+  | { type: "getSteps"; itemId: string }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -256,6 +282,8 @@ export type TaskWorkerResponse =
     }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
+  | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }
+  | { type: "steps"; itemId: string; steps: StepDTO[] }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
   | {
       type: "syncOutcome";

@@ -66,6 +66,31 @@ pub struct ItemListResponse {
     pub items: Vec<Item>,
 }
 
+/// One [`TaskHostCore::blocked`] entry: an item and the open blockers
+/// [`Core::blocked`] paired it with — S10's "relation-blocked … the reason
+/// visible" (issue #108).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BlockedEntryDTO {
+    pub item: Item,
+    pub blocked_by: Vec<Item>,
+}
+
+/// The wrapper around [`TaskHostCore::blocked`]'s answer. Same `"busy"`
+/// contract as [`ItemListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BlockedListResponse {
+    pub kind: &'static str,
+    pub entries: Vec<BlockedEntryDTO>,
+}
+
+/// The wrapper around [`TaskHostCore::steps`]'s answer — item detail's
+/// checklist (issue #96, S10). Same `"busy"` contract as [`ItemListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct StepListResponse {
+    pub kind: &'static str,
+    pub steps: Vec<hummingbird_domain::Step>,
+}
+
 /// The wrapper around [`TaskHostCore::is_pending`]'s answer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct IsPendingResponse {
@@ -303,6 +328,27 @@ impl TaskHostCore {
         }
     }
 
+    /// Relation-blocked items with the reason visible, per [`Core::blocked`].
+    pub fn blocked(&self) -> BlockedListResponse {
+        BlockedListResponse {
+            kind: "ok",
+            entries: self
+                .core
+                .blocked()
+                .into_iter()
+                .map(|(item, blocked_by)| BlockedEntryDTO { item, blocked_by })
+                .collect(),
+        }
+    }
+
+    /// One item's Steps, per [`Core::steps_for`] — item detail (issue #96).
+    pub fn steps(&self, item_id: &str) -> StepListResponse {
+        StepListResponse {
+            kind: "ok",
+            steps: self.core.steps_for(item_id),
+        }
+    }
+
     /// Drains every [`CoreEvent`] since the last drain, mapped to this
     /// host's JSON shape.
     pub fn take_events(&mut self) -> Vec<TaskEventDTO> {
@@ -466,6 +512,18 @@ mod tests {
 
         assert_eq!(host.frontier().items.len(), 0);
         assert_eq!(host.triage_inbox().items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_host_reports_no_blocked_items_and_no_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-blocked-1");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        assert_eq!(host.blocked(), BlockedListResponse { kind: "ok", entries: Vec::new() });
+        assert_eq!(host.steps("some-id"), StepListResponse { kind: "ok", steps: Vec::new() });
     }
 
     #[tokio::test]
@@ -898,6 +956,30 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&response).unwrap(),
             r#"{"kind":"ok","items":[]}"#
+        );
+    }
+
+    #[test]
+    fn blocked_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = BlockedListResponse {
+            kind: "ok",
+            entries: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","entries":[]}"#
+        );
+    }
+
+    #[test]
+    fn step_list_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = StepListResponse {
+            kind: "ok",
+            steps: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","steps":[]}"#
         );
     }
 

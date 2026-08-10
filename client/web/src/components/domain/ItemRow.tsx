@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CSSProperties, HTMLAttributes } from "react";
 import { Icon } from "../core/Icon";
+import { priorityLabel } from "../../screens/priority";
 import { StageBadge } from "./StageBadge";
 import type { Stage } from "./StageBadge";
 
@@ -15,10 +16,21 @@ export interface ItemRowProps extends Omit<HTMLAttributes<HTMLDivElement>, "styl
   scheduled?: string;
   /** Size label: quick · normal · deep. */
   size?: string;
+  /** The owned schema's raw `items.priority` wire value (0..4, ADR-0009) —
+   * rendered by its label (`priorityLabel`), never the raw number, which is
+   * inverted and holed (issue #108). Omitted entirely at "No priority"
+   * (0), the same "nothing to say" contract every other optional meta chip
+   * on this row already follows. */
+  priority?: number;
   /** Count or key of the actions this one is blocked by. */
   blockedBy?: string;
   /** Microtask progress, e.g. "2/5". */
   steps?: string;
+  /** Set once an unconfirmed capture/mutation is overlaid on this item
+   * (`TaskState.pending`, `Core::is_pending`) — a pending item must be
+   * marked as such (issue #108) rather than rendered indistinguishably
+   * from confirmed server truth. */
+  pending?: boolean;
   selected?: boolean;
   style?: CSSProperties;
 }
@@ -28,7 +40,7 @@ const URGENCY: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "va
 // the stored enum is not what a reader wants hovering a coloured dot.
 const URGENCY_LABEL: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "Calm", soon: "Due soon", now: "Due now", overdue: "Overdue" };
 
-export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, blockedBy, steps, selected = false, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
+export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, priority, blockedBy, steps, pending = false, selected = false, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
   const [hover, setHover] = useState(false);
   // No onClick, no affordance: a row that does nothing must not take focus,
   // announce itself as a button, or claim a pointer.
@@ -60,7 +72,13 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
       }} {...rest}>
       <span title={URGENCY_LABEL[urgency] || URGENCY_LABEL.calm} style={{ width: 6, height: 6, borderRadius: "50%", flex: "0 0 auto", background: URGENCY[urgency] || URGENCY.calm }} />
       <span style={{ flex: 1, minWidth: 0, font: "var(--type-body)", color: stage === "done" ? "var(--text-muted)" : "var(--text-primary)",
-        textDecoration: stage === "done" ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+        textDecoration: stage === "done" ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        opacity: pending ? 0.7 : 1 }}>{title}</span>
+      {pending ? (
+        <span title="Not yet confirmed by the server" style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-muted)" }}>
+          <Icon name="loader-circle" size={13} />Pending
+        </span>
+      ) : null}
       {steps ? (
         <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)", color: "var(--text-muted)" }}>
           <Icon name="list-checks" size={13} />{steps}
@@ -72,6 +90,9 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
         </span>
       ) : null}
       {size ? <span style={{ font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-muted)" }}>{size}</span> : null}
+      {priority !== undefined && priority !== 0 ? (
+        <span style={{ font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-brand)" }}>{priorityLabel(priority)}</span>
+      ) : null}
       {scheduled ? (
         <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)", color: "var(--text-muted)" }}>
           <Icon name="calendar" size={13} />{scheduled}

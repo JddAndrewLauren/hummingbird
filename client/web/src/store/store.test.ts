@@ -15,6 +15,8 @@ const initialCalendar: CalendarState = {
 const initialTask: TaskState = {
   frontier: [],
   triageInbox: [],
+  blocked: [],
+  stepsByItem: {},
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,

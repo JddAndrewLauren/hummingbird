@@ -18,9 +18,10 @@ mod task_host;
 
 pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
 pub use task_host::{
-    CaptureResponse, DeadLetterEntryDTO, DeadLetterFieldDTO, DeadLettersResponse,
-    IsPendingResponse, ItemListResponse, MirrorSnapshotResponse, QueueDepthResponse, RunResponse,
-    TaskEventDTO, TaskHostCore,
+    BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
+    DeadLetterFieldDTO, DeadLettersResponse, IsPendingResponse, ItemListResponse,
+    MirrorSnapshotResponse, QueueDepthResponse, RunResponse, StepListResponse, TaskEventDTO,
+    TaskHostCore,
 };
 
 use wasm_bindgen::prelude::*;
@@ -363,6 +364,8 @@ mod wasm_bindings {
     /// await, but must still answer *something* if a concurrent async call
     /// happens to be mid-flight; see `TaskHost::frontier`).
     const BUSY_ITEM_LIST: &str = r#"{"kind":"busy","items":[]}"#;
+    const BUSY_BLOCKED_LIST: &str = r#"{"kind":"busy","entries":[]}"#;
+    const BUSY_STEP_LIST: &str = r#"{"kind":"busy","steps":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
@@ -439,6 +442,27 @@ mod wasm_bindings {
                 Some(host) => serde_json::to_string(&host.triage_inbox())
                     .expect("ItemListResponse serializes"),
                 None => BUSY_ITEM_LIST.to_string(),
+            }
+        }
+
+        /// Relation-blocked items with the reason visible, as JSON:
+        /// `{"kind": "ok"|"busy", "entries": [{"item": Item, "blocked_by": [Item]}]}`.
+        pub fn blocked(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.blocked()).expect("BlockedListResponse serializes")
+                }
+                None => BUSY_BLOCKED_LIST.to_string(),
+            }
+        }
+
+        /// One item's Steps, as JSON: `{"kind": "ok"|"busy", "steps": [Step]}`.
+        pub fn steps(&self, item_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.steps(&item_id)).expect("StepListResponse serializes")
+                }
+                None => BUSY_STEP_LIST.to_string(),
             }
         }
 

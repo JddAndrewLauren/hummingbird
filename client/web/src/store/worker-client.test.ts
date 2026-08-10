@@ -13,10 +13,12 @@ import {
   requestCalendarList,
   requestCurrentNext,
   requestDeadLetters,
+  requestBlocked,
   requestFrontier,
   requestIsPending,
   requestMirrorSnapshot,
   requestQueueDepth,
+  requestSteps,
   requestTriageInbox,
   runTaskSync,
   setCalendarIdsOnWorker,
@@ -39,6 +41,8 @@ const initialCalendar: CalendarState = {
 const initialTask: TaskState = {
   frontier: [],
   triageInbox: [],
+  blocked: [],
+  stepsByItem: {},
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
@@ -265,6 +269,67 @@ describe("attachWorkerClient", () => {
     worker.onmessage?.({ data: { type: "triageInbox", items: [] } } as MessageEvent);
 
     expect(store.getSnapshot().task.triageInbox).toEqual([]);
+  });
+
+  it("writes the blocked entries on a blocked message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const item = {
+      id: "item-1",
+      seq: null,
+      title: "buy milk",
+      description: null,
+      stage: "ready" as const,
+      size: null,
+      energy: null,
+      context: null,
+      priority: 0,
+      projectId: null,
+      projectPos: null,
+      deadline: null,
+      scheduledDate: null,
+      source: null,
+      sourceKey: null,
+      sourceUrl: null,
+      archivedAt: null,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 0,
+    };
+    worker.onmessage?.({
+      data: { type: "blocked", entries: [{ item, blockedBy: [item] }] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.blocked).toEqual([{ item, blockedBy: [item] }]);
+    // Untouched sibling field.
+    expect(store.getSnapshot().task.frontier).toEqual([]);
+  });
+
+  it("writes the steps for the requested item on a steps message, keyed by item id", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const step = {
+      id: "step-1",
+      itemId: "item-1",
+      body: "do the thing",
+      done: false,
+      position: 1,
+      deletedAt: null,
+      version: 0,
+    };
+    worker.onmessage?.({
+      data: { type: "steps", itemId: "item-1", steps: [step] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.stepsByItem).toEqual({ "item-1": [step] });
+
+    worker.onmessage?.({ data: { type: "steps", itemId: "item-2", steps: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.stepsByItem).toEqual({ "item-1": [step], "item-2": [] });
   });
 
   it("merges one item's pending state on an isPendingResult message, leaving others alone", () => {
@@ -654,6 +719,18 @@ describe("the task send helpers (#105/S7)", () => {
       type: "isPending",
       itemId: "item-1",
     });
+  });
+
+  it("requestBlocked posts a getBlocked request", () => {
+    const worker = fakeWorker();
+    requestBlocked(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
+  });
+
+  it("requestSteps posts a getSteps request carrying the item id", () => {
+    const worker = fakeWorker();
+    requestSteps(worker, "item-1");
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getSteps", itemId: "item-1" });
   });
 
   it("runTaskSync posts a runSync request", () => {

@@ -9,6 +9,8 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
+    blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
+    steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
     isPending: vi.fn().mockReturnValue('{"kind":"ok","pending":false}'),
     takeEvents: vi.fn().mockReturnValue("[]"),
     runSync: vi.fn().mockResolvedValue(
@@ -169,6 +171,68 @@ describe("handleTaskRequest", () => {
       triageInbox: vi.fn().mockReturnValue('{"kind":"busy","items":[]}'),
     });
     expect(await run({ type: "getTriageInbox" }, host)).toEqual([]);
+  });
+
+  it("getBlocked maps every raw entry to its camelCase DTO", async () => {
+    const host = fakeHost({
+      blocked: vi.fn().mockReturnValue(
+        JSON.stringify({ kind: "ok", entries: [{ item: rawItem, blocked_by: [rawItem] }] }),
+      ),
+    });
+    const posted = await run({ type: "getBlocked" }, host);
+
+    expect(posted).toEqual([
+      { type: "blocked", entries: [{ item: dtoItem, blockedBy: [dtoItem] }] },
+    ]);
+  });
+
+  it('getBlocked posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      blocked: vi.fn().mockReturnValue('{"kind":"busy","entries":[]}'),
+    });
+    expect(await run({ type: "getBlocked" }, host)).toEqual([]);
+  });
+
+  it("getSteps maps every raw step to its camelCase DTO, alongside the requested item id", async () => {
+    const rawStep = {
+      id: "step-1",
+      item_id: "item-1",
+      body: "do the thing",
+      done: false,
+      position: 1,
+      deleted_at: null,
+      version: 0,
+    };
+    const host = fakeHost({
+      steps: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", steps: [rawStep] })),
+    });
+    const posted = await run({ type: "getSteps", itemId: "item-1" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "steps",
+        itemId: "item-1",
+        steps: [
+          {
+            id: "step-1",
+            itemId: "item-1",
+            body: "do the thing",
+            done: false,
+            position: 1,
+            deletedAt: null,
+            version: 0,
+          },
+        ],
+      },
+    ]);
+    expect(host.steps).toHaveBeenCalledWith("item-1");
+  });
+
+  it('getSteps posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      steps: vi.fn().mockReturnValue('{"kind":"busy","steps":[]}'),
+    });
+    expect(await run({ type: "getSteps", itemId: "item-1" }, host)).toEqual([]);
   });
 
   it("isPending posts the item id alongside the answer", async () => {
