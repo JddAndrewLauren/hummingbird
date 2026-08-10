@@ -283,14 +283,29 @@ mod wasm_bindings {
     use super::task_host::TaskHostCore;
 
     /// Whatever a synchronous setter had to defer because [`TaskShared`]'s
-    /// host was checked out — mutually exclusive, since only the most
-    /// recent request matters: whichever of push/rehydrate/clear landed
-    /// *last* while checked out is what [`TaskShared::check_in`] applies,
-    /// matching what would have happened had the host not been busy.
+    /// host was checked out. NOT simple last-wins: `Push` and `Clear` always
+    /// supersede whatever is pending, but a queued `Rehydrate` must never
+    /// supersede a queued `Push` (round-2 review of #196's PR #202).
+    ///
+    /// A same-target-object simulation makes the reason concrete. "As if not
+    /// busy" — the host applies each call the instant it arrives — Push then
+    /// Rehydrate resumes: `push_api_key` sets the key, clears `held`, and
+    /// drops the pending prompt; `rehydrate_api_key` merely re-sets the same
+    /// key afterwards, leaving the resume intact. Under plain last-wins,
+    /// only the queued `Rehydrate` would apply at check-in, and
+    /// `rehydrate_api_key` never touches `held` — so the credential would
+    /// stay held with no pending prompt to explain why, reachable in
+    /// practice through `serial-queue.ts`'s abandon-on-timeout
+    /// (`TASK_REQUEST_TIMEOUT_MS`) racing a 401 re-submit against a
+    /// still-running cycle. Dropping the queued `Rehydrate` in favour of the
+    /// `Push` is safe: `check_in`'s `Push` already sets the (newer, or
+    /// identical) key the `Rehydrate` would have re-set.
     enum PendingApiKeyOp {
         Push(String),
         /// Issue #196 (shape 2): the rehydration counterpart to `Push` —
-        /// see [`TaskShared::rehydrate_api_key`].
+        /// see [`TaskShared::rehydrate_api_key`]. Deliberately the only
+        /// variant that does NOT unconditionally supersede whatever is
+        /// already queued — see this enum's own doc.
         Rehydrate(String),
         Clear,
     }
@@ -338,7 +353,9 @@ mod wasm_bindings {
         /// Pushes immediately if the host is present, or queues for the next
         /// [`TaskShared::check_in`] if it is currently checked out — never
         /// silently drops the key either way. A queued push supersedes any
-        /// other queued op: this is the more recent request.
+        /// other queued op unconditionally, including a queued rehydration —
+        /// see [`PendingApiKeyOp`]'s doc for why that is the correct, not
+        /// merely convenient, choice.
         fn push_api_key(&self, api_key: String) {
             match self.host.borrow_mut().as_mut() {
                 Some(host) => host.push_api_key(api_key),
@@ -348,18 +365,28 @@ mod wasm_bindings {
 
         /// Issue #196 (shape 2): the rehydration counterpart to
         /// [`TaskShared::push_api_key`] — applies immediately if the host is
-        /// present, or queues otherwise, same as a push, but never resumes a
-        /// hold either way. See [`TaskHostCore::rehydrate_api_key`].
+        /// present, or queues otherwise, but never resumes a hold either
+        /// way. Deliberately does NOT overwrite an already-queued `Push`:
+        /// see [`PendingApiKeyOp`]'s doc for the failure this avoids — a
+        /// queued resume silently downgraded to a non-resuming rehydration
+        /// would leave the credential held with no prompt to explain why.
+        /// See [`TaskHostCore::rehydrate_api_key`].
         fn rehydrate_api_key(&self, api_key: String) {
             match self.host.borrow_mut().as_mut() {
                 Some(host) => host.rehydrate_api_key(api_key),
-                None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Rehydrate(api_key)),
+                None => {
+                    let mut pending = self.pending_op.borrow_mut();
+                    if !matches!(*pending, Some(PendingApiKeyOp::Push(_))) {
+                        *pending = Some(PendingApiKeyOp::Rehydrate(api_key));
+                    }
+                }
             }
         }
 
         /// "Forget token" (#106/S8): clears immediately if the host is
         /// present, or queues for the next [`TaskShared::check_in`]
-        /// otherwise. A queued clear supersedes any other queued op.
+        /// otherwise. A queued clear supersedes any other queued op
+        /// unconditionally, same as a queued push.
         fn clear_api_key(&self) {
             match self.host.borrow_mut().as_mut() {
                 Some(host) => host.clear_api_key(),
