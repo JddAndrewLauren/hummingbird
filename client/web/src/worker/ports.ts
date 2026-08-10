@@ -10,6 +10,13 @@ export interface PortLike {
   start(): void;
 }
 
+type Enqueue = (request: CalendarWorkerRequest) => Promise<void>;
+
+type State =
+  | { kind: "pending" }
+  | { kind: "ready"; enqueue: Enqueue; coreApiVersion: () => number }
+  | { kind: "failed"; message: string };
+
 /** ADR-0010: one core in a `SharedWorker`, N connecting views. Every tab and
  * the installed PWA window connects a `MessagePort`; the registry is what
  * turns "one core" into "every view sees the same thing" — it keeps the
@@ -22,31 +29,89 @@ export interface PortLike {
  * view, but a second view connecting after the core is already running
  * would never see a handshake that already happened. Posting it per
  * connecting port keeps the push-only, unprompted shape (see protocol.ts)
- * while covering every view, not just the first. */
+ * while covering every view, not just the first.
+ *
+ * **The registry is built to exist before the core does.** `core.worker.ts`
+ * loads the wasm module with a dynamic `import()` so `self.onconnect` can be
+ * wired synchronously, before that import resolves — the fix for PR #167
+ * round-1 review blocker 1: `connect` has no platform buffering, so the
+ * connect event from the very view that starts the SharedWorker is dropped
+ * if `onconnect` is not already assigned when the worker's event loop
+ * starts. That means `connect` can be called before the wasm core, its
+ * `CalendarHost`, and the request queue exist. A port that arrives during
+ * that window is queued (`pending`) rather than wired or dropped, and gets
+ * its handshake retroactively — `ready` if `activate` resolves the race,
+ * `error` if `activateError` does (the other half of blocker 1/2: a CSP
+ * rejecting wasm compilation must reach every view as `{type: "error"}`
+ * instead of hanging it on "Loading core…" forever, which is what a
+ * dedicated Worker's `onerror` gave for free and a SharedWorker does not —
+ * see main.tsx). Once resolved either way, the registry never reverts: a
+ * wasm import does not retry mid-session. */
 export class PortRegistry {
+  // Never pruned. A closed view's port is never explicitly removed from
+  // this set — `postMessage` to a disconnected `MessagePort` is a silent
+  // no-op per spec, and the browser tears down the whole SharedWorker
+  // global scope (this registry included) once the last port disconnects,
+  // so the accumulation is bounded by the core's own lifetime, not
+  // unbounded. Flagged (PR #167 round-1 review, non-blocking finding 3) as
+  // worth revisiting once #107 broadcasts sync status on every cycle
+  // instead of only on demand — a long-lived core with a drift of closed
+  // tabs would then pay a growing, if still harmless, per-cycle fan-out.
   private readonly ports = new Set<PortLike>();
+  private readonly pending: PortLike[] = [];
+  private state: State = { kind: "pending" };
 
-  constructor(
-    private readonly enqueue: (request: CalendarWorkerRequest) => Promise<void>,
-    private readonly coreApiVersion: () => number,
-  ) {}
-
-  /** Wires a newly connecting port: routes its incoming requests through the
-   * shared one-at-a-time queue, starts it, adds it to the broadcast set, and
-   * announces readiness to it alone. */
+  /** Wires a newly connecting port. While the core is still initializing,
+   * the port is queued instead — never dropped, never wired twice. */
   connect(port: PortLike): void {
-    port.onmessage = (event) => {
-      void this.enqueue(event.data);
-    };
-    port.start();
-    this.ports.add(port);
-    announceReady((response) => port.postMessage(response), this.coreApiVersion);
+    if (this.state.kind === "pending") {
+      this.pending.push(port);
+      return;
+    }
+    this.wire(port, this.state);
   }
 
-  /** Posts one published event to every connected view. */
+  /** The core finished initializing: every port already queued, and every
+   * port connecting from here on, gets wired and announced ready. */
+  activate(enqueue: Enqueue, coreApiVersion: () => number): void {
+    const state: State = { kind: "ready", enqueue, coreApiVersion };
+    this.state = state;
+    for (const port of this.pending.splice(0)) {
+      this.wire(port, state);
+    }
+  }
+
+  /** The core failed to initialize. Every port already queued, and every
+   * port connecting from here on, gets `{type: "error"}` instead of a
+   * handshake that will never come. */
+  activateError(message: string): void {
+    this.state = { kind: "failed", message };
+    for (const port of this.pending.splice(0)) {
+      port.postMessage({ type: "error", message });
+    }
+  }
+
+  /** Posts one published event to every wired view. A port still queued in
+   * `pending` has not been wired yet — it is caught up by its own
+   * `ready`/`error` once init resolves, not by a broadcast meant for views
+   * already running. */
   broadcast(response: WorkerResponse): void {
     for (const port of this.ports) {
       port.postMessage(response);
     }
+  }
+
+  private wire(port: PortLike, state: Exclude<State, { kind: "pending" }>): void {
+    if (state.kind === "failed") {
+      port.postMessage({ type: "error", message: state.message });
+      return;
+    }
+    const { enqueue, coreApiVersion } = state;
+    port.onmessage = (event) => {
+      void enqueue(event.data);
+    };
+    port.start();
+    this.ports.add(port);
+    announceReady((response) => port.postMessage(response), coreApiVersion);
   }
 }

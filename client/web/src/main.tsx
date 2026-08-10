@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { coreStore } from "./store/store";
+import { watchForReadyTimeout } from "./store/ready-timeout";
 import { attachWorkerClient } from "./store/worker-client";
 import { applyInitialTheme } from "./theme/useTheme";
 import "./styles.css";
@@ -18,18 +19,30 @@ const sharedWorker = new SharedWorker(new URL("./worker/core.worker.ts", import.
 const worker = sharedWorker.port;
 attachWorkerClient(worker, coreStore);
 
-// The worker's wasm import is top-level, so a module-eval failure (e.g. the
-// CSP rejecting WebAssembly compilation) never reaches attachWorkerClient's
-// message handler -- it fires here instead. Without this, the UI would sit
-// on "Loading core…" forever instead of showing the error branch App.tsx
-// already implements. `onerror` lives on the `SharedWorker` object itself,
-// not the port.
+// `sharedWorker.onerror` is NOT the CSP/wasm-failure catch-all a dedicated
+// Worker's `onerror` was. Per spec, a SharedWorker's `error` event covers
+// only its script's initial *fetch* failing; an uncaught error during the
+// script's own evaluation (a CSP rejecting WebAssembly compilation is
+// exactly this) is reported to the worker's own global scope, never here
+// (PR #167 round-1 review, blocker 2). The real fallback for that case is
+// worker-side: `core.worker.ts` wraps its wasm init in a try/catch and, on
+// failure, `PortRegistry.activateError` posts a real `{type: "error"}`
+// message to this port, which `attachWorkerClient` already routes to the
+// store above. `watchForReadyTimeout` below is the last-resort backstop for
+// anything that reaches neither path. This handler is kept for what
+// `onerror` genuinely still catches — the initial script fetch failing.
 sharedWorker.onerror = (event) => {
   coreStore.setState({
     status: "error",
     error: event.message || "worker failed to load",
   });
 };
+
+// The last-resort backstop for blocker 2 above: if nothing — neither a
+// `ready`, an `{type: "error"}` message, nor `sharedWorker.onerror` — is
+// ever heard from, this moves the UI off "Loading core…" instead of
+// leaving it stuck forever.
+watchForReadyTimeout(coreStore, 10_000);
 
 const root = document.getElementById("root");
 if (!root) {
