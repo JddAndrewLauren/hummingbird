@@ -49,7 +49,7 @@ Core fields, present on **every** event from **every** source, always:
 
 | Field | Type | Note |
 | --- | --- | --- |
-| `source` | string | frozen namespace: `gmail/v1`, `city-waste/v1`, `home-assistant/v1` |
+| `source` | string | frozen namespace: `gmail/v1`, `photo-site/v1`, `home-assistant/v1` |
 | `source_key` | string | identity within the source |
 | `occurred_at` | timestamp | |
 | `title` | string | what the notification shows |
@@ -186,7 +186,8 @@ Value types are declared per key, **not fixed to numeric**. The flagship
 scenario — a holiday sliding trash pickup Monday → Tuesday — is a *date*
 change; a numeric-only constraint would have made it rule-ineligible.
 
-That scenario needs **no value condition at all**: `source eq 'city-waste/v1'`,
+That scenario needs **no value condition at all**: `source eq 'city-waste/v2'`
+*(the source's live version — `v1` is retired, [ADR-0014](0014-occurrence-identity-and-the-source-key-conventions.md))*,
 tier urgent. ADR-0009 rule 2 already places the materiality judgment in the
 source's wiring ("what counts as material is defined per source, at wiring
 time — a weekly 'next date' rolling forward on cadence is not a change"). For

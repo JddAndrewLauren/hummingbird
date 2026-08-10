@@ -261,6 +261,93 @@ fn rule_naming_an_unknown_kind_is_invalid() {
     }
 }
 
+/// **Vector: a rule naming a retired source is invalid, never silently
+/// non-firing.** `city-waste/v1` is the registry's real retired entry
+/// (ADR-0014, #189) — this is the ADR's own worked example
+/// (`source eq 'city-waste/v1'` matching nothing forever after a bump).
+#[test]
+fn rule_naming_a_retired_source_is_invalid() {
+    let r = rule(
+        "trash-slide",
+        None,
+        vec![condition("source", "eq", serde_json::json!("city-waste/v1"), false)],
+    );
+    assert_eq!(
+        validate_rule(&r),
+        vec![RuleProblem::RetiredSource {
+            source: "city-waste/v1".to_string(),
+            successor: "city-waste/v2".to_string(),
+        }]
+    );
+}
+
+/// **Vector: negating the condition does not escape the flag.** Without
+/// this, negating a dead condition would read as "always true" instead of
+/// invalid — the always-true inversion path ADR-0013 explicitly rejects.
+#[test]
+fn rule_naming_a_retired_source_is_invalid_even_negated() {
+    let r = rule(
+        "trash-slide-negated",
+        None,
+        vec![condition("source", "eq", serde_json::json!("city-waste/v1"), true)],
+    );
+    assert_eq!(
+        validate_rule(&r),
+        vec![RuleProblem::RetiredSource {
+            source: "city-waste/v1".to_string(),
+            successor: "city-waste/v2".to_string(),
+        }]
+    );
+}
+
+/// **Vector: a live source is clean.** `gmail/v1` is registered and not
+/// retired — naming it is not a problem.
+#[test]
+fn rule_naming_a_live_source_is_clean() {
+    let r = rule(
+        "live-source",
+        None,
+        vec![condition("source", "eq", serde_json::json!("gmail/v1"), false)],
+    );
+    assert_eq!(validate_rule(&r), vec![]);
+}
+
+/// Negated form of the live-source vector: still clean.
+#[test]
+fn rule_naming_a_live_source_is_clean_even_negated() {
+    let r = rule(
+        "live-source-negated",
+        None,
+        vec![condition("source", "eq", serde_json::json!("gmail/v1"), true)],
+    );
+    assert_eq!(validate_rule(&r), vec![]);
+}
+
+/// **Vector: an unregistered source is clean.** Per `sources.rs`'s module
+/// doc, `find` returning `None` means "not an alert source" —
+/// `items.source`/`context_snapshots.source` values are legitimately
+/// absent from the registry, and a rule may name them without penalty.
+#[test]
+fn rule_naming_an_unregistered_source_is_clean() {
+    let r = rule(
+        "web-source",
+        None,
+        vec![condition("source", "eq", serde_json::json!("web/v1"), false)],
+    );
+    assert_eq!(validate_rule(&r), vec![]);
+}
+
+/// Negated form of the unregistered-source vector: still clean.
+#[test]
+fn rule_naming_an_unregistered_source_is_clean_even_negated() {
+    let r = rule(
+        "web-source-negated",
+        None,
+        vec![condition("source", "eq", serde_json::json!("web/v1"), true)],
+    );
+    assert_eq!(validate_rule(&r), vec![]);
+}
+
 /// `email` golden vector: `subject contains 'urgent'`, case-insensitive,
 /// against a subject that carries the substring in different casing.
 #[test]

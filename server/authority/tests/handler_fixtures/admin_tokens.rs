@@ -88,12 +88,12 @@ fn mint_ingest_token_requires_and_stores_a_source() {
         &sql,
         "POST",
         "/api/admin/tokens",
-        Some(r#"{"id": "t-hc", "name": "healthchecks", "scope": "ingest", "source": "hc"}"#),
+        Some(r#"{"id": "t-hc", "name": "healthchecks", "scope": "ingest", "source": "healthchecks/v1"}"#),
         0,
     );
     assert_eq!(resp.status, 201, "{}", resp.body);
     let minted: MintedToken = body_as(&resp);
-    assert_eq!(minted.source, Some("hc".to_string()));
+    assert_eq!(minted.source, Some("healthchecks/v1".to_string()));
 
     let row_source = sql
         .exec("SELECT source FROM tokens WHERE id = 't-hc'", &[])
@@ -102,7 +102,50 @@ fn mint_ingest_token_requires_and_stores_a_source() {
         .unwrap()
         .as_text()
         .map(str::to_string);
-    assert_eq!(row_source, Some("hc".to_string()));
+    assert_eq!(row_source, Some("healthchecks/v1".to_string()));
+}
+
+/// #189, Part 2: an ingest token bound to a source the ADR-0014 registry
+/// has never heard of is rejected at mint, not silently 403ing on every
+/// alert it ever posts.
+#[test]
+fn mint_rejects_an_ingest_token_bound_to_an_unregistered_source() {
+    let sql = RusqliteSql::new();
+    let resp = req_admin(
+        &sql,
+        "POST",
+        "/api/admin/tokens",
+        Some(r#"{"id": "t-typo", "name": "n", "scope": "ingest", "source": "healthchecks"}"#),
+        0,
+    );
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    assert!(resp.body.contains("healthchecks"), "{}", resp.body);
+    assert!(
+        sql.exec("SELECT id FROM tokens WHERE id = 't-typo'", &[]).unwrap().is_empty(),
+        "no row landed"
+    );
+}
+
+/// Nothing new should be minted under a retired source either
+/// (ADR-0014: "Old rows under a retired source age out through their
+/// normal lifecycle; nothing new should be minted under it").
+/// `city-waste/v1` is the registry's real retired entry.
+#[test]
+fn mint_rejects_an_ingest_token_bound_to_a_retired_source() {
+    let sql = RusqliteSql::new();
+    let resp = req_admin(
+        &sql,
+        "POST",
+        "/api/admin/tokens",
+        Some(r#"{"id": "t-retired", "name": "n", "scope": "ingest", "source": "city-waste/v1"}"#),
+        0,
+    );
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    assert!(resp.body.contains("city-waste/v1"), "{}", resp.body);
+    assert!(
+        sql.exec("SELECT id FROM tokens WHERE id = 't-retired'", &[]).unwrap().is_empty(),
+        "no row landed"
+    );
 }
 
 #[test]
@@ -169,7 +212,7 @@ fn token_writes_never_bump_the_workspace_counter() {
         &sql,
         "POST",
         "/api/admin/tokens",
-        Some(r#"{"id": "t-1", "name": "n", "scope": "ingest", "source": "hc"}"#),
+        Some(r#"{"id": "t-1", "name": "n", "scope": "ingest", "source": "healthchecks/v1"}"#),
         0,
     );
     assert_eq!(minted.status, 201, "{}", minted.body);

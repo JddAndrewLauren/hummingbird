@@ -190,7 +190,7 @@ the single predicate all three call; no consumer re-spells it in SQL.
 | `m365-mail/v1` | event | `internetMessageId` |
 | `google-calendar/v1` | event | `<eventId or recurringEventId>:<originalStartTime>` |
 | `m365-calendar/v1` | event | `<seriesMasterId or id>:<originalStart>` |
-| `city-waste/v1` | event | `<stream>:<scheduled-date>` — `trash:2026-08-17` |
+| `city-waste/v1` ***(retired → `v2`, #189)*** | event | `<stream>:<scheduled-date>` — `trash:2026-08-17` |
 | `item-threshold/v1` | **state** | `item:<id>` |
 | `healthchecks/v1`, `home-assistant/v1` | **state** | the check or entity id, authored in the webhook body |
 | `github/v1`, `photo-site/v1`, `gmail-alert/v1` | event | the source's own event or message id |
@@ -295,6 +295,18 @@ field it names is flagged invalid in the UI at load, never silently
 non-firing."* A retired source is flagged identically, and the registry
 above is what knows a source is retired. That is its second job.
 
+*Instantiated by [#189](https://github.com/JddAndrewLauren/hummingbird/pull/204):
+`city-waste/v1` above is not a hypothetical any more — the registry retires
+it to `v2` for real, both to give the retired-source flag (`RuleProblem`'s
+`RetiredSource` variant, wired into `validate_rule`) and the
+`POST /api/admin/tokens` mint gate ("nothing new should be minted under a
+retired source," below) something real to exercise end-to-end. Safe to do
+for real: nothing is deployed yet and the city-waste poller (#135-137) is
+unbuilt, so no adapter has ever minted a row under it, and `city_waste_v1_key`
+stays defined with its frozen vector intact — retirement is a namespace-string
+change, never a recipe change. No `city-waste/v2` entry exists in the
+registry yet; that lands with the poller that actually produces `/v2` rows.*
+
 This requires **every `source` string to carry a version suffix from the
 start**, uniformly. ADR-0009's examples were inconsistent (`'healthchecks'`,
 `'home-assistant'`, but `'gmail-alert/v1'`), and a bare name has no escape
@@ -326,7 +338,7 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | Source | `expires_at` |
 | --- | --- |
 | `google-calendar/v1`, `m365-calendar/v1` | the instance's end time |
-| `city-waste/v1` | end of the affected collection date |
+| `city-waste/v1` ***(retired → `v2`)*** | end of the affected collection date |
 | `gmail/v1`, `m365-mail/v1` | none, ever |
 | `github/v1`, `photo-site/v1` | none unless the event carries one |
 

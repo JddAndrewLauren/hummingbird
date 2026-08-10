@@ -3,8 +3,8 @@
 //! verdict is a severity-on-alert plus a tier-on-delivery, nothing else.
 
 use hummingbird_domain::{
-    core_field_type, deadline_sort_key, find_kind, is_valid_deadline, parse_duration, shift,
-    Condition, DurationUnit, Event, EventKindEntry, FieldType, FieldValue, Rule, Tier,
+    core_field_type, deadline_sort_key, find_kind, find_source, is_valid_deadline, parse_duration,
+    shift, Condition, DurationUnit, Event, EventKindEntry, FieldType, FieldValue, Rule, Tier,
 };
 
 use crate::operator::Operator;
@@ -28,6 +28,13 @@ pub enum RuleProblem {
     /// string). Reported here rather than left to evaluate silently to
     /// `false` — which, negated, would make the condition **always true**.
     MalformedValue { field: String, reason: String },
+    /// `field` is `source`, `op` is `eq`, and the named literal resolves
+    /// (via the ADR-0014 registry) to a source that has been retired in
+    /// favor of `successor` — a condition naming it can never fire again.
+    /// Distinct from an **unregistered** source, which is not a problem
+    /// (`items.source`/`context_snapshots.source` values legitimately
+    /// never appear in this registry at all).
+    RetiredSource { source: String, successor: String },
 }
 
 /// One rule's outcome against one event.
@@ -78,6 +85,8 @@ pub fn validate_rule(rule: &Rule) -> Vec<RuleProblem> {
                             field: condition.field.clone(),
                             reason,
                         });
+                    } else {
+                        problems.extend(retired_source_problems(&condition.field, op, &condition.value));
                     }
                 }
                 _ => problems.push(RuleProblem::IllegalOperator {
@@ -139,6 +148,33 @@ fn malformed_value_reason(field_type: FieldType, op: Operator, value: &serde_jso
             .all(|l| l.as_bool().is_none())
             .then(|| "value must be a bool or a list of bools".to_string()),
     }
+}
+
+/// ADR-0014's second registry job: a rule naming a source that has since
+/// been retired by a namespace bump matches nothing ever again — flagged
+/// here rather than left silently non-firing (ADR-0013/0014). Only
+/// `source` conditions using `eq` are checked: `contains` does substring
+/// matching and cannot name one source unambiguously, and an
+/// **unregistered** source is never itself a problem (`find_source`
+/// returning `None` means "not an alert source," not "unknown" — see
+/// `hummingbird_domain::sources`'s module doc). Independent of `negate`:
+/// a dead condition must not read as "always true" once inverted.
+fn retired_source_problems(field: &str, op: Operator, value: &serde_json::Value) -> Vec<RuleProblem> {
+    if field != "source" || op != Operator::Eq {
+        return Vec::new();
+    }
+    normalize_condition_values(value)
+        .iter()
+        .filter_map(|literal| literal.as_str())
+        .filter_map(|source| {
+            let entry = find_source(source)?;
+            let successor = entry.retired_as?;
+            Some(RuleProblem::RetiredSource {
+                source: source.to_string(),
+                successor: successor.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Evaluates one rule against one event. `now` must be a valid
