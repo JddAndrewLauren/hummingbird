@@ -9,6 +9,7 @@
 mod codec;
 mod delivery;
 mod entropy;
+mod fcm;
 mod handlers;
 mod schema;
 mod sql;
@@ -16,6 +17,11 @@ mod sweep;
 
 pub use delivery::{deliver, DeliveryOutcome, PushNotification, SuppressReason};
 pub use entropy::Entropy;
+pub use fcm::{
+    assemble_assertion, assertion_signing_input, classify_response, message_json,
+    parse_access_token, pkcs8_der_from_pem, revoke_dead_target, send_url, token_request_body,
+    AccessToken, FcmConfigError, SendVerdict, ServiceAccount, FCM_SCOPE, OAUTH_TOKEN_URL,
+};
 pub use handlers::{handle, ApiRequest, ApiResponse, HandleContext};
 pub use schema::{init_schema, SCHEMA_VERSION};
 pub use sql::{Row, Sql, SqlError, SqlValue};

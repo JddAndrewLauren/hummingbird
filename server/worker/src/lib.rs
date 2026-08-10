@@ -9,15 +9,21 @@
 //! behaviour lives in `hummingbird-authority`, fixture-tested there.
 
 #[cfg(target_arch = "wasm32")]
+mod fcm;
+
+#[cfg(target_arch = "wasm32")]
 mod shim {
     use std::cell::Cell;
     use std::collections::HashMap;
 
     use hummingbird_authority::{
-        handle, init_schema, ApiRequest, Entropy, HandleContext, Row, Sql, SqlError, SqlValue,
+        handle, init_schema, revoke_dead_target, ApiRequest, Entropy, HandleContext, Row, SendVerdict,
+        Sql, SqlError, SqlValue,
     };
     use hummingbird_domain::ApiError;
     use worker::*;
+
+    use crate::fcm::FcmSender;
 
     /// [`Entropy`] over the platform CSPRNG (`crypto.getRandomValues` via
     /// `getrandom`'s js backend) — token minting's randomness source.
@@ -89,6 +95,10 @@ mod shim {
         /// `ADMIN_SECRET` Worker secret; absent (e.g. unset in `wrangler
         /// dev`) means the admin routes fail closed with a 401.
         admin_secret: Option<String>,
+        /// The FCM send leg (#219), over the `FCM_SERVICE_ACCOUNT` secret;
+        /// absent means no push can send, and `alarm()` logs each
+        /// transition it had to drop.
+        fcm: Option<FcmSender>,
     }
 
     impl DurableObject for Authority {
@@ -97,6 +107,7 @@ mod shim {
                 state,
                 schema_ready: Cell::new(false),
                 admin_secret: env.secret("ADMIN_SECRET").map(|s| s.to_string()).ok(),
+                fcm: FcmSender::from_env(&env),
             }
         }
 
@@ -181,17 +192,63 @@ mod shim {
 
             let matches = tick_result.map_err(|e| Error::RustError(e.message))?;
             for tick_match in matches {
-                if let hummingbird_authority::DeliveryOutcome::Logged { targets, notification, .. } =
-                    tick_match.outcome
-                {
-                    for _target in targets {
-                        // The real FCM HTTP send (async, per target) is not
-                        // part of this seam's job — `sweep_tick` only
-                        // decides and logs (see `deliver`'s module doc);
-                        // sending is future wiring (push_targets' own FCM
-                        // client) with `notification` and `_target`
-                        // already resolved and waiting here.
-                        let _ = &notification;
+                let hummingbird_authority::DeliveryOutcome::Logged {
+                    delivery_id,
+                    targets,
+                    notification,
+                } = tick_match.outcome
+                else {
+                    continue;
+                };
+
+                let Some(sender) = self.fcm.as_ref() else {
+                    // The credential is missing, and the claim row is
+                    // already committed — this transition will never ring.
+                    // Loud, and per delivery, because it is silent data
+                    // loss on the operator's highest-trust channel.
+                    console_error!(
+                        "delivery {delivery_id} (alert {}) is logged but unsendable: \
+                         FCM_SERVICE_ACCOUNT is not configured",
+                        notification.alert_id,
+                    );
+                    continue;
+                };
+
+                for target in targets {
+                    // Sequential rather than concurrent: an alarm sends to
+                    // a handful of the operator's own devices, and one
+                    // shared access token minted on the first send is
+                    // reused by the rest.
+                    match sender.send(&notification, &target, now_ms).await {
+                        SendVerdict::Delivered => {}
+                        SendVerdict::TokenDead => {
+                            console_warn!(
+                                "push target {} ({}) is UNREGISTERED with FCM; revoking",
+                                target.id,
+                                target.name,
+                            );
+                            // A revoke that itself fails must not abandon
+                            // the remaining targets: the next dead-token
+                            // response revokes it again (the write is
+                            // idempotent), and the alternative is a live
+                            // device never hearing this alert.
+                            if let Err(e) = revoke_dead_target(&sql, &target.id, now_ms) {
+                                console_error!(
+                                    "could not revoke dead push target {}: {}",
+                                    target.id,
+                                    e.message,
+                                );
+                            }
+                        }
+                        SendVerdict::Failed { detail } => {
+                            // Never retried: `deliver` committed the claim
+                            // before this send, so a retry would risk the
+                            // double-ring ADR-0012 rules out.
+                            console_error!(
+                                "delivery {delivery_id} to push target {} failed, not retried: {detail}",
+                                target.id,
+                            );
+                        }
                     }
                 }
             }
