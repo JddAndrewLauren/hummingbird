@@ -24,6 +24,7 @@ describe("toCoreTrigger", () => {
     expect(toCoreTrigger("open")).toBe("user");
     expect(toCoreTrigger("reconnect")).toBe("user");
     expect(toCoreTrigger("focus")).toBe("user");
+    expect(toCoreTrigger("manual")).toBe("user");
   });
 
   it('maps the unattended timer to "timer"', () => {
@@ -55,6 +56,17 @@ describe("createSyncCadence", () => {
     createSyncCadence(run).onFocus();
     expect(run).toHaveBeenCalledTimes(1);
     expect(run).toHaveBeenCalledWith("focus");
+  });
+
+  // Issue #194: manual refresh is ADR-0007's "same cycle, user-invoked; no
+  // special path" — its own trigger spelling so `core.worker.ts` can tell it
+  // apart from a focus/open/reconnect cycle if it ever needs to, same as
+  // #193 did for "open".
+  it("onManual fires exactly one cycle with the \"manual\" trigger", () => {
+    const run = vi.fn();
+    createSyncCadence(run).onManual();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("manual");
   });
 
   it("two onFocus calls fire exactly two cycles — no de-dupe hides a real repeated gesture", () => {

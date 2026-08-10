@@ -21,6 +21,9 @@ type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceR
 export interface DispatchCadence {
   onOpen: () => void;
   onFocus: () => void;
+  /** Issue #194: the header's manual refresh, routed through the shared
+   * cadence like every other trigger. */
+  onManual: () => void;
 }
 
 /** The slice of `visibility-tracker.ts` this routing needs, generic in the
@@ -52,8 +55,10 @@ export function createDispatch<Port>(deps: DispatchDeps<Port>): Dispatch<Port> {
     if (isSyncCadenceRequest(request)) {
       if (request.type === "setViewVisibility") {
         deps.visibility.setHidden(port, request.hidden);
-      } else {
+      } else if (request.type === "syncFocusTrigger") {
         deps.cadence.onFocus();
+      } else {
+        deps.cadence.onManual();
       }
       return Promise.resolve();
     }

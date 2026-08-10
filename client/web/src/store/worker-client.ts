@@ -278,16 +278,6 @@ export function requestIsPending(worker: WorkerLike, itemId: string): void {
   worker.postMessage({ type: "isPending", itemId });
 }
 
-export function runTaskSync(
-  worker: WorkerLike,
-  nowMs: number,
-  trigger: "user" | "timer",
-  forceFullSweep: boolean,
-  jitterUnit: number,
-): void {
-  worker.postMessage({ type: "runSync", nowMs, trigger, forceFullSweep, jitterUnit });
-}
-
 // -- S9's sync-status reads --------------------------------------------
 
 export function requestQueueDepth(worker: WorkerLike): void {
@@ -321,4 +311,15 @@ export function reportViewVisibility(worker: WorkerLike, hidden: boolean): void 
  * for why that is fine. */
 export function triggerSyncFocus(worker: WorkerLike): void {
   worker.postMessage({ type: "syncFocusTrigger" });
+}
+
+/** Issue #194: the header refresh control's task leg — sent on a manual
+ * refresh press and routed through the shared cadence in `core.worker.ts`,
+ * exactly like `triggerSyncFocus` above, rather than posted straight to the
+ * task queue as a bespoke `runSync` (the old `runTaskSync`, deleted: it had
+ * no production caller). This is what keeps a manual press ADR-0007's "same
+ * cycle, user-invoked; no special path", and lets any future in-flight
+ * coalescing (#184) cover it too. */
+export function triggerSyncManual(worker: WorkerLike): void {
+  worker.postMessage({ type: "manualSyncTrigger" });
 }

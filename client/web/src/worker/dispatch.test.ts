@@ -10,7 +10,7 @@ import { createDispatch } from "./dispatch";
 // review of PR #185). Extracted, it is ordinary decision logic.
 
 function harness(options: { taskEnqueue?: (request: TaskWorkerRequest) => Promise<void> } = {}) {
-  const cadence = { onOpen: vi.fn(), onFocus: vi.fn() };
+  const cadence = { onOpen: vi.fn(), onFocus: vi.fn(), onManual: vi.fn() };
   const visibility = { setHidden: vi.fn() };
   const taskEnqueue = vi.fn(options.taskEnqueue ?? (() => Promise.resolve()));
   const calendarEnqueue = vi.fn(() => Promise.resolve());
@@ -43,6 +43,20 @@ describe("createDispatch routing", () => {
     await h.dispatch({ type: "syncFocusTrigger" }, "tab-1");
 
     expect(h.cadence.onFocus).toHaveBeenCalledTimes(1);
+    expect(h.taskEnqueue).not.toHaveBeenCalled();
+    expect(h.calendarEnqueue).not.toHaveBeenCalled();
+  });
+
+  // Issue #194: the header's manual refresh routes through the shared
+  // cadence — never a bespoke `runSync` posted straight to the task queue —
+  // so it stays ADR-0007's "same cycle, user-invoked; no special path".
+  it("intercepts manualSyncTrigger as a cadence manual refresh, reaching neither wasm queue", async () => {
+    const h = harness();
+
+    await h.dispatch({ type: "manualSyncTrigger" }, "tab-1");
+
+    expect(h.cadence.onManual).toHaveBeenCalledTimes(1);
+    expect(h.cadence.onFocus).not.toHaveBeenCalled();
     expect(h.taskEnqueue).not.toHaveBeenCalled();
     expect(h.calendarEnqueue).not.toHaveBeenCalled();
   });

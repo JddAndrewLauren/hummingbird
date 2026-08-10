@@ -8,6 +8,7 @@ import {
   requestQueueDepth,
   setMirrorSnapshotHandler,
   triggerSyncFocus,
+  triggerSyncManual,
   type WorkerLike,
 } from "../store/worker-client";
 
@@ -30,6 +31,11 @@ export interface SyncWiring {
   /** Requests the current mirror and, once it answers, writes it to disk.
    * S9's mirror download button. */
   handleDownloadMirror: () => void;
+  /** Issue #194: the header refresh control's task leg — fires the ADR-0007
+   * cycle through the shared cadence (`triggerSyncManual`), same as every
+   * other trigger. `App.tsx` calls this only when a task token is present
+   * (`shell/refresh-gate.ts`). */
+  handleManualSync: () => void;
 }
 
 /** How often the sync-status "as of" label re-samples the clock — same
@@ -130,5 +136,12 @@ export function useSyncWiring(
     requestMirrorSnapshot(worker);
   }
 
-  return { nowMs, handleDownloadMirror };
+  // Issue #194: the manual refresh's task leg. `triggerSyncManual` routes
+  // through the shared cadence in `core.worker.ts`, not a bespoke `runSync`
+  // straight to the task queue — see that function's own doc.
+  function handleManualSync() {
+    triggerSyncManual(worker);
+  }
+
+  return { nowMs, handleDownloadMirror, handleManualSync };
 }
