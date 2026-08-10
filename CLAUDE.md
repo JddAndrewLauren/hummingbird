@@ -27,9 +27,11 @@ client migrates onto them at S2/S3), `authority` (pure handler logic over a
 sync `Sql` seam — plus an `Entropy` seam for token minting — fixture-tested
 with rusqlite), `rules-engine` (fire-time evaluation of the ADR-0013
 condition vocabulary, over the Event kind registry that lives in `domain`;
-its `validate_rule` exists but is not yet wired into `POST /api/rules` —
-`authority` does not depend on the crate — so a malformed condition is
-currently caught only at fire time), and `worker` (the thin `workers-rs`
+its `validate_rule` is wired into both `POST /api/rules` and
+`PATCH /api/rules/:id` — a malformed condition is rejected at save with a
+400, not just caught later at fire time; an unrecognized `event_kind` is
+the one `RuleProblem` deliberately left unrejected there, since it is an
+open registry key, not a closed vocabulary), and `worker` (the thin `workers-rs`
 shim — one Worker, one SQLite-backed Durable Object). It carries the full
 amended ADR-0009 schema plus the notification lane's
 `rules`/`push_targets`/`deliveries` (14 tables,
