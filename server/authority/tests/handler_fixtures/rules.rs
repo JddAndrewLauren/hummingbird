@@ -384,6 +384,79 @@ fn patch_validates_untouched_conditions_against_a_new_event_kind() {
     assert_eq!(meta_version(&sql), 1, "no write happened beyond the create");
 }
 
+/// #221: the compare-typed no-op #166 gave the other seven patch handlers,
+/// applied to `rules`. A PATCH that sets every settable field to the value
+/// already stored performs no write at all.
+#[test]
+fn patch_setting_every_field_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "n", "event_kind": "email",
+            "conditions": [{"field": "labels", "op": "contains", "value": "x", "negate": false}],
+            "severity": "high", "tier": "urgent", "enabled": true}"#,
+        0,
+    ); // version 1
+    let resp = patch_rule(
+        &sql,
+        "r-1",
+        r#"{"expected_version": 1, "name": "n", "event_kind": "email",
+            "conditions": [{"field": "labels", "op": "contains", "value": "x", "negate": false}],
+            "severity": "high", "tier": "urgent", "enabled": true}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged = rule(&resp);
+    assert_eq!(unchanged.version, 1, "no version bump for a value-identical patch");
+    assert_eq!(unchanged.updated_at, 0, "no updated_at restamp either");
+    assert_eq!(meta_version(&sql), 1);
+}
+
+/// A patch mixing a changed field with unchanged ones writes only the
+/// changed column, and still bumps once.
+#[test]
+fn patch_mixing_changed_and_unchanged_fields_writes_only_the_changed_ones() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "n", "conditions": [], "severity": "high", "tier": "urgent", "enabled": true}"#,
+        0,
+    ); // version 1
+    let resp = patch_rule(
+        &sql,
+        "r-1",
+        r#"{"expected_version": 1, "name": "n", "severity": "high", "enabled": false}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let updated = rule(&resp);
+    assert_eq!(updated.name, "n", "the unchanged field is left as-is");
+    assert!(!updated.enabled, "the changed field is written");
+    assert_eq!(updated.version, 2, "a mixed patch still bumps");
+    assert_eq!(updated.updated_at, 2000);
+    assert_eq!(meta_version(&sql), 2);
+}
+
+// The integer/real hazard (#166) — `enabled` is the one integer column
+// this handler patches. See items.rs for the full explanation: a Durable
+// Object cursor may surface an INTEGER column as a whole f64, so a naive
+// raw-SqlValue comparison must never be used for the no-op check.
+#[test]
+fn patch_value_identical_enabled_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "n", "conditions": [], "severity": "high", "tier": "urgent", "enabled": false}"#,
+        0,
+    ); // version 1, enabled: false
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch_rule(&wrapped, "r-1", r#"{"expected_version": 1, "enabled": false}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged = rule(&resp);
+    assert_eq!(unchanged.version, 1, "enabled: Integer(0) vs Real(0.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 1);
+}
+
 #[test]
 fn patch_with_only_expected_version_is_a_noop() {
     let sql = RusqliteSql::new();
