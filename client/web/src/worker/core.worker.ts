@@ -86,7 +86,8 @@ import { createSyncCadence, SYNC_TIMER_MS, toCoreTrigger } from "../shell/sync-c
 import { createRequestQueue } from "./calendar-worker";
 import { createDispatch } from "./dispatch";
 import { PortRegistry, type PortLike } from "./ports";
-import { createTaskRequestQueue, type TaskHostLike } from "./task-worker";
+import { createSyncRunGuard } from "./sync-run-guard";
+import { createTaskRequestQueue, TASK_REQUEST_TIMEOUT_MS, type TaskHostLike } from "./task-worker";
 import { VisibilityTracker } from "./visibility-tracker";
 
 // The IndexedDB database name (ADR-0003: the host contributes exactly one
@@ -210,21 +211,30 @@ void (async () => {
     // new core, and the core it connects to has already swept" (ADR-0010)).
     // `Math.random()`/`Date.now()` are the caller-injected clock/jitter
     // `Core::run` requires (this global scope is a real JS runtime, unlike
-    // bare wasm32, so both are safe to call directly here). No in-flight
-    // guard yet: a cycle still running when `task-worker.ts`'s 30s abandon
-    // fires can overlap the next 60s tick's `runSync` and surface as
-    // `"busy"` — tracked as issue #184.
-    const cadence = createSyncCadence((trigger) => {
-      void taskEnqueueReady.then((enqueue) =>
-        enqueue({
-          type: "runSync",
-          nowMs: Date.now(),
-          trigger: toCoreTrigger(trigger),
-          forceFullSweep: trigger === "open",
-          jitterUnit: Math.random(),
-        }),
-      );
-    });
+    // bare wasm32, so both are safe to call directly here). Issue #184's
+    // in-flight guard (`sync-run-guard.ts`) wraps this `run` sink rather
+    // than living inside `sync-cadence.ts` itself: at most one `runSync` is
+    // in flight at a time, any triggers arriving meanwhile coalesce into
+    // exactly one follow-up run that starts the instant the in-flight one
+    // resolves, and the guard's own release bound — reused from
+    // `TASK_REQUEST_TIMEOUT_MS`, the same bound the underlying task queue
+    // already uses to abandon a hung request — keeps a `runSync` whose
+    // promise never settles from wedging the cadence forever.
+    const cadence = createSyncCadence(
+      createSyncRunGuard(
+        (trigger) =>
+          taskEnqueueReady.then((enqueue) =>
+            enqueue({
+              type: "runSync",
+              nowMs: Date.now(),
+              trigger: toCoreTrigger(trigger),
+              forceFullSweep: trigger === "open",
+              jitterUnit: Math.random(),
+            }),
+          ),
+        { releaseMs: TASK_REQUEST_TIMEOUT_MS },
+      ),
+    );
 
     // The three-way routing (shared cadence / task queue / calendar queue)
     // and ADR-0007's "on app open" trigger both live in `dispatch.ts` as
