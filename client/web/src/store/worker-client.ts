@@ -129,6 +129,13 @@ export function attachWorkerClient(
           // "Completing offline shows Done immediately").
           requestFrontier(worker);
           requestBlocked(worker);
+          // PR #207 round-2 fix: the acted-on item's `pending` must render
+          // from a LIVE source. The task worker's serial queue guarantees
+          // the act was applied before this reads, so `TaskState.pending`
+          // gets `true` now and `false` once a sync cycle drains the queue
+          // (`useItemDetailWiring` re-reads it per cycle) — which is what
+          // re-enables a blocked item's Start/Cancel row.
+          requestIsPending(worker, message.itemId);
         }
         return;
       case "frontier":

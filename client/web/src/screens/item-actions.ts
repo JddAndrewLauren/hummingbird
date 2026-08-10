@@ -49,6 +49,50 @@ export function availableActions(stage: TaskStageName): readonly TaskActionName[
  * anywhere, and the next successful sync cycle's `frontier`/`blocked`
  * refresh (or dead-letter revert) is what makes the real value authoritative
  * again. */
+/** The round-2 PR #207 fix: what `pending` the detail panel's FALLBACK item
+ * (an item that has left both `frontier` and `blocked` — a just-blocked or
+ * just-cancelled one) should render, and whether the screen is still waiting
+ * for the act's own `isPending` read to land.
+ *
+ * Why: `applyItemAction`'s `pending: true` is a frozen snapshot. A
+ * `Stage::Blocked` item never re-enters either live query, so nothing ever
+ * replaced that snapshot and the Start/Cancel row rendered permanently
+ * disabled (`ItemDetailPanel`'s `disabled={item.pending}`) — functionally
+ * unreachable. The live source is `TaskState.pending[id]`, fed by
+ * `worker-client.ts`'s `isPending` re-read on every ok `actResult` and by
+ * `useItemDetailWiring`'s per-sync-cycle re-read for the open item; once the
+ * queued mutation drains, that read flips to `false` and the row enables.
+ *
+ * `awaitingConfirm` covers the one stale window: clicking a SECOND act (e.g.
+ * Start on the now-enabled blocked row) fires while `TaskState.pending[id]`
+ * still holds the previous act's drained `false`. The screen sets
+ * `awaitingConfirm` at click time, and this function refuses to let a live
+ * `false` enable the row until it has observed the new act's own `true`
+ * once — so the row can never briefly re-enable mid-mutation.
+ *
+ * Pure on purpose (reviewer note on PR #207): the repo has no component-test
+ * infrastructure, so the deciding logic lives here where a vitest node test
+ * can execute it; `NowScreen.tsx` only threads React state through it. */
+export interface FallbackPendingResolution {
+  /** What the rendered item's `pending` should be this render. */
+  pending: boolean;
+  /** The next `awaitingConfirm` state the screen should hold. */
+  awaitingConfirm: boolean;
+}
+
+export function resolveFallbackPending(
+  optimisticPending: boolean,
+  livePending: boolean | undefined,
+  awaitingConfirm: boolean,
+): FallbackPendingResolution {
+  if (awaitingConfirm) {
+    // Disabled until the fresh act is confirmed queued; a live `true`
+    // is that confirmation, after which the live value takes over.
+    return { pending: true, awaitingConfirm: livePending !== true };
+  }
+  return { pending: livePending ?? optimisticPending, awaitingConfirm: false };
+}
+
 export function applyItemAction(item: TaskItemDTO, action: TaskActionName): TaskItemDTO {
   switch (action) {
     case "start":

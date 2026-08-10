@@ -95,7 +95,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     selectedItemId,
     openItem: handleOpenItem,
     closeItem: handleCloseItemDetail,
-  } = useItemDetailWiring(worker);
+  } = useItemDetailWiring(worker, task.syncOutcomeSeq);
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
 
   // #110/S12's "always-present ... plus a global hotkey that focuses it"
