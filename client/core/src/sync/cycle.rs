@@ -171,17 +171,32 @@ pub enum CycleOutcome {
     /// cycle. The drained-so-far queue was still persisted, and backoff was
     /// recorded (`retry_after_ms` is the delay [`Backoff::record_failure`]
     /// returned).
-    Blocked { retry_after_ms: i64 },
-    /// The queue halted on a 401 (ADR-0007: "queue holds, polling holds") —
-    /// the pull was never attempted this cycle. Persisting the drained
-    /// queue up to that point still happened.
-    CredentialNeeded,
+    ///
+    /// `drain` is the whole [`DrainOutcome`], not just its dead-letter
+    /// count: the entries before the blockage did real work, and a host
+    /// badging "1 edit didn't apply" needs it whether the cycle finished or
+    /// stopped short.
+    Blocked {
+        drain: DrainOutcome,
+        retry_after_ms: i64,
+    },
+    /// A 401 — from the queue (ADR-0007: "queue holds, polling holds", so
+    /// the pull was never attempted) or from the pull itself. Persisting
+    /// the drained queue up to that point still happened, and `drain`
+    /// carries what it did; a pull-side 401 is distinguishable from a
+    /// queue-side one precisely by that field being a completed drain.
+    CredentialNeeded { drain: DrainOutcome },
     /// Persisting the queue right after drain, or the mirror right after a
-    /// successful pull, failed. The in-memory state may be ahead of what
-    /// is durable; `message` is the underlying store/serde error's
-    /// `Display`. Backoff was recorded too — a store that just failed is
-    /// exactly the kind of thing worth backing off from before retrying,
-    /// the same as a transport failure.
+    /// successful pull, failed. `message` is the underlying store/serde
+    /// error's `Display`. Backoff was recorded too — a store that just
+    /// failed is exactly the kind of thing worth backing off from before
+    /// retrying, the same as a transport failure.
+    ///
+    /// Deliberately the one variant with no `drain`: its whole meaning is
+    /// that the durability of this cycle's state is in doubt, so badging
+    /// "1 edit didn't apply" off it would be badging state that may not
+    /// have survived. A caller that needs the count should wait for the
+    /// retry that persists.
     PersistFailed {
         message: String,
         retry_after_ms: i64,
@@ -389,8 +404,10 @@ where
 
         // ADR-0007: "401 is not a failure of the cycle: queue holds,
         // polling holds" — the pull is never attempted this cycle.
-        if matches!(drain_outcome, DrainOutcome::CredentialNeeded) {
-            return CycleOutcome::CredentialNeeded;
+        if matches!(drain_outcome, DrainOutcome::CredentialNeeded { .. }) {
+            return CycleOutcome::CredentialNeeded {
+                drain: drain_outcome,
+            };
         }
 
         // ADR-0007: a retryable failure "blocks the queue and ends the
@@ -398,7 +415,10 @@ where
         // and the streak counts as a cycle-level failure for backoff.
         if matches!(drain_outcome, DrainOutcome::Blocked { .. }) {
             let retry_after_ms = self.backoff.record_failure(now_ms, jitter_unit);
-            return CycleOutcome::Blocked { retry_after_ms };
+            return CycleOutcome::Blocked {
+                drain: drain_outcome,
+                retry_after_ms,
+            };
         }
 
         let due_for_full_sweep = force_full_sweep
@@ -456,7 +476,9 @@ where
                     was_full_sweep,
                 }
             }
-            Err(error) if error.is_unauthorized() => CycleOutcome::CredentialNeeded,
+            Err(error) if error.is_unauthorized() => CycleOutcome::CredentialNeeded {
+                drain: drain_outcome,
+            },
             Err(_) => {
                 let retry_after_ms = self.backoff.record_failure(now_ms, jitter_unit);
                 CycleOutcome::PullFailed {
@@ -507,6 +529,11 @@ mod tests {
         log: &'a CallLog,
         changes: Mutex<Option<Result<String, TransportError>>>,
         sweep: Mutex<Option<Result<String, TransportError>>>,
+        /// Every `since` cursor `fetch_changes` was called with, in order.
+        /// A `Vec` rather than an `Option` so it pins the call count as
+        /// well as the value — and because [`CallLog`] can only carry
+        /// `&'static str`, so the cursor cannot ride along in there.
+        since_calls: Mutex<Vec<i64>>,
     }
 
     impl<'a> ScriptedRead<'a> {
@@ -518,6 +545,7 @@ mod tests {
                 log,
                 changes: Mutex::new(None),
                 sweep: Mutex::new(Some(result)),
+                since_calls: Mutex::new(Vec::new()),
             }
         }
 
@@ -528,6 +556,7 @@ mod tests {
                 log,
                 changes: Mutex::new(Some(result)),
                 sweep: Mutex::new(None),
+                since_calls: Mutex::new(Vec::new()),
             }
         }
 
@@ -538,15 +567,22 @@ mod tests {
                 log,
                 changes: Mutex::new(None),
                 sweep: Mutex::new(None),
+                since_calls: Mutex::new(Vec::new()),
             }
+        }
+
+        /// The `since` cursors this fixture's delta pulls were asked for.
+        fn since_calls(&self) -> Vec<i64> {
+            self.since_calls.lock().unwrap().clone()
         }
     }
 
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     impl ChangesTransport for ScriptedRead<'_> {
-        async fn fetch_changes(&self, _access_token: &str, _since: i64) -> Result<String, TransportError> {
+        async fn fetch_changes(&self, _access_token: &str, since: i64) -> Result<String, TransportError> {
             self.log.record("delta");
+            self.since_calls.lock().unwrap().push(since);
             self.changes
                 .lock()
                 .unwrap()
@@ -713,7 +749,9 @@ mod tests {
 
         // A second cycle whose sweep fails outright — never a partial body.
         // `force_full_sweep: true` again, so this exercises the sweep path
-        // specifically (a delta failure is covered by its own test below).
+        // specifically; the delta path has its own test, named so this
+        // reference breaks under `grep` if it is ever renamed or deleted:
+        // `a_failed_delta_pull_leaves_the_previous_mirror_byte_identical_and_records_backoff`.
         let failing_read = ScriptedRead::sweep_only(&log, Err(TransportError::new("connection reset")));
         let failing_write = ScriptedWrite {
             log: &log,
@@ -929,10 +967,62 @@ mod tests {
             .run(&read, &write, "token", 1_000, Trigger::User, true, 0.0)
             .await;
 
-        assert_eq!(outcome, CycleOutcome::CredentialNeeded);
+        assert_eq!(
+            outcome,
+            CycleOutcome::CredentialNeeded {
+                drain: DrainOutcome::CredentialNeeded { dead_lettered: 0 }
+            },
+            "a queue-side 401 is the one whose own drain reports CredentialNeeded"
+        );
         assert!(
             log.calls().iter().all(|c| *c == "drain"),
             "the read side must hold too, not just the queue"
+        );
+    }
+
+    /// The read side's own 401 (`run`'s `error.is_unauthorized()` arm) had
+    /// no test at all. The queue has already drained by the time the pull
+    /// makes its call, so what distinguishes this outcome from the
+    /// queue-side 401 above is exactly its `drain` field: a *completed*
+    /// drain, not a halted one.
+    ///
+    /// Known gap this deliberately pins rather than fixes: unlike every
+    /// other pull failure, a 401 on the pull records no backoff, so a
+    /// 60-second timer re-attempts a doomed cycle every tick until a fresh
+    /// token arrives. What that wants is a credential hold (nothing is
+    /// attempted until the host supplies a new token), not an exponential
+    /// backoff — a behaviour change, and S6/#104's to make, since it is
+    /// #104 that gives the host somewhere to surface the prompt.
+    #[tokio::test]
+    async fn a_401_on_the_pull_holds_the_cycle_too_after_the_queue_already_drained() {
+        let log = CallLog::default();
+        let write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![ok(400, r#"{"error":"validation"}"#)].into()),
+        };
+        let read = ScriptedRead::sweep_only(&log, Err(TransportError::http(401, "token revoked")));
+        let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+        cycle.queue.enqueue(create_entry("m-1", "a-1"));
+
+        let outcome = cycle
+            .run(&read, &write, "token", 1_000, Trigger::User, true, 1.0)
+            .await;
+
+        assert_eq!(
+            outcome,
+            CycleOutcome::CredentialNeeded {
+                drain: DrainOutcome::Completed { dead_lettered: 1 }
+            },
+            "a pull-side 401 must still report what the drain that preceded it did"
+        );
+        assert_eq!(
+            log.calls(),
+            vec!["drain", "sweep"],
+            "the pull really was attempted — this is not the queue-side halt"
+        );
+        assert!(
+            cycle.backoff.ready(1_000),
+            "pinning the current asymmetry: a pull-side 401 records no backoff (see this test's doc comment)"
         );
     }
 
@@ -957,8 +1047,12 @@ mod tests {
             .await;
 
         match outcome {
-            CycleOutcome::Blocked { retry_after_ms } => {
-                assert!(retry_after_ms > 0, "a recorded failure must produce a positive delay")
+            CycleOutcome::Blocked {
+                drain,
+                retry_after_ms,
+            } => {
+                assert!(retry_after_ms > 0, "a recorded failure must produce a positive delay");
+                assert_eq!(drain, DrainOutcome::Blocked { dead_lettered: 0 });
             }
             other => panic!("expected Blocked, got {other:?}"),
         }
@@ -1016,6 +1110,102 @@ mod tests {
             "the steady-state pull must be the delta, not the sweep"
         );
         assert_eq!(log.calls().iter().filter(|c| **c == "sweep").count(), 1);
+        assert_eq!(
+            delta_read.since_calls(),
+            vec![1],
+            "the delta must be asked for since the mirror's own version — the seed left it at 1"
+        );
+    }
+
+    /// The delta half of "a failed pull leaves the previous mirror
+    /// byte-identical" — the sweep half is
+    /// `a_mid_pagination_failure_leaves_the_previous_mirror_byte_identical`,
+    /// whose comment used to point at a test that did not exist.
+    ///
+    /// Beyond the mirror itself, this pins the *cursor*: `mirror.version()`
+    /// is what the next delta is asked for as `since`, so an advance past a
+    /// delta that never applied would silently skip rows forever. The
+    /// drain is made non-trivial (one entry that 400s) so the outcome's
+    /// `drain` field is carrying a real fact, and `jitter_unit: 1.0` is
+    /// deliberate — with `0.0` the backoff assertion would be vacuous.
+    #[tokio::test]
+    async fn a_failed_delta_pull_leaves_the_previous_mirror_byte_identical_and_records_backoff() {
+        let log = CallLog::default();
+        let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+
+        // Seed a non-empty mirror at version 1 with one forced sweep — an
+        // empty-to-empty comparison would pass even if the guarantee broke.
+        let seed_read = ScriptedRead::sweep_only(
+            &log,
+            Ok(serde_json::to_string(&ChangesResponse {
+                version: 1,
+                projects: vec![hummingbird_domain::Project {
+                    id: "p-1".to_string(),
+                    name: "project p-1".to_string(),
+                    archived_at: None,
+                    created_at: 1,
+                    updated_at: 1,
+                    version: 1,
+                }],
+                items: vec![item_fixture("a-1", hummingbird_domain::Stage::Ready)],
+                ..ChangesResponse::empty(1)
+            })
+            .unwrap()),
+        );
+        let seed_write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        cycle
+            .run(&seed_read, &seed_write, "token", 1_000, Trigger::User, true, 0.0)
+            .await;
+        let before = cycle.mirror().clone();
+        assert!(before.item("a-1").is_some(), "sanity: the seed landed");
+        assert_eq!(before.version(), 1);
+
+        // The steady-state cycle: a delta pull that fails, over a drain
+        // that dead-letters one entry on its way through.
+        let failing_read = ScriptedRead::changes_only(&log, Err(TransportError::new("connection reset")));
+        let failing_write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![ok(400, r#"{"error":"validation"}"#)].into()),
+        };
+        cycle.queue.enqueue(create_entry("m-1", "a-1"));
+
+        let outcome = cycle
+            .run(&failing_read, &failing_write, "token", 2_000, Trigger::User, false, 1.0)
+            .await;
+
+        match outcome {
+            CycleOutcome::PullFailed {
+                drain,
+                retry_after_ms,
+            } => {
+                assert_eq!(drain, DrainOutcome::Completed { dead_lettered: 1 });
+                assert!(retry_after_ms > 0, "a failed pull must record a backoff delay");
+            }
+            other => panic!("expected PullFailed, got {other:?}"),
+        }
+        assert_eq!(
+            log.calls().iter().filter(|c| **c == "delta").count(),
+            1,
+            "the steady-state failure must be on the delta path"
+        );
+        assert_eq!(
+            log.calls().iter().filter(|c| **c == "sweep").count(),
+            1,
+            "only the seed swept — a failed delta must not fall back to a full sweep"
+        );
+        assert_eq!(
+            cycle.mirror(),
+            &before,
+            "a failed delta must leave the mirror exactly as it was, item and project content included"
+        );
+        assert_eq!(
+            cycle.mirror().version(),
+            1,
+            "the cursor must not advance past a delta that never applied"
+        );
     }
 
     /// ADR-0008: the full sweep is the backstop "on app open" — `run`'s

@@ -2,13 +2,21 @@
 //! drains what the write adapter (S3/#101) encodes.
 //!
 //! **Durable before sent.** [`OutboundQueue::enqueue`] only ever mutates the
-//! in-memory value; it is the caller's job to run it through
-//! [`crate::storage::save_snapshot`] *before* ever calling
-//! [`OutboundQueue::drain`] — that ordering, not anything inside this type,
-//! is what ADR-0003 means by "a change made offline survives a crash". This
-//! module never touches storage itself, the same separation
-//! [`super::mirror::SyncMirror`] already keeps between the read model and
-//! its persistence.
+//! in-memory value, and the ordering that makes it durable first — a
+//! `save_snapshot` *before* anything reaches [`OutboundQueue::drain`], which
+//! is what ADR-0003 means by "a change made offline survives a crash" —
+//! lives one level up, in [`super::cycle::SyncCycle`], since S5/#103.
+//! [`super::cycle::SyncCycle::enqueue`] persists a candidate queue and
+//! installs it only on success, so an entry this type never wrote is never
+//! drainable; [`super::cycle::SyncCycle::run`] persists the queue
+//! immediately after `drain` returns, whatever it did. Capture code should
+//! reach for those rather than for `enqueue`/`drain` here.
+//!
+//! This module still never touches storage itself — it implements
+//! [`crate::storage::Persistable`] and stops there, calling neither
+//! `save_snapshot` nor `load_snapshot` outside its own tests — the same
+//! separation [`super::mirror::SyncMirror`] already keeps between the read
+//! model and its persistence.
 //!
 //! **Strict FIFO, one writer.** [`OutboundQueue::drain`] attempts entries
 //! front-to-back and stops the instant one can't be resolved right now: a
@@ -199,7 +207,27 @@ pub enum DrainOutcome {
     /// `drain` call, however many entries remained — a credential event is
     /// one fact ("this queue needs a fresh token"), not one per entry it
     /// would have touched.
-    CredentialNeeded,
+    ///
+    /// It still carries `dead_lettered`, because entries *before* the
+    /// failing one may well have dead-lettered on the way: a 401 says
+    /// nothing about the work that already resolved, and the "1 edit
+    /// didn't apply" affordance (ADR-0007) needs that count whichever way
+    /// the drain ended.
+    CredentialNeeded { dead_lettered: usize },
+}
+
+impl DrainOutcome {
+    /// How many entries this drain moved to the dead-letter journal. Every
+    /// variant carries the count, so this is deliberately not an `Option`:
+    /// "the drain ended early" and "nothing dead-lettered" are different
+    /// facts and must not share a spelling.
+    pub fn dead_lettered(&self) -> usize {
+        match self {
+            DrainOutcome::Completed { dead_lettered }
+            | DrainOutcome::Blocked { dead_lettered }
+            | DrainOutcome::CredentialNeeded { dead_lettered } => *dead_lettered,
+        }
+    }
 }
 
 /// The durable FIFO outbound queue plus its dead-letter journal — one
@@ -225,9 +253,10 @@ impl OutboundQueue {
         Self::default()
     }
 
-    /// Appends one entry to the back of the queue. The caller must persist
-    /// the queue (`save_snapshot`) before this entry is ever handed to
-    /// `drain` — see the module docs.
+    /// Appends one entry to the back of the queue, in memory only. Prefer
+    /// [`super::cycle::SyncCycle::enqueue`], which pairs this with the
+    /// persist that makes the entry durable before `drain` can ever reach
+    /// it — see the module docs.
     pub fn enqueue(&mut self, entry: QueueEntry) {
         self.entries.push_back(entry);
     }
@@ -280,7 +309,7 @@ impl OutboundQueue {
                     return DrainOutcome::Blocked { dead_lettered };
                 }
                 Err(WriteError::Unauthorized) => {
-                    return DrainOutcome::CredentialNeeded;
+                    return DrainOutcome::CredentialNeeded { dead_lettered };
                 }
                 Err(WriteError::Permanent(message)) => {
                     self.dead_letter(DeadLetterReason::Permanent(message), now_ms);
@@ -569,13 +598,36 @@ mod tests {
 
         let outcome = queue.drain(&transport, "token", 1_000).await;
 
-        assert_eq!(outcome, DrainOutcome::CredentialNeeded);
+        assert_eq!(outcome, DrainOutcome::CredentialNeeded { dead_lettered: 0 });
         assert_eq!(
             transport.call_count(),
             1,
             "nothing past position 1 is ever attempted"
         );
         assert_eq!(queue.len(), 3, "the entire queue is left untouched");
+    }
+
+    /// A 401 says nothing about the work that already resolved before it.
+    /// An entry that dead-lettered at position 1 must still be counted when
+    /// position 2 halts the queue — otherwise the "1 edit didn't apply"
+    /// affordance loses the edit entirely, whatever `CycleOutcome` does one
+    /// layer up.
+    #[tokio::test]
+    async fn a_401_halt_still_reports_what_the_drain_dead_lettered_before_it() {
+        let transport = ScriptedTransport::new(vec![
+            ok(400, r#"{"error":"validation"}"#), // position 1: dead-letters
+            ok(401, ""),                          // position 2: halts
+        ]);
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(create_entry("m-1", "a-1"));
+        queue.enqueue(create_entry("m-2", "a-2"));
+
+        let outcome = queue.drain(&transport, "token", 1_000).await;
+
+        assert_eq!(outcome, DrainOutcome::CredentialNeeded { dead_lettered: 1 });
+        assert_eq!(outcome.dead_lettered(), 1);
+        assert_eq!(queue.dead_letters().len(), 1);
+        assert_eq!(queue.len(), 1, "the 401'd entry is left queued for a fresh token");
     }
 
     // --------------------------------------------------------- crash-replay
