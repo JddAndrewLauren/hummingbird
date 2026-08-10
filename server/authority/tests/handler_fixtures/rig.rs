@@ -157,6 +157,46 @@ impl Sql for RecordingSql<'_> {
     }
 }
 
+/// Coerces every `Integer` result cell to a whole `Real` — standing in for
+/// a Durable Object cursor, which (per `SqlValue::as_i64`'s own doc) may
+/// surface an INTEGER column that way. rusqlite never does this on its own
+/// (#166), so without this decorator the CI backend can't reproduce the
+/// hazard a naive `SqlValue == SqlValue` comparison would hide: `Integer(2)
+/// != Real(2.0)`, so a value-identical patch would wrongly be seen as
+/// "changed" and bump. Every fixture using this decorator only wraps the
+/// PATCH call under test — seeding and post-call assertions still go
+/// through the plain rusqlite handle, so only the read the handler's
+/// current-value comparison depends on is affected.
+pub struct RealCoercingSql<'a> {
+    pub inner: &'a dyn Sql,
+}
+
+impl<'a> RealCoercingSql<'a> {
+    pub fn new(inner: &'a dyn Sql) -> Self {
+        RealCoercingSql { inner }
+    }
+}
+
+impl Sql for RealCoercingSql<'_> {
+    fn exec(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<Row>, SqlError> {
+        let rows = self.inner.exec(sql, params)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|(col, value)| {
+                        let value = match value {
+                            SqlValue::Integer(n) => SqlValue::Real(n as f64),
+                            other => other,
+                        };
+                        (col, value)
+                    })
+                    .collect()
+            })
+            .collect())
+    }
+}
+
 // ------------------------------------------------------ request helpers
 
 /// The lowest-level request: explicit authorization header and admin

@@ -153,9 +153,13 @@ pub fn dismiss(
         return Ok(conflict(&current));
     }
 
+    // Compared typed against `current`, never a bare SQL-value `==` — see
+    // items::patch for why.
     let mut sets = Sets::new();
     if let Some(dismissed_at) = patch.dismissed_at {
-        sets.set("dismissed_at", SqlValue::from_opt_i64(dismissed_at));
+        if dismissed_at != current.dismissed_at {
+            sets.set("dismissed_at", SqlValue::from_opt_i64(dismissed_at));
+        }
     }
     if sets.is_empty() {
         return Ok(json(200, &current));

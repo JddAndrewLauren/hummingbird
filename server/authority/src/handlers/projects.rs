@@ -86,12 +86,18 @@ pub fn patch(
         return Ok(conflict(&current));
     }
 
+    // Compared typed against `current`, never a bare SQL-value `==` — see
+    // items::patch for why.
     let mut sets = Sets::new();
     if let Some(name) = &patch.name {
-        sets.set("name", SqlValue::Text(name.clone()));
+        if *name != current.name {
+            sets.set("name", SqlValue::Text(name.clone()));
+        }
     }
     if let Some(archived_at) = patch.archived_at {
-        sets.set("archived_at", SqlValue::from_opt_i64(archived_at));
+        if archived_at != current.archived_at {
+            sets.set("archived_at", SqlValue::from_opt_i64(archived_at));
+        }
     }
     if sets.is_empty() {
         return Ok(json(200, &current));
