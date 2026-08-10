@@ -11,6 +11,8 @@ import { NavRail } from "./shell/NavRail";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
+import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
+import { taskTokenUiState } from "./task/token-ui";
 import { useStore } from "./store/useStore";
 import type { WorkerLike } from "./store/worker-client";
 import { toggledPreference } from "./theme/theme";
@@ -47,6 +49,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const apiVersion = useStore((state) => state.apiVersion);
   const error = useStore((state) => state.error);
   const calendar = useStore((state) => state.calendar);
+  const task = useStore((state) => state.task);
 
   // A lazy initializer rather than a ref: reading `ref.current` during render
   // is what React's rules forbid, and this needs to be constructed exactly
@@ -65,6 +68,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     handleCalendarSelectionChange,
     handleRefreshClick,
   } = useCalendarWiring(worker, status, calendar);
+  const {
+    hasToken: hasTaskToken,
+    enteredAtMs: taskTokenEnteredAtMs,
+    handleSubmitToken: handleSubmitTaskToken,
+    handleForgetToken: handleForgetTaskToken,
+  } = useTaskTokenWiring(worker, status);
+  const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
 
   const tile = contextTileProps(calendar, nowMs);
 
@@ -126,6 +136,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onConnect={() => void handleConnectClick()}
               onSelectionChange={handleCalendarSelectionChange}
               onRefresh={handleRefreshClick}
+              taskTokenState={taskTokenState}
+              taskTokenEnteredAtMs={taskTokenEnteredAtMs}
+              onSubmitTaskToken={handleSubmitTaskToken}
+              onForgetTaskToken={() => void handleForgetTaskToken()}
             />
           )}
         </div>

@@ -4,12 +4,15 @@ import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { CalendarPicker } from "../components/domain/CalendarPicker";
+import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import type { CalendarState, CoreStatus } from "../store/store";
+import { isBlankTokenInput } from "../task/token";
+import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 
@@ -32,6 +35,46 @@ function Note({ children }: { children: ReactNode }) {
   );
 }
 
+/** The device-token entry field, shared between the first-run "unset" state
+ * and the 401 "reprompt" state — same form, different surrounding copy.
+ * Local validation only rejects a blank submission (mirroring
+ * `isBlankTokenInput`); the field clears on a successful submit so a stale
+ * value never lingers on screen once it is safely in IndexedDB. */
+function TokenEntryForm({ onSubmit }: { onSubmit: (input: string) => Promise<boolean> }) {
+  const [value, setValue] = useState("");
+  const [blocked, setBlocked] = useState(false);
+
+  async function submit() {
+    if (isBlankTokenInput(value)) {
+      setBlocked(true);
+      return;
+    }
+    setBlocked(false);
+    const ok = await onSubmit(value);
+    if (ok) {
+      setValue("");
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      <Input
+        label="Device token"
+        placeholder="hb_device_..."
+        value={value}
+        error={blocked ? "Enter a token before saving." : undefined}
+        onChange={(event) => {
+          setValue(event.target.value);
+          setBlocked(false);
+        }}
+      />
+      <Button onClick={() => void submit()} fullWidth>
+        Save token
+      </Button>
+    </div>
+  );
+}
+
 export interface SettingsScreenProps {
   demo: DemoData | null;
   status: CoreStatus;
@@ -43,6 +86,11 @@ export interface SettingsScreenProps {
   onConnect: () => void;
   onSelectionChange: (selectedCalendarIds: string[]) => void;
   onRefresh: () => void;
+  /** #106/S8's device-token surface — entry, rest, and re-prompt. */
+  taskTokenState: TaskTokenUiState;
+  taskTokenEnteredAtMs: number | null;
+  onSubmitTaskToken: (input: string) => Promise<boolean>;
+  onForgetTaskToken: () => void;
 }
 
 export function SettingsScreen({
@@ -56,6 +104,10 @@ export function SettingsScreen({
   onConnect,
   onSelectionChange,
   onRefresh,
+  taskTokenState,
+  taskTokenEnteredAtMs,
+  onSubmitTaskToken,
+  onForgetTaskToken,
 }: SettingsScreenProps) {
   const unavailableIds = unavailableSelectedIds(
     calendar.selectedCalendarIds,
@@ -198,6 +250,45 @@ export function SettingsScreen({
               <span className="hb-meta">
                 opt-in is per-device · polled every 15m in the foreground
               </span>
+            </Card>
+          </>
+        ) : null}
+
+        {status === "ready" ? (
+          <>
+            <span className="hb-meta">device token</span>
+            <Card
+              padding="var(--space-5)"
+              style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+            >
+              <p
+                style={{
+                  font: "var(--type-body-sm)",
+                  color:
+                    taskTokenState === "reprompt"
+                      ? "var(--status-warn-fg)"
+                      : "var(--text-secondary)",
+                }}
+              >
+                {taskQueueStatusCopy(taskTokenState)}
+              </p>
+              {taskTokenState === "resting" ? (
+                <>
+                  {taskTokenEnteredAtMs !== null ? (
+                    <span className="hb-meta">entered {formatEnteredAt(taskTokenEnteredAtMs)}</span>
+                  ) : null}
+                  <Button
+                    variant="secondary"
+                    iconLeft="x"
+                    onClick={onForgetTaskToken}
+                    style={{ alignSelf: "flex-start" }}
+                  >
+                    Forget token
+                  </Button>
+                </>
+              ) : (
+                <TokenEntryForm onSubmit={onSubmitTaskToken} />
+              )}
             </Card>
           </>
         ) : null}
