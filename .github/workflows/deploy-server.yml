@@ -55,6 +55,16 @@ jobs:
         with:
           toolchain: "1.97.1"
           targets: wasm32-unknown-unknown
+      # The same cache server-test.yml keeps, for the same reason and with the
+      # same settings: wrangler.toml's [build] runs `cargo install -q
+      # worker-build && worker-build --release` inside the wrangler step
+      # below, and the test job's cache lives on a different runner. Without
+      # this every deploy pays a cold `cargo install` plus a full release
+      # build of the shim.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          cache-bin: true
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
