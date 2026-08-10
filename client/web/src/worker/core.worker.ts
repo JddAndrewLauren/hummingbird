@@ -66,8 +66,11 @@
 // not a second cycle") and blows the ADR's explicit ~60 req/hr budget. This
 // module constructs exactly one `sync-cadence.ts` cadence and exactly one
 // `setInterval` for the whole origin below; `onOpen`/`onReconnect` fire
-// once each, at core activation and on this worker's own `online` event,
-// for the same reason. The one thing this global scope genuinely cannot
+// once each, for the same reason — `onReconnect` on this worker's own
+// `online` event, and `onOpen` on the first `pushTaskApiKey` any view sends
+// (`dispatch.ts`, which owns that rule: at core activation no credential is
+// known yet, which is not what `onOpen`'s contract asks for). The one thing
+// this global scope genuinely cannot
 // observe on its own is page visibility — no `document` exists here — so
 // `VisibilityTracker` aggregates each view's own `setViewVisibility` report
 // (`protocol.ts`) instead: one visible tab keeps the cycle running even
@@ -78,11 +81,11 @@
 // never incorrect" duplicate-user-gesture case the calendar wiring above
 // already accepts, not the unattended-clock defect this fix closes.
 
-import type { CalendarWorkerRequest, SyncCadenceRequest, TaskWorkerRequest } from "../store/protocol";
+import type { TaskWorkerRequest, TaskWorkerResponse } from "../store/protocol";
 import { createSyncCadence, SYNC_TIMER_MS } from "../shell/sync-cadence";
 import { createRequestQueue } from "./calendar-worker";
+import { createDispatch } from "./dispatch";
 import { PortRegistry, type PortLike } from "./ports";
-import { isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
 import { createTaskRequestQueue, type TaskHostLike } from "./task-worker";
 import { VisibilityTracker } from "./visibility-tracker";
 
@@ -127,10 +130,23 @@ type TaskEnqueue = (request: TaskWorkerRequest) => Promise<void>;
 /** A `TaskWorkerRequest` handler used only when the task host itself failed
  * to construct (a corrupt durable snapshot) — reported per request rather
  * than failing calendar activation too, since the two bindings are
- * otherwise fully independent (see the module doc). */
-function failedTaskEnqueue(message: string): TaskEnqueue {
+ * otherwise fully independent (see the module doc).
+ *
+ * Post-batch review of PR #185: this used to `console.error` and nothing
+ * else, so every view kept rendering a healthy `ready` (the calendar side's,
+ * which really is fine) while every capture, every sync and every pushed
+ * device token was dropped forever, with no retry and no user-visible
+ * signal. It now also broadcasts `taskHostUnavailable` per dropped request —
+ * per request rather than only once at construction, because a view that
+ * connects after the failure was announced would otherwise never hear about
+ * it (`PortRegistry.broadcast` reaches the views connected at the time). */
+function failedTaskEnqueue(
+  message: string,
+  broadcast: (response: TaskWorkerResponse) => void,
+): TaskEnqueue {
   return async (request) => {
     console.error("task host unavailable, dropping request", request.type, message);
+    broadcast({ type: "taskHostUnavailable", message });
   };
 }
 
@@ -149,11 +165,16 @@ function failedTaskEnqueue(message: string): TaskEnqueue {
 function createTaskEnqueueDeferred(
   createTaskHost: (namespace: string, baseUrl: string, apiKey: string) => Promise<TaskHostLike>,
 ): Promise<TaskEnqueue> {
+  const broadcast = (response: TaskWorkerResponse) => registry.broadcast(response);
   return createTaskHost(TASK_NAMESPACE, TASK_BASE_URL, "")
-    .then((taskHost) => createTaskRequestQueue(taskHost, (response) => registry.broadcast(response)))
-    .catch((taskErr: unknown) =>
-      failedTaskEnqueue(taskErr instanceof Error ? taskErr.message : String(taskErr)),
-    );
+    .then((taskHost) => createTaskRequestQueue(taskHost, broadcast))
+    .catch((taskErr: unknown) => {
+      const message = taskErr instanceof Error ? taskErr.message : String(taskErr);
+      // Announce it once immediately, for the views already connected —
+      // they may never issue another task request on their own.
+      broadcast({ type: "taskHostUnavailable", message });
+      return failedTaskEnqueue(message, broadcast);
+    });
 }
 
 void (async () => {
@@ -198,29 +219,22 @@ void (async () => {
       );
     });
 
-    const dispatch = (
-      request: CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest,
-      port: PortLike,
-    ): Promise<void> => {
-      if (isSyncCadenceRequest(request)) {
-        if (request.type === "setViewVisibility") {
-          visibility.setHidden(port, request.hidden);
-        } else {
-          cadence.onFocus();
-        }
-        return Promise.resolve();
-      }
-      return isTaskWorkerRequest(request)
-        ? taskEnqueueReady.then((enqueue) => enqueue(request))
-        : calendarEnqueue(request);
-    };
+    // The three-way routing (shared cadence / task queue / calendar queue)
+    // and ADR-0007's "on app open" trigger both live in `dispatch.ts` as
+    // pure logic a node test can execute — see that module's doc. In
+    // particular the open sweep fires on the FIRST `pushTaskApiKey`, not
+    // here at activation: `onOpen` is documented as "call once the core is
+    // ready and a task credential is known", and at activation no view has
+    // had the chance to push one yet, so firing it here made every
+    // session's first cycle a spurious `no_credential`.
+    const dispatch = createDispatch<PortLike>({
+      cadence,
+      visibility,
+      taskEnqueueReady,
+      calendarEnqueue,
+    });
 
     registry.activate(dispatch, core_api_version);
-
-    // ADR-0007: "on app open / core start" — fires exactly once, when the
-    // shared core itself activates, regardless of how many views are
-    // connected right now or connect later.
-    cadence.onOpen();
 
     // ADR-0007: "on reconnect" — the worker's own connectivity signal.
     // `online`/`offline` fire on whatever global scope implements

@@ -47,6 +47,7 @@ const initialTask: TaskState = {
   queueDepth: null,
   deadLetters: [],
   needsReconnect: false,
+  hostError: null,
 };
 
 // A minimal fake of the Worker surface the client needs: an assignable
@@ -326,6 +327,72 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.lastSyncAtMs).toBe(7_000);
   });
 
+  // Post-batch review of PR #185. `lastSyncAtMs` used to be stamped
+  // unconditionally, and `"skipped"`/`"busy"` were unclassified in
+  // `sync-status.ts`, so a backed-off tick during a server outage
+  // (`Core::run` -> `Skipped`, "nothing was attempted at all") both erased
+  // the real `pull_failed` and re-stamped the clock — flipping the badge
+  // from "Stale" back to a green "Synced — as of just now" every 60 seconds
+  // for the entire outage.
+  it.each<"skipped" | "busy">(["skipped", "busy"])(
+    "does not advance lastSyncAtMs on a %s outcome — nothing was attempted, so nothing got fresher",
+    (kind) => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      let clock = 1_000;
+      attachWorkerClient(worker, store, () => clock);
+
+      worker.onmessage?.({
+        data: {
+          type: "syncOutcome",
+          kind: "pull_failed",
+          retryAfterMs: 30_000,
+          activeItemCount: null,
+          wasFullSweep: null,
+          deadLettered: null,
+        },
+      } as MessageEvent);
+      clock = 61_000;
+      worker.onmessage?.({
+        data: {
+          type: "syncOutcome",
+          kind,
+          retryAfterMs: null,
+          activeItemCount: null,
+          wasFullSweep: null,
+          deadLettered: null,
+        },
+      } as MessageEvent);
+
+      const task = store.getSnapshot().task;
+      expect(task.lastSyncAtMs).toBe(1_000);
+      // The last outcome that actually ran is still what the badge reads.
+      expect(task.lastSyncOutcome?.kind).toBe("pull_failed");
+      // ...and the cycle still counted, so the per-cycle refresh still fires.
+      expect(task.syncOutcomeSeq).toBe(2);
+    },
+  );
+
+  it("leaves lastSyncAtMs null when the very first cycle of the session is skipped", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store, () => 9_000);
+
+    worker.onmessage?.({
+      data: {
+        type: "syncOutcome",
+        kind: "skipped",
+        retryAfterMs: null,
+        activeItemCount: null,
+        wasFullSweep: null,
+        deadLettered: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastSyncAtMs).toBeNull();
+    expect(store.getSnapshot().task.lastSyncOutcome).toBeNull();
+  });
+
   it("bumps syncOutcomeSeq on EVERY cycle, even when consecutive outcomes are identical", () => {
     // Round-2 review of PR #181: the queue-depth / dead-letter refresh
     // effect (`useSyncWiring.ts`) is keyed on this value, and
@@ -359,6 +426,31 @@ describe("attachWorkerClient", () => {
     // The outcome object itself is what it always is in the steady state —
     // the seq is the ONLY thing distinguishing cycle 2 from cycle 1.
     expect(store.getSnapshot().task.lastSyncOutcome?.kind).toBe("completed");
+  });
+
+  it("records a task-host failure so a view can say so, and stays idempotent across repeats", () => {
+    // Broadcast once at construction failure AND per dropped request
+    // (protocol.ts), because a view connecting later would otherwise never
+    // hear it — so the same message arriving N times must be one state.
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const message = {
+      type: "taskHostUnavailable",
+      message: "durable snapshot is corrupt",
+    };
+    worker.onmessage?.({ data: message } as MessageEvent);
+    worker.onmessage?.({ data: { ...message } } as MessageEvent);
+
+    expect(store.getSnapshot().task).toEqual({
+      ...initialTask,
+      hostError: "durable snapshot is corrupt",
+    });
+    // The calendar side is genuinely still working — #171 decoupled the two
+    // on purpose, so this must not present as a whole-core failure.
+    expect(store.getSnapshot().status).toBe("loading");
+    expect(store.getSnapshot().error).toBeNull();
   });
 
   it("records the queue depth on a queueDepth message", () => {

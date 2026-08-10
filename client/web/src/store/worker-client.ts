@@ -1,3 +1,4 @@
+import { isInformativeSyncOutcome } from "../shell/sync-status";
 import type { createCoreStore } from "./store";
 import type {
   CalendarWorkerRequest,
@@ -119,7 +120,25 @@ export function attachWorkerClient(
         store.setTaskPending(message.itemId, message.pending);
         return;
       case "syncOutcome":
+        // The counter bumps on EVERY broadcast, whatever the kind — it is
+        // what `useSyncWiring.ts` keys its per-cycle refresh on, and a
+        // cycle that did not run is still a cycle that happened
+        // (`TaskState.syncOutcomeSeq`).
         syncOutcomeSeq += 1;
+        if (!isInformativeSyncOutcome(message.kind)) {
+          // `"skipped"`/`"busy"`: nothing was attempted at all, so this
+          // broadcast says nothing about how stale the mirror is, and
+          // recording it would ERASE what does. Post-batch review found the
+          // bug this closes: during a server outage the badge went red
+          // ("Stale") on the first `pull_failed`, then the next 60s tick hit
+          // ADR-0007's backoff, returned `Skipped`, stamped `lastSyncAtMs`
+          // to now, and flipped the badge back to a green "Synced — as of
+          // just now" — re-greening itself every minute for the whole
+          // outage, which is precisely the affordance #107 exists to
+          // provide. See `shell/sync-status.ts`'s `OUTCOME_CLASS`.
+          store.setTaskState({ syncOutcomeSeq });
+          return;
+        }
         store.setTaskState({
           syncOutcomeSeq,
           lastSyncOutcome: {
@@ -129,9 +148,9 @@ export function attachWorkerClient(
             wasFullSweep: message.wasFullSweep,
             deadLettered: message.deadLettered,
           },
-          // Every cycle attempt counts as a "sweep" for S9's status readout,
-          // whatever it resolved to — a held or failed cycle is still
-          // information about how stale the mirror now is.
+          // Every cycle that was actually ATTEMPTED counts as a "sweep" for
+          // S9's status readout, whatever it resolved to — a held or failed
+          // cycle is still information about how stale the mirror now is.
           lastSyncAtMs: now(),
         });
         return;
@@ -150,6 +169,12 @@ export function attachWorkerClient(
         return;
       case "deadLetters":
         store.setTaskState({ deadLetters: message.entries });
+        return;
+      case "taskHostUnavailable":
+        // Broadcast per dropped request as well as once at failure (see
+        // protocol.ts), so this arm is written to be idempotent: the same
+        // message landing N times is one state, not N.
+        store.setTaskState({ hostError: message.message });
         return;
       case "mirrorSnapshot":
         // Never stored — see `mirrorSnapshotHandler`'s own doc.

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSyncOutcome } from "../store/store";
-import { deadLetterHeading, syncStatusLabel, syncStatusTone, syncStatusToneWord } from "./sync-status";
+import {
+  deadLetterHeading,
+  isInformativeSyncOutcome,
+  syncOutcomeClass,
+  syncStatusLabel,
+  syncStatusTone,
+  syncStatusToneWord,
+} from "./sync-status";
 
 function outcome(kind: TaskSyncOutcome["kind"]): TaskSyncOutcome {
   return { kind, retryAfterMs: null, activeItemCount: null, wasFullSweep: null, deadLettered: null };
@@ -258,6 +265,73 @@ describe("syncStatusToneWord", () => {
     };
     expect(syncStatusToneWord(input)).toBe("synced");
     expect(syncStatusLabel(input)).toContain("Synced");
+  });
+});
+
+// Post-batch review of PR #185: `"skipped"` and `"busy"` were in neither
+// `HELD_KINDS` nor `FAILED_KINDS` and fell through to the SUCCESS branch, so
+// a backed-off tick during a server outage (`Core::run` -> `Skipped`,
+// "nothing was attempted at all", cycle.rs:166-168) read as
+// "Synced — as of just now" and re-greened the badge every 60 seconds for
+// the whole outage. This file never mentioned either kind, which is how a
+// 272-line test file missed it.
+describe("the cycles that never ran — skipped and busy", () => {
+  const NOT_RUN: TaskSyncOutcome["kind"][] = ["skipped", "busy"];
+
+  it.each(NOT_RUN)("classifies %s as not-run, i.e. carrying no staleness information", (kind) => {
+    expect(syncOutcomeClass(kind)).toBe("not-run");
+    expect(isInformativeSyncOutcome(kind)).toBe(false);
+  });
+
+  it.each<TaskSyncOutcome["kind"]>([
+    "held",
+    "credential_needed",
+    "no_credential",
+    "pull_failed",
+    "persist_failed",
+    "blocked",
+    "completed",
+  ])("treats %s as informative — every other kind says something about staleness", (kind) => {
+    expect(isInformativeSyncOutcome(kind)).toBe(true);
+  });
+
+  it.each(NOT_RUN)("never lets a %s outcome read as Synced", (kind) => {
+    const input = {
+      online: true,
+      lastSyncOutcome: outcome(kind),
+      lastSyncAtMs: 0,
+      queueDepth: 0,
+      nowMs: 60_000,
+    };
+    expect(syncStatusLabel(input)).toBe("Stale — as of 1m ago");
+    expect(syncStatusTone(input)).toBe("danger");
+    expect(syncStatusToneWord(input)).toBe("stale");
+  });
+
+  it.each(NOT_RUN)("still says Not yet synced for %s before any cycle has landed", (kind) => {
+    const input = {
+      online: true,
+      lastSyncOutcome: outcome(kind),
+      lastSyncAtMs: null,
+      queueDepth: 0,
+      nowMs: 60_000,
+    };
+    expect(syncStatusLabel(input)).toBe("Not yet synced");
+    expect(syncStatusTone(input)).toBe("neutral");
+    expect(syncStatusToneWord(input)).toBe("not synced");
+  });
+
+  it.each(NOT_RUN)("still says Offline for %s while offline", (kind) => {
+    const input = {
+      online: false,
+      lastSyncOutcome: outcome(kind),
+      lastSyncAtMs: 0,
+      queueDepth: 0,
+      nowMs: 0,
+    };
+    expect(syncStatusLabel(input)).toBe("Offline");
+    expect(syncStatusTone(input)).toBe("neutral");
+    expect(syncStatusToneWord(input)).toBe("offline");
   });
 });
 

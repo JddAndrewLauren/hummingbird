@@ -42,6 +42,44 @@ function Note({ children }: { children: ReactNode }) {
   );
 }
 
+/** The one place a view can say that the task binding is dead (post-batch
+ * review of PR #185). The calendar side is genuinely still ready — #171
+ * decoupled the two on purpose — so this is a card inside Settings, not the
+ * whole-app `{type:"error"}` screen; but without it every capture, sync and
+ * pushed token vanished into a `console.error` while the UI looked healthy.
+ * Honesty over reassurance (design README): state what is broken, then the
+ * one action that can fix it. The underlying message is kept in the mono
+ * meta style — it is machine text, not a sentence. */
+function TaskHostUnavailableCard({ message }: { message: string }) {
+  return (
+    <>
+      <span className="hb-meta">tasks</span>
+      <Card
+        padding="var(--space-5)"
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+      >
+        <Badge dot tone="danger" style={{ alignSelf: "flex-start" }}>
+          Unavailable
+        </Badge>
+        <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          The task core did not start, so nothing captured here is being saved or synced. Reload to
+          try again.
+        </p>
+        <span
+          style={{
+            font: "var(--type-meta)",
+            letterSpacing: "var(--tracking-meta)",
+            color: "var(--text-muted)",
+            overflowWrap: "anywhere",
+          }}
+        >
+          {message}
+        </span>
+      </Card>
+    </>
+  );
+}
+
 /** The submit outcomes the form itself needs to say something about — every
  * `TaskTokenSubmitOutcome` except `"ok"`, which clears the field instead of
  * showing an error. */
@@ -380,6 +418,8 @@ export function SettingsScreen({
             </Card>
           </>
         ) : null}
+
+        {task.hostError !== null ? <TaskHostUnavailableCard message={task.hostError} /> : null}
 
         {status === "ready" ? (
           <>

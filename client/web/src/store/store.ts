@@ -99,6 +99,12 @@ export interface TaskState {
   /** Set once a `taskEvents` broadcast carries a `credential_needed` event;
    * mirrors `CalendarState.needsReconnect`'s own contract. */
   needsReconnect: boolean;
+  /** The task host failed to construct in the shared worker, so every task
+   * request this core ever receives is dropped (`taskHostUnavailable`,
+   * protocol.ts). `null` in the normal case. Not recoverable in-session —
+   * the core does not retry construction — so the one honest thing a view
+   * can do with it is say so and tell the user to reload. */
+  hostError: string | null;
 }
 
 export interface CoreState {
@@ -133,6 +139,7 @@ const initialTaskState: TaskState = {
   queueDepth: null,
   deadLetters: [],
   needsReconnect: false,
+  hostError: null,
 };
 
 const initialState: CoreState = {

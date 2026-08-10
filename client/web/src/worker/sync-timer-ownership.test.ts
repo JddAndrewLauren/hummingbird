@@ -32,10 +32,15 @@ describe("the ADR-0007 sync timer lives in exactly one place", () => {
     expect(intervalCalls).toHaveLength(1);
   });
 
-  it("core.worker.ts's cadence.onOpen()/onReconnect() are each called exactly once, not per connecting port", () => {
-    expect(coreWorkerSource.match(/cadence\.onOpen\(\)/g) ?? []).toHaveLength(1);
+  it("core.worker.ts's cadence.onReconnect() is called exactly once, not per connecting port", () => {
     expect(coreWorkerSource.match(/cadence\.onReconnect\(\)/g) ?? []).toHaveLength(1);
-    // Neither call is inside `self.onconnect` — which runs once PER
+    // The open trigger moved into `dispatch.ts` (post-batch review of PR
+    // #185: `onOpen` must wait for a credential, and `sync-cadence.ts` says
+    // so in its own contract), where it is proven once-per-core by
+    // executable tests rather than by grep — but it must not creep back
+    // into a per-connection path here.
+    expect(coreWorkerSource).not.toContain("cadence.onOpen()");
+    // No cadence call is inside `self.onconnect` — which runs once PER
     // connecting view, exactly the multiplying shape this fix removes.
     const start = coreWorkerSource.indexOf("self.onconnect");
     const onconnectBody = coreWorkerSource.slice(start, start + 200);

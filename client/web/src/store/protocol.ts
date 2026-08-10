@@ -273,7 +273,21 @@ export type TaskWorkerResponse =
   | { type: "taskEvents"; events: TaskEventDTO[] }
   | { type: "queueDepth"; depth: number }
   | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
-  | { type: "mirrorSnapshot"; mirror: unknown };
+  | { type: "mirrorSnapshot"; mirror: unknown }
+  /** The task host itself failed to construct (a corrupt durable snapshot,
+   * say), so every task request — every capture, every sync, every pushed
+   * device token — is being dropped for this core's whole lifetime.
+   *
+   * This is deliberately NOT `{type: "error"}`: #171 decoupled task-host
+   * construction from calendar activation on purpose, so the calendar side
+   * is genuinely still working and its views are genuinely still ready.
+   * Without a signal of its own, though, that decoupling meant a view saw a
+   * perfectly healthy `ready` while everything task-shaped vanished into a
+   * `console.error` nobody reads (post-batch review of PR #185). Broadcast
+   * once when construction fails AND again per dropped request, since a
+   * broadcast reaches only the views connected at the time and a view that
+   * connects later must still learn — its first task request tells it. */
+  | { type: "taskHostUnavailable"; message: string };
 
 // -- worker -> main -----------------------------------------------------
 

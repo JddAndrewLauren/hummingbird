@@ -139,6 +139,31 @@ cannot precede the constructor, so 16 remains Safari's effective floor.
   sync status is genuinely shared state, so every view shows the same cycle
   rather than its own.
 
+### The top-level-await invariant (amendment, 2026-08-09)
+
+Committing to ES module workers above has one consequence sharp enough to
+state as a rule of its own, because it is invisible in review and fatal in
+production: **no top-level `await` may enter
+`client/web/src/worker/core.worker.ts`'s static import graph.**
+
+`vite-plugin-top-level-await` rewrites such a module into an async IIFE. That
+moves the `self.onconnect` assignment out of the module's first synchronous
+turn — and a `connect` event has **no platform buffering**, so the connect
+queued by the very view that *starts* the SharedWorker is delivered to
+nothing and dropped. That view never gets a wired port and never gets a
+handshake: it sits on "Loading core…" forever, while every other tab opened
+afterwards works perfectly. This is why the wasm module is loaded with a
+dynamic `import()` inside an async IIFE rather than a static top-level
+import, and why a plain-looking `import` added to that file is a breaking
+change.
+
+It is enforced today by the file's own header comment and the source-text
+pins in `client/web/src/worker/sync-timer-ownership.test.ts`; the only real
+proof is the built bundle (zero `await` at function-depth ≤ 1 before
+`self.onconnect =`), which four separate reviewers hand-checked during the
+S6–S9 batch. If a mechanical check ever becomes cheap — a build-time assert
+over `dist/assets/core.worker-*.js` — it belongs in CI, not in review.
+
 ## Rejected alternatives
 
 - **`navigator.locks` leader election, with read-only followers.** The strongest

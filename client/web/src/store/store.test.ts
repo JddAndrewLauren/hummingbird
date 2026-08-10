@@ -23,6 +23,7 @@ const initialTask: TaskState = {
   queueDepth: null,
   deadLetters: [],
   needsReconnect: false,
+  hostError: null,
 };
 
 describe("createCoreStore", () => {
