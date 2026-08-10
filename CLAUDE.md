@@ -243,6 +243,13 @@ canonical *text*, so `MutationIntent::Patch` carries `rebase_fields` — the
 same intent in the entity's encoding — and `patch_with_rebase` diffs a 409
 against that. Without it this client's own already-landed write reads as a
 collision with itself and dead-letters a `PUT` that in fact succeeded.
+The mirror-image hazard is a **success** that is not one: a `PUT` at
+`expected_version: 0` against a key that already exists never 409s — the
+authority answers `200` with the *stored* row — so `patch_with_rebase` asks
+`rebase::divergent_fields` whether that row actually carries this write's
+intent, and reports a `Conflict` when it does not. Right for a true replay,
+and the difference between a dead-letter and silent loss for a device that
+had simply never pulled the row (a binding edited before its first sync).
 
 **The overlay is one representation, not one per mutation kind.**
 `overlay_from_queue` rebuilds it at `Core::init` from whatever the durable
@@ -431,10 +438,15 @@ by `createdAt`, which reads the same before and after the overlay clears),
 has left every live query) `triage-form.ts` (which drafted fields are
 actually changes — `null` means "leave this field alone", never an empty
 string sent as an edit) and `bindings.ts` (#118's editor: the human copy per
-binding, the three value states read apart, and which drafts are worth
+binding, the three value states read apart, which drafts are worth
 sending — an empty one, a no-op one and any key this build cannot write are
 all refused here, because `Core::set_binding` has no opinion of its own and
-`settings` has no DELETE to undo a blanked row).
+`settings` has no DELETE to undo a blanked row — plus `sameBindingValue`,
+which is what lets a row reseed its field when the value underneath it
+moves, so a pull carrying another device's edit can never leave a stale
+draft sitting over it with Save enabled to push it back, and
+`bindingWriteError`, so a failed write is words on that row rather than a
+`lastBindingWrite` nothing reads).
 
 The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
 re-requests its queries once the core is ready and again on every

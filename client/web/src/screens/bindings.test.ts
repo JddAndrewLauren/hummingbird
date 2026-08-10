@@ -5,7 +5,9 @@ import {
   bindingDraftSeed,
   bindingSubmitValue,
   bindingValueLabel,
+  bindingWriteError,
   canSubmitBinding,
+  sameBindingValue,
 } from "./bindings";
 
 function binding(overrides: Partial<BindingDTO> = {}): BindingDTO {
@@ -87,6 +89,50 @@ describe("canSubmitBinding", () => {
     // not touch either.
     const unknown = binding({ key: "some-future-binding", known: false });
     expect(canSubmitBinding(unknown, "anything")).toBe(false);
+  });
+});
+
+describe("sameBindingValue", () => {
+  it("reads two identical values as the same fact", () => {
+    expect(sameBindingValue({ state: "unset" }, { state: "unset" })).toBe(true);
+    expect(sameBindingValue({ state: "text", text: "f1" }, { state: "text", text: "f1" })).toBe(
+      true,
+    );
+    expect(sameBindingValue({ state: "other", raw: "7" }, { state: "other", raw: "7" })).toBe(true);
+  });
+
+  it("reads a changed value as a change, across states and within one", () => {
+    expect(sameBindingValue({ state: "text", text: "f1" }, { state: "text", text: "motogp" })).toBe(
+      false,
+    );
+    expect(sameBindingValue({ state: "unset" }, { state: "text", text: "f1" })).toBe(false);
+    expect(sameBindingValue({ state: "other", raw: "7" }, { state: "other", raw: "8" })).toBe(false);
+  });
+});
+
+describe("bindingWriteError", () => {
+  const failed = { seed: "s", key: "race-series", kind: "failed", error: "queue is full" } as const;
+
+  it("says nothing when nothing failed", () => {
+    expect(bindingWriteError(null, "race-series")).toBeNull();
+    expect(
+      bindingWriteError({ seed: "s", key: "race-series", kind: "ok", error: null }, "race-series"),
+    ).toBeNull();
+  });
+
+  it("never bleeds another binding's failure onto this row", () => {
+    expect(bindingWriteError(failed, "trips-calendar")).toBeNull();
+  });
+
+  it("gives every failing outcome words, carrying the underlying error when there is one", () => {
+    expect(bindingWriteError(failed, "race-series")).toBe("queue is full");
+    expect(
+      bindingWriteError({ ...failed, error: null }, "race-series"),
+    ).toMatch(/didn't save/);
+    expect(bindingWriteError({ ...failed, kind: "busy" }, "race-series")).toMatch(/busy/);
+    expect(bindingWriteError({ ...failed, kind: "unknown_key" }, "race-series")).toMatch(
+      /doesn't know/,
+    );
   });
 });
 

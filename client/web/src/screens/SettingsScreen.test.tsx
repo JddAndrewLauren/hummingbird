@@ -29,19 +29,19 @@ const calendar: CalendarState = {
   asOfMs: null,
 };
 
-function renderSettings(
-  options: {
-    bindings?: BindingDTO[] | null;
-    status?: CoreStatus;
-    withSetBinding?: boolean;
-    task?: Partial<TaskState>;
-  } = {},
-) {
+interface SettingsOptions {
+  bindings?: BindingDTO[] | null;
+  status?: CoreStatus;
+  withSetBinding?: boolean;
+  task?: Partial<TaskState>;
+}
+
+function renderSettings(options: SettingsOptions = {}) {
   const onSetBinding = vi.fn();
-  render(
+  const tree = (current: SettingsOptions) => (
     <SettingsScreen
       demo={null}
-      status={options.status ?? "ready"}
+      status={current.status ?? "ready"}
       apiVersion={1}
       error={null}
       calendar={calendar}
@@ -54,14 +54,17 @@ function renderSettings(
       taskTokenEnteredAtMs={null}
       onSubmitTaskToken={vi.fn()}
       onForgetTaskToken={vi.fn()}
-      task={taskState({ bindings: options.bindings ?? null, ...options.task })}
-      onSetBinding={options.withSetBinding === false ? undefined : onSetBinding}
+      task={taskState({ bindings: current.bindings ?? null, ...current.task })}
+      onSetBinding={current.withSetBinding === false ? undefined : onSetBinding}
       online
       syncNowMs={10_000}
       onDownloadMirror={vi.fn()}
-    />,
+    />
   );
-  return { onSetBinding };
+  const { rerender } = render(tree(options));
+  // A pull arriving is a re-render with new props, not a remount — which is
+  // the whole point of the stale-draft test below.
+  return { onSetBinding, pull: (next: SettingsOptions) => rerender(tree(next)) };
 }
 
 function saveButton(name: RegExp | string = /save/i): HTMLElement {
@@ -160,6 +163,62 @@ describe("SettingsScreen — the bindings editor", () => {
     expect(
       screen.queryAllByRole("button").filter((button) => button.textContent?.trim() === "Save"),
     ).toEqual([]);
+  });
+
+  it("reseeds the field when another device's value arrives, rather than sitting on a stale draft", () => {
+    // The acceptance criterion this protects: a binding edited on one
+    // client is VISIBLE on a second after its next pull. The label always
+    // refreshed; the field did not, leaving a stale draft over the new
+    // value with Save enabled to push it straight back.
+    const { onSetBinding, pull } = renderSettings({
+      bindings: [bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } })],
+    });
+    expect((screen.getByLabelText("Race series") as HTMLInputElement).value).toBe("f1");
+
+    pull({
+      bindings: [bindingDTO({ key: "race-series", value: { state: "text", text: "indycar" } })],
+    });
+
+    expect((screen.getByLabelText("Race series") as HTMLInputElement).value).toBe("indycar");
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    expect(onSetBinding).not.toHaveBeenCalled();
+  });
+
+  it("keeps an in-progress draft while the value underneath it has not moved", () => {
+    // Reseeding on every render would fight the typist — only a real change
+    // to the value may take the field back.
+    const { pull } = renderSettings({
+      bindings: [bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } })],
+    });
+    fireEvent.change(screen.getByLabelText("Race series"), { target: { value: "motog" } });
+
+    pull({
+      bindings: [bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } })],
+      task: { syncOutcomeSeq: 3 },
+    });
+
+    expect((screen.getByLabelText("Race series") as HTMLInputElement).value).toBe("motog");
+  });
+
+  it("says so when a binding write failed, on that binding's own row", () => {
+    // Without this the outcome was recorded in `lastBindingWrite` and read
+    // nowhere: Save appeared to do nothing at all.
+    renderSettings({
+      bindings: [
+        bindingDTO({ key: "race-series" }),
+        bindingDTO({ key: "trips-calendar", value: { state: "unset" } }),
+      ],
+      task: {
+        lastBindingWrite: {
+          seed: "s",
+          key: "race-series",
+          kind: "failed",
+          error: "the queue could not be written",
+        },
+      },
+    });
+
+    expect(screen.getByText(/the queue could not be written/i)).toBeDefined();
   });
 
   it("offers no Save at all when the host cannot write bindings", () => {

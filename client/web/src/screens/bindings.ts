@@ -1,4 +1,5 @@
 import type { BindingDTO, BindingValueDTO } from "../store/protocol";
+import type { TaskBindingResult } from "../store/store";
 
 // #118's bindings editor, everything decidable: what each binding is called
 // in human words, what it currently holds, and whether a draft is worth
@@ -70,6 +71,52 @@ export function bindingValueLabel(value: BindingValueDTO): string {
  * submit would overwrite it with a mangled string. */
 export function bindingDraftSeed(value: BindingValueDTO): string {
   return value.state === "text" ? value.text : "";
+}
+
+/** Whether two reads of a binding's value are the same fact.
+ *
+ * The row's input is seeded from the value once and then owned by the
+ * typist, so something has to notice when the value underneath it changes —
+ * another device's edit arriving on the next pull, or this device's own
+ * write confirming. Without it the field keeps showing the old value while
+ * the label above it shows the new one, and Save is enabled to push the
+ * stale text straight back over what just arrived (#118 review finding). */
+export function sameBindingValue(a: BindingValueDTO, b: BindingValueDTO): boolean {
+  if (a.state !== b.state) {
+    return false;
+  }
+  if (a.state === "text" && b.state === "text") {
+    return a.text === b.text;
+  }
+  if (a.state === "other" && b.state === "other") {
+    return a.raw === b.raw;
+  }
+  return true;
+}
+
+/** The message a failed binding write should show on its own row, or `null`
+ * when the last write was someone else's row or succeeded.
+ *
+ * Every non-`ok` outcome gets words: an enqueue that failed, a core that was
+ * busy and a key this build cannot write are all "Save appeared to do
+ * nothing" without one. Matched by key so a stale failure from a DIFFERENT
+ * binding never bleeds onto this row — the same rule `NowScreen`'s act error
+ * follows for item ids. */
+export function bindingWriteError(
+  lastWrite: TaskBindingResult | null,
+  key: string,
+): string | null {
+  if (lastWrite === null || lastWrite.key !== key || lastWrite.kind === "ok") {
+    return null;
+  }
+  switch (lastWrite.kind) {
+    case "unknown_key":
+      return "This build doesn't know that binding, so it wasn't saved.";
+    case "busy":
+      return "The core was busy. Try saving again.";
+    case "failed":
+      return lastWrite.error ?? "That binding didn't save.";
+  }
 }
 
 /** Whether a drafted binding is worth sending.

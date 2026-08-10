@@ -13,7 +13,9 @@ import {
   bindingDraftSeed,
   bindingSubmitValue,
   bindingValueLabel,
+  bindingWriteError,
   canSubmitBinding,
+  sameBindingValue,
 } from "./bindings";
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
@@ -158,13 +160,32 @@ function TokenEntryForm({
  * name is one it must not overwrite either. */
 function BindingRow({
   binding,
+  writeError,
   onSetBinding,
 }: {
   binding: BindingDTO;
+  /** The last `setBinding` failure for THIS key, already matched and worded
+   * (`bindingWriteError`) — `null` when the last write succeeded or was some
+   * other row's. */
+  writeError: string | null;
   onSetBinding?: (key: string, value: string) => void;
 }) {
   const copy = bindingCopy(binding);
   const [draft, setDraft] = useState(() => bindingDraftSeed(binding.value));
+
+  // Reseed the field whenever the value underneath it moves — a pull
+  // carrying another device's edit, or this device's own write confirming.
+  // The row is keyed by binding key and so never remounts, which means the
+  // mount-time seed alone would leave a stale draft sitting over a value it
+  // never showed, with Save enabled to push it back (#118 review finding).
+  // React's own "adjust state while rendering" idiom: cheaper than an effect
+  // and applied before anything paints.
+  const [seenValue, setSeenValue] = useState(binding.value);
+  if (!sameBindingValue(seenValue, binding.value)) {
+    setSeenValue(binding.value);
+    setDraft(bindingDraftSeed(binding.value));
+  }
+
   const canSubmit = canSubmitBinding(binding, draft) && onSetBinding !== undefined;
 
   return (
@@ -206,6 +227,11 @@ function BindingRow({
               Save
             </Button>
           </div>
+          {writeError ? (
+            <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+              {writeError}
+            </p>
+          ) : null}
           <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{copy.help}</p>
         </>
       ) : (
@@ -378,6 +404,11 @@ export function SettingsScreen({
                 <BindingRow
                   key={binding.key}
                   binding={binding}
+                  // A demo row can never have been written, so it can never
+                  // have failed to write.
+                  writeError={
+                    demo === null ? bindingWriteError(task.lastBindingWrite, binding.key) : null
+                  }
                   // Demo rows are fixtures, not real `settings` rows: a Save
                   // here would enqueue a CAS write for a key nobody bound.
                   onSetBinding={demo === null ? onSetBinding : undefined}
