@@ -25,14 +25,21 @@ daily-usable.
 workspace: `domain` (the owned-schema types both sides will compile; the
 client migrates onto them at S2/S3), `authority` (pure handler logic over a
 sync `Sql` seam — plus an `Entropy` seam for token minting — fixture-tested
-with rusqlite), and `worker` (the thin `workers-rs` shim — one Worker, one
-SQLite-backed Durable Object). It carries the full amended ADR-0009 schema
-(11 tables, `SCHEMA_VERSION 2`), entity-level CAS writes (absolute sets +
-`expected_version`, 409 carries the current entity, creates idempotent by
-client id), the all-tables delta pull with `GET /api/sweep` as its
-byte-identical backstop, bearer-token auth (sha256 at rest; scopes
+with rusqlite), `rules-engine` (fire-time evaluation of the ADR-0013
+condition vocabulary, over the Event kind registry that lives in `domain`;
+its `validate_rule` exists but is not yet wired into `POST /api/rules` —
+`authority` does not depend on the crate — so a malformed condition is
+currently caught only at fire time), and `worker` (the thin `workers-rs`
+shim — one Worker, one SQLite-backed Durable Object). It carries the full
+amended ADR-0009 schema plus the notification lane's
+`rules`/`push_targets`/`deliveries` (14 tables,
+`SCHEMA_VERSION 3`, ADR-0012/0013/0014), entity-level CAS writes (absolute
+sets + `expected_version`, 409 carries the current entity, creates
+idempotent by client id), the all-tables delta pull with `GET /api/sweep`
+as its byte-identical backstop, bearer-token auth (sha256 at rest; scopes
 `device`/`sweeper`/`ingest`; `/api/admin/tokens` gated by `ADMIN_SECRET`;
-401 = bad credential, 403 = wrong scope, both empty-bodied), and the
+401 = bad credential, 403 = wrong scope or — for an `ingest` token, which is
+bound to one alert source — a source mismatch, all empty-bodied), and the
 `POST /api/alerts` ingest upsert. Still no production deploy (that is #95's
 human gate H3) — `wrangler dev` + `server/scripts/smoke.sh` locally,
 `.github/workflows/server.yml` in CI.

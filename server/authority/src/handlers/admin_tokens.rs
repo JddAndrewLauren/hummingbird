@@ -3,7 +3,7 @@
 //! only from the operator's terminal. Tokens never bump the workspace
 //! counter: they are machinery outside the delta contract.
 
-use hummingbird_domain::{MintToken, MintedToken, TokenInfo};
+use hummingbird_domain::{MintToken, MintedToken, Scope, TokenInfo};
 
 use super::{auth, error, json, parse_body, ApiResponse, HandleContext};
 use crate::codec::{bad_cell, RowReader};
@@ -33,16 +33,30 @@ pub fn mint(
     if mint.name.is_empty() {
         return Ok(error(400, "validation", "name must be non-empty"));
     }
+    // ADR-0008's "one token per ingest source": the pairing is required one
+    // way and forbidden the other (#145).
+    if mint.scope == Scope::Ingest && mint.source.is_none() {
+        return Ok(error(400, "validation", "an ingest token requires a source"));
+    }
+    if mint.scope != Scope::Ingest && mint.source.is_some() {
+        return Ok(error(
+            400,
+            "validation",
+            "only an ingest token may carry a source",
+        ));
+    }
 
     let mut bytes = [0u8; 32];
     ctx.entropy.fill(&mut bytes);
     let token = format!("hb_{}", auth::hex(&bytes));
     sql.exec(
-        "INSERT INTO tokens (id, name, scope, token_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO tokens (id, name, scope, source, token_hash, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
         &[
             SqlValue::Text(mint.id.clone()),
             SqlValue::Text(mint.name.clone()),
             SqlValue::Text(mint.scope.as_str().to_string()),
+            SqlValue::from_opt_text(mint.source.as_deref()),
             SqlValue::Text(auth::sha256_hex(&token)),
             SqlValue::Integer(ctx.now_ms),
         ],
@@ -53,6 +67,7 @@ pub fn mint(
             id: mint.id,
             name: mint.name,
             scope: mint.scope,
+            source: mint.source,
             created_at: ctx.now_ms,
             token,
         },
@@ -107,6 +122,7 @@ fn token_info_from_row(row: &Row) -> Result<TokenInfo, SqlError> {
         id: r.text("id")?,
         name: r.text("name")?,
         scope: hummingbird_domain::Scope::parse(&scope_text).ok_or_else(|| bad_cell("scope"))?,
+        source: r.opt_text("source"),
         created_at: r.int("created_at")?,
         last_seen: r.opt_int("last_seen"),
         revoked_at: r.opt_int("revoked_at"),

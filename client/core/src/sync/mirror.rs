@@ -55,7 +55,18 @@ use crate::task::Presence;
 /// [`crate::storage::SnapshotError::Deserialize`] must still never be mapped
 /// to `SyncMirror::default()` by a caller — that would discard retained
 /// history no sweep can reconstruct, only refill going forward).
-pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 1;
+///
+/// Bumped to 2 for #153's `domain::Item.due_date` → `.deadline` rename.
+/// That rename is the shape change serde cannot catch: `deadline` is an
+/// `Option<String>` and `Item` carries no `deny_unknown_fields`, so a v1
+/// snapshot's stale `due_date` key is dropped and `deadline` comes back
+/// `None` with no error at all. What converts that into a safe outcome is
+/// not the constant on its own but the check against it in
+/// [`super::cycle::SyncCycle::load`]: a stored mirror whose envelope
+/// version is not this one is discarded and rebuilt by the next pull's
+/// full-sweep backstop. Bumping this constant without that check would be
+/// inert.
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 2;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.
@@ -383,7 +394,7 @@ mod tests {
             priority: 0,
             project_id: None,
             project_pos: None,
-            due_date: None,
+            deadline: None,
             scheduled_date: None,
             source: None,
             source_key: None,
@@ -451,6 +462,7 @@ mod tests {
             alerts: vec![],
             context_snapshots: vec![],
             settings: vec![],
+            rules: vec![],
         }
     }
 

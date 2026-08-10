@@ -41,14 +41,24 @@ pub fn admin_ok(authorization: Option<&str>, admin_secret: Option<&str>) -> bool
     }
 }
 
-/// Resolve the bearer to a live token's scope, stamping `last_seen` on the
-/// way — with **no meta bump**: tokens sit outside the delta contract, and
-/// bumping here would make every authed read dirty the cursor.
+/// A resolved bearer token: its scope, plus the source it is bound to when
+/// `scope` is `ingest` (#145) — `None` for `device`/`sweeper`, always
+/// `Some` for a properly minted `ingest` token (a null-source `ingest` row
+/// can only exist via a raw seam that bypassed the mint handler).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Principal {
+    pub scope: Scope,
+    pub source: Option<String>,
+}
+
+/// Resolve the bearer to a live token's principal, stamping `last_seen` on
+/// the way — with **no meta bump**: tokens sit outside the delta contract,
+/// and bumping here would make every authed read dirty the cursor.
 pub fn authenticate(
     authorization: Option<&str>,
     now_ms: i64,
     sql: &dyn Sql,
-) -> Result<Option<Scope>, SqlError> {
+) -> Result<Option<Principal>, SqlError> {
     let Some(token) = parse_bearer(authorization) else {
         return Ok(None);
     };
@@ -65,12 +75,13 @@ pub fn authenticate(
     let r = RowReader(&row);
     let scope_text = r.text("scope")?;
     let scope = Scope::parse(&scope_text).ok_or_else(|| bad_cell("scope"))?;
+    let source = r.opt_text("source");
     let id = r.text("id")?;
     sql.exec(
         "UPDATE tokens SET last_seen = ? WHERE id = ?",
         &[SqlValue::Integer(now_ms), SqlValue::Text(id)],
     )?;
-    Ok(Some(scope))
+    Ok(Some(Principal { scope, source }))
 }
 
 /// The whole scope matrix. Device is a full task client: everything except
@@ -78,10 +89,10 @@ pub fn authenticate(
 /// `POST /api/items`. Ingest is the webhook lane and nothing else:
 /// `POST /api/alerts`. Admin routes never reach here.
 ///
-/// Known gap, deliberately deferred: an ingest token is not bound to a
-/// `source` — any ingest credential may upsert any source's alerts. #145
-/// closes this (tokens.source, enforced here) and must land before the
-/// first production ingest token is minted.
+/// This is the scope check only — it has no access to the request body, so
+/// it cannot see which source a `POST /api/alerts` payload names. The
+/// source-binding check (#145: an ingest token may only post for its own
+/// source) lives in the alerts handler, which does parse the body.
 pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
     match (method, segments) {
         ("POST", ["items"]) => matches!(scope, Scope::Device | Scope::Sweeper),

@@ -151,6 +151,41 @@ fn scope_matrix_default_arm_denies_every_other_route() {
 }
 
 #[test]
+fn bound_ingest_token_posting_for_its_own_source_succeeds() {
+    let sql = RusqliteSql::new();
+    bind_ingest_token(&sql, "hc");
+    let resp = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "POST",
+        "/api/alerts",
+        None,
+        Some(r#"{"source": "hc", "source_key": "k", "title": "t"}"#),
+        0,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+}
+
+#[test]
+fn ingest_token_posting_for_a_different_source_is_403_with_an_empty_body() {
+    let sql = RusqliteSql::new();
+    bind_ingest_token(&sql, "hc");
+    let resp = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "POST",
+        "/api/alerts",
+        None,
+        Some(r#"{"source": "not-hc", "source_key": "k", "title": "t"}"#),
+        0,
+    );
+    assert_eq!(resp.status, 403, "{}", resp.body);
+    assert!(resp.body.is_empty(), "leaked: {}", resp.body);
+    let rows = sql.exec("SELECT id FROM alerts", &[]).unwrap();
+    assert!(rows.is_empty(), "the mismatch never reaches the upsert");
+}
+
+#[test]
 fn revoked_token_gets_401_on_its_next_request() {
     let sql = RusqliteSql::new();
     assert_eq!(changes(&sql, "since=0").status, 200, "live token works");

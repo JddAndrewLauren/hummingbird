@@ -11,6 +11,7 @@ mod fog;
 mod items;
 mod projects;
 mod routes;
+mod rules;
 mod settings;
 mod steps;
 
@@ -87,10 +88,10 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
 
     // Everything else authenticates first — an unauthenticated caller never
     // learns the route map — then passes the scope matrix before routing.
-    let Some(scope) = auth::authenticate(req.authorization, ctx.now_ms, sql)? else {
+    let Some(principal) = auth::authenticate(req.authorization, ctx.now_ms, sql)? else {
         return Ok(empty_status(401));
     };
-    if !auth::permitted(scope, req.method, &segments) {
+    if !auth::permitted(principal.scope, req.method, &segments) {
         return Ok(empty_status(403));
     }
 
@@ -118,19 +119,23 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("PUT", ["settings", key]) if !key.is_empty() => {
             settings::put(key, req.body, now_ms, sql)
         }
-        ("POST", ["alerts"]) => alerts::ingest(req.body, now_ms, sql),
+        ("POST", ["alerts"]) => alerts::ingest(req.body, now_ms, principal.source.as_deref(), sql),
         ("PATCH", ["alerts", id]) if !id.is_empty() => alerts::dismiss(id, req.body, now_ms, sql),
+        ("POST", ["rules"]) => rules::create(req.body, now_ms, sql),
+        ("PATCH", ["rules", id]) if !id.is_empty() => rules::patch(id, req.body, now_ms, sql),
         ("GET", ["changes"]) => changes::changes(req.query, sql),
         ("GET", ["sweep"]) => changes::sweep(sql),
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
         (
             _,
-            ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "changes"
-                | "sweep"],
+            ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "rules"
+                | "changes" | "sweep"],
         ) => Ok(method_not_allowed()),
-        (_, ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts", id])
-            if !id.is_empty() =>
+        (
+            _,
+            ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts" | "rules", id],
+        ) if !id.is_empty() =>
         {
             Ok(method_not_allowed())
         }

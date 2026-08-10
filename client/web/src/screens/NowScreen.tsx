@@ -99,7 +99,7 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
                     title={item.title}
                     stage={item.stage}
                     urgency={item.urgency}
-                    due={item.due}
+                    deadline={item.deadline}
                     scheduled={item.scheduled}
                     size={item.size}
                     steps={item.steps}

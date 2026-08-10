@@ -3,8 +3,14 @@
 //! — one code path, so their byte-for-byte agreement (#114 acceptance
 //! criterion 4) holds by construction; a fixture pins it anyway.
 //!
-//! `tokens` and `meta` never appear: tokens are per-writer machinery, and
-//! the meta counter is the response's `version` field.
+//! Four tables never appear. `tokens` is per-writer machinery that never
+//! syncs to clients, and the `meta` counter is the response's `version`
+//! field. `push_targets` and `deliveries` are out for the structural
+//! reason: neither carries a `version` column (#131), so neither can sit
+//! on a cursor at all — they are server-side machinery, not delta-pulled
+//! records. See [`ChangesResponse`]'s twin note.
+//!
+//! [`ChangesResponse`]: hummingbird_domain::ChangesResponse
 
 use hummingbird_domain::{ChangesResponse, ContextSnapshot};
 
@@ -46,6 +52,7 @@ fn changes_since(since: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
         alerts: pull(sql, since, "alerts", "id", super::alerts::alert_from_row)?,
         context_snapshots: pull(sql, since, "context_snapshots", "source, key", snapshot_from_row)?,
         settings: pull(sql, since, "settings", "key", super::settings::setting_from_row)?,
+        rules: pull(sql, since, "rules", "id", super::rules::rule_from_row)?,
     };
     Ok(json(200, &response))
 }

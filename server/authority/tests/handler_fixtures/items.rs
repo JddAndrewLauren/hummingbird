@@ -93,7 +93,7 @@ fn create_accepts_the_full_field_set() {
         &sql,
         r#"{"id": "a-1", "title": "hello", "description": "d", "stage": "ready",
             "size": "quick", "energy": "high", "context": "@computer", "priority": 3,
-            "project_id": "p-1", "project_pos": 2, "due_date": "2026-08-15",
+            "project_id": "p-1", "project_pos": 2, "deadline": "2026-08-15",
             "scheduled_date": "2026-08-10", "source": "google-tasks/v1",
             "source_key": "gt-9", "source_url": "https://example.test/t/9"}"#,
         500,
@@ -116,12 +116,27 @@ fn create_validation_rejects_bad_input() {
         (r#"{"id": "a", "title": "t", "priority": 5}"#, "priority out of range"),
         (r#"{"id": "a", "title": "t", "stage": "backlog"}"#, "stage outside the six"),
         (r#"{"id": "a", "title": "t", "project_id": "ghost"}"#, "unknown project"),
+        (r#"{"id": "a", "title": "t", "deadline": "2026-08-15T09:30:00"}"#, "deadline has seconds"),
+        (r#"{"id": "a", "title": "t", "deadline": "2026-08-15T09:30Z"}"#, "deadline has a Z suffix"),
+        (r#"{"id": "a", "title": "t", "deadline": "not-a-date"}"#, "deadline is malformed"),
         (r#"not json"#, "malformed JSON"),
     ] {
         let resp = post(&sql, body, 0);
         assert_eq!(resp.status, 400, "{why}: {}", resp.body);
     }
     assert_eq!(meta_version(&sql), 0, "no write happened");
+}
+
+#[test]
+fn create_accepts_a_valid_deadline_in_either_form() {
+    let sql = RusqliteSql::new();
+    let resp = post(&sql, r#"{"id": "a", "title": "t", "deadline": "2026-08-15"}"#, 0);
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    assert_eq!(item(&resp).deadline.as_deref(), Some("2026-08-15"));
+
+    let resp = post(&sql, r#"{"id": "b", "title": "t", "deadline": "2026-08-15T09:30"}"#, 0);
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    assert_eq!(item(&resp).deadline.as_deref(), Some("2026-08-15T09:30"));
 }
 
 // -------------------------------------------------------- patch (PATCH)
@@ -264,6 +279,8 @@ fn patch_validation_rejects_bad_input() {
         (r#"{"expected_version": 1, "title": ""}"#, "empty title"),
         (r#"{"expected_version": 1, "priority": 9}"#, "priority out of range"),
         (r#"{"expected_version": 1, "project_id": "ghost"}"#, "unknown project"),
+        (r#"{"expected_version": 1, "deadline": "2026-08-15T09:30:00"}"#, "deadline has seconds"),
+        (r#"{"expected_version": 1, "deadline": "09:30"}"#, "deadline is a bare time"),
         (r#"{"title": "no version"}"#, "missing expected_version"),
         (r#"{"#, "malformed JSON"),
     ] {
@@ -271,6 +288,25 @@ fn patch_validation_rejects_bad_input() {
         assert_eq!(resp.status, 400, "{why}: {}", resp.body);
     }
     assert_eq!(meta_version(&sql), 1, "no write happened");
+}
+
+#[test]
+fn patch_accepts_a_valid_deadline_and_can_clear_it() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+
+    let resp = patch(
+        &sql,
+        "a-1",
+        r#"{"expected_version": 1, "deadline": "2026-08-15T09:30"}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).deadline.as_deref(), Some("2026-08-15T09:30"));
+
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 2, "deadline": null}"#, 3000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).deadline, None, "explicit null clears");
 }
 
 #[test]

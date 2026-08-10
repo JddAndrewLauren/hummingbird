@@ -103,8 +103,21 @@ DEVICE=$(jq -r '.token' <<<"$BODY")
 case "$DEVICE" in hb_*) ;; *) fail "device token shape: $BODY";; esac
 request 201 POST /api/admin/tokens '{"id":"t-sweeper","name":"smoke sweeper","scope":"sweeper"}' "$ADMIN_SECRET"
 SWEEPER=$(jq -r '.token' <<<"$BODY")
-request 201 POST /api/admin/tokens '{"id":"t-ingest","name":"smoke ingest","scope":"ingest"}' "$ADMIN_SECRET"
+# An ingest token is bound to exactly one source (#145); every alert this
+# script raises below uses source "healthchecks/v1", so the smoke ingest
+# token is minted bound to it.
+request 201 POST /api/admin/tokens '{"id":"t-ingest","name":"smoke ingest","scope":"ingest","source":"healthchecks/v1"}' "$ADMIN_SECRET"
 INGEST=$(jq -r '.token' <<<"$BODY")
+
+# Minting an ingest token without a source, or a non-ingest token with one,
+# is a 400 (#145).
+request 400 POST /api/admin/tokens '{"id":"t-ingest-nosrc","name":"x","scope":"ingest"}' "$ADMIN_SECRET"
+request 400 POST /api/admin/tokens '{"id":"t-device-src","name":"x","scope":"device","source":"healthchecks/v1"}' "$ADMIN_SECRET"
+
+# The bound ingest token cannot post an alert for a different source: 403,
+# empty body.
+request 403 POST /api/alerts '{"source":"home-assistant/v1","source_key":"k","title":"t"}' "$INGEST"
+[ -z "$BODY" ] || fail "403 leaked a body: $BODY"
 
 # A replayed mint returns metadata without the plaintext.
 request 200 POST /api/admin/tokens '{"id":"t-device","name":"smoke device","scope":"device"}' "$ADMIN_SECRET"
@@ -151,7 +164,7 @@ request 200 GET "/api/changes?since=$V1" '' "$DEVICE"
 
 # Device cannot ingest; ingest cannot touch items or read; sweeper creates
 # items and nothing else. Every rejection is an empty-bodied 403.
-request 403 POST /api/alerts '{"source":"hc","source_key":"k","title":"t"}' "$DEVICE"
+request 403 POST /api/alerts '{"source":"healthchecks/v1","source_key":"k","title":"t"}' "$DEVICE"
 [ -z "$BODY" ] || fail "403 leaked a body: $BODY"
 request 403 POST /api/items '{"id":"x","title":"t"}' "$INGEST"
 request 403 GET "/api/changes?since=0" '' "$INGEST"
@@ -161,10 +174,10 @@ request 403 GET "/api/changes?since=0" '' "$SWEEPER"
 # ------------------------------------------------------------- alerts
 
 # First raise -> 201; identical re-raise -> 200 with the same version.
-request 201 POST /api/alerts '{"source":"hc","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
+request 201 POST /api/alerts '{"source":"healthchecks/v1","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
 AV=$(jq -r '.version' <<<"$BODY")
 ALERT_ID=$(jq -r '.id' <<<"$BODY")
-request 200 POST /api/alerts '{"source":"hc","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
+request 200 POST /api/alerts '{"source":"healthchecks/v1","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
 [ "$(jq -r '.version' <<<"$BODY")" = "$AV" ] || fail "identical re-raise bumped: $BODY"
 request 200 GET "/api/changes?since=0" '' "$DEVICE"
 [ "$(jq -r '.alerts | length' <<<"$BODY")" = "1" ] || fail "alert count in delta: $BODY"

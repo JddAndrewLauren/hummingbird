@@ -36,12 +36,16 @@ impl Scope {
 
 /// Token metadata as the admin list/replay endpoints return it — everything
 /// in the `tokens` row except the hash.
+///
+/// `source` (#145) binds an `ingest` token to exactly one webhook source —
+/// `Some` for every `ingest` token, always `None` for `device`/`sweeper`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenInfo {
     pub id: String,
     /// 'pixel-9', 'sweeper', 'home-assistant', …
     pub name: String,
     pub scope: Scope,
+    pub source: Option<String>,
     pub created_at: i64,
     pub last_seen: Option<i64>,
     pub revoked_at: Option<i64>,
@@ -55,6 +59,7 @@ pub struct MintedToken {
     pub id: String,
     pub name: String,
     pub scope: Scope,
+    pub source: Option<String>,
     pub created_at: i64,
     pub token: String,
 }

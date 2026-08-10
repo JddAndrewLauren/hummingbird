@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::context::{Alert, ContextSnapshot, Setting};
 use crate::item::{Energy, Item, Size, Stage};
 use crate::project::{Fog, Project, Route};
+use crate::rule::{Condition, Rule, Tier};
 use crate::step::{BlockedBy, Step};
 use crate::token::Scope;
 
@@ -42,7 +43,7 @@ pub struct CreateItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_pos: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub due_date: Option<String>,
+    pub deadline: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +95,10 @@ non_null_shim!(non_null_question, String, "question");
 non_null_shim!(non_null_position, i64, "position");
 non_null_shim!(non_null_body, String, "body");
 non_null_shim!(non_null_done, bool, "done");
+non_null_shim!(non_null_conditions, Vec<Condition>, "conditions");
+non_null_shim!(non_null_severity, String, "severity");
+non_null_shim!(non_null_tier, Tier, "tier");
+non_null_shim!(non_null_enabled, bool, "enabled");
 
 /// `PATCH /api/items/:id` body: `expected_version` plus absolute-value
 /// sets. Every mutation states the entire new value of each field it
@@ -126,7 +131,7 @@ pub struct ItemPatch {
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub project_pos: Option<Option<i64>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
-    pub due_date: Option<Option<String>>,
+    pub deadline: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub scheduled_date: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
@@ -234,6 +239,46 @@ pub struct BlockedByPatch {
     pub removed_at: Option<Option<i64>>,
 }
 
+/// `POST /api/rules` body. `id` is client-supplied so the create is
+/// idempotent by it, same rule as [`CreateItem`]. `event_kind` is nullable
+/// with no closed vocabulary (ADR-0013): `None` matches any kind.
+/// `enabled` defaults to `true` — a saved rule starts live.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRule {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<String>,
+    pub conditions: Vec<Condition>,
+    pub severity: String,
+    pub tier: Tier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// `PATCH /api/rules/:id` body: `expected_version` plus absolute-value
+/// sets, the same CAS contract as [`ItemPatch`]. `event_kind` is the one
+/// nullable column — double-`Option`, `null` clears it to "any kind" — every
+/// other field is `NOT NULL` and rejects an explicit `null`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RulePatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "non_null_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<Option<String>>,
+    #[serde(default, deserialize_with = "non_null_conditions", skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<Vec<Condition>>,
+    #[serde(default, deserialize_with = "non_null_severity", skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(default, deserialize_with = "non_null_tier", skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
+    #[serde(default, deserialize_with = "non_null_enabled", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
 /// `PUT /api/settings/:key` body. `expected_version: 0` is the create case
 /// (idempotent: a replay against the identical stored value is a no-op 200).
 /// `value` is typed JSON on the wire and stored as its canonical
@@ -249,9 +294,16 @@ pub struct PutSetting {
 /// `expected_version`: webhook sources cannot track versions, and the
 /// upsert on `(source, source_key)` is inherently absolute — the source is
 /// authoritative for its own fields (ADR-0009 rule 3). Every source-owned
-/// field is set from this payload on each raise (absent = NULL), except
-/// that an absent `raised_at` keeps the stored stamp on a re-raise;
-/// `dismissed_at` is human-owned and never touched by ingest.
+/// field is set from this payload on each raise (absent = NULL), with two
+/// exceptions: an absent `raised_at` keeps the stored stamp on a re-raise,
+/// and an absent `severity` keeps the stored value, rather than clearing
+/// it, while the existing alert is still live (ADR-0014's ratchet) — a
+/// mint against a live alert may only raise severity, and clearing on
+/// absence would let a second, lower-severity mint quietly downgrade it,
+/// since the handler cannot tell that mint apart from the source's own
+/// next ping. Once the alert has left live, an absent `severity` clears
+/// like every other optional. `dismissed_at` is human-owned and never
+/// touched by ingest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlertIngest {
@@ -287,12 +339,19 @@ pub struct AlertPatch {
 /// `POST /api/admin/tokens` body. `id` is client-supplied so the mint is
 /// idempotent — but the plaintext token is shown only on the 201; a replay
 /// returns the stored metadata without it (only the hash is kept).
+///
+/// `source` binds an `ingest` token to exactly one webhook source (#145,
+/// ADR-0008's "one token per ingest source"): required when `scope` is
+/// `ingest`, rejected for every other scope. The mint handler validates the
+/// pairing; this shape just carries it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MintToken {
     pub id: String,
     pub name: String,
     pub scope: Scope,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// `GET /api/changes?since=N` (and `GET /api/sweep`, which is the same
@@ -301,7 +360,9 @@ pub struct MintToken {
 ///
 /// `tokens` and `meta` are deliberately absent: tokens are per-writer
 /// machinery that never syncs to clients, and `meta`'s counter is the
-/// `version` field itself.
+/// `version` field itself. `push_targets` and `deliveries` are absent too,
+/// for the same reason as `tokens`: neither carries a `version` column
+/// (#131) — they are server-side machinery, not delta-pulled records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangesResponse {
     pub version: i64,
@@ -314,6 +375,11 @@ pub struct ChangesResponse {
     pub alerts: Vec<Alert>,
     pub context_snapshots: Vec<ContextSnapshot>,
     pub settings: Vec<Setting>,
+    /// `#[serde(default)]`: a server response predating #131 (or a fixture
+    /// written before it) carries no `rules` key at all — absent, not
+    /// empty, and must still deserialize rather than fail the whole pull.
+    #[serde(default)]
+    pub rules: Vec<Rule>,
 }
 
 impl ChangesResponse {
@@ -331,6 +397,7 @@ impl ChangesResponse {
             alerts: vec![],
             context_snapshots: vec![],
             settings: vec![],
+            rules: vec![],
         }
     }
 }
@@ -368,7 +435,7 @@ mod tests {
         assert_eq!(p.expected_version, 3);
         assert_eq!(p.description, Some(None), "explicit null = clear");
         assert_eq!(p.context, Some(Some("@calls".into())), "value = set");
-        assert_eq!(p.due_date, None, "absent = untouched");
+        assert_eq!(p.deadline, None, "absent = untouched");
         assert_eq!(p.title, None);
     }
 
@@ -457,18 +524,7 @@ mod tests {
     /// is the export".
     #[test]
     fn changes_response_carries_exactly_the_synced_tables() {
-        let empty = ChangesResponse {
-            version: 0,
-            projects: vec![],
-            routes: vec![],
-            fog: vec![],
-            items: vec![],
-            steps: vec![],
-            blocked_by: vec![],
-            alerts: vec![],
-            context_snapshots: vec![],
-            settings: vec![],
-        };
+        let empty = ChangesResponse::empty(0);
         let value = serde_json::to_value(&empty).unwrap();
         // serde_json::Map sorts keys, so compare the set, not the order.
         let keys: Vec<&str> = value.as_object().unwrap().keys().map(|k| k.as_str()).collect();
@@ -483,15 +539,40 @@ mod tests {
             "alerts",
             "context_snapshots",
             "settings",
+            "rules",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected);
     }
 
+    /// The acceptance criterion: `rules` participates in the delta pull like
+    /// any other entity — it must appear on the wire, not sit beside it.
+    #[test]
+    fn changes_response_carries_rules() {
+        let rule = Rule {
+            id: "r-1".into(),
+            name: "n".into(),
+            event_kind: None,
+            conditions: vec![],
+            severity: "high".into(),
+            tier: Tier::Urgent,
+            enabled: true,
+            updated_at: 0,
+            version: 1,
+        };
+        let response = ChangesResponse {
+            rules: vec![rule.clone()],
+            ..ChangesResponse::empty(1)
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let back: ChangesResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rules, vec![rule]);
+    }
+
     #[test]
     fn alert_ingest_has_no_expected_version() {
         let a: AlertIngest = serde_json::from_str(
-            r#"{"source": "healthchecks", "source_key": "sweeper", "title": "down"}"#,
+            r#"{"source": "healthchecks/v1", "source_key": "sweeper", "title": "down"}"#,
         )
         .unwrap();
         assert_eq!(a.raised_at, None, "server clock fills it");

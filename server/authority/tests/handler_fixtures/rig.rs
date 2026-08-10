@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use hummingbird_authority::{
     handle, init_schema, ApiRequest, ApiResponse, Entropy, HandleContext, Row, SqlError, SqlValue,
 };
-use hummingbird_domain::Item;
+use hummingbird_domain::{Item, Rule};
 use sha2::{Digest, Sha256};
 
 // Re-exported so every suite gets the trait (for `sql.exec`) with `rig::*`.
@@ -67,6 +67,12 @@ impl RusqliteSql {
             ("rig-sweeper", "sweeper", SWEEPER_TOKEN),
             ("rig-ingest", "ingest", INGEST_TOKEN),
         ] {
+            // Seeded with no `source`: a deliberate stand-in for the
+            // pre-#145 unbound ingest token. `ingest_alert` rebinds
+            // `rig-ingest` to whatever source each fixture's payload names,
+            // so existing suites (each exercising a different source
+            // string) keep passing under the new binding check without
+            // having to agree on one shared source.
             sql.exec(
                 "INSERT INTO tokens (id, name, scope, token_hash, created_at) \
                  VALUES (?, ?, ?, ?, 0)",
@@ -268,9 +274,37 @@ pub fn put_setting(sql: &dyn Sql, key: &str, body: &str, now_ms: i64) -> ApiResp
     req(sql, "PUT", &format!("/api/settings/{key}"), None, Some(body), now_ms)
 }
 
-/// Webhook ingest — the one route that speaks with the ingest scope.
+pub fn post_rule(sql: &dyn Sql, body: &str, now_ms: i64) -> ApiResponse {
+    post_to(sql, "/api/rules", body, now_ms)
+}
+
+pub fn patch_rule(sql: &dyn Sql, id: &str, body: &str, now_ms: i64) -> ApiResponse {
+    patch_at(sql, &format!("/api/rules/{id}"), body, now_ms)
+}
+
+/// Webhook ingest — the one route that speaks with the ingest scope. Rebinds
+/// the rig's ingest token (#145) to whatever `source` the body names before
+/// every call, so callers can keep using whichever source string their
+/// fixture cares about without a 403 from the new binding check; use
+/// `req_as` with `INGEST_TOKEN` directly (as the mismatch tests do) to
+/// exercise a stale binding instead.
 pub fn ingest_alert(sql: &dyn Sql, body: &str, now_ms: i64) -> ApiResponse {
+    let source = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    bind_ingest_token(sql, &source);
     req_as(sql, INGEST_TOKEN, "POST", "/api/alerts", None, Some(body), now_ms)
+}
+
+/// Rebind `rig-ingest`'s bound source directly through the seam (mint's own
+/// pairing validation is exercised in `admin_tokens.rs`, not here).
+pub fn bind_ingest_token(sql: &dyn Sql, source: &str) {
+    sql.exec(
+        "UPDATE tokens SET source = ? WHERE id = 'rig-ingest'",
+        &[SqlValue::Text(source.to_string())],
+    )
+    .expect("rebinding the rig ingest token");
 }
 
 // -------------------------------------------------------- body helpers
@@ -282,6 +316,10 @@ pub fn body_as<T: serde::de::DeserializeOwned>(resp: &ApiResponse) -> T {
 }
 
 pub fn item(resp: &ApiResponse) -> Item {
+    body_as(resp)
+}
+
+pub fn rule(resp: &ApiResponse) -> Rule {
     body_as(resp)
 }
 
@@ -320,6 +358,58 @@ pub fn seed_item(sql: &dyn Sql, id: &str) -> i64 {
         resp.body
     );
     item(&resp).version
+}
+
+/// Create a rule through the handler and return it.
+pub fn seed_rule(sql: &dyn Sql, id: &str) -> Rule {
+    let resp = post_rule(
+        sql,
+        &format!(
+            r#"{{"id": "{id}", "name": "seeded {id}", "conditions": [], "severity": "normal", "tier": "normal"}}"#
+        ),
+        0,
+    );
+    assert!(
+        resp.status == 201 || resp.status == 200,
+        "rule seed failed: {}",
+        resp.body
+    );
+    rule(&resp)
+}
+
+/// `push_targets` has no #131 write handler (that HTTP surface is #139), so
+/// it is seeded through the seam directly, like `alerts` was in #114.
+pub fn seed_push_target_raw(sql: &dyn Sql, id: &str, name: &str) {
+    sql.exec(
+        "INSERT INTO push_targets (id, name, platform, fcm_token, created_at) \
+         VALUES (?, ?, 'android', 'tok', 0)",
+        &[SqlValue::Text(id.into()), SqlValue::Text(name.into())],
+    )
+    .unwrap();
+}
+
+/// `deliveries` has no #131 write handler either (#139); seeded raw for the
+/// dedupe-key fixtures.
+pub fn seed_delivery_raw(
+    sql: &dyn Sql,
+    id: &str,
+    alert_id: &str,
+    rule_id: &str,
+    generation: i64,
+    severity: &str,
+) -> Result<(), SqlError> {
+    sql.exec(
+        "INSERT INTO deliveries (id, alert_id, rule_id, generation, severity, tier, sent_at) \
+         VALUES (?, ?, ?, ?, ?, 'normal', 0)",
+        &[
+            SqlValue::Text(id.into()),
+            SqlValue::Text(alert_id.into()),
+            SqlValue::Text(rule_id.into()),
+            SqlValue::Integer(generation),
+            SqlValue::Text(severity.into()),
+        ],
+    )
+    .map(|_| ())
 }
 
 /// The two tables without a #114 write handler are seeded through the seam

@@ -1,18 +1,23 @@
 //! The full owned schema, verbatim from ADR-0009 as amended 2026-08-09
-//! (`scheduled_date`, `settings`). Eleven tables and five indexes; the
-//! notification-lane tables (`rules`, `push_targets`, the delivery log)
-//! carry their DDL in ADR-0012 and land with their own slice (#131), not
-//! here.
+//! (`scheduled_date`, `settings`), plus the notification lane's three
+//! tables (ADR-0012, amended by ADR-0013) landed here in their own slice
+//! (#131). Fourteen tables and six indexes; `tokens` gained a `source`
+//! column in #145.
 
 use crate::sql::{Sql, SqlError, SqlValue};
 
 /// Bumped when the DDL changes shape; stored in `meta.schema_version`.
-/// 1 was the S0 slice (`meta` + `items`, no FK); 2 is the full ADR-0009
-/// DDL. The bump is additive-only — every pre-2 consumer is ephemeral
-/// (in-memory fixtures, a `wrangler dev` state dir the smoke script wipes),
-/// so there is no migration engine; the first breaking DDL change after a
-/// production deploy earns one.
-pub const SCHEMA_VERSION: i64 = 2;
+/// 1 was the S0 slice (`meta` + `items`, no FK); 2 was the full ADR-0009
+/// DDL; 3 adds the notification lane (`rules`, `push_targets`,
+/// `deliveries`, #131). The bump is additive-only — every pre-3 consumer is
+/// ephemeral (in-memory fixtures, a `wrangler dev` state dir the smoke
+/// script wipes), so there is no migration engine; the first breaking DDL
+/// change after a production deploy earns one. `tokens.source` (#145) does
+/// not bump it: nothing is deployed yet (same doctrine #153 used for the
+/// `deadline` rename), so the fixture standing in for the frozen v2 shape
+/// is simply re-frozen to already carry the column, per the ephemeral-store
+/// doctrine — not a real ALTER TABLE-worthy migration.
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -74,7 +79,7 @@ CREATE TABLE IF NOT EXISTS items (
   priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
   project_id  TEXT REFERENCES projects(id),
   project_pos INTEGER,
-  due_date    TEXT,
+  deadline    TEXT,
   scheduled_date TEXT,
   source      TEXT,
   source_key  TEXT,
@@ -148,29 +153,94 @@ CREATE TABLE IF NOT EXISTS settings (
 )";
 
 /// Per-writer bearer auth (ADR-0008). Never synced: no `version` column —
-/// tokens are outside the delta contract by construction.
+/// tokens are outside the delta contract by construction. `source` (#145)
+/// binds an `ingest` token to exactly one webhook source, per ADR-0008's
+/// "one token per ingest source" — nullable at the column level (raw seams
+/// like the test rig still write rows directly), but the mint handler
+/// requires it for `ingest` and rejects it for every other scope, and the
+/// alert-ingest handler 403s a payload naming a different source than the
+/// token is bound to.
 pub const CREATE_TOKENS: &str = "\
 CREATE TABLE IF NOT EXISTS tokens (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   scope      TEXT NOT NULL CHECK (scope IN ('device','sweeper','ingest')),
+  source     TEXT,
   token_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   last_seen  INTEGER,
   revoked_at INTEGER
 )";
 
-const CREATE_INDEXES: [&str; 5] = [
+/// The notification lane (ADR-0012, amended by ADR-0013). `event_kind` is
+/// nullable with **no `CHECK`** — an open registry key, `NULL` = any kind;
+/// a `CHECK` here would freeze the registry in the database, which is
+/// exactly what #133 avoids by keeping it in code. `conditions` is JSON
+/// (`[{field, op, value, negate}]`, the `negate` member new in 0013) with no
+/// column-level shape enforcement — the typed catalogue lives in `domain`,
+/// validated at save by the rule engine (#133), not by SQLite. `severity`
+/// stays `NOT NULL` even though it is unused for `mints: false` kinds.
+pub const CREATE_RULES: &str = "\
+CREATE TABLE IF NOT EXISTS rules (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  event_kind TEXT,
+  conditions TEXT NOT NULL,
+  severity   TEXT NOT NULL,
+  tier       TEXT NOT NULL CHECK (tier IN ('urgent','normal')),
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL,
+  version    INTEGER NOT NULL
+)";
+
+/// FCM registrations (ADR-0012): the notification sibling of `tokens`,
+/// individually revocable. No `version` — server-side machinery outside the
+/// delta-pull contract, like `tokens`; the HTTP surface that creates and
+/// revokes rows here is #139.
+pub const CREATE_PUSH_TARGETS: &str = "\
+CREATE TABLE IF NOT EXISTS push_targets (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  platform   TEXT NOT NULL CHECK (platform IN ('android','ios')),
+  fcm_token  TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_seen  INTEGER,
+  revoked_at INTEGER
+)";
+
+/// The delivery log (ADR-0012, amended by ADR-0014): the durable memory of
+/// what rang. `UNIQUE(alert_id, rule_id, generation, severity)` is the
+/// dedupe key #139's transitions-only dedupe reads — an identical re-raise
+/// of a live alert must not insert a second row for the *same* rule.
+/// `rule_id` is in the key deliberately (ADR-0014): a delivery is one
+/// rule's ring, not the alert's — N matching rules produce N delivery rows
+/// even when they agree on severity, so `rule_id` must not collapse them.
+/// No `version`: an append-only log, outside the delta-pull contract like
+/// `push_targets`.
+pub const CREATE_DELIVERIES: &str = "\
+CREATE TABLE IF NOT EXISTS deliveries (
+  id         TEXT PRIMARY KEY,
+  alert_id   TEXT NOT NULL REFERENCES alerts(id),
+  rule_id    TEXT NOT NULL REFERENCES rules(id),
+  generation INTEGER NOT NULL,
+  severity   TEXT NOT NULL,
+  tier       TEXT NOT NULL,
+  sent_at    INTEGER NOT NULL,
+  UNIQUE(alert_id, rule_id, generation, severity)
+)";
+
+const CREATE_INDEXES: [&str; 6] = [
     "CREATE INDEX IF NOT EXISTS idx_items_version ON items(version)",
     "CREATE INDEX IF NOT EXISTS idx_steps_version ON steps(version)",
     "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_steps_item    ON steps(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_rules_version ON rules(version)",
 ];
 
 /// Every table, parents before children (routes/fog reference projects,
-/// steps/blocked_by reference items).
-const CREATE_TABLES: [&str; 11] = [
+/// steps/blocked_by reference items, deliveries references alerts/rules).
+const CREATE_TABLES: [&str; 14] = [
     CREATE_META,
     CREATE_PROJECTS,
     CREATE_ROUTES,
@@ -182,6 +252,9 @@ const CREATE_TABLES: [&str; 11] = [
     CREATE_CONTEXT_SNAPSHOTS,
     CREATE_SETTINGS,
     CREATE_TOKENS,
+    CREATE_RULES,
+    CREATE_PUSH_TARGETS,
+    CREATE_DELIVERIES,
 ];
 
 /// Idempotent: safe to run on every Durable Object construction. A schema-1

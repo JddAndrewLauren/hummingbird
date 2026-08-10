@@ -63,7 +63,9 @@
 //! — an empty *mirror* would merely be refilled by the next pull, but an
 //! empty *queue* would be silent loss of every capture made while offline,
 //! so this function does not special-case either table down to "start
-//! fresh".
+//! fresh" on an error. A *schema-version* mismatch is the one place those
+//! two tables diverge — the mirror is discarded and rebuilt, the queue is
+//! loaded anyway; see [`SyncCycle::load`].
 //!
 //! **Time and jitter are both injected.** `now_ms` and `jitter_unit` are
 //! caller-supplied on every call, never sampled internally — the same
@@ -275,20 +277,37 @@ where
         }
     }
 
-    /// Loads the queue and the mirror from their stores. "Nothing written
-    /// yet" (`Ok(None)`) is the only case that defaults to an empty table —
-    /// any other error propagates as `Err` rather than being silently
-    /// mapped to the same default, per the module docs' forwarded-review
-    /// note: a schema-shape `Deserialize` failure on the queue must never
-    /// look like "the device has no pending offline captures".
+    /// Loads the queue and the mirror from their stores. A `Deserialize`
+    /// failure on either propagates as `Err` rather than being silently
+    /// mapped to an empty table, per the module docs' forwarded-review
+    /// note: a schema-shape failure on the queue must never look like "the
+    /// device has no pending offline captures".
+    ///
+    /// **The envelope's schema version is checked, and the two tables
+    /// answer it differently.** A snapshot written at any version other
+    /// than the current one is discarded for the *mirror*
+    /// (rebuilt by the next pull, which — with `last_full_sweep_at_ms`
+    /// starting `None` — is the full-sweep backstop) and kept for the
+    /// *queue*. That asymmetry is #102's recorded decision, pinned by
+    /// `queue::tests::a_schema_version_bump_loads_the_old_queue_rather_than_emptying_it`:
+    /// "for the mirror an empty result is harmless ... but for the queue it
+    /// is silent loss of captures the user made". The check is what makes
+    /// the version constants load-bearing rather than decorative, and it is
+    /// needed because the dangerous shape changes are exactly the ones
+    /// serde cannot see: #153's `due_date` → `deadline` rename leaves old
+    /// bytes deserialising cleanly, with every deadline quietly `None`.
     pub async fn load(queue_store: QS, mirror_store: MS) -> Result<Self, LoadError<QS::Error, MS::Error>> {
         let queue = match load_snapshot::<OutboundQueue, _>(&queue_store).await {
+            // Deliberately version-blind: old bytes are loaded anyway.
             Ok(Some(envelope)) => envelope.payload,
             Ok(None) => OutboundQueue::new(),
             Err(error) => return Err(LoadError::Queue(error)),
         };
         let mirror = match load_snapshot::<SyncMirror, _>(&mirror_store).await {
-            Ok(Some(envelope)) => envelope.payload,
+            Ok(Some(envelope)) if envelope.schema_version == SYNC_MIRROR_SCHEMA_VERSION => {
+                envelope.payload
+            }
+            Ok(Some(_)) => SyncMirror::new(),
             Ok(None) => SyncMirror::new(),
             Err(error) => return Err(LoadError::Mirror(error)),
         };
@@ -665,7 +684,7 @@ mod tests {
             priority: 0,
             project_id: None,
             project_pos: None,
-            due_date: None,
+            deadline: None,
             scheduled_date: None,
             source: None,
             source_key: None,
@@ -1495,6 +1514,70 @@ mod tests {
         assert!(
             matches!(result, Err(LoadError::Queue(SnapshotError::Deserialize(_)))),
             "a shape mismatch must surface as an error, never as an empty queue"
+        );
+    }
+
+    /// The mirror half of the schema-version asymmetry (#153): a stored
+    /// mirror whose envelope version is not the current one is *discarded*,
+    /// not trusted, because a shape change like #153's `due_date` →
+    /// `deadline` rename deserialises perfectly cleanly into the current
+    /// shape while silently meaning something else. The envelope version is
+    /// the only thing that can tell those bytes apart, so this test writes
+    /// a mirror that would load fine and proves the version alone rejects
+    /// it.
+    ///
+    /// The queue in the same load takes the opposite branch, on purpose:
+    /// see `queue::tests::a_schema_version_bump_loads_the_old_queue_rather_than_emptying_it`
+    /// — an empty mirror costs one full sweep, an empty queue is silent
+    /// loss of captures the user made offline.
+    #[tokio::test]
+    async fn load_discards_a_mirror_at_a_stale_schema_version_but_keeps_the_queue() {
+        let mirror_store = MemorySnapshotStore::default();
+        let mut stale_mirror = SyncMirror::new();
+        stale_mirror.apply_sweep(
+            ChangesResponse {
+                version: 7,
+                items: vec![item_fixture("a-1", hummingbird_domain::Stage::Ready)],
+                ..ChangesResponse::empty(7)
+            },
+            1_000,
+        );
+        save_snapshot(&mirror_store, SYNC_MIRROR_SCHEMA_VERSION - 1, 0, stale_mirror.clone())
+            .await
+            .unwrap();
+        // Sanity: these bytes are not corrupt — they load into the current
+        // shape without complaint. Only the version says otherwise.
+        assert!(
+            load_snapshot::<SyncMirror, _>(&mirror_store)
+                .await
+                .unwrap()
+                .is_some(),
+            "the stale payload must itself be perfectly deserialisable — that is the danger"
+        );
+
+        let queue_store = MemorySnapshotStore::default();
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(create_entry("m-1", "a-1"));
+        save_snapshot(&queue_store, QUEUE_SCHEMA_VERSION - 1, 0, queue)
+            .await
+            .unwrap();
+
+        let cycle = SyncCycle::load(queue_store, mirror_store).await.unwrap();
+
+        assert_eq!(
+            cycle.mirror(),
+            &SyncMirror::new(),
+            "a mirror at another schema version must be discarded and rebuilt, not trusted"
+        );
+        assert_eq!(
+            cycle.mirror().version(),
+            0,
+            "the discarded mirror's delta cursor goes with it, so the next pull rebuilds from scratch"
+        );
+        assert_eq!(
+            cycle.queue().len(),
+            1,
+            "the queue keeps its entries across a version mismatch — the deliberate asymmetry"
         );
     }
 
