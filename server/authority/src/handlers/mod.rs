@@ -11,6 +11,7 @@ mod fog;
 mod items;
 mod projects;
 mod routes;
+mod rules;
 mod settings;
 mod steps;
 
@@ -120,17 +121,21 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         }
         ("POST", ["alerts"]) => alerts::ingest(req.body, now_ms, sql),
         ("PATCH", ["alerts", id]) if !id.is_empty() => alerts::dismiss(id, req.body, now_ms, sql),
+        ("POST", ["rules"]) => rules::create(req.body, now_ms, sql),
+        ("PATCH", ["rules", id]) if !id.is_empty() => rules::patch(id, req.body, now_ms, sql),
         ("GET", ["changes"]) => changes::changes(req.query, sql),
         ("GET", ["sweep"]) => changes::sweep(sql),
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
         (
             _,
-            ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "changes"
-                | "sweep"],
+            ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "rules"
+                | "changes" | "sweep"],
         ) => Ok(method_not_allowed()),
-        (_, ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts", id])
-            if !id.is_empty() =>
+        (
+            _,
+            ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts" | "rules", id],
+        ) if !id.is_empty() =>
         {
             Ok(method_not_allowed())
         }

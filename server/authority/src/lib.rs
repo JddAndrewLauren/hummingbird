@@ -42,8 +42,8 @@ mod tests {
     /// CHECK literals — the equivalence every write and read leans on.
     #[test]
     fn enum_strings_appear_in_the_ddl() {
-        use crate::schema::{CREATE_ITEMS, CREATE_TOKENS};
-        use hummingbird_domain::{Energy, Scope, Size, Stage};
+        use crate::schema::{CREATE_ITEMS, CREATE_PUSH_TARGETS, CREATE_RULES, CREATE_TOKENS};
+        use hummingbird_domain::{Energy, Platform, Scope, Size, Stage, Tier};
 
         for stage in Stage::ALL {
             assert!(
@@ -65,5 +65,22 @@ mod tests {
                 scope.as_str(),
             );
         }
+        for tier in Tier::ALL {
+            assert!(
+                CREATE_RULES.contains(&format!("'{}'", tier.as_str())),
+                "tier `{}` missing from the rules DDL CHECK",
+                tier.as_str(),
+            );
+        }
+        for platform in Platform::ALL {
+            assert!(
+                CREATE_PUSH_TARGETS.contains(&format!("'{}'", platform.as_str())),
+                "platform `{}` missing from the push_targets DDL CHECK",
+                platform.as_str(),
+            );
+        }
+        // event_kind is deliberately absent from this test: ADR-0013 drops
+        // its CHECK, and asserting a closed set here would reintroduce the
+        // frozen registry the amendment removed.
     }
 }
