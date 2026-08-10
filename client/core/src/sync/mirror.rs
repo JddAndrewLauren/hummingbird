@@ -205,6 +205,22 @@ impl SyncMirror {
         live(self.alerts.get(id))
     }
 
+    /// One server-polled gauge, by its `(source, key)` identity — the row a
+    /// standing question's pane reads (ADR-0015). Live only: a snapshot the
+    /// server has stopped sending is demoted like every other record
+    /// (ADR-0003), and reading a demoted gauge as a current answer is
+    /// exactly the "quietly empty" ADR-0015 rules out.
+    ///
+    /// Takes the key by halves and allocates to look it up: the map is
+    /// keyed by an owned tuple, which `BTreeMap` cannot probe with a
+    /// `(&str, &str)`. Two allocations per pane read, against a map with a
+    /// handful of entries.
+    pub fn context_snapshot(&self, source: &str, key: &str) -> Option<&ContextSnapshot> {
+        live(self
+            .context_snapshots
+            .get(&(source.to_string(), key.to_string())))
+    }
+
     pub fn setting(&self, key: &str) -> Option<&Setting> {
         live(self.settings.get(key))
     }

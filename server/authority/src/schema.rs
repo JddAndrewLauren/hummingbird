@@ -17,7 +17,18 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// `deadline` rename), so the fixture standing in for the frozen v2 shape
 /// is simply re-frozen to already carry the column, per the ephemeral-store
 /// doctrine — not a real ALTER TABLE-worthy migration.
-pub const SCHEMA_VERSION: i64 = 3;
+///
+/// 4 adds `alerts.subject_key` (ADR-0015), and is the **first growth that
+/// is not purely a new table**. 1→2 and 2→3 both only added tables, which
+/// `CREATE TABLE IF NOT EXISTS` grows for free; a new column on an existing
+/// table is a silent no-op on that same statement, so [`init_schema`] gains
+/// [`add_missing_columns`] — a real `ALTER TABLE` — and this is the bump
+/// ADR-0015 asks for rather than another re-freeze. Re-freezing was
+/// available (nothing is deployed, same as `tokens.source`) and was not
+/// taken: the ADR names `SCHEMA_VERSION` 3 → 4 explicitly, and a `wrangler
+/// dev` state dir is a genuinely-v3 store that outlives the change even if
+/// no production one does.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -113,6 +124,19 @@ CREATE TABLE IF NOT EXISTS blocked_by (
 )";
 
 /// Pushed context: discrete events raised at the app from outside.
+/// `subject_key` (ADR-0015) is nullable and joins an alert to the
+/// `context_snapshots` row a pane reads — `(source, subject_key)` ↔
+/// `(source, key)`; `source_key` stays occurrence identity and is never
+/// parsed for it.
+///
+/// **The last-column-inline formatting is load-bearing, not a typo.**
+/// `subject_key` must stay last among the columns, on `version`'s own line,
+/// before the `UNIQUE` constraint — because that is exactly the text SQLite
+/// splices in for `ALTER TABLE alerts ADD COLUMN subject_key TEXT`, and
+/// `init_schema_grows_a_schema_3_database_additively` asserts a migrated
+/// store and a fresh one hold **byte-identical** `sqlite_master.sql`.
+/// Reformatting this onto its own line breaks that test on whitespace
+/// alone.
 pub const CREATE_ALERTS: &str = "\
 CREATE TABLE IF NOT EXISTS alerts (
   id           TEXT PRIMARY KEY,
@@ -126,7 +150,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   resolved_at  INTEGER,
   dismissed_at INTEGER,
   expires_at   INTEGER,
-  version      INTEGER NOT NULL,
+  version      INTEGER NOT NULL, subject_key TEXT,
   UNIQUE(source, source_key)
 )";
 
@@ -259,11 +283,14 @@ const CREATE_TABLES: [&str; 14] = [
 
 /// Idempotent: safe to run on every Durable Object construction. A schema-1
 /// database is grown additively — the new tables are created, `items` stays
-/// as-is, and `schema_version` moves forward.
+/// as-is, and `schema_version` moves forward. Columns added to a table that
+/// already exists are the one growth `CREATE TABLE IF NOT EXISTS` cannot
+/// do; [`add_missing_columns`] runs after the create loop for those.
 pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
     for ddl in CREATE_TABLES.iter().chain(CREATE_INDEXES.iter()) {
         sql.exec(ddl, &[])?;
     }
+    add_missing_columns(sql)?;
     sql.exec(
         "INSERT OR IGNORE INTO meta (id, version, schema_version) VALUES (1, 0, ?)",
         &[SqlValue::Integer(SCHEMA_VERSION)],
@@ -276,4 +303,73 @@ pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
         ],
     )?;
     Ok(())
+}
+
+/// Every column added to an already-existing table since the schema was
+/// first written — today just `alerts.subject_key` (3→4, ADR-0015).
+///
+/// Runs **after** the create loop, which is what makes one rule cover every
+/// starting shape: by this point `alerts` certainly exists, either because
+/// the store already had it (v2, v3 — without the column) or because
+/// `CREATE_ALERTS` just made it complete (fresh, and v1, which had no
+/// `alerts` table at all). So the condition is not the stored
+/// `schema_version` but the column's actual presence: gating on the version
+/// would try to `ALTER` a v1 store's freshly-created, already-correct table
+/// and fail on a duplicate column.
+///
+/// Presence is read from `sqlite_master` rather than `PRAGMA table_info`,
+/// because the Durable Object's SQL storage permits only a narrow set of
+/// pragmas and a plain `SELECT` is the portable question.
+fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
+    if !column_exists(sql, "alerts", "subject_key")? {
+        sql.exec("ALTER TABLE alerts ADD COLUMN subject_key TEXT", &[])?;
+    }
+    Ok(())
+}
+
+/// Whether one table's stored DDL declares `column`.
+///
+/// The match is on whole identifiers, not a substring, and that is the
+/// difference between a correct answer and a silently skipped migration:
+/// `contains("key")` is true of any table carrying a `source_key`, so a
+/// later growth adding a genuinely absent `key` column would decide it was
+/// already there and never run its `ALTER`. Nothing would fail loudly —
+/// exactly the failure mode this whole function exists to close.
+fn column_exists(sql: &dyn Sql, table: &str, column: &str) -> Result<bool, SqlError> {
+    let rows = sql.exec(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        &[SqlValue::Text(table.to_string())],
+    )?;
+    let Some(ddl) = rows.first().and_then(|row| row.get("sql")).and_then(|v| v.as_text()) else {
+        return Err(SqlError {
+            message: format!("`{table}` is missing from sqlite_master after the create loop"),
+        });
+    };
+    Ok(ddl_declares_column(ddl, column))
+}
+
+/// The identifier match itself, split out so it is testable without a
+/// database — it is the part with a wrong answer available.
+fn ddl_declares_column(ddl: &str, column: &str) -> bool {
+    ddl.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|token| token == column)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_column_is_matched_as_a_whole_identifier_not_a_substring() {
+        let alerts = CREATE_ALERTS;
+        assert!(ddl_declares_column(alerts, "subject_key"));
+        assert!(ddl_declares_column(alerts, "source_key"));
+        // The bug this replaced: `contains` would call every one of these
+        // present, and `add_missing_columns` would skip an ALTER that was
+        // genuinely needed — silently, which is the failure mode the whole
+        // function exists to close.
+        for absent in ["key", "subject", "ubject_ke", "id_"] {
+            assert!(!ddl_declares_column(alerts, absent), "`{absent}` is not a column of alerts");
+        }
+    }
 }

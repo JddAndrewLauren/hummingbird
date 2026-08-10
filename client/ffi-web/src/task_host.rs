@@ -12,6 +12,7 @@
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
+use hummingbird_core::freshness::Freshness;
 use hummingbird_core::{
     ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction, TriageDestination,
     TriagePatch,
@@ -306,6 +307,22 @@ pub struct DeadLettersResponse {
     pub entries: Vec<DeadLetterEntryDTO>,
 }
 
+/// The wrapper around [`TaskHostCore::snapshot_freshness`]'s answer
+/// (ADR-0015). `freshness` is [`Freshness`]'s own serde shape —
+/// `{"state":"unknown"}` or `{"state":"age","age_ms":…,
+/// "declared_cadence_ms":…|null}` — deliberately re-exported rather than
+/// flattened into nullable fields here: a flattened `age_ms: null` is the
+/// boolean collapse ADR-0015 rejected, arriving in another costume.
+///
+/// The subtraction happens core-side, so what crosses is the finished
+/// answer. TS supplies only the threshold, per pane, because the driver is
+/// the cost of a wrong answer and not the cadence.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FreshnessResponse {
+    pub kind: &'static str,
+    pub freshness: Freshness,
+}
+
 /// The wrapper around [`TaskHostCore::mirror_snapshot`]'s answer — S9's
 /// mirror download button.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -488,6 +505,22 @@ impl TaskHostCore {
                     blocked_by: blocked_by.into_iter().map(|b| self.with_pending(b)).collect(),
                 })
                 .collect(),
+        }
+    }
+
+    /// How old this device's answer to one standing question is, per
+    /// [`Core::snapshot_freshness`] (ADR-0015). `now_ms` is host-supplied,
+    /// like every other clock read that crosses this seam.
+    ///
+    /// No row is `{"state":"unknown"}`, which `Freshness` guarantees can
+    /// never be read as fresh — including by the shim's busy answer, which
+    /// is the same `unknown` rather than a zero age (`lib.rs`'s
+    /// `BUSY_FRESHNESS`). A core that is still loading has not measured
+    /// anything.
+    pub fn snapshot_freshness(&self, source: &str, key: &str, now_ms: i64) -> FreshnessResponse {
+        FreshnessResponse {
+            kind: "ok",
+            freshness: self.core.snapshot_freshness(source, key, now_ms),
         }
     }
 
@@ -955,6 +988,39 @@ mod tests {
         assert_eq!(
             host.is_pending("some-id"),
             IsPendingResponse { kind: "ok", pending: false }
+        );
+    }
+
+    #[tokio::test]
+    async fn the_freshness_wire_shape_keeps_the_two_unknowns_apart() {
+        // What crosses is the finished answer, not the parts (ADR-0015).
+        // A host with nothing synced has measured nothing, and it must say
+        // so in a shape TS cannot mistake for a fresh, zero-age answer.
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-freshness");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host.snapshot_freshness("city-waste/v2", "next_collection", 100_000);
+        assert_eq!(
+            response,
+            FreshnessResponse { kind: "ok", freshness: Freshness::Unknown }
+        );
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","freshness":{"state":"unknown"}}"#,
+        );
+
+        // The second, different unknown — an age we know, a cadence we do
+        // not — must not serialize to the same thing.
+        assert_eq!(
+            serde_json::to_string(&FreshnessResponse {
+                kind: "ok",
+                freshness: Freshness::Age { age_ms: 0, declared_cadence_ms: None },
+            })
+            .unwrap(),
+            r#"{"kind":"ok","freshness":{"state":"age","age_ms":0,"declared_cadence_ms":null}}"#,
         );
     }
 

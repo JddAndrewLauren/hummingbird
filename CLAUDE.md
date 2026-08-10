@@ -35,7 +35,7 @@ open registry key, not a closed vocabulary), and `worker` (the thin `workers-rs`
 shim — one Worker, one SQLite-backed Durable Object). It carries the full
 amended ADR-0009 schema plus the notification lane's
 `rules`/`push_targets`/`deliveries` (14 tables,
-`SCHEMA_VERSION 3`, ADR-0012/0013/0014), entity-level CAS writes (absolute
+`SCHEMA_VERSION 4`, ADR-0012/0013/0014/0015), entity-level CAS writes (absolute
 sets + `expected_version`, 409 carries the current entity, creates
 idempotent by client id), the all-tables delta pull with `GET /api/sweep`
 as its byte-identical backstop, bearer-token auth (sha256 at rest; scopes
@@ -120,7 +120,37 @@ rather than passing `None`, because that handler sets source-owned fields
 What supersedes a resolution is a later raise — `raised_at` overtakes the
 stamp, the alert is live again and rings, and the stamp stays legible
 underneath. Note that `done` is a *resolution* boundary only: #138's
-evaluation boundary is still `archived_at` alone. Still no production deploy
+evaluation boundary is still `archived_at` alone.
+
+**ADR-0015's server half** is `SCHEMA_VERSION` 4, and it is the first growth
+that is not purely a new table: `alerts.subject_key` is a nullable column on
+an existing table, where `CREATE TABLE IF NOT EXISTS` is a silent no-op — the
+column would never appear while `schema_version` marched to 4 regardless. So
+`init_schema` gains `add_missing_columns`, a real `ALTER TABLE`, run *after*
+the create loop (by then `alerts` exists whatever the store started as) and
+gated on the column's actual presence read from `sqlite_master`, never on the
+stored `schema_version` — a v1 store's freshly-created table is already
+correct and gating on the version would try to add the column twice.
+**`CREATE_ALERTS` declares `subject_key` last and inline on `version`'s own
+line, and that formatting is load-bearing**: it is exactly the text SQLite
+splices in for `ADD COLUMN`, and the growth tests assert a migrated store and
+a fresh one hold byte-identical `sqlite_master.sql`, so reformatting it
+breaks them on whitespace alone. The column is the pane join's server half —
+`(source, subject_key)` ↔ `(source, key)`, *additive*, so an alert matching
+no pane still lives in `AlertsScreen` — and it is source-owned, set
+absolutely on every re-raise like `body`/`url`; `source_key` stays occurrence
+identity and is never parsed for it, and `sweep_tick` deliberately writes no
+`subject_key` at all, because an item is not a standing question and has no
+pane. `hummingbird_domain::SnapshotEnvelope` is the other half: the common
+`{ schema, polled_every_ms, body }` every `context_snapshots.payload` now
+carries, parsed shallowly — `body` is carried through opaque, an unrecognised
+`schema` is passed through untouched (it must never grow a `REGISTRY` check),
+an absent `polled_every_ms` is a legitimate state, and everything else is a
+typed `EnvelopeProblem` naming *what* was wrong, never a quietly empty
+answer. The panes, the client-side `Freshness` carve-out and the
+`city-waste/v2` + race source-registry entries are each their own slice.
+
+Still no production deploy
 (that is #95's human gate H3) — `wrangler dev` + `server/scripts/smoke.sh`
 locally, `.github/workflows/server.yml` in CI. **The test recipe is shared,
 not copied** (#229): `server-test.yml` is a `workflow_call`-only workflow
@@ -226,6 +256,36 @@ cite the actual decisive rule rather than a step index. The total order ends
 `the_same_snapshot_ranked_twice_is_byte_identical` is what pins that a
 repeat call is byte-identical. Nothing consumes it yet — it crosses no FFI
 seam; #116 is its caller.
+
+`client/core/src/freshness.rs` is the third top-level module, and ADR-0015's
+Rust half of the Rust/TS carve-out: `Freshness` is **not a boolean** but
+`Unknown | Age { age_ms, declared_cadence_ms: Option }`, because two
+different unknowns exist — `Unknown` is *we do not know the age*, `Age` with
+no cadence is *we know the age but not what normal looks like*. The
+invariant it exists to make unbreakable is that **`Unknown` may never render
+as fresh**: `age_ms()` returns an `Option` rather than a zero, and
+`is_stale_beyond(threshold)` — the one stale decision here — answers `true`
+for `Unknown` against every threshold, including `i64::MAX`. The **clock
+rule is stated once** in `measure`: both stamps are read against the
+device's clock, so a fetch stamp in the future means the clocks disagree,
+and age clamps to `0`; two prototypes independently hand-rolled
+`Math.max(0, now - fetchedAt)`, which is the drift the carve-out exists to
+stop, so no other caller in Rust or TS may repeat it. **The threshold is
+deliberately not here** — it stays in TS beside each pane's band function,
+because the driver is the cost of a wrong answer (waste calls 26h stale
+where `2 × cadence` would say 48h); a `stale_after_ms` field on this type is
+the rejected design. One type serves all four panes: `of_snapshot` takes the
+cadence from the row's `SnapshotEnvelope` (a broken envelope costs the
+cadence, not the age — the pane reads the `EnvelopeProblem` from its own
+parse), while the calendar lane passes ADR-0005's poll interval into
+`measure` directly. **The finished value is what crosses the seam**, not its
+parts (`Core::snapshot_freshness` → `task_host.rs`'s `FreshnessResponse`,
+`{"state":"unknown"}` or `{"state":"age",…}`): handing `fetched_at` over for
+TS to combine would put the subtraction back on the far side of the
+boundary, and the shim's busy answer is `unknown` for the same reason — a
+core that has not loaded has measured nothing. The generic pane read (for a
+source, its snapshot rows and its live alerts) is #119's and does not exist
+yet; nothing in TS consumes freshness until it does.
 
 ## The web worker layer
 

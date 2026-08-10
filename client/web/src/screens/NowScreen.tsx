@@ -18,6 +18,24 @@ import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
 import { applyItemAction, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+// PROTOTYPE (#119) — throwaway, dev-only, renders nothing without `?racepane`.
+// Shape settled (context panel); delete these two mounts with
+// `prototype-race-pane/`.
+import { RacePane, RacePaneSwitcher } from "./prototype-race-pane/RacePanePrototype";
+// PROTOTYPE (#122) — throwaway, dev-only, renders nothing without
+// `?weekendpane`. Delete these three mounts with `prototype-weekend-pane/`.
+import { WeekendPane, WeekendPaneSwitcher } from "./prototype-weekend-pane/WeekendPanePrototype";
+// PROTOTYPE (#121) — throwaway, dev-only, renders nothing without
+// `?vacationpane`. Shape decided (A, context panel); delete these two mounts
+// with `prototype-vacation-pane/` once it is folded into the real pane.
+import {
+  VacationPane,
+  VacationPaneSwitcher,
+} from "./prototype-vacation-pane/VacationPanePrototype";
+// PROTOTYPE (#120) — throwaway, dev-only, renders nothing without
+// `?wastepane`. A driveable world rather than fixed scenarios; delete these
+// two mounts with `prototype-waste-pane/`.
+import { WastePane, WastePaneSwitcher } from "./prototype-waste-pane/WastePanePrototype";
 import { computeUrgency } from "./urgency";
 
 function SnapshotTile({ snapshot }: { snapshot: DemoSnapshot }) {
@@ -277,7 +295,12 @@ export function NowScreen({
 
   return (
     <TwoColumn>
+      <RacePaneSwitcher />
+      <VacationPaneSwitcher />
+      <WeekendPaneSwitcher />
+      <WastePaneSwitcher />
       <Column>
+        <WeekendPane slot="banner" />
         {demo && top ? (
           <>
             <div>
@@ -354,6 +377,10 @@ export function NowScreen({
       </Column>
 
       <Aside label="Context">
+        <RacePane />
+        <WastePane />
+        <VacationPane />
+        <WeekendPane slot="aside" />
         <div>
           <span className="hb-meta">calendar context</span>
           <div

@@ -4,7 +4,7 @@
 //! goes through `sweep_tick` the same way that caller will, and asserts on
 //! the `TickMatch`es it returns plus the rows it did (and did not) touch.
 
-use hummingbird_authority::{sweep_tick, DeliveryOutcome, SuppressReason};
+use hummingbird_authority::{sweep_tick, DeliveryOutcome, SqlValue, SuppressReason};
 
 use crate::rig::*;
 
@@ -49,10 +49,17 @@ fn an_item_matching_a_time_predicate_mints_and_delivers_on_the_tick_it_becomes_t
         other => panic!("expected Logged, got {other:?}"),
     }
 
-    let alerts = sql.exec("SELECT source, source_key FROM alerts", &[]).unwrap();
+    let alerts = sql.exec("SELECT source, source_key, subject_key FROM alerts", &[]).unwrap();
     assert_eq!(alerts.len(), 1, "exactly one alert minted");
     assert_eq!(alerts[0].get("source").unwrap().as_text(), Some("item-threshold/v1"));
     assert_eq!(alerts[0].get("source_key").unwrap().as_text(), Some("item:it-1"));
+    // ADR-0015 rule 1: an item is not a standing question and has no pane,
+    // so the sweep names no subject — the join is left empty deliberately.
+    assert_eq!(
+        alerts[0].get("subject_key"),
+        Some(&SqlValue::Null),
+        "sweep_tick leaves subject_key NULL",
+    );
 
     let deliveries = sql.exec("SELECT id FROM deliveries", &[]).unwrap();
     assert_eq!(deliveries.len(), 1, "exactly one delivery row logged");

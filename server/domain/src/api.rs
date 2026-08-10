@@ -323,6 +323,12 @@ pub struct PutSetting {
 pub struct AlertIngest {
     pub source: String,
     pub source_key: String,
+    /// Optional (ADR-0015): the `context_snapshots.key` this alert is
+    /// *about*, when the source has one — the pane join's own half. Absent
+    /// is the norm and always legal; most sources answer no standing
+    /// question, and `sweep_tick` deliberately never sends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_key: Option<String>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,

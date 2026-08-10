@@ -34,6 +34,14 @@ pub fn ingest(
     if ingest.title.is_empty() {
         return Ok(error(400, "validation", "title must be non-empty"));
     }
+    // Absent is always legal — most sources answer no standing question.
+    // Present-but-empty is not: it is a `context_snapshots.key` that names
+    // nothing, and the pane join would silently match no subject rather
+    // than report the source's bug (ADR-0015's "visibly broken, never
+    // quietly empty", applied on the alert side of the same join).
+    if ingest.subject_key.as_deref() == Some("") {
+        return Ok(error(400, "validation", "subject_key must be non-empty when present"));
+    }
     if token_source != Some(ingest.source.as_str()) {
         return Ok(empty_status(403));
     }
@@ -63,6 +71,7 @@ pub(crate) fn upsert(
             id: deterministic_id(&ingest.source, &ingest.source_key),
             source: ingest.source,
             source_key: ingest.source_key,
+            subject_key: ingest.subject_key,
             title: ingest.title,
             body: ingest.body,
             url: ingest.url,
@@ -74,13 +83,14 @@ pub(crate) fn upsert(
             version,
         };
         sql.exec(
-            "INSERT INTO alerts (id, source, source_key, title, body, url, severity, \
+            "INSERT INTO alerts (id, source, source_key, subject_key, title, body, url, severity, \
              raised_at, resolved_at, dismissed_at, expires_at, version) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
             &[
                 SqlValue::Text(alert.id.clone()),
                 SqlValue::Text(alert.source.clone()),
                 SqlValue::Text(alert.source_key.clone()),
+                SqlValue::from_opt_text(alert.subject_key.as_deref()),
                 SqlValue::Text(alert.title.clone()),
                 SqlValue::from_opt_text(alert.body.as_deref()),
                 SqlValue::from_opt_text(alert.url.as_deref()),
@@ -115,6 +125,10 @@ pub(crate) fn upsert(
         ingest.severity
     };
     let next = Alert {
+        // Source-owned like title/body/url: set absolutely, so a source
+        // that stops naming a subject clears the join rather than leaving
+        // the alert bound to a subject it no longer claims.
+        subject_key: ingest.subject_key,
         title: ingest.title,
         body: ingest.body,
         url: ingest.url,
@@ -130,9 +144,10 @@ pub(crate) fn upsert(
 
     let version = read_meta_version(sql)? + 1;
     sql.exec(
-        "UPDATE alerts SET title = ?, body = ?, url = ?, severity = ?, raised_at = ?, \
-         resolved_at = ?, expires_at = ?, version = ? WHERE id = ?",
+        "UPDATE alerts SET subject_key = ?, title = ?, body = ?, url = ?, severity = ?, \
+         raised_at = ?, resolved_at = ?, expires_at = ?, version = ? WHERE id = ?",
         &[
+            SqlValue::from_opt_text(next.subject_key.as_deref()),
             SqlValue::Text(next.title.clone()),
             SqlValue::from_opt_text(next.body.as_deref()),
             SqlValue::from_opt_text(next.url.as_deref()),
@@ -306,6 +321,7 @@ pub(super) fn alert_from_row(row: &Row) -> Result<Alert, SqlError> {
         id: r.text("id")?,
         source: r.text("source")?,
         source_key: r.text("source_key")?,
+        subject_key: r.opt_text("subject_key"),
         title: r.text("title")?,
         body: r.opt_text("body"),
         url: r.opt_text("url"),

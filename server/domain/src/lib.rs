@@ -29,7 +29,7 @@ pub use api::{
     CreateStep, FogPatch, ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch, RulePatch,
     StepPatch, VERSION_CONFLICT,
 };
-pub use context::{Alert, ContextSnapshot, Setting};
+pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
 pub use deadline::{
     deadline_sort_key, is_valid_deadline, now_as_deadline, parse_duration, shift, DurationUnit,
 };
