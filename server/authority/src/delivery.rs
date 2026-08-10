@@ -38,6 +38,7 @@
 use hummingbird_domain::{Alert, PushTarget, Tier};
 
 use crate::handlers::push_targets::push_target_from_row;
+use crate::handlers::sha256_hex;
 use crate::sql::{Sql, SqlError, SqlValue};
 
 /// Everything the caller's async send step needs, independent of which
@@ -171,21 +172,43 @@ fn live_push_targets(sql: &dyn Sql) -> Result<Vec<PushTarget>, SqlError> {
         .collect()
 }
 
-/// `hex(sha256("delivery:" + alert_id + ":" + rule_id + ":" + generation +
-/// ":" + severity))[..32]` — stable across replays, mirroring
-/// `alerts::deterministic_id`. A retried `deliver` call for the same
-/// transition (a retried sweep tick) would land on the same row, but the
-/// already-logged check above absorbs it before this id is ever computed.
+/// `hex(sha256("delivery:" + len(alert_id) + ":" + alert_id + ":" +
+/// len(rule_id) + ":" + rule_id + ":" + generation + ":" +
+/// severity))[..32]` — stable across replays, mirroring
+/// `alerts::deterministic_id`. `alert_id` and `rule_id` are free text and
+/// each precede another field, so each is length-prefixed to keep the
+/// preimage unambiguous: without it, `(rule_id = "a:1", generation = 2,
+/// severity = "high")` and `(rule_id = "a", generation = 1,
+/// severity = "2:high")` collide on the same string. `generation` needs no
+/// prefix of its own — it is an `i64` printed in decimal, which can never
+/// contain the `:` delimiter — and `severity`, being the last field, needs
+/// none either. A retried `deliver` call for the same transition (a
+/// retried sweep tick) would land on the same row, but the already-logged
+/// check above absorbs it before this id is ever computed.
 fn deterministic_delivery_id(alert_id: &str, rule_id: &str, generation: i64, severity: &str) -> String {
-    use sha2::{Digest, Sha256};
-    use std::fmt::Write;
-
-    let preimage = format!("delivery:{alert_id}:{rule_id}:{generation}:{severity}");
-    let digest = Sha256::digest(preimage.as_bytes());
-    let mut id = digest.iter().fold(String::with_capacity(digest.len() * 2), |mut s, b| {
-        write!(s, "{b:02x}").expect("writing to a String cannot fail");
-        s
-    });
+    let preimage = format!(
+        "delivery:{}:{alert_id}:{}:{rule_id}:{generation}:{severity}",
+        alert_id.len(),
+        rule_id.len()
+    );
+    let mut id = sha256_hex(&preimage);
     id.truncate(32);
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the exact collision pair the issue reported: without the
+    /// length prefix on `rule_id`, `("a:1", 2, "high")` and `("a", 1,
+    /// "2:high")` both format to the same preimage string and therefore
+    /// the same id. With it, they must differ.
+    #[test]
+    fn deterministic_delivery_id_disambiguates_the_known_collision_pair() {
+        let alert_id = "shared-alert";
+        let a = deterministic_delivery_id(alert_id, "a:1", 2, "high");
+        let b = deterministic_delivery_id(alert_id, "a", 1, "2:high");
+        assert_ne!(a, b);
+    }
 }

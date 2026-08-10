@@ -24,6 +24,11 @@ pub(crate) use alerts::upsert as upsert_alert;
 pub(crate) use items::item_from_row;
 pub(crate) use rules::rule_from_row;
 
+// Re-exported for `delivery.rs` (#139/#220), so its id derivation shares
+// the one sha256+hex spelling `auth` and `alerts::deterministic_id` already
+// use rather than hand-rolling a third.
+pub(crate) use auth::sha256_hex;
+
 use hummingbird_domain::{ApiError, ConflictResponse, VERSION_CONFLICT};
 use serde::Serialize;
 

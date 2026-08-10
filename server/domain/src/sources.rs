@@ -95,11 +95,6 @@ impl SourceEntry {
     }
 }
 
-/// The frozen registry. Every entry's `source` carries a version suffix
-/// (enforced by `tests::every_registered_source_is_versioned`); every
-/// source below has at least one frozen key-vector test in this module,
-/// and the whole table is pinned verbatim by
-/// `tests::registry_matches_the_frozen_adr_0014_table`.
 /// `item-threshold/v1`'s frozen namespace, named as a `const` (not just a
 /// literal in the registry array below) so #138's DO alarm sweep — the one
 /// caller that mints under this source without going through a webhook —
@@ -113,6 +108,11 @@ impl SourceEntry {
 /// One `const`, two consumers, makes that drift a compile error instead.
 pub const ITEM_THRESHOLD_V1: &str = "item-threshold/v1";
 
+/// The frozen registry. Every entry's `source` carries a version suffix
+/// (enforced by `tests::every_registered_source_is_versioned`); every
+/// source below has at least one frozen key-vector test in this module,
+/// and the whole table is pinned verbatim by
+/// `tests::registry_matches_the_frozen_adr_0014_table`.
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: "gmail/v1",
