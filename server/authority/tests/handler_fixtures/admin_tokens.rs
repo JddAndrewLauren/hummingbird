@@ -63,10 +63,65 @@ fn mint_validation_400() {
         (r#"{"id": "t", "name": "", "scope": "device"}"#, "empty name"),
         (r#"{"id": "t", "name": "n", "scope": "admin"}"#, "admin is not a scope"),
         (r#"{"id": "t", "name": "n"}"#, "missing scope"),
+        (
+            r#"{"id": "t", "name": "n", "scope": "ingest"}"#,
+            "ingest without a source",
+        ),
+        (
+            r#"{"id": "t", "name": "n", "scope": "device", "source": "hc"}"#,
+            "device with a source",
+        ),
+        (
+            r#"{"id": "t", "name": "n", "scope": "sweeper", "source": "hc"}"#,
+            "sweeper with a source",
+        ),
     ] {
         let resp = req_admin(&sql, "POST", "/api/admin/tokens", Some(body), 0);
         assert_eq!(resp.status, 400, "{why}: {}", resp.body);
     }
+}
+
+#[test]
+fn mint_ingest_token_requires_and_stores_a_source() {
+    let sql = RusqliteSql::new();
+    let resp = req_admin(
+        &sql,
+        "POST",
+        "/api/admin/tokens",
+        Some(r#"{"id": "t-hc", "name": "healthchecks", "scope": "ingest", "source": "hc"}"#),
+        0,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    let minted: MintedToken = body_as(&resp);
+    assert_eq!(minted.source, Some("hc".to_string()));
+
+    let row_source = sql
+        .exec("SELECT source FROM tokens WHERE id = 't-hc'", &[])
+        .unwrap()[0]
+        .get("source")
+        .unwrap()
+        .as_text()
+        .map(str::to_string);
+    assert_eq!(row_source, Some("hc".to_string()));
+}
+
+#[test]
+fn a_null_source_token_remains_valid_for_non_ingest_scopes() {
+    let sql = RusqliteSql::new();
+    // The rig's device/sweeper tokens are seeded with a null source and
+    // must keep authenticating and working exactly as before #145.
+    let resp = req_as(&sql, DEVICE_TOKEN, "GET", "/api/changes", Some("since=0"), None, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let resp = req_as(
+        &sql,
+        SWEEPER_TOKEN,
+        "POST",
+        "/api/items",
+        None,
+        Some(r#"{"id": "x", "title": "t"}"#),
+        0,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
 }
 
 #[test]
@@ -110,13 +165,14 @@ fn revoke_is_idempotent_and_unknown_404() {
 #[test]
 fn token_writes_never_bump_the_workspace_counter() {
     let sql = RusqliteSql::new();
-    req_admin(
+    let minted = req_admin(
         &sql,
         "POST",
         "/api/admin/tokens",
-        Some(r#"{"id": "t-1", "name": "n", "scope": "ingest"}"#),
+        Some(r#"{"id": "t-1", "name": "n", "scope": "ingest", "source": "hc"}"#),
         0,
     );
+    assert_eq!(minted.status, 201, "{}", minted.body);
     req_admin(&sql, "DELETE", "/api/admin/tokens/t-1", None, 0);
     assert_eq!(
         meta_version(&sql),
