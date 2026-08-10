@@ -8,6 +8,7 @@ import {
   pollStart,
   pollTimer,
   clearTaskApiKey,
+  initTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
   reportViewVisibility,
@@ -22,10 +23,10 @@ import {
   requestQueueDepth,
   requestSteps,
   requestTriageInbox,
-  runTaskSync,
   setCalendarIdsOnWorker,
   setMirrorSnapshotHandler,
   triggerSyncFocus,
+  triggerSyncManual,
   type WorkerLike,
 } from "./worker-client";
 
@@ -502,6 +503,7 @@ describe("attachWorkerClient", () => {
         activeItemCount: 2,
         wasFullSweep: true,
         deadLettered: 0,
+        atMs: 5_000,
       },
     } as MessageEvent);
 
@@ -528,10 +530,46 @@ describe("attachWorkerClient", () => {
         activeItemCount: null,
         wasFullSweep: null,
         deadLettered: null,
+        atMs: 7_000,
       },
     } as MessageEvent);
 
     expect(store.getSnapshot().task.lastSyncAtMs).toBe(7_000);
+  });
+
+  // Issue #195 round-1 review (blocking finding 1): `PortRegistry` (ports.ts)
+  // replays the last `syncOutcome` broadcast to a port that connects long
+  // after the cycle it describes. If this handler stamped `lastSyncAtMs`
+  // from its OWN receipt clock, a replay would read as though the cycle had
+  // just happened — the exact false-freshness `isInformativeSyncOutcome` /
+  // `OUTCOME_CLASS` exist to prevent (see their own doc: a backed-off tick
+  // used to re-green a "Stale" badge to "Synced — as of just now" every
+  // minute during an outage). `atMs` is the cycle's OWN time
+  // (`worker/task-worker.ts` posts `request.nowMs`), so `lastSyncAtMs` must
+  // come from the message, never from this view's receipt-time clock — this
+  // test's `now` returns a wildly different value specifically to prove
+  // that.
+  it("stamps lastSyncAtMs from the message's own atMs, not the receiving view's clock — a replayed outcome must read at its true age", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    // A view connecting hours after the cycle this outcome describes — its
+    // own receipt-time clock is nowhere near the cycle's real time.
+    attachWorkerClient(worker, store, () => 999_999_999);
+
+    const cycleTimeMs = 5_000;
+    worker.onmessage?.({
+      data: {
+        type: "syncOutcome",
+        kind: "completed",
+        retryAfterMs: null,
+        activeItemCount: 2,
+        wasFullSweep: true,
+        deadLettered: 0,
+        atMs: cycleTimeMs,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastSyncAtMs).toBe(cycleTimeMs);
   });
 
   // Post-batch review of PR #185. `lastSyncAtMs` used to be stamped
@@ -546,8 +584,7 @@ describe("attachWorkerClient", () => {
     (kind) => {
       const worker = fakeWorker();
       const store = createCoreStore();
-      let clock = 1_000;
-      attachWorkerClient(worker, store, () => clock);
+      attachWorkerClient(worker, store);
 
       worker.onmessage?.({
         data: {
@@ -557,9 +594,9 @@ describe("attachWorkerClient", () => {
           activeItemCount: null,
           wasFullSweep: null,
           deadLettered: null,
+          atMs: 1_000,
         },
       } as MessageEvent);
-      clock = 61_000;
       worker.onmessage?.({
         data: {
           type: "syncOutcome",
@@ -568,6 +605,7 @@ describe("attachWorkerClient", () => {
           activeItemCount: null,
           wasFullSweep: null,
           deadLettered: null,
+          atMs: 61_000,
         },
       } as MessageEvent);
 
@@ -575,7 +613,8 @@ describe("attachWorkerClient", () => {
       expect(task.lastSyncAtMs).toBe(1_000);
       // The last outcome that actually ran is still what the badge reads.
       expect(task.lastSyncOutcome?.kind).toBe("pull_failed");
-      // ...and the cycle still counted, so the per-cycle refresh still fires.
+      // ...and the cycle still counted, whether or not anything currently
+      // reads that count — see `TaskState.syncOutcomeSeq`'s own doc.
       expect(task.syncOutcomeSeq).toBe(2);
     },
   );
@@ -583,7 +622,7 @@ describe("attachWorkerClient", () => {
   it("leaves lastSyncAtMs null when the very first cycle of the session is skipped", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store, () => 9_000);
+    attachWorkerClient(worker, store);
 
     worker.onmessage?.({
       data: {
@@ -593,6 +632,7 @@ describe("attachWorkerClient", () => {
         activeItemCount: null,
         wasFullSweep: null,
         deadLettered: null,
+        atMs: 9_000,
       },
     } as MessageEvent);
 
@@ -601,15 +641,22 @@ describe("attachWorkerClient", () => {
   });
 
   it("bumps syncOutcomeSeq on EVERY cycle, even when consecutive outcomes are identical", () => {
-    // Round-2 review of PR #181: the queue-depth / dead-letter refresh
-    // effect (`useSyncWiring.ts`) is keyed on this value, and
-    // `requestQueueDepth`/`requestDeadLetters` have exactly one call site
-    // app-wide — so if a second steady-state cycle did NOT change it, the
-    // Settings queue-depth badge would freeze after the first post-ready
-    // cycle and a dead letter created later in the session (it arrives
-    // inside a *completed* outcome — `deadLettered` is its own field) would
-    // never surface. Two byte-identical outcomes must yield two distinct
-    // seq values.
+    // Round-2 review of PR #181: until issue #191, the queue-depth /
+    // dead-letter refresh effect (`useSyncWiring.ts`) was keyed on this
+    // value, and `requestQueueDepth`/`requestDeadLetters` had exactly one
+    // call site app-wide — so if a second steady-state cycle did NOT change
+    // it, the Settings queue-depth badge would freeze after the first
+    // post-ready cycle and a dead letter created later in the session (it
+    // arrives inside a *completed* outcome — `deadLettered` is its own
+    // field) would never surface.
+    //
+    // Issue #191 moved that per-cycle refresh into the worker itself (an
+    // unsolicited `queueDepth`/`deadLetters` push at the tail of every
+    // `runSync`, `worker/task-worker.ts`), which removed this counter's only
+    // consumer in view code — see `TaskState.syncOutcomeSeq`'s own doc for
+    // why it is retained anyway rather than deleted. This test still pins
+    // the counter's own behaviour (two byte-identical outcomes must yield
+    // two distinct seq values), independent of who currently reads it.
     const worker = fakeWorker();
     const store = createCoreStore();
     attachWorkerClient(worker, store, () => 5_000);
@@ -620,6 +667,7 @@ describe("attachWorkerClient", () => {
       activeItemCount: 2,
       wasFullSweep: false,
       deadLettered: 0,
+      atMs: 5_000,
     };
 
     worker.onmessage?.({ data: steadyStateOutcome } as MessageEvent);
@@ -830,6 +878,15 @@ describe("the task send helpers (#105/S7)", () => {
     });
   });
 
+  it("initTaskApiKey posts an initTaskApiKey request (issue #196's rehydration path)", () => {
+    const worker = fakeWorker();
+    initTaskApiKey(worker, "device-token-1");
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "initTaskApiKey",
+      apiKey: "device-token-1",
+    });
+  });
+
   it("clearTaskApiKey posts a clearTaskApiKey request carrying nothing", () => {
     const worker = fakeWorker();
     clearTaskApiKey(worker);
@@ -893,18 +950,6 @@ describe("the task send helpers (#105/S7)", () => {
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getProjects" });
   });
 
-  it("runTaskSync posts a runSync request", () => {
-    const worker = fakeWorker();
-    runTaskSync(worker, 1_000, "timer", false, 0.5);
-    expect(worker.postMessage).toHaveBeenCalledWith({
-      type: "runSync",
-      nowMs: 1_000,
-      trigger: "timer",
-      forceFullSweep: false,
-      jitterUnit: 0.5,
-    });
-  });
-
   it("requestQueueDepth posts a getQueueDepth request", () => {
     const worker = fakeWorker();
     requestQueueDepth(worker);
@@ -936,5 +981,11 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     triggerSyncFocus(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "syncFocusTrigger" });
+  });
+
+  it("triggerSyncManual posts a manualSyncTrigger request", () => {
+    const worker = fakeWorker();
+    triggerSyncManual(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "manualSyncTrigger" });
   });
 });

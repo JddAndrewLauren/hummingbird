@@ -21,6 +21,7 @@ type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceR
 // (PR #171 round-1 review — the previous `Set` had no such check).
 const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   pushTaskApiKey: true,
+  initTaskApiKey: true,
   clearTaskApiKey: true,
   capture: true,
   act: true,
@@ -42,6 +43,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
 const SYNC_CADENCE_REQUEST_TYPES: Record<SyncCadenceRequest["type"], true> = {
   setViewVisibility: true,
   syncFocusTrigger: true,
+  manualSyncTrigger: true,
 };
 
 /** Whether `request` belongs on the task binding's queue rather than the

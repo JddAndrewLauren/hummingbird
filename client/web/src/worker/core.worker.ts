@@ -67,10 +67,10 @@
 // module constructs exactly one `sync-cadence.ts` cadence and exactly one
 // `setInterval` for the whole origin below; `onOpen`/`onReconnect` fire
 // once each, for the same reason — `onReconnect` on this worker's own
-// `online` event, and `onOpen` on the first `pushTaskApiKey` any view sends
-// (`dispatch.ts`, which owns that rule: at core activation no credential is
-// known yet, which is not what `onOpen`'s contract asks for). The one thing
-// this global scope genuinely cannot
+// `online` event, and `onOpen` on the first `initTaskApiKey`/`pushTaskApiKey`
+// any view sends (`dispatch.ts`, which owns that rule: at core activation no
+// credential is known yet, which is not what `onOpen`'s contract asks for).
+// The one thing this global scope genuinely cannot
 // observe on its own is page visibility — no `document` exists here — so
 // `VisibilityTracker` aggregates each view's own `setViewVisibility` report
 // (`protocol.ts`) instead: one visible tab keeps the cycle running even
@@ -82,7 +82,7 @@
 // already accepts, not the unattended-clock defect this fix closes.
 
 import type { TaskWorkerRequest, TaskWorkerResponse } from "../store/protocol";
-import { createSyncCadence, SYNC_TIMER_MS } from "../shell/sync-cadence";
+import { createSyncCadence, SYNC_TIMER_MS, toCoreTrigger } from "../shell/sync-cadence";
 import { createRequestQueue } from "./calendar-worker";
 import { createDispatch } from "./dispatch";
 import { PortRegistry, type PortLike } from "./ports";
@@ -199,21 +199,28 @@ void (async () => {
 
     // The shared ADR-0007 cadence — see the module doc above for why this
     // is constructed exactly once here rather than once per view. `trigger`
-    // is already the spelling `Core::run`'s own `Trigger` expects
-    // (`sync-cadence.ts`'s `toCoreTrigger`); `forceFullSweep: false` is the
-    // normal delta pull (ADR-0008 amendment), and `Math.random()`/`Date.now()`
-    // are the caller-injected clock/jitter `Core::run` requires (this global
-    // scope is a real JS runtime, unlike bare wasm32, so both are safe to
-    // call directly here). No in-flight guard yet: a cycle still running
-    // when `task-worker.ts`'s 30s abandon fires can overlap the next 60s
-    // tick's `runSync` and surface as `"busy"` — tracked as issue #184.
+    // is the un-collapsed `SyncCadenceTrigger` ("open" | "reconnect" |
+    // "focus" | "timer"); this is the one place that both maps it to the
+    // spelling `Core::run`'s own `Trigger` expects (`toCoreTrigger`, still
+    // "open"/"reconnect"/"focus" -> "user") AND decides `forceFullSweep`
+    // from it directly (#193: ADR-0008's "on app open" backstop is only
+    // `"open"` — an already-warm core's `onFocus`/`onReconnect`/timer ticks
+    // stay delta-only; a NEW VIEW connecting to a live core does not re-fire
+    // `onOpen` at all, deliberately, per #193's triage: "a new view is not a
+    // new core, and the core it connects to has already swept" (ADR-0010)).
+    // `Math.random()`/`Date.now()` are the caller-injected clock/jitter
+    // `Core::run` requires (this global scope is a real JS runtime, unlike
+    // bare wasm32, so both are safe to call directly here). No in-flight
+    // guard yet: a cycle still running when `task-worker.ts`'s 30s abandon
+    // fires can overlap the next 60s tick's `runSync` and surface as
+    // `"busy"` — tracked as issue #184.
     const cadence = createSyncCadence((trigger) => {
       void taskEnqueueReady.then((enqueue) =>
         enqueue({
           type: "runSync",
           nowMs: Date.now(),
-          trigger,
-          forceFullSweep: false,
+          trigger: toCoreTrigger(trigger),
+          forceFullSweep: trigger === "open",
           jitterUnit: Math.random(),
         }),
       );
@@ -222,11 +229,11 @@ void (async () => {
     // The three-way routing (shared cadence / task queue / calendar queue)
     // and ADR-0007's "on app open" trigger both live in `dispatch.ts` as
     // pure logic a node test can execute — see that module's doc. In
-    // particular the open sweep fires on the FIRST `pushTaskApiKey`, not
-    // here at activation: `onOpen` is documented as "call once the core is
-    // ready and a task credential is known", and at activation no view has
-    // had the chance to push one yet, so firing it here made every
-    // session's first cycle a spurious `no_credential`.
+    // particular the open sweep fires on the FIRST `initTaskApiKey` or
+    // `pushTaskApiKey`, not here at activation: `onOpen` is documented as
+    // "call once the core is ready and a task credential is known", and at
+    // activation no view has had the chance to supply one yet, so firing it
+    // here made every session's first cycle a spurious `no_credential`.
     const dispatch = createDispatch<PortLike>({
       cadence,
       visibility,

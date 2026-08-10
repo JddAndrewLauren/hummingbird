@@ -24,6 +24,7 @@ describe("toCoreTrigger", () => {
     expect(toCoreTrigger("open")).toBe("user");
     expect(toCoreTrigger("reconnect")).toBe("user");
     expect(toCoreTrigger("focus")).toBe("user");
+    expect(toCoreTrigger("manual")).toBe("user");
   });
 
   it('maps the unattended timer to "timer"', () => {
@@ -32,25 +33,40 @@ describe("toCoreTrigger", () => {
 });
 
 describe("createSyncCadence", () => {
-  it("onOpen fires exactly one cycle with a user trigger", () => {
+  // #193: `run` receives the real `SyncCadenceTrigger` — not the
+  // "user"/"timer" spelling `toCoreTrigger` maps it to — so the one caller
+  // (`core.worker.ts`) can tell an open cycle apart from a focus or
+  // reconnect cycle and decide `forceFullSweep` itself.
+  it("onOpen fires exactly one cycle with the \"open\" trigger", () => {
     const run = vi.fn();
     createSyncCadence(run).onOpen();
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("user");
+    expect(run).toHaveBeenCalledWith("open");
   });
 
-  it("onReconnect fires exactly one cycle with a user trigger", () => {
+  it("onReconnect fires exactly one cycle with the \"reconnect\" trigger", () => {
     const run = vi.fn();
     createSyncCadence(run).onReconnect();
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("user");
+    expect(run).toHaveBeenCalledWith("reconnect");
   });
 
-  it("onFocus fires exactly one cycle with a user trigger", () => {
+  it("onFocus fires exactly one cycle with the \"focus\" trigger", () => {
     const run = vi.fn();
     createSyncCadence(run).onFocus();
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("user");
+    expect(run).toHaveBeenCalledWith("focus");
+  });
+
+  // Issue #194: manual refresh is ADR-0007's "same cycle, user-invoked; no
+  // special path" — its own trigger spelling so `core.worker.ts` can tell it
+  // apart from a focus/open/reconnect cycle if it ever needs to, same as
+  // #193 did for "open".
+  it("onManual fires exactly one cycle with the \"manual\" trigger", () => {
+    const run = vi.fn();
+    createSyncCadence(run).onManual();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("manual");
   });
 
   it("two onFocus calls fire exactly two cycles — no de-dupe hides a real repeated gesture", () => {

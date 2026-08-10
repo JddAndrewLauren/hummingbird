@@ -13,10 +13,19 @@ import type { TaskTokenStoreLike } from "./token-store";
 
 export interface TaskTokenDeps {
   store: TaskTokenStoreLike;
-  /** `worker-client.ts`'s `pushTaskApiKey`, bound to the live worker. Never
-   * called with anything but the token itself — nothing here logs it or
-   * wraps it in an error. */
+  /** `worker-client.ts`'s `pushTaskApiKey`, bound to the live worker. Only
+   * ever called from `submitTaskToken` — a genuinely new or re-entered
+   * token, which is the only thing allowed to resume a held credential
+   * (issue #196). Never called with anything but the token itself — nothing
+   * here logs it or wraps it in an error. */
   pushApiKey: (token: string) => void;
+  /** `worker-client.ts`'s `initTaskApiKey`, bound to the live worker. The
+   * core-start REHYDRATION path (`loadTaskToken` below) uses this instead of
+   * `pushApiKey` — issue #196: under #126's shared core, every view that
+   * reaches `ready` reloads and re-supplies the stored token, and doing that
+   * through `pushApiKey` would silently resume (and retry) a hold a
+   * previous view's rejected cycle just set. */
+  initApiKey: (token: string) => void;
   /** `worker-client.ts`'s `clearTaskApiKey`, bound to the live worker.
    * Round-1 review finding: #126 put the core in a SharedWorker that
    * outlives any single tab, so clearing storage alone leaves the live key
@@ -44,10 +53,17 @@ export type TaskTokenSubmitOutcome = "ok" | "blank" | "storeError";
 const NO_TOKEN: TaskTokenLoadResult = { hasToken: false, enteredAtMs: null };
 
 /** Core-start wiring: reads whatever device token this browser has stored
- * and, if present, pushes it into the core immediately — mirroring
+ * and, if present, rehydrates it into the core immediately — mirroring
  * `calendar/connection.ts`'s `initConnection`, but for a token the user
  * typed in rather than one GIS silently re-mints. A never-entered device
  * does nothing here and stays in the "unset" state.
+ *
+ * Calls `deps.initApiKey`, deliberately NOT `deps.pushApiKey` (issue #196):
+ * this fires on EVERY view that reaches `ready`, not just the first, and
+ * under #126's one-shared-core-per-origin a later view calling this is a
+ * rehydration of a token the core may already hold — possibly one a prior
+ * view's rejected cycle just held on. A `pushApiKey` here would silently
+ * resume that hold and retry a credential already known to be dead.
  *
  * A failed read (`store.read()` rejects — a corrupt or blocked IndexedDB)
  * is reported as `null` rather than left to reject this promise: a load
@@ -65,7 +81,7 @@ export async function loadTaskToken(deps: TaskTokenDeps): Promise<TaskTokenLoadR
   if (record === null) {
     return NO_TOKEN;
   }
-  deps.pushApiKey(record.token);
+  deps.initApiKey(record.token);
   return { hasToken: true, enteredAtMs: record.enteredAtMs };
 }
 

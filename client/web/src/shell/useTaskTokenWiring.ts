@@ -8,7 +8,12 @@ import {
 } from "../task/token";
 import { createIndexedDbTaskTokenStore, type TaskTokenStoreLike } from "../task/token-store";
 import { coreStore, type CoreStatus } from "../store/store";
-import { clearTaskApiKey, pushTaskApiKey, type WorkerLike } from "../store/worker-client";
+import {
+  clearTaskApiKey,
+  initTaskApiKey,
+  pushTaskApiKey,
+  type WorkerLike,
+} from "../store/worker-client";
 
 // The web host's device-token lifecycle (#106/S8): entry, rest, and
 // re-prompt against the owned server's bearer token (ADR-0004, amended by
@@ -38,16 +43,28 @@ export function useTaskTokenWiring(
     return {
       store,
       pushApiKey: (token) => pushTaskApiKey(worker, token),
+      initApiKey: (token) => initTaskApiKey(worker, token),
       clearApiKey: () => clearTaskApiKey(worker),
     };
   }
 
-  // Core-start wiring: load whatever token is stored, if any, and push it
-  // into the core immediately (`Core::init` starts with an empty key —
+  // Core-start wiring: load whatever token is stored, if any, and rehydrate
+  // it into the core immediately (`Core::init` starts with an empty key —
   // `core.worker.ts`'s provisional `""` — so a real device token only
   // reaches it once this fires). `loadTaskToken` itself resolves a failed
   // read to the honest "unset" state rather than rejecting, so nothing
   // here needs its own try/catch.
+  //
+  // This effect keys on THIS VIEW's own `status`, so it fires again on
+  // every additional view (tab / PWA window) that reaches `ready` under
+  // #126's one-shared-core-per-origin — that used to matter, because
+  // `loadTaskToken` called `pushApiKey`, which unconditionally resumes a
+  // held credential: opening a second tab silently retried a token the
+  // first tab's rejected cycle had just held on (issue #196). Nothing here
+  // changed to fix that — `loadTaskToken` now calls `deps.initApiKey`
+  // instead, which the worker protocol (`initTaskApiKey`, `protocol.ts`)
+  // never resumes a hold for. This effect firing per-view is fine; it is
+  // the rehydration it triggers that had to stop resuming.
   useEffect(() => {
     if (status !== "ready") {
       return;

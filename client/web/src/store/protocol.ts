@@ -248,10 +248,25 @@ export type TaskRunOutcomeKind =
   | "busy";
 
 export type TaskWorkerRequest =
-  /** The host calls this once a device token is known (startup, or a
-   * rotation) — never in response to anything the worker posted back,
-   * because nothing the worker posts back ever carries the key. */
+  /** The host calls this on a genuinely new or re-entered token — a
+   * first-run entry, or a deliberate re-submit through the 401 re-prompt —
+   * never in response to anything the worker posted back, because nothing
+   * the worker posts back ever carries the key. This is the only message
+   * that resumes a held credential (issue #196: shape 2 splits rehydration
+   * from rotation at this protocol level precisely so that only THIS one
+   * can). */
   | { type: "pushTaskApiKey"; apiKey: string }
+  /** Issue #196 (shape 2): the rehydration counterpart to `pushTaskApiKey`
+   * — the host calls this at core start, and every time a view reaches
+   * `ready` under #126's one-shared-core-per-origin
+   * (`useTaskTokenWiring.ts`'s core-start effect), to re-supply whatever
+   * device token is already stored. Deliberately NOT `pushTaskApiKey`: a
+   * later view rehydrating the very token that just got 401'd must not be
+   * able to resume the hold that rejection set, or the client silently
+   * retries a credential already known to be dead and drops the pending
+   * re-auth prompt. Still reaches the core's credential slot when nothing
+   * is held — a first-run device's stored token must still become usable. */
+  | { type: "initTaskApiKey"; apiKey: string }
   /** "Forget token" (#106/S8): clears the core's in-memory credential.
    * Carries nothing — there is no key to carry — and gets no reply; the
    * host fires this and moves on. Never touches the mirror or the queue. */
@@ -304,11 +319,17 @@ export type TaskWorkerRequest =
       forceFullSweep: boolean;
       jitterUnit: number;
     }
-  /** S9's sync-status "queued" figure. */
+  /** S9's sync-status "queued" figure. As of issue #191, sent only once —
+   * on becoming ready — rather than after every cycle: a view connecting
+   * mid-session still needs an initial answer, but the per-cycle refresh
+   * this used to also drive is now the worker's own unsolicited `queueDepth`
+   * push at the tail of every `runSync` (`worker/task-worker.ts`'s `runSync`
+   * branch), not a re-request from each view. */
   | { type: "getQueueDepth" }
-  /** S9's "1 edit didn't apply" affordance — fetched on demand rather than
-   * pushed on every cycle, since the journal is small but the full
-   * field/local/server detail is more than a status badge needs. */
+  /** S9's "1 edit didn't apply" affordance. As of issue #191, sent only
+   * once — on becoming ready, same as `getQueueDepth` above — since the
+   * per-cycle case is now the worker's own unsolicited `deadLetters` push at
+   * the tail of every cycle. */
   | { type: "getDeadLetters" }
   /** S9's mirror download button. */
   | { type: "getMirrorSnapshot" };
@@ -339,7 +360,13 @@ export type SyncCadenceRequest =
    * request queue (ADR-0010) — an unattended clock multiplying with tab
    * count is the defect this type exists to close; a human's own actions
    * are not. */
-  | { type: "syncFocusTrigger" };
+  | { type: "syncFocusTrigger" }
+  /** Issue #194: the header refresh control's task leg. Sent on a manual
+   * refresh press, and routed through the shared cadence the same as every
+   * other trigger — never posted straight to the task queue as a bespoke
+   * `runSync` — so it stays ADR-0007's "same cycle, user-invoked; no special
+   * path", and any future in-flight coalescing (#184) covers it too. */
+  | { type: "manualSyncTrigger" };
 
 export type TaskWorkerResponse =
   | {
@@ -384,6 +411,23 @@ export type TaskWorkerResponse =
   | { type: "steps"; itemId: string; steps: StepDTO[] }
   | { type: "projects"; projects: ProjectDTO[] }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
+  /** What one `Core::run` cycle resolved to, broadcast to every connected
+   * port. Issue #195: also the last one is cached by `PortRegistry` and
+   * replayed to a port that connects after it — see `queueDepth`'s doc
+   * below and `ports.ts`'s class doc for the full "latest-state vs
+   * one-shot" rule this and its siblings are classified under.
+   *
+   * `atMs` is the cycle's OWN time (`worker/task-worker.ts`'s `runSync`
+   * branch posts `request.nowMs`, the same clock value `Core::run` was
+   * invoked with) — deliberately not left for the receiving view to infer
+   * from its own message-receipt clock. Issue #195 round-1 review: a live
+   * broadcast's receipt time is a safe stand-in for the cycle's real time
+   * (sub-second apart), but a REPLAYED broadcast can reach a newly
+   * connecting port arbitrarily long after the cycle it describes — a view
+   * stamping its own `now()` on receipt would render a five-hour-old cycle
+   * as "as of just now", exactly the false-freshness the badge exists to
+   * avoid (`shell/sync-status.ts`). `store/worker-client.ts` reads this
+   * field for `lastSyncAtMs` rather than calling its own clock. */
   | {
       type: "syncOutcome";
       kind: TaskRunOutcomeKind;
@@ -391,6 +435,7 @@ export type TaskWorkerResponse =
       activeItemCount: number | null;
       wasFullSweep: boolean | null;
       deadLettered: number | null;
+      atMs: number;
     }
   /** Drained from `Core::take_events` and broadcast to every connected port
    * (`PortRegistry.broadcast`, not a reply to whichever port triggered the
@@ -398,7 +443,23 @@ export type TaskWorkerResponse =
    * single-reader drain would let the first tab to poll swallow an event
    * every other tab needed too. */
   | { type: "taskEvents"; events: TaskEventDTO[] }
+  /** Answers `getQueueDepth`, AND — issue #191 — arrives unsolicited at the
+   * tail of every completed `runSync`, whether or not any view asked this
+   * cycle: `worker/task-worker.ts`'s `runSync` branch reads and posts it
+   * once per cycle (dropped, not posted, on a `"busy"` read), broadcast to
+   * every connected port the same as `syncOutcome`. This is what keeps N
+   * connected views from each re-requesting it every cycle. `syncOutcome`,
+   * this, `deadLetters` and `taskHostUnavailable` are also — issue #195 —
+   * cached by `PortRegistry` and replayed to a port that connects after the
+   * fact, so a view whose port wires up between cycles still starts from
+   * the current figure instead of `null` (see `ports.ts`'s class doc for
+   * which message types get this treatment and why). */
   | { type: "queueDepth"; depth: number }
+  /** Answers `getDeadLetters`, AND — issue #191 — arrives unsolicited at the
+   * tail of every completed `runSync`, same contract as `queueDepth` above:
+   * read and posted at most once per cycle regardless of view count, never
+   * on a `"busy"` read. Replayed to a late-connecting port the same as
+   * `queueDepth` — see that field's doc. */
   | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
   | { type: "mirrorSnapshot"; mirror: unknown }
   /** The task host itself failed to construct (a corrupt durable snapshot,
@@ -413,7 +474,9 @@ export type TaskWorkerResponse =
    * `console.error` nobody reads (post-batch review of PR #185). Broadcast
    * once when construction fails AND again per dropped request, since a
    * broadcast reaches only the views connected at the time and a view that
-   * connects later must still learn — its first task request tells it. */
+   * connects later must still learn — its first task request tells it, and
+   * — issue #195 — so does `PortRegistry`'s replay on connect, without
+   * waiting for that view to send one. */
   | { type: "taskHostUnavailable"; message: string };
 
 // -- worker -> main -----------------------------------------------------

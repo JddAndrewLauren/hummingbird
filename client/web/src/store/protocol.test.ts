@@ -18,6 +18,7 @@ function roundTrip<T>(value: T): T {
 describe("protocol round-trips", () => {
   it.each<TaskWorkerRequest>([
     { type: "pushTaskApiKey", apiKey: "device-token-1" },
+    { type: "initTaskApiKey", apiKey: "device-token-1" },
     { type: "clearTaskApiKey" },
     { type: "capture", seed: "seed-1", title: "buy milk", stage: "ready", nowMs: 1_000 },
     { type: "getFrontier" },
@@ -50,6 +51,7 @@ describe("protocol round-trips", () => {
       activeItemCount: 3,
       wasFullSweep: false,
       deadLettered: 0,
+      atMs: 5_000,
     },
     { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 5_000 }] },
     { type: "queueDepth", depth: 3 },
@@ -103,6 +105,7 @@ describe("protocol round-trips", () => {
     ];
     const taskTypes: TaskWorkerRequest["type"][] = [
       "pushTaskApiKey",
+      "initTaskApiKey",
       "clearTaskApiKey",
       "capture",
       "getFrontier",

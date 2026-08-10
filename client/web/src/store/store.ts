@@ -108,32 +108,50 @@ export interface TaskState {
    * (S13/#111) — `null` until the first one resolves. */
   lastTriage: TaskTriageResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
-  /** When this view learned the last `Core::run` cycle happened (any
-   * trigger, any outcome) — S9's "last sweep" readout. Sampled by
-   * `worker-client.ts` at the moment it processes the `syncOutcome`
-   * broadcast, using this view's own clock — the wire message carries no
-   * `nowMs` of its own (the cycle's real invocation time, sampled inside
-   * `core.worker.ts`, is never round-tripped back), and every view's
-   * broadcast-processing clock reads within a few milliseconds of every
-   * other's regardless, so this is an accurate-enough proxy for "just now"
-   * without needing to widen the protocol. */
+  /** When the last `Core::run` cycle actually happened (any trigger, any
+   * outcome) — S9's "last sweep" readout. Copied by `worker-client.ts`
+   * straight from the `syncOutcome` message's own `atMs`, which
+   * `task-worker.ts` stamps from the cycle's clock (`atMs: request.nowMs`,
+   * the same value `core.worker.ts` passes to `host.runSync`) — NOT sampled
+   * from this view's clock at broadcast-processing time. That distinction is
+   * what issue #195's cache-and-replay depends on: a `syncOutcome` replayed
+   * to a late-connecting port must read at its true age, and a view stamping
+   * its own clock on a replay would launder a stale outcome into a fresh
+   * success. */
   lastSyncAtMs: number | null;
   /** Monotonic count of `syncOutcome` broadcasts this view has processed —
    * incremented by `worker-client.ts` on EVERY cycle, whatever its `kind`.
-   * This is what `useSyncWiring.ts` keys its per-cycle queue-depth /
-   * dead-letter refresh on (round-2 review of PR #181): keying on the
-   * outcome's `kind` froze the refresh after the first cycle (steady state
-   * is `"completed"` forever, and a dead letter arrives INSIDE a completed
-   * outcome — `deadLettered` is a separate field), and keying on the outcome
-   * object's identity works today but is one memoisation away from the same
-   * freeze. A counter changes on every cycle by construction. */
+   * Until issue #191, this was what `useSyncWiring.ts` keyed its per-cycle
+   * queue-depth / dead-letter refresh effect on (round-2 review of PR #181):
+   * keying on the outcome's `kind` froze the refresh after the first cycle
+   * (steady state is `"completed"` forever, and a dead letter arrives
+   * INSIDE a completed outcome — `deadLettered` is a separate field), and
+   * keying on the outcome object's identity works today but is one
+   * memoisation away from the same freeze. A counter changes on every cycle
+   * by construction.
+   *
+   * Issue #191 moved the per-cycle queue-depth/dead-letter refresh itself
+   * into the worker (an unsolicited push at the cycle tail, protocol.ts's
+   * `queueDepth`/`deadLetters` docs), which removed `useSyncWiring.ts`'s
+   * only consumer of this field — it is deliberately kept anyway, still
+   * bumped every cycle and still asserted by `worker-client.test.ts`,
+   * because a per-cycle "a cycle just completed" signal is generically
+   * useful even with no current reader; see the PR that closed #191 for the
+   * explicit call-out this is not a silent, unexplained deletion. */
   syncOutcomeSeq: number;
   /** The outbound queue's current depth — S9's sync-status "queued"
-   * figure. `null` until the first answer arrives (this view has not asked,
-   * or the core is still loading). */
+   * figure. `null` until the first answer arrives: an explicit
+   * `getQueueDepth` reply, the worker's own unsolicited per-cycle push
+   * (issue #191), or — issue #195 — the replay a newly connecting port gets
+   * of whatever `queueDepth` last broadcast this session
+   * (`worker/ports.ts`'s `PortRegistry`). `null` still means exactly one
+   * thing regardless of origin: nothing has answered yet, because the core
+   * is still loading or has never completed a cycle. */
   queueDepth: number | null;
-  /** The whole dead-letter journal, as of the last `getDeadLetters`
-   * request — S9's "1 edit didn't apply" affordance. Never pruned
+  /** The whole dead-letter journal, as of the last `deadLetters` broadcast
+   * — S9's "1 edit didn't apply" affordance. Kept fresh by the worker's own
+   * unsolicited push at the tail of every cycle as well as by an explicit
+   * `getDeadLetters` request (issue #191). Never pruned
    * client-side either (mirrors the core's own journal, `sync::queue`'s own
    * doc), so this only ever grows until a re-apply flow exists to shrink
    * it. */

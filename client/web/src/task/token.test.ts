@@ -25,8 +25,12 @@ function fakeStore(initial: TaskTokenRecord | null = null): TaskTokenStoreLike {
 
 function deps(
   store: TaskTokenStoreLike,
-): TaskTokenDeps & { pushApiKey: ReturnType<typeof vi.fn>; clearApiKey: ReturnType<typeof vi.fn> } {
-  return { store, pushApiKey: vi.fn(), clearApiKey: vi.fn() };
+): TaskTokenDeps & {
+  pushApiKey: ReturnType<typeof vi.fn>;
+  initApiKey: ReturnType<typeof vi.fn>;
+  clearApiKey: ReturnType<typeof vi.fn>;
+} {
+  return { store, pushApiKey: vi.fn(), initApiKey: vi.fn(), clearApiKey: vi.fn() };
 }
 
 describe("loadTaskToken", () => {
@@ -37,15 +41,26 @@ describe("loadTaskToken", () => {
 
     expect(result).toEqual({ hasToken: false, enteredAtMs: null });
     expect(d.pushApiKey).not.toHaveBeenCalled();
+    expect(d.initApiKey).not.toHaveBeenCalled();
   });
 
-  it("pushes a stored token into the core and reports when it was entered", async () => {
-    const d = deps(fakeStore({ token: "secret-token", enteredAtMs: 1_000 }));
-
-    const result = await loadTaskToken(d);
+  it("rehydrates a stored token into the core (via initApiKey, never pushApiKey) and reports when it was entered", async () => {
+    // Issue #196: `loadTaskToken` is the core-start wiring every view's
+    // core-start effect runs, including a second (or later) view under
+    // #126's shared core. It must never be able to resume a hold, so it
+    // goes through `initApiKey`, not `pushApiKey`.
+    const result = await loadTaskToken(deps(fakeStore({ token: "secret-token", enteredAtMs: 1_000 })));
 
     expect(result).toEqual({ hasToken: true, enteredAtMs: 1_000 });
-    expect(d.pushApiKey).toHaveBeenCalledWith("secret-token");
+  });
+
+  it("calls initApiKey, never pushApiKey, with the stored token", async () => {
+    const d = deps(fakeStore({ token: "secret-token", enteredAtMs: 1_000 }));
+
+    await loadTaskToken(d);
+
+    expect(d.initApiKey).toHaveBeenCalledWith("secret-token");
+    expect(d.pushApiKey).not.toHaveBeenCalled();
   });
 
   it("reports the unset state (not an unhandled rejection) when the store read fails", async () => {
@@ -60,6 +75,52 @@ describe("loadTaskToken", () => {
 
     expect(result).toEqual({ hasToken: false, enteredAtMs: null });
     expect(d.pushApiKey).not.toHaveBeenCalled();
+    expect(d.initApiKey).not.toHaveBeenCalled();
+  });
+});
+
+// Issue #196's acceptance criterion: "a vitest test drives the two-view
+// sequence: view A holds on 401, view B connects, assert no resuming push
+// reaches the core." `loadTaskToken` is exactly what each view's core-start
+// effect calls (`useTaskTokenWiring.ts`), so two calls against deps sharing
+// one recording worker double IS the two-view sequence at this layer — the
+// core-level hold/resume semantics themselves are pinned in
+// `client/core/src/lib.rs`'s `rehydrate_api_key` tests.
+describe("the two-view rehydration sequence never sends a resuming push", () => {
+  it("view A's core-start load, then view B's, both rehydrate — pushApiKey is never called by either", async () => {
+    const store = fakeStore({ token: "rejected-token", enteredAtMs: 1_000 });
+    const pushApiKey = vi.fn();
+    const initApiKey = vi.fn();
+    const clearApiKey = vi.fn();
+    const sharedDeps: TaskTokenDeps = { store, pushApiKey, initApiKey, clearApiKey };
+
+    // View A reaches `ready` and rehydrates. (Its cycle going on to 401 and
+    // holding is core-side state this layer never observes directly — see
+    // the module doc above.)
+    await loadTaskToken(sharedDeps);
+
+    // View B (a second tab, or the PWA window) connects and reaches `ready`
+    // too, reloading the very same stored — now-rejected — token.
+    await loadTaskToken(sharedDeps);
+
+    expect(initApiKey).toHaveBeenCalledTimes(2);
+    expect(initApiKey).toHaveBeenNthCalledWith(1, "rejected-token");
+    expect(initApiKey).toHaveBeenNthCalledWith(2, "rejected-token");
+    expect(pushApiKey).not.toHaveBeenCalled();
+  });
+
+  it("a deliberate re-submit through the form still pushes and would resume — the recovery path is untouched", async () => {
+    const store = fakeStore(null);
+    const pushApiKey = vi.fn();
+    const initApiKey = vi.fn();
+    const clearApiKey = vi.fn();
+    const sharedDeps: TaskTokenDeps = { store, pushApiKey, initApiKey, clearApiKey };
+
+    const outcome = await submitTaskToken(sharedDeps, "fresh-token", 5_000);
+
+    expect(outcome).toBe("ok");
+    expect(pushApiKey).toHaveBeenCalledWith("fresh-token");
+    expect(initApiKey).not.toHaveBeenCalled();
   });
 });
 

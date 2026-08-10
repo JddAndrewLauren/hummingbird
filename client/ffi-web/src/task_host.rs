@@ -395,6 +395,15 @@ impl TaskHostCore {
         self.core.push_api_key(api_key);
     }
 
+    /// Issue #196 (shape 2): the rehydration counterpart to
+    /// [`TaskHostCore::push_api_key`] — the host reloading a token it
+    /// already had stored (core start, or a later view under #126's shared
+    /// core reaching `ready`), never resuming a hold. See
+    /// [`Core::rehydrate_api_key`].
+    pub fn rehydrate_api_key(&mut self, api_key: String) {
+        self.core.rehydrate_api_key(api_key);
+    }
+
     /// "Forget token" (#106/S8): clears the in-memory credential this host
     /// holds. Never persisted in the first place (`Core::init`'s own doc),
     /// so there is nothing durable to clean up here — see

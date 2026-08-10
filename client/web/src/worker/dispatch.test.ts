@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TaskWorkerRequest } from "../store/protocol";
+import { createSyncCadence, type SyncCadenceTrigger } from "../shell/sync-cadence";
 import { createDispatch } from "./dispatch";
 
 // `core.worker.ts`'s routing used to live inline in that file, where no test
@@ -9,7 +10,7 @@ import { createDispatch } from "./dispatch";
 // review of PR #185). Extracted, it is ordinary decision logic.
 
 function harness(options: { taskEnqueue?: (request: TaskWorkerRequest) => Promise<void> } = {}) {
-  const cadence = { onOpen: vi.fn(), onFocus: vi.fn() };
+  const cadence = { onOpen: vi.fn(), onFocus: vi.fn(), onManual: vi.fn() };
   const visibility = { setHidden: vi.fn() };
   const taskEnqueue = vi.fn(options.taskEnqueue ?? (() => Promise.resolve()));
   const calendarEnqueue = vi.fn(() => Promise.resolve());
@@ -23,6 +24,7 @@ function harness(options: { taskEnqueue?: (request: TaskWorkerRequest) => Promis
 }
 
 const PUSH_KEY: TaskWorkerRequest = { type: "pushTaskApiKey", apiKey: "device-token" };
+const INIT_KEY: TaskWorkerRequest = { type: "initTaskApiKey", apiKey: "device-token" };
 
 describe("createDispatch routing", () => {
   it("intercepts setViewVisibility for the reporting port, reaching neither wasm queue", async () => {
@@ -45,12 +47,35 @@ describe("createDispatch routing", () => {
     expect(h.calendarEnqueue).not.toHaveBeenCalled();
   });
 
+  // Issue #194: the header's manual refresh routes through the shared
+  // cadence — never a bespoke `runSync` posted straight to the task queue —
+  // so it stays ADR-0007's "same cycle, user-invoked; no special path".
+  it("intercepts manualSyncTrigger as a cadence manual refresh, reaching neither wasm queue", async () => {
+    const h = harness();
+
+    await h.dispatch({ type: "manualSyncTrigger" }, "tab-1");
+
+    expect(h.cadence.onManual).toHaveBeenCalledTimes(1);
+    expect(h.cadence.onFocus).not.toHaveBeenCalled();
+    expect(h.taskEnqueue).not.toHaveBeenCalled();
+    expect(h.calendarEnqueue).not.toHaveBeenCalled();
+  });
+
   it("routes a task request to the task queue only", async () => {
     const h = harness();
 
     await h.dispatch({ type: "getFrontier" }, "tab-1");
 
     expect(h.taskEnqueue).toHaveBeenCalledWith({ type: "getFrontier" });
+    expect(h.calendarEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("routes initTaskApiKey to the task queue only", async () => {
+    const h = harness();
+
+    await h.dispatch(INIT_KEY, "tab-1");
+
+    expect(h.taskEnqueue).toHaveBeenCalledWith(INIT_KEY);
     expect(h.calendarEnqueue).not.toHaveBeenCalled();
   });
 
@@ -130,5 +155,78 @@ describe("the app-open sweep waits for a credential", () => {
 
     expect(h.taskEnqueue).toHaveBeenCalledTimes(3);
     expect(h.cadence.onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // Issue #196 (shape 2): `initTaskApiKey` is the rehydration message every
+  // view's core-start effect sends, including a second (or later) view
+  // connecting while a first view's hold is live. The open-sweep trigger
+  // must follow rehydration too, per the triage decision — a stored-token
+  // device's core start must still get its open sweep — not just an
+  // interactive `pushTaskApiKey`.
+  it("also fires on the first initTaskApiKey — a stored-token device's rehydration still gets its open sweep", async () => {
+    const h = harness();
+
+    await h.dispatch(INIT_KEY, "tab-1");
+
+    expect(h.cadence.onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire a second time when initTaskApiKey is followed by pushTaskApiKey (or vice versa)", async () => {
+    const h = harness();
+
+    await h.dispatch(INIT_KEY, "tab-1");
+    await h.dispatch(PUSH_KEY, "tab-2");
+
+    expect(h.cadence.onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // #193 review (CB4): the tests above stub `cadence` as bare `vi.fn()`s, so
+  // none of them exercise dispatch -> the real `createSyncCadence` -> `run`.
+  // This wires the actual cadence controller in, the same one
+  // `core.worker.ts` constructs, so the "open" trigger reaching `run` on the
+  // first `pushTaskApiKey` (and not on the second) is proven through the real
+  // collaborator rather than asserted only against a stub.
+  it("wired to a real createSyncCadence, the first pushTaskApiKey fires one run(\"open\") and the second fires none", async () => {
+    const run = vi.fn<(trigger: SyncCadenceTrigger) => void>();
+    const cadence = createSyncCadence(run);
+    const visibility = { setHidden: vi.fn() };
+    const taskEnqueue = vi.fn(() => Promise.resolve());
+    const calendarEnqueue = vi.fn(() => Promise.resolve());
+    const dispatch = createDispatch<string>({
+      cadence,
+      visibility,
+      taskEnqueueReady: Promise.resolve(taskEnqueue),
+      calendarEnqueue,
+    });
+
+    await dispatch(PUSH_KEY, "tab-1");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("open");
+
+    await dispatch({ type: "pushTaskApiKey", apiKey: "rotated" }, "tab-1");
+    expect(run).toHaveBeenCalledTimes(1); // still just the one call from above
+  });
+
+  // Issue #196: the same real-collaborator proof, for the rehydration
+  // message a stored-token device's core start actually sends.
+  it('wired to a real createSyncCadence, the first initTaskApiKey fires one run("open") and a later pushTaskApiKey fires none', async () => {
+    const run = vi.fn<(trigger: SyncCadenceTrigger) => void>();
+    const cadence = createSyncCadence(run);
+    const visibility = { setHidden: vi.fn() };
+    const taskEnqueue = vi.fn(() => Promise.resolve());
+    const calendarEnqueue = vi.fn(() => Promise.resolve());
+    const dispatch = createDispatch<string>({
+      cadence,
+      visibility,
+      taskEnqueueReady: Promise.resolve(taskEnqueue),
+      calendarEnqueue,
+    });
+
+    await dispatch(INIT_KEY, "tab-1");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("open");
+
+    await dispatch(PUSH_KEY, "tab-2");
+    expect(run).toHaveBeenCalledTimes(1); // still just the one call from above
   });
 });

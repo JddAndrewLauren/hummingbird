@@ -72,9 +72,13 @@ export function attachWorkerClient(
   store: Store,
   now: () => number = Date.now,
 ): void {
-  // One counter per attached worker (i.e. per view): see
-  // `TaskState.syncOutcomeSeq`'s doc for why the per-cycle refresh keys on
-  // this rather than on the outcome itself.
+  // One counter per attached worker (i.e. per view). As of issue #191 this
+  // has no consumer left in view code — `useSyncWiring.ts`'s per-cycle
+  // refresh, the only thing that used to key on it, was replaced by the
+  // worker's own unsolicited `queueDepth`/`deadLetters` push at the tail of
+  // every cycle (`worker/task-worker.ts`'s `runSync` branch). Kept anyway,
+  // deliberately, not silently dropped — see `TaskState.syncOutcomeSeq`'s
+  // own doc for why.
   let syncOutcomeSeq = 0;
   worker.onmessage = (event) => {
     const message = event.data;
@@ -189,10 +193,11 @@ export function attachWorkerClient(
         store.setTaskPending(message.itemId, message.pending);
         return;
       case "syncOutcome":
-        // The counter bumps on EVERY broadcast, whatever the kind — it is
-        // what `useSyncWiring.ts` keys its per-cycle refresh on, and a
-        // cycle that did not run is still a cycle that happened
-        // (`TaskState.syncOutcomeSeq`).
+        // The counter bumps on EVERY broadcast, whatever the kind — a cycle
+        // that did not run is still a cycle that happened. As of issue #191
+        // nothing in view code reads it (see this function's own doc on
+        // `syncOutcomeSeq` above); it is retained rather than deleted — see
+        // `TaskState.syncOutcomeSeq`'s doc for why.
         syncOutcomeSeq += 1;
         if (!isInformativeSyncOutcome(message.kind)) {
           // `"skipped"`/`"busy"`: nothing was attempted at all, so this
@@ -220,7 +225,20 @@ export function attachWorkerClient(
           // Every cycle that was actually ATTEMPTED counts as a "sweep" for
           // S9's status readout, whatever it resolved to — a held or failed
           // cycle is still information about how stale the mirror now is.
-          lastSyncAtMs: now(),
+          //
+          // Issue #195 round-1 review: this used to be `now()` — this
+          // view's own receipt-time clock. That is a safe stand-in for a
+          // LIVE broadcast (worker posts, view receives, sub-second apart),
+          // but `worker/ports.ts`'s `PortRegistry` also REPLAYS the last
+          // `syncOutcome` to a port that connects long after the cycle it
+          // describes; a view stamping its own clock on a replay would
+          // render an hours-old cycle as "as of just now" — the exact
+          // false-freshness `isInformativeSyncOutcome`/`OUTCOME_CLASS`
+          // exist to prevent, two paragraphs up. `message.atMs` is the
+          // cycle's OWN time (`worker/task-worker.ts` posts
+          // `request.nowMs`), so it reads correctly whether this message
+          // arrived live or as a replay.
+          lastSyncAtMs: message.atMs,
         });
         return;
       case "taskEvents":
@@ -234,9 +252,16 @@ export function attachWorkerClient(
         }
         return;
       case "queueDepth":
+        // Arrives both in reply to `getQueueDepth` (once, on becoming
+        // ready) and unsolicited at the tail of every cycle (issue #191,
+        // protocol.ts's `queueDepth` doc) — this handler does not need to
+        // tell the two apart, since both are the same "here is the current
+        // depth" fact.
         store.setTaskState({ queueDepth: message.depth });
         return;
       case "deadLetters":
+        // Same dual origin as `queueDepth` above — see protocol.ts's
+        // `deadLetters` doc.
         store.setTaskState({ deadLetters: message.entries });
         return;
       case "taskHostUnavailable":
@@ -295,11 +320,24 @@ export function requestCalendarList(worker: WorkerLike): void {
 // never at construction time" rule as the calendar helpers above, and the
 // same one-request-one-postMessage shape.
 
-/** The host calls this at startup, once a stored device token is known, and
- * on every rotation — the key crosses this boundary exactly once per call
- * and is never read back out through any `WorkerResponse` (protocol.ts). */
+/** The host calls this on a genuinely new or re-entered token — first-run
+ * entry, or a deliberate re-submit through the 401 re-prompt — never at
+ * core-start rehydration (see `initTaskApiKey` below; issue #196: only this
+ * one resumes a held credential). The key crosses this boundary exactly
+ * once per call and is never read back out through any `WorkerResponse`
+ * (protocol.ts). */
 export function pushTaskApiKey(worker: WorkerLike, apiKey: string): void {
   worker.postMessage({ type: "pushTaskApiKey", apiKey });
+}
+
+/** Issue #196 (shape 2): the host calls this — never `pushTaskApiKey` — to
+ * rehydrate whatever device token is already stored: at core start, and
+ * every time a view reaches `ready` under #126's one-shared-core-per-origin
+ * (`useTaskTokenWiring.ts`'s core-start effect). See `protocol.ts`'s
+ * `initTaskApiKey` doc for the full contract this closes — a later view
+ * rehydrating an already-rejected token must not resume the hold it set. */
+export function initTaskApiKey(worker: WorkerLike, apiKey: string): void {
+  worker.postMessage({ type: "initTaskApiKey", apiKey });
 }
 
 /** "Forget token" (#106/S8): tells the core to clear whatever credential it
@@ -388,16 +426,6 @@ export function requestIsPending(worker: WorkerLike, itemId: string): void {
   worker.postMessage({ type: "isPending", itemId });
 }
 
-export function runTaskSync(
-  worker: WorkerLike,
-  nowMs: number,
-  trigger: "user" | "timer",
-  forceFullSweep: boolean,
-  jitterUnit: number,
-): void {
-  worker.postMessage({ type: "runSync", nowMs, trigger, forceFullSweep, jitterUnit });
-}
-
 // -- S9's sync-status reads --------------------------------------------
 
 export function requestQueueDepth(worker: WorkerLike): void {
@@ -431,4 +459,15 @@ export function reportViewVisibility(worker: WorkerLike, hidden: boolean): void 
  * for why that is fine. */
 export function triggerSyncFocus(worker: WorkerLike): void {
   worker.postMessage({ type: "syncFocusTrigger" });
+}
+
+/** Issue #194: the header refresh control's task leg — sent on a manual
+ * refresh press and routed through the shared cadence in `core.worker.ts`,
+ * exactly like `triggerSyncFocus` above, rather than posted straight to the
+ * task queue as a bespoke `runSync` (the old `runTaskSync`, deleted: it had
+ * no production caller). This is what keeps a manual press ADR-0007's "same
+ * cycle, user-invoked; no special path", and lets any future in-flight
+ * coalescing (#184) cover it too. */
+export function triggerSyncManual(worker: WorkerLike): void {
+  worker.postMessage({ type: "manualSyncTrigger" });
 }
