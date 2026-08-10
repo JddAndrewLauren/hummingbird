@@ -1,22 +1,24 @@
-// The message protocol between the main thread and the core Web Worker
-// (#69). Shared by worker-client.ts (main thread) and worker/core.worker.ts
-// (the worker itself) so both sides stay in sync on the wire shape.
+// The message protocol between a view (main thread) and the core
+// SharedWorker (ADR-0010, #126 — one core per origin, formerly a dedicated
+// Worker per app instance, #69). Shared by worker-client.ts (a view) and
+// worker/core.worker.ts (the worker itself) so both sides stay in sync on
+// the wire shape.
 //
-// The worker->main direction is push-only, unprompted at module evaluation
+// The worker->view direction is push-only, unprompted per connecting port
 // (the "ready"/"error" handshake) — see the comment below for why. The
-// main->worker direction (issue #73's calendar requests) is different: the
-// main thread only ever sends a `CalendarWorkerRequest` after observing
-// "ready", so there is no handshake to race — by the time "ready" is
-// observed, the worker has already synchronously attached its `onmessage`
-// listener (see core.worker.ts).
+// view->worker direction (issue #73's calendar requests) is different: a
+// view only ever sends a `CalendarWorkerRequest` after observing "ready" on
+// its own port, so there is no handshake to race — by the time "ready" is
+// observed, the worker has already synchronously attached that port's
+// `onmessage` listener (see core.worker.ts / ports.ts).
 //
 // This is what makes the *ready* handshake immune to bundler transforms (PR
 // #79 round-2 blocker): vite-plugin-top-level-await wraps the worker module
-// in an async IIFE, so nothing here is guaranteed to run before the main
-// thread's messages arrive; a request/response handshake AT CONSTRUCTION
-// TIME therefore drops the request. In the worker->main direction there is
-// no such race: the main thread attaches its listener synchronously in the
-// same task that constructs the Worker, before any worker message can be
+// in an async IIFE, so nothing here is guaranteed to run before a view's
+// messages arrive; a request/response handshake AT CONNECTION TIME therefore
+// drops the request. In the worker->view direction there is no such race:
+// each view attaches its port's listener synchronously in the same task
+// that constructs the SharedWorker, before any message on that port can be
 // dispatched.
 
 /** One host-visible signal that a provider's credential no longer works. */
