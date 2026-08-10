@@ -143,6 +143,25 @@ caller-injected on every call — bare `wasm32-unknown-unknown` has no clock or
 RNG that does not panic. There is no `docs/sync.md`; the map is the module
 docs in `client/core/src/sync/mod.rs` and each submodule's own header.
 
+**A 409 is a three-way decision, not two** (#163/#164). `write/rebase.rs`'s
+`decide` diffs every touched field against both the client's `base` and the
+409's `current`: a field that moved to some third value is a `Collision`,
+naming every colliding field; a patch whose touched fields *all* already
+hold their intended value is `RebaseDecision::Achieved` — this write in fact
+already landed (a crash swallowed the ack), so it is **not resent at all**,
+the 409's carried entity becomes the outcome, and the authority never sees
+the replay; only `Safe` — at least one field still needing reapplying,
+nothing colliding — reissues the identical touched-field intent at the new
+version. `write/adapter.rs`'s `patch_with_rebase` is a bounded attempt loop
+(`MAX_ATTEMPTS = 3`: the original send, the retry a first `Safe` 409 earns,
+and one further retry for a `Safe` second), each attempt diffed against the
+`current` it was actually rebased onto rather than the original `base`. A
+third attempt that is *still* disjoint is repeated churn, not a collision,
+and terminates as `WriteError::Contention { current }` → the queue's
+`DeadLetterReason::Contention` — carrying the server entity so the journal
+still has material, because the alternative is a `Conflict` with an empty
+field list masquerading as a real one, showing the reader nothing to act on.
+
 `Core` (`client/core/src/lib.rs`) is the one door onto all of that, and it
 has exactly **three mutation entry points**: `Core::capture` (a create,
 whose `title` goes through `capture::parse_seam` — #110/#42's named no-op —
@@ -176,6 +195,27 @@ is. It is keyed one entry per item id in FIFO order (last enqueued wins),
 which leaves the narrow `entry_id` gap `Core::act`'s own doc records —
 flagged there, not fixed.
 
+`client/core/src/rank.rs` is the other top-level module beside `Core`, and
+it is no part of the sync engine: `rank()` (#162) is
+`/next-up-personal`'s six ranking steps made pure, so a device can pick
+"what to do right now" offline — context hard-filter, overdue / due-today,
+In Progress bias, priority, energy/size fit plus the 30-minute calendar
+nudge, then oldest-first. **No I/O, no credentials, no clock read**: "now"
+arrives as the caller-injected `Now`, carried in two shapes (naive-local, in
+exactly `Item::deadline`'s own spelling, and the same instant as epoch ms)
+because deriving one from the other would need a time zone this crate has no
+business guessing. It speaks only `hummingbird_domain::Item` and
+`calendar::EventRecord` — no Linear vocabulary and deliberately no
+translation layer onto either — and consumes `calendar::query`'s
+`is_actionable`, so a cancelled future instance never fires the nudge, the
+same invariant `query.rs` documents for "Next". Every candidate carries
+every `ReasonCode` that applied, in step order, so #116's skill layer can
+cite the actual decisive rule rather than a step index. The total order ends
+`created_at` then `id`, with nothing left to chance, and
+`the_same_snapshot_ranked_twice_is_byte_identical` is what pins that a
+repeat call is byte-identical. Nothing consumes it yet — it crosses no FFI
+seam; #116 is its caller.
+
 ## The web worker layer
 
 `client/web/src/worker/` is where the device half meets the browser: **one
@@ -199,6 +239,44 @@ writes), `shell/useSyncWiring.ts` and `shell/useTaskTokenWiring.ts` (#106's
 device token: entry, rest, re-prompt — the key crosses into the core and is
 never read back out through any response), and `shell/sync-status.ts` (the
 staleness readout; an outcome that did not run must never read as success).
+
+**That one interval now runs behind an in-flight guard, and trigger identity
+survives it.** `worker/sync-run-guard.ts` (#184) wraps the `run` sink
+`core.worker.ts` hands `createSyncCadence` — not the cadence, and not the
+serial queue, whose own abandon-on-timeout is an unrelated fix that must
+keep working — so at most one `runSync` is in flight for the whole origin.
+Triggers arriving during a run coalesce into exactly ONE pending follow-up,
+which starts the instant the in-flight one resolves; and because a
+`runSync` whose promise never settles would otherwise wedge the cadence
+forever, the guard releases the slot after its own bound, `releaseMs`,
+passed in as `TASK_REQUEST_TIMEOUT_MS` — the same "how long is too long"
+the underlying task queue already answers, never a second independent
+number. A generation counter is what makes that release safe: a straggler's
+late `.finally`, arriving after the bound already handed the slot to a new
+run, is stale and can never free that *other* run's slot. Which of two
+triggers survives in the single pending slot is
+`shell/sync-cadence.ts`'s `mergePendingSyncTrigger`, never bare last-wins,
+because identity is read downstream of the guard (`forceFullSweep`,
+`toCoreTrigger`): `open` (3) > `reconnect` | `manual` (2) > `focus` (1) >
+`timer` (0). A pending `open` overwritten by a later trigger would drop
+ADR-0008's app-open full-sweep backstop for the rest of the worker's
+lifetime (`dispatch.ts` fires it once), and a pending `reconnect`/`manual`
+overwritten by a `focus` or `timer` would silently demote a user-facing
+backoff reset — the outage-recovery path the precedence exists for. **The
+guard module imports nothing, and must stay that way**: it sits in
+`core.worker.ts`'s static import graph, which may never acquire a top-level
+`await`.
+
+`toCoreTrigger` maps `"focus"` onto the core's `"timer"` spelling, not
+`"user"` (#190). A focus event says a window came forward — an ambient
+signal, not the gesture ADR-0007's "backoff is reset by any user-facing
+trigger" is about; only `open` / `reconnect` / `manual` are, and they still
+reset it. The cadence itself is unchanged and `useSyncWiring.ts` still
+forwards every focus, but outside backoff a focus behaves exactly as before
+and during backoff it lands as a cycle the core declines, so alt-tabbing at
+any rate can no longer stretch an outage's request rate past the backoff
+schedule. An interpretation of ADR-0007 recorded in the code, not an
+amendment to the ADR.
 
 The protocol now carries the whole read-and-act surface: view→worker
 `capture` / `act` / `triage` and the reads `getFrontier` /
