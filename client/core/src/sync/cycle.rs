@@ -369,6 +369,15 @@ where
     /// open" signal (ADR-0008's other backstop trigger, alongside "daily")
     /// — independent of `trigger`, since a full sweep on app open is called
     /// for whether or not that open also happens to reset backoff.
+    // Eight arguments, one over clippy's default seven, and deliberately so:
+    // five of them are the caller-injected dependencies this module exists to
+    // keep injectable (both transports, the token, the clock, the jitter —
+    // bare `wasm32-unknown-unknown` has neither a clock nor an RNG that does
+    // not panic, so none of them can be sampled here). Bundling them into a
+    // parameter struct would only move the same eight values one line up at
+    // every call site, and S6/#104 is about to consume this signature as it
+    // stands.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &mut self,
         read_transport: &impl ChangesTransport,

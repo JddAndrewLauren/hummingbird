@@ -1,0 +1,18 @@
+# The one Rust toolchain this repo builds and lints with.
+#
+# Root-level deliberately: there is no root `Cargo.toml` — `client/` and
+# `server/` are separate workspaces — but rustup resolves this by walking up
+# from the current directory, so one file here covers both, and covers a
+# `cargo` invoked with `--manifest-path` from anywhere in the tree.
+#
+# Pinned rather than `stable` because CI gates `clippy -D warnings`: a new
+# stable release can add a lint, and an unrelated PR would then go red for
+# something its author did not write. Bump this file on purpose, in its own
+# PR, with whatever the new stable objects to fixed in the same change.
+#
+# `rustfmt` is here for local use only. There is no `cargo fmt --check` gate
+# yet: the repo has never been formatted, so the first pass is a ~2,350-line
+# diff that wants its own PR against main.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

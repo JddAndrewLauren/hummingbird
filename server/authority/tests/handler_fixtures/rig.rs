@@ -155,6 +155,10 @@ impl Sql for RecordingSql<'_> {
 
 /// The lowest-level request: explicit authorization header and admin
 /// secret. Every other helper reduces to this.
+// Eight arguments by design: this helper's whole job is to leave every axis
+// of an `ApiRequest` explicit at one call site, so a fixture can vary any
+// one of them. The narrower helpers below are the ergonomic front doors.
+#[allow(clippy::too_many_arguments)]
 pub fn req_with(
     sql: &dyn Sql,
     authorization: Option<&str>,
@@ -320,7 +324,6 @@ pub fn seed_item(sql: &dyn Sql, id: &str) -> i64 {
 
 /// The two tables without a #114 write handler are seeded through the seam
 /// directly, stamping the next workspace version the way a handler would.
-
 pub fn seed_alert_raw(sql: &dyn Sql, id: &str, source: &str, source_key: &str) -> i64 {
     let version = meta_version(sql) + 1;
     sql.exec(

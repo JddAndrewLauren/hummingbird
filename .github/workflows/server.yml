@@ -9,10 +9,12 @@ on:
     branches: [main]
     paths:
       - "server/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/server.yml"
   pull_request:
     paths:
       - "server/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/server.yml"
 
 # Superseded PR pushes cancel their stale runs.
@@ -29,8 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to match root `rust-toolchain.toml` — see client.yml.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97.1"
+          components: clippy
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
@@ -39,6 +44,10 @@ jobs:
           # worker-build is installed by wrangler.toml's [build] command;
           # caching ~/.cargo/bin keeps that install a no-op across runs.
           cache-bin: true
+
+      - name: cargo clippy (server workspace)
+        working-directory: server
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Native fixture tests (domain + authority)
         working-directory: server
