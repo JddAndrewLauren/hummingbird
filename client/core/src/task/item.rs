@@ -321,5 +321,4 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         assert!(!json.contains("extra"), "{json}");
     }
-
 }
