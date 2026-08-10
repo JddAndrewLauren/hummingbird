@@ -55,7 +55,13 @@ use crate::task::Presence;
 /// [`crate::storage::SnapshotError::Deserialize`] must still never be mapped
 /// to `SyncMirror::default()` by a caller — that would discard retained
 /// history no sweep can reconstruct, only refill going forward).
-pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 1;
+///
+/// Bumped to 2 for #153's `domain::Item.due_date` → `.deadline` rename: the
+/// same reasoning as `task::mirror::MIRROR_SCHEMA_VERSION` applies here —
+/// `deadline` is an `Option<String>` with no `deny_unknown_fields` on
+/// `Item`, so a stored snapshot's stale `due_date` key would otherwise be
+/// silently dropped and `deadline` would silently deserialize to `None`.
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 2;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.

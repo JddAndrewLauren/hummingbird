@@ -26,7 +26,18 @@ use super::route::Route;
 /// against is *not* silent: `load_snapshot` surfaces a shape change as
 /// `SnapshotError::Deserialize`, never as an empty mirror — a caller that
 /// maps that error to "start fresh" is the thing that would lose data.
-pub const MIRROR_SCHEMA_VERSION: u32 = 1;
+///
+/// Bumped to 2 for #153's `Item.due_date` → `Item.deadline` rename: unlike
+/// this guard's usual guarantee, that particular shape change is *not*
+/// caught by a naive envelope check on its own — `deadline` has no
+/// `#[serde(default)]` yet `Option<T>` fields still deserialize a missing
+/// key as `None` (serde's built-in behaviour for `Option`), and the struct
+/// carries no `deny_unknown_fields`. So an old snapshot's stale `due_date`
+/// key would be silently ignored and `deadline` would silently come back
+/// `None`, losing every stored deadline with no error at all — exactly the
+/// failure this constant exists to convert into an explicit one. Bumping it
+/// is what makes that conversion actually happen.
+pub const MIRROR_SCHEMA_VERSION: u32 = 2;
 
 /// The result of applying one complete sweep.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

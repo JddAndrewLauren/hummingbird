@@ -26,7 +26,7 @@ pub use api::{
     VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, Setting};
-pub use deadline::is_valid_deadline;
+pub use deadline::{deadline_sort_key, is_valid_deadline};
 pub use item::{Energy, Item, Size, Stage};
 pub use project::{Fog, Project, Route};
 pub use rule::{Condition, Delivery, Platform, PushTarget, Rule, Tier};

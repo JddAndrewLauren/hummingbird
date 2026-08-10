@@ -174,9 +174,11 @@ pub struct Item {
     /// format before the decision exists.
     pub labels: Vec<String>,
     pub priority: Priority,
-    /// `YYYY-MM-DD`, verbatim from Linear. A calendar date, not an instant —
-    /// parsing it to a timestamp requires a timezone this record has no
-    /// business choosing.
+    /// `YYYY-MM-DD` verbatim from Linear (day-grained; Linear's own
+    /// `dueDate` carries no time), or a minute-precision naive date-time
+    /// once a record round-trips through the owned schema (ADR-0013). A
+    /// calendar date is not an instant — parsing it to a timestamp requires
+    /// a timezone this record has no business choosing.
     pub deadline: Option<String>,
     pub created_at_ms: i64,
     /// The base for ADR-0007's field-level conflict detection: a queued
@@ -319,4 +321,5 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         assert!(!json.contains("extra"), "{json}");
     }
+
 }
