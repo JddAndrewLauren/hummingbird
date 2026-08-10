@@ -19,7 +19,8 @@ mod task_host;
 pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
 pub use task_host::{
     ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
-    DeadLetterFieldDTO, DeadLettersResponse, FrontierItemDTO, IsPendingResponse, ItemListResponse,
+    DeadLetterFieldDTO, DeadLettersResponse, FreshnessResponse, FrontierItemDTO, IsPendingResponse,
+    ItemListResponse,
     MirrorSnapshotResponse, ProjectListResponse, QueueDepthResponse, RunResponse, StepListResponse,
     TaskEventDTO, TaskHostCore, TriageEdits, TriageResponse,
 };
@@ -405,6 +406,9 @@ mod wasm_bindings {
     const BUSY_STEP_LIST: &str = r#"{"kind":"busy","steps":[]}"#;
     const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
+    // ADR-0015: a core that has not loaded has measured nothing, so busy is
+    // `unknown` — never `{"age_ms":0}`, which would render as fresh.
+    const BUSY_FRESHNESS: &str = r#"{"kind":"busy","freshness":{"state":"unknown"}}"#;
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_ACT: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_TRIAGE: &str = r#"{"kind":"busy","error":null}"#;
@@ -533,6 +537,21 @@ mod wasm_bindings {
                     serde_json::to_string(&host.projects()).expect("ProjectListResponse serializes")
                 }
                 None => BUSY_PROJECT_LIST.to_string(),
+            }
+        }
+
+        /// How old this device's answer to one standing question is
+        /// (ADR-0015), as JSON: `{"kind": "ok"|"busy", "freshness":
+        /// {"state":"unknown"} | {"state":"age","age_ms":number,
+        /// "declared_cadence_ms":number|null}}`. `now_ms` is host-supplied.
+        #[wasm_bindgen(js_name = snapshotFreshness)]
+        pub fn snapshot_freshness(&self, source: String, key: String, now_ms: f64) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.snapshot_freshness(&source, &key, now_ms as i64))
+                        .expect("FreshnessResponse serializes")
+                }
+                None => BUSY_FRESHNESS.to_string(),
             }
         }
 

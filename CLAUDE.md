@@ -246,6 +246,36 @@ cite the actual decisive rule rather than a step index. The total order ends
 repeat call is byte-identical. Nothing consumes it yet — it crosses no FFI
 seam; #116 is its caller.
 
+`client/core/src/freshness.rs` is the third top-level module, and ADR-0015's
+Rust half of the Rust/TS carve-out: `Freshness` is **not a boolean** but
+`Unknown | Age { age_ms, declared_cadence_ms: Option }`, because two
+different unknowns exist — `Unknown` is *we do not know the age*, `Age` with
+no cadence is *we know the age but not what normal looks like*. The
+invariant it exists to make unbreakable is that **`Unknown` may never render
+as fresh**: `age_ms()` returns an `Option` rather than a zero, and
+`is_stale_beyond(threshold)` — the one stale decision here — answers `true`
+for `Unknown` against every threshold, including `i64::MAX`. The **clock
+rule is stated once** in `measure`: both stamps are read against the
+device's clock, so a fetch stamp in the future means the clocks disagree,
+and age clamps to `0`; two prototypes independently hand-rolled
+`Math.max(0, now - fetchedAt)`, which is the drift the carve-out exists to
+stop, so no other caller in Rust or TS may repeat it. **The threshold is
+deliberately not here** — it stays in TS beside each pane's band function,
+because the driver is the cost of a wrong answer (waste calls 26h stale
+where `2 × cadence` would say 48h); a `stale_after_ms` field on this type is
+the rejected design. One type serves all four panes: `of_snapshot` takes the
+cadence from the row's `SnapshotEnvelope` (a broken envelope costs the
+cadence, not the age — the pane reads the `EnvelopeProblem` from its own
+parse), while the calendar lane passes ADR-0005's poll interval into
+`measure` directly. **The finished value is what crosses the seam**, not its
+parts (`Core::snapshot_freshness` → `task_host.rs`'s `FreshnessResponse`,
+`{"state":"unknown"}` or `{"state":"age",…}`): handing `fetched_at` over for
+TS to combine would put the subtraction back on the far side of the
+boundary, and the shim's busy answer is `unknown` for the same reason — a
+core that has not loaded has measured nothing. The generic pane read (for a
+source, its snapshot rows and its live alerts) is #119's and does not exist
+yet; nothing in TS consumes freshness until it does.
+
 ## The web worker layer
 
 `client/web/src/worker/` is where the device half meets the browser: **one

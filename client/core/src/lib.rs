@@ -44,6 +44,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod calendar;
 pub mod capture;
 pub mod context;
+pub mod freshness;
 pub mod rank;
 pub mod storage;
 pub mod sync;
@@ -700,6 +701,32 @@ where
         let mut projects: Vec<Project> = self.cycle.mirror().all_projects().cloned().collect();
         projects.sort_by(|a, b| a.id.cmp(&b.id));
         projects
+    }
+
+    /// How old this device's answer to one standing question is (ADR-0015).
+    ///
+    /// **Computed here rather than assembled by the host.** The alternative
+    /// — handing `fetched_at` and the declared cadence over the seam for TS
+    /// to combine — would put the age subtraction back on the far side of
+    /// the boundary, and the two prototypes that independently hand-rolled
+    /// `Math.max(0, now - fetchedAt)` are the evidence for what happens
+    /// next. [`freshness::Freshness::measure`]'s clock rule is only "once,
+    /// in one place" if the finished value is what crosses.
+    ///
+    /// No row (never synced, or demoted by ADR-0003's absence rule) is
+    /// [`freshness::Freshness::Unknown`] — not a zero age, and not a
+    /// silently fresh answer. `now_ms` is caller-injected, as everywhere
+    /// else in this crate.
+    ///
+    /// Deliberately *not* the pane read. The generic "for a source, its
+    /// snapshot rows and its live alerts" read is #119's, and it can call
+    /// this or [`freshness::Freshness::of_snapshot`] directly once it
+    /// exists; nothing here knows what a pane means by its answer.
+    pub fn snapshot_freshness(&self, source: &str, key: &str, now_ms: i64) -> freshness::Freshness {
+        match self.cycle.mirror().context_snapshot(source, key) {
+            Some(snapshot) => freshness::Freshness::of_snapshot(now_ms, snapshot),
+            None => freshness::Freshness::Unknown,
+        }
     }
 
     /// Captures a new item: enqueues a `POST /api/items` create (durably,
@@ -2854,5 +2881,66 @@ mod tests {
     async fn a_fresh_core_reports_no_projects() {
         let core = Core::new();
         assert!(core.projects().is_empty());
+    }
+
+    // ------------------------------------------- snapshot_freshness() (ADR-0015)
+
+    #[tokio::test]
+    async fn snapshot_freshness_reads_the_row_and_demotion_returns_it_to_unknown() {
+        use freshness::Freshness;
+
+        fn gauge(fetched_at: i64, version: i64) -> hummingbird_domain::ContextSnapshot {
+            hummingbird_domain::ContextSnapshot {
+                source: "city-waste/v2".to_string(),
+                key: "next_collection".to_string(),
+                payload: r#"{"schema":"city-waste/v2","polled_every_ms":86400000,"body":{}}"#
+                    .to_string(),
+                fetched_at,
+                version,
+            }
+        }
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        // Nothing synced yet: unknown, and unknown is stale against every
+        // threshold — never a zero age standing in for "no answer".
+        let before = core.snapshot_freshness("city-waste/v2", "next_collection", 100_000);
+        assert_eq!(before, Freshness::Unknown);
+        assert!(before.is_stale_beyond(i64::MAX));
+
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            context_snapshots: vec![gauge(60_000, 1)],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        core.run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+
+        assert_eq!(
+            core.snapshot_freshness("city-waste/v2", "next_collection", 100_000),
+            Freshness::Age { age_ms: 40_000, declared_cadence_ms: Some(86_400_000) },
+        );
+        // Identity is `(source, key)` — a different key is a different
+        // question, not the same answer.
+        assert_eq!(
+            core.snapshot_freshness("city-waste/v2", "some_other_metric", 100_000),
+            Freshness::Unknown,
+        );
+
+        // A sweep that omits the row demotes it (ADR-0003). A demoted gauge
+        // must read as unknown, not as the last answer it happened to hold.
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse::empty(2))
+            .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        core.run(&read, &ScriptedWrite::new(vec![]), 2_000, Trigger::User, true, 0.0)
+            .await;
+
+        assert_eq!(
+            core.snapshot_freshness("city-waste/v2", "next_collection", 100_000),
+            Freshness::Unknown,
+        );
     }
 }
