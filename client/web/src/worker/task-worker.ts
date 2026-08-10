@@ -49,7 +49,7 @@ interface RawItem {
   priority: number;
   project_id: string | null;
   project_pos: number | null;
-  due_date: string | null;
+  deadline: string | null;
   scheduled_date: string | null;
   source: string | null;
   source_key: string | null;
@@ -136,7 +136,7 @@ function mapItem(raw: RawItem): TaskItemDTO {
     priority: raw.priority,
     projectId: raw.project_id,
     projectPos: raw.project_pos,
-    dueDate: raw.due_date,
+    deadline: raw.deadline,
     scheduledDate: raw.scheduled_date,
     source: raw.source,
     sourceKey: raw.source_key,
