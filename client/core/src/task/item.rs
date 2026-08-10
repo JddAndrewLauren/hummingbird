@@ -177,7 +177,7 @@ pub struct Item {
     /// `YYYY-MM-DD`, verbatim from Linear. A calendar date, not an instant —
     /// parsing it to a timestamp requires a timezone this record has no
     /// business choosing.
-    pub due_date: Option<String>,
+    pub deadline: Option<String>,
     pub created_at_ms: i64,
     /// The base for ADR-0007's field-level conflict detection: a queued
     /// mutation records the value it saw here, and a sweep returning a newer
@@ -216,7 +216,7 @@ impl Item {
             project: None,
             labels: Vec::new(),
             priority: Priority::None,
-            due_date: None,
+            deadline: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             blockers: Vec::new(),

@@ -105,8 +105,8 @@ pub fn by_priority_then_due(items: &mut [&Item]) {
         a.priority
             .rank()
             .cmp(&b.priority.rank())
-            // `None` sorts last: no due date is not an infinitely near one.
-            .then_with(|| match (&a.due_date, &b.due_date) {
+            // `None` sorts last: no deadline is not an infinitely near one.
+            .then_with(|| match (&a.deadline, &b.deadline) {
                 (Some(x), Some(y)) => x.cmp(y),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -297,7 +297,7 @@ mod tests {
         urgent.priority = Priority::Urgent;
         let mut low_soon = item("3", Stage::Ready);
         low_soon.priority = Priority::Low;
-        low_soon.due_date = Some("2026-08-09".to_string());
+        low_soon.deadline = Some("2026-08-09".to_string());
         let mut low_undated = item("4", Stage::Ready);
         low_undated.priority = Priority::Low;
 
@@ -306,5 +306,41 @@ mod tests {
         by_priority_then_due(&mut items);
 
         assert_eq!(ids(&items), vec!["2", "3", "4", "1"]);
+    }
+
+    /// The ordering comparison is a raw string `cmp`, not a date parse —
+    /// this pins that the widened field (a calendar date, or a
+    /// minute-precision date-time — #153) keeps sorting chronologically
+    /// under that comparison: a date-only value sorts before any time on
+    /// the same day, and lexicographic order matches chronological order
+    /// across a mixed set of both forms.
+    #[test]
+    fn same_priority_items_sort_chronologically_across_mixed_deadline_forms() {
+        let mut same_day_dated = item("1", Stage::Ready);
+        same_day_dated.priority = Priority::Low;
+        same_day_dated.deadline = Some("2026-08-09".to_string());
+
+        let mut same_day_early = item("2", Stage::Ready);
+        same_day_early.priority = Priority::Low;
+        same_day_early.deadline = Some("2026-08-09T00:01".to_string());
+
+        let mut same_day_late = item("3", Stage::Ready);
+        same_day_late.priority = Priority::Low;
+        same_day_late.deadline = Some("2026-08-09T23:59".to_string());
+
+        let mut next_day = item("4", Stage::Ready);
+        next_day.priority = Priority::Low;
+        next_day.deadline = Some("2026-08-10".to_string());
+
+        let mirror = mirror_of(vec![next_day, same_day_late, same_day_dated, same_day_early]);
+        let mut items = mirror.frontier();
+        by_priority_then_due(&mut items);
+
+        assert_eq!(
+            ids(&items),
+            vec!["1", "2", "3", "4"],
+            "date-only sorts before any same-day time, and chronological order holds \
+             across the mixed set",
+        );
     }
 }

@@ -114,8 +114,10 @@ pub struct Item {
     pub project_id: Option<String>,
     /// Order within the Route's action list.
     pub project_pos: Option<i64>,
-    /// ISO deadline, set deliberately at triage only.
-    pub due_date: Option<String>,
+    /// A naive calendar date (`YYYY-MM-DD`) or minute-precision date-time
+    /// (`YYYY-MM-DDTHH:MM`), set deliberately at triage only. See
+    /// [`crate::is_valid_deadline`] — no seconds, no timezone.
+    pub deadline: Option<String>,
     /// ISO do-date the human chose: a preference, never feeds urgency.
     pub scheduled_date: Option<String>,
     /// Frozen namespace: 'google-tasks/v1', 'gmail/v1', 'web', …
@@ -170,7 +172,7 @@ mod tests {
             priority: 2,
             project_id: None,
             project_pos: None,
-            due_date: Some("2026-08-15".into()),
+            deadline: Some("2026-08-15".into()),
             scheduled_date: None,
             source: Some("web".into()),
             source_key: None,

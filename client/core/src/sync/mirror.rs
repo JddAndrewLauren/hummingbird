@@ -383,7 +383,7 @@ mod tests {
             priority: 0,
             project_id: None,
             project_pos: None,
-            due_date: None,
+            deadline: None,
             scheduled_date: None,
             source: None,
             source_key: None,

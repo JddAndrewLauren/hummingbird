@@ -43,7 +43,7 @@ pub struct CreateItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_pos: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub due_date: Option<String>,
+    pub deadline: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,7 +131,7 @@ pub struct ItemPatch {
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub project_pos: Option<Option<i64>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
-    pub due_date: Option<Option<String>>,
+    pub deadline: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub scheduled_date: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(p.expected_version, 3);
         assert_eq!(p.description, Some(None), "explicit null = clear");
         assert_eq!(p.context, Some(Some("@calls".into())), "value = set");
-        assert_eq!(p.due_date, None, "absent = untouched");
+        assert_eq!(p.deadline, None, "absent = untouched");
         assert_eq!(p.title, None);
     }
 

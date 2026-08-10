@@ -34,7 +34,7 @@ fn golden_sweep() -> Sweep {
     let mut started = Item::new("id-started", "write the mirror", Stage::InProgress);
     started.identifier = "ION-5".to_string();
     started.priority = Priority::High;
-    started.due_date = Some("2026-08-09".to_string());
+    started.deadline = Some("2026-08-09".to_string());
     started.project = Some("Build the client".to_string());
     started
         .extra
