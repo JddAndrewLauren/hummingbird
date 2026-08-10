@@ -25,13 +25,15 @@
 //! place) and a [`WriteError::Unauthorized`] halts it entirely, emitting
 //! exactly one [`DrainOutcome::CredentialNeeded`] — never one per remaining
 //! entry, and never an attempt at anything past position 1. Only a
-//! [`WriteError::Permanent`], an unresolved [`WriteError::Conflict`], or a
-//! malformed response ([`WriteError::InvalidResponse`]) — nothing further
-//! can fix any of the three by retrying unchanged — moves an entry to the
-//! dead-letter journal and lets the drain continue. This is what makes
-//! create-before-update ordering hold without a separate proof: a queue
-//! that skipped ahead on a transient failure could send an update before
-//! the create it depends on.
+//! [`WriteError::Permanent`], an unresolved [`WriteError::Conflict`], a
+//! genuinely disjoint [`WriteError::Contention`] (#163 — a second 409 that
+//! stayed disjoint even after the one bounded rebase retry), or a malformed
+//! response ([`WriteError::InvalidResponse`]) — nothing further can fix any
+//! of the four by retrying unchanged — moves an entry to the dead-letter
+//! journal and lets the drain continue. This is what makes create-before-
+//! update ordering hold without a separate proof: a queue that skipped
+//! ahead on a transient failure could send an update before the create it
+//! depends on.
 //!
 //! Per ADR-0010 (#97's blocker cleared by PR #125), the queue is
 //! single-writer by construction — one `SharedWorker` per origin, one
@@ -43,11 +45,14 @@
 //! it no longer needs resending is a gap this type does not try to close —
 //! closing it would need a distributed transaction this app doesn't have.
 //! Instead, replaying the *same* durably-stored entry against the authority
-//! a second time must be safe, and that is exactly what #101 already
+//! a second time must be safe, and that is exactly what #101/#163 already
 //! guarantees: a create is idempotent by its deterministic id, and a patch
-//! that already landed rebases as [`super::write::RebaseDecision::Safe`]
-//! ("already achieved") and reapplies as a no-op. `drain` never rebuilds an
-//! entry's body from live state on retry — it resends the identical
+//! that already landed rebases as
+//! [`super::write::RebaseDecision::Achieved`] and is **not resent at
+//! all** — the 409 body alone is enough to recognize the replay, so the
+//! authority never sees the replayed write a second time and `updated_at`
+//! is never falsified to the replay time. `drain` never rebuilds an entry's
+//! body from live state on retry — it resends the identical
 //! `patch_fields`/`base` this entry was enqueued with — which is what makes
 //! that guarantee apply here.
 //!
@@ -174,6 +179,13 @@ pub enum DeadLetterReason {
     /// be dropped (`Err(WriteError::Conflict { fields, .. })`) on the way
     /// into the journal.
     Conflict { fields: Vec<String>, current: Value },
+    /// A second 409, still genuinely disjoint after the one bounded rebase
+    /// retry (#163): not a field collision — there is no colliding field
+    /// name to show — just repeated churn this queue gives up reissuing
+    /// against. Carries the server's `current` entity so the journal still
+    /// has material, never a `Conflict` with an empty field list
+    /// masquerading as one.
+    Contention { current: Value },
 }
 
 /// One dead-lettered entry: the abandoned intent plus why, so it can be
@@ -321,6 +333,10 @@ impl OutboundQueue {
                 }
                 Err(WriteError::Conflict { fields, current }) => {
                     self.dead_letter(DeadLetterReason::Conflict { fields, current }, now_ms);
+                    dead_lettered += 1;
+                }
+                Err(WriteError::Contention { current }) => {
+                    self.dead_letter(DeadLetterReason::Contention { current }, now_ms);
                     dead_lettered += 1;
                 }
             }
@@ -584,6 +600,47 @@ mod tests {
         }
     }
 
+    /// #163 acceptance: "No path through the patch write can produce a
+    /// conflict dead-letter with an empty field list." A second 409 that
+    /// stays genuinely disjoint after the one bounded rebase retry
+    /// dead-letters as `Contention`, carrying the current entity — never a
+    /// `Conflict` with `fields: []` masquerading as a real collision.
+    #[tokio::test]
+    async fn a_genuinely_disjoint_second_409_dead_letters_as_contention_not_an_empty_conflict() {
+        let first_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"buy milk","version":2}}"#;
+        let second_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"buy milk again","version":3}}"#;
+        let third_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","priority":1,"title":"buy milk yet again","version":4}}"#;
+        let transport = ScriptedTransport::new(vec![
+            ok(409, first_conflict),
+            ok(409, second_conflict),
+            ok(409, third_conflict),
+        ]);
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(QueueEntry {
+            id: "m-1".to_string(),
+            intent: MutationIntent::Patch {
+                path: "/api/items/a-1".to_string(),
+                method: HttpMethod::Patch,
+                base: json!({"id": "a-1", "priority": 1, "title": "old title", "version": 1}),
+                base_updated_at: 1_000,
+                patch_fields: json!({"priority": 2}),
+            },
+        });
+
+        let outcome = queue.drain(&transport, "token", 1_000).await;
+
+        assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 1 });
+        assert_eq!(queue.dead_letters().len(), 1);
+        match &queue.dead_letters()[0].reason {
+            DeadLetterReason::Contention { current } => assert_eq!(
+                current,
+                &json!({"id": "a-1", "priority": 1, "title": "buy milk yet again", "version": 4}),
+                "the current entity must reach the journal, not be dropped"
+            ),
+            other => panic!("expected contention, got {other:?}"),
+        }
+    }
+
     // -------------------------------------------------------------- 401
 
     /// #102 acceptance: "A 401 at position 1 attempts nothing further and
@@ -678,11 +735,12 @@ mod tests {
 
         // The replay: the authority's `current` already holds exactly what
         // this patch intends (its own prior success) — the 409 rebases as
-        // `Safe` and the retry is a no-op that still reports success.
+        // `Achieved` (#163) and the write is never resent at all; the real
+        // authority would answer a genuine retry with the *next* version,
+        // never the same one, which is exactly why there is no second
+        // scripted response here to accidentally rely on.
         let replay_conflict = r#"{"error":"version_conflict","current":{"id":"a-1","title":"buy oat milk","version":2}}"#;
-        let replay_retry_success = r#"{"id":"a-1","title":"buy oat milk","version":2}"#;
-        let replay_transport =
-            ScriptedTransport::new(vec![ok(409, replay_conflict), ok(200, replay_retry_success)]);
+        let replay_transport = ScriptedTransport::new(vec![ok(409, replay_conflict)]);
 
         let replay_outcome = rebooted_queue.drain(&replay_transport, "token", 2_000).await;
 
@@ -695,6 +753,11 @@ mod tests {
         assert!(
             rebooted_queue.dead_letters().is_empty(),
             "a converging replay is not a conflict — no duplicate side effect"
+        );
+        assert_eq!(
+            replay_transport.call_count(),
+            1,
+            "an already-achieved 409 must never be resent"
         );
     }
 
