@@ -19,6 +19,7 @@ import { createSerialQueue } from "./serial-queue";
  * place. */
 export interface TaskHostLike {
   pushApiKey(apiKey: string): void;
+  clearApiKey(): void;
   capture(seed: string, title: string, stage: string, nowMs: number): Promise<string>;
   frontier(): string;
   triageInbox(): string;
@@ -150,6 +151,12 @@ export async function handleTaskRequest(
       // Forwarded and never echoed: no branch below, or anywhere else in
       // this module, ever posts a message carrying an API key.
       host.pushApiKey(request.apiKey);
+      return;
+    case "clearTaskApiKey":
+      // "Forget token" (#106/S8): forwarded and never acknowledged with a
+      // reply — there is nothing to reply with, and the host already
+      // updated its own local state before sending this.
+      host.clearApiKey();
       return;
     case "capture": {
       const raw = JSON.parse(

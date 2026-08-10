@@ -4,12 +4,15 @@ import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { CalendarPicker } from "../components/domain/CalendarPicker";
+import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import type { CalendarState, CoreStatus } from "../store/store";
+import type { TaskTokenSubmitOutcome } from "../task/token";
+import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 
@@ -32,6 +35,66 @@ function Note({ children }: { children: ReactNode }) {
   );
 }
 
+/** The submit outcomes the form itself needs to say something about — every
+ * `TaskTokenSubmitOutcome` except `"ok"`, which clears the field instead of
+ * showing an error. */
+type TokenFormError = Exclude<TaskTokenSubmitOutcome, "ok">;
+
+const TOKEN_FORM_ERROR_COPY: Record<TokenFormError, string> = {
+  blank: "Enter a token before saving.",
+  storeError: "Could not save the token on this device. Try again.",
+};
+
+/** The device-token entry field, shared between the first-run "unset" state
+ * and the 401 "reprompt" state — same form, different surrounding copy.
+ * `type="password"` keeps the value out of the on-screen render (shoulder
+ * surfing) and Chrome's enhanced-spellcheck exfiltration path;
+ * `autoComplete="off"` keeps a long-lived bearer token out of the browser's
+ * saved-password store, which is scoped to this origin and outlives
+ * "forget token"; `spellCheck={false}` is the same exfiltration surface
+ * `autoComplete` addresses, belt-and-braces since some browsers spellcheck
+ * password fields anyway. The field clears on a successful submit so a
+ * stale value never lingers on screen once it is safely in IndexedDB. */
+function TokenEntryForm({
+  onSubmit,
+}: {
+  onSubmit: (input: string) => Promise<TaskTokenSubmitOutcome>;
+}) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<TokenFormError | null>(null);
+
+  async function submit() {
+    const outcome = await onSubmit(value);
+    if (outcome === "ok") {
+      setValue("");
+      setError(null);
+      return;
+    }
+    setError(outcome);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      <Input
+        label="Device token"
+        placeholder="hb_device_..."
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        error={error === null ? undefined : TOKEN_FORM_ERROR_COPY[error]}
+        onChange={(event) => {
+          setValue(event.target.value);
+          setError(null);
+        }}
+      />
+      <Button onClick={() => void submit()} fullWidth>
+        Save token
+      </Button>
+    </div>
+  );
+}
+
 export interface SettingsScreenProps {
   demo: DemoData | null;
   status: CoreStatus;
@@ -43,6 +106,11 @@ export interface SettingsScreenProps {
   onConnect: () => void;
   onSelectionChange: (selectedCalendarIds: string[]) => void;
   onRefresh: () => void;
+  /** #106/S8's device-token surface — entry, rest, and re-prompt. */
+  taskTokenState: TaskTokenUiState;
+  taskTokenEnteredAtMs: number | null;
+  onSubmitTaskToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
+  onForgetTaskToken: () => void;
 }
 
 export function SettingsScreen({
@@ -56,6 +124,10 @@ export function SettingsScreen({
   onConnect,
   onSelectionChange,
   onRefresh,
+  taskTokenState,
+  taskTokenEnteredAtMs,
+  onSubmitTaskToken,
+  onForgetTaskToken,
 }: SettingsScreenProps) {
   const unavailableIds = unavailableSelectedIds(
     calendar.selectedCalendarIds,
@@ -198,6 +270,45 @@ export function SettingsScreen({
               <span className="hb-meta">
                 opt-in is per-device · polled every 15m in the foreground
               </span>
+            </Card>
+          </>
+        ) : null}
+
+        {status === "ready" ? (
+          <>
+            <span className="hb-meta">device token</span>
+            <Card
+              padding="var(--space-5)"
+              style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+            >
+              <p
+                style={{
+                  font: "var(--type-body-sm)",
+                  color:
+                    taskTokenState === "reprompt"
+                      ? "var(--status-warn-fg)"
+                      : "var(--text-secondary)",
+                }}
+              >
+                {taskQueueStatusCopy(taskTokenState)}
+              </p>
+              {taskTokenState === "resting" ? (
+                <>
+                  {taskTokenEnteredAtMs !== null ? (
+                    <span className="hb-meta">entered {formatEnteredAt(taskTokenEnteredAtMs)}</span>
+                  ) : null}
+                  <Button
+                    variant="secondary"
+                    iconLeft="x"
+                    onClick={onForgetTaskToken}
+                    style={{ alignSelf: "flex-start" }}
+                  >
+                    Forget token
+                  </Button>
+                </>
+              ) : (
+                <TokenEntryForm onSubmit={onSubmitTaskToken} />
+              )}
             </Card>
           </>
         ) : null}

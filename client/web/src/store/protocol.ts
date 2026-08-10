@@ -165,6 +165,10 @@ export type TaskWorkerRequest =
    * rotation) — never in response to anything the worker posted back,
    * because nothing the worker posts back ever carries the key. */
   | { type: "pushTaskApiKey"; apiKey: string }
+  /** "Forget token" (#106/S8): clears the core's in-memory credential.
+   * Carries nothing — there is no key to carry — and gets no reply; the
+   * host fires this and moves on. Never touches the mirror or the queue. */
+  | { type: "clearTaskApiKey" }
   /** `seed` mints the deterministic id `Core::capture` derives from it
    * (`client/core/src/sync/write/id.rs`) — caller-supplied so the view that
    * issued the capture can match its own seed back against the

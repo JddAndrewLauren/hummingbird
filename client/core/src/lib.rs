@@ -148,6 +148,17 @@ impl AccessTokenSlot {
     fn is_held(&self) -> bool {
         self.held
     }
+
+    /// "Forget token" (#106/S8): returns to the "no key has ever been
+    /// pushed" state, distinct from [`AccessTokenSlot::hold`] — a hold
+    /// means a previously-good key was just rejected and a fresh push is
+    /// expected to resume it; a clear means the host discarded the key
+    /// itself, so the next [`Core::run`] should report
+    /// [`CoreCycleOutcome::NoCredential`], not stay [`CoreCycleOutcome::Held`].
+    fn clear(&mut self) {
+        self.key = None;
+        self.held = false;
+    }
 }
 
 /// One not-yet-confirmed capture: the mutation's own queue entry id (so a
@@ -495,6 +506,25 @@ where
     /// rotation it is asking for already happened.
     pub fn push_api_key(&mut self, api_key: impl Into<String>) {
         self.credential.push(api_key.into());
+        self.events
+            .retain(|event| !matches!(event, CoreEvent::CredentialNeeded { .. }));
+    }
+
+    /// "Forget token" (#106/S8): discards the in-memory credential outright
+    /// rather than holding it — the next [`Core::run`] reports
+    /// [`CoreCycleOutcome::NoCredential`], the same steady state a device
+    /// that has never pushed a key sees, not [`CoreCycleOutcome::Held`]
+    /// (which would wrongly imply a key was rejected and is waiting to be
+    /// retried). Never touches anything durable: the credential was never
+    /// persisted in the first place (see the `compile_fail` proof on
+    /// [`Core`]), so there is nothing here to clean up.
+    ///
+    /// Also drops any not-yet-drained [`CoreEvent::CredentialNeeded`], for
+    /// the same reason [`Core::push_api_key`] does — forgetting the key is
+    /// this host's own deliberate action, not something a stale prompt
+    /// should re-litigate.
+    pub fn clear_api_key(&mut self) {
+        self.credential.clear();
         self.events
             .retain(|event| !matches!(event, CoreEvent::CredentialNeeded { .. }));
     }
@@ -1226,6 +1256,97 @@ mod tests {
             Vec::new(),
             "a fresh push must retract a prompt for a hold it just resolved"
         );
+    }
+
+    // ------------------------------------------------------- clear_api_key
+
+    #[tokio::test]
+    async fn clearing_a_never_pushed_key_stays_no_credential() {
+        let mut core = Core::new();
+        core.clear_api_key();
+
+        let read = ScriptedRead::sweep_only(vec![]);
+        let write = ScriptedWrite::new(vec![]);
+        let outcome = core.run(&read, &write, 1_000, Trigger::User, true, 1.0).await;
+
+        assert_eq!(outcome, CoreCycleOutcome::NoCredential);
+    }
+
+    #[tokio::test]
+    async fn clearing_a_working_key_reports_no_credential_not_held() {
+        let mut core = Core::new();
+        core.push_api_key("device-token");
+        core.clear_api_key();
+
+        let read = ScriptedRead::sweep_only(vec![]);
+        let write = ScriptedWrite::new(vec![]);
+        let outcome = core.run(&read, &write, 1_000, Trigger::User, true, 1.0).await;
+
+        // Distinct from `CoreCycleOutcome::Held`: nothing was rejected here,
+        // the host simply forgot a key that was working fine — the "no
+        // credential" steady state is the honest one, not "waiting for a
+        // retry of a bad token".
+        assert_eq!(outcome, CoreCycleOutcome::NoCredential);
+    }
+
+    #[tokio::test]
+    async fn clearing_after_a_401_hold_also_reports_no_credential_not_held() {
+        let mut core = Core::new();
+        core.push_api_key("stale-token");
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        // The first run actually attempts the cycle and hits the 401,
+        // which is what sets `held` — see
+        // `a_pull_side_401_holds_every_subsequent_run_until_a_fresh_key_is_pushed`.
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0).await;
+        let held_read = ScriptedRead::default();
+        let held_write = ScriptedWrite::default();
+        let held = core
+            .run(&held_read, &held_write, 2_000, Trigger::User, true, 1.0)
+            .await;
+        assert_eq!(held, CoreCycleOutcome::Held);
+
+        core.clear_api_key();
+
+        let outcome = core
+            .run(&held_read, &held_write, 3_000, Trigger::User, true, 1.0)
+            .await;
+        assert_eq!(outcome, CoreCycleOutcome::NoCredential);
+    }
+
+    #[tokio::test]
+    async fn clearing_the_key_drops_an_undrained_credential_needed_event() {
+        let mut core = Core::new();
+        core.push_api_key("stale-token");
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0)
+            .await;
+
+        // The event is recorded but deliberately never drained here.
+        core.clear_api_key();
+
+        assert_eq!(
+            core.take_events(),
+            Vec::new(),
+            "forgetting the key is this host's own action, not something a stale re-prompt \
+             should re-litigate"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_never_touches_the_overlay() {
+        let mut core = Core::new();
+        core.push_api_key("device-token");
+        let id = core.capture("seed-1", "buy milk", Stage::Ready, 1_000).await.unwrap();
+
+        core.clear_api_key();
+
+        assert!(
+            core.is_pending(&id),
+            "clearing the credential must not touch a queued capture's overlay"
+        );
+        assert_eq!(core.frontier().len(), 1);
     }
 
     // -------------------------------------------------------------- triage_inbox

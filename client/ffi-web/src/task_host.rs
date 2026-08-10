@@ -179,6 +179,15 @@ impl TaskHostCore {
         self.core.push_api_key(api_key);
     }
 
+    /// "Forget token" (#106/S8): clears the in-memory credential this host
+    /// holds. Never persisted in the first place (`Core::init`'s own doc),
+    /// so there is nothing durable to clean up here — see
+    /// [`Core::clear_api_key`] for why this reports `no_credential`, not
+    /// `held`, on the next [`TaskHostCore::run`].
+    pub fn clear_api_key(&mut self) {
+        self.core.clear_api_key();
+    }
+
     /// Whether `item_id` currently has an unconfirmed capture overlaid on
     /// it.
     pub fn is_pending(&self, item_id: &str) -> IsPendingResponse {
@@ -365,6 +374,43 @@ mod tests {
         // An empty `base_url` builds a relative URL, which `reqwest` rejects
         // before ever opening a socket — deterministic and network-free.
         assert_eq!(response.kind, "pull_failed");
+    }
+
+    #[tokio::test]
+    async fn clearing_the_key_reports_a_genuine_no_credential_without_touching_the_network() {
+        // Unlike the fresh-init case above (`Core::init`'s `""` still counts
+        // as *a* pushed key, so a fresh host actually exercises
+        // `pull_failed`), `clear_api_key` removes the key outright — this is
+        // the one path in this file that reaches a real
+        // `CoreCycleOutcome::NoCredential`, network-free even though
+        // `base_url` here is a real, well-formed relative path that would
+        // otherwise be attempted.
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-clear-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+
+        host.clear_api_key();
+        let response = host.run(1_000, "user", true, 0.0).await;
+
+        assert_eq!(response.kind, "no_credential");
+    }
+
+    #[tokio::test]
+    async fn clearing_never_touches_a_pending_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-clear-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+        let response = host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = response.id.unwrap();
+
+        host.clear_api_key();
+
+        assert!(host.is_pending(&id).pending);
+        assert_eq!(host.frontier().items.len(), 1);
     }
 
     #[tokio::test]

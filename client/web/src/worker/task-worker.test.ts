@@ -5,6 +5,7 @@ import { createTaskRequestQueue, handleTaskRequest, type TaskHostLike } from "./
 function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
   return {
     pushApiKey: vi.fn(),
+    clearApiKey: vi.fn(),
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
@@ -83,6 +84,14 @@ describe("handleTaskRequest", () => {
     // check every posted response's serialized form as a defensive-in-depth
     // net, not just the empty-array assertion above.
     expect(JSON.stringify(posted)).not.toContain("device-token-1");
+  });
+
+  it("clearTaskApiKey forwards to the host and posts nothing back", async () => {
+    const host = fakeHost();
+    const posted = await run({ type: "clearTaskApiKey" }, host);
+
+    expect(host.clearApiKey).toHaveBeenCalledTimes(1);
+    expect(posted).toEqual([]);
   });
 
   it("capture posts the minted id keyed by the seed the caller chose", async () => {
