@@ -1488,4 +1488,240 @@ mod tests {
             "a shape mismatch must surface as an error, never as an empty queue"
         );
     }
+
+    // ------------------------------------------------- write amplification
+
+    /// ADR-0001's watchline population — the size #95 asks about.
+    const WATCHLINE_ITEM_COUNT: usize = 250;
+
+    /// What a [`WATCHLINE_ITEM_COUNT`]-item mirror serialised to when this
+    /// was measured: **89,178 bytes on 2026-08-09**, at PR #161's head
+    /// (88,848 for the slightly leaner item shape the same day's live
+    /// measurement used — the two agree to within half a percent). At
+    /// ADR-0007's 60-second timer that is ~5.1 MiB/hour, ~122 MiB/day
+    /// rewritten against a mirror nothing changed.
+    ///
+    /// The assertions below hold a *band* around this figure rather than
+    /// the figure itself: adding a field to [`hummingbird_domain::Item`]
+    /// moves it, and that is churn, not a regression. The invariant worth
+    /// pinning is the equality across ticks — a cycle that applied nothing
+    /// rewrites the byte-identical full payload anyway.
+    const MEASURED_WATCHLINE_MIRROR_BYTES: usize = 89_178;
+
+    /// Half to double the measured figure — see
+    /// [`MEASURED_WATCHLINE_MIRROR_BYTES`].
+    fn assert_within_measured_band(bytes: usize, what: &str) {
+        let low = MEASURED_WATCHLINE_MIRROR_BYTES / 2;
+        let high = MEASURED_WATCHLINE_MIRROR_BYTES * 2;
+        assert!(
+            (low..=high).contains(&bytes),
+            "{what} was {bytes} bytes, outside the band {low}..={high} around the \
+             {MEASURED_WATCHLINE_MIRROR_BYTES} measured on 2026-08-09 — if a domain field was \
+             added this is churn and the constant wants re-measuring, but an order-of-magnitude \
+             move is the regression this test exists to catch"
+        );
+    }
+
+    /// A full sweep carrying a watchline-sized item set.
+    fn watchline_sweep_body(version: i64) -> String {
+        serde_json::to_string(&ChangesResponse {
+            version,
+            items: (0..WATCHLINE_ITEM_COUNT)
+                .map(|i| item_fixture(&format!("a-{i:03}"), hummingbird_domain::Stage::Ready))
+                .collect(),
+            ..ChangesResponse::empty(version)
+        })
+        .unwrap()
+    }
+
+    /// Seeds a cycle whose mirror holds the watchline population, through
+    /// one real forced sweep, on instrumented stores. The full-sweep clock
+    /// is set on the way out, so the caller's next `run` takes the delta
+    /// path rather than the daily backstop.
+    async fn cycle_seeded_with_a_watchline_mirror(
+        log: &CallLog,
+    ) -> SyncCycle<InstrumentedSnapshotStore, InstrumentedSnapshotStore> {
+        let mut cycle = SyncCycle::new(InstrumentedSnapshotStore::new(), InstrumentedSnapshotStore::new());
+        let read = ScriptedRead::sweep_only(log, Ok(watchline_sweep_body(1)));
+        let write = ScriptedWrite {
+            log,
+            responses: Mutex::new(vec![].into()),
+        };
+        let outcome = cycle
+            .run(&read, &write, "token", 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(
+            matches!(outcome, CycleOutcome::Completed { .. }),
+            "sanity: the seed sweep must land, or every measurement below is of an empty mirror"
+        );
+        assert_eq!(cycle.active_item_count(), WATCHLINE_ITEM_COUNT);
+        cycle
+    }
+
+    /// #95's write-amplification question, half one: **how many** writes.
+    /// Exactly two per cycle — the queue (always, right after `drain`) and
+    /// the mirror (on any successful pull) — regardless of how little the
+    /// cycle actually changed. Nothing here is per-row or per-entity, so
+    /// this count is the multiplier ADR-0007's 60-second timer applies to
+    /// whatever the next test measures.
+    #[tokio::test]
+    async fn one_cycle_writes_each_snapshot_slot_exactly_once_however_little_changed() {
+        let log = CallLog::default();
+        let mut cycle = cycle_seeded_with_a_watchline_mirror(&log).await;
+        let queue_writes_before = cycle.queue_store().write_count();
+        let mirror_writes_before = cycle.mirror_store().write_count();
+
+        // An empty queue and a delta that carries no rows: the emptiest
+        // steady-state tick the timer can produce.
+        let read = ScriptedRead::changes_only(&log, Ok(empty_body(1)));
+        let write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        let outcome = cycle
+            .run(&read, &write, "token", 2_000, Trigger::Timer, false, 0.0)
+            .await;
+
+        assert!(
+            matches!(
+                outcome,
+                CycleOutcome::Completed {
+                    was_full_sweep: false,
+                    ..
+                }
+            ),
+            "expected a completed delta cycle, got {outcome:?}"
+        );
+        assert_eq!(
+            cycle.queue_store().write_count() - queue_writes_before,
+            1,
+            "the queue is re-serialised once per cycle even with nothing to drain"
+        );
+        assert_eq!(
+            cycle.mirror_store().write_count() - mirror_writes_before,
+            1,
+            "the mirror is re-serialised once per cycle even with nothing to apply"
+        );
+    }
+
+    /// #95's write-amplification question, half two: **how much**. A delta
+    /// that returned zero rows still rewrites the entire mirror, because
+    /// `save_snapshot` sits outside the Sweep/Delta match — the payload is
+    /// the whole read model, never the delta that produced it.
+    ///
+    /// The load-bearing assertion is the *equality*: two consecutive ticks
+    /// with nothing between them write byte-identical payloads. The band
+    /// check is the order-of-magnitude guard — see
+    /// [`MEASURED_WATCHLINE_MIRROR_BYTES`].
+    #[tokio::test]
+    async fn a_zero_row_delta_re_serialises_the_whole_mirror_not_the_delta() {
+        let log = CallLog::default();
+        let mut cycle = cycle_seeded_with_a_watchline_mirror(&log).await;
+
+        let delta_body = empty_body(1);
+        let read = ScriptedRead::changes_only(&log, Ok(delta_body.clone()));
+        let write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        cycle
+            .run(&read, &write, "token", 2_000, Trigger::Timer, false, 0.0)
+            .await;
+
+        let sizes = cycle.mirror_store().write_sizes();
+        assert_eq!(sizes.len(), 2, "one seed sweep, then one steady-state tick");
+        let (seeded, steady) = (sizes[0], sizes[1]);
+
+        assert_eq!(
+            steady, seeded,
+            "a tick that applied no rows rewrote a payload of a different size than the tick \
+             before it — the mirror snapshot is supposed to be the whole read model either way"
+        );
+        assert!(
+            steady > delta_body.len() * 100,
+            "the persisted payload ({steady} bytes) should dwarf the delta that produced it \
+             ({} bytes) — that gap is the amplification #95 asks about",
+            delta_body.len()
+        );
+        assert_within_measured_band(steady, "a steady-state mirror rewrite");
+    }
+
+    /// #95 names only the mirror, but the queue's persisted payload has the
+    /// same unbounded-growth shape: it bundles the never-pruned dead-letter
+    /// journal with the live FIFO, so a queue with nothing left to send
+    /// still re-serialises every entry that ever failed permanently — on
+    /// every cycle, and on every capture through
+    /// [`SyncCycle::enqueue`]. Nothing prunes that journal today; only the
+    /// unbuilt "1 edit didn't apply" affordance would.
+    #[tokio::test]
+    async fn the_queue_snapshot_carries_the_dead_letter_journal_on_every_later_cycle() {
+        let log = CallLog::default();
+        let mut cycle = SyncCycle::new(InstrumentedSnapshotStore::new(), InstrumentedSnapshotStore::new());
+
+        // Tick 1: an empty queue, so the baseline payload is the queue's
+        // own overhead and nothing else.
+        let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
+        let idle_write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        cycle
+            .run(&read, &idle_write, "token", 1_000, Trigger::User, true, 0.0)
+            .await;
+        let empty_queue_bytes = cycle.queue_store().write_sizes()[0];
+
+        // One capture that the authority rejects permanently: it leaves the
+        // FIFO empty again, but the journal keeps it forever.
+        cycle.enqueue(create_entry("m-1", "a-1"), 1_500).await.unwrap();
+        let read = ScriptedRead::changes_only(&log, Ok(empty_body(1)));
+        let rejecting_write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![ok(400, r#"{"error":"validation"}"#)].into()),
+        };
+        let outcome = cycle
+            .run(&read, &rejecting_write, "token", 2_000, Trigger::Timer, false, 0.0)
+            .await;
+        assert!(
+            matches!(
+                outcome,
+                CycleOutcome::Completed {
+                    drain: DrainOutcome::Completed { dead_lettered: 1 },
+                    ..
+                }
+            ),
+            "expected the capture to dead-letter, got {outcome:?}"
+        );
+
+        // Tick 3: nothing queued, nothing returned, nothing to do.
+        let read = ScriptedRead::changes_only(&log, Ok(empty_body(1)));
+        cycle
+            .run(&read, &idle_write, "token", 3_000, Trigger::Timer, false, 0.0)
+            .await;
+
+        let sizes = cycle.queue_store().write_sizes();
+        let (idle, journalled, still_journalled) = (sizes[0], sizes[2], sizes[3]);
+        assert_eq!(idle, empty_queue_bytes, "sanity: tick 1's write is the baseline");
+        assert!(
+            journalled > idle,
+            "the dead-lettered entry must be in the persisted payload ({journalled} bytes \
+             against an empty queue's {idle})"
+        );
+        assert_eq!(
+            still_journalled, journalled,
+            "a cycle with an empty FIFO and nothing to drain still rewrote the whole journal — \
+             which is the point: this cost never goes away on its own"
+        );
+
+        let loaded: OutboundQueue = load_snapshot(cycle.queue_store())
+            .await
+            .unwrap()
+            .unwrap()
+            .payload;
+        assert!(loaded.is_empty(), "the FIFO itself drained");
+        assert_eq!(
+            loaded.dead_letters().len(),
+            1,
+            "and what is being re-serialised every tick is the journal"
+        );
+    }
 }
