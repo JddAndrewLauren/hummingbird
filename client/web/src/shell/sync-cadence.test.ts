@@ -32,25 +32,29 @@ describe("toCoreTrigger", () => {
 });
 
 describe("createSyncCadence", () => {
-  it("onOpen fires exactly one cycle with a user trigger", () => {
+  // #193: `run` receives the real `SyncCadenceTrigger` — not the
+  // "user"/"timer" spelling `toCoreTrigger` maps it to — so the one caller
+  // (`core.worker.ts`) can tell an open cycle apart from a focus or
+  // reconnect cycle and decide `forceFullSweep` itself.
+  it("onOpen fires exactly one cycle with the \"open\" trigger", () => {
     const run = vi.fn();
     createSyncCadence(run).onOpen();
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("user");
+    expect(run).toHaveBeenCalledWith("open");
   });
 
-  it("onReconnect fires exactly one cycle with a user trigger", () => {
+  it("onReconnect fires exactly one cycle with the \"reconnect\" trigger", () => {
     const run = vi.fn();
     createSyncCadence(run).onReconnect();
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("user");
+    expect(run).toHaveBeenCalledWith("reconnect");
   });
 
-  it("onFocus fires exactly one cycle with a user trigger", () => {
+  it("onFocus fires exactly one cycle with the \"focus\" trigger", () => {
     const run = vi.fn();
     createSyncCadence(run).onFocus();
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("user");
+    expect(run).toHaveBeenCalledWith("focus");
   });
 
   it("two onFocus calls fire exactly two cycles — no de-dupe hides a real repeated gesture", () => {

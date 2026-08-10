@@ -63,13 +63,17 @@ export interface SyncCadence {
   onTimerTick: (hidden: boolean, online: boolean) => void;
 }
 
-/** Builds the cadence controller: `run` is called with the `Trigger` spelling
- * `Core::run` expects, exactly once per triggering event this controller is
- * told about. Kept free of `setInterval`/DOM listeners entirely — see the
- * module doc. */
-export function createSyncCadence(run: (trigger: "user" | "timer") => void): SyncCadence {
+/** Builds the cadence controller: `run` is called with the real
+ * [`SyncCadenceTrigger`] — not `toCoreTrigger`'s collapsed `"user" | "timer"`
+ * — exactly once per triggering event this controller is told about. The
+ * one caller (`core.worker.ts`) needs the un-collapsed spelling to decide
+ * `forceFullSweep` (ADR-0008: true on `"open"` only, #193) and calls
+ * `toCoreTrigger` itself when it builds the actual sync request; that
+ * mapping rule stays defined here so it has exactly one owner. Kept free of
+ * `setInterval`/DOM listeners entirely — see the module doc. */
+export function createSyncCadence(run: (trigger: SyncCadenceTrigger) => void): SyncCadence {
   function fire(trigger: SyncCadenceTrigger) {
-    run(toCoreTrigger(trigger));
+    run(trigger);
   }
   return {
     onOpen: () => fire("open"),
