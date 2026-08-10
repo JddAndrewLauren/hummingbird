@@ -167,6 +167,13 @@ export function pushTaskApiKey(worker: WorkerLike, apiKey: string): void {
   worker.postMessage({ type: "pushTaskApiKey", apiKey });
 }
 
+/** "Forget token" (#106/S8): tells the core to clear whatever credential it
+ * is holding. Carries nothing and expects no reply — see `protocol.ts`'s
+ * `clearTaskApiKey`. */
+export function clearTaskApiKey(worker: WorkerLike): void {
+  worker.postMessage({ type: "clearTaskApiKey" });
+}
+
 /** `seed` mints the deterministic id `Core::capture` derives from it; the
  * caller keeps its own seed to match the eventual `captureResult` broadcast
  * back to this specific call (see `TaskCaptureResult`, store.ts). */

@@ -11,7 +11,7 @@ import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection"
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import type { CalendarState, CoreStatus } from "../store/store";
-import { isBlankTokenInput } from "../task/token";
+import type { TaskTokenSubmitOutcome } from "../task/token";
 import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
 import { Aside, Column, Section, TwoColumn } from "./layout";
@@ -35,25 +35,42 @@ function Note({ children }: { children: ReactNode }) {
   );
 }
 
+/** The submit outcomes the form itself needs to say something about — every
+ * `TaskTokenSubmitOutcome` except `"ok"`, which clears the field instead of
+ * showing an error. */
+type TokenFormError = Exclude<TaskTokenSubmitOutcome, "ok">;
+
+const TOKEN_FORM_ERROR_COPY: Record<TokenFormError, string> = {
+  blank: "Enter a token before saving.",
+  storeError: "Could not save the token on this device. Try again.",
+};
+
 /** The device-token entry field, shared between the first-run "unset" state
  * and the 401 "reprompt" state — same form, different surrounding copy.
- * Local validation only rejects a blank submission (mirroring
- * `isBlankTokenInput`); the field clears on a successful submit so a stale
- * value never lingers on screen once it is safely in IndexedDB. */
-function TokenEntryForm({ onSubmit }: { onSubmit: (input: string) => Promise<boolean> }) {
+ * `type="password"` keeps the value out of the on-screen render (shoulder
+ * surfing) and Chrome's enhanced-spellcheck exfiltration path;
+ * `autoComplete="off"` keeps a long-lived bearer token out of the browser's
+ * saved-password store, which is scoped to this origin and outlives
+ * "forget token"; `spellCheck={false}` is the same exfiltration surface
+ * `autoComplete` addresses, belt-and-braces since some browsers spellcheck
+ * password fields anyway. The field clears on a successful submit so a
+ * stale value never lingers on screen once it is safely in IndexedDB. */
+function TokenEntryForm({
+  onSubmit,
+}: {
+  onSubmit: (input: string) => Promise<TaskTokenSubmitOutcome>;
+}) {
   const [value, setValue] = useState("");
-  const [blocked, setBlocked] = useState(false);
+  const [error, setError] = useState<TokenFormError | null>(null);
 
   async function submit() {
-    if (isBlankTokenInput(value)) {
-      setBlocked(true);
+    const outcome = await onSubmit(value);
+    if (outcome === "ok") {
+      setValue("");
+      setError(null);
       return;
     }
-    setBlocked(false);
-    const ok = await onSubmit(value);
-    if (ok) {
-      setValue("");
-    }
+    setError(outcome);
   }
 
   return (
@@ -61,11 +78,14 @@ function TokenEntryForm({ onSubmit }: { onSubmit: (input: string) => Promise<boo
       <Input
         label="Device token"
         placeholder="hb_device_..."
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
         value={value}
-        error={blocked ? "Enter a token before saving." : undefined}
+        error={error === null ? undefined : TOKEN_FORM_ERROR_COPY[error]}
         onChange={(event) => {
           setValue(event.target.value);
-          setBlocked(false);
+          setError(null);
         }}
       />
       <Button onClick={() => void submit()} fullWidth>
@@ -89,7 +109,7 @@ export interface SettingsScreenProps {
   /** #106/S8's device-token surface — entry, rest, and re-prompt. */
   taskTokenState: TaskTokenUiState;
   taskTokenEnteredAtMs: number | null;
-  onSubmitTaskToken: (input: string) => Promise<boolean>;
+  onSubmitTaskToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
   onForgetTaskToken: () => void;
 }
 

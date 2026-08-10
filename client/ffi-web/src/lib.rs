@@ -291,9 +291,17 @@ mod wasm_bindings {
     /// has no way to know its rotation was lost. Applied at
     /// [`TaskShared::check_in`], same as [`Shared::check_in`] applies a
     /// pending token/selection.
+    ///
+    /// `pending_clear` is the same idea for "forget token" (#106/S8): a
+    /// clear requested while checked out must not be dropped either, and
+    /// the two pending slots are kept mutually exclusive — whichever of
+    /// push/clear is requested *last*, while checked out, is what
+    /// [`TaskShared::check_in`] applies, matching what would have happened
+    /// had the host not been busy.
     struct TaskShared {
         host: RefCell<Option<TaskHostCore>>,
         pending_api_key: RefCell<Option<String>>,
+        pending_clear: RefCell<bool>,
     }
 
     impl TaskShared {
@@ -301,6 +309,7 @@ mod wasm_bindings {
             Self {
                 host: RefCell::new(Some(host)),
                 pending_api_key: RefCell::new(None),
+                pending_clear: RefCell::new(false),
             }
         }
 
@@ -309,7 +318,9 @@ mod wasm_bindings {
         }
 
         fn check_in(&self, mut host: TaskHostCore) {
-            if let Some(api_key) = self.pending_api_key.borrow_mut().take() {
+            if std::mem::take(&mut *self.pending_clear.borrow_mut()) {
+                host.clear_api_key();
+            } else if let Some(api_key) = self.pending_api_key.borrow_mut().take() {
                 host.push_api_key(api_key);
             }
             *self.host.borrow_mut() = Some(host);
@@ -317,11 +328,28 @@ mod wasm_bindings {
 
         /// Pushes immediately if the host is present, or queues for the next
         /// [`TaskShared::check_in`] if it is currently checked out — never
-        /// silently drops the key either way.
+        /// silently drops the key either way. A queued push supersedes any
+        /// queued clear: this is the more recent request.
         fn push_api_key(&self, api_key: String) {
             match self.host.borrow_mut().as_mut() {
                 Some(host) => host.push_api_key(api_key),
-                None => *self.pending_api_key.borrow_mut() = Some(api_key),
+                None => {
+                    *self.pending_clear.borrow_mut() = false;
+                    *self.pending_api_key.borrow_mut() = Some(api_key);
+                }
+            }
+        }
+
+        /// "Forget token" (#106/S8): clears immediately if the host is
+        /// present, or queues for the next [`TaskShared::check_in`]
+        /// otherwise. A queued clear supersedes any queued push.
+        fn clear_api_key(&self) {
+            match self.host.borrow_mut().as_mut() {
+                Some(host) => host.clear_api_key(),
+                None => {
+                    *self.pending_api_key.borrow_mut() = None;
+                    *self.pending_clear.borrow_mut() = true;
+                }
             }
         }
     }
@@ -375,6 +403,16 @@ mod wasm_bindings {
         #[wasm_bindgen(js_name = pushApiKey)]
         pub fn push_api_key(&self, api_key: String) {
             self.inner.push_api_key(api_key);
+        }
+
+        /// "Forget token" (#106/S8): clears the in-memory credential. Never
+        /// touches anything durable — the key was never persisted — and
+        /// posts no response; the caller (`task-worker.ts`) fires this and
+        /// moves on. Queued rather than dropped if the host is currently
+        /// checked out mid-`run`/`capture` — see [`TaskShared`]'s doc.
+        #[wasm_bindgen(js_name = clearApiKey)]
+        pub fn clear_api_key(&self) {
+            self.inner.clear_api_key();
         }
 
         /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item]}`.

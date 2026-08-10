@@ -23,8 +23,10 @@ function fakeStore(initial: TaskTokenRecord | null = null): TaskTokenStoreLike {
   };
 }
 
-function deps(store: TaskTokenStoreLike): TaskTokenDeps & { pushApiKey: ReturnType<typeof vi.fn> } {
-  return { store, pushApiKey: vi.fn() };
+function deps(
+  store: TaskTokenStoreLike,
+): TaskTokenDeps & { pushApiKey: ReturnType<typeof vi.fn>; clearApiKey: ReturnType<typeof vi.fn> } {
+  return { store, pushApiKey: vi.fn(), clearApiKey: vi.fn() };
 }
 
 describe("loadTaskToken", () => {
@@ -44,6 +46,20 @@ describe("loadTaskToken", () => {
 
     expect(result).toEqual({ hasToken: true, enteredAtMs: 1_000 });
     expect(d.pushApiKey).toHaveBeenCalledWith("secret-token");
+  });
+
+  it("reports the unset state (not an unhandled rejection) when the store read fails", async () => {
+    const store: TaskTokenStoreLike = {
+      read: () => Promise.reject(new Error("indexeddb blocked")),
+      write: () => Promise.resolve(),
+      clear: () => Promise.resolve(),
+    };
+    const d = deps(store);
+
+    const result = await loadTaskToken(d);
+
+    expect(result).toEqual({ hasToken: false, enteredAtMs: null });
+    expect(d.pushApiKey).not.toHaveBeenCalled();
   });
 });
 
@@ -66,13 +82,26 @@ describe("isBlankTokenInput", () => {
 });
 
 describe("submitTaskToken", () => {
-  it("persists the token verbatim, pushes it, and reports the fresh entered-at time", async () => {
+  it("persists the trimmed token, pushes it, and reports ok", async () => {
     const store = fakeStore(null);
     const d = deps(store);
 
-    const result = await submitTaskToken(d, "hb_device_abc123", 5_000);
+    const outcome = await submitTaskToken(d, "hb_device_abc123", 5_000);
 
-    expect(result).toEqual({ hasToken: true, enteredAtMs: 5_000 });
+    expect(outcome).toBe("ok");
+    expect(d.pushApiKey).toHaveBeenCalledWith("hb_device_abc123");
+    await expect(store.read()).resolves.toEqual({
+      token: "hb_device_abc123",
+      enteredAtMs: 5_000,
+    });
+  });
+
+  it("trims a pasted trailing newline or surrounding whitespace before storing or pushing", async () => {
+    const store = fakeStore(null);
+    const d = deps(store);
+
+    await submitTaskToken(d, "  hb_device_abc123\n", 5_000);
+
     expect(d.pushApiKey).toHaveBeenCalledWith("hb_device_abc123");
     await expect(store.read()).resolves.toEqual({
       token: "hb_device_abc123",
@@ -88,24 +117,55 @@ describe("submitTaskToken", () => {
 
     await expect(store.read()).resolves.toEqual({ token: "new-token", enteredAtMs: 9_000 });
   });
+
+  it("rejects a blank submission before touching storage or the worker", async () => {
+    const store = fakeStore(null);
+    const d = deps(store);
+
+    const outcome = await submitTaskToken(d, "   ", 5_000);
+
+    expect(outcome).toBe("blank");
+    expect(d.pushApiKey).not.toHaveBeenCalled();
+    await expect(store.read()).resolves.toBeNull();
+  });
+
+  it("reports storeError and never pushes the key when the store write fails", async () => {
+    const store: TaskTokenStoreLike = {
+      read: () => Promise.resolve(null),
+      write: () => Promise.reject(new Error("indexeddb blocked")),
+      clear: () => Promise.resolve(),
+    };
+    const d = deps(store);
+
+    const outcome = await submitTaskToken(d, "hb_device_abc123", 5_000);
+
+    expect(outcome).toBe("storeError");
+    expect(d.pushApiKey).not.toHaveBeenCalled();
+  });
 });
 
 describe("forgetTaskToken", () => {
   it("clears the stored token and reports the unset state", async () => {
     const store = fakeStore({ token: "secret-token", enteredAtMs: 1_000 });
+    const d = deps(store);
 
-    const result = await forgetTaskToken(store);
+    const result = await forgetTaskToken(d);
 
     expect(result).toEqual({ hasToken: false, enteredAtMs: null });
     await expect(store.read()).resolves.toBeNull();
   });
 
-  it("never posts anything to the worker — forgetting has no wire message", async () => {
-    // There is no "unset the key" request in the protocol (`store/protocol.ts`);
-    // the running core just keeps whatever it last held until the tab
-    // reloads. This asserts the intent by construction: `forgetTaskToken`
-    // does not even accept a `pushApiKey` callback, only the store.
+  it("also clears the live key the core is holding — not just local storage", async () => {
+    // Round-1 review finding: #126's SharedWorker outlives any one tab, so
+    // clearing IndexedDB alone would leave the running core still holding
+    // (and using) the "forgotten" key. `forgetTaskToken` must call
+    // `clearApiKey` every time.
     const store = fakeStore({ token: "secret-token", enteredAtMs: 1_000 });
-    await expect(forgetTaskToken(store)).resolves.toBeDefined();
+    const d = deps(store);
+
+    await forgetTaskToken(d);
+
+    expect(d.clearApiKey).toHaveBeenCalledTimes(1);
+    expect(d.pushApiKey).not.toHaveBeenCalled();
   });
 });

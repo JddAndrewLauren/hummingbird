@@ -6,6 +6,7 @@ import {
   pollRefresh,
   pollStart,
   pollTimer,
+  clearTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
   requestCalendarList,
@@ -380,6 +381,12 @@ describe("the task send helpers (#105/S7)", () => {
       type: "pushTaskApiKey",
       apiKey: "device-token-1",
     });
+  });
+
+  it("clearTaskApiKey posts a clearTaskApiKey request carrying nothing", () => {
+    const worker = fakeWorker();
+    clearTaskApiKey(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "clearTaskApiKey" });
   });
 
   it("captureTask posts a capture request carrying its seed", () => {
