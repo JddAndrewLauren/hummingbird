@@ -218,6 +218,65 @@ pub(crate) fn find_by_identity(
     select_by_identity(sql, source, source_key)?.map(|row| alert_from_row(&row)).transpose()
 }
 
+/// Every currently-live alert of one source, for ADR-0014's resolution pass
+/// (#217) — which iterates *alerts*, not items, because an item-side scan
+/// can only reach the alerts whose items it still sees, precisely the set
+/// that does not need resolving.
+///
+/// The three-clause live predicate is applied in Rust, through
+/// [`Alert::is_live`], rather than transcribed into this `WHERE`. It is
+/// subtle (each lifecycle stamp holds only until a later raise overtakes
+/// it), it is ADR-0014's normative definition, and a second copy in SQL is
+/// a place for the two to drift silently. The scan is bounded by one
+/// source's alert rows, which the operator keeps small by construction.
+pub(crate) fn find_live_by_source(
+    sql: &dyn Sql,
+    source: &str,
+    now_ms: i64,
+) -> Result<Vec<Alert>, SqlError> {
+    let rows = sql.exec(
+        "SELECT * FROM alerts WHERE source = ?",
+        &[SqlValue::Text(source.to_string())],
+    )?;
+    let mut live = Vec::new();
+    for row in &rows {
+        let alert = alert_from_row(row)?;
+        if alert.is_live(now_ms) {
+            live.push(alert);
+        }
+    }
+    Ok(live)
+}
+
+/// Stamps `resolved_at` on one alert — ADR-0014's "the condition ended",
+/// said by the only party that can know it.
+///
+/// Deliberately *not* routed through [`upsert`]: that is the **source's**
+/// path, which sets every source-owned field absolutely from a payload. The
+/// resolution pass has no payload — it is not re-reporting the alert, it is
+/// closing it — so it writes the single column it owns and leaves title,
+/// body, url, severity and `raised_at` exactly as the last raise left them.
+/// Resolution is not dismissal: `dismissed_at` stays untouched (human-owned),
+/// and a later raise overtakes this stamp and rings again, which is what
+/// keying `item-threshold/v1` on `item:<id>` bought.
+///
+/// Version-bumped through the same `meta` counter as every other write, so
+/// a resolved alert reaches devices on the next delta pull rather than
+/// waiting for the daily `GET /api/sweep`.
+pub(crate) fn resolve(sql: &dyn Sql, alert: &Alert, now_ms: i64) -> Result<Alert, SqlError> {
+    let version = read_meta_version(sql)? + 1;
+    sql.exec(
+        "UPDATE alerts SET resolved_at = ?, version = ? WHERE id = ?",
+        &[
+            SqlValue::Integer(now_ms),
+            SqlValue::Integer(version),
+            SqlValue::Text(alert.id.clone()),
+        ],
+    )?;
+    write_meta_version(sql, version)?;
+    Ok(Alert { resolved_at: Some(now_ms), version, ..alert.clone() })
+}
+
 fn select_by_identity(sql: &dyn Sql, source: &str, source_key: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(

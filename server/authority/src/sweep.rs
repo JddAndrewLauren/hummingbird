@@ -49,42 +49,59 @@
 //!   live predicate (`raised_at > dismissed_at`) could never flip back true
 //!   no matter how many times the condition later re-triggers.
 //!
-//! **What this does not fix:** ADR-0014 also assigns the DO alarm a
-//! *separate* "resolution pass" — iterating live `item-threshold/v1`
-//! alerts (not items) and stamping `resolved_at` once an item is done,
-//! archived, deleted, or no longer matches. That pass is not implemented
-//! here (see `tick`'s own doc and the tracking issue named in the PR). Two
-//! concrete consequences follow, both accepted deliberately for this issue
-//! and not silently absorbed:
+//! # The resolution pass, and how it composes (#217)
 //!
-//! 1. An item whose alert was never dismissed, and whose item later stops
-//!    matching (done, archived, or edited past the threshold) without a
-//!    human ever hand-acking it, has **no path back to live-and-quiet**: no
-//!    resolution pass ever runs to close it, so it sits live and
-//!    top-of-stack forever until a human dismisses it by hand. This sweep
-//!    cannot detect "the condition ended" — only "the condition still
-//!    holds" or "nothing to report" — which is exactly the gap ADR-0014
-//!    names as the reason the resolution pass has to exist.
-//! 2. Even after that pass exists, it will not compose for free with this
-//!    mint path as written: every call here passes `resolved_at: None`,
-//!    and `upsert_alert` (`handlers/alerts.rs`) sets a source-owned field
-//!    *absolutely* from what it is given — an absent optional clears. If
-//!    the item is still matching on the tick right after the resolution
-//!    pass stamps `resolved_at`, this sweep's next `upsert_alert` call
-//!    erases that stamp on the very next tick. Wiring the two together
-//!    correctly is part of that future issue's job, not a side effect of
-//!    reading this module.
+//! ADR-0014 gives the alarm a second job: *"the resolution pass iterates
+//! live `item-threshold/v1` alerts, not items,"* stamping `resolved_at`
+//! once the named item is done, archived, deleted, or no longer matches.
+//! Without it the sweep can only ever say "still matching" or "nothing to
+//! report" — never "the condition ended" — so an alert nobody hand-acked
+//! stays live and top-of-stack forever. It is [`resolution_pass`] below,
+//! and it runs as the second phase of every [`tick`].
+//!
+//! **The composition hazard, designed out rather than guarded against.**
+//! `upsert_alert` sets each source-owned field *absolutely* — an absent
+//! optional clears the column — so the obvious wiring (a pass that stamps
+//! `resolved_at`, a mint path that keeps passing `resolved_at: None`) has
+//! the sweep silently erasing the pass's stamp one tick later. Two
+//! independent things stop that here, either of which would be sufficient:
+//!
+//! 1. **The two phases partition the alert set.** Phase one records the
+//!    `source_key` of every alert it minted or ratcheted this tick; phase
+//!    two resolves exactly the live alerts whose key is *not* in that set.
+//!    No alert is written by both phases in one tick, by construction —
+//!    not by a rule the two phases have to agree to follow.
+//! 2. **The sweep never clears `resolved_at`.** It passes the stored value
+//!    straight back through (see [`tick`]), so even across ticks — and even
+//!    if the partition above were ever broken — a stamp the pass wrote
+//!    cannot be erased by a later mint. What supersedes a resolution is a
+//!    *later raise*, exactly as ADR-0014 says: `raised_at` overtakes
+//!    `resolved_at` and the alert is live again, the stamp still legible
+//!    underneath.
+//!
+//! **Done is a resolution boundary, not an evaluation one.** An item at
+//! `stage = done` is skipped by phase one, so it never mints and its
+//! existing alert falls to phase two and resolves — ADR-0014 lists "done"
+//! first among the things that end the condition. This is deliberately not
+//! the same question as `load_live_items`' `archived_at` filter, which is
+//! about which items are *evaluated* at all; #138 declined to add a second
+//! evaluation exclusion for `stage` because nothing anchored it. Resolution
+//! is anchored. The alternative — ringing about a task the operator has
+//! already finished — is the exact noise ADR-0012 built this lane to avoid.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hummingbird_domain::{
     higher_severity, item_threshold_v1_key, now_as_deadline, AlertIngest, Energy, Event,
-    FieldValue, Item, Size, ITEM_THRESHOLD_V1,
+    FieldValue, Item, Size, Stage, ITEM_THRESHOLD_V1,
 };
 use hummingbird_rules_engine::{evaluate_rules, RuleOutcome, Verdict};
 
 use crate::delivery::{deliver, DeliveryOutcome};
-use crate::handlers::{find_alert_by_identity, item_from_row, rule_from_row, upsert_alert};
+use crate::handlers::{
+    find_alert_by_identity, find_live_alerts_by_source, item_from_row, resolve_alert,
+    rule_from_row, upsert_alert,
+};
 use crate::sql::{Row, Sql, SqlError};
 
 /// The alarm's tick interval — a real, readable parameter (ADR-0013: "the
@@ -117,6 +134,11 @@ pub struct TickMatch {
 /// `Logged`, but every outcome is reported so a fixture can assert on
 /// suppression too.
 ///
+/// Then, as a second phase, [`resolution_pass`] closes every live
+/// `item-threshold/v1` alert this tick did *not* match — the two phases
+/// partition the alert set, so neither writes a row the other touched (see
+/// the module doc).
+///
 /// A single malformed row (`item_from_row`/`rule_from_row` failing to parse
 /// a cell) is skipped rather than aborting the whole tick — a poisoned row
 /// must not become a poison pill that blocks every other item, forever,
@@ -126,14 +148,29 @@ pub struct TickMatch {
 pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
     let rules: Vec<_> =
         load_enabled_rules(sql)?.iter().filter_map(|row| rule_from_row(row).ok()).collect();
+    // With no enabled rules nothing can match, so every live alert this
+    // source owns is a condition that has ended — the resolution pass still
+    // runs. Returning early here (as this did before #217) would strand
+    // every outstanding alert live the moment the operator disabled the
+    // rule that raised it.
     if rules.is_empty() {
+        resolution_pass(sql, now_ms, &BTreeSet::new())?;
         return Ok(Vec::new());
     }
 
     let now = now_as_deadline(now_ms);
     let mut matches = Vec::new();
+    // The keys phase one wrote, and therefore exactly the keys phase two
+    // must not touch.
+    let mut still_matching = BTreeSet::new();
     for row in load_live_items(sql)? {
         let Ok(item) = item_from_row(&row) else { continue };
+        // Done is one of ADR-0014's four resolution triggers (module doc):
+        // skipped here, so it mints nothing and its alert falls through to
+        // the resolution pass below.
+        if item.stage == Stage::Done {
+            continue;
+        }
         let event = item_threshold_event(&item);
 
         let verdicts: Vec<(String, Verdict)> = evaluate_rules(&rules, &event, &now)
@@ -166,6 +203,7 @@ pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
             .fold(None, |acc: Option<&str>, (_, v)| higher_severity(acc, Some(v.severity.as_str())))
             .map(str::to_string);
 
+        still_matching.insert(source_key.clone());
         let ingest = AlertIngest {
             source: ITEM_THRESHOLD_V1.to_string(),
             source_key,
@@ -174,12 +212,17 @@ pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
             url: item.source_url.clone(),
             severity,
             raised_at,
-            // `item-threshold/v1` never sets `resolved_at`/`expires_at`
-            // from this sweep — resolving an alert whose item stopped
-            // matching is ADR-0014's separate "resolution pass" over live
-            // alerts, out of #138's acceptance criteria (see module doc's
-            // "what this does not fix").
-            resolved_at: None,
+            // Carried straight back through, never `None` (#217). This
+            // path is a *mint*, and `upsert_alert` sets source-owned
+            // fields absolutely — passing `None` here would clear whatever
+            // `resolved_at` the resolution pass had written, which is the
+            // wiring hazard the module doc's second guarantee rules out.
+            // Keeping the stamp costs nothing: a fresh `raised_at`
+            // overtakes it and the alert is live regardless (ADR-0014's
+            // live predicate), and on the still-live path both this and
+            // `raised_at` are unchanged, so the upsert stays the
+            // byte-identical no-op a repeat tick depends on.
+            resolved_at: existing.as_ref().and_then(|alert| alert.resolved_at),
             expires_at: None,
         };
         let (_status, alert) = upsert_alert(sql, now_ms, ingest)?;
@@ -189,7 +232,39 @@ pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
             matches.push(TickMatch { item_id: item.id.clone(), rule_id, outcome });
         }
     }
+
+    resolution_pass(sql, now_ms, &still_matching)?;
     Ok(matches)
+}
+
+/// ADR-0014's resolution pass: stamps `resolved_at` on every live
+/// `item-threshold/v1` alert whose condition has ended.
+///
+/// "Has ended" is read off `still_matching` — the keys phase one just
+/// minted for — rather than re-derived. That is what makes the two phases a
+/// partition instead of two scans that have to agree, and it collapses all
+/// four of ADR-0014's triggers into one test, because each of them removes
+/// the item from phase one's matched set by a different route: **done** is
+/// skipped explicitly, **archived** is excluded by `load_live_items`,
+/// **deleted** is simply not in `items`, and **no longer matches** produces
+/// no verdict. A missing item resolves rather than errors — ADR-0014 again:
+/// *"a deleted or unknown `item:<id>` is the condition ending in its most
+/// total form."*
+///
+/// Only *live* alerts are considered, which is what makes the pass
+/// idempotent: an alert it resolved on one tick is no longer live on the
+/// next, so its stamp cannot creep forward tick after tick.
+fn resolution_pass(
+    sql: &dyn Sql,
+    now_ms: i64,
+    still_matching: &BTreeSet<String>,
+) -> Result<(), SqlError> {
+    for alert in find_live_alerts_by_source(sql, ITEM_THRESHOLD_V1, now_ms)? {
+        if !still_matching.contains(&alert.source_key) {
+            resolve_alert(sql, &alert, now_ms)?;
+        }
+    }
+    Ok(())
 }
 
 fn load_enabled_rules(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
