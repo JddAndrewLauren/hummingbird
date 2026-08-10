@@ -8,6 +8,8 @@ import type {
   CurrentNextEventDTO,
   PollOutcomeName,
   RenderableCurrentNextKind,
+  TaskItemDTO,
+  TaskRunOutcomeKind,
 } from "./protocol";
 
 export type CoreStatus = "loading" | "ready" | "error";
@@ -31,11 +33,49 @@ export interface CalendarState {
   asOfMs: number | null;
 }
 
+/** The last `Core::run` cycle's outcome, as far as the shell needs it —
+ * S9's sync-status affordance reads the whole thing; `useStore` consumers
+ * before then only need `kind`. */
+export interface TaskSyncOutcome {
+  kind: TaskRunOutcomeKind;
+  retryAfterMs: number | null;
+  activeItemCount: number | null;
+  wasFullSweep: boolean | null;
+  deadLettered: number | null;
+}
+
+/** The result of the most recent `capture` request this view issued,
+ * matched back by `seed` — the worker->view direction is a broadcast to
+ * every connected port (protocol.ts), so a view only knows a `captureResult`
+ * is "its own" by recognising the seed it itself minted. */
+export interface TaskCaptureResult {
+  seed: string;
+  kind: "ok" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
+}
+
+/** Issue #105/S7's task read-model slice: the owned-schema counterpart to
+ * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
+export interface TaskState {
+  frontier: TaskItemDTO[];
+  triageInbox: TaskItemDTO[];
+  /** Keyed by item id — only ever grows entries this view actually asked
+   * about via `isPending`, never a full mirror of every pending item. */
+  pending: Record<string, boolean>;
+  lastCapture: TaskCaptureResult | null;
+  lastSyncOutcome: TaskSyncOutcome | null;
+  /** Set once a `taskEvents` broadcast carries a `credential_needed` event;
+   * mirrors `CalendarState.needsReconnect`'s own contract. */
+  needsReconnect: boolean;
+}
+
 export interface CoreState {
   status: CoreStatus;
   apiVersion: number | null;
   error: string | null;
   calendar: CalendarState;
+  task: TaskState;
 }
 
 type Listener = () => void;
@@ -51,11 +91,21 @@ const initialCalendarState: CalendarState = {
   asOfMs: null,
 };
 
+const initialTaskState: TaskState = {
+  frontier: [],
+  triageInbox: [],
+  pending: {},
+  lastCapture: null,
+  lastSyncOutcome: null,
+  needsReconnect: false,
+};
+
 const initialState: CoreState = {
   status: "loading",
   apiVersion: null,
   error: null,
   calendar: initialCalendarState,
+  task: initialTaskState,
 };
 
 export function createCoreStore() {
@@ -79,6 +129,18 @@ export function createCoreStore() {
     setState({ calendar: { ...state.calendar, ...patch } });
   }
 
+  // Same idea for the task slice (#105/S7).
+  function setTaskState(patch: Partial<TaskState>): void {
+    setState({ task: { ...state.task, ...patch } });
+  }
+
+  // `pending` is itself a map, so a plain `setTaskState` merge would
+  // require every caller to spread `state.task.pending` — this is that one
+  // extra level, kept here rather than duplicated at each call site.
+  function setTaskPending(itemId: string, pending: boolean): void {
+    setTaskState({ pending: { ...state.task.pending, [itemId]: pending } });
+  }
+
   // A stable reference: this closure is created once, when the store is
   // created, and never reallocated per call. useSyncExternalStore relies on
   // that stability to avoid resubscribing every render.
@@ -89,7 +151,7 @@ export function createCoreStore() {
     };
   }
 
-  return { getSnapshot, setState, setCalendarState, subscribe };
+  return { getSnapshot, setState, setCalendarState, setTaskState, setTaskPending, subscribe };
 }
 
 // The one module-level singleton the app renders from.

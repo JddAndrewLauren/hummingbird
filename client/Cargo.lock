@@ -602,9 +602,12 @@ name = "hummingbird-ffi-web"
 version = "0.1.0"
 dependencies = [
  "hummingbird-core",
+ "hummingbird-domain",
  "js-sys",
+ "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",

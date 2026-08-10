@@ -88,6 +88,126 @@ export type CalendarWorkerRequest =
    * pushed, so the picker's lookup costs the host nothing extra. */
   | { type: "listCalendars" };
 
+// -- task binding (#105/S7) -------------------------------------------------
+//
+// The owned-schema counterpart to the calendar wiring above, one door into
+// #104's `Core` instead of #72's `ContextPoller`. It gets its own single-file
+// request queue (`worker/task-worker.ts`'s `createTaskRequestQueue`) rather
+// than sharing the calendar one: the two wrap independent Rust objects with
+// independent re-entrancy guards, so serialising them together would only
+// buy incidental ordering neither side depends on. `PortRegistry` (ports.ts)
+// does not care which queue a request lands in — `core.worker.ts`'s combined
+// dispatcher (`worker/request-router.ts`) is what tells them apart, by
+// `type`.
+
+/** The six-stage lifecycle name the owned schema's `Stage` enum serializes
+ * to (`server/domain/src/item.rs`; snake_case, byte-for-byte the DDL `CHECK`
+ * literal). */
+export type TaskStageName =
+  | "triage"
+  | "grilling"
+  | "ready"
+  | "in_progress"
+  | "blocked"
+  | "done";
+
+/** One `items` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Item`, camelCased. */
+export interface TaskItemDTO {
+  id: string;
+  seq: number | null;
+  title: string;
+  description: string | null;
+  stage: TaskStageName;
+  size: "quick" | "short" | "deep" | null;
+  energy: "low" | "medium" | "high" | null;
+  context: string | null;
+  priority: number;
+  projectId: string | null;
+  projectPos: number | null;
+  dueDate: string | null;
+  scheduledDate: string | null;
+  source: string | null;
+  sourceKey: string | null;
+  sourceUrl: string | null;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  version: number;
+}
+
+/** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
+ * JSON shape. `"credential_needed"` is the only kind `Core` produces today. */
+export interface TaskEventDTO {
+  kind: "credential_needed";
+  atMs: number;
+}
+
+/** What one `Core::run` cycle resolved to — the stable string names
+ * `hummingbird-ffi-web`'s `TaskHost::runSync` (`client/ffi-web/src/lib.rs`)
+ * resolves to, plus whatever payload S9's sync-status / "1 edit didn't
+ * apply" affordance reads. `"busy"` is the same never-in-practice signal the
+ * calendar binding's `PollOutcomeName` documents — the task binding's own
+ * single-file queue means it should never be observed either. */
+export type TaskRunOutcomeKind =
+  | "no_credential"
+  | "held"
+  | "skipped"
+  | "blocked"
+  | "credential_needed"
+  | "persist_failed"
+  | "pull_failed"
+  | "completed"
+  | "busy";
+
+export type TaskWorkerRequest =
+  /** The host calls this once a device token is known (startup, or a
+   * rotation) — never in response to anything the worker posted back,
+   * because nothing the worker posts back ever carries the key. */
+  | { type: "pushTaskApiKey"; apiKey: string }
+  /** `seed` mints the deterministic id `Core::capture` derives from it
+   * (`client/core/src/sync/write/id.rs`) — caller-supplied so the view that
+   * issued the capture can match its own seed back against the
+   * `captureResult` broadcast (see `TaskWorkerResponse`), since the
+   * worker->view direction never replies to just one sender. */
+  | { type: "capture"; seed: string; title: string; stage: TaskStageName; nowMs: number }
+  | { type: "getFrontier" }
+  | { type: "getTriageInbox" }
+  | { type: "isPending"; itemId: string }
+  | {
+      type: "runSync";
+      nowMs: number;
+      trigger: "user" | "timer";
+      forceFullSweep: boolean;
+      jitterUnit: number;
+    };
+
+export type TaskWorkerResponse =
+  | {
+      type: "captureResult";
+      seed: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  | { type: "frontier"; items: TaskItemDTO[] }
+  | { type: "triageInbox"; items: TaskItemDTO[] }
+  | { type: "isPendingResult"; itemId: string; pending: boolean }
+  | {
+      type: "syncOutcome";
+      kind: TaskRunOutcomeKind;
+      retryAfterMs: number | null;
+      activeItemCount: number | null;
+      wasFullSweep: boolean | null;
+      deadLettered: number | null;
+    }
+  /** Drained from `Core::take_events` and broadcast to every connected port
+   * (`PortRegistry.broadcast`, not a reply to whichever port triggered the
+   * drain) — the fix for #104's review finding that a destructive
+   * single-reader drain would let the first tab to poll swallow an event
+   * every other tab needed too. */
+  | { type: "taskEvents"; events: TaskEventDTO[] };
+
 // -- worker -> main -----------------------------------------------------
 
 export type WorkerResponse =
@@ -105,4 +225,5 @@ export type WorkerResponse =
       kind: RenderableCurrentNextKind;
       event: CurrentNextEventDTO | null;
       asOfMs: number | null;
-    };
+    }
+  | TaskWorkerResponse;

@@ -59,13 +59,28 @@
 // global scope alive as long as any port is connected, and terminates it
 // only once the last one is. Nothing here needs to detect a disconnect.
 
+import type { CalendarWorkerRequest, TaskWorkerRequest } from "../store/protocol";
 import { createRequestQueue } from "./calendar-worker";
 import { PortRegistry, type PortLike } from "./ports";
+import { isTaskWorkerRequest } from "./request-router";
+import { createTaskRequestQueue, type TaskHostLike } from "./task-worker";
 
 // The IndexedDB database name (ADR-0003: the host contributes exactly one
 // thing at init — a storage path/namespace). No calendars are selected
 // until the picker (a view) calls `setCalendarIds`.
 const CALENDAR_NAMESPACE = "hummingbird-calendar";
+
+// The owned-schema task binding's own namespace (#105/S7) — a sibling
+// IndexedDB database, not the calendar one above; `Core::init`'s queue and
+// mirror stores live under it.
+const TASK_NAMESPACE = "hummingbird-task";
+
+// The authority's origin (ADR-0003: `core` invents no deployment address of
+// its own). Unset in dev by default, same posture as `VITE_GOOGLE_CLIENT_ID`
+// (App.tsx) — an empty string builds a relative, `reqwest`-rejected URL, so
+// every `runSync` request fails fast (network-free) as `"pull_failed"`
+// rather than the task binding silently doing nothing.
+const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 const registry = new PortRegistry();
 
@@ -78,19 +93,66 @@ self.onconnect = (event: MessageEvent) => {
   registry.connect(port);
 };
 
+type TaskEnqueue = (request: TaskWorkerRequest) => Promise<void>;
+
+/** A `TaskWorkerRequest` handler used only when the task host itself failed
+ * to construct (a corrupt durable snapshot) — reported per request rather
+ * than failing calendar activation too, since the two bindings are
+ * otherwise fully independent (see the module doc). */
+function failedTaskEnqueue(message: string): TaskEnqueue {
+  return async (request) => {
+    console.error("task host unavailable, dropping request", request.type, message);
+  };
+}
+
+/** Constructs the task host and its queue in the background, without making
+ * `registry.activate` (and therefore every view's calendar-side "ready")
+ * wait on it (PR #171 round-1 review) — `createTaskHost` only touches local
+ * storage today, but the two bindings are otherwise fully independent doors
+ * into the same wasm module, and #126 deliberately decoupled their failure
+ * paths for exactly this reason: a slow or hung task host must not delay
+ * calendar activation for every connected view.
+ *
+ * Requests arriving before this resolves queue on the returned promise
+ * itself (`.then` callbacks fire in attachment order), so ordering across
+ * task requests is preserved either way — see `dispatch` below, the one
+ * caller. */
+function createTaskEnqueueDeferred(
+  createTaskHost: (namespace: string, baseUrl: string, apiKey: string) => Promise<TaskHostLike>,
+): Promise<TaskEnqueue> {
+  return createTaskHost(TASK_NAMESPACE, TASK_BASE_URL, "")
+    .then((taskHost) => createTaskRequestQueue(taskHost, (response) => registry.broadcast(response)))
+    .catch((taskErr: unknown) =>
+      failedTaskEnqueue(taskErr instanceof Error ? taskErr.message : String(taskErr)),
+    );
+}
+
 void (async () => {
   try {
-    const { CalendarHost, core_api_version } = await import(
-      "../wasm/pkg/hummingbird_ffi_web"
-    );
+    const wasmModule = await import("../wasm/pkg/hummingbird_ffi_web");
+    const { CalendarHost, core_api_version, createTaskHost } = wasmModule;
+
     const calendarHost = new CalendarHost(CALENDAR_NAMESPACE, []);
     // Every request goes through one at-a-time queue: `CalendarHost` is not
     // re-entrant (see createRequestQueue), and per-port `onmessage` handlers
     // on their own would run a fresh handler per message with no regard for
     // one already suspended on a network await — across ports, not just
     // within one.
-    const enqueue = createRequestQueue(calendarHost, (response) => registry.broadcast(response));
-    registry.activate(enqueue, core_api_version);
+    const calendarEnqueue = createRequestQueue(calendarHost, (response) =>
+      registry.broadcast(response),
+    );
+
+    // The task binding (#105/S7) gets its own host and its own queue — see
+    // `protocol.ts`'s note on why it is not merged with the calendar one.
+    // Deliberately not awaited here — see `createTaskEnqueueDeferred`'s doc.
+    const taskEnqueueReady = createTaskEnqueueDeferred(createTaskHost);
+
+    const dispatch = (request: CalendarWorkerRequest | TaskWorkerRequest): Promise<void> =>
+      isTaskWorkerRequest(request)
+        ? taskEnqueueReady.then((enqueue) => enqueue(request))
+        : calendarEnqueue(request);
+
+    registry.activate(dispatch, core_api_version);
   } catch (err) {
     // Reaches every view as `{type: "error"}` via `PortRegistry` instead of
     // silently hanging them on "Loading core…" — see main.tsx for why a
