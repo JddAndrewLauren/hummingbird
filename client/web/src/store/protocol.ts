@@ -111,6 +111,28 @@ export type TaskStageName =
   | "blocked"
   | "done";
 
+/** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
+ * checklist (issue #96, S10) — read-only from this binding; ticking one is
+ * S11's concern. */
+export interface StepDTO {
+  id: string;
+  itemId: string;
+  body: string;
+  done: boolean;
+  position: number;
+  deletedAt: number | null;
+  version: number;
+}
+
+/** One [`TaskHostCore::blocked`] entry: an item and the open blockers
+ * excluding it from the frontier — S10's "relation-blocked … the reason
+ * visible" (issue #108). */
+export interface BlockedFrontierEntryDTO {
+  item: TaskItemDTO;
+  blockedBy: TaskItemDTO[];
+}
+
 /** One `items` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Item`, camelCased. */
 export interface TaskItemDTO {
@@ -130,6 +152,25 @@ export interface TaskItemDTO {
   source: string | null;
   sourceKey: string | null;
   sourceUrl: string | null;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  version: number;
+  /** Whether this item is currently overlaid by an unconfirmed local
+   * mutation (`Core::is_pending`, `ffi-web`'s `FrontierItemDTO`) — S10's "a
+   * pending item is marked as such" (issue #108). Stamped by the host on
+   * every item this DTO shape carries (frontier, triage inbox, blocked and
+   * its blockers), not left to a separate `isPending` request per row. */
+  pending: boolean;
+}
+
+/** One `projects` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Project`, camelCased. Resolves a
+ * `TaskItemDTO.projectId` to a real name for the frontier's "grouped by
+ * project" display (issue #108, PR #200 review). */
+export interface ProjectDTO {
+  id: string;
+  name: string;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -201,6 +242,13 @@ export type TaskWorkerRequest =
   | { type: "capture"; seed: string; title: string; stage: TaskStageName; nowMs: number }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
+  /** Relation-blocked items with the reason visible — S10 (issue #108). */
+  | { type: "getBlocked" }
+  /** One item's Steps — item detail (issue #96, S10). */
+  | { type: "getSteps"; itemId: string }
+  /** Resolves the frontier's "grouped by project" display to real names
+   * (issue #108, PR #200 review). */
+  | { type: "getProjects" }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -256,6 +304,9 @@ export type TaskWorkerResponse =
     }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
+  | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }
+  | { type: "steps"; itemId: string; steps: StepDTO[] }
+  | { type: "projects"; projects: ProjectDTO[] }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
   | {
       type: "syncOutcome";

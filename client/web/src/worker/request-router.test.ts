@@ -9,6 +9,9 @@ describe("isTaskWorkerRequest", () => {
     { type: "capture", seed: "s", title: "t", stage: "triage", nowMs: 1 },
     { type: "getFrontier" },
     { type: "getTriageInbox" },
+    { type: "getBlocked" },
+    { type: "getSteps", itemId: "i" },
+    { type: "getProjects" },
     { type: "isPending", itemId: "i" },
     { type: "runSync", nowMs: 1, trigger: "user", forceFullSweep: false, jitterUnit: 0 },
   ])("routes every task request type ($type) to the task queue", (request) => {

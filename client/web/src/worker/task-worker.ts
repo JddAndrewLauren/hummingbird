@@ -1,5 +1,8 @@
 import type {
+  BlockedFrontierEntryDTO,
   DeadLetterEntryDTO,
+  ProjectDTO,
+  StepDTO,
   TaskEventDTO,
   TaskItemDTO,
   TaskRunOutcomeKind,
@@ -24,6 +27,9 @@ export interface TaskHostLike {
   capture(seed: string, title: string, stage: string, nowMs: number): Promise<string>;
   frontier(): string;
   triageInbox(): string;
+  blocked(): string;
+  steps(itemId: string): string;
+  projects(): string;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -58,11 +64,54 @@ interface RawItem {
   created_at: number;
   updated_at: number;
   version: number;
+  /** Flattened alongside the item's own fields (`FrontierItemDTO`,
+   * `client/ffi-web/src/task_host.rs`) — issue #108's "a pending item is
+   * marked as such". */
+  pending: boolean;
+}
+
+interface RawProject {
+  id: string;
+  name: string;
+  archived_at: number | null;
+  created_at: number;
+  updated_at: number;
+  version: number;
+}
+
+interface RawProjectListResponse {
+  kind: "ok" | "busy";
+  projects: RawProject[];
 }
 
 interface RawItemListResponse {
   kind: "ok" | "busy";
   items: RawItem[];
+}
+
+interface RawBlockedEntry {
+  item: RawItem;
+  blocked_by: RawItem[];
+}
+
+interface RawBlockedListResponse {
+  kind: "ok" | "busy";
+  entries: RawBlockedEntry[];
+}
+
+interface RawStep {
+  id: string;
+  item_id: string;
+  body: string;
+  done: boolean;
+  position: number;
+  deleted_at: number | null;
+  version: number;
+}
+
+interface RawStepListResponse {
+  kind: "ok" | "busy";
+  steps: RawStep[];
 }
 
 interface RawIsPendingResponse {
@@ -144,6 +193,37 @@ function mapItem(raw: RawItem): TaskItemDTO {
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+    version: raw.version,
+    pending: raw.pending,
+  };
+}
+
+function mapProject(raw: RawProject): ProjectDTO {
+  return {
+    id: raw.id,
+    name: raw.name,
+    archivedAt: raw.archived_at,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    version: raw.version,
+  };
+}
+
+function mapBlockedEntries(raw: RawBlockedEntry[]): BlockedFrontierEntryDTO[] {
+  return raw.map((entry) => ({
+    item: mapItem(entry.item),
+    blockedBy: entry.blocked_by.map(mapItem),
+  }));
+}
+
+function mapStep(raw: RawStep): StepDTO {
+  return {
+    id: raw.id,
+    itemId: raw.item_id,
+    body: raw.body,
+    done: raw.done,
+    position: raw.position,
+    deletedAt: raw.deleted_at,
     version: raw.version,
   };
 }
@@ -230,6 +310,30 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "triageInbox", items: raw.items.map(mapItem) });
+      return;
+    }
+    case "getBlocked": {
+      const raw = JSON.parse(host.blocked()) as RawBlockedListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "blocked", entries: mapBlockedEntries(raw.entries) });
+      return;
+    }
+    case "getSteps": {
+      const raw = JSON.parse(host.steps(request.itemId)) as RawStepListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "steps", itemId: request.itemId, steps: raw.steps.map(mapStep) });
+      return;
+    }
+    case "getProjects": {
+      const raw = JSON.parse(host.projects()) as RawProjectListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "projects", projects: raw.projects.map(mapProject) });
       return;
     }
     case "isPending": {

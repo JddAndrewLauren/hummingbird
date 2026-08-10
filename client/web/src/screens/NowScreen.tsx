@@ -3,13 +3,19 @@ import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
 import { ContextTile } from "../components/domain/ContextTile";
+import { ItemDetailPanel } from "../components/domain/ItemDetailPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import type { CalendarTileProps } from "../calendar/tile-props";
 import type { DemoData, DemoSnapshot } from "../fixtures/demo";
 import type { Screen } from "../shell/screens";
+import type { TaskState } from "../store/store";
+import { blockedReasonLabel } from "./blocked-reason";
+import { groupByProject } from "./frontier-groups";
+import { orderFrontier } from "./frontier-order";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+import { computeUrgency } from "./urgency";
 
 function SnapshotTile({ snapshot }: { snapshot: DemoSnapshot }) {
   return (
@@ -33,9 +39,142 @@ export interface NowScreenProps {
   /** The real calendar context, or null on a device that never opted in. */
   tile: CalendarTileProps | null;
   onScreen: (screen: Screen) => void;
+  /** S10's real frontier data (issue #108) — rendered whenever `demo` is
+   * null, i.e. always outside dev's `?demo` mode. */
+  task: TaskState;
+  /** Sampled at the same ~30s granularity `useCalendarWiring.ts` already
+   * ticks at — coarse enough for urgency's own bucket sizes
+   * (`urgency.ts`), so this reuses that clock rather than adding a second
+   * one. */
+  nowMs: number;
+  selectedItemId: string | null;
+  onOpenItem: (itemId: string) => void;
+  onCloseItemDetail: () => void;
 }
 
-export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
+/** Real-data frontier/blocked rendering (issue #108) — kept out of the
+ * `demo`-fixture render path above so the two never entangle: the fixture
+ * carries its own (deliberately hand-authored) `urgency`/`blockedBy`
+ * strings, while this branch derives everything at read time from the
+ * `TaskItemDTO`s the store actually holds. */
+function RealFrontier({
+  task,
+  nowMs,
+  selectedItemId,
+  onOpenItem,
+  onCloseItemDetail,
+}: Pick<NowScreenProps, "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail">) {
+  const allItems = [...task.frontier, ...task.blocked.map((entry) => entry.item)];
+  const selectedItem = selectedItemId
+    ? (allItems.find((item) => item.id === selectedItemId) ?? null)
+    : null;
+
+  if (selectedItem) {
+    return (
+      <ItemDetailPanel
+        item={selectedItem}
+        steps={task.stepsByItem[selectedItem.id] ?? []}
+        onClose={onCloseItemDetail}
+      />
+    );
+  }
+
+  const groups = groupByProject(orderFrontier(task.frontier), task.projects);
+
+  if (groups.length === 0 && task.blocked.length === 0) {
+    return (
+      <Card padding="var(--space-3)">
+        <EmptyState
+          icon="zap"
+          headingLevel={2}
+          title="Nothing to start"
+          body="No actions are Ready or In Progress right now."
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      {groups.map((group) => (
+        <Section
+          key={group.projectId ?? "unassigned"}
+          title={
+            group.projectId === null
+              ? "No project"
+              : (group.projectName ?? `Project ${group.projectId}`)
+          }
+          meta={`${group.items.length} ${group.items.length === 1 ? "action" : "actions"}`}
+        >
+          <Card padding="var(--space-3)">
+            {group.items.map((item) => (
+              <ItemRow
+                key={item.id}
+                title={item.title}
+                stage={item.stage}
+                urgency={computeUrgency(item.deadline, nowMs)}
+                deadline={item.deadline ?? undefined}
+                scheduled={item.scheduledDate ?? undefined}
+                size={item.size ?? undefined}
+                priority={item.priority}
+                pending={item.pending}
+                onClick={() => onOpenItem(item.id)}
+              />
+            ))}
+          </Card>
+        </Section>
+      ))}
+
+      {task.blocked.length > 0 ? (
+        <Section
+          title="Blocked"
+          meta={`${task.blocked.length} ${task.blocked.length === 1 ? "action" : "actions"}`}
+        >
+          <Card padding="var(--space-3)">
+            {task.blocked.map((entry) => (
+              // This wrapper is the ONE dimming source for a blocked row —
+              // `ItemRow`'s own `pending` indicator is a chip, never an
+              // opacity change (see that component), specifically so
+              // stacking the two here can never compound into an
+              // over-muted row for something both blocked and pending
+              // (PR #200 review).
+              <div key={entry.item.id} style={{ opacity: 0.6 }}>
+                <ItemRow
+                  title={entry.item.title}
+                  stage={entry.item.stage}
+                  size={entry.item.size ?? undefined}
+                  priority={entry.item.priority}
+                  pending={entry.item.pending}
+                />
+                <span
+                  className="hb-meta"
+                  style={{
+                    display: "block",
+                    padding: "0 var(--space-5) var(--space-3)",
+                    color: "var(--status-danger-fg)",
+                  }}
+                >
+                  {blockedReasonLabel(entry.blockedBy.map((blocker) => blocker.title))}
+                </span>
+              </div>
+            ))}
+          </Card>
+        </Section>
+      ) : null}
+    </>
+  );
+}
+
+export function NowScreen({
+  demo,
+  tile,
+  onScreen,
+  task,
+  nowMs,
+  selectedItemId,
+  onOpenItem,
+  onCloseItemDetail,
+}: NowScreenProps) {
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
   // would let a reordered fixture describe the wrong action.
@@ -111,14 +250,13 @@ export function NowScreen({ demo, tile, onScreen }: NowScreenProps) {
             </Section>
           </>
         ) : (
-          <Card padding="var(--space-3)">
-            <EmptyState
-              icon="zap"
-              headingLevel={2}
-              title="Nothing to start"
-              body="No actions exist yet. Ranking begins once the first one is minted from Triage."
-            />
-          </Card>
+          <RealFrontier
+            task={task}
+            nowMs={nowMs}
+            selectedItemId={selectedItemId}
+            onOpenItem={onOpenItem}
+            onCloseItemDetail={onCloseItemDetail}
+          />
         )}
       </Column>
 

@@ -41,7 +41,7 @@ export function setMirrorSnapshotHandler(handler: ((mirror: unknown) => void) | 
 
 type Store = Pick<
   ReturnType<typeof createCoreStore>,
-  "setState" | "setCalendarState" | "setTaskState" | "setTaskPending"
+  "setState" | "setCalendarState" | "setTaskState" | "setTaskPending" | "setTaskSteps"
 >;
 
 // Wires a worker's response messages into the store. This is the only place
@@ -115,6 +115,15 @@ export function attachWorkerClient(
         return;
       case "triageInbox":
         store.setTaskState({ triageInbox: message.items });
+        return;
+      case "blocked":
+        store.setTaskState({ blocked: message.entries });
+        return;
+      case "steps":
+        store.setTaskSteps(message.itemId, message.steps);
+        return;
+      case "projects":
+        store.setTaskState({ projects: message.projects });
         return;
       case "isPendingResult":
         store.setTaskPending(message.itemId, message.pending);
@@ -259,6 +268,22 @@ export function requestFrontier(worker: WorkerLike): void {
 
 export function requestTriageInbox(worker: WorkerLike): void {
   worker.postMessage({ type: "getTriageInbox" });
+}
+
+/** Relation-blocked items with the reason visible — S10 (issue #108). */
+export function requestBlocked(worker: WorkerLike): void {
+  worker.postMessage({ type: "getBlocked" });
+}
+
+/** One item's Steps — item detail (issue #96, S10). */
+export function requestSteps(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "getSteps", itemId });
+}
+
+/** Resolves the frontier's "grouped by project" display to real names
+ * (issue #108, PR #200 review). */
+export function requestProjects(worker: WorkerLike): void {
+  worker.postMessage({ type: "getProjects" });
 }
 
 export function requestIsPending(worker: WorkerLike, itemId: string): void {

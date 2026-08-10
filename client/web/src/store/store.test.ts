@@ -15,6 +15,9 @@ const initialCalendar: CalendarState = {
 const initialTask: TaskState = {
   frontier: [],
   triageInbox: [],
+  blocked: [],
+  stepsByItem: {},
+  projects: [],
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
@@ -109,6 +112,7 @@ describe("createCoreStore", () => {
           createdAt: 1_000,
           updatedAt: 1_000,
           version: 0,
+          pending: false,
         },
       ],
     });

@@ -12,6 +12,8 @@ import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
 import { syncStatusLabel } from "./shell/sync-status";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
+import { useFrontierWiring } from "./shell/useFrontierWiring";
+import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
@@ -85,6 +87,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     status,
     task.syncOutcomeSeq,
   );
+  useFrontierWiring(worker, status, task.syncOutcomeSeq);
+  const {
+    selectedItemId,
+    openItem: handleOpenItem,
+    closeItem: handleCloseItemDetail,
+  } = useItemDetailWiring(worker);
   const syncLabel = syncStatusLabel({
     online,
     lastSyncOutcome: task.lastSyncOutcome,
@@ -140,7 +148,18 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
             padding: "0 var(--gutter-page) var(--space-11)",
           }}
         >
-          {screen === "now" && <NowScreen demo={demo} tile={tile} onScreen={setScreen} />}
+          {screen === "now" && (
+            <NowScreen
+              demo={demo}
+              tile={tile}
+              onScreen={setScreen}
+              task={task}
+              nowMs={nowMs}
+              selectedItemId={selectedItemId}
+              onOpenItem={handleOpenItem}
+              onCloseItemDetail={handleCloseItemDetail}
+            />
+          )}
           {screen === "triage" && <TriageScreen demo={demo} />}
           {screen === "routes" && <RoutesScreen demo={demo} />}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
