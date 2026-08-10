@@ -6,9 +6,10 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use hummingbird_authority::{
-    handle, init_schema, ApiRequest, ApiResponse, Entropy, HandleContext, Row, SqlError, SqlValue,
+    handle, init_schema, ApiRequest, ApiResponse, Entropy, HandleContext, PushError,
+    PushNotification, Pusher, Row, SqlError, SqlValue,
 };
-use hummingbird_domain::{Item, Rule};
+use hummingbird_domain::{Alert, Item, PushTarget, Rule};
 use sha2::{Digest, Sha256};
 
 // Re-exported so every suite gets the trait (for `sql.exec`) with `rig::*`.
@@ -473,6 +474,92 @@ pub fn seed_alert_raw(sql: &dyn Sql, id: &str, source: &str, source_key: &str) -
     )
     .unwrap();
     version
+}
+
+/// Seeds an alert with full control over its lifecycle columns, for
+/// `delivery.rs`'s tests, which exercise ADR-0014's live predicate and the
+/// severity ratchet directly. Only the row's identity (`id`) needs to
+/// exist for `deliveries`' foreign key — callers that want to exercise an
+/// escalation or a later generation build a second [`Alert`] value with the
+/// same `id` in memory (matching how #138 will hand `deliver` its own
+/// freshly ratcheted view) rather than mutating this row.
+#[allow(clippy::too_many_arguments)]
+pub fn seed_alert_full_raw(
+    sql: &dyn Sql,
+    id: &str,
+    severity: Option<&str>,
+    raised_at: i64,
+    resolved_at: Option<i64>,
+    dismissed_at: Option<i64>,
+    expires_at: Option<i64>,
+) -> Alert {
+    let version = meta_version(sql) + 1;
+    sql.exec(
+        "INSERT INTO alerts (id, source, source_key, title, severity, raised_at, resolved_at, \
+         dismissed_at, expires_at, version) VALUES (?, 'test-source/v1', ?, 'seeded alert', \
+         ?, ?, ?, ?, ?, ?)",
+        &[
+            SqlValue::Text(id.into()),
+            SqlValue::Text(id.into()),
+            SqlValue::from_opt_text(severity),
+            SqlValue::Integer(raised_at),
+            SqlValue::from_opt_i64(resolved_at),
+            SqlValue::from_opt_i64(dismissed_at),
+            SqlValue::from_opt_i64(expires_at),
+            SqlValue::Integer(version),
+        ],
+    )
+    .unwrap();
+    sql.exec(
+        "UPDATE meta SET version = ? WHERE id = 1",
+        &[SqlValue::Integer(version)],
+    )
+    .unwrap();
+    Alert {
+        id: id.into(),
+        source: "test-source/v1".into(),
+        source_key: id.into(),
+        title: "seeded alert".into(),
+        body: None,
+        url: None,
+        severity: severity.map(str::to_string),
+        raised_at,
+        resolved_at,
+        dismissed_at,
+        expires_at,
+        version,
+    }
+}
+
+/// Records every send [`hummingbird_authority::deliver`] attempts, and can
+/// be told which targets to fail — the seam #139's send-path tests
+/// exercise without a live FCM project.
+pub struct FakePusher {
+    pub sent: RefCell<Vec<(String, String)>>, // (target_id, alert_id)
+    pub fail_targets: RefCell<Vec<String>>,
+}
+
+impl FakePusher {
+    pub fn new() -> Self {
+        FakePusher {
+            sent: RefCell::new(Vec::new()),
+            fail_targets: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Pusher for FakePusher {
+    fn send(&self, target: &PushTarget, notification: &PushNotification) -> Result<(), PushError> {
+        if self.fail_targets.borrow().contains(&target.id) {
+            return Err(PushError {
+                message: format!("fake failure for {}", target.id),
+            });
+        }
+        self.sent
+            .borrow_mut()
+            .push((target.id.clone(), notification.alert_id.to_string()));
+        Ok(())
+    }
 }
 
 pub fn seed_snapshot_raw(sql: &dyn Sql, source: &str, key: &str) -> i64 {

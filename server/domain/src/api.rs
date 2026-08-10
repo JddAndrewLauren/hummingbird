@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::context::{Alert, ContextSnapshot, Setting};
 use crate::item::{Energy, Item, Size, Stage};
 use crate::project::{Fog, Project, Route};
-use crate::rule::{Condition, Rule, Tier};
+use crate::rule::{Condition, Platform, Rule, Tier};
 use crate::step::{BlockedBy, Step};
 use crate::token::Scope;
 
@@ -255,6 +255,20 @@ pub struct CreateRule {
     pub tier: Tier,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+}
+
+/// `POST /api/push_targets` body (#139): idempotent create by client id,
+/// the same shape as [`CreateRule`]. No patch surface — revocation
+/// (`DELETE /api/push_targets/:id`) is the only mutation a registered
+/// target ever gets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePushTarget {
+    pub id: String,
+    /// 'pixel-9', 'pixel-watch', …
+    pub name: String,
+    pub platform: Platform,
+    pub fcm_token: String,
 }
 
 /// `PATCH /api/rules/:id` body: `expected_version` plus absolute-value
