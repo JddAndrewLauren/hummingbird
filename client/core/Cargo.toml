@@ -7,6 +7,9 @@ description = "Binding-agnostic sync engine core (ADR-0003)."
 [dependencies]
 async-trait = "0.1.92"
 chrono = { version = "0.4.45", features = ["serde"] }
+# The owned-schema wire DTOs and domain records (ADR-0008/0009), compiled by
+# both sides — this crate deserialises them, never redefines them (#100/#101).
+hummingbird-domain = { path = "../../server/domain" }
 # The IANA time zone database, for one job: resolving a Google all-day
 # boundary (`date`, no time) to the instant of local midnight in the
 # calendar's own zone. `chrono` alone cannot — it has no zone table — and
@@ -23,6 +26,10 @@ chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# The write adapter's deterministic id derivation (#101) ports sweep.py's
+# `deterministic_v4` (sha256-then-force-v4-nibbles) — same primitive the
+# authority already uses for token hashing (server/authority/Cargo.toml).
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3.27.0"

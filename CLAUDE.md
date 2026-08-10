@@ -37,6 +37,25 @@ byte-identical backstop, bearer-token auth (sha256 at rest; scopes
 human gate H3) — `wrangler dev` + `server/scripts/smoke.sh` locally,
 `.github/workflows/server.yml` in CI.
 
+## The client sync engine
+
+`client/core/src/sync/` is the device half of the owned stack (ADR-0008), and
+the largest thing in `client/`: `adapter`/`transport` are the read side (the
+normal pull is the delta since the mirror's own version; `GET /api/sweep` is
+the correctness backstop, on app open and daily), `write/` is its mirror
+image on the write side (CAS mutations, rebase-on-409, deterministic ids,
+the error taxonomy), `mirror` is the local read model where absence demotes
+rather than deletes (ADR-0003), `queue` is the durable FIFO plus its
+dead-letter journal, and `cycle` is ADR-0007's one cycle — drain, then pull,
+in that order, every time, with jittered backoff capped at five minutes.
+**Durability belongs to the cycle, not the queue**: capture code calls
+`SyncCycle::enqueue`/`run`, never `OutboundQueue::enqueue`/`drain` directly,
+because only the cycle pairs each mutation with the snapshot write that
+makes it durable before anything is sent. Clock, jitter and access token are
+caller-injected on every call — bare `wasm32-unknown-unknown` has no clock or
+RNG that does not panic. There is no `docs/sync.md`; the map is the module
+docs in `client/core/src/sync/mod.rs` and each submodule's own header.
+
 ## The design system
 
 The UI brand is the "Hummingbird Design System" project on claude.ai/design;

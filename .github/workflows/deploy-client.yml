@@ -13,6 +13,7 @@ on:
     branches: [main]
     paths:
       - "client/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/deploy-client.yml"
 
 jobs:
@@ -20,8 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to match root `rust-toolchain.toml`: the deployed wasm artifact
+      # should be built by the same compiler CI gated, not by whatever stable
+      # happens to be on the day of the deploy.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97.1"
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
