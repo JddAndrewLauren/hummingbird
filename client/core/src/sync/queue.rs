@@ -125,6 +125,21 @@ pub enum MutationIntent {
         /// version is live at send time (the original attempt's, or a 409's
         /// retry version).
         patch_fields: Value,
+        /// The same intent expressed in the **entity's** own encoding, when
+        /// that differs from the wire's — see
+        /// [`super::write::adapter::patch_with_rebase`]'s `rebase_view` for
+        /// the one case that has it (`settings.value` is stored as the
+        /// canonical *text* of the JSON the wire sends, so diffing the wire
+        /// body against a 409's `current` would read this client's own
+        /// already-landed write as a collision with itself).
+        ///
+        /// `None` for every other entity, and `#[serde(default)]` so queue
+        /// bytes written before this field existed still deserialise into
+        /// the identical entry rather than degrading into an empty queue
+        /// (see [`QUEUE_SCHEMA_VERSION`]) — which is also why this addition
+        /// does not bump it.
+        #[serde(default)]
+        rebase_fields: Option<Value>,
     },
 }
 
@@ -378,6 +393,7 @@ async fn attempt(
             method,
             base,
             patch_fields,
+            rebase_fields,
             ..
         } => {
             let patch_fields = patch_fields.clone();
@@ -389,9 +405,17 @@ async fn attempt(
                 patch
             };
 
-            patch_with_rebase::<Value, Value>(transport, access_token, *method, path, base, build_patch)
-                .await
-                .map(|_| ())
+            patch_with_rebase::<Value, Value>(
+                transport,
+                access_token,
+                *method,
+                path,
+                base,
+                rebase_fields.as_ref(),
+                build_patch,
+            )
+            .await
+            .map(|_| ())
         }
     }
 }
@@ -469,6 +493,7 @@ mod tests {
                 base: json!({"id": item_id, "title": "buy milk", "version": base_version}),
                 base_updated_at: 1_000,
                 patch_fields: json!({"title": "buy oat milk"}),
+                rebase_fields: None,
             },
         }
     }
@@ -624,6 +649,7 @@ mod tests {
                 base: json!({"id": "a-1", "priority": 1, "title": "old title", "version": 1}),
                 base_updated_at: 1_000,
                 patch_fields: json!({"priority": 2}),
+                rebase_fields: None,
             },
         });
 

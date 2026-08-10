@@ -81,6 +81,40 @@ pub fn decide(patch: &Value, base: &Value, current: &Value) -> RebaseDecision {
     }
 }
 
+/// Every field the intent touched that `entity` does not already hold.
+///
+/// The same field-by-field question [`decide`] asks, but of a **success**
+/// response rather than a 409, and with no `base` to reconcile against:
+/// either the entity the server handed back carries this write's intent or
+/// it does not. Empty ⇒ the write landed.
+///
+/// This exists for one shape the CAS contract deliberately leaves as a
+/// success: a `PUT` at `expected_version: 0` against a key that already
+/// exists is a *create replay*, and the authority answers `200` with the
+/// **stored** row rather than `409`
+/// (`handler_fixtures/settings.rs::put_replay_at_version_zero_returns_stored_row_without_bump`).
+/// For an idempotent replay that is exactly right. For a device that has
+/// simply never pulled the row — a binding edited before this device's
+/// first sync — the same `200` carries someone else's value, and taking it
+/// at face value would drop the operator's edit with no journal entry and
+/// no 409 to rebase.
+pub fn divergent_fields(patch: &Value, entity: &Value) -> Vec<String> {
+    let Some(fields) = patch.as_object() else {
+        return Vec::new();
+    };
+
+    let mut divergent = Vec::new();
+    for (field, intended) in fields {
+        if field == "expected_version" {
+            continue;
+        }
+        if entity.get(field).unwrap_or(&Value::Null) != intended {
+            divergent.push(field.clone());
+        }
+    }
+    divergent
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +200,31 @@ mod tests {
         let patch = json!({"expected_version": 5, "description": null});
 
         assert_eq!(decide(&patch, &base, &current), RebaseDecision::Safe);
+    }
+
+    #[test]
+    fn a_success_carrying_this_writes_intent_is_not_divergent() {
+        let entity = json!({"key": "race-series", "value": "\"motogp\"", "version": 1});
+        let intent = json!({"expected_version": 0, "value": "\"motogp\""});
+
+        assert_eq!(divergent_fields(&intent, &entity), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_success_carrying_someone_elses_value_names_every_divergent_field() {
+        // The create-replay 200: the stored row, not the payload just sent.
+        let entity = json!({"key": "race-series", "value": "\"f1\"", "version": 1});
+        let intent = json!({"expected_version": 0, "value": "\"motogp\""});
+
+        assert_eq!(divergent_fields(&intent, &entity), vec!["value".to_string()]);
+    }
+
+    #[test]
+    fn expected_version_itself_is_never_divergent() {
+        let entity = json!({"key": "k", "version": 7});
+        let intent = json!({"expected_version": 0});
+
+        assert_eq!(divergent_fields(&intent, &entity), Vec::<String>::new());
     }
 
     #[test]

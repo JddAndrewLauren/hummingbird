@@ -225,6 +225,15 @@ impl SyncMirror {
         live(self.settings.get(key))
     }
 
+    /// Every live `settings` row, key order — the read behind #118's
+    /// bindings editor. Deliberately the whole table rather than only the
+    /// keys [`crate::bindings::BindingKey`] knows: a row a newer build
+    /// wrote is still in the table, and a reader that filtered it out would
+    /// show an editor claiming the table holds less than it does.
+    pub fn all_settings(&self) -> impl Iterator<Item = &Setting> {
+        self.settings.values().filter_map(live_slot)
+    }
+
     /// Live and not yet `Done` — the population ADR-0001's 250-issue
     /// watchline measures, ported to the owned schema (`crate::task::query`'s
     /// `active_count` is its S1/Linear-era twin).
@@ -801,6 +810,67 @@ mod tests {
         assert_eq!(
             mirror.items.get("a-2").unwrap().presence,
             Presence::Absent { since_ms: 2_000 }
+        );
+    }
+
+    /// #118 acceptance: "settings rows ride the ordinary delta pull and full
+    /// sweep — no bespoke sync path". The proof is that they behave exactly
+    /// like every other table here: a delta upserts them, a delta that does
+    /// not mention them leaves them alone, and only a sweep's completeness
+    /// demotes one by absence.
+    #[test]
+    fn settings_rows_ride_the_ordinary_delta_pull_and_full_sweep() {
+        fn setting(key: &str, value: &str, version: i64) -> Setting {
+            Setting {
+                key: key.to_string(),
+                value: value.to_string(),
+                updated_at: 1,
+                version,
+            }
+        }
+
+        let mut mirror = SyncMirror::new();
+        mirror.apply_delta(ChangesResponse {
+            version: 1,
+            settings: vec![
+                setting("race-series", "\"f1\"", 1),
+                setting("trips-calendar", "\"cal-1\"", 1),
+            ],
+            ..ChangesResponse::empty(1)
+        });
+        assert_eq!(mirror.all_settings().count(), 2);
+
+        // A delta touching only items must not disturb them...
+        mirror.apply_delta(ChangesResponse {
+            version: 2,
+            items: vec![item("a-1")],
+            ..ChangesResponse::empty(2)
+        });
+        assert_eq!(mirror.setting("race-series").unwrap().value, "\"f1\"");
+
+        // ...an updated row upserts in place, at its new version...
+        mirror.apply_delta(ChangesResponse {
+            version: 3,
+            settings: vec![setting("race-series", "\"motogp\"", 2)],
+            ..ChangesResponse::empty(3)
+        });
+        let updated = mirror.setting("race-series").unwrap();
+        assert_eq!(updated.value, "\"motogp\"");
+        assert_eq!(updated.version, 2);
+
+        // ...and only a sweep's completeness demotes one by absence.
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 4,
+                settings: vec![setting("race-series", "\"motogp\"", 2)],
+                ..ChangesResponse::empty(4)
+            },
+            9_000,
+        );
+        assert!(mirror.setting("trips-calendar").is_none());
+        assert_eq!(
+            mirror.all_settings().map(|s| s.key.as_str()).collect::<Vec<_>>(),
+            vec!["race-series"]
         );
     }
 

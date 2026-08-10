@@ -204,24 +204,52 @@ still has material, because the alternative is a `Conflict` with an empty
 field list masquerading as a real one, showing the reader nothing to act on.
 
 `Core` (`client/core/src/lib.rs`) is the one door onto all of that, and it
-has exactly **three mutation entry points**: `Core::capture` (a create,
+has exactly **four mutation entry points**: `Core::capture` (a create,
 whose `title` goes through `capture::parse_seam` — #110/#42's named no-op —
 and reaches the mutation verbatim regardless), `Core::act` (S11's closed
 `ItemAction` vocabulary: start / complete / block / cancel, where cancel
 sets `archived_at` and never a stage, because the owned schema has no
 "canceled"), and `Core::triage` (S13's `TriageDestination` + `TriagePatch`:
 a multi-field triage is exactly ONE queued CAS `PATCH`, never one per
-field, so a 409 rebases or dead-letters the whole edit together). **All
-three enqueue through `SyncCycle::enqueue` and none of them may reach
-`OutboundQueue::enqueue`** — the durability rule above is not per-caller
-advice, it is what makes an offline capture, act or triage survive at all.
-All three take a caller-minted `seed` (deterministic id, same no-clock/no-RNG
+field, so a 409 rebases or dead-letters the whole edit together), and
+`Core::set_binding` (#118's standing-question bindings — one `settings` row,
+written as an ordinary absolute-value CAS `PUT`). **All four enqueue through
+`SyncCycle::enqueue` and none of them may reach `OutboundQueue::enqueue`** —
+the durability rule above is not per-caller advice, it is what makes an
+offline capture, act, triage or binding survive at all. All four take a
+caller-minted `seed` (deterministic id, same no-clock/no-RNG
 reasoning). The reads are `frontier` / `triage_inbox` / `blocked` /
-`steps_for` / `projects`; the three item queries are each a filter over one
-shared `overlaid_items` view, while `steps_for` and `projects` (over
-`SyncMirror::all_projects`) read the mirror directly — no mutation entry
-point mints a Step or a Project, so there is nothing optimistic to overlay
-there.
+`steps_for` / `projects` / `bindings`; the three item queries are each a
+filter over one shared `overlaid_items` view, while `steps_for` and
+`projects` (over `SyncMirror::all_projects`) read the mirror directly — no
+mutation entry point mints a Step or a Project, so there is nothing
+optimistic to overlay there.
+
+**Bindings are `settings` rows and nothing more** (#118, ADR-0015).
+`bindings.rs` holds the closed, kebab-case, **unversioned** key vocabulary —
+`race-series` / `trips-calendar` / `city-waste-page` — resolved by name at
+the seam so no caller can mint a key into a table that has no DELETE, and
+unversioned so a `city-waste/v1 → /v2` source bump cannot orphan one. They
+ride the ordinary delta pull and full sweep (`SyncMirror::all_settings`),
+with no bespoke path on either side; `Core::bindings` lists every known key
+set or not, then every live row this build cannot write, each flagged
+`known` — an unrecognised key is displayed, never hidden, the same reading
+ADR-0015 gives an unrecognised snapshot `schema`. A value is
+`Unset | Text | Other`, not a nullable string, for `Freshness`'s own reason:
+"nobody set this" and "this holds something that is not text" are different
+facts. The one place bindings are not like every other write is the
+encoding: `PutSetting::value` is typed JSON while `Setting::value` stores its
+canonical *text*, so `MutationIntent::Patch` carries `rebase_fields` — the
+same intent in the entity's encoding — and `patch_with_rebase` diffs a 409
+against that. Without it this client's own already-landed write reads as a
+collision with itself and dead-letters a `PUT` that in fact succeeded.
+The mirror-image hazard is a **success** that is not one: a `PUT` at
+`expected_version: 0` against a key that already exists never 409s — the
+authority answers `200` with the *stored* row — so `patch_with_rebase` asks
+`rebase::divergent_fields` whether that row actually carries this write's
+intent, and reports a `Conflict` when it does not. Right for a true replay,
+and the difference between a dead-letter and silent loss for a device that
+had simply never pulled the row (a binding edited before its first sync).
 
 **The overlay is one representation, not one per mutation kind.**
 `overlay_from_queue` rebuilds it at `Core::init` from whatever the durable
@@ -229,7 +257,10 @@ queue still holds — `MutationIntent::Create` through `item_from_create`,
 `MutationIntent::Patch` through `apply_item_patch` (the same absolute-value
 field overwrite the wire sends) — so a capture, an act or a triage made
 offline and then reloaded is still readable, still `is_pending`, rather
-than vanishing until the next successful cycle. A queue entry that no
+than vanishing until the next successful cycle. `binding_overlay_from_queue`
+is its exact twin for `settings` (a separate map: different key space,
+different shape, identical lifecycle in `Core::run` — dead-letter reverts,
+completed cycle clears). A queue entry that no
 longer projects is an `Err`, never a silently dropped overlay entry: going
 overlay-blind would tell a reader nothing is pending while something still
 is. It is keyed one entry per item id in FIFO order (last enqueued wins),
@@ -350,11 +381,11 @@ schedule. An interpretation of ADR-0007 recorded in the code, not an
 amendment to the ADR.
 
 The protocol now carries the whole read-and-act surface: view→worker
-`capture` / `act` / `triage` and the reads `getFrontier` /
-`getTriageInbox` / `getBlocked` / `getSteps` / `getProjects` / `isPending`;
-worker→view `captureResult` / `actResult` / `triageResult` plus the
-`frontier` / `triageInbox` / `blocked` / `steps` / `projects` /
-`isPendingResult` pushes. A frontier or blocked entry is a
+`capture` / `act` / `triage` / `setBinding` and the reads `getFrontier` /
+`getTriageInbox` / `getBlocked` / `getSteps` / `getProjects` /
+`getBindings` / `isPending`; worker→view `captureResult` / `actResult` /
+`triageResult` / `setBindingResult` plus the `frontier` / `triageInbox` /
+`blocked` / `steps` / `projects` / `bindings` / `isPendingResult` pushes. A frontier or blocked entry is a
 `FrontierItemDTO` — `ffi-web/src/task_host.rs` flattens
 `hummingbird_domain::Item` and adds the computed `pending` flag, stamped in
 exactly one place (`TaskHostCore::with_pending`, applied by `frontier()`,
@@ -365,7 +396,8 @@ column. Every wire string is resolved by name before the seam
 `Energy::parse`), so an unrecognised name fails without ever reaching
 `Core`. On an `ok` result `store/worker-client.ts` re-requests the affected
 queries itself — `actResult` re-reads frontier, blocked and that item's
-`isPending`; `triageResult` re-reads the triage inbox and the frontier —
+`isPending`; `triageResult` re-reads the triage inbox and the frontier;
+`setBindingResult` re-reads the bindings —
 which is what makes a mutation taken offline visible immediately, without
 waiting for a cycle.
 
@@ -403,9 +435,18 @@ opinion of its own and would enqueue it), `triage-order.ts` (capture order,
 by `createdAt`, which reads the same before and after the overlay clears),
 `item-actions.ts` (which actions a stage offers, the optimistic
 `applyItemAction` projection, and `resolveFallbackPending` for an item that
-has left every live query) and `triage-form.ts` (which drafted fields are
+has left every live query) `triage-form.ts` (which drafted fields are
 actually changes — `null` means "leave this field alone", never an empty
-string sent as an edit).
+string sent as an edit) and `bindings.ts` (#118's editor: the human copy per
+binding, the three value states read apart, which drafts are worth
+sending — an empty one, a no-op one and any key this build cannot write are
+all refused here, because `Core::set_binding` has no opinion of its own and
+`settings` has no DELETE to undo a blanked row — plus `sameBindingValue`,
+which is what lets a row reseed its field when the value underneath it
+moves, so a pull carrying another device's edit can never leave a stale
+draft sitting over it with Save enabled to push it back, and
+`bindingWriteError`, so a failed write is words on that row rather than a
+`lastBindingWrite` nothing reads).
 
 The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
 re-requests its queries once the core is ready and again on every

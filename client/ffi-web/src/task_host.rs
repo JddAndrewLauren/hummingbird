@@ -9,6 +9,7 @@
 //! being re-derived on the TypeScript side from `hummingbird_domain`'s own
 //! serde output.
 
+use hummingbird_core::bindings::{Binding, BindingKey};
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
@@ -323,6 +324,29 @@ pub struct FreshnessResponse {
     pub freshness: Freshness,
 }
 
+/// The wrapper around [`TaskHostCore::bindings`]'s answer (#118) — every
+/// standing-question binding, known-first. Same `"busy"` contract as
+/// [`ItemListResponse`]: no answer, never an empty one, since an editor
+/// rendering "nothing is bound" from a busy core would invite the operator
+/// to overwrite values it simply had not read yet.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BindingListResponse {
+    pub kind: &'static str,
+    pub bindings: Vec<Binding>,
+}
+
+/// What [`TaskHostCore::set_binding`] resolves to. `"unknown_key"` is
+/// distinct from `"failed"` on purpose: it is the seam rejecting a key that
+/// is not in ADR-0015's closed vocabulary — a caller mistake, and the one
+/// outcome that never reaches `Core` at all — while `"failed"` is a
+/// durability failure enqueueing the write. Same shape as [`ActResponse`]'s
+/// three-way split.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SetBindingResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
 /// The wrapper around [`TaskHostCore::mirror_snapshot`]'s answer — S9's
 /// mirror download button.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -529,6 +553,43 @@ impl TaskHostCore {
         StepListResponse {
             kind: "ok",
             steps: self.core.steps_for(item_id),
+        }
+    }
+
+    /// Every standing-question binding, per [`Core::bindings`] (#118).
+    pub fn bindings(&self) -> BindingListResponse {
+        BindingListResponse {
+            kind: "ok",
+            bindings: self.core.bindings(),
+        }
+    }
+
+    /// Sets one binding (#118). `key` is the wire's kebab-case binding name,
+    /// resolved through [`BindingKey::parse`]; an unrecognised one fails
+    /// without ever touching [`Core::set_binding`] — the same "reject before
+    /// the seam" discipline [`TaskHostCore::capture`]/[`TaskHostCore::act`]
+    /// apply to their own vocabularies, and load-bearing here for a second
+    /// reason: `settings` has no DELETE, so a key minted by mistake can
+    /// never be taken back out of the table.
+    pub async fn set_binding(
+        &mut self,
+        seed: &str,
+        key: &str,
+        value: &str,
+        now_ms: i64,
+    ) -> SetBindingResponse {
+        let Some(key) = BindingKey::parse(key) else {
+            return SetBindingResponse {
+                kind: "unknown_key",
+                error: Some(format!("unrecognised binding key {key:?}")),
+            };
+        };
+        match self.core.set_binding(seed, key, value, now_ms).await {
+            Ok(()) => SetBindingResponse { kind: "ok", error: None },
+            Err(error) => SetBindingResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
         }
     }
 
@@ -1432,6 +1493,7 @@ mod tests {
                     base: serde_json::json!({"title": "buy milk", "version": 1}),
                     base_updated_at: 1_000,
                     patch_fields: serde_json::json!({"title": "buy oat milk"}),
+                    rebase_fields: None,
                 },
             },
             reason: DeadLetterReason::Conflict {
@@ -1473,6 +1535,7 @@ mod tests {
                     base: serde_json::json!({"version": 1}),
                     base_updated_at: 1_000,
                     patch_fields: serde_json::json!({}),
+                    rebase_fields: None,
                 },
             },
             reason: DeadLetterReason::Conflict {
@@ -1757,5 +1820,88 @@ mod tests {
             serde_json::to_string(&response).unwrap(),
             r#"{"kind":"ok","mirror":{"version":1}}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+
+    #[test]
+    fn binding_responses_serialize_with_the_exact_keys_task_worker_ts_parses() {
+        let list = BindingListResponse {
+            kind: "ok",
+            bindings: vec![
+                Binding {
+                    key: "race-series".to_string(),
+                    known: true,
+                    pending: true,
+                    value: hummingbird_core::bindings::BindingValue::Text {
+                        text: "f1".to_string(),
+                    },
+                },
+                Binding {
+                    key: "trips-calendar".to_string(),
+                    known: true,
+                    pending: false,
+                    value: hummingbird_core::bindings::BindingValue::Unset,
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_string(&list).unwrap(),
+            r#"{"kind":"ok","bindings":[{"key":"race-series","known":true,"pending":true,"value":{"state":"text","text":"f1"}},{"key":"trips-calendar","known":true,"pending":false,"value":{"state":"unset"}}]}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&SetBindingResponse { kind: "ok", error: None }).unwrap(),
+            r#"{"kind":"ok","error":null}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_a_binding_with_an_unrecognised_key_never_reaches_core_set_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-binding-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        // A versioned spelling is exactly the mistake ADR-0015's unversioned
+        // keys exist to prevent, and `settings` has no DELETE to undo it.
+        let response = host.set_binding("seed-1", "race-series/v1", "f1", 1_000).await;
+
+        assert_eq!(response.kind, "unknown_key");
+        assert!(
+            host.bindings()
+                .bindings
+                .iter()
+                .all(|binding| binding.key != "race-series/v1"),
+            "a rejected key must never reach the table"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_binding_set_through_the_seam_reads_back_from_the_same_seam() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-binding-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        assert_eq!(host.set_binding("seed-1", "trips-calendar", "cal-trips", 1_000).await.kind, "ok");
+
+        let bindings = host.bindings().bindings;
+        let trips = bindings
+            .iter()
+            .find(|binding| binding.key == "trips-calendar")
+            .expect("trips-calendar is always listed");
+        assert_eq!(
+            trips.value,
+            hummingbird_core::bindings::BindingValue::Text {
+                text: "cal-trips".to_string()
+            }
+        );
+        assert!(trips.pending, "nothing has synced it yet");
     }
 }

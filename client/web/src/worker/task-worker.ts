@@ -1,4 +1,6 @@
 import type {
+  BindingDTO,
+  BindingValueDTO,
   BlockedFrontierEntryDTO,
   DeadLetterEntryDTO,
   ProjectDTO,
@@ -44,6 +46,11 @@ export interface TaskHostLike {
     context: string | null,
     nowMs: number,
   ): Promise<string>;
+  /** #118's binding write. Mirrors `hummingbird-ffi-web`'s
+   * `TaskHost::setBinding`, resolved to JSON:
+   * `{"kind": "ok"|"unknown_key"|"failed"|"busy", "error": string|null}`. */
+  setBinding(seed: string, key: string, value: string, nowMs: number): Promise<string>;
+  bindings(): string;
   frontier(): string;
   triageInbox(): string;
   blocked(): string;
@@ -87,6 +94,27 @@ interface RawItem {
    * `client/ffi-web/src/task_host.rs`) — issue #108's "a pending item is
    * marked as such". */
   pending: boolean;
+}
+
+/** The core's own `BindingValue` serde shape — already camel-free (its keys
+ * are `state`/`text`/`raw`), so it crosses unchanged. */
+type RawBindingValue = BindingValueDTO;
+
+interface RawBinding {
+  key: string;
+  known: boolean;
+  pending: boolean;
+  value: RawBindingValue;
+}
+
+interface RawBindingListResponse {
+  kind: "ok" | "busy";
+  bindings: RawBinding[];
+}
+
+interface RawSetBindingResponse {
+  kind: "ok" | "unknown_key" | "failed" | "busy";
+  error: string | null;
 }
 
 interface RawProject {
@@ -227,6 +255,15 @@ function mapItem(raw: RawItem): TaskItemDTO {
     updatedAt: raw.updated_at,
     version: raw.version,
     pending: raw.pending,
+  };
+}
+
+function mapBinding(raw: RawBinding): BindingDTO {
+  return {
+    key: raw.key,
+    known: raw.known,
+    pending: raw.pending,
+    value: raw.value,
   };
 }
 
@@ -393,6 +430,29 @@ export async function handleTaskRequest(
         kind: raw.kind,
         error: raw.error,
       });
+      return;
+    }
+    case "setBinding": {
+      const raw = JSON.parse(
+        await host.setBinding(request.seed, request.key, request.value, request.nowMs),
+      ) as RawSetBindingResponse;
+      post({
+        type: "setBindingResult",
+        seed: request.seed,
+        key: request.key,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getBindings": {
+      const raw = JSON.parse(host.bindings()) as RawBindingListResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty answer — an empty binding list reads as
+        // "nothing is bound", which is the wrong answer rather than none.
+        return;
+      }
+      post({ type: "bindings", bindings: raw.bindings.map(mapBinding) });
       return;
     }
     case "getFrontier": {

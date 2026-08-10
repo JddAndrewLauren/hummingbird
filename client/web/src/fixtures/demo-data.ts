@@ -5,6 +5,7 @@
 
 import type { Stage } from "../components/domain/StageBadge";
 import type { AlertTier } from "../components/domain/AlertCard";
+import type { BindingDTO } from "../store/protocol";
 
 export type Urgency = "calm" | "soon" | "now" | "overdue";
 
@@ -69,6 +70,13 @@ export interface DemoRule {
   description: string;
 }
 
+/** One #118 binding row as the kit renders it. Reuses the real
+ * `BindingDTO` rather than a demo-shaped twin: the editor's whole job is to
+ * render that value's three states, and a parallel fixture type could drift
+ * from the shape it exists to preview. Demo rows are never writable — the
+ * Settings screen passes no `onSetBinding` for them. */
+export type DemoBinding = BindingDTO;
+
 export interface DemoCalendar {
   id: string;
   summary: string;
@@ -81,6 +89,7 @@ export interface DemoData {
   route: DemoRoute;
   snapshots: DemoSnapshot[];
   standingQuestions: DemoStandingQuestion[];
+  bindings: DemoBinding[];
   rules: DemoRule[];
   calendars: DemoCalendar[];
   /** The header's sync readout. Demo-only: no outbound queue exists yet. */
@@ -128,6 +137,11 @@ export const DEMO_DATA: DemoData = {
     { q: "Next race", a: "Ridgeline 10k · 16 days" },
     { q: "Vacation", a: "Lisbon · 38 days" },
     { q: "Which cans", a: "Recycling · Tuesday" },
+  ],
+  bindings: [
+    { key: "race-series", known: true, pending: false, value: { state: "text", text: "hyrox-uk" } },
+    { key: "trips-calendar", known: true, pending: true, value: { state: "text", text: "travel@group.calendar.google.com" } },
+    { key: "city-waste-page", known: true, pending: false, value: { state: "unset" } },
   ],
   rules: [
     { name: "Sweeper run failed", tier: "urgent", description: "Two consecutive adapter failures from one source." },

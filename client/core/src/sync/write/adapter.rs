@@ -130,6 +130,14 @@ const MAX_ATTEMPTS: u32 = 3;
 /// - `Collision` — reported as [`WriteError::Conflict`], naming every
 ///   colliding field. Never retried.
 ///
+/// One success is **not** taken at face value: a create-shaped attempt
+/// (`expected_version: 0`) answered `200` rather than `201` is the
+/// authority's create replay, and its body is the stored row rather than
+/// what was just sent. If that row does not already carry this write's
+/// intent ([`rebase::divergent_fields`]), it is reported as
+/// [`WriteError::Conflict`] — the row belongs to another device and this
+/// edit never landed. Every other success is parsed and returned as-is.
+///
 /// A `Safe` decision on the first 409 earns exactly one retry; a `Safe`
 /// decision on that retry's own 409 is genuine contention and earns exactly
 /// one further bounded retry (see [`MAX_ATTEMPTS`]) before dead-lettering as
@@ -143,12 +151,24 @@ const MAX_ATTEMPTS: u32 = 3;
 /// value` of whatever `hummingbird_domain` entity the caller holds).
 /// `build_patch` receives the `expected_version` to use — called once per
 /// attempt, at whichever version that attempt is rebased onto.
+///
+/// `rebase_view` is the same intent expressed in the **entity's** own
+/// encoding, for the one case where that differs from the wire's: `PUT
+/// /api/settings/:key` sends `value` as typed JSON, but the entity stores it
+/// as that JSON's canonical *text* (`hummingbird_domain::Setting::value`),
+/// so diffing the wire body against `base`/`current` would compare `"f1"`
+/// against `"\"f1\""` and read this client's own already-landed write as a
+/// collision with itself. `None` — every other entity in ADR-0009's write
+/// vocabulary — means the wire body already IS the entity's encoding and is
+/// diffed directly. It changes only what [`rebase::decide`] compares; the
+/// bytes sent are always `build_patch`'s.
 pub async fn patch_with_rebase<P, T>(
     transport: &impl MutationTransport,
     access_token: &str,
     method: HttpMethod,
     path: &str,
     base: &Value,
+    rebase_view: Option<&Value>,
     mut build_patch: impl FnMut(i64) -> P,
 ) -> Result<T, WriteError>
 where
@@ -182,10 +202,37 @@ where
             .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
 
         match send(transport, access_token, method, path, body).await {
-            Sent::Success(_, body) => return parse(&body),
+            Sent::Success(status, body) => {
+                // A create-shaped PUT (`expected_version: 0`) that lands on
+                // 200 rather than 201 is the authority's create *replay*:
+                // the key already existed, and the body is the STORED row,
+                // not what this attempt sent. Idempotent when it really is
+                // a replay; silent data loss when this device had simply
+                // never pulled the row (a binding edited before the first
+                // sync), because the queue would drop the entry as a
+                // success and the next pull would quietly restore the other
+                // value. Diffed in the entity's own encoding, exactly as
+                // the 409 branch below is, and surfaced as the conflict it
+                // is — the journal gets local and server side by side.
+                if version == 0 && status != 201 {
+                    let entity: Value = parse(&body)?;
+                    let fields =
+                        rebase::divergent_fields(rebase_view.unwrap_or(&patch_value), &entity);
+                    if !fields.is_empty() {
+                        return Err(WriteError::Conflict {
+                            fields,
+                            current: entity,
+                        });
+                    }
+                    return serde_json::from_value(entity)
+                        .map_err(|source| WriteError::InvalidResponse(source.to_string()));
+                }
+                return parse(&body);
+            }
             Sent::Failed(error) => return Err(error),
             Sent::Conflict(current) => {
-                match rebase::decide(&patch_value, &compare_against, &current) {
+                let diffed = rebase_view.unwrap_or(&patch_value);
+                match rebase::decide(diffed, &compare_against, &current) {
                     RebaseDecision::Collision(fields) => {
                         return Err(WriteError::Conflict { fields, current })
                     }
@@ -475,6 +522,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy milk"}),
         )
         .await
@@ -504,6 +552,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -533,6 +582,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -570,6 +620,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -597,6 +648,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -625,6 +677,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -660,6 +713,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "priority": 2}),
         )
         .await
@@ -693,6 +747,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "priority": 2}),
         )
         .await
@@ -730,6 +785,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -773,6 +829,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk", "context": "@computer"}),
         )
         .await
@@ -804,6 +861,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -839,6 +897,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -863,6 +922,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/items/a-1",
             &base,
+            None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
         )
         .await
@@ -902,6 +962,7 @@ mod tests {
             HttpMethod::Patch,
             "/api/steps/s-1",
             &base,
+            None,
             |expected_version| StepPatch {
                 expected_version,
                 done: Some(true),
@@ -916,5 +977,175 @@ mod tests {
 
         let sent_body = &transport.calls.lock().unwrap()[0].body;
         assert_eq!(sent_body, r#"{"expected_version":1,"done":true}"#);
+    }
+
+    // -------------------------- the settings encoding split (#118)
+    //
+    // `PUT /api/settings/:key` is the one write whose wire encoding and
+    // stored encoding differ: `PutSetting::value` is typed JSON, and
+    // `Setting::value` is that JSON's canonical *text*. `rebase_view` is
+    // what keeps the 409 diff in the stored encoding; these two tests are
+    // the reason it exists, and the reason it may not be dropped as
+    // redundant.
+
+    #[tokio::test]
+    async fn a_settings_replay_that_already_landed_is_achieved_not_a_collision() {
+        // The classic replay: this client's own PUT landed, the ack was
+        // lost, and the retry 409s carrying that very value back. Diffed in
+        // the WIRE encoding this would read as `"motogp"` vs `"\"motogp\""`
+        // — a collision with itself, dead-lettering a write that in fact
+        // succeeded.
+        let conflict_body = r#"{"error":"version_conflict","current":{"key":"race-series","value":"\"motogp\"","updated_at":3000,"version":4}}"#;
+        let transport = ScriptedTransport::new(vec![ok(409, conflict_body)]);
+        let base = json!({"key": "race-series", "value": "\"f1\"", "updated_at": 1, "version": 3});
+
+        let result: hummingbird_domain::Setting = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Put,
+            "/api/settings/race-series",
+            &base,
+            Some(&json!({"value": "\"motogp\""})),
+            |v| json!({"expected_version": v, "value": "motogp"}),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.value, "\"motogp\"");
+        assert_eq!(transport.call_count(), 1, "an achieved write is never resent");
+    }
+
+    #[tokio::test]
+    async fn a_stale_settings_write_still_rebases_and_a_real_one_still_collides() {
+        // Someone else bumped the workspace version without touching this
+        // key: untouched since base, so this reapplies at the new version.
+        let untouched = r#"{"error":"version_conflict","current":{"key":"race-series","value":"\"f1\"","updated_at":1,"version":5}}"#;
+        let applied = r#"{"key":"race-series","value":"\"motogp\"","updated_at":3000,"version":6}"#;
+        let transport = ScriptedTransport::new(vec![ok(200, applied), ok(409, untouched)]);
+        let base = json!({"key": "race-series", "value": "\"f1\"", "updated_at": 1, "version": 3});
+
+        let result: hummingbird_domain::Setting = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Put,
+            "/api/settings/race-series",
+            &base,
+            Some(&json!({"value": "\"motogp\""})),
+            |v| json!({"expected_version": v, "value": "motogp"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.version, 6);
+        assert_eq!(transport.call_count(), 2, "one rebased retry");
+        assert_eq!(
+            transport.calls.lock().unwrap()[1].body,
+            r#"{"expected_version":5,"value":"motogp"}"#,
+            "the retry re-sends the WIRE encoding at the 409's version",
+        );
+
+        // And a genuine same-key disagreement is still a named collision.
+        let collided = r#"{"error":"version_conflict","current":{"key":"race-series","value":"\"wrc\"","updated_at":2,"version":5}}"#;
+        let transport = ScriptedTransport::new(vec![ok(409, collided)]);
+        let err = patch_with_rebase::<_, hummingbird_domain::Setting>(
+            &transport,
+            "token",
+            HttpMethod::Put,
+            "/api/settings/race-series",
+            &base,
+            Some(&json!({"value": "\"motogp\""})),
+            |v| json!({"expected_version": v, "value": "motogp"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            WriteError::Conflict { ref fields, .. } if fields == &vec!["value".to_string()]
+        ));
+    }
+
+    // ---------------- the create-replay 200 (post-#118 review finding)
+    //
+    // A `PUT` at `expected_version: 0` against a key that already exists
+    // never 409s: the authority answers 200 with the STORED row. Success
+    // for a true replay, silent loss for a device that had not pulled the
+    // row yet — which is exactly the first-run bindings case.
+
+    #[tokio::test]
+    async fn a_version_zero_create_that_actually_created_is_a_plain_success() {
+        let created = r#"{"key":"race-series","value":"\"motogp\"","updated_at":3000,"version":1}"#;
+        let transport = ScriptedTransport::new(vec![ok(201, created)]);
+        let base = json!({"key": "race-series", "value": "null", "updated_at": 0, "version": 0});
+
+        let result: hummingbird_domain::Setting = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Put,
+            "/api/settings/race-series",
+            &base,
+            Some(&json!({"value": "\"motogp\""})),
+            |v| json!({"expected_version": v, "value": "motogp"}),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.value, "\"motogp\"");
+        assert_eq!(transport.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_version_zero_replay_of_this_writes_own_value_is_still_a_success() {
+        // The idempotent case the 200 exists for: the row already holds
+        // exactly what this write intended, so there is nothing lost.
+        let stored = r#"{"key":"race-series","value":"\"motogp\"","updated_at":3000,"version":1}"#;
+        let transport = ScriptedTransport::new(vec![ok(200, stored)]);
+        let base = json!({"key": "race-series", "value": "null", "updated_at": 0, "version": 0});
+
+        let result: hummingbird_domain::Setting = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Put,
+            "/api/settings/race-series",
+            &base,
+            Some(&json!({"value": "\"motogp\""})),
+            |v| json!({"expected_version": v, "value": "motogp"}),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.value, "\"motogp\"");
+    }
+
+    #[tokio::test]
+    async fn a_version_zero_write_over_someone_elses_row_is_a_named_conflict_not_a_success() {
+        // The loss this check exists for: this device never pulled
+        // `race-series`, so it wrote at version 0 — and the authority
+        // answered 200 with the value another device had already set.
+        // Reported as a conflict so the entry dead-letters with both sides
+        // visible, rather than being dropped as a success whose edit the
+        // next pull quietly reverts.
+        let stored = r#"{"key":"race-series","value":"\"f1\"","updated_at":1000,"version":1}"#;
+        let transport = ScriptedTransport::new(vec![ok(200, stored)]);
+        let base = json!({"key": "race-series", "value": "null", "updated_at": 0, "version": 0});
+
+        let err = patch_with_rebase::<_, hummingbird_domain::Setting>(
+            &transport,
+            "token",
+            HttpMethod::Put,
+            "/api/settings/race-series",
+            &base,
+            Some(&json!({"value": "\"motogp\""})),
+            |v| json!({"expected_version": v, "value": "motogp"}),
+        )
+        .await
+        .unwrap_err();
+
+        match err {
+            WriteError::Conflict { fields, current } => {
+                assert_eq!(fields, vec!["value".to_string()]);
+                assert_eq!(current["value"], "\"f1\"", "the journal keeps the server side");
+            }
+            other => panic!("expected a named conflict, got {other:?}"),
+        }
+        assert_eq!(transport.call_count(), 1, "a divergent replay is never resent");
     }
 }

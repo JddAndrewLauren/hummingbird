@@ -41,6 +41,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod bindings;
 pub mod calendar;
 pub mod capture;
 pub mod context;
@@ -50,7 +51,8 @@ pub mod storage;
 pub mod sync;
 pub mod task;
 
-use hummingbird_domain::{CreateItem, Energy, Item, Project, Size, Stage};
+use bindings::{Binding, BindingKey, BindingValue};
+use hummingbird_domain::{CreateItem, Energy, Item, Project, Setting, Size, Stage};
 
 use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
 use sync::queue::{MutationIntent, QueueEntry};
@@ -176,6 +178,15 @@ impl AccessTokenSlot {
 struct OverlayEntry {
     entry_id: String,
     item: Item,
+}
+
+/// One not-yet-confirmed binding write (#118), the [`Setting`]-shaped twin
+/// of [`OverlayEntry`]: the queue entry id (so a dead-letter reverts it, the
+/// same match [`Core::run`] already makes for items) and the optimistic row
+/// a reader sees until the overlay clears.
+struct SettingOverlayEntry {
+    entry_id: String,
+    setting: Setting,
 }
 
 /// Builds the optimistic [`Item`] a reader sees for a still-queued create,
@@ -307,6 +318,79 @@ fn overlay_from_queue(
         }
     }
     Ok(overlay)
+}
+
+/// The `settings` write path — the prefix [`binding_overlay_from_queue`]
+/// recognises a queued binding write by, and the one
+/// [`sync::write::paths::setting`] mints.
+const SETTINGS_PATH_PREFIX: &str = "/api/settings/";
+
+/// Rebuilds the binding overlay from whatever binding writes the durable
+/// queue still holds — [`overlay_from_queue`]'s exact twin for `settings`,
+/// and for the same reason: a binding set offline and then reloaded before
+/// ever syncing must still read back as set (and as `pending`), rather than
+/// reverting on screen to whatever the mirror last pulled.
+///
+/// The rebuild reads the intent's `rebase_fields`, not its `patch_fields`:
+/// those *are* the same intent in the entity's own encoding
+/// ([`sync::queue::MutationIntent::Patch`]'s own doc), which is exactly what
+/// merging onto a stored [`Setting`] needs — the wire body's typed `value`
+/// would merge a bare JSON value into a column that stores its canonical
+/// text. A binding entry carrying none, or one whose merge no longer
+/// deserialises as a `Setting`, is an `Err` rather than a silently dropped
+/// overlay entry, the same never-go-overlay-blind rule
+/// [`overlay_from_queue`] documents.
+fn binding_overlay_from_queue(
+    queue: &sync::queue::OutboundQueue,
+) -> Result<BTreeMap<String, SettingOverlayEntry>, CoreInitError> {
+    let mut overlay = BTreeMap::new();
+    for entry in queue.entries() {
+        let MutationIntent::Patch {
+            path,
+            base,
+            rebase_fields,
+            ..
+        } = &entry.intent
+        else {
+            continue;
+        };
+        if !path.starts_with(SETTINGS_PATH_PREFIX) {
+            continue;
+        }
+        let setting = rebase_fields
+            .as_ref()
+            .and_then(|fields| apply_setting_patch(base, fields))
+            .ok_or_else(|| {
+                CoreInitError(format!(
+                    "queue entry {} is a patch for {path} whose base+rebase_fields no \
+                     longer merge into a valid Setting",
+                    entry.id
+                ))
+            })?;
+        overlay.insert(
+            setting.key.clone(),
+            SettingOverlayEntry {
+                entry_id: entry.id.clone(),
+                setting,
+            },
+        );
+    }
+    Ok(overlay)
+}
+
+/// [`apply_item_patch`]'s twin for a [`Setting`]: the same absolute-value
+/// field overwrite, deserialised as the settings row rather than the item.
+/// `None` if either side is not a JSON object, or the merge is not a valid
+/// `Setting`.
+fn apply_setting_patch(
+    base: &serde_json::Value,
+    fields: &serde_json::Value,
+) -> Option<Setting> {
+    let mut merged = base.as_object()?.clone();
+    for (key, value) in fields.as_object()? {
+        merged.insert(key.clone(), value.clone());
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).ok()
 }
 
 /// S11/#109's act vocabulary — every affordance the frontier/item-detail UI
@@ -465,6 +549,11 @@ pub struct Core<QS = MemorySnapshotStore, MS = MemorySnapshotStore> {
     cycle: SyncCycle<QS, MS>,
     credential: AccessTokenSlot,
     overlay: BTreeMap<String, OverlayEntry>,
+    /// #118's binding overlay — kept as its own map rather than folded into
+    /// `overlay`: that one is keyed by *item* id and its entries project
+    /// into [`Item`]s, and a `settings` row shares neither the key space nor
+    /// the shape. Both follow the identical lifecycle in [`Core::run`].
+    binding_overlay: BTreeMap<String, SettingOverlayEntry>,
     events: Vec<CoreEvent>,
 }
 
@@ -478,6 +567,7 @@ impl Core<MemorySnapshotStore, MemorySnapshotStore> {
             cycle: SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default()),
             credential: AccessTokenSlot::default(),
             overlay: BTreeMap::new(),
+            binding_overlay: BTreeMap::new(),
             events: Vec::new(),
         }
     }
@@ -509,10 +599,12 @@ impl Core<CoreStore, CoreStore> {
         let mut credential = AccessTokenSlot::default();
         credential.push(api_key.into());
         let overlay = overlay_from_queue(cycle.queue())?;
+        let binding_overlay = binding_overlay_from_queue(cycle.queue())?;
         Ok(Self {
             cycle,
             credential,
             overlay,
+            binding_overlay,
             events: Vec::new(),
         })
     }
@@ -729,6 +821,162 @@ where
         }
     }
 
+    /// Every standing-question binding (#118, ADR-0015): each
+    /// [`BindingKey`] this build knows — set or not — in vocabulary order,
+    /// then every other live `settings` row this device has pulled, in key
+    /// order.
+    ///
+    /// The second group is why this is not simply "the three keys": a row a
+    /// newer build wrote is really in the table, and an editor that showed
+    /// only what it can write would misreport what is actually bound.
+    /// [`Binding::known`] is how a reader tells the two apart — an unknown
+    /// key is display-only, since minting arbitrary keys into a table with
+    /// no DELETE is the failure ADR-0015's closed vocabulary exists to
+    /// prevent.
+    ///
+    /// Reads through the same overlay-over-mirror view every other query
+    /// here uses, so a binding set offline reads back set — and `pending` —
+    /// immediately, without waiting for a cycle.
+    pub fn bindings(&self) -> Vec<Binding> {
+        let overlaid = self.overlaid_settings();
+        let describe = |key: &str| {
+            let value = match overlaid.get(key) {
+                Some(setting) => BindingValue::from_stored(&setting.value),
+                None => BindingValue::Unset,
+            };
+            Binding {
+                key: key.to_string(),
+                known: BindingKey::parse(key).is_some(),
+                pending: self.binding_overlay.contains_key(key),
+                value,
+            }
+        };
+
+        let mut bindings: Vec<Binding> = BindingKey::ALL
+            .iter()
+            .map(|key| describe(key.as_str()))
+            .collect();
+        bindings.extend(
+            overlaid
+                .keys()
+                .filter(|key| BindingKey::parse(key).is_none())
+                .map(|key| describe(key)),
+        );
+        bindings
+    }
+
+    /// Every live `settings` row with every not-yet-confirmed binding write
+    /// overlaid on top — [`Core::overlaid_items`]'s twin, and under the same
+    /// contract: an overlaid row is present the instant
+    /// [`Core::set_binding`] returns, survives every cycle outcome except a
+    /// completed one (which supersedes it with server truth) or its own
+    /// entry dead-lettering (which reverts it).
+    fn overlaid_settings(&self) -> BTreeMap<String, Setting> {
+        let mut settings: BTreeMap<String, Setting> = self
+            .cycle
+            .mirror()
+            .all_settings()
+            .map(|setting| (setting.key.clone(), setting.clone()))
+            .collect();
+        for overlay in self.binding_overlay.values() {
+            settings.insert(overlay.setting.key.clone(), overlay.setting.clone());
+        }
+        settings
+    }
+
+    /// Sets one binding (#118): enqueues an absolute-value CAS
+    /// `PUT /api/settings/:key` — durably, via [`sync::SyncCycle::enqueue`],
+    /// never [`sync::queue::OutboundQueue::enqueue`] directly, the same rule
+    /// [`Core::capture`]/[`Core::act`]/[`Core::triage`] follow — and
+    /// overlays the row so a reader sees the new value immediately, offline
+    /// or not.
+    ///
+    /// **No bespoke write path.** This is the ordinary entity-level CAS the
+    /// whole owned-schema write vocabulary shares: `expected_version` is the
+    /// version this device last knew (`0` when it knows no row at all, which
+    /// is how `PUT` carries create semantics — see the authority's
+    /// `handlers/settings.rs`), a stale write 409s and rebases per ADR-0008,
+    /// and an unresolvable one dead-letters like any other.
+    ///
+    /// `key` is a resolved [`BindingKey`], never a raw string: the wire
+    /// spelling is rejected by name at the seam
+    /// (`ffi-web`'s `set_binding`), so no caller can mint a key into a table
+    /// that has no DELETE. `value` is text — every binding this vocabulary
+    /// carries is a name or an id — and is sent as a JSON string, which the
+    /// authority stores as that value's canonical JSON.
+    ///
+    /// `seed` mints this mutation's queue-entry id
+    /// ([`sync::write::deterministic_id`]) — caller-supplied, the same
+    /// no-clock/no-RNG reasoning as every other mutation entry point here.
+    pub async fn set_binding(
+        &mut self,
+        seed: &str,
+        key: BindingKey,
+        value: &str,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let key = key.as_str();
+        let current = self.overlaid_settings().get(key).cloned();
+
+        // The wire's `value` is typed JSON (`PutSetting::value`); the stored
+        // column is that JSON's canonical *text* (`Setting::value`). Both
+        // encodings are carried: the first is what gets sent, the second is
+        // what a 409 and the overlay are diffed and rebuilt in — see
+        // `MutationIntent::Patch::rebase_fields`.
+        let wire_value = serde_json::Value::String(value.to_string());
+        let stored_value = wire_value.to_string();
+
+        let (base, base_updated_at) = match &current {
+            Some(setting) => (
+                serde_json::to_value(setting).expect("Setting always serializes"),
+                setting.updated_at,
+            ),
+            // No row this device knows of: version `0` is the create's
+            // `expected_version`, and JSON `null` stands in for the value
+            // there is not — never diffed (a create-shaped PUT cannot 409)
+            // and overwritten by this very patch in the overlay below.
+            None => (
+                serde_json::json!({
+                    "key": key,
+                    "value": "null",
+                    "updated_at": 0,
+                    "version": 0,
+                }),
+                0,
+            ),
+        };
+
+        let entry_id = sync::write::deterministic_id(seed);
+        let entry = QueueEntry {
+            id: entry_id.clone(),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::setting(key),
+                method: HttpMethod::Put,
+                base,
+                base_updated_at,
+                patch_fields: serde_json::json!({ "value": wire_value }),
+                rebase_fields: Some(serde_json::json!({ "value": stored_value })),
+            },
+        };
+
+        self.cycle.enqueue(entry, now_ms).await?;
+
+        self.binding_overlay.insert(
+            key.to_string(),
+            SettingOverlayEntry {
+                entry_id,
+                setting: Setting {
+                    key: key.to_string(),
+                    value: stored_value,
+                    updated_at: now_ms,
+                    version: current.map(|setting| setting.version).unwrap_or(0),
+                },
+            },
+        );
+
+        Ok(())
+    }
+
     /// Captures a new item: enqueues a `POST /api/items` create (durably,
     /// via [`sync::SyncCycle::enqueue`] — never [`sync::queue::OutboundQueue::enqueue`]
     /// directly, per that module's own durability rule) and overlays an
@@ -870,6 +1118,7 @@ where
                 base,
                 base_updated_at: current.updated_at,
                 patch_fields,
+                rebase_fields: None,
             },
         };
 
@@ -972,6 +1221,7 @@ where
                 base,
                 base_updated_at: current.updated_at,
                 patch_fields: serde_json::Value::Object(patch_fields),
+                rebase_fields: None,
             },
         };
 
@@ -1121,6 +1371,14 @@ where
             .collect();
         self.overlay
             .retain(|_, overlay| !newly_dead_lettered_ids.contains(overlay.entry_id.as_str()));
+        // #118's binding overlay follows the identical lifecycle — a
+        // dead-lettered binding write reverts to server truth here, and
+        // `Core::dead_letters` carries the affordance, exactly as for an
+        // item. Kept in step deliberately: a binding that stayed overlaid
+        // after its write was given up on would show a value this device
+        // will never send again.
+        self.binding_overlay
+            .retain(|_, overlay| !newly_dead_lettered_ids.contains(overlay.entry_id.as_str()));
 
         // A completed cycle is drain-then-pull both having finished
         // (ADR-0007): every overlay entry either just dead-lettered
@@ -1132,6 +1390,7 @@ where
         // mid-queue.
         if matches!(outcome, CycleOutcome::Completed { .. }) {
             self.overlay.clear();
+            self.binding_overlay.clear();
         }
 
         if matches!(outcome, CycleOutcome::CredentialNeeded { .. }) {
@@ -2139,6 +2398,7 @@ mod tests {
             ),
             credential: AccessTokenSlot::default(),
             overlay: BTreeMap::new(),
+            binding_overlay: BTreeMap::new(),
             events: Vec::new(),
         };
         core.push_api_key("token-1");
@@ -2942,5 +3202,292 @@ mod tests {
             core.snapshot_freshness("city-waste/v2", "next_collection", 100_000),
             Freshness::Unknown,
         );
+    }
+
+    // ------------------------------------------- #118: settings bindings
+
+    fn fixture_setting(key: &str, value: &str, version: i64) -> hummingbird_domain::Setting {
+        hummingbird_domain::Setting {
+            key: key.to_string(),
+            value: value.to_string(),
+            updated_at: 1,
+            version,
+        }
+    }
+
+    /// Runs one full-sweep cycle seeding `settings` — the same shape
+    /// [`seeded_core`] uses for items, since `SyncCycle` exposes no
+    /// `mirror_mut` and a binding pulled from the authority must reach the
+    /// mirror the ordinary way or not at all.
+    async fn core_with_settings(settings: Vec<hummingbird_domain::Setting>) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            settings,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    fn binding<'a>(bindings: &'a [Binding], key: &str) -> &'a Binding {
+        bindings
+            .iter()
+            .find(|binding| binding.key == key)
+            .unwrap_or_else(|| panic!("no binding for {key}"))
+    }
+
+    /// #118 acceptance: "a binding edited on one client is visible on a
+    /// second client after its next pull" — the receiving half. The row
+    /// arrives through the ordinary pull, with no binding-specific sync path
+    /// anywhere: this device never wrote it.
+    #[tokio::test]
+    async fn a_binding_written_elsewhere_arrives_through_the_ordinary_pull() {
+        let core = core_with_settings(vec![fixture_setting("race-series", "\"f1\"", 3)]).await;
+
+        let bindings = core.bindings();
+        let race = binding(&bindings, "race-series");
+        assert_eq!(race.value, BindingValue::Text { text: "f1".to_string() });
+        assert!(race.known);
+        assert!(!race.pending, "nothing local is queued for it");
+    }
+
+    /// Every known key is listed whether or not it is set — an editor that
+    /// only showed rows that already exist could never set the first one.
+    #[tokio::test]
+    async fn every_known_binding_is_listed_in_vocabulary_order_set_or_not() {
+        let core = core_with_settings(vec![fixture_setting("trips-calendar", "\"cal-1\"", 1)]).await;
+
+        let bindings = core.bindings();
+        assert_eq!(
+            bindings.iter().map(|b| b.key.as_str()).collect::<Vec<_>>(),
+            vec!["race-series", "trips-calendar", "city-waste-page"],
+        );
+        assert_eq!(binding(&bindings, "race-series").value, BindingValue::Unset);
+        assert_eq!(binding(&bindings, "city-waste-page").value, BindingValue::Unset);
+    }
+
+    /// A key this build has never heard of is still in the table, so it is
+    /// still shown — flagged as unwritable rather than hidden, the same
+    /// reading ADR-0015 gives an unrecognised snapshot `schema`.
+    #[tokio::test]
+    async fn a_settings_row_this_build_does_not_know_is_listed_but_not_writable() {
+        let core = core_with_settings(vec![
+            fixture_setting("some-future-binding", "\"whatever\"", 1),
+            fixture_setting("a-non-string-one", "7", 1),
+        ])
+        .await;
+
+        let bindings = core.bindings();
+        let future = binding(&bindings, "some-future-binding");
+        assert!(!future.known, "this build cannot write a key it cannot name");
+        assert_eq!(
+            future.value,
+            BindingValue::Text { text: "whatever".to_string() },
+            "unknown to this build is not unreadable"
+        );
+        assert_eq!(
+            binding(&bindings, "a-non-string-one").value,
+            BindingValue::Other { raw: "7".to_string() },
+            "a non-text value is shown as what it is, never as unset"
+        );
+        // The unknown keys sort after every known one, so the editor's own
+        // rows stay put.
+        assert_eq!(
+            bindings.iter().map(|b| b.key.as_str()).collect::<Vec<_>>(),
+            vec![
+                "race-series",
+                "trips-calendar",
+                "city-waste-page",
+                "a-non-string-one",
+                "some-future-binding",
+            ],
+        );
+    }
+
+    /// #118 acceptance: "writing a binding is an absolute-value CAS set" —
+    /// and the sending half of "visible on a second client after its next
+    /// pull": what this device enqueues is one ordinary CAS `PUT`, at the
+    /// version it last knew, with no bespoke path of any kind.
+    #[tokio::test]
+    async fn setting_a_binding_enqueues_one_absolute_value_cas_put_at_the_known_version() {
+        let mut core = core_with_settings(vec![fixture_setting("race-series", "\"f1\"", 3)]).await;
+
+        core.set_binding("seed-1", BindingKey::RaceSeries, "motogp", 2_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1, "one binding write is one mutation");
+        let MutationIntent::Patch {
+            path,
+            method,
+            base,
+            patch_fields,
+            rebase_fields,
+            ..
+        } = &entries[0].intent
+        else {
+            panic!("a binding write is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/settings/race-series");
+        assert_eq!(*method, HttpMethod::Put);
+        assert_eq!(
+            base.get("version").and_then(serde_json::Value::as_i64),
+            Some(3),
+            "the CAS expects the version this device last knew"
+        );
+        assert_eq!(
+            patch_fields,
+            &serde_json::json!({"value": "motogp"}),
+            "the wire carries typed JSON — PutSetting::value"
+        );
+        assert_eq!(
+            rebase_fields,
+            &Some(serde_json::json!({"value": "\"motogp\""})),
+            "the 409 diff and the overlay work in the column's own encoding"
+        );
+    }
+
+    /// A key with no row yet is the same write, at `expected_version` 0 —
+    /// which is exactly how `PUT /api/settings/:key` carries create
+    /// semantics (the authority's `handlers/settings.rs`), so there is no
+    /// separate create path here either.
+    #[tokio::test]
+    async fn setting_a_binding_that_has_no_row_yet_is_the_same_write_at_version_zero() {
+        let mut core = Core::new();
+
+        core.set_binding("seed-1", BindingKey::CityWastePage, "https://city/waste", 2_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { base, .. } = &entries[0].intent else {
+            panic!("expected a patch");
+        };
+        assert_eq!(base.get("version").and_then(serde_json::Value::as_i64), Some(0));
+        assert_eq!(
+            binding(&core.bindings(), "city-waste-page").value,
+            BindingValue::Text { text: "https://city/waste".to_string() },
+        );
+    }
+
+    /// The overlay half: a binding set with no network at all reads back
+    /// immediately, and says so.
+    #[tokio::test]
+    async fn a_binding_set_offline_reads_back_immediately_and_reads_as_pending() {
+        let mut core = core_with_settings(vec![fixture_setting("race-series", "\"f1\"", 3)]).await;
+
+        core.set_binding("seed-1", BindingKey::RaceSeries, "motogp", 2_000)
+            .await
+            .unwrap();
+
+        let bindings = core.bindings();
+        let race = binding(&bindings, "race-series");
+        assert_eq!(race.value, BindingValue::Text { text: "motogp".to_string() });
+        assert!(race.pending, "an unconfirmed write must say so");
+    }
+
+    /// The reload half, exactly [`overlay_from_queue`]'s own guarantee for
+    /// items: a binding set offline and then reloaded before ever syncing is
+    /// still readable, rather than reverting on screen to the last pulled
+    /// value while the write is still durably queued.
+    #[tokio::test]
+    async fn a_queued_binding_write_survives_a_reload_and_still_reads_as_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-binding-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        first
+            .set_binding("seed-1", BindingKey::TripsCalendar, "cal-trips", 1_000)
+            .await
+            .unwrap();
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let bindings = second.bindings();
+        let trips = binding(&bindings, "trips-calendar");
+        assert_eq!(trips.value, BindingValue::Text { text: "cal-trips".to_string() });
+        assert!(trips.pending);
+    }
+
+    /// A binding write that is permanently rejected reverts to server truth,
+    /// matched by its own queue entry id — the identical lifecycle
+    /// `Core::run` already gives a dead-lettered item mutation. A binding
+    /// left overlaid after its write was given up on would show a value this
+    /// device is never going to send again.
+    #[tokio::test]
+    async fn a_dead_lettered_binding_write_reverts_the_overlay_to_server_truth() {
+        let mut core = core_with_settings(vec![fixture_setting("race-series", "\"f1\"", 3)]).await;
+        core.set_binding("seed-1", BindingKey::RaceSeries, "motogp", 2_000)
+            .await
+            .unwrap();
+
+        // A 400 is permanent: no retry fixes it, so the entry dead-letters.
+        let write = ScriptedWrite::new(vec![ok(400, r#"{"error":"bad_request"}"#)]);
+        // The pull that follows the drain still carries the server's own
+        // value — the write never landed, so nothing about it changed.
+        let unchanged = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            settings: vec![fixture_setting("race-series", "\"f1\"", 3)],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(unchanged)]);
+        core.run(&read, &write, 3_000, Trigger::User, true, 0.0).await;
+
+        let bindings = core.bindings();
+        let race = binding(&bindings, "race-series");
+        assert_eq!(
+            race.value,
+            BindingValue::Text { text: "f1".to_string() },
+            "the overlay must revert to what the server actually holds"
+        );
+        assert!(!race.pending);
+        assert_eq!(core.dead_letters().len(), 1, "and the affordance carries it");
+    }
+
+    /// A completed cycle supersedes the overlay with server truth, the same
+    /// as for items: drain-then-pull means this device's own write already
+    /// landed by the time that pull asked.
+    #[tokio::test]
+    async fn a_completed_cycle_clears_the_binding_overlay_in_favour_of_the_pull() {
+        let mut core = core_with_settings(vec![fixture_setting("race-series", "\"f1\"", 3)]).await;
+        core.set_binding("seed-1", BindingKey::RaceSeries, "motogp", 2_000)
+            .await
+            .unwrap();
+
+        let confirmed = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            settings: vec![fixture_setting("race-series", "\"motogp\"", 4)],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let write = ScriptedWrite::new(vec![ok(
+            200,
+            r#"{"key":"race-series","value":"\"motogp\"","updated_at":3000,"version":4}"#,
+        )]);
+        let read = ScriptedRead::sweep_only(vec![Ok(confirmed)]);
+        let outcome = core.run(&read, &write, 3_000, Trigger::User, true, 0.0).await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+
+        let bindings = core.bindings();
+        let race = binding(&bindings, "race-series");
+        assert_eq!(race.value, BindingValue::Text { text: "motogp".to_string() });
+        assert!(!race.pending, "confirmed by the pull — nothing is queued now");
+        assert_eq!(core.queue_depth(), 0);
     }
 }

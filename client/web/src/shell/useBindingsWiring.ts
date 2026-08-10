@@ -1,0 +1,54 @@
+import { useEffect } from "react";
+import type { CoreStatus } from "../store/store";
+import { requestBindings, setBinding, type WorkerLike } from "../store/worker-client";
+
+// #118's bindings wiring: requests every standing-question binding once the
+// core is ready, and again after every sync cycle — the same "refresh once
+// ready, then per-cycle" shape `useFrontierWiring.ts` uses, and for the same
+// reason. A completed cycle is exactly when a binding another device set can
+// have arrived (they ride the ordinary delta pull), and it is also when this
+// device's own write stops being `pending`.
+//
+// Thin glue, no clock of its own beyond the one `Date.now` call every
+// mutation entry point needs for its own `nowMs`/seed — ADR-0007's single
+// 60-second interval lives in the SharedWorker, and nothing here schedules
+// anything.
+
+export interface BindingsWiring {
+  /** Sends one binding write. The caller decides whether the draft is worth
+   * sending (`screens/bindings.ts`'s `canSubmitBinding`); this trusts it and
+   * enqueues, exactly as `useCaptureWiring` does. Does not wait for
+   * `setBindingResult` — `worker-client.ts` re-requests the bindings itself
+   * the moment a successful one broadcasts. */
+  setBinding: (key: string, value: string) => void;
+}
+
+export function useBindingsWiring(
+  worker: WorkerLike,
+  status: CoreStatus,
+  /** `TaskState.syncOutcomeSeq` — see `useFrontierWiring.ts`'s own parameter
+   * doc for why this, not the outcome's `kind`, is what a per-cycle refresh
+   * must key on. */
+  syncOutcomeSeq: number,
+): BindingsWiring {
+  const ready = status === "ready";
+
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
+    requestBindings(worker);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, syncOutcomeSeq]);
+
+  return {
+    setBinding: (key: string, value: string) => {
+      const nowMs = Date.now();
+      // Deterministic, not random — same "caller-injected, no clock/RNG that
+      // panics on bare wasm32" reasoning `Core::set_binding`'s own `seed`
+      // parameter documents (mirrors `useTriageWiring.ts`'s seed shape).
+      const seed = `${key}:binding:${nowMs}`;
+      setBinding(worker, seed, key, value, nowMs);
+    },
+  };
+}

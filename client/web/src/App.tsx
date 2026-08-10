@@ -18,6 +18,7 @@ import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
 import { useItemActions } from "./shell/useItemActions";
 import { useTriageWiring } from "./shell/useTriageWiring";
+import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { useSyncWiring } from "./shell/useSyncWiring";
@@ -95,6 +96,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     closeItem: handleCloseItemDetail,
   } = useItemDetailWiring(worker, task.syncOutcomeSeq);
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
+  const { setBinding: handleSetBinding } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
 
   // #110/S12's "always-present ... plus a global hotkey that focuses it"
   // (#98, restated on #110): a counter, not a boolean — `TriageScreen`'s own
@@ -251,6 +253,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onSubmitTaskToken={handleSubmitTaskToken}
               onForgetTaskToken={() => void handleForgetTaskToken()}
               task={task}
+              onSetBinding={handleSetBinding}
               online={online}
               syncNowMs={syncNowMs}
               onDownloadMirror={handleDownloadMirror}
