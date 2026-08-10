@@ -161,6 +161,58 @@ fn create_rejects_an_hour_unit_on_a_date_typed_field() {
     assert!(rows.is_empty(), "no row landed");
 }
 
+/// `RuleProblem::RetiredSource` (#189) is not `UnknownKind` — it is not
+/// excluded from `save_time_problems`, so it is rejected at save exactly
+/// like a malformed value, negated or not. `city-waste/v1` is the
+/// registry's real retired entry (ADR-0014).
+#[test]
+fn create_rejects_a_condition_naming_a_retired_source() {
+    let sql = RusqliteSql::new();
+    for negate in [false, true] {
+        let resp = post_rule(
+            &sql,
+            &format!(
+                r#"{{"id": "r-1", "name": "n",
+                    "conditions": [
+                      {{"field": "source", "op": "eq", "value": "city-waste/v1", "negate": {negate}}}
+                    ],
+                    "severity": "s", "tier": "normal"}}"#
+            ),
+            0,
+        );
+        assert_eq!(resp.status, 400, "negate={negate}: {}", resp.body);
+        assert!(resp.body.contains("city-waste/v1"), "{}", resp.body);
+        assert!(resp.body.contains("city-waste/v2"), "names the successor: {}", resp.body);
+    }
+    assert_eq!(meta_version(&sql), 0, "no write happened");
+    let rows = sql.exec("SELECT id FROM rules", &[]).unwrap();
+    assert!(rows.is_empty(), "no row landed");
+}
+
+/// A **live** or **unregistered** source is not rejected — only a
+/// resolved-and-retired one is a save-time problem.
+#[test]
+fn create_accepts_a_live_or_unregistered_source_condition() {
+    let sql = RusqliteSql::new();
+    let resp = post_rule(
+        &sql,
+        r#"{"id": "r-live", "name": "n",
+            "conditions": [{"field": "source", "op": "eq", "value": "gmail/v1", "negate": false}],
+            "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    assert_eq!(resp.status, 201, "live source: {}", resp.body);
+
+    let resp = post_rule(
+        &sql,
+        r#"{"id": "r-web", "name": "n",
+            "conditions": [{"field": "source", "op": "eq", "value": "web/v1", "negate": false}],
+            "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    assert_eq!(resp.status, 201, "unregistered source: {}", resp.body);
+}
+
 #[test]
 fn create_validation_rejects_bad_input() {
     let sql = RusqliteSql::new();

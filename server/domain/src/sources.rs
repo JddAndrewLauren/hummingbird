@@ -130,6 +130,15 @@ pub const REGISTRY: &[SourceEntry] = &[
         expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
     },
+    // Retired, deliberately, to give ADR-0014's second registry job (a
+    // rule or an ingest token naming a retired source is flagged, never
+    // silently inert) something real to exercise end-to-end — this is the
+    // ADR's own worked example verbatim ("`source eq 'city-waste/v1'`
+    // matching nothing forever after a bump", ADR-0014). Safe to retire
+    // for real: nothing is deployed yet and the city-waste poller
+    // (#135-137) is unbuilt, so no adapter has ever minted a row under
+    // it. `city_waste_v1_key` stays defined and tested below regardless —
+    // retirement never breaks the recipe old rows still need.
     SourceEntry {
         source: "city-waste/v1",
         shape: Shape::Event,
@@ -137,7 +146,7 @@ pub const REGISTRY: &[SourceEntry] = &[
                       collection date, never whatever date a later \
                       correction slides to",
         expires_at: Expiry::Always("end of the affected collection date"),
-        retired_as: None,
+        retired_as: Some("city-waste/v2"),
     },
     SourceEntry {
         source: "item-threshold/v1",
@@ -320,7 +329,7 @@ mod tests {
                 "city-waste/v1",
                 Shape::Event,
                 Expiry::Always("end of the affected collection date"),
-                None,
+                Some("city-waste/v2"),
             ),
             ("item-threshold/v1", Shape::State, Expiry::Never, None),
             ("healthchecks/v1", Shape::State, Expiry::Never, None),
@@ -389,6 +398,16 @@ mod tests {
         let entry = find("gmail/v1").expect("gmail/v1 is registered");
         assert_eq!(entry.shape, Shape::Event);
         assert!(!entry.is_retired());
+    }
+
+    /// `city-waste/v1` is the registry's one real retired entry (#189) —
+    /// `find` resolves it, and it reports retired with its successor,
+    /// through the actual production path (not a locally-built fixture).
+    #[test]
+    fn find_resolves_the_one_retired_registry_entry() {
+        let entry = find("city-waste/v1").expect("city-waste/v1 is registered");
+        assert!(entry.is_retired());
+        assert_eq!(entry.retired_as, Some("city-waste/v2"));
     }
 
     /// Acceptance: a retired source is representable, and distinguishable

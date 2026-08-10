@@ -3,7 +3,7 @@
 //! only from the operator's terminal. Tokens never bump the workspace
 //! counter: they are machinery outside the delta contract.
 
-use hummingbird_domain::{MintToken, MintedToken, Scope, TokenInfo};
+use hummingbird_domain::{find_source, MintToken, MintedToken, Scope, TokenInfo};
 
 use super::{auth, error, json, parse_body, ApiResponse, HandleContext};
 use crate::codec::{bad_cell, RowReader};
@@ -44,6 +44,32 @@ pub fn mint(
             "validation",
             "only an ingest token may carry a source",
         ));
+    }
+    // ADR-0014's registry is the only source of truth for what an alert
+    // source is (#189): an ingest token bound to a string the registry
+    // has never heard of would 403 on every alert it ever posts, silently
+    // and indistinguishably from a genuinely wrong-source push; one bound
+    // to a **retired** source is the same drift the registry exists to
+    // make loud ("nothing new should be minted under it").
+    if let Some(source) = &mint.source {
+        match find_source(source) {
+            None => {
+                return Ok(error(
+                    400,
+                    "validation",
+                    &format!("`{source}` is not a registered alert source"),
+                ));
+            }
+            Some(entry) if entry.is_retired() => {
+                let successor = entry.retired_as.unwrap_or_default();
+                return Ok(error(
+                    400,
+                    "validation",
+                    &format!("`{source}` is retired (bumped to `{successor}`); nothing new may be minted under it"),
+                ));
+            }
+            Some(_) => {}
+        }
     }
 
     let mut bytes = [0u8; 32];

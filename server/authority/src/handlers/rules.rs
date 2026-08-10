@@ -37,6 +37,9 @@ fn describe_problem(problem: &RuleProblem) -> String {
             format!("operator `{op}` is not legal for field `{field}`")
         }
         RuleProblem::MalformedValue { field, reason } => format!("field `{field}`: {reason}"),
+        RuleProblem::RetiredSource { source, successor } => {
+            format!("source `{source}` is retired (bumped to `{successor}`)")
+        }
     }
 }
 
