@@ -16,6 +16,7 @@ import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
 import { useItemActions } from "./shell/useItemActions";
+import { useTriageWiring } from "./shell/useTriageWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { useSyncWiring } from "./shell/useSyncWiring";
@@ -141,6 +142,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
   const { act: handleAct } = useItemActions(worker);
+  const { triage: handleTriage } = useTriageWiring(worker);
   const syncLabel = syncStatusLabel({
     online,
     lastSyncOutcome: task.lastSyncOutcome,
@@ -214,6 +216,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               demo={demo}
               task={task}
               onSubmitCapture={submitCapture}
+              onTriage={demo ? undefined : handleTriage}
               focusRequestId={captureFocusRequestId}
             />
           )}

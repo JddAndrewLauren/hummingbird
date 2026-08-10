@@ -6,8 +6,21 @@ import type {
   TaskActionName,
   TaskStageName,
   TaskWorkerRequest,
+  TriageDestinationName,
   WorkerResponse,
 } from "./protocol";
+
+/** The optional edit fields a triage mutation may carry (S13/#111) — a
+ * caller-facing convenience shape over the wire message's individually
+ * nullable fields (`TaskWorkerRequest`'s `"triage"` variant): an omitted key
+ * here means "leave this field alone", same as an explicit `null`. */
+export interface TriageEdits {
+  title?: string | null;
+  projectId?: string | null;
+  size?: "quick" | "short" | "deep" | null;
+  energy?: "low" | "medium" | "high" | null;
+  context?: string | null;
+}
 
 // The narrow slice of the DOM `MessagePort` interface a view needs — narrow
 // enough that tests can pass a plain object instead of a real port. Under
@@ -136,6 +149,25 @@ export function attachWorkerClient(
           // (`useItemDetailWiring` re-reads it per cycle) — which is what
           // re-enables a blocked item's Start/Cancel row.
           requestIsPending(worker, message.itemId);
+        }
+        return;
+      case "triageResult":
+        store.setTaskState({
+          lastTriage: {
+            seed: message.seed,
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::triage`'s overlay already updated synchronously — same
+          // immediate re-read `actResult` triggers, so a triage taken
+          // offline is visible right away (this issue's acceptance: a
+          // triaged item leaves the triage query and appears on the
+          // frontier through the mirror, not local bookkeeping).
+          requestTriageInbox(worker);
+          requestFrontier(worker);
         }
         return;
       case "frontier":
@@ -301,6 +333,31 @@ export function actOnTask(
   nowMs: number,
 ): void {
   worker.postMessage({ type: "act", seed, itemId, action, nowMs });
+}
+
+/** S13/#111's triage mutation: edits whatever fields `edits` sets and
+ * promotes to `destination`, as one CAS `PATCH`. `seed` mints `Core::triage`'s
+ * own queue-entry id — same caller-mints contract as `actOnTask`'s. */
+export function triageItem(
+  worker: WorkerLike,
+  seed: string,
+  itemId: string,
+  destination: TriageDestinationName,
+  edits: TriageEdits,
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "triage",
+    seed,
+    itemId,
+    destination,
+    title: edits.title ?? null,
+    projectId: edits.projectId ?? null,
+    size: edits.size ?? null,
+    energy: edits.energy ?? null,
+    context: edits.context ?? null,
+    nowMs,
+  });
 }
 
 export function requestFrontier(worker: WorkerLike): void {

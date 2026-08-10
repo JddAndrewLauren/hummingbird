@@ -12,8 +12,11 @@
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
-use hummingbird_core::{ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction};
-use hummingbird_domain::{Item, Project, Stage};
+use hummingbird_core::{
+    ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction, TriageDestination,
+    TriagePatch,
+};
+use hummingbird_domain::{Energy, Item, Project, Size, Stage};
 
 // The real, target-specific store `Core::init` resolves to internally is a
 // *private* type alias (`hummingbird_core::CoreStore`) — this crate cannot
@@ -67,6 +70,36 @@ pub struct ActResponse {
     pub error: Option<String>,
 }
 
+/// What [`TaskHostCore::triage`] resolves to: `"ok"`, `"not_found"` (no such
+/// item — [`ActError::ItemNotFound`]) or `"failed"` (an unrecognised
+/// `destination`, an unrecognised `size`/`energy` name, or a durability
+/// failure enqueueing the mutation — the caller has no differing recovery
+/// for any of those). Same three-way split as [`ActResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TriageResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wire-string fields a triage request carries beyond `destination` —
+/// [`TaskHostCore::triage`]'s own parameter list already reads long, so
+/// grouping the optional edit fields here keeps that signature to one
+/// struct plus the four "which item, which mutation" scalars every other
+/// method here takes individually (`seed`, `item_id`, `now_ms`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct TriageEdits {
+    pub title: Option<String>,
+    pub project_id: Option<String>,
+    /// The wire's snake_case size name (`hummingbird_domain::Size::parse`);
+    /// resolved by name through the vocabulary, never a raw index or a
+    /// hardcoded id.
+    pub size: Option<String>,
+    /// Same "resolved by name" contract as `size`
+    /// (`hummingbird_domain::Energy::parse`).
+    pub energy: Option<String>,
+    pub context: Option<String>,
+}
+
 /// Maps S11/#109's wire action name to [`ItemAction`] — the one place a
 /// string crossing the JS boundary becomes the closed act vocabulary, the
 /// same "reject before the seam" discipline [`TaskHostCore::capture`]
@@ -78,6 +111,22 @@ fn parse_action(action: &str) -> Option<ItemAction> {
         "complete" => Some(ItemAction::Complete),
         "block" => Some(ItemAction::Block),
         "cancel" => Some(ItemAction::Cancel),
+        _ => None,
+    }
+}
+
+/// Maps S13/#111's wire destination name to [`TriageDestination`] — the one
+/// place a triage promotion's target crosses the JS boundary and becomes
+/// the closed destination vocabulary, same "reject before the seam"
+/// discipline [`parse_action`] applies to its own wire strings. Never a raw
+/// [`hummingbird_domain::Stage`]: there is no wire name that lets a caller
+/// send an arbitrary stage id, and there is deliberately no `"backlog"`
+/// spelling here — the owned schema has no such stage (see
+/// [`TriageDestination`]'s own doc).
+fn parse_destination(destination: &str) -> Option<TriageDestination> {
+    match destination {
+        "grilling" => Some(TriageDestination::Grilling),
+        "ready" => Some(TriageDestination::Ready),
         _ => None,
     }
 }
@@ -504,6 +553,74 @@ impl TaskHostCore {
         }
     }
 
+    /// Triages an already-captured item (S13/#111): edits whatever
+    /// `edits` sets and promotes it to `destination`, as one CAS `PATCH`
+    /// (never four separate mutations — [`Core::triage`]'s own doc).
+    /// `destination` is the wire's snake_case destination name
+    /// ([`parse_destination`]); `edits.size`/`edits.energy` are each
+    /// resolved by name through `hummingbird_domain`'s own vocabulary
+    /// (`Size::parse`/`Energy::parse`). Any unrecognised name fails without
+    /// ever touching [`Core::triage`], the same "reject before the seam"
+    /// discipline [`TaskHostCore::capture`]/[`TaskHostCore::act`] use for
+    /// their own inputs.
+    pub async fn triage(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        destination: &str,
+        edits: TriageEdits,
+        now_ms: i64,
+    ) -> TriageResponse {
+        let Some(destination) = parse_destination(destination) else {
+            return TriageResponse {
+                kind: "failed",
+                error: Some(format!("unrecognised triage destination {destination:?}")),
+            };
+        };
+        let size = match edits.size {
+            Some(raw) => match Size::parse(&raw) {
+                Some(size) => Some(size),
+                None => {
+                    return TriageResponse {
+                        kind: "failed",
+                        error: Some(format!("unrecognised size {raw:?}")),
+                    };
+                }
+            },
+            None => None,
+        };
+        let energy = match edits.energy {
+            Some(raw) => match Energy::parse(&raw) {
+                Some(energy) => Some(energy),
+                None => {
+                    return TriageResponse {
+                        kind: "failed",
+                        error: Some(format!("unrecognised energy {raw:?}")),
+                    };
+                }
+            },
+            None => None,
+        };
+        let patch = TriagePatch {
+            title: edits.title,
+            project_id: edits.project_id,
+            size,
+            energy,
+            context: edits.context,
+        };
+        match self.core.triage(seed, item_id, destination, patch, now_ms).await {
+            Ok(()) => TriageResponse { kind: "ok", error: None },
+            Err(ActError::ItemNotFound) => TriageResponse {
+                kind: "not_found",
+                error: Some("item not found".to_string()),
+            },
+            Err(error) => TriageResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
     /// Runs one [`Core::run`] cycle against the live `reqwest` transports.
     pub async fn run(
         &mut self,
@@ -664,6 +781,138 @@ mod act_tests {
         let response = host.act("seed-act-1", &id, "cancel", 2_000).await;
 
         assert_eq!(response.kind, "ok");
+        assert_eq!(host.frontier().items.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod triage_tests {
+    use super::*;
+
+    #[test]
+    fn triage_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let ok = TriageResponse { kind: "ok", error: None };
+        assert_eq!(serde_json::to_string(&ok).unwrap(), r#"{"kind":"ok","error":null}"#);
+    }
+
+    #[tokio::test]
+    async fn triaging_with_an_unrecognised_destination_never_reaches_core_triage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage("seed-triage-1", &id, "backlog", TriageEdits::default(), 2_000)
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.error.is_some());
+        assert_eq!(host.triage_inbox().items.len(), 1, "the item is untouched");
+    }
+
+    #[tokio::test]
+    async fn triaging_with_an_unrecognised_size_never_reaches_core_triage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage(
+                "seed-triage-1",
+                &id,
+                "ready",
+                TriageEdits { size: Some("giant".to_string()), ..TriageEdits::default() },
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.error.is_some());
+        assert_eq!(host.triage_inbox().items.len(), 1, "the item is untouched");
+    }
+
+    #[tokio::test]
+    async fn triaging_on_an_unknown_item_id_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host
+            .triage("seed-triage-1", "no-such-item", "ready", TriageEdits::default(), 1_000)
+            .await;
+
+        assert_eq!(response.kind, "not_found");
+        assert!(response.error.is_some());
+    }
+
+    /// This issue's headline acceptance: a triaged item leaves the triage
+    /// query and appears on the frontier — through the same `Core` overlay
+    /// every other read here goes through.
+    #[tokio::test]
+    async fn promoting_to_ready_moves_the_item_from_triage_to_the_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-4");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage(
+                "seed-triage-1",
+                &id,
+                "ready",
+                TriageEdits {
+                    title: Some("buy milk".to_string()),
+                    project_id: Some("project-1".to_string()),
+                    size: Some("quick".to_string()),
+                    energy: Some("low".to_string()),
+                    context: Some("@errands".to_string()),
+                },
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.triage_inbox().items.len(), 0);
+        let frontier = host.frontier();
+        assert_eq!(frontier.items.len(), 1);
+        let item = &frontier.items[0].item;
+        assert_eq!(item.title, "buy milk");
+        assert_eq!(item.project_id.as_deref(), Some("project-1"));
+        assert!(item.size.is_some());
+        assert!(item.energy.is_some());
+        assert_eq!(item.context.as_deref(), Some("@errands"));
+        assert!(frontier.items[0].pending, "an unconfirmed triage must read as pending");
+    }
+
+    #[tokio::test]
+    async fn sending_to_grilling_leaves_the_triage_inbox_without_reaching_the_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-5");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let response = host
+            .triage("seed-triage-1", &id, "grilling", TriageEdits::default(), 2_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.triage_inbox().items.len(), 0);
         assert_eq!(host.frontier().items.len(), 0);
     }
 }

@@ -123,6 +123,16 @@ export type TaskStageName =
  * `blocked_by` relation edge (S10's `getBlocked`), never this. */
 export type TaskActionName = "start" | "complete" | "block" | "cancel";
 
+/** S13/#111's triage promotion vocabulary — the only two stages a triage
+ * mutation may promote a captured item into (`TriageDestination`,
+ * `client/core/src/lib.rs`). Deliberately not a `TaskStageName`, same
+ * "reject before the seam" discipline `TaskActionName` documents for its
+ * own vocabulary — and deliberately no `"backlog"` spelling: the owned
+ * schema's six-stage vocabulary has no such stage, so an item not yet ready
+ * to promote simply stays in `"triage"` rather than sending a destination
+ * the server cannot express. */
+export type TriageDestinationName = "grilling" | "ready";
+
 /** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
  * checklist (issue #96, S10) — read-only from this binding; ticking one is
@@ -257,6 +267,26 @@ export type TaskWorkerRequest =
    * `"capture"` documents above — `Core::act`'s own queue-entry id derives
    * from it. */
   | { type: "act"; seed: string; itemId: string; action: TaskActionName; nowMs: number }
+  /** S13/#111's triage mutation: edits whatever `title`/`projectId`/`size`/
+   * `energy`/`context` set (each `null` meaning "leave this field alone",
+   * never "clear it" — `TriagePatch`'s own contract) and promotes to
+   * `destination`, as one CAS `PATCH` — never four separate mutations for
+   * four separate fields. `size`/`energy` are the wire's snake_case
+   * vocabulary names, resolved by name through
+   * `hummingbird_domain::Size`/`Energy::parse` on the way in, never a raw
+   * index. Same caller-mints-`seed` contract as `"act"`. */
+  | {
+      type: "triage";
+      seed: string;
+      itemId: string;
+      destination: TriageDestinationName;
+      title: string | null;
+      projectId: string | null;
+      size: "quick" | "short" | "deep" | null;
+      energy: "low" | "medium" | "high" | null;
+      context: string | null;
+      nowMs: number;
+    }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
   /** Relation-blocked items with the reason visible — S10 (issue #108). */
@@ -331,6 +361,20 @@ export type TaskWorkerResponse =
       seed: string;
       itemId: string;
       action: TaskActionName;
+      kind: "ok" | "not_found" | "failed" | "busy";
+      error: string | null;
+    }
+  /** S13/#111's triage result, matched back by `seed` — same
+   * broadcast-not-reply contract as `actResult`. `"not_found"` is a caller
+   * mistake (no such item); `"failed"` is everything else (an unrecognised
+   * `destination`/`size`/`energy` name, or a durability failure enqueueing
+   * the mutation). A successful triage needs no item payload here either:
+   * `Core::triage`'s overlay already updated, so the existing
+   * `triageInbox`/`frontier` refresh is what a caller re-reads to see it. */
+  | {
+      type: "triageResult";
+      seed: string;
+      itemId: string;
       kind: "ok" | "not_found" | "failed" | "busy";
       error: string | null;
     }

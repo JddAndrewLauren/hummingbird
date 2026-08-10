@@ -8,6 +8,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     clearApiKey: vi.fn(),
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
@@ -165,6 +166,102 @@ describe("handleTaskRequest", () => {
         seed: "seed-act-1",
         itemId: "no-such-item",
         action: "start",
+        kind: "not_found",
+        error: "item not found",
+      },
+    ]);
+  });
+
+  it("triage forwards every field to the host and posts an ok result keyed by seed and item", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      {
+        type: "triage",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        destination: "ready",
+        title: "buy milk",
+        projectId: "project-1",
+        size: "quick",
+        energy: "low",
+        context: "@errands",
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(host.triage).toHaveBeenCalledWith(
+      "seed-triage-1",
+      "item-1",
+      "ready",
+      "buy milk",
+      "project-1",
+      "quick",
+      "low",
+      "@errands",
+      2_000,
+    );
+    expect(posted).toEqual([
+      { type: "triageResult", seed: "seed-triage-1", itemId: "item-1", kind: "ok", error: null },
+    ]);
+  });
+
+  it("triage posts a failed result with its error message", async () => {
+    const host = fakeHost({
+      triage: vi.fn().mockResolvedValue('{"kind":"failed","error":"unrecognised size \\"giant\\""}'),
+    });
+    const posted = await run(
+      {
+        type: "triage",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        destination: "ready",
+        title: null,
+        projectId: null,
+        size: "giant" as never,
+        energy: null,
+        context: null,
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        kind: "failed",
+        error: 'unrecognised size "giant"',
+      },
+    ]);
+  });
+
+  it("triage posts a not_found result for an unknown item id", async () => {
+    const host = fakeHost({
+      triage: vi.fn().mockResolvedValue('{"kind":"not_found","error":"item not found"}'),
+    });
+    const posted = await run(
+      {
+        type: "triage",
+        seed: "seed-triage-1",
+        itemId: "no-such-item",
+        destination: "ready",
+        title: null,
+        projectId: null,
+        size: null,
+        energy: null,
+        context: null,
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "no-such-item",
         kind: "not_found",
         error: "item not found",
       },

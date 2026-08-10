@@ -26,6 +26,21 @@ export interface TaskHostLike {
   clearApiKey(): void;
   capture(seed: string, title: string, stage: string, nowMs: number): Promise<string>;
   act(seed: string, itemId: string, action: string, nowMs: number): Promise<string>;
+  /** S13/#111's triage mutation. Mirrors `hummingbird-ffi-web`'s
+   * `TaskHost::triage` exactly (`client/ffi-web/src/lib.rs`) — five
+   * `undefined`-or-`string` edit fields plus `destination`, resolved to
+   * JSON: `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`. */
+  triage(
+    seed: string,
+    itemId: string,
+    destination: string,
+    title: string | null,
+    projectId: string | null,
+    size: string | null,
+    energy: string | null,
+    context: string | null,
+    nowMs: number,
+  ): Promise<string>;
   frontier(): string;
   triageInbox(): string;
   blocked(): string;
@@ -127,6 +142,11 @@ interface RawCaptureResponse {
 }
 
 interface RawActResponse {
+  kind: "ok" | "not_found" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawTriageResponse {
   kind: "ok" | "not_found" | "failed" | "busy";
   error: string | null;
 }
@@ -308,6 +328,29 @@ export async function handleTaskRequest(
         seed: request.seed,
         itemId: request.itemId,
         action: request.action,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "triage": {
+      const raw = JSON.parse(
+        await host.triage(
+          request.seed,
+          request.itemId,
+          request.destination,
+          request.title,
+          request.projectId,
+          request.size,
+          request.energy,
+          request.context,
+          request.nowMs,
+        ),
+      ) as RawTriageResponse;
+      post({
+        type: "triageResult",
+        seed: request.seed,
+        itemId: request.itemId,
         kind: raw.kind,
         error: raw.error,
       });

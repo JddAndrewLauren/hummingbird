@@ -21,6 +21,7 @@ const initialTask: TaskState = {
   pending: {},
   lastCapture: null,
   lastAct: null,
+  lastTriage: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,

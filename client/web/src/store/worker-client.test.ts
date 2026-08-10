@@ -49,6 +49,7 @@ const initialTask: TaskState = {
   pending: {},
   lastCapture: null,
   lastAct: null,
+  lastTriage: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   syncOutcomeSeq: 0,
@@ -287,6 +288,59 @@ describe("attachWorkerClient", () => {
       seed: "seed-act-1",
       itemId: "no-such-item",
       action: "start",
+      kind: "not_found",
+      error: "item not found",
+    });
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("records a triageResult keyed by seed/item and re-requests the triage inbox and frontier on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "item-1",
+        kind: "ok",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastTriage).toEqual({
+      seed: "seed-triage-1",
+      itemId: "item-1",
+      kind: "ok",
+      error: null,
+    });
+    // `Core::triage`'s overlay updates synchronously — an `ok` result
+    // immediately re-requests the triage inbox/frontier so a promoted item
+    // leaves triage and appears on the frontier without waiting for the
+    // next sync cycle (this issue's acceptance).
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getTriageInbox" });
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
+  });
+
+  it("records a failed triageResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "triageResult",
+        seed: "seed-triage-1",
+        itemId: "no-such-item",
+        kind: "not_found",
+        error: "item not found",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastTriage).toEqual({
+      seed: "seed-triage-1",
+      itemId: "no-such-item",
       kind: "not_found",
       error: "item not found",
     });
