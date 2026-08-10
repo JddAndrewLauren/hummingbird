@@ -99,3 +99,53 @@ fn patch_edge_stale_version_409_and_unknown_404() {
     let resp = patch_at(&sql, "/api/blocked_by/a/ghost", r#"{"expected_version": 1}"#, 0);
     assert_eq!(resp.status, 404);
 }
+
+#[test]
+fn patch_setting_removed_at_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    seed_item(&sql, "a");
+    seed_item(&sql, "b");
+    post_to(&sql, "/api/blocked_by", &edge_body("a", "b"), 0); // version 3
+    patch_at(
+        &sql,
+        "/api/blocked_by/a/b",
+        r#"{"expected_version": 3, "removed_at": 5000}"#,
+        0,
+    ); // version 4
+    let resp = patch_at(
+        &sql,
+        "/api/blocked_by/a/b",
+        r#"{"expected_version": 4, "removed_at": 5000}"#,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: BlockedBy = body_as(&resp);
+    assert_eq!(unchanged.version, 4, "no version bump for a value-identical patch");
+    assert_eq!(meta_version(&sql), 4);
+}
+
+// The integer/real hazard (#166) — see items.rs for the full explanation.
+#[test]
+fn patch_value_identical_removed_at_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    seed_item(&sql, "a");
+    seed_item(&sql, "b");
+    post_to(&sql, "/api/blocked_by", &edge_body("a", "b"), 0); // version 3
+    patch_at(
+        &sql,
+        "/api/blocked_by/a/b",
+        r#"{"expected_version": 3, "removed_at": 5000}"#,
+        0,
+    ); // version 4
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch_at(
+        &wrapped,
+        "/api/blocked_by/a/b",
+        r#"{"expected_version": 4, "removed_at": 5000}"#,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: BlockedBy = body_as(&resp);
+    assert_eq!(unchanged.version, 4, "removed_at: Integer(5000) vs Real(5000.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 4);
+}

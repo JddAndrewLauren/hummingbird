@@ -321,6 +321,44 @@ fn dismiss_is_cas_set_and_clear() {
 }
 
 #[test]
+fn dismiss_setting_dismissed_at_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    let alert: Alert = body_as(&ingest_alert(
+        &sql,
+        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        0,
+    ));
+    let path = format!("/api/alerts/{}", alert.id);
+    patch_at(&sql, &path, r#"{"expected_version": 1, "dismissed_at": 500}"#, 0); // version 2
+
+    let resp = patch_at(&sql, &path, r#"{"expected_version": 2, "dismissed_at": 500}"#, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Alert = body_as(&resp);
+    assert_eq!(unchanged.version, 2, "no version bump for a value-identical patch");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+// The integer/real hazard (#166) — see items.rs for the full explanation.
+#[test]
+fn dismiss_value_identical_dismissed_at_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    let alert: Alert = body_as(&ingest_alert(
+        &sql,
+        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        0,
+    ));
+    let path = format!("/api/alerts/{}", alert.id);
+    patch_at(&sql, &path, r#"{"expected_version": 1, "dismissed_at": 500}"#, 0); // version 2
+
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch_at(&wrapped, &path, r#"{"expected_version": 2, "dismissed_at": 500}"#, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Alert = body_as(&resp);
+    assert_eq!(unchanged.version, 2, "dismissed_at: Integer(500) vs Real(500.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
 fn dismiss_cannot_write_source_owned_fields() {
     let sql = RusqliteSql::new();
     let alert: Alert = body_as(&ingest_alert(

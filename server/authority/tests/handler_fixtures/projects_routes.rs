@@ -113,6 +113,54 @@ fn patch_project_unknown_id_404_and_empty_patch_noop() {
     assert_eq!(meta_version(&sql), 1, "empty patch bumps nothing");
 }
 
+#[test]
+fn patch_project_setting_every_field_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        r#"{"expected_version": 1, "name": "seeded p-1", "archived_at": null}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Project = body_as(&resp);
+    assert_eq!(unchanged.version, 1, "no version bump for a value-identical patch");
+    assert_eq!(unchanged.updated_at, 0, "no updated_at restamp");
+    assert_eq!(meta_version(&sql), 1);
+}
+
+#[test]
+fn patch_project_mixing_changed_and_unchanged_fields_bumps_once() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        r#"{"expected_version": 1, "name": "seeded p-1", "archived_at": 9000}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let updated: Project = body_as(&resp);
+    assert_eq!(updated.name, "seeded p-1", "the unchanged field is left as-is");
+    assert_eq!(updated.archived_at, Some(9000), "the changed field is written");
+    assert_eq!(updated.version, 2, "a mixed patch still bumps");
+}
+
+// The integer/real hazard (#166) — see items.rs for the full explanation.
+#[test]
+fn patch_project_value_identical_archived_at_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+    patch_at(&sql, "/api/projects/p-1", r#"{"expected_version": 1, "archived_at": 9000}"#, 0); // version 2
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch_at(&wrapped, "/api/projects/p-1", r#"{"expected_version": 2, "archived_at": 9000}"#, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Project = body_as(&resp);
+    assert_eq!(unchanged.version, 2, "archived_at: Integer(9000) vs Real(9000.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 2);
+}
+
 // ---------------------------------------------------------------- routes
 
 #[test]
@@ -165,4 +213,50 @@ fn patch_route_unknown_project_404() {
     let sql = RusqliteSql::new();
     let resp = patch_at(&sql, "/api/routes/ghost", r#"{"expected_version": 1}"#, 0);
     assert_eq!(resp.status, 404);
+}
+
+#[test]
+fn patch_route_setting_every_field_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // project + route at version 1
+    patch_at(
+        &sql,
+        "/api/routes/p-1",
+        r#"{"expected_version": 1, "destination": "car sold", "notes": "list it first"}"#,
+        2000,
+    ); // version 2
+    let resp = patch_at(
+        &sql,
+        "/api/routes/p-1",
+        r#"{"expected_version": 2, "destination": "car sold", "notes": "list it first"}"#,
+        3000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Route = body_as(&resp);
+    assert_eq!(unchanged.version, 2, "no version bump for a value-identical patch");
+    assert_eq!(unchanged.updated_at, 2000, "no updated_at restamp");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
+fn patch_route_mixing_changed_and_unchanged_fields_bumps_once() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1");
+    patch_at(
+        &sql,
+        "/api/routes/p-1",
+        r#"{"expected_version": 1, "destination": "car sold", "notes": "list it first"}"#,
+        2000,
+    ); // version 2
+    let resp = patch_at(
+        &sql,
+        "/api/routes/p-1",
+        r#"{"expected_version": 2, "destination": "car sold", "notes": "list it, then sell"}"#,
+        3000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let updated: Route = body_as(&resp);
+    assert_eq!(updated.destination.as_deref(), Some("car sold"), "unchanged field kept");
+    assert_eq!(updated.notes.as_deref(), Some("list it, then sell"), "changed field written");
+    assert_eq!(updated.version, 3, "a mixed patch still bumps");
 }

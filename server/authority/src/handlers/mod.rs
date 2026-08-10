@@ -10,10 +10,19 @@ mod changes;
 mod fog;
 mod items;
 mod projects;
+pub(crate) mod push_targets;
 mod routes;
 mod rules;
 mod settings;
 mod steps;
+
+// Re-exported for #138's sweep module, which mints/ratchets
+// `item-threshold/v1` alerts and reads item/rule rows through these exact
+// functions rather than a parallel implementation of either.
+pub(crate) use alerts::find_by_identity as find_alert_by_identity;
+pub(crate) use alerts::upsert as upsert_alert;
+pub(crate) use items::item_from_row;
+pub(crate) use rules::rule_from_row;
 
 use hummingbird_domain::{ApiError, ConflictResponse, VERSION_CONFLICT};
 use serde::Serialize;
@@ -123,6 +132,10 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("PATCH", ["alerts", id]) if !id.is_empty() => alerts::dismiss(id, req.body, now_ms, sql),
         ("POST", ["rules"]) => rules::create(req.body, now_ms, sql),
         ("PATCH", ["rules", id]) if !id.is_empty() => rules::patch(id, req.body, now_ms, sql),
+        ("POST", ["push_targets"]) => push_targets::register(req.body, now_ms, sql),
+        ("DELETE", ["push_targets", id]) if !id.is_empty() => {
+            push_targets::revoke(id, now_ms, sql)
+        }
         ("GET", ["changes"]) => changes::changes(req.query, sql),
         ("GET", ["sweep"]) => changes::sweep(sql),
         // A known collection or entity path with the wrong method is a 405;
@@ -130,11 +143,12 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         (
             _,
             ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "rules"
-                | "changes" | "sweep"],
+                | "push_targets" | "changes" | "sweep"],
         ) => Ok(method_not_allowed()),
         (
             _,
-            ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts" | "rules", id],
+            ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts" | "rules"
+                | "push_targets", id],
         ) if !id.is_empty() =>
         {
             Ok(method_not_allowed())

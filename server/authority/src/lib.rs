@@ -7,15 +7,19 @@
 //! single-threaded and its SQLite API synchronous).
 
 mod codec;
+mod delivery;
 mod entropy;
 mod handlers;
 mod schema;
 mod sql;
+mod sweep;
 
+pub use delivery::{deliver, DeliveryOutcome, PushNotification, SuppressReason};
 pub use entropy::Entropy;
 pub use handlers::{handle, ApiRequest, ApiResponse, HandleContext};
 pub use schema::{init_schema, SCHEMA_VERSION};
 pub use sql::{Row, Sql, SqlError, SqlValue};
+pub use sweep::{tick as sweep_tick, TickMatch, ALARM_INTERVAL_MS};
 
 #[cfg(test)]
 mod tests {

@@ -27,12 +27,18 @@ pub fn patch(
         return Ok(conflict(&current));
     }
 
+    // Compared typed against `current`, never a bare SQL-value `==` — see
+    // items::patch for why.
     let mut sets = Sets::new();
     if let Some(destination) = &patch.destination {
-        sets.set("destination", SqlValue::from_opt_text(destination.as_deref()));
+        if *destination != current.destination {
+            sets.set("destination", SqlValue::from_opt_text(destination.as_deref()));
+        }
     }
     if let Some(notes) = &patch.notes {
-        sets.set("notes", SqlValue::from_opt_text(notes.as_deref()));
+        if *notes != current.notes {
+            sets.set("notes", SqlValue::from_opt_text(notes.as_deref()));
+        }
     }
     if sets.is_empty() {
         return Ok(json(200, &current));

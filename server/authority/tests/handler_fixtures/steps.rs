@@ -93,6 +93,71 @@ fn patch_step_edits_moves_deletes_and_conflicts() {
 }
 
 #[test]
+fn patch_setting_every_field_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    seed_item(&sql, "a-1");
+    post_to(
+        &sql,
+        "/api/steps",
+        r#"{"id": "s-1", "item_id": "a-1", "body": "empty the shelf", "position": 1}"#,
+        0,
+    ); // version 2
+    let resp = patch_at(
+        &sql,
+        "/api/steps/s-1",
+        r#"{"expected_version": 2, "body": "empty the shelf", "done": false, "position": 1}"#,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Step = body_as(&resp);
+    assert_eq!(unchanged.version, 2, "no version bump for a value-identical patch");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
+fn patch_mixing_changed_and_unchanged_fields_writes_only_the_changed_ones() {
+    let sql = RusqliteSql::new();
+    seed_item(&sql, "a-1");
+    post_to(
+        &sql,
+        "/api/steps",
+        r#"{"id": "s-1", "item_id": "a-1", "body": "empty the shelf", "position": 1}"#,
+        0,
+    ); // version 2
+    let resp = patch_at(
+        &sql,
+        "/api/steps/s-1",
+        r#"{"expected_version": 2, "body": "empty the shelf", "done": true}"#,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let updated: Step = body_as(&resp);
+    assert_eq!(updated.body, "empty the shelf", "the unchanged field is left as-is");
+    assert!(updated.done, "the changed field is written");
+    assert_eq!(updated.version, 3, "a mixed patch still bumps");
+}
+
+// The integer/real hazard (#166) — see items.rs for the full explanation.
+#[test]
+fn patch_value_identical_done_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    seed_item(&sql, "a-1");
+    post_to(
+        &sql,
+        "/api/steps",
+        r#"{"id": "s-1", "item_id": "a-1", "body": "b", "position": 1}"#,
+        0,
+    ); // version 2
+    patch_at(&sql, "/api/steps/s-1", r#"{"expected_version": 2, "done": true}"#, 0); // version 3
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch_at(&wrapped, "/api/steps/s-1", r#"{"expected_version": 3, "done": true}"#, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Step = body_as(&resp);
+    assert_eq!(unchanged.version, 3, "done: Integer(1) vs Real(1.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 3);
+}
+
+#[test]
 fn patch_step_unknown_id_404_and_null_done_400() {
     let sql = RusqliteSql::new();
     seed_item(&sql, "a-1");

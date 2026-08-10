@@ -69,6 +69,70 @@ fn patch_fog_rewords_moves_and_resolves_under_cas() {
 }
 
 #[test]
+fn patch_fog_setting_every_field_to_its_current_value_is_a_noop() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1");
+    post_to(
+        &sql,
+        "/api/fog",
+        r#"{"id": "f-1", "project_id": "p-1", "question": "which movers?", "position": 1}"#,
+        0,
+    ); // version 2
+    let resp = patch_at(
+        &sql,
+        "/api/fog/f-1",
+        r#"{"expected_version": 2, "question": "which movers?", "position": 1, "resolved_at": null}"#,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Fog = body_as(&resp);
+    assert_eq!(unchanged.version, 2, "no version bump for a value-identical patch");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
+fn patch_fog_mixing_changed_and_unchanged_fields_bumps_once() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1");
+    post_to(
+        &sql,
+        "/api/fog",
+        r#"{"id": "f-1", "project_id": "p-1", "question": "which movers?", "position": 1}"#,
+        0,
+    ); // version 2
+    let resp = patch_at(
+        &sql,
+        "/api/fog/f-1",
+        r#"{"expected_version": 2, "question": "which movers?", "position": 3}"#,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let updated: Fog = body_as(&resp);
+    assert_eq!(updated.question, "which movers?", "unchanged field kept");
+    assert_eq!(updated.position, 3, "changed field written");
+    assert_eq!(updated.version, 3, "a mixed patch still bumps");
+}
+
+// The integer/real hazard (#166) — see items.rs for the full explanation.
+#[test]
+fn patch_fog_value_identical_position_noops_even_when_the_row_reads_back_as_real() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1");
+    post_to(
+        &sql,
+        "/api/fog",
+        r#"{"id": "f-1", "project_id": "p-1", "question": "q", "position": 1}"#,
+        0,
+    ); // version 2
+    let wrapped = RealCoercingSql::new(&sql);
+    let resp = patch_at(&wrapped, "/api/fog/f-1", r#"{"expected_version": 2, "position": 1}"#, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unchanged: Fog = body_as(&resp);
+    assert_eq!(unchanged.version, 2, "position: Integer(1) vs Real(1.0) must still compare equal");
+    assert_eq!(meta_version(&sql), 2);
+}
+
+#[test]
 fn patch_fog_unknown_id_404_and_null_question_400() {
     let sql = RusqliteSql::new();
     seed_project(&sql, "p-1");
