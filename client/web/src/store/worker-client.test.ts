@@ -43,6 +43,7 @@ const initialTask: TaskState = {
   lastCapture: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
+  syncOutcomeSeq: 0,
   queueDepth: null,
   deadLetters: [],
   needsReconnect: false,
@@ -323,6 +324,41 @@ describe("attachWorkerClient", () => {
     } as MessageEvent);
 
     expect(store.getSnapshot().task.lastSyncAtMs).toBe(7_000);
+  });
+
+  it("bumps syncOutcomeSeq on EVERY cycle, even when consecutive outcomes are identical", () => {
+    // Round-2 review of PR #181: the queue-depth / dead-letter refresh
+    // effect (`useSyncWiring.ts`) is keyed on this value, and
+    // `requestQueueDepth`/`requestDeadLetters` have exactly one call site
+    // app-wide — so if a second steady-state cycle did NOT change it, the
+    // Settings queue-depth badge would freeze after the first post-ready
+    // cycle and a dead letter created later in the session (it arrives
+    // inside a *completed* outcome — `deadLettered` is its own field) would
+    // never surface. Two byte-identical outcomes must yield two distinct
+    // seq values.
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store, () => 5_000);
+    const steadyStateOutcome = {
+      type: "syncOutcome",
+      kind: "completed",
+      retryAfterMs: null,
+      activeItemCount: 2,
+      wasFullSweep: false,
+      deadLettered: 0,
+    };
+
+    worker.onmessage?.({ data: steadyStateOutcome } as MessageEvent);
+    const seqAfterFirst = store.getSnapshot().task.syncOutcomeSeq;
+    worker.onmessage?.({ data: { ...steadyStateOutcome } } as MessageEvent);
+    const seqAfterSecond = store.getSnapshot().task.syncOutcomeSeq;
+
+    expect(seqAfterFirst).toBe(1);
+    expect(seqAfterSecond).toBe(2);
+    expect(seqAfterSecond).not.toBe(seqAfterFirst);
+    // The outcome object itself is what it always is in the steady state —
+    // the seq is the ONLY thing distinguishing cycle 2 from cycle 1.
+    expect(store.getSnapshot().task.lastSyncOutcome?.kind).toBe("completed");
   });
 
   it("records the queue depth on a queueDepth message", () => {

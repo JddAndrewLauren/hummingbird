@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSyncOutcome } from "../store/store";
-import { deadLetterHeading, SYNC_STATUS_TONE_LABEL, syncStatusLabel, syncStatusTone } from "./sync-status";
+import { deadLetterHeading, syncStatusLabel, syncStatusTone, syncStatusToneWord } from "./sync-status";
 
 function outcome(kind: TaskSyncOutcome["kind"]): TaskSyncOutcome {
   return { kind, retryAfterMs: null, activeItemCount: null, wasFullSweep: null, deadLettered: null };
@@ -196,16 +196,68 @@ describe("syncStatusTone", () => {
   });
 });
 
-describe("SYNC_STATUS_TONE_LABEL", () => {
-  it("has a distinct word for every SyncStatusTone value", () => {
-    const words = Object.values(SYNC_STATUS_TONE_LABEL);
-    expect(new Set(words).size).toBe(words.length);
-    expect(SYNC_STATUS_TONE_LABEL).toEqual({
-      neutral: "not syncing",
-      warn: "held",
-      danger: "stale",
-      success: "synced",
-    });
+describe("syncStatusToneWord", () => {
+  // Round-2 review of PR #181: a fixed tone→word record said "not syncing"
+  // next to a label saying "Offline". The word now branches with the label,
+  // so each case is pinned against the label it renders beside.
+  it("says offline while offline — matching the label's own word", () => {
+    const input = {
+      online: false,
+      lastSyncOutcome: null,
+      lastSyncAtMs: null,
+      queueDepth: 0,
+      nowMs: 0,
+    };
+    expect(syncStatusToneWord(input)).toBe("offline");
+    expect(syncStatusLabel(input)).toBe("Offline");
+  });
+
+  it("says held while held", () => {
+    const input = {
+      online: true,
+      lastSyncOutcome: outcome("held"),
+      lastSyncAtMs: 0,
+      queueDepth: 0,
+      nowMs: 0,
+    };
+    expect(syncStatusToneWord(input)).toBe("held");
+    expect(syncStatusLabel(input)).toContain("Held");
+  });
+
+  it("says not synced before the first cycle this session", () => {
+    const input = {
+      online: true,
+      lastSyncOutcome: null,
+      lastSyncAtMs: null,
+      queueDepth: 0,
+      nowMs: 0,
+    };
+    expect(syncStatusToneWord(input)).toBe("not synced");
+    expect(syncStatusLabel(input)).toBe("Not yet synced");
+  });
+
+  it("says stale after a failed cycle", () => {
+    const input = {
+      online: true,
+      lastSyncOutcome: outcome("pull_failed"),
+      lastSyncAtMs: 0,
+      queueDepth: 0,
+      nowMs: 0,
+    };
+    expect(syncStatusToneWord(input)).toBe("stale");
+    expect(syncStatusLabel(input)).toContain("Stale");
+  });
+
+  it("says synced after a completed cycle", () => {
+    const input = {
+      online: true,
+      lastSyncOutcome: outcome("completed"),
+      lastSyncAtMs: 0,
+      queueDepth: 0,
+      nowMs: 0,
+    };
+    expect(syncStatusToneWord(input)).toBe("synced");
+    expect(syncStatusLabel(input)).toContain("Synced");
   });
 });
 

@@ -41,7 +41,14 @@ const STATUS_CLOCK_TICK_MS = 30 * 1000;
 export function useSyncWiring(
   worker: WorkerLike,
   status: CoreStatus,
-  lastSyncOutcomeKind: string | null,
+  /** `TaskState.syncOutcomeSeq` — bumps on EVERY completed cycle, which is
+   * what makes the per-cycle refresh below actually per-cycle. Round-2
+   * review of PR #181: this used to be the outcome's `kind`, which is
+   * `"completed"` forever in the steady state, so the refresh effect fired
+   * once and froze — a dead letter created later in the session (it arrives
+   * inside a *completed* outcome; `deadLettered` is a separate field) never
+   * surfaced, and the queue-depth badge stuck at its first reading. */
+  syncOutcomeSeq: number,
 ): SyncWiring {
   const ready = status === "ready";
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -90,7 +97,9 @@ export function useSyncWiring(
   // Refreshes the sync-status reads once ready, and again after every cycle
   // (the "drain tail" is exactly when the queue depth and journal can have
   // changed) — cheap, and keeps the status indicator honest without a
-  // separate poll.
+  // separate poll. Keyed on `syncOutcomeSeq`, a per-cycle counter, precisely
+  // BECAUSE the outcome's own fields do not change between steady-state
+  // cycles — see this hook's parameter doc.
   useEffect(() => {
     if (!ready) {
       return;
@@ -98,7 +107,7 @@ export function useSyncWiring(
     requestQueueDepth(worker);
     requestDeadLetters(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, lastSyncOutcomeKind]);
+  }, [ready, syncOutcomeSeq]);
 
   // The download itself is a one-off action, not durable UI state: a click
   // requests a fresh snapshot and this registration writes it to disk the

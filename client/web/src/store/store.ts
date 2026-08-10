@@ -76,6 +76,16 @@ export interface TaskState {
    * other's regardless, so this is an accurate-enough proxy for "just now"
    * without needing to widen the protocol. */
   lastSyncAtMs: number | null;
+  /** Monotonic count of `syncOutcome` broadcasts this view has processed —
+   * incremented by `worker-client.ts` on EVERY cycle, whatever its `kind`.
+   * This is what `useSyncWiring.ts` keys its per-cycle queue-depth /
+   * dead-letter refresh on (round-2 review of PR #181): keying on the
+   * outcome's `kind` froze the refresh after the first cycle (steady state
+   * is `"completed"` forever, and a dead letter arrives INSIDE a completed
+   * outcome — `deadLettered` is a separate field), and keying on the outcome
+   * object's identity works today but is one memoisation away from the same
+   * freeze. A counter changes on every cycle by construction. */
+  syncOutcomeSeq: number;
   /** The outbound queue's current depth — S9's sync-status "queued"
    * figure. `null` until the first answer arrives (this view has not asked,
    * or the core is still loading). */
@@ -119,6 +129,7 @@ const initialTaskState: TaskState = {
   lastCapture: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
+  syncOutcomeSeq: 0,
   queueDepth: null,
   deadLetters: [],
   needsReconnect: false,

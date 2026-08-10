@@ -12,9 +12,9 @@ import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import {
   deadLetterHeading,
-  SYNC_STATUS_TONE_LABEL,
   syncStatusLabel,
   syncStatusTone,
+  syncStatusToneWord,
 } from "../shell/sync-status";
 import type { DeadLetterEntryDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
@@ -406,7 +406,7 @@ export function SettingsScreen({
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
                     <Badge dot mono tone={tone} style={{ alignSelf: "flex-start" }}>
-                      {SYNC_STATUS_TONE_LABEL[tone]}
+                      {syncStatusToneWord(syncStatusInput)}
                     </Badge>
                     <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
                       {syncStatusLabel(syncStatusInput)}

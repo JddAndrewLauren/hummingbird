@@ -83,7 +83,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const { nowMs: syncNowMs, handleDownloadMirror } = useSyncWiring(
     worker,
     status,
-    task.lastSyncOutcome?.kind ?? null,
+    task.syncOutcomeSeq,
   );
   const syncLabel = syncStatusLabel({
     online,

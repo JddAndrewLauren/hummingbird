@@ -183,7 +183,9 @@ void (async () => {
     // normal delta pull (ADR-0008 amendment), and `Math.random()`/`Date.now()`
     // are the caller-injected clock/jitter `Core::run` requires (this global
     // scope is a real JS runtime, unlike bare wasm32, so both are safe to
-    // call directly here).
+    // call directly here). No in-flight guard yet: a cycle still running
+    // when `task-worker.ts`'s 30s abandon fires can overlap the next 60s
+    // tick's `runSync` and surface as `"busy"` — tracked as issue #184.
     const cadence = createSyncCadence((trigger) => {
       void taskEnqueueReady.then((enqueue) =>
         enqueue({

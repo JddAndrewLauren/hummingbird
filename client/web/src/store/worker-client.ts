@@ -57,6 +57,10 @@ export function attachWorkerClient(
   store: Store,
   now: () => number = Date.now,
 ): void {
+  // One counter per attached worker (i.e. per view): see
+  // `TaskState.syncOutcomeSeq`'s doc for why the per-cycle refresh keys on
+  // this rather than on the outcome itself.
+  let syncOutcomeSeq = 0;
   worker.onmessage = (event) => {
     const message = event.data;
     switch (message.type) {
@@ -115,7 +119,9 @@ export function attachWorkerClient(
         store.setTaskPending(message.itemId, message.pending);
         return;
       case "syncOutcome":
+        syncOutcomeSeq += 1;
         store.setTaskState({
+          syncOutcomeSeq,
           lastSyncOutcome: {
             kind: message.kind,
             retryAfterMs: message.retryAfterMs,

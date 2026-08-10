@@ -19,6 +19,7 @@ const initialTask: TaskState = {
   lastCapture: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
+  syncOutcomeSeq: 0,
   queueDepth: null,
   deadLetters: [],
   needsReconnect: false,

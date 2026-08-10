@@ -83,16 +83,27 @@ export function syncStatusLabel(input: SyncStatusInput): string {
   return `${state} — as of ${age}${queuedSuffix(input.queueDepth)}`;
 }
 
-/** The short word `SettingsScreen.tsx` badges `syncStatusTone` with — round-1
+/** The short word `SettingsScreen.tsx` badges the sync status with — round-1
  * review: a 4-valued tone with a 1-valued consumer (only ever checked for
- * `"danger"`) defeats the point of computing it. Every tone gets its own
- * word here so the badge actually renders all four. */
-export const SYNC_STATUS_TONE_LABEL: Record<SyncStatusTone, string> = {
-  neutral: "not syncing",
-  warn: "held",
-  danger: "stale",
-  success: "synced",
-};
+ * `"danger"`) defeats the point of computing it, so every state gets its own
+ * word. Round-2 review: a fixed tone→word record made the neutral badge say
+ * "not syncing" next to a label saying "Offline" — inconsistent copy,
+ * because `neutral` covers two distinct states. The word is computed from
+ * the SAME branches as [`syncStatusTone`] and [`syncStatusLabel`] instead,
+ * so badge and label can never disagree about which state they describe. */
+export function syncStatusToneWord(input: SyncStatusInput): string {
+  if (!input.online) {
+    return "offline";
+  }
+  if (input.lastSyncOutcome !== null && HELD_KINDS.includes(input.lastSyncOutcome.kind)) {
+    return "held";
+  }
+  if (input.lastSyncAtMs === null) {
+    return "not synced";
+  }
+  const failed = input.lastSyncOutcome !== null && FAILED_KINDS.includes(input.lastSyncOutcome.kind);
+  return failed ? "stale" : "synced";
+}
 
 /** The dead-letter affordance's heading — pluralised off the real count
  * (round-1 review: the fixed "1 edit didn't apply" string was wrong for
