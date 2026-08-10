@@ -3,8 +3,7 @@
 //!
 //! [`calendar_host::CalendarHostCore`] (issue #73) is the web host's one
 //! door into #72's `ContextPoller`/#71's Google adapter: push a token, drive
-//! the selected calendars, trigger a poll, drain credential events, and
-//! read the current/next event for the context tile. It is plain,
+//! the selected calendars, trigger a poll, and drain credential events. It is plain,
 //! `wasm_bindgen`-free Rust, testable with `cargo test --workspace` on any
 //! target; [`CalendarHost`] below is the thin `#[wasm_bindgen]` shim over it
 //! that only compiles for `wasm32` — `js_sys`/`wasm-bindgen-futures`'s JS
@@ -16,13 +15,13 @@
 mod calendar_host;
 mod task_host;
 
-pub use calendar_host::{CalendarHostCore, CalendarListResponse, CurrentNextResponse};
+pub use calendar_host::{CalendarHostCore, CalendarListResponse};
 pub use task_host::{
     ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
     DeadLetterFieldDTO, DeadLettersResponse, FreshnessResponse, FrontierItemDTO, IsPendingResponse,
     ItemListResponse,
-    MirrorSnapshotResponse, ProjectListResponse, QueueDepthResponse, RunResponse, StepListResponse,
-    TaskEventDTO, TaskHostCore, TriageEdits, TriageResponse,
+    MirrorSnapshotResponse, PaneReadResponse, ProjectListResponse, QueueDepthResponse, RunResponse,
+    StepListResponse, TaskEventDTO, TaskHostCore, TriageEdits, TriageResponse,
 };
 
 use wasm_bindgen::prelude::*;
@@ -148,12 +147,7 @@ mod wasm_bindings {
     /// and nothing is wrong with the credential.
     const BUSY_OUTCOME: &str = "busy";
 
-    /// What `currentOrNext` resolves to when the core is already checked
-    /// out. The host treats it as "no new information" and leaves the tile
-    /// as it stands, rather than blanking it.
-    const BUSY_CURRENT_NEXT: &str = r#"{"kind":"busy","event":null,"as_of_ms":null}"#;
-
-    /// The same "no new information" answer for `listCalendars`: the host
+    /// The "no new information" answer for `listCalendars`: the host
     /// leaves the picker's existing options alone rather than emptying it.
     const BUSY_CALENDAR_LIST: &str = r#"{"kind":"busy","calendars":[]}"#;
 
@@ -261,23 +255,6 @@ mod wasm_bindings {
             self.inner.take_credential_events()
         }
 
-        /// The current/next event as of `now_ms`, as JSON:
-        /// `{"kind": "no_snapshot"|"none"|"in_progress"|"upcoming"|"busy",
-        ///   "event": EventRecord | null, "as_of_ms": number | null}`.
-        #[wasm_bindgen(js_name = currentOrNext)]
-        pub fn current_or_next(&self, now_ms: f64) -> js_sys::Promise {
-            let inner = self.inner.clone();
-            future_to_promise(async move {
-                let Some(core) = inner.check_out() else {
-                    return Ok(JsValue::from_str(BUSY_CURRENT_NEXT));
-                };
-                let response = core.current_or_next(now_ms as i64).await;
-                inner.check_in(core);
-                Ok(JsValue::from_str(
-                    &serde_json::to_string(&response).expect("CurrentNextResponse serializes"),
-                ))
-            })
-        }
     }
 
     // ------------------------------------------------------------ TaskHost
@@ -413,6 +390,11 @@ mod wasm_bindings {
     // ADR-0015: a core that has not loaded has measured nothing, so busy is
     // `unknown` — never `{"age_ms":0}`, which would render as fresh.
     const BUSY_FRESHNESS: &str = r#"{"kind":"busy","freshness":{"state":"unknown"}}"#;
+    // #245: same reading one step up — an empty pane read is the claim
+    // "nothing is due", and busy is no answer rather than that one. The
+    // host drops it (`task-worker.ts`'s `mapPaneRead`) instead of storing
+    // the empty lists this shape has to carry.
+    const BUSY_PANE_READ: &str = r#"{"kind":"busy","snapshots":[],"alerts":[]}"#;
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_ACT: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_TRIAGE: &str = r#"{"kind":"busy","error":null}"#;
@@ -556,6 +538,28 @@ mod wasm_bindings {
                         .expect("FreshnessResponse serializes")
                 }
                 None => BUSY_FRESHNESS.to_string(),
+            }
+        }
+
+        /// One source's whole pane-facing read (#245, ADR-0015), as JSON:
+        /// `{"kind": "ok"|"busy", "snapshots": [{"source": string, "key":
+        /// string, "fetched_at": number, "version": number, "freshness":
+        /// …, "envelope": {"state":"parsed","schema":string,
+        /// "polled_every_ms":number|null,"body":string} |
+        /// {"state":"malformed","reason":string}}], "alerts": [Alert]}`.
+        ///
+        /// `busy` carries empty lists because the shape demands lists, and
+        /// the host **drops** the whole answer on it rather than storing
+        /// them: an empty pane read renders as "nothing is due", which a
+        /// core that has not loaded has no standing to claim. `now_ms` is
+        /// host-supplied, and decides both the ages and which alerts are
+        /// live.
+        #[wasm_bindgen(js_name = paneRead)]
+        pub fn pane_read(&self, source: String, now_ms: f64) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.pane_read(&source, now_ms as i64))
+                    .expect("PaneReadResponse serializes"),
+                None => BUSY_PANE_READ.to_string(),
             }
         }
 

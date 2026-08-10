@@ -14,11 +14,12 @@ use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationI
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::freshness::Freshness;
+use hummingbird_core::pane::PaneSnapshot;
 use hummingbird_core::{
     ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction, TriageDestination,
     TriagePatch,
 };
-use hummingbird_domain::{Energy, Item, Project, Size, Stage};
+use hummingbird_domain::{Alert, Energy, Item, Project, Size, Stage};
 
 // The real, target-specific store `Core::init` resolves to internally is a
 // *private* type alias (`hummingbird_core::CoreStore`) — this crate cannot
@@ -324,6 +325,30 @@ pub struct FreshnessResponse {
     pub freshness: Freshness,
 }
 
+/// The wrapper around [`TaskHostCore::pane_read`]'s answer (#245,
+/// ADR-0015) — one source's snapshot rows and its live alerts, the generic
+/// read every standing question's pane starts from.
+///
+/// `snapshots` carries [`PaneSnapshot`]'s own serde shape (`freshness` as
+/// the tagged union above; `envelope` as `{"state":"parsed",…}` /
+/// `{"state":"malformed","reason":…}`, whose `body` is a **string
+/// containing JSON** — opaque all the way across, parsed only by the pane
+/// that owns the shape). `alerts` carries raw
+/// [`hummingbird_domain::Alert`] rows, `subject_key` included: the
+/// `(source, subject_key)` ↔ `(source, key)` join is additive and belongs
+/// to the pane, in TS.
+///
+/// Same `"busy"` contract as [`ItemListResponse`], and it matters more here
+/// than most: an empty pane read renders as "nothing is due", so a busy
+/// core answering `[]` would tell the operator a *fact* it has not read.
+/// `lib.rs`'s `BUSY_PANE_READ` is dropped by the host rather than stored.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PaneReadResponse {
+    pub kind: &'static str,
+    pub snapshots: Vec<PaneSnapshot>,
+    pub alerts: Vec<Alert>,
+}
+
 /// The wrapper around [`TaskHostCore::bindings`]'s answer (#118) — every
 /// standing-question binding, known-first. Same `"busy"` contract as
 /// [`ItemListResponse`]: no answer, never an empty one, since an editor
@@ -545,6 +570,20 @@ impl TaskHostCore {
         FreshnessResponse {
             kind: "ok",
             freshness: self.core.snapshot_freshness(source, key, now_ms),
+        }
+    }
+
+    /// One source's whole pane-facing read, per [`Core::pane_read`] (#245).
+    /// `now_ms` is host-supplied, like every other clock read crossing this
+    /// seam, and it decides two things at once: each row's measured age and
+    /// which alerts are still live (ADR-0014's predicate, applied core-side
+    /// so no pane can re-spell it).
+    pub fn pane_read(&self, source: &str, now_ms: i64) -> PaneReadResponse {
+        let read = self.core.pane_read(source, now_ms);
+        PaneReadResponse {
+            kind: "ok",
+            snapshots: read.snapshots,
+            alerts: read.alerts,
         }
     }
 
@@ -1820,6 +1859,102 @@ mod tests {
             serde_json::to_string(&response).unwrap(),
             r#"{"kind":"ok","mirror":{"version":1}}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod pane_read_tests {
+    use super::*;
+    use hummingbird_core::freshness::Freshness;
+    use hummingbird_core::pane::PaneEnvelope;
+
+    /// Pins the whole wire shape `task-worker.ts`'s `RawPaneReadResponse`
+    /// parses, in one string: the tagged `freshness`/`envelope` unions, the
+    /// `body` that is a JSON *string* rather than a nested object, and the
+    /// raw alert row with `subject_key` on it. Nothing on the TS side
+    /// re-derives any of this from serde's output.
+    #[test]
+    fn pane_read_response_serializes_with_the_exact_keys_the_pane_shell_ts_parses() {
+        let response = PaneReadResponse {
+            kind: "ok",
+            snapshots: vec![
+                PaneSnapshot {
+                    source: "city-waste/v2".to_string(),
+                    key: "collection".to_string(),
+                    fetched_at: 1_000,
+                    version: 2,
+                    freshness: Freshness::Age {
+                        age_ms: 60_000,
+                        declared_cadence_ms: Some(86_400_000),
+                    },
+                    envelope: PaneEnvelope::Parsed {
+                        schema: "city-waste/v2".to_string(),
+                        polled_every_ms: Some(86_400_000),
+                        body: r#"{"zone":"Europe/London"}"#.to_string(),
+                    },
+                },
+                PaneSnapshot {
+                    source: "city-waste/v2".to_string(),
+                    key: "broken".to_string(),
+                    fetched_at: 2_000,
+                    version: 1,
+                    freshness: Freshness::Age { age_ms: 0, declared_cadence_ms: None },
+                    envelope: PaneEnvelope::Malformed {
+                        reason: "`body` is missing".to_string(),
+                    },
+                },
+            ],
+            alerts: vec![Alert {
+                id: "alert-1".to_string(),
+                source: "city-waste/v2".to_string(),
+                source_key: "collection:2026-08-11".to_string(),
+                subject_key: Some("collection".to_string()),
+                title: "Collection moved".to_string(),
+                body: None,
+                url: None,
+                severity: None,
+                raised_at: 900,
+                resolved_at: None,
+                dismissed_at: None,
+                expires_at: None,
+                version: 1,
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            concat!(
+                r#"{"kind":"ok","snapshots":["#,
+                r#"{"source":"city-waste/v2","key":"collection","fetched_at":1000,"version":2,"#,
+                r#""freshness":{"state":"age","age_ms":60000,"declared_cadence_ms":86400000},"#,
+                r#""envelope":{"state":"parsed","schema":"city-waste/v2","polled_every_ms":86400000,"#,
+                r#""body":"{\"zone\":\"Europe/London\"}"}},"#,
+                r#"{"source":"city-waste/v2","key":"broken","fetched_at":2000,"version":1,"#,
+                r#""freshness":{"state":"age","age_ms":0,"declared_cadence_ms":null},"#,
+                r#""envelope":{"state":"malformed","reason":"`body` is missing"}}],"#,
+                r#""alerts":[{"id":"alert-1","source":"city-waste/v2","#,
+                r#""source_key":"collection:2026-08-11","subject_key":"collection","#,
+                r#""title":"Collection moved","body":null,"url":null,"severity":null,"#,
+                r#""raised_at":900,"resolved_at":null,"dismissed_at":null,"expires_at":null,"#,
+                r#""version":1}]}"#,
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_host_answers_ok_and_empty_which_is_not_busy() {
+        // "Nothing synced yet" is an answer. `busy` — no answer at all — is
+        // the shim's, and the host must never conflate the two.
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-pane-1");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host.pane_read("city-waste/v2", 1_000);
+        assert_eq!(response.kind, "ok");
+        assert!(response.snapshots.is_empty());
+        assert!(response.alerts.is_empty());
     }
 }
 

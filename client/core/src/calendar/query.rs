@@ -84,6 +84,12 @@ pub enum CurrentOrNext<'a> {
 /// Finds the in-progress event (if any), else the soonest upcoming event,
 /// as of `now_ms`. Cancelled events are never returned — see
 /// [`is_actionable`].
+///
+/// **Its host caller left with #245** — ADR-0015 replaced Now's context
+/// tile with the ranked pane region, and `ffi-web`'s `currentOrNext` shim
+/// went with it. This stays: [`crate::rank`] consumes [`CurrentOrNext`] for
+/// its 30-minute calendar nudge, and the next host consumer is the "what's
+/// on now / next" standing question (ADR-0015, under #117).
 pub fn current_or_next_event(snapshot: &CalendarSnapshot, now_ms: i64) -> CurrentOrNext<'_> {
     let in_progress = snapshot
         .events

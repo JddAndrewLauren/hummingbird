@@ -46,6 +46,7 @@ pub mod calendar;
 pub mod capture;
 pub mod context;
 pub mod freshness;
+pub mod pane;
 pub mod rank;
 pub mod storage;
 pub mod sync;
@@ -810,14 +811,53 @@ where
     /// silently fresh answer. `now_ms` is caller-injected, as everywhere
     /// else in this crate.
     ///
-    /// Deliberately *not* the pane read. The generic "for a source, its
-    /// snapshot rows and its live alerts" read is #119's, and it can call
-    /// this or [`freshness::Freshness::of_snapshot`] directly once it
-    /// exists; nothing here knows what a pane means by its answer.
+    /// Deliberately *not* the pane read: this is the point lookup for one
+    /// `(source, key)`. The generic "for a source, its snapshot rows and its
+    /// live alerts" read is [`Core::pane_read`] (#245), which embeds the
+    /// same freshness per row; nothing in either knows what a pane means by
+    /// its answer.
     pub fn snapshot_freshness(&self, source: &str, key: &str, now_ms: i64) -> freshness::Freshness {
         match self.cycle.mirror().context_snapshot(source, key) {
             Some(snapshot) => freshness::Freshness::of_snapshot(now_ms, snapshot),
             None => freshness::Freshness::Unknown,
+        }
+    }
+
+    /// Everything one standing question's pane reads from this device
+    /// (#245, ADR-0015): every live `context_snapshots` row for `source`
+    /// (key order, envelope parsed, age measured) and every alert that
+    /// source has raised which is **live right now**.
+    ///
+    /// Per-source rather than per-pane, and `&self` with no `Result`: a
+    /// device that has never synced answers with an empty read, which is an
+    /// answer, not an error. `now_ms` is caller-injected like every other
+    /// clock read in this crate.
+    ///
+    /// **No overlay.** The context lanes are server-written — no mutation
+    /// entry point mints a snapshot or an alert — so there is nothing
+    /// optimistic to overlay, exactly as [`Core::steps_for`] and
+    /// [`Core::projects`] read the mirror directly.
+    ///
+    /// **Live-only alerts, decided here.** ADR-0014's predicate needs a
+    /// clock, and it is one of the two things ADR-0015 carves into Rust so
+    /// it cannot drift (freshness is the other); a pane that re-derived
+    /// "still live" in TS would be the second implementation the carve-out
+    /// exists to prevent. What is *not* decided here is the join:
+    /// `subject_key` rides through untouched, because
+    /// `(source, subject_key)` ↔ `(source, key)` is additive and the pane
+    /// owns it.
+    pub fn pane_read(&self, source: &str, now_ms: i64) -> pane::PaneRead {
+        let mirror = self.cycle.mirror();
+        pane::PaneRead {
+            snapshots: mirror
+                .context_snapshots_for(source)
+                .map(|snapshot| pane::PaneSnapshot::of_row(now_ms, snapshot))
+                .collect(),
+            alerts: mirror
+                .alerts_for_source(source)
+                .filter(|alert| alert.is_live(now_ms))
+                .cloned()
+                .collect(),
         }
     }
 
@@ -3201,6 +3241,271 @@ mod tests {
         assert_eq!(
             core.snapshot_freshness("city-waste/v2", "next_collection", 100_000),
             Freshness::Unknown,
+        );
+    }
+
+    // ------------------------------------------- pane_read() (#245, ADR-0015)
+
+    fn fixture_snapshot(
+        source: &str,
+        key: &str,
+        payload: &str,
+        fetched_at: i64,
+    ) -> hummingbird_domain::ContextSnapshot {
+        hummingbird_domain::ContextSnapshot {
+            source: source.to_string(),
+            key: key.to_string(),
+            payload: payload.to_string(),
+            fetched_at,
+            version: 1,
+        }
+    }
+
+    fn fixture_alert(
+        id: &str,
+        source: &str,
+        subject_key: Option<&str>,
+        raised_at: i64,
+    ) -> hummingbird_domain::Alert {
+        hummingbird_domain::Alert {
+            id: id.to_string(),
+            source: source.to_string(),
+            source_key: format!("occurrence:{id}"),
+            subject_key: subject_key.map(|key| key.to_string()),
+            title: format!("alert {id}"),
+            body: None,
+            url: None,
+            severity: None,
+            raised_at,
+            resolved_at: None,
+            dismissed_at: None,
+            expires_at: None,
+            version: 1,
+        }
+    }
+
+    /// Runs one full-sweep cycle seeding the two context lanes — the same
+    /// shape [`core_with_settings`] uses, and for the same reason:
+    /// `SyncCycle` exposes no `mirror_mut`, so a server-written row must
+    /// reach the mirror the ordinary way or not at all.
+    async fn core_with_context(
+        snapshots: Vec<hummingbird_domain::ContextSnapshot>,
+        alerts: Vec<hummingbird_domain::Alert>,
+    ) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            context_snapshots: snapshots,
+            alerts,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    const WASTE_PAYLOAD: &str =
+        r#"{"schema":"city-waste/v2","polled_every_ms":86400000,"body":{"zone":"Europe/London"}}"#;
+
+    #[tokio::test]
+    async fn a_fresh_core_answers_the_pane_read_empty_rather_than_failing() {
+        // An answer, not an error: a device that has never synced has
+        // nothing to say about this question, and saying so is the answer.
+        let read = Core::new().pane_read("city-waste/v2", 1_000);
+        assert!(read.snapshots.is_empty());
+        assert!(read.alerts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_read_carries_only_the_named_sources_rows_and_alerts() {
+        let core = core_with_context(
+            vec![
+                fixture_snapshot("city-waste/v2", "collection", WASTE_PAYLOAD, 500),
+                fixture_snapshot("race/v1", "next", WASTE_PAYLOAD, 500),
+            ],
+            vec![
+                fixture_alert("a-1", "city-waste/v2", Some("collection"), 500),
+                fixture_alert("a-2", "race/v1", None, 500),
+            ],
+        )
+        .await;
+
+        let read = core.pane_read("city-waste/v2", 1_000);
+        assert_eq!(
+            read.snapshots.iter().map(|s| s.key.clone()).collect::<Vec<_>>(),
+            vec!["collection"]
+        );
+        assert_eq!(
+            read.alerts.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"]
+        );
+        // And a source nothing was ever written for is empty, not an error.
+        assert!(core.pane_read("no-such-source/v1", 1_000).snapshots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_alerts_live_at_the_callers_clock_ride_the_read() {
+        // The first client-side end-to-end test of ADR-0014's predicate:
+        // liveness is decided here, against the injected clock, so no pane
+        // can re-derive it in TS and drift.
+        let mut resolved = fixture_alert("a-resolved", "city-waste/v2", None, 500);
+        resolved.resolved_at = Some(600);
+        let mut dismissed = fixture_alert("a-dismissed", "city-waste/v2", None, 500);
+        dismissed.dismissed_at = Some(600);
+        let mut expiring = fixture_alert("a-expiring", "city-waste/v2", None, 500);
+        expiring.expires_at = Some(2_000);
+
+        let core = core_with_context(
+            vec![],
+            vec![
+                resolved,
+                dismissed,
+                expiring,
+                fixture_alert("a-live", "city-waste/v2", None, 500),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            core.pane_read("city-waste/v2", 3_000)
+                .alerts
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["a-live"],
+            "resolved, dismissed and expired alerts are all settled"
+        );
+        // The same alert, the same mirror, an earlier clock: still live.
+        assert_eq!(
+            core.pane_read("city-waste/v2", 1_500)
+                .alerts
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["a-expiring", "a-live"],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_demoted_snapshot_never_appears_in_the_pane_read() {
+        let mut core = core_with_context(
+            vec![fixture_snapshot("city-waste/v2", "collection", WASTE_PAYLOAD, 500)],
+            vec![fixture_alert("a-1", "city-waste/v2", None, 500)],
+        )
+        .await;
+        assert_eq!(core.pane_read("city-waste/v2", 1_000).snapshots.len(), 1);
+
+        // A complete sweep that omits both rows demotes them (ADR-0003).
+        let sweep_body =
+            serde_json::to_string(&hummingbird_domain::ChangesResponse::empty(2)).unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        core.run(&read, &ScriptedWrite::new(vec![]), 2_000, Trigger::User, true, 0.0)
+            .await;
+
+        let read = core.pane_read("city-waste/v2", 2_000);
+        assert!(read.snapshots.is_empty(), "a demoted gauge is not a current answer");
+        assert!(read.alerts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_broken_envelope_is_malformed_with_a_reason_and_still_carries_its_age() {
+        let core = core_with_context(
+            vec![fixture_snapshot("city-waste/v2", "collection", "not json at all", 1_000)],
+            vec![],
+        )
+        .await;
+
+        let read = core.pane_read("city-waste/v2", 61_000);
+        let row = &read.snapshots[0];
+        // Visibly broken, never quietly empty.
+        match &row.envelope {
+            pane::PaneEnvelope::Malformed { reason } => {
+                assert!(reason.contains("not JSON"), "{reason}")
+            }
+            other => panic!("expected malformed, got {other:?}"),
+        }
+        // The row was really fetched: the break costs the cadence, not the
+        // age, and never collapses to `Unknown` (which never renders fresh).
+        assert_eq!(
+            row.freshness,
+            freshness::Freshness::Age { age_ms: 60_000, declared_cadence_ms: None }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unrecognised_schema_rides_through_untouched() {
+        // ADR-0015: never a registry check. A source this build has not
+        // heard of is a fact about the build, and the pane says so itself.
+        let core = core_with_context(
+            vec![fixture_snapshot(
+                "city-waste/v2",
+                "collection",
+                r#"{"schema":"city-waste/v9","body":{}}"#,
+                1_000,
+            )],
+            vec![],
+        )
+        .await;
+
+        match &core.pane_read("city-waste/v2", 1_000).snapshots[0].envelope {
+            pane::PaneEnvelope::Parsed { schema, polled_every_ms, body } => {
+                assert_eq!(schema, "city-waste/v9");
+                assert_eq!(*polled_every_ms, None);
+                assert_eq!(body, "{}");
+            }
+            other => panic!("expected parsed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn per_row_freshness_agrees_with_the_snapshot_freshness_point_lookup() {
+        // Two parses of the same payload must not drift: whatever
+        // `Freshness::of_snapshot` says for a row, the embedded value says
+        // too — including for the malformed one.
+        let core = core_with_context(
+            vec![
+                fixture_snapshot("city-waste/v2", "collection", WASTE_PAYLOAD, 500),
+                fixture_snapshot("city-waste/v2", "broken", "[]", 700),
+            ],
+            vec![],
+        )
+        .await;
+
+        for row in core.pane_read("city-waste/v2", 90_000).snapshots {
+            assert_eq!(
+                row.freshness,
+                core.snapshot_freshness("city-waste/v2", &row.key, 90_000),
+                "{}",
+                row.key
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_alert_naming_no_subject_still_rides_the_read() {
+        // The pane join is additive: `subject_key: None` is a legitimate
+        // alert, carried untouched for the pane (or `AlertsScreen`) to read.
+        let core = core_with_context(
+            vec![],
+            vec![
+                fixture_alert("a-none", "city-waste/v2", None, 500),
+                fixture_alert("a-subject", "city-waste/v2", Some("collection"), 500),
+            ],
+        )
+        .await;
+
+        let read = core.pane_read("city-waste/v2", 1_000);
+        assert_eq!(
+            read.alerts.iter().map(|a| a.subject_key.clone()).collect::<Vec<_>>(),
+            vec![None, Some("collection".to_string())],
         );
     }
 
