@@ -24,6 +24,9 @@ describe("protocol round-trips", () => {
     { type: "getTriageInbox" },
     { type: "isPending", itemId: "item-1" },
     { type: "runSync", nowMs: 1_000, trigger: "timer", forceFullSweep: true, jitterUnit: 0.5 },
+    { type: "getQueueDepth" },
+    { type: "getDeadLetters" },
+    { type: "getMirrorSnapshot" },
   ])("round-trips a TaskWorkerRequest ($type)", (request) => {
     expect(roundTrip(request)).toEqual(request);
   });
@@ -43,6 +46,27 @@ describe("protocol round-trips", () => {
       deadLettered: 0,
     },
     { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 5_000 }] },
+    { type: "queueDepth", depth: 3 },
+    {
+      type: "deadLetters",
+      entries: [
+        {
+          id: "item-1",
+          reason: "conflict",
+          message: null,
+          fields: [{ field: "title", local: "buy oat milk", server: "someone else's" }],
+          atMs: 5_000,
+        },
+        {
+          id: "item-2",
+          reason: "permanent",
+          message: "validation",
+          fields: [],
+          atMs: 6_000,
+        },
+      ],
+    },
+    { type: "mirrorSnapshot", mirror: { version: 1 } },
   ])("round-trips a TaskWorkerResponse ($type)", (response) => {
     expect(roundTrip(response)).toEqual(response);
   });
@@ -79,6 +103,9 @@ describe("protocol round-trips", () => {
       "getTriageInbox",
       "isPending",
       "runSync",
+      "getQueueDepth",
+      "getDeadLetters",
+      "getMirrorSnapshot",
     ];
 
     const overlap = calendarTypes.filter((type) => (taskTypes as string[]).includes(type));

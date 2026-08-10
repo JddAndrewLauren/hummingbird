@@ -58,12 +58,33 @@
 // lifetime already gives ADR-0010's rule for free: the browser keeps this
 // global scope alive as long as any port is connected, and terminates it
 // only once the last one is. Nothing here needs to detect a disconnect.
+//
+// **ADR-0007's 60-second cadence is owned HERE, not per view** (S9 round-1
+// review of PR #181): a `setInterval` inside a view's own hook multiplies
+// with open-tab count — N tabs, N timers, N cycles/minute — which directly
+// contradicts ADR-0010's amendment to ADR-0007 ("a second tab is a view,
+// not a second cycle") and blows the ADR's explicit ~60 req/hr budget. This
+// module constructs exactly one `sync-cadence.ts` cadence and exactly one
+// `setInterval` for the whole origin below; `onOpen`/`onReconnect` fire
+// once each, at core activation and on this worker's own `online` event,
+// for the same reason. The one thing this global scope genuinely cannot
+// observe on its own is page visibility — no `document` exists here — so
+// `VisibilityTracker` aggregates each view's own `setViewVisibility` report
+// (`protocol.ts`) instead: one visible tab keeps the cycle running even
+// while its siblings are backgrounded. A view's own `focus` event similarly
+// has no worker-side equivalent and is forwarded per view as
+// `syncFocusTrigger` — deliberately NOT deduplicated the way the timer is,
+// since two tabs focusing near-simultaneously is the same "wasteful but
+// never incorrect" duplicate-user-gesture case the calendar wiring above
+// already accepts, not the unattended-clock defect this fix closes.
 
-import type { CalendarWorkerRequest, TaskWorkerRequest } from "../store/protocol";
+import type { CalendarWorkerRequest, SyncCadenceRequest, TaskWorkerRequest } from "../store/protocol";
+import { createSyncCadence, SYNC_TIMER_MS } from "../shell/sync-cadence";
 import { createRequestQueue } from "./calendar-worker";
 import { PortRegistry, type PortLike } from "./ports";
-import { isTaskWorkerRequest } from "./request-router";
+import { isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
 import { createTaskRequestQueue, type TaskHostLike } from "./task-worker";
+import { VisibilityTracker } from "./visibility-tracker";
 
 // The IndexedDB database name (ADR-0003: the host contributes exactly one
 // thing at init — a storage path/namespace). No calendars are selected
@@ -83,6 +104,14 @@ const TASK_NAMESPACE = "hummingbird-task";
 const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 const registry = new PortRegistry();
+
+// The shared cadence's own view-visibility aggregate (S9 round-1 review) —
+// see the module doc above and `visibility-tracker.ts`. Declared alongside
+// `registry` rather than inside the async IIFE below: `dispatch` (defined
+// once wasm loads) closes over it, but a `setViewVisibility` request could
+// in principle arrive as soon as any port is wired, and this must already
+// exist by then.
+const visibility = new VisibilityTracker<PortLike>();
 
 declare const self: SharedWorkerGlobalScope;
 
@@ -147,12 +176,66 @@ void (async () => {
     // Deliberately not awaited here — see `createTaskEnqueueDeferred`'s doc.
     const taskEnqueueReady = createTaskEnqueueDeferred(createTaskHost);
 
-    const dispatch = (request: CalendarWorkerRequest | TaskWorkerRequest): Promise<void> =>
-      isTaskWorkerRequest(request)
+    // The shared ADR-0007 cadence — see the module doc above for why this
+    // is constructed exactly once here rather than once per view. `trigger`
+    // is already the spelling `Core::run`'s own `Trigger` expects
+    // (`sync-cadence.ts`'s `toCoreTrigger`); `forceFullSweep: false` is the
+    // normal delta pull (ADR-0008 amendment), and `Math.random()`/`Date.now()`
+    // are the caller-injected clock/jitter `Core::run` requires (this global
+    // scope is a real JS runtime, unlike bare wasm32, so both are safe to
+    // call directly here). No in-flight guard yet: a cycle still running
+    // when `task-worker.ts`'s 30s abandon fires can overlap the next 60s
+    // tick's `runSync` and surface as `"busy"` — tracked as issue #184.
+    const cadence = createSyncCadence((trigger) => {
+      void taskEnqueueReady.then((enqueue) =>
+        enqueue({
+          type: "runSync",
+          nowMs: Date.now(),
+          trigger,
+          forceFullSweep: false,
+          jitterUnit: Math.random(),
+        }),
+      );
+    });
+
+    const dispatch = (
+      request: CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest,
+      port: PortLike,
+    ): Promise<void> => {
+      if (isSyncCadenceRequest(request)) {
+        if (request.type === "setViewVisibility") {
+          visibility.setHidden(port, request.hidden);
+        } else {
+          cadence.onFocus();
+        }
+        return Promise.resolve();
+      }
+      return isTaskWorkerRequest(request)
         ? taskEnqueueReady.then((enqueue) => enqueue(request))
         : calendarEnqueue(request);
+    };
 
     registry.activate(dispatch, core_api_version);
+
+    // ADR-0007: "on app open / core start" — fires exactly once, when the
+    // shared core itself activates, regardless of how many views are
+    // connected right now or connect later.
+    cadence.onOpen();
+
+    // ADR-0007: "on reconnect" — the worker's own connectivity signal.
+    // `online`/`offline` fire on whatever global scope implements
+    // `WindowOrWorkerGlobalScope` per the HTML spec, a `SharedWorker`
+    // included, so this needs no per-view forwarding.
+    self.addEventListener("online", () => cadence.onReconnect());
+
+    // ADR-0007's 60-second foreground timer: the ONE interval for the whole
+    // origin (see the module doc above), paused while every connected view
+    // reports hidden (`VisibilityTracker`) or this worker itself is
+    // offline — both proven as pure logic in `sync-cadence.test.ts` and
+    // `visibility-tracker.test.ts`.
+    self.setInterval(() => {
+      cadence.onTimerTick(visibility.isHidden(), self.navigator.onLine);
+    }, SYNC_TIMER_MS);
   } catch (err) {
     // Reaches every view as `{type: "error"}` via `PortRegistry` instead of
     // silently hanging them on "Loading core…" — see main.tsx for why a

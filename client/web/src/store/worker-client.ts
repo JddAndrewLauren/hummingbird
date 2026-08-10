@@ -1,6 +1,7 @@
 import type { createCoreStore } from "./store";
 import type {
   CalendarWorkerRequest,
+  SyncCadenceRequest,
   TaskStageName,
   TaskWorkerRequest,
   WorkerResponse,
@@ -14,7 +15,27 @@ import type {
 // the type carried that name through the migration).
 export interface WorkerLike {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
-  postMessage(message: CalendarWorkerRequest | TaskWorkerRequest): void;
+  postMessage(message: CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest): void;
+}
+
+/** S9's mirror-download flow, round-1 review fix: `mirrorSnapshot` used to
+ * be stored in `TaskState`, but a `WorkerResponse` is a broadcast to every
+ * connected view (protocol.ts has no directed reply), so a value there
+ * would retain a full copy of the mirror in EVERY open tab's memory
+ * indefinitely after only one of them ever asked for a download. This is a
+ * single mutable slot instead — `App.tsx` mounts exactly one
+ * `useSyncWiring.ts` instance per tab, so a later registration replacing an
+ * earlier one is the only case that ever happens in practice — and the
+ * mirror is handed straight to whichever handler is registered right now
+ * and then discarded, never retained in the store. */
+let mirrorSnapshotHandler: ((mirror: unknown) => void) | null = null;
+
+/** Registers the one handler `attachWorkerClient` hands the next
+ * `mirrorSnapshot` broadcast to. Pass `null` to unregister (e.g. on
+ * unmount) — a view that never asked for a download must not silently pick
+ * up a snapshot some other request-issuing view triggered. */
+export function setMirrorSnapshotHandler(handler: ((mirror: unknown) => void) | null): void {
+  mirrorSnapshotHandler = handler;
 }
 
 type Store = Pick<
@@ -36,6 +57,10 @@ export function attachWorkerClient(
   store: Store,
   now: () => number = Date.now,
 ): void {
+  // One counter per attached worker (i.e. per view): see
+  // `TaskState.syncOutcomeSeq`'s doc for why the per-cycle refresh keys on
+  // this rather than on the outcome itself.
+  let syncOutcomeSeq = 0;
   worker.onmessage = (event) => {
     const message = event.data;
     switch (message.type) {
@@ -94,7 +119,9 @@ export function attachWorkerClient(
         store.setTaskPending(message.itemId, message.pending);
         return;
       case "syncOutcome":
+        syncOutcomeSeq += 1;
         store.setTaskState({
+          syncOutcomeSeq,
           lastSyncOutcome: {
             kind: message.kind,
             retryAfterMs: message.retryAfterMs,
@@ -102,6 +129,10 @@ export function attachWorkerClient(
             wasFullSweep: message.wasFullSweep,
             deadLettered: message.deadLettered,
           },
+          // Every cycle attempt counts as a "sweep" for S9's status readout,
+          // whatever it resolved to — a held or failed cycle is still
+          // information about how stale the mirror now is.
+          lastSyncAtMs: now(),
         });
         return;
       case "taskEvents":
@@ -113,6 +144,16 @@ export function attachWorkerClient(
         if (message.events.some((event) => event.kind === "credential_needed")) {
           store.setTaskState({ needsReconnect: true });
         }
+        return;
+      case "queueDepth":
+        store.setTaskState({ queueDepth: message.depth });
+        return;
+      case "deadLetters":
+        store.setTaskState({ deadLetters: message.entries });
+        return;
+      case "mirrorSnapshot":
+        // Never stored — see `mirrorSnapshotHandler`'s own doc.
+        mirrorSnapshotHandler?.(message.mirror);
         return;
     }
   };
@@ -207,4 +248,39 @@ export function runTaskSync(
   jitterUnit: number,
 ): void {
   worker.postMessage({ type: "runSync", nowMs, trigger, forceFullSweep, jitterUnit });
+}
+
+// -- S9's sync-status reads --------------------------------------------
+
+export function requestQueueDepth(worker: WorkerLike): void {
+  worker.postMessage({ type: "getQueueDepth" });
+}
+
+export function requestDeadLetters(worker: WorkerLike): void {
+  worker.postMessage({ type: "getDeadLetters" });
+}
+
+export function requestMirrorSnapshot(worker: WorkerLike): void {
+  worker.postMessage({ type: "getMirrorSnapshot" });
+}
+
+// -- shared cadence coordination (S9 round-1 review, PR #181) --------------
+//
+// `core.worker.ts` owns ADR-0007's cadence itself now (one clock for the
+// whole origin, not one per view — see that file's module doc); these two
+// are the only cadence-related messages a view still sends, purely to keep
+// the shared cadence honest about what it cannot observe on its own.
+
+/** Sent on mount and on every `visibilitychange` — the worker's global
+ * scope has no `document` of its own, so this is the only way it learns
+ * this view's own visibility. */
+export function reportViewVisibility(worker: WorkerLike, hidden: boolean): void {
+  worker.postMessage({ type: "setViewVisibility", hidden });
+}
+
+/** Sent on a `window` `focus` event (ADR-0007's "on window focus"). Not
+ * deduplicated across views — see `protocol.ts`'s `SyncCadenceRequest` doc
+ * for why that is fine. */
+export function triggerSyncFocus(worker: WorkerLike): void {
+  worker.postMessage({ type: "syncFocusTrigger" });
 }

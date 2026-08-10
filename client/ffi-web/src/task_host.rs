@@ -9,6 +9,7 @@
 //! being re-derived on the TypeScript side from `hummingbird_domain`'s own
 //! serde output.
 
+use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::{Core, CoreCycleOutcome, CoreEvent, CoreInitError};
@@ -135,6 +136,94 @@ fn map_run_outcome(outcome: CoreCycleOutcome) -> RunResponse {
                 ..run_response("completed")
             },
         },
+    }
+}
+
+/// The wrapper around [`TaskHostCore::queue_depth`]'s answer — S9's
+/// sync-status "queued" figure.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct QueueDepthResponse {
+    pub kind: &'static str,
+    pub depth: usize,
+}
+
+/// One field a dead-lettered [`hummingbird_core::sync::queue::DeadLetterReason::Conflict`]
+/// disagreed on — S9's "1 edit didn't apply" affordance shows exactly this
+/// triple per field so a person can judge whose value to keep.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DeadLetterFieldDTO {
+    pub field: String,
+    pub local: serde_json::Value,
+    pub server: serde_json::Value,
+}
+
+/// One dead-lettered entry, as the web host's JSON shape. `"permanent"`
+/// carries `message` and no `fields` (there is no local/server disagreement
+/// to show — the write itself was rejected outright); `"conflict"` carries
+/// `fields` and no `message`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DeadLetterEntryDTO {
+    pub id: String,
+    pub reason: &'static str,
+    pub message: Option<String>,
+    pub fields: Vec<DeadLetterFieldDTO>,
+    pub at_ms: i64,
+}
+
+/// The wrapper around [`TaskHostCore::dead_letters`]'s answer.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DeadLettersResponse {
+    pub kind: &'static str,
+    pub entries: Vec<DeadLetterEntryDTO>,
+}
+
+/// The wrapper around [`TaskHostCore::mirror_snapshot`]'s answer — S9's
+/// mirror download button.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MirrorSnapshotResponse {
+    pub kind: &'static str,
+    pub mirror: serde_json::Value,
+}
+
+/// The touched fields' *intended* (local) values a [`MutationIntent`]
+/// carries — only a `Patch` has any; a `Create` never conflicts (deterministic
+/// ids, ADR-0007), so it is never the intent behind a `Conflict` reason.
+fn local_field_values(intent: &MutationIntent) -> serde_json::Map<String, serde_json::Value> {
+    match intent {
+        MutationIntent::Patch { patch_fields, .. } => {
+            patch_fields.as_object().cloned().unwrap_or_default()
+        }
+        MutationIntent::Create { .. } => serde_json::Map::new(),
+    }
+}
+
+fn map_dead_letter(entry: &DeadLetterEntry) -> DeadLetterEntryDTO {
+    match &entry.reason {
+        DeadLetterReason::Permanent(message) => DeadLetterEntryDTO {
+            id: entry.entry.id.clone(),
+            reason: "permanent",
+            message: Some(message.clone()),
+            fields: Vec::new(),
+            at_ms: entry.at_ms,
+        },
+        DeadLetterReason::Conflict { fields, current } => {
+            let local = local_field_values(&entry.entry.intent);
+            let mapped_fields = fields
+                .iter()
+                .map(|field| DeadLetterFieldDTO {
+                    field: field.clone(),
+                    local: local.get(field).cloned().unwrap_or(serde_json::Value::Null),
+                    server: current.get(field).cloned().unwrap_or(serde_json::Value::Null),
+                })
+                .collect();
+            DeadLetterEntryDTO {
+                id: entry.entry.id.clone(),
+                reason: "conflict",
+                message: None,
+                fields: mapped_fields,
+                at_ms: entry.at_ms,
+            }
+        }
     }
 }
 
@@ -276,6 +365,32 @@ impl TaskHostCore {
             )
             .await;
         map_run_outcome(outcome)
+    }
+
+    /// The outbound queue's current depth — S9's sync-status "queued"
+    /// figure.
+    pub fn queue_depth(&self) -> QueueDepthResponse {
+        QueueDepthResponse {
+            kind: "ok",
+            depth: self.core.queue_depth(),
+        }
+    }
+
+    /// Every dead-lettered entry, mapped to this host's JSON shape — S9's
+    /// "1 edit didn't apply" affordance.
+    pub fn dead_letters(&self) -> DeadLettersResponse {
+        DeadLettersResponse {
+            kind: "ok",
+            entries: self.core.dead_letters().iter().map(map_dead_letter).collect(),
+        }
+    }
+
+    /// The local mirror, serialized whole — S9's mirror download button.
+    pub fn mirror_snapshot(&self) -> MirrorSnapshotResponse {
+        MirrorSnapshotResponse {
+            kind: "ok",
+            mirror: self.core.mirror_snapshot(),
+        }
     }
 }
 
@@ -428,6 +543,49 @@ mod tests {
         let user = host.run(2_000, "anything-else", true, 0.0).await;
         assert_eq!(timer.kind, "pull_failed");
         assert_eq!(user.kind, "pull_failed");
+    }
+
+    // -------------------------------------------------- S9 sync-status reads
+
+    #[tokio::test]
+    async fn a_fresh_host_reports_zero_queue_depth_and_no_dead_letters() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-queue-1");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
+        assert_eq!(
+            host.dead_letters(),
+            DeadLettersResponse { kind: "ok", entries: Vec::new() }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capture_raises_the_queue_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-queue-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    #[tokio::test]
+    async fn a_fresh_host_serializes_a_readable_mirror_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-mirror-1");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+
+        let response = host.mirror_snapshot();
+        assert_eq!(response.kind, "ok");
+        assert!(response.mirror.is_object());
     }
 
     #[tokio::test]
@@ -593,6 +751,113 @@ mod tests {
         );
     }
 
+    // ----------------------------------------------------- map_dead_letter
+    //
+    // Same reasoning as `map_run_outcome`'s tests above: this file's own
+    // network-free `TaskHostCore::run` tests never actually reach a
+    // `Conflict` dead-letter (that needs a real 409 rebase), so
+    // `map_dead_letter` is exercised directly against hand-built
+    // `DeadLetterEntry` values instead.
+
+    use hummingbird_core::sync::queue::QueueEntry;
+
+    #[test]
+    fn a_permanent_dead_letter_carries_its_message_and_no_fields() {
+        let entry = DeadLetterEntry {
+            entry: QueueEntry {
+                id: "item-1".to_string(),
+                intent: MutationIntent::Create {
+                    path: "/api/items".to_string(),
+                    body: serde_json::json!({"title": "buy milk"}),
+                },
+            },
+            reason: DeadLetterReason::Permanent("validation".to_string()),
+            at_ms: 5_000,
+        };
+
+        assert_eq!(
+            map_dead_letter(&entry),
+            DeadLetterEntryDTO {
+                id: "item-1".to_string(),
+                reason: "permanent",
+                message: Some("validation".to_string()),
+                fields: Vec::new(),
+                at_ms: 5_000,
+            }
+        );
+    }
+
+    #[test]
+    fn a_conflict_dead_letter_pairs_each_named_field_with_its_local_and_server_value() {
+        let entry = DeadLetterEntry {
+            entry: QueueEntry {
+                id: "item-1".to_string(),
+                intent: MutationIntent::Patch {
+                    path: "/api/items/item-1".to_string(),
+                    method: hummingbird_core::sync::write::transport::HttpMethod::Patch,
+                    base: serde_json::json!({"title": "buy milk", "version": 1}),
+                    base_updated_at: 1_000,
+                    patch_fields: serde_json::json!({"title": "buy oat milk"}),
+                },
+            },
+            reason: DeadLetterReason::Conflict {
+                fields: vec!["title".to_string()],
+                current: serde_json::json!({"title": "someone else's", "version": 2}),
+            },
+            at_ms: 6_000,
+        };
+
+        assert_eq!(
+            map_dead_letter(&entry),
+            DeadLetterEntryDTO {
+                id: "item-1".to_string(),
+                reason: "conflict",
+                message: None,
+                fields: vec![DeadLetterFieldDTO {
+                    field: "title".to_string(),
+                    local: serde_json::json!("buy oat milk"),
+                    server: serde_json::json!("someone else's"),
+                }],
+                at_ms: 6_000,
+            }
+        );
+    }
+
+    #[test]
+    fn a_conflicting_field_absent_from_the_servers_current_entity_maps_to_null() {
+        // Defensive: the server's `current` entity is whatever it chose to
+        // send back on a 409, and this file has no control over that shape
+        // — a field this queue thinks conflicted but that `current` simply
+        // omits must render as an honest "no value", not panic or silently
+        // drop the row.
+        let entry = DeadLetterEntry {
+            entry: QueueEntry {
+                id: "item-1".to_string(),
+                intent: MutationIntent::Patch {
+                    path: "/api/items/item-1".to_string(),
+                    method: hummingbird_core::sync::write::transport::HttpMethod::Patch,
+                    base: serde_json::json!({"version": 1}),
+                    base_updated_at: 1_000,
+                    patch_fields: serde_json::json!({}),
+                },
+            },
+            reason: DeadLetterReason::Conflict {
+                fields: vec!["context".to_string()],
+                current: serde_json::json!({"version": 2}),
+            },
+            at_ms: 7_000,
+        };
+
+        assert_eq!(
+            map_dead_letter(&entry).fields,
+            vec![DeadLetterFieldDTO {
+                field: "context".to_string(),
+                local: serde_json::Value::Null,
+                server: serde_json::Value::Null,
+            }]
+        );
+    }
+
     // ------------------------------------------------ wire shape pinning
     //
     // `task-worker.ts`'s hand-written `Raw*` TypeScript interfaces parse
@@ -697,5 +962,63 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn queue_depth_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = QueueDepthResponse { kind: "ok", depth: 3 };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","depth":3}"#
+        );
+    }
+
+    #[test]
+    fn dead_letters_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let permanent = DeadLettersResponse {
+            kind: "ok",
+            entries: vec![DeadLetterEntryDTO {
+                id: "item-1".to_string(),
+                reason: "permanent",
+                message: Some("validation".to_string()),
+                fields: Vec::new(),
+                at_ms: 5_000,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&permanent).unwrap(),
+            r#"{"kind":"ok","entries":[{"id":"item-1","reason":"permanent","message":"validation","fields":[],"at_ms":5000}]}"#
+        );
+
+        let conflict = DeadLettersResponse {
+            kind: "ok",
+            entries: vec![DeadLetterEntryDTO {
+                id: "item-2".to_string(),
+                reason: "conflict",
+                message: None,
+                fields: vec![DeadLetterFieldDTO {
+                    field: "title".to_string(),
+                    local: serde_json::json!("buy oat milk"),
+                    server: serde_json::json!("someone else's"),
+                }],
+                at_ms: 6_000,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&conflict).unwrap(),
+            r#"{"kind":"ok","entries":[{"id":"item-2","reason":"conflict","message":null,"fields":[{"field":"title","local":"buy oat milk","server":"someone else's"}],"at_ms":6000}]}"#
+        );
+    }
+
+    #[test]
+    fn mirror_snapshot_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = MirrorSnapshotResponse {
+            kind: "ok",
+            mirror: serde_json::json!({"version": 1}),
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","mirror":{"version":1}}"#
+        );
     }
 }

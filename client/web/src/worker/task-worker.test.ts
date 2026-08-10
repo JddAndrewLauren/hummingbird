@@ -14,6 +14,9 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     runSync: vi.fn().mockResolvedValue(
       '{"kind":"no_credential","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}',
     ),
+    queueDepth: vi.fn().mockReturnValue('{"kind":"ok","depth":0}'),
+    deadLetters: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
+    mirrorSnapshot: vi.fn().mockReturnValue('{"kind":"ok","mirror":{"version":0}}'),
     ...overrides,
   };
 }
@@ -240,6 +243,82 @@ describe("handleTaskRequest", () => {
       },
       { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 9000 }] },
     ]);
+  });
+
+  // ---------------------------------------------- S9 sync-status reads
+
+  it("getQueueDepth posts the depth", async () => {
+    const host = fakeHost({
+      queueDepth: vi.fn().mockReturnValue('{"kind":"ok","depth":2}'),
+    });
+    const posted = await run({ type: "getQueueDepth" }, host);
+
+    expect(posted).toEqual([{ type: "queueDepth", depth: 2 }]);
+  });
+
+  it('getQueueDepth posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      queueDepth: vi.fn().mockReturnValue('{"kind":"busy","depth":0}'),
+    });
+    expect(await run({ type: "getQueueDepth" }, host)).toEqual([]);
+  });
+
+  it("getDeadLetters maps every raw entry to its camelCase DTO", async () => {
+    const host = fakeHost({
+      deadLetters: vi.fn().mockReturnValue(
+        JSON.stringify({
+          kind: "ok",
+          entries: [
+            {
+              id: "item-1",
+              reason: "conflict",
+              message: null,
+              fields: [{ field: "title", local: "buy oat milk", server: "someone else's" }],
+              at_ms: 5_000,
+            },
+          ],
+        }),
+      ),
+    });
+    const posted = await run({ type: "getDeadLetters" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "deadLetters",
+        entries: [
+          {
+            id: "item-1",
+            reason: "conflict",
+            message: null,
+            fields: [{ field: "title", local: "buy oat milk", server: "someone else's" }],
+            atMs: 5_000,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('getDeadLetters posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      deadLetters: vi.fn().mockReturnValue('{"kind":"busy","entries":[]}'),
+    });
+    expect(await run({ type: "getDeadLetters" }, host)).toEqual([]);
+  });
+
+  it("getMirrorSnapshot posts the mirror value verbatim", async () => {
+    const host = fakeHost({
+      mirrorSnapshot: vi.fn().mockReturnValue('{"kind":"ok","mirror":{"version":1}}'),
+    });
+    const posted = await run({ type: "getMirrorSnapshot" }, host);
+
+    expect(posted).toEqual([{ type: "mirrorSnapshot", mirror: { version: 1 } }]);
+  });
+
+  it('getMirrorSnapshot posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      mirrorSnapshot: vi.fn().mockReturnValue('{"kind":"busy","mirror":null}'),
+    });
+    expect(await run({ type: "getMirrorSnapshot" }, host)).toEqual([]);
   });
 });
 

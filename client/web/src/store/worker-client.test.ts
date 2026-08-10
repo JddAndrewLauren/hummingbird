@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CalendarState, type TaskState, createCoreStore } from "./store";
 import {
   attachWorkerClient,
@@ -9,13 +9,19 @@ import {
   clearTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
+  reportViewVisibility,
   requestCalendarList,
   requestCurrentNext,
+  requestDeadLetters,
   requestFrontier,
   requestIsPending,
+  requestMirrorSnapshot,
+  requestQueueDepth,
   requestTriageInbox,
   runTaskSync,
   setCalendarIdsOnWorker,
+  setMirrorSnapshotHandler,
+  triggerSyncFocus,
   type WorkerLike,
 } from "./worker-client";
 
@@ -36,6 +42,10 @@ const initialTask: TaskState = {
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
+  lastSyncAtMs: null,
+  syncOutcomeSeq: 0,
+  queueDepth: null,
+  deadLetters: [],
   needsReconnect: false,
 };
 
@@ -271,10 +281,10 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.pending).toEqual({ "item-1": true, "item-2": false });
   });
 
-  it("records the sync outcome on a syncOutcome message", () => {
+  it("records the sync outcome and the sweep time on a syncOutcome message", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store);
+    attachWorkerClient(worker, store, () => 5_000);
 
     worker.onmessage?.({
       data: {
@@ -293,6 +303,144 @@ describe("attachWorkerClient", () => {
       activeItemCount: 2,
       wasFullSweep: true,
       deadLettered: 0,
+    });
+    expect(store.getSnapshot().task.lastSyncAtMs).toBe(5_000);
+  });
+
+  it("records the sweep time on a held or failed outcome too — staleness must not freeze", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store, () => 7_000);
+
+    worker.onmessage?.({
+      data: {
+        type: "syncOutcome",
+        kind: "held",
+        retryAfterMs: null,
+        activeItemCount: null,
+        wasFullSweep: null,
+        deadLettered: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastSyncAtMs).toBe(7_000);
+  });
+
+  it("bumps syncOutcomeSeq on EVERY cycle, even when consecutive outcomes are identical", () => {
+    // Round-2 review of PR #181: the queue-depth / dead-letter refresh
+    // effect (`useSyncWiring.ts`) is keyed on this value, and
+    // `requestQueueDepth`/`requestDeadLetters` have exactly one call site
+    // app-wide — so if a second steady-state cycle did NOT change it, the
+    // Settings queue-depth badge would freeze after the first post-ready
+    // cycle and a dead letter created later in the session (it arrives
+    // inside a *completed* outcome — `deadLettered` is its own field) would
+    // never surface. Two byte-identical outcomes must yield two distinct
+    // seq values.
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store, () => 5_000);
+    const steadyStateOutcome = {
+      type: "syncOutcome",
+      kind: "completed",
+      retryAfterMs: null,
+      activeItemCount: 2,
+      wasFullSweep: false,
+      deadLettered: 0,
+    };
+
+    worker.onmessage?.({ data: steadyStateOutcome } as MessageEvent);
+    const seqAfterFirst = store.getSnapshot().task.syncOutcomeSeq;
+    worker.onmessage?.({ data: { ...steadyStateOutcome } } as MessageEvent);
+    const seqAfterSecond = store.getSnapshot().task.syncOutcomeSeq;
+
+    expect(seqAfterFirst).toBe(1);
+    expect(seqAfterSecond).toBe(2);
+    expect(seqAfterSecond).not.toBe(seqAfterFirst);
+    // The outcome object itself is what it always is in the steady state —
+    // the seq is the ONLY thing distinguishing cycle 2 from cycle 1.
+    expect(store.getSnapshot().task.lastSyncOutcome?.kind).toBe("completed");
+  });
+
+  it("records the queue depth on a queueDepth message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({ data: { type: "queueDepth", depth: 3 } } as MessageEvent);
+
+    expect(store.getSnapshot().task.queueDepth).toBe(3);
+  });
+
+  it("records the dead-letter journal on a deadLetters message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+    const entries = [
+      {
+        id: "item-1",
+        reason: "conflict" as const,
+        message: null,
+        fields: [{ field: "title", local: "buy oat milk", server: "someone else's" }],
+        atMs: 1_000,
+      },
+    ];
+
+    worker.onmessage?.({ data: { type: "deadLetters", entries } } as MessageEvent);
+
+    expect(store.getSnapshot().task.deadLetters).toEqual(entries);
+  });
+
+  describe("mirrorSnapshot handling (round-1 review: never retained in the store)", () => {
+    afterEach(() => {
+      // Every `attachWorkerClient` call below registers a real handler on
+      // the module-level slot (`worker-client.ts`'s own doc explains why it
+      // is a single slot, not per-store) — left registered, it would leak
+      // into whichever test runs next.
+      setMirrorSnapshotHandler(null);
+    });
+
+    it("hands the mirror straight to the registered handler and writes nothing to the store", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+      const received: unknown[] = [];
+      setMirrorSnapshotHandler((mirror) => received.push(mirror));
+
+      worker.onmessage?.({
+        data: { type: "mirrorSnapshot", mirror: { version: 1 } },
+      } as MessageEvent);
+
+      expect(received).toEqual([{ version: 1 }]);
+      expect(store.getSnapshot().task).not.toHaveProperty("mirrorSnapshot");
+    });
+
+    it("drops the mirror silently when no handler is registered — never throws, never stored", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+
+      expect(() =>
+        worker.onmessage?.({
+          data: { type: "mirrorSnapshot", mirror: { version: 1 } },
+        } as MessageEvent),
+      ).not.toThrow();
+    });
+
+    it("a later registration replaces the earlier one rather than accumulating", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+      const first = vi.fn();
+      const second = vi.fn();
+      setMirrorSnapshotHandler(first);
+      setMirrorSnapshotHandler(second);
+
+      worker.onmessage?.({
+        data: { type: "mirrorSnapshot", mirror: { version: 1 } },
+      } as MessageEvent);
+
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith({ version: 1 });
     });
   });
 
@@ -426,5 +574,38 @@ describe("the task send helpers (#105/S7)", () => {
       forceFullSweep: false,
       jitterUnit: 0.5,
     });
+  });
+
+  it("requestQueueDepth posts a getQueueDepth request", () => {
+    const worker = fakeWorker();
+    requestQueueDepth(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getQueueDepth" });
+  });
+
+  it("requestDeadLetters posts a getDeadLetters request", () => {
+    const worker = fakeWorker();
+    requestDeadLetters(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getDeadLetters" });
+  });
+
+  it("requestMirrorSnapshot posts a getMirrorSnapshot request", () => {
+    const worker = fakeWorker();
+    requestMirrorSnapshot(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getMirrorSnapshot" });
+  });
+
+  it("reportViewVisibility posts a setViewVisibility request with this view's own hidden state", () => {
+    const worker = fakeWorker();
+    reportViewVisibility(worker, true);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "setViewVisibility", hidden: true });
+
+    reportViewVisibility(worker, false);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "setViewVisibility", hidden: false });
+  });
+
+  it("triggerSyncFocus posts a syncFocusTrigger request", () => {
+    const worker = fakeWorker();
+    triggerSyncFocus(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "syncFocusTrigger" });
   });
 });

@@ -10,7 +10,14 @@ import { Switch } from "../components/forms/Switch";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
-import type { CalendarState, CoreStatus } from "../store/store";
+import {
+  deadLetterHeading,
+  syncStatusLabel,
+  syncStatusTone,
+  syncStatusToneWord,
+} from "../shell/sync-status";
+import type { DeadLetterEntryDTO } from "../store/protocol";
+import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenSubmitOutcome } from "../task/token";
 import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
@@ -95,6 +102,57 @@ function TokenEntryForm({
   );
 }
 
+/** One dead-lettered entry's field-level detail — S9's "1 edit didn't
+ * apply" affordance. No dedicated Table component exists in the kit (16
+ * components, none of them tabular), so this renders as a bordered list of
+ * rows in the mono meta style the rest of the app already uses for computed
+ * values, the same idiom `TriageScreen.tsx`'s capture rows use. */
+function DeadLetterRow({ entry }: { entry: DeadLetterEntryDTO }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-2)",
+        padding: "var(--space-4) 0",
+        borderTop: "1px solid var(--border-subtle)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span className="hb-meta">{entry.id}</span>
+        <span className="hb-meta">{new Date(entry.atMs).toISOString()}</span>
+      </div>
+      {entry.reason === "permanent" ? (
+        <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          {entry.message ?? "Rejected — no further detail."}
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {entry.fields.map((field) => (
+            <div
+              key={field.field}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "auto 1fr 1fr",
+                gap: "var(--space-4)",
+                alignItems: "baseline",
+              }}
+            >
+              <span className="hb-meta">{field.field}</span>
+              <span style={{ font: "var(--type-body-sm)", color: "var(--text-primary)" }}>
+                local: {JSON.stringify(field.local)}
+              </span>
+              <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+                server: {JSON.stringify(field.server)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export interface SettingsScreenProps {
   demo: DemoData | null;
   status: CoreStatus;
@@ -111,6 +169,12 @@ export interface SettingsScreenProps {
   taskTokenEnteredAtMs: number | null;
   onSubmitTaskToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
   onForgetTaskToken: () => void;
+  /** S9's sync-status affordance: last sweep, queue depth, the dead-letter
+   * journal, and the mirror download. */
+  task: TaskState;
+  online: boolean;
+  syncNowMs: number;
+  onDownloadMirror: () => void;
 }
 
 export function SettingsScreen({
@@ -128,6 +192,10 @@ export function SettingsScreen({
   taskTokenEnteredAtMs,
   onSubmitTaskToken,
   onForgetTaskToken,
+  task,
+  online,
+  syncNowMs,
+  onDownloadMirror,
 }: SettingsScreenProps) {
   const unavailableIds = unavailableSelectedIds(
     calendar.selectedCalendarIds,
@@ -310,6 +378,62 @@ export function SettingsScreen({
                 <TokenEntryForm onSubmit={onSubmitTaskToken} />
               )}
             </Card>
+          </>
+        ) : null}
+
+        {status === "ready" ? (
+          <>
+            <span className="hb-meta">sync</span>
+            <Card
+              padding="var(--space-5)"
+              style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ font: "var(--type-body-strong)", color: "var(--text-primary)" }}>
+                  Outbound queue
+                </span>
+                <Badge mono>{task.queueDepth ?? 0} queued</Badge>
+              </div>
+              {(() => {
+                const syncStatusInput = {
+                  online,
+                  lastSyncOutcome: task.lastSyncOutcome,
+                  lastSyncAtMs: task.lastSyncAtMs,
+                  queueDepth: task.queueDepth,
+                  nowMs: syncNowMs,
+                };
+                const tone = syncStatusTone(syncStatusInput);
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                    <Badge dot mono tone={tone} style={{ alignSelf: "flex-start" }}>
+                      {syncStatusToneWord(syncStatusInput)}
+                    </Badge>
+                    <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+                      {syncStatusLabel(syncStatusInput)}
+                    </p>
+                  </div>
+                );
+              })()}
+              <Button
+                variant="secondary"
+                iconLeft="download"
+                onClick={onDownloadMirror}
+                style={{ alignSelf: "flex-start" }}
+              >
+                Download mirror
+              </Button>
+            </Card>
+
+            {task.deadLetters.length > 0 ? (
+              <>
+                <span className="hb-meta">{deadLetterHeading(task.deadLetters.length)}</span>
+                <Card padding="var(--space-5)">
+                  {task.deadLetters.map((entry) => (
+                    <DeadLetterRow key={`${entry.id}-${entry.atMs}`} entry={entry} />
+                  ))}
+                </Card>
+              </>
+            ) : null}
           </>
         ) : null}
       </Aside>

@@ -1,4 +1,5 @@
 import type {
+  DeadLetterEntryDTO,
   TaskEventDTO,
   TaskItemDTO,
   TaskRunOutcomeKind,
@@ -31,6 +32,9 @@ export interface TaskHostLike {
     forceFullSweep: boolean,
     jitterUnit: number,
   ): Promise<string>;
+  queueDepth(): string;
+  deadLetters(): string;
+  mirrorSnapshot(): string;
 }
 
 interface RawItem {
@@ -90,6 +94,35 @@ interface RawRunResponse {
   dead_lettered: number | null;
 }
 
+interface RawQueueDepthResponse {
+  kind: "ok" | "busy";
+  depth: number;
+}
+
+interface RawDeadLetterField {
+  field: string;
+  local: unknown;
+  server: unknown;
+}
+
+interface RawDeadLetterEntry {
+  id: string;
+  reason: "permanent" | "conflict";
+  message: string | null;
+  fields: RawDeadLetterField[];
+  at_ms: number;
+}
+
+interface RawDeadLettersResponse {
+  kind: "ok" | "busy";
+  entries: RawDeadLetterEntry[];
+}
+
+interface RawMirrorSnapshotResponse {
+  kind: "ok" | "busy";
+  mirror: unknown;
+}
+
 function mapItem(raw: RawItem): TaskItemDTO {
   return {
     id: raw.id,
@@ -117,6 +150,20 @@ function mapItem(raw: RawItem): TaskItemDTO {
 
 function mapEvents(raw: RawTaskEvent[]): TaskEventDTO[] {
   return raw.map((event) => ({ kind: event.kind, atMs: event.at_ms }));
+}
+
+function mapDeadLetters(raw: RawDeadLetterEntry[]): DeadLetterEntryDTO[] {
+  return raw.map((entry) => ({
+    id: entry.id,
+    reason: entry.reason,
+    message: entry.message,
+    fields: entry.fields.map((field) => ({
+      field: field.field,
+      local: field.local,
+      server: field.server,
+    })),
+    atMs: entry.at_ms,
+  }));
 }
 
 /** Drains and broadcasts task events, if any. Called after every request
@@ -206,6 +253,30 @@ export async function handleTaskRequest(
         deadLettered: raw.dead_lettered,
       });
       postTaskEvents(host, post);
+      return;
+    }
+    case "getQueueDepth": {
+      const raw = JSON.parse(host.queueDepth()) as RawQueueDepthResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "queueDepth", depth: raw.depth });
+      return;
+    }
+    case "getDeadLetters": {
+      const raw = JSON.parse(host.deadLetters()) as RawDeadLettersResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "deadLetters", entries: mapDeadLetters(raw.entries) });
+      return;
+    }
+    case "getMirrorSnapshot": {
+      const raw = JSON.parse(host.mirrorSnapshot()) as RawMirrorSnapshotResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "mirrorSnapshot", mirror: raw.mirror });
       return;
     }
   }

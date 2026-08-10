@@ -66,7 +66,24 @@ describe("PortRegistry", () => {
       const request: CalendarWorkerRequest = { type: "listCalendars" };
       port.onmessage?.({ data: request } as MessageEvent<CalendarWorkerRequest>);
 
-      expect(enqueue).toHaveBeenCalledWith(request);
+      expect(enqueue).toHaveBeenCalledWith(request, port);
+    });
+
+    it("tells two connected ports' messages apart by the port each arrived on — S9's shared-cadence visibility tracking depends on this", () => {
+      const enqueue = vi.fn().mockResolvedValue(undefined);
+      const registry = new PortRegistry();
+      registry.activate(enqueue, () => 1);
+      const first = fakePort();
+      const second = fakePort();
+      registry.connect(first);
+      registry.connect(second);
+
+      const request: CalendarWorkerRequest = { type: "listCalendars" };
+      first.onmessage?.({ data: request } as MessageEvent<CalendarWorkerRequest>);
+      second.onmessage?.({ data: request } as MessageEvent<CalendarWorkerRequest>);
+
+      expect(enqueue).toHaveBeenNthCalledWith(1, request, first);
+      expect(enqueue).toHaveBeenNthCalledWith(2, request, second);
     });
 
     it("starts a connecting port so its queued incoming messages dispatch", () => {
@@ -130,7 +147,7 @@ describe("PortRegistry", () => {
       const request: CalendarWorkerRequest = { type: "listCalendars" };
       port.onmessage?.({ data: request } as MessageEvent<CalendarWorkerRequest>);
 
-      expect(enqueue).toHaveBeenCalledWith(request);
+      expect(enqueue).toHaveBeenCalledWith(request, port);
     });
   });
 

@@ -373,6 +373,28 @@ where
         self.overlay.contains_key(item_id)
     }
 
+    /// The outbound queue's current depth — how many mutations are enqueued
+    /// and not yet drained. S9's sync-status indicator's "queued" figure.
+    pub fn queue_depth(&self) -> usize {
+        self.cycle.queue().len()
+    }
+
+    /// Every entry the outbound queue has permanently given up on
+    /// (ADR-0007's dead-letter journal) — never pruned, so this always
+    /// reflects the whole history, not just this session's. S9's "1 edit
+    /// didn't apply" affordance reads this directly.
+    pub fn dead_letters(&self) -> &[sync::queue::DeadLetterEntry] {
+        self.cycle.queue().dead_letters()
+    }
+
+    /// The local mirror, serialized whole — S9's mirror download button.
+    /// Always succeeds: every field [`sync::SyncMirror`] carries derives
+    /// `Serialize`, the same guarantee its own persistence already relies
+    /// on.
+    pub fn mirror_snapshot(&self) -> serde_json::Value {
+        serde_json::to_value(self.cycle.mirror()).expect("SyncMirror always serializes")
+    }
+
     /// Every item the mirror knows about live, with every not-yet-confirmed
     /// capture overlaid on top — the shared read underneath both
     /// [`Core::frontier`] and [`Core::triage_inbox`], so an overlaid item is
@@ -937,6 +959,94 @@ mod tests {
             core.frontier().is_empty(),
             "with no server-side item and no overlay, the frontier reverts to server truth"
         );
+    }
+
+    // ------------------------------------------------- S9 sync-status reads
+
+    #[tokio::test]
+    async fn queue_depth_reflects_a_queued_capture_and_drops_once_it_is_sent() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        assert_eq!(core.queue_depth(), 0);
+
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+        assert_eq!(core.queue_depth(), 1);
+
+        let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let write = ScriptedWrite::new(vec![ok(201, r#"{"id":"seed-1","version":1}"#)]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(core.queue_depth(), 0, "a sent create leaves nothing queued");
+    }
+
+    #[tokio::test]
+    async fn dead_letters_is_empty_on_a_fresh_core_and_carries_a_permanent_failure_after_one() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        assert!(core.dead_letters().is_empty());
+
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let write = ScriptedWrite::new(vec![ok(400, r#"{"error":"validation"}"#)]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+
+        let dead_letters = core.dead_letters();
+        assert_eq!(dead_letters.len(), 1);
+        assert_eq!(dead_letters[0].entry.id, id);
+    }
+
+    #[tokio::test]
+    async fn mirror_snapshot_serializes_a_fresh_core_and_stays_readable_json() {
+        let core = Core::new();
+        let snapshot = core.mirror_snapshot();
+        // A fresh mirror is a JSON object (not, say, a bare string or an
+        // opaque encoding) — this is the shape a mirror-download button
+        // writes to a file, so it must be independently readable.
+        assert!(snapshot.is_object());
+    }
+
+    /// S9 round-1 review: `mirror_snapshot` and `dead_letters` are two new
+    /// surfaces a whole mirror/journal crosses on its way out to a UI —
+    /// the same "grep the bytes" proof
+    /// `the_api_key_never_reaches_the_durable_snapshot_bytes` above already
+    /// applies to persisted snapshots, extended to these two in-memory reads
+    /// (`SyncMirror`/`DeadLetterEntry` carry no credential field by
+    /// construction, but a mechanical proof outlives that fact staying
+    /// true).
+    #[tokio::test]
+    async fn the_api_key_never_reaches_the_mirror_snapshot() {
+        let mut core = Core::new();
+        let secret = "sk-do-not-leak-into-the-mirror";
+        core.push_api_key(secret);
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        let serialized = serde_json::to_string(&core.mirror_snapshot()).unwrap();
+        assert!(!serialized.contains(secret));
+    }
+
+    #[tokio::test]
+    async fn the_api_key_never_reaches_a_dead_lettered_entry() {
+        let mut core = Core::new();
+        let secret = "sk-do-not-leak-into-the-journal";
+        core.push_api_key(secret);
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let write = ScriptedWrite::new(vec![ok(400, r#"{"error":"validation"}"#)]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(core.dead_letters().len(), 1, "the run above must have dead-lettered exactly one entry");
+        let serialized = serde_json::to_string(core.dead_letters()).unwrap();
+        assert!(!serialized.contains(secret));
     }
 
     #[tokio::test]

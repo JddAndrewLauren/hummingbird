@@ -6,6 +6,7 @@
 import type {
   CalendarListEntryDTO,
   CurrentNextEventDTO,
+  DeadLetterEntryDTO,
   PollOutcomeName,
   RenderableCurrentNextKind,
   TaskItemDTO,
@@ -65,6 +66,36 @@ export interface TaskState {
   pending: Record<string, boolean>;
   lastCapture: TaskCaptureResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
+  /** When this view learned the last `Core::run` cycle happened (any
+   * trigger, any outcome) — S9's "last sweep" readout. Sampled by
+   * `worker-client.ts` at the moment it processes the `syncOutcome`
+   * broadcast, using this view's own clock — the wire message carries no
+   * `nowMs` of its own (the cycle's real invocation time, sampled inside
+   * `core.worker.ts`, is never round-tripped back), and every view's
+   * broadcast-processing clock reads within a few milliseconds of every
+   * other's regardless, so this is an accurate-enough proxy for "just now"
+   * without needing to widen the protocol. */
+  lastSyncAtMs: number | null;
+  /** Monotonic count of `syncOutcome` broadcasts this view has processed —
+   * incremented by `worker-client.ts` on EVERY cycle, whatever its `kind`.
+   * This is what `useSyncWiring.ts` keys its per-cycle queue-depth /
+   * dead-letter refresh on (round-2 review of PR #181): keying on the
+   * outcome's `kind` froze the refresh after the first cycle (steady state
+   * is `"completed"` forever, and a dead letter arrives INSIDE a completed
+   * outcome — `deadLettered` is a separate field), and keying on the outcome
+   * object's identity works today but is one memoisation away from the same
+   * freeze. A counter changes on every cycle by construction. */
+  syncOutcomeSeq: number;
+  /** The outbound queue's current depth — S9's sync-status "queued"
+   * figure. `null` until the first answer arrives (this view has not asked,
+   * or the core is still loading). */
+  queueDepth: number | null;
+  /** The whole dead-letter journal, as of the last `getDeadLetters`
+   * request — S9's "1 edit didn't apply" affordance. Never pruned
+   * client-side either (mirrors the core's own journal, `sync::queue`'s own
+   * doc), so this only ever grows until a re-apply flow exists to shrink
+   * it. */
+  deadLetters: DeadLetterEntryDTO[];
   /** Set once a `taskEvents` broadcast carries a `credential_needed` event;
    * mirrors `CalendarState.needsReconnect`'s own contract. */
   needsReconnect: boolean;
@@ -97,6 +128,10 @@ const initialTaskState: TaskState = {
   pending: {},
   lastCapture: null,
   lastSyncOutcome: null,
+  lastSyncAtMs: null,
+  syncOutcomeSeq: 0,
+  queueDepth: null,
+  deadLetters: [],
   needsReconnect: false,
 };
 

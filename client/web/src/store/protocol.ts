@@ -143,6 +143,30 @@ export interface TaskEventDTO {
   atMs: number;
 }
 
+/** One field a dead-lettered conflict disagreed on — S9's "1 edit didn't
+ * apply" affordance (`client/ffi-web/src/task_host.rs`'s
+ * `DeadLetterFieldDTO`). `local`/`server` are whatever JSON value that field
+ * held on each side; deliberately `unknown` rather than a narrower type —
+ * this is a display-only diff over an arbitrary entity's fields, not a
+ * value this app ever reads structurally. */
+export interface DeadLetterFieldDTO {
+  field: string;
+  local: unknown;
+  server: unknown;
+}
+
+/** One dead-lettered outbound mutation, as the web host's JSON shape
+ * (`DeadLetterEntryDTO`). `"permanent"` carries `message` and an empty
+ * `fields`; `"conflict"` carries `fields` and no `message` — the two never
+ * both have something to show. */
+export interface DeadLetterEntryDTO {
+  id: string;
+  reason: "permanent" | "conflict";
+  message: string | null;
+  fields: DeadLetterFieldDTO[];
+  atMs: number;
+}
+
 /** What one `Core::run` cycle resolved to — the stable string names
  * `hummingbird-ffi-web`'s `TaskHost::runSync` (`client/ffi-web/src/lib.rs`)
  * resolves to, plus whatever payload S9's sync-status / "1 edit didn't
@@ -184,7 +208,43 @@ export type TaskWorkerRequest =
       trigger: "user" | "timer";
       forceFullSweep: boolean;
       jitterUnit: number;
-    };
+    }
+  /** S9's sync-status "queued" figure. */
+  | { type: "getQueueDepth" }
+  /** S9's "1 edit didn't apply" affordance — fetched on demand rather than
+   * pushed on every cycle, since the journal is small but the full
+   * field/local/server detail is more than a status badge needs. */
+  | { type: "getDeadLetters" }
+  /** S9's mirror download button. */
+  | { type: "getMirrorSnapshot" };
+
+// -- shared cadence coordination (S9 round-1 review, PR #181) --------------
+//
+// ADR-0010's core lives in exactly one `SharedWorker` per origin, so
+// ADR-0007's 60-second cadence must be ONE clock for the whole origin, not
+// one per connected view — `core.worker.ts` owns the timer and the
+// open/reconnect triggers itself (see that file). The one thing it
+// genuinely cannot observe on its own is page visibility: a
+// `SharedWorker`'s global scope has no `document`. These two messages are
+// the only cadence-related traffic that still crosses the view->worker
+// boundary, and neither one reaches either wasm host — `core.worker.ts`'s
+// dispatch intercepts both before routing anything to the calendar or task
+// queues.
+export type SyncCadenceRequest =
+  /** Sent on mount and on every `visibilitychange`. `hidden` is this one
+   * view's own `document.hidden` — the worker aggregates every connected
+   * view's report itself (`worker/visibility-tracker.ts`) so one visible
+   * tab keeps the shared cycle running even while its siblings are
+   * backgrounded. */
+  | { type: "setViewVisibility"; hidden: boolean }
+  /** Sent on a `window` `focus` event. Deliberately not deduplicated across
+   * views the way the timer is: two tabs focusing near-simultaneously firing
+   * two cycles is the same "wasteful but never incorrect" duplicate-gesture
+   * case `core.worker.ts`'s calendar wiring already accepts for its own
+   * request queue (ADR-0010) — an unattended clock multiplying with tab
+   * count is the defect this type exists to close; a human's own actions
+   * are not. */
+  | { type: "syncFocusTrigger" };
 
 export type TaskWorkerResponse =
   | {
@@ -210,7 +270,10 @@ export type TaskWorkerResponse =
    * drain) — the fix for #104's review finding that a destructive
    * single-reader drain would let the first tab to poll swallow an event
    * every other tab needed too. */
-  | { type: "taskEvents"; events: TaskEventDTO[] };
+  | { type: "taskEvents"; events: TaskEventDTO[] }
+  | { type: "queueDepth"; depth: number }
+  | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
+  | { type: "mirrorSnapshot"; mirror: unknown };
 
 // -- worker -> main -----------------------------------------------------
 
