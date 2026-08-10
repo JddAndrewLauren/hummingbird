@@ -55,10 +55,32 @@ ADR-0012/0014) and hands the caller back exactly which live `push_targets`
 rows to send to; the delivery row commits before the caller can possibly
 begin sending, so a crash or retry never double-rings, and zero live
 targets suppresses without logging rather than permanently burning the
-transition. #138 (the periodic sweep, unbuilt) is the intended async
-caller: mint/ratchet the alert, then call `deliver` once per matching rule
-with rules-engine's `Verdict::tier`. Still no production deploy (that is #95's
-human gate H3) — `wrangler dev` + `server/scripts/smoke.sh` locally,
+transition. `hummingbird_authority::sweep_tick` (#138) is that async
+caller's synchronous half: the DO alarm's repeat-tick evaluation, at the
+`ALARM_INTERVAL_MS` interval (15 minutes, a readable `const` rather than a
+buried literal, so #140 can warn when a rule duration is shorter than it).
+Every enabled rule against every non-archived item, presented as a
+synthetic `item_threshold` event; each match mints/ratchets the alert
+through the exact same upsert `POST /api/alerts` uses (`item-threshold/v1`,
+`source_key` = `item:<id>`, ADR-0014's state-source convention — occurrence
+identity lives in the alert's lifecycle, not the tick), then calls
+`deliver` once per matching rule. A repeat tick that still matches is
+therefore just another call into #139's frozen dedupe key, not a new
+mechanism: the re-raise keeps the alert's `raised_at`, so `deliver` finds
+the same `(alert_id, rule_id, generation, severity)` already logged and
+suppresses it. The sweep never writes to `items` or `rules` — a tick is
+read-then-mint, never a write to what it read. The worker shim
+(`hummingbird-authority-worker`) supplies the DO's `alarm()` handler:
+it drives `sweep_tick`, reschedules the next tick unconditionally (even if
+the tick itself errored, so one bad tick can't stop the clock), and is
+where a future issue wires the actual FCM HTTP send for each
+`DeliveryOutcome::Logged` target — `sweep_tick` only decides and hands back
+what to send, exactly as `deliver` does one layer down. Not yet built:
+ADR-0014's separate "resolution pass" (stamping `resolved_at` on an
+`item-threshold/v1` alert once its item is done, archived, deleted, or no
+longer matches) — until it lands, an alert minted for an item that stops
+matching stays live until hand-acked. Still no production deploy (that is
+#95's human gate H3) — `wrangler dev` + `server/scripts/smoke.sh` locally,
 `.github/workflows/server.yml` in CI.
 
 ## The client sync engine

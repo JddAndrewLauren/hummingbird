@@ -30,7 +30,9 @@ pub use api::{
     StepPatch, VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, Setting};
-pub use deadline::{deadline_sort_key, is_valid_deadline, parse_duration, shift, DurationUnit};
+pub use deadline::{
+    deadline_sort_key, is_valid_deadline, now_as_deadline, parse_duration, shift, DurationUnit,
+};
 pub use event::{
     core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,

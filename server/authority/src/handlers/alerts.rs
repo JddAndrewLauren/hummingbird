@@ -38,6 +38,22 @@ pub fn ingest(
         return Ok(empty_status(403));
     }
 
+    let (status, alert) = upsert(sql, now_ms, ingest)?;
+    Ok(json(status, &alert))
+}
+
+/// The mint/ratchet core, HTTP-agnostic — shared verbatim by the webhook
+/// ingest route above and #138's internal DO-alarm sweep, which mints
+/// `item-threshold/v1` alerts through this exact same path rather than a
+/// parallel one (the brief's "through the same path as every other kind").
+/// Returns the HTTP status the caller would have answered with (201 first
+/// raise, 200 no-op-or-ratcheted re-raise) alongside the resulting row —
+/// the sweep ignores the status and uses only the alert.
+pub(crate) fn upsert(
+    sql: &dyn Sql,
+    now_ms: i64,
+    ingest: AlertIngest,
+) -> Result<(u16, Alert), SqlError> {
     let Some(row) = select_by_identity(sql, &ingest.source, &ingest.source_key)? else {
         // First raise. The id is minted deterministically from the identity
         // — no entropy, and a crashed-and-replayed first raise lands on the
@@ -76,7 +92,7 @@ pub fn ingest(
             ],
         )?;
         write_meta_version(sql, version)?;
-        return Ok(json(201, &alert));
+        return Ok((201, alert));
     };
 
     // Re-raise: the source-owned fields are set absolutely from the payload
@@ -109,7 +125,7 @@ pub fn ingest(
         ..current.clone()
     };
     if next == current {
-        return Ok(json(200, &current));
+        return Ok((200, current));
     }
 
     let version = read_meta_version(sql)? + 1;
@@ -129,7 +145,7 @@ pub fn ingest(
         ],
     )?;
     write_meta_version(sql, version)?;
-    Ok(json(200, &Alert { version, ..next }))
+    Ok((200, Alert { version, ..next }))
 }
 
 /// The device lane: dismiss (or un-dismiss) under CAS — the only alert
