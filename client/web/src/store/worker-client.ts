@@ -165,9 +165,16 @@ export function attachWorkerClient(
         }
         return;
       case "queueDepth":
+        // Arrives both in reply to `getQueueDepth` (once, on becoming
+        // ready) and unsolicited at the tail of every cycle (issue #191,
+        // protocol.ts's `queueDepth` doc) — this handler does not need to
+        // tell the two apart, since both are the same "here is the current
+        // depth" fact.
         store.setTaskState({ queueDepth: message.depth });
         return;
       case "deadLetters":
+        // Same dual origin as `queueDepth` above — see protocol.ts's
+        // `deadLetters` doc.
         store.setTaskState({ deadLetters: message.entries });
         return;
       case "taskHostUnavailable":

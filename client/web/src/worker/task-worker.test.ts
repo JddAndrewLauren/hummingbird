@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskWorkerResponse } from "../store/protocol";
+import { PortRegistry, type PortLike } from "./ports";
 import { createTaskRequestQueue, handleTaskRequest, type TaskHostLike } from "./task-worker";
 
 function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
@@ -222,6 +223,9 @@ describe("handleTaskRequest", () => {
     );
 
     expect(host.runSync).toHaveBeenCalledWith(1_000, "user", true, 0);
+    // Issue #191: the tail push — `queueDepth`/`deadLetters` come after the
+    // outcome (and any drained task events), unsolicited, using the same
+    // fakeHost defaults `getQueueDepth`/`getDeadLetters` themselves use.
     expect(posted).toEqual([
       {
         type: "syncOutcome",
@@ -231,10 +235,12 @@ describe("handleTaskRequest", () => {
         wasFullSweep: false,
         deadLettered: 0,
       },
+      { type: "queueDepth", depth: 0 },
+      { type: "deadLetters", entries: [] },
     ]);
   });
 
-  it("runSync also drains and posts a credential-needed event when the cycle held", async () => {
+  it("runSync also drains and posts a credential-needed event when the cycle held, before the tail push", async () => {
     const host = fakeHost({
       runSync: vi.fn().mockResolvedValue(
         '{"kind":"credential_needed","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":0}',
@@ -257,7 +263,37 @@ describe("handleTaskRequest", () => {
         deadLettered: 0,
       },
       { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 9000 }] },
+      { type: "queueDepth", depth: 0 },
+      { type: "deadLetters", entries: [] },
     ]);
+  });
+
+  it('runSync drops a "busy" queue-depth read at the cycle tail instead of posting an empty reading', async () => {
+    const host = fakeHost({
+      queueDepth: vi.fn().mockReturnValue('{"kind":"busy","depth":0}'),
+    });
+
+    const posted = await run(
+      { type: "runSync", nowMs: 1_000, trigger: "user", forceFullSweep: false, jitterUnit: 0 },
+      host,
+    );
+
+    expect(posted.some((response) => response.type === "queueDepth")).toBe(false);
+    expect(posted.some((response) => response.type === "deadLetters")).toBe(true);
+  });
+
+  it('runSync drops a "busy" dead-letters read at the cycle tail instead of posting an empty reading', async () => {
+    const host = fakeHost({
+      deadLetters: vi.fn().mockReturnValue('{"kind":"busy","entries":[]}'),
+    });
+
+    const posted = await run(
+      { type: "runSync", nowMs: 1_000, trigger: "user", forceFullSweep: false, jitterUnit: 0 },
+      host,
+    );
+
+    expect(posted.some((response) => response.type === "deadLetters")).toBe(false);
+    expect(posted.some((response) => response.type === "queueDepth")).toBe(true);
   });
 
   // ---------------------------------------------- S9 sync-status reads
@@ -419,4 +455,66 @@ describe("createTaskRequestQueue", () => {
       consoleError.mockRestore();
     });
   });
+});
+
+// ---------------------------------------------- issue #191: cycle-tail push
+
+/** A `PortLike` whose `postMessage` calls are counted, wired through a real
+ * `PortRegistry` — the acceptance criterion is about `PortRegistry.broadcast`
+ * fan-out, not just this module in isolation, so the test exercises the same
+ * `post` callable `core.worker.ts` actually wires (`registry.broadcast`). */
+function countingPort(): PortLike & { count: () => number } {
+  let calls = 0;
+  return {
+    onmessage: null,
+    start: () => {},
+    postMessage: () => {
+      calls += 1;
+    },
+    count: () => calls,
+  };
+}
+
+describe("runSync's cycle-tail push scales with view count in messages, not in wasm calls", () => {
+  it.each([1, 3])(
+    "reads the queue depth and dead letters exactly once per cycle for N=%i connected views",
+    async (n) => {
+      const host = fakeHost();
+      const registry = new PortRegistry();
+      registry.activate(async () => {}, () => 1);
+      const ports = Array.from({ length: n }, () => countingPort());
+      for (const port of ports) {
+        registry.connect(port);
+      }
+      // Each `connect` above already posted its own `ready` handshake —
+      // record it here so the counts below reflect only the cycle-tail
+      // push, not the connection handshake.
+      const handshakeCounts = ports.map((port) => port.count());
+
+      const enqueue = createTaskRequestQueue(host, (response) => registry.broadcast(response));
+
+      await enqueue({
+        type: "runSync",
+        nowMs: 1_000,
+        trigger: "user",
+        forceFullSweep: false,
+        jitterUnit: 0,
+      });
+
+      // The wasm host is read exactly once per cycle regardless of N — this
+      // is the O(N²) -> O(N) fix: `queueDepth`/`deadLetters` used to be
+      // re-requested by every connected view every cycle.
+      expect(host.queueDepth).toHaveBeenCalledTimes(1);
+      expect(host.deadLetters).toHaveBeenCalledTimes(1);
+
+      // Each of the three broadcasts (syncOutcome, queueDepth, deadLetters)
+      // reaches every connected port — that fan-out is still, correctly,
+      // O(N), not O(N²): total messages scale linearly with view count.
+      const totalMessagesThisCycle = ports.reduce(
+        (sum, port, i) => sum + (port.count() - handshakeCounts[i]),
+        0,
+      );
+      expect(totalMessagesThisCycle).toBe(3 * n);
+    },
+  );
 });

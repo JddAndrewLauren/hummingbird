@@ -78,20 +78,32 @@ export interface TaskState {
   lastSyncAtMs: number | null;
   /** Monotonic count of `syncOutcome` broadcasts this view has processed —
    * incremented by `worker-client.ts` on EVERY cycle, whatever its `kind`.
-   * This is what `useSyncWiring.ts` keys its per-cycle queue-depth /
-   * dead-letter refresh on (round-2 review of PR #181): keying on the
-   * outcome's `kind` froze the refresh after the first cycle (steady state
-   * is `"completed"` forever, and a dead letter arrives INSIDE a completed
-   * outcome — `deadLettered` is a separate field), and keying on the outcome
-   * object's identity works today but is one memoisation away from the same
-   * freeze. A counter changes on every cycle by construction. */
+   * Until issue #191, this was what `useSyncWiring.ts` keyed its per-cycle
+   * queue-depth / dead-letter refresh effect on (round-2 review of PR #181):
+   * keying on the outcome's `kind` froze the refresh after the first cycle
+   * (steady state is `"completed"` forever, and a dead letter arrives
+   * INSIDE a completed outcome — `deadLettered` is a separate field), and
+   * keying on the outcome object's identity works today but is one
+   * memoisation away from the same freeze. A counter changes on every cycle
+   * by construction.
+   *
+   * Issue #191 moved the per-cycle queue-depth/dead-letter refresh itself
+   * into the worker (an unsolicited push at the cycle tail, protocol.ts's
+   * `queueDepth`/`deadLetters` docs), which removed `useSyncWiring.ts`'s
+   * only consumer of this field — it is deliberately kept anyway, still
+   * bumped every cycle and still asserted by `worker-client.test.ts`,
+   * because a per-cycle "a cycle just completed" signal is generically
+   * useful even with no current reader; see the PR that closed #191 for the
+   * explicit call-out this is not a silent, unexplained deletion. */
   syncOutcomeSeq: number;
   /** The outbound queue's current depth — S9's sync-status "queued"
    * figure. `null` until the first answer arrives (this view has not asked,
    * or the core is still loading). */
   queueDepth: number | null;
-  /** The whole dead-letter journal, as of the last `getDeadLetters`
-   * request — S9's "1 edit didn't apply" affordance. Never pruned
+  /** The whole dead-letter journal, as of the last `deadLetters` broadcast
+   * — S9's "1 edit didn't apply" affordance. Kept fresh by the worker's own
+   * unsolicited push at the tail of every cycle as well as by an explicit
+   * `getDeadLetters` request (issue #191). Never pruned
    * client-side either (mirrors the core's own journal, `sync::queue`'s own
    * doc), so this only ever grows until a re-apply flow exists to shrink
    * it. */
