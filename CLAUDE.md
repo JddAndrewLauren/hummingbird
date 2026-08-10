@@ -63,6 +63,42 @@ caller-injected on every call — bare `wasm32-unknown-unknown` has no clock or
 RNG that does not panic. There is no `docs/sync.md`; the map is the module
 docs in `client/core/src/sync/mod.rs` and each submodule's own header.
 
+## The web worker layer
+
+`client/web/src/worker/` is where the device half meets the browser: **one
+`SharedWorker` per origin, N views** (ADR-0010, #126). `core.worker.ts` is
+the shim only — it loads the wasm core with a dynamic `import()`, wires
+`ports.ts`'s `PortRegistry` (the port list, the per-port `ready`/`error`
+handshake, the broadcast fan-out; a port that connects before the core
+exists is queued, never dropped), and owns **ADR-0007's single 60-second
+interval for the whole origin**, because a timer in a per-view hook
+multiplies with tab count and blows the ADR's ~60 req/hr budget. Everything
+decidable is a sibling pure module a vitest (node) test can execute:
+`dispatch.ts` (cadence / task / calendar routing, plus the app-open sweep,
+which fires on the first `pushTaskApiKey` — never at activation, when no
+credential is known yet), `request-router.ts`, `task-worker.ts` and
+`calendar-worker.ts` (the two wasm hosts' own serial queues and JSON
+parsing), `visibility-tracker.ts` (a `SharedWorker` has no `document`, so
+each view reports its own `document.hidden`). The view side is
+`store/protocol.ts` (the whole wire contract, push-only worker→view),
+`store/worker-client.ts` (the only translation of that protocol into store
+writes), `shell/useSyncWiring.ts` and `shell/useTaskTokenWiring.ts` (#106's
+device token: entry, rest, re-prompt — the key crosses into the core and is
+never read back out through any response), and `shell/sync-status.ts` (the
+staleness readout; an outcome that did not run must never read as success).
+
+**The invariant: no top-level `await` may enter `core.worker.ts`'s static
+import graph.** `vite-plugin-top-level-await` wraps such a module in an
+async IIFE, which pushes the `self.onconnect` assignment past the first
+turn — and a `connect` event has no platform buffering, so the connect
+queued by the very view that STARTS the SharedWorker is silently dropped and
+that view hangs on "Loading core…" forever. This is why the wasm module is
+imported dynamically inside an async IIFE. Adding a static import to that
+file, or a top-level `await` to anything it imports, re-breaks it;
+`worker/sync-timer-ownership.test.ts` pins what it can from the source text,
+but the real proof is the built bundle (zero `await` at function-depth ≤ 1
+before `self.onconnect =`).
+
 ## The design system
 
 The UI brand is the "Hummingbird Design System" project on claude.ai/design;

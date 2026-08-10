@@ -10,22 +10,31 @@ import { Header } from "./shell/Header";
 import { NavRail } from "./shell/NavRail";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
+import { syncStatusLabel } from "./shell/sync-status";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
+import { useOnlineStatus } from "./shell/useOnlineStatus";
+import { useSyncWiring } from "./shell/useSyncWiring";
+import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
+import { taskTokenUiState } from "./task/token-ui";
 import { useStore } from "./store/useStore";
 import type { WorkerLike } from "./store/worker-client";
 import { toggledPreference } from "./theme/theme";
 import { useTheme } from "./theme/useTheme";
 
 function realWorker(): WorkerLike {
-  return new Worker(new URL("./worker/core.worker.ts", import.meta.url), {
+  // ADR-0010 (#126): one core per origin, in a `SharedWorker`. This
+  // component talks to its `port`, not the `SharedWorker` object itself.
+  const shared = new SharedWorker(new URL("./worker/core.worker.ts", import.meta.url), {
     type: "module",
-  }) as unknown as WorkerLike;
+  });
+  return shared.port as unknown as WorkerLike;
 }
 
 interface AppProps {
-  /** The worker `App` talks to. Defaults to a lazily-constructed real Web
-   * Worker; overridable so this component could be driven by a fake in a
-   * future DOM-environment test without touching production wiring. */
+  /** The port `App` talks to. Defaults to a lazily-constructed connection to
+   * the real `SharedWorker`; overridable so this component could be driven
+   * by a fake in a future DOM-environment test without touching production
+   * wiring. */
   worker?: WorkerLike;
 }
 
@@ -43,6 +52,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const apiVersion = useStore((state) => state.apiVersion);
   const error = useStore((state) => state.error);
   const calendar = useStore((state) => state.calendar);
+  const task = useStore((state) => state.task);
 
   // A lazy initializer rather than a ref: reading `ref.current` during render
   // is what React's rules forbid, and this needs to be constructed exactly
@@ -61,6 +71,27 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     handleCalendarSelectionChange,
     handleRefreshClick,
   } = useCalendarWiring(worker, status, calendar);
+  const {
+    hasToken: hasTaskToken,
+    enteredAtMs: taskTokenEnteredAtMs,
+    handleSubmitToken: handleSubmitTaskToken,
+    handleForgetToken: handleForgetTaskToken,
+  } = useTaskTokenWiring(worker, status);
+  const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
+
+  const online = useOnlineStatus();
+  const { nowMs: syncNowMs, handleDownloadMirror } = useSyncWiring(
+    worker,
+    status,
+    task.syncOutcomeSeq,
+  );
+  const syncLabel = syncStatusLabel({
+    online,
+    lastSyncOutcome: task.lastSyncOutcome,
+    lastSyncAtMs: task.lastSyncAtMs,
+    queueDepth: task.queueDepth,
+    nowMs: syncNowMs,
+  });
 
   const tile = contextTileProps(calendar, nowMs);
 
@@ -91,7 +122,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       <main style={{ display: "flex", flex: 1, minWidth: 0, flexDirection: "column" }}>
         <Header
           title={SCREEN_TITLES[screen]}
-          syncLabel={demo?.syncBadge}
+          // The demo badge stands in for a real cycle only in demo mode;
+          // everywhere else this is now backed by one (S9) — see
+          // `sync-status.ts`.
+          syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={canRefresh ? handleRefreshClick : undefined}
           onCapture={() => setScreen("triage")}
         />
@@ -122,6 +156,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onConnect={() => void handleConnectClick()}
               onSelectionChange={handleCalendarSelectionChange}
               onRefresh={handleRefreshClick}
+              taskTokenState={taskTokenState}
+              taskTokenEnteredAtMs={taskTokenEnteredAtMs}
+              onSubmitTaskToken={handleSubmitTaskToken}
+              onForgetTaskToken={() => void handleForgetTaskToken()}
+              task={task}
+              online={online}
+              syncNowMs={syncNowMs}
+              onDownloadMirror={handleDownloadMirror}
             />
           )}
         </div>

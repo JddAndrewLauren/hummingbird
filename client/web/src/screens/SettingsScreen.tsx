@@ -4,12 +4,22 @@ import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { CalendarPicker } from "../components/domain/CalendarPicker";
+import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import type { DemoData } from "../fixtures/demo";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
-import type { CalendarState, CoreStatus } from "../store/store";
+import {
+  deadLetterHeading,
+  syncStatusLabel,
+  syncStatusTone,
+  syncStatusToneWord,
+} from "../shell/sync-status";
+import type { DeadLetterEntryDTO } from "../store/protocol";
+import type { CalendarState, CoreStatus, TaskState } from "../store/store";
+import type { TaskTokenSubmitOutcome } from "../task/token";
+import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 
@@ -32,6 +42,155 @@ function Note({ children }: { children: ReactNode }) {
   );
 }
 
+/** The one place a view can say that the task binding is dead (post-batch
+ * review of PR #185). The calendar side is genuinely still ready — #171
+ * decoupled the two on purpose — so this is a card inside Settings, not the
+ * whole-app `{type:"error"}` screen; but without it every capture, sync and
+ * pushed token vanished into a `console.error` while the UI looked healthy.
+ * Honesty over reassurance (design README): state what is broken, then the
+ * one action that can fix it. The underlying message is kept in the mono
+ * meta style — it is machine text, not a sentence. */
+function TaskHostUnavailableCard({ message }: { message: string }) {
+  return (
+    <>
+      <span className="hb-meta">tasks</span>
+      <Card
+        padding="var(--space-5)"
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+      >
+        <Badge dot tone="danger" style={{ alignSelf: "flex-start" }}>
+          Unavailable
+        </Badge>
+        <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          The task core did not start, so nothing captured here is being saved or synced. Reload to
+          try again.
+        </p>
+        <span
+          style={{
+            font: "var(--type-meta)",
+            letterSpacing: "var(--tracking-meta)",
+            color: "var(--text-muted)",
+            overflowWrap: "anywhere",
+          }}
+        >
+          {message}
+        </span>
+      </Card>
+    </>
+  );
+}
+
+/** The submit outcomes the form itself needs to say something about — every
+ * `TaskTokenSubmitOutcome` except `"ok"`, which clears the field instead of
+ * showing an error. */
+type TokenFormError = Exclude<TaskTokenSubmitOutcome, "ok">;
+
+const TOKEN_FORM_ERROR_COPY: Record<TokenFormError, string> = {
+  blank: "Enter a token before saving.",
+  storeError: "Could not save the token on this device. Try again.",
+};
+
+/** The device-token entry field, shared between the first-run "unset" state
+ * and the 401 "reprompt" state — same form, different surrounding copy.
+ * `type="password"` keeps the value out of the on-screen render (shoulder
+ * surfing) and Chrome's enhanced-spellcheck exfiltration path;
+ * `autoComplete="off"` keeps a long-lived bearer token out of the browser's
+ * saved-password store, which is scoped to this origin and outlives
+ * "forget token"; `spellCheck={false}` is the same exfiltration surface
+ * `autoComplete` addresses, belt-and-braces since some browsers spellcheck
+ * password fields anyway. The field clears on a successful submit so a
+ * stale value never lingers on screen once it is safely in IndexedDB. */
+function TokenEntryForm({
+  onSubmit,
+}: {
+  onSubmit: (input: string) => Promise<TaskTokenSubmitOutcome>;
+}) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<TokenFormError | null>(null);
+
+  async function submit() {
+    const outcome = await onSubmit(value);
+    if (outcome === "ok") {
+      setValue("");
+      setError(null);
+      return;
+    }
+    setError(outcome);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      <Input
+        label="Device token"
+        placeholder="hb_device_..."
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        error={error === null ? undefined : TOKEN_FORM_ERROR_COPY[error]}
+        onChange={(event) => {
+          setValue(event.target.value);
+          setError(null);
+        }}
+      />
+      <Button onClick={() => void submit()} fullWidth>
+        Save token
+      </Button>
+    </div>
+  );
+}
+
+/** One dead-lettered entry's field-level detail — S9's "1 edit didn't
+ * apply" affordance. No dedicated Table component exists in the kit (16
+ * components, none of them tabular), so this renders as a bordered list of
+ * rows in the mono meta style the rest of the app already uses for computed
+ * values, the same idiom `TriageScreen.tsx`'s capture rows use. */
+function DeadLetterRow({ entry }: { entry: DeadLetterEntryDTO }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-2)",
+        padding: "var(--space-4) 0",
+        borderTop: "1px solid var(--border-subtle)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span className="hb-meta">{entry.id}</span>
+        <span className="hb-meta">{new Date(entry.atMs).toISOString()}</span>
+      </div>
+      {entry.reason === "permanent" ? (
+        <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          {entry.message ?? "Rejected — no further detail."}
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {entry.fields.map((field) => (
+            <div
+              key={field.field}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "auto 1fr 1fr",
+                gap: "var(--space-4)",
+                alignItems: "baseline",
+              }}
+            >
+              <span className="hb-meta">{field.field}</span>
+              <span style={{ font: "var(--type-body-sm)", color: "var(--text-primary)" }}>
+                local: {JSON.stringify(field.local)}
+              </span>
+              <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+                server: {JSON.stringify(field.server)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export interface SettingsScreenProps {
   demo: DemoData | null;
   status: CoreStatus;
@@ -43,6 +202,17 @@ export interface SettingsScreenProps {
   onConnect: () => void;
   onSelectionChange: (selectedCalendarIds: string[]) => void;
   onRefresh: () => void;
+  /** #106/S8's device-token surface — entry, rest, and re-prompt. */
+  taskTokenState: TaskTokenUiState;
+  taskTokenEnteredAtMs: number | null;
+  onSubmitTaskToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
+  onForgetTaskToken: () => void;
+  /** S9's sync-status affordance: last sweep, queue depth, the dead-letter
+   * journal, and the mirror download. */
+  task: TaskState;
+  online: boolean;
+  syncNowMs: number;
+  onDownloadMirror: () => void;
 }
 
 export function SettingsScreen({
@@ -56,6 +226,14 @@ export function SettingsScreen({
   onConnect,
   onSelectionChange,
   onRefresh,
+  taskTokenState,
+  taskTokenEnteredAtMs,
+  onSubmitTaskToken,
+  onForgetTaskToken,
+  task,
+  online,
+  syncNowMs,
+  onDownloadMirror,
 }: SettingsScreenProps) {
   const unavailableIds = unavailableSelectedIds(
     calendar.selectedCalendarIds,
@@ -199,6 +377,103 @@ export function SettingsScreen({
                 opt-in is per-device · polled every 15m in the foreground
               </span>
             </Card>
+          </>
+        ) : null}
+
+        {status === "ready" ? (
+          <>
+            <span className="hb-meta">device token</span>
+            <Card
+              padding="var(--space-5)"
+              style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+            >
+              <p
+                style={{
+                  font: "var(--type-body-sm)",
+                  color:
+                    taskTokenState === "reprompt"
+                      ? "var(--status-warn-fg)"
+                      : "var(--text-secondary)",
+                }}
+              >
+                {taskQueueStatusCopy(taskTokenState)}
+              </p>
+              {taskTokenState === "resting" ? (
+                <>
+                  {taskTokenEnteredAtMs !== null ? (
+                    <span className="hb-meta">entered {formatEnteredAt(taskTokenEnteredAtMs)}</span>
+                  ) : null}
+                  <Button
+                    variant="secondary"
+                    iconLeft="x"
+                    onClick={onForgetTaskToken}
+                    style={{ alignSelf: "flex-start" }}
+                  >
+                    Forget token
+                  </Button>
+                </>
+              ) : (
+                <TokenEntryForm onSubmit={onSubmitTaskToken} />
+              )}
+            </Card>
+          </>
+        ) : null}
+
+        {task.hostError !== null ? <TaskHostUnavailableCard message={task.hostError} /> : null}
+
+        {status === "ready" ? (
+          <>
+            <span className="hb-meta">sync</span>
+            <Card
+              padding="var(--space-5)"
+              style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ font: "var(--type-body-strong)", color: "var(--text-primary)" }}>
+                  Outbound queue
+                </span>
+                <Badge mono>{task.queueDepth ?? 0} queued</Badge>
+              </div>
+              {(() => {
+                const syncStatusInput = {
+                  online,
+                  lastSyncOutcome: task.lastSyncOutcome,
+                  lastSyncAtMs: task.lastSyncAtMs,
+                  queueDepth: task.queueDepth,
+                  nowMs: syncNowMs,
+                };
+                const tone = syncStatusTone(syncStatusInput);
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                    <Badge dot mono tone={tone} style={{ alignSelf: "flex-start" }}>
+                      {syncStatusToneWord(syncStatusInput)}
+                    </Badge>
+                    <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+                      {syncStatusLabel(syncStatusInput)}
+                    </p>
+                  </div>
+                );
+              })()}
+              <Button
+                variant="secondary"
+                iconLeft="download"
+                onClick={onDownloadMirror}
+                style={{ alignSelf: "flex-start" }}
+              >
+                Download mirror
+              </Button>
+            </Card>
+
+            {task.deadLetters.length > 0 ? (
+              <>
+                <span className="hb-meta">{deadLetterHeading(task.deadLetters.length)}</span>
+                <Card padding="var(--space-5)">
+                  {task.deadLetters.map((entry) => (
+                    <DeadLetterRow key={`${entry.id}-${entry.atMs}`} entry={entry} />
+                  ))}
+                </Card>
+              </>
+            ) : null}
           </>
         ) : null}
       </Aside>

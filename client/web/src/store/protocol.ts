@@ -1,22 +1,24 @@
-// The message protocol between the main thread and the core Web Worker
-// (#69). Shared by worker-client.ts (main thread) and worker/core.worker.ts
-// (the worker itself) so both sides stay in sync on the wire shape.
+// The message protocol between a view (main thread) and the core
+// SharedWorker (ADR-0010, #126 — one core per origin, formerly a dedicated
+// Worker per app instance, #69). Shared by worker-client.ts (a view) and
+// worker/core.worker.ts (the worker itself) so both sides stay in sync on
+// the wire shape.
 //
-// The worker->main direction is push-only, unprompted at module evaluation
+// The worker->view direction is push-only, unprompted per connecting port
 // (the "ready"/"error" handshake) — see the comment below for why. The
-// main->worker direction (issue #73's calendar requests) is different: the
-// main thread only ever sends a `CalendarWorkerRequest` after observing
-// "ready", so there is no handshake to race — by the time "ready" is
-// observed, the worker has already synchronously attached its `onmessage`
-// listener (see core.worker.ts).
+// view->worker direction (issue #73's calendar requests) is different: a
+// view only ever sends a `CalendarWorkerRequest` after observing "ready" on
+// its own port, so there is no handshake to race — by the time "ready" is
+// observed, the worker has already synchronously attached that port's
+// `onmessage` listener (see core.worker.ts / ports.ts).
 //
 // This is what makes the *ready* handshake immune to bundler transforms (PR
 // #79 round-2 blocker): vite-plugin-top-level-await wraps the worker module
-// in an async IIFE, so nothing here is guaranteed to run before the main
-// thread's messages arrive; a request/response handshake AT CONSTRUCTION
-// TIME therefore drops the request. In the worker->main direction there is
-// no such race: the main thread attaches its listener synchronously in the
-// same task that constructs the Worker, before any worker message can be
+// in an async IIFE, so nothing here is guaranteed to run before a view's
+// messages arrive; a request/response handshake AT CONNECTION TIME therefore
+// drops the request. In the worker->view direction there is no such race:
+// each view attaches its port's listener synchronously in the same task
+// that constructs the SharedWorker, before any message on that port can be
 // dispatched.
 
 /** One host-visible signal that a provider's credential no longer works. */
@@ -86,6 +88,207 @@ export type CalendarWorkerRequest =
    * pushed, so the picker's lookup costs the host nothing extra. */
   | { type: "listCalendars" };
 
+// -- task binding (#105/S7) -------------------------------------------------
+//
+// The owned-schema counterpart to the calendar wiring above, one door into
+// #104's `Core` instead of #72's `ContextPoller`. It gets its own single-file
+// request queue (`worker/task-worker.ts`'s `createTaskRequestQueue`) rather
+// than sharing the calendar one: the two wrap independent Rust objects with
+// independent re-entrancy guards, so serialising them together would only
+// buy incidental ordering neither side depends on. `PortRegistry` (ports.ts)
+// does not care which queue a request lands in — `core.worker.ts`'s combined
+// dispatcher (`worker/request-router.ts`) is what tells them apart, by
+// `type`.
+
+/** The six-stage lifecycle name the owned schema's `Stage` enum serializes
+ * to (`server/domain/src/item.rs`; snake_case, byte-for-byte the DDL `CHECK`
+ * literal). */
+export type TaskStageName =
+  | "triage"
+  | "grilling"
+  | "ready"
+  | "in_progress"
+  | "blocked"
+  | "done";
+
+/** One `items` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Item`, camelCased. */
+export interface TaskItemDTO {
+  id: string;
+  seq: number | null;
+  title: string;
+  description: string | null;
+  stage: TaskStageName;
+  size: "quick" | "short" | "deep" | null;
+  energy: "low" | "medium" | "high" | null;
+  context: string | null;
+  priority: number;
+  projectId: string | null;
+  projectPos: number | null;
+  dueDate: string | null;
+  scheduledDate: string | null;
+  source: string | null;
+  sourceKey: string | null;
+  sourceUrl: string | null;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  version: number;
+}
+
+/** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
+ * JSON shape. `"credential_needed"` is the only kind `Core` produces today. */
+export interface TaskEventDTO {
+  kind: "credential_needed";
+  atMs: number;
+}
+
+/** One field a dead-lettered conflict disagreed on — S9's "1 edit didn't
+ * apply" affordance (`client/ffi-web/src/task_host.rs`'s
+ * `DeadLetterFieldDTO`). `local`/`server` are whatever JSON value that field
+ * held on each side; deliberately `unknown` rather than a narrower type —
+ * this is a display-only diff over an arbitrary entity's fields, not a
+ * value this app ever reads structurally. */
+export interface DeadLetterFieldDTO {
+  field: string;
+  local: unknown;
+  server: unknown;
+}
+
+/** One dead-lettered outbound mutation, as the web host's JSON shape
+ * (`DeadLetterEntryDTO`). `"permanent"` carries `message` and an empty
+ * `fields`; `"conflict"` carries `fields` and no `message` — the two never
+ * both have something to show. */
+export interface DeadLetterEntryDTO {
+  id: string;
+  reason: "permanent" | "conflict";
+  message: string | null;
+  fields: DeadLetterFieldDTO[];
+  atMs: number;
+}
+
+/** What one `Core::run` cycle resolved to — the stable string names
+ * `hummingbird-ffi-web`'s `TaskHost::runSync` (`client/ffi-web/src/lib.rs`)
+ * resolves to, plus whatever payload S9's sync-status / "1 edit didn't
+ * apply" affordance reads. `"busy"` is the same never-in-practice signal the
+ * calendar binding's `PollOutcomeName` documents — the task binding's own
+ * single-file queue means it should never be observed either. */
+export type TaskRunOutcomeKind =
+  | "no_credential"
+  | "held"
+  | "skipped"
+  | "blocked"
+  | "credential_needed"
+  | "persist_failed"
+  | "pull_failed"
+  | "completed"
+  | "busy";
+
+export type TaskWorkerRequest =
+  /** The host calls this once a device token is known (startup, or a
+   * rotation) — never in response to anything the worker posted back,
+   * because nothing the worker posts back ever carries the key. */
+  | { type: "pushTaskApiKey"; apiKey: string }
+  /** "Forget token" (#106/S8): clears the core's in-memory credential.
+   * Carries nothing — there is no key to carry — and gets no reply; the
+   * host fires this and moves on. Never touches the mirror or the queue. */
+  | { type: "clearTaskApiKey" }
+  /** `seed` mints the deterministic id `Core::capture` derives from it
+   * (`client/core/src/sync/write/id.rs`) — caller-supplied so the view that
+   * issued the capture can match its own seed back against the
+   * `captureResult` broadcast (see `TaskWorkerResponse`), since the
+   * worker->view direction never replies to just one sender. */
+  | { type: "capture"; seed: string; title: string; stage: TaskStageName; nowMs: number }
+  | { type: "getFrontier" }
+  | { type: "getTriageInbox" }
+  | { type: "isPending"; itemId: string }
+  | {
+      type: "runSync";
+      nowMs: number;
+      trigger: "user" | "timer";
+      forceFullSweep: boolean;
+      jitterUnit: number;
+    }
+  /** S9's sync-status "queued" figure. */
+  | { type: "getQueueDepth" }
+  /** S9's "1 edit didn't apply" affordance — fetched on demand rather than
+   * pushed on every cycle, since the journal is small but the full
+   * field/local/server detail is more than a status badge needs. */
+  | { type: "getDeadLetters" }
+  /** S9's mirror download button. */
+  | { type: "getMirrorSnapshot" };
+
+// -- shared cadence coordination (S9 round-1 review, PR #181) --------------
+//
+// ADR-0010's core lives in exactly one `SharedWorker` per origin, so
+// ADR-0007's 60-second cadence must be ONE clock for the whole origin, not
+// one per connected view — `core.worker.ts` owns the timer and the
+// open/reconnect triggers itself (see that file). The one thing it
+// genuinely cannot observe on its own is page visibility: a
+// `SharedWorker`'s global scope has no `document`. These two messages are
+// the only cadence-related traffic that still crosses the view->worker
+// boundary, and neither one reaches either wasm host — `core.worker.ts`'s
+// dispatch intercepts both before routing anything to the calendar or task
+// queues.
+export type SyncCadenceRequest =
+  /** Sent on mount and on every `visibilitychange`. `hidden` is this one
+   * view's own `document.hidden` — the worker aggregates every connected
+   * view's report itself (`worker/visibility-tracker.ts`) so one visible
+   * tab keeps the shared cycle running even while its siblings are
+   * backgrounded. */
+  | { type: "setViewVisibility"; hidden: boolean }
+  /** Sent on a `window` `focus` event. Deliberately not deduplicated across
+   * views the way the timer is: two tabs focusing near-simultaneously firing
+   * two cycles is the same "wasteful but never incorrect" duplicate-gesture
+   * case `core.worker.ts`'s calendar wiring already accepts for its own
+   * request queue (ADR-0010) — an unattended clock multiplying with tab
+   * count is the defect this type exists to close; a human's own actions
+   * are not. */
+  | { type: "syncFocusTrigger" };
+
+export type TaskWorkerResponse =
+  | {
+      type: "captureResult";
+      seed: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  | { type: "frontier"; items: TaskItemDTO[] }
+  | { type: "triageInbox"; items: TaskItemDTO[] }
+  | { type: "isPendingResult"; itemId: string; pending: boolean }
+  | {
+      type: "syncOutcome";
+      kind: TaskRunOutcomeKind;
+      retryAfterMs: number | null;
+      activeItemCount: number | null;
+      wasFullSweep: boolean | null;
+      deadLettered: number | null;
+    }
+  /** Drained from `Core::take_events` and broadcast to every connected port
+   * (`PortRegistry.broadcast`, not a reply to whichever port triggered the
+   * drain) — the fix for #104's review finding that a destructive
+   * single-reader drain would let the first tab to poll swallow an event
+   * every other tab needed too. */
+  | { type: "taskEvents"; events: TaskEventDTO[] }
+  | { type: "queueDepth"; depth: number }
+  | { type: "deadLetters"; entries: DeadLetterEntryDTO[] }
+  | { type: "mirrorSnapshot"; mirror: unknown }
+  /** The task host itself failed to construct (a corrupt durable snapshot,
+   * say), so every task request — every capture, every sync, every pushed
+   * device token — is being dropped for this core's whole lifetime.
+   *
+   * This is deliberately NOT `{type: "error"}`: #171 decoupled task-host
+   * construction from calendar activation on purpose, so the calendar side
+   * is genuinely still working and its views are genuinely still ready.
+   * Without a signal of its own, though, that decoupling meant a view saw a
+   * perfectly healthy `ready` while everything task-shaped vanished into a
+   * `console.error` nobody reads (post-batch review of PR #185). Broadcast
+   * once when construction fails AND again per dropped request, since a
+   * broadcast reaches only the views connected at the time and a view that
+   * connects later must still learn — its first task request tells it. */
+  | { type: "taskHostUnavailable"; message: string };
+
 // -- worker -> main -----------------------------------------------------
 
 export type WorkerResponse =
@@ -103,4 +306,5 @@ export type WorkerResponse =
       kind: RenderableCurrentNextKind;
       event: CurrentNextEventDTO | null;
       asOfMs: number | null;
-    };
+    }
+  | TaskWorkerResponse;

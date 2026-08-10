@@ -1,14 +1,17 @@
 # client/web
 
 Desktop web client shell (#69): Vite + React + Tailwind + TypeScript, the
-wasm sync core (`hummingbird-ffi-web`, #67) loaded in a Web Worker, PWA
-offline shell, served from Cloudflare Workers static assets at
-`hb.twinion.net` (ADR-0006). The shell is built on the Hummingbird Design
-System (see the repo `CLAUDE.md`): a fixed nav rail over five surfaces — Now,
-Triage, Routes, Alerts, Settings. **No task sync yet**, so every surface but
-Settings reports an honest empty state; sync will target the owned API
-(ADR-0008), and a Linear client adapter is never built. Calendar context and
-its Google auth landed with #73 and are real.
+wasm sync core (`hummingbird-ffi-web`, #67) loaded in a **SharedWorker** —
+one core per origin, N views (ADR-0010, #126) — PWA offline shell, served
+from Cloudflare Workers static assets at `hb.twinion.net` (ADR-0006). The
+shell is built on the Hummingbird Design System (see the repo `CLAUDE.md`):
+a fixed nav rail over five surfaces — Now, Triage, Routes, Alerts, Settings.
+Task sync against the owned authority (ADR-0008) is live as of S6–S9:
+capture, the frontier and triage inbox, the device token, and ADR-0007's
+sync cadence with its status readout. A Linear client adapter is never
+built. Calendar context and its Google auth landed with #73 and are real.
+Nothing is deployed yet — `VITE_API_BASE_URL` is unset by default, so every
+cycle fast-fails as `pull_failed` until #95's H3 human gate.
 
 ## Local development
 
@@ -52,10 +55,13 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   `domain`, `feedback`). Inline styles over the design tokens, as in the
   source. `Icon` wraps `lucide-react` through a static name map: the design
   system's own CDN loader cannot ship under `script-src 'self'`.
-- `src/shell/` — the nav rail, the header, the screen list, and
-  `useCalendarWiring`, which owns the calendar lifecycle (consent, token
-  rotation, the 15-minute poll and the staleness clock) for the app's whole
-  lifetime, independent of which screen is mounted.
+- `src/shell/` — the nav rail, the header, the screen list, and the
+  app-lifetime wiring hooks, independent of which screen is mounted:
+  `useCalendarWiring` (consent, token rotation, the 15-minute poll and the
+  staleness clock), `useTaskTokenWiring` (the device token's entry, rest and
+  re-prompt, #106), `useSyncWiring` (the per-cycle reads and the view's own
+  visibility/focus reports — it owns no timer; see below), plus the pure
+  readouts `sync-cadence.ts` and `sync-status.ts`.
 - `src/screens/` — the five surfaces. They switch on local state: there are
   no deep links to honour yet, so no router is installed.
 - `src/theme/` — the `light | dark | system` preference, persisted at
@@ -65,7 +71,17 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   `useSyncExternalStore`, a module-level `coreStore` singleton with a stable
   `subscribe` reference, and `worker-client.ts` wiring the worker's messages
   (`src/store/protocol.ts`) into store writes. No second state channel.
-- `src/worker/core.worker.ts` — the Web Worker that loads the wasm core.
+- `src/worker/` — the SharedWorker layer. `core.worker.ts` is the shim: it
+  loads the wasm core, wires `PortRegistry` (`ports.ts`, one core → N views
+  and their handshakes), and owns ADR-0007's single 60-second interval for
+  the whole origin. Everything decidable is a sibling pure module a node
+  test can execute — `dispatch.ts` (cadence-vs-task-vs-calendar routing and
+  the app-open trigger), `request-router.ts`, `task-worker.ts`,
+  `calendar-worker.ts`, `serial-queue.ts`, `visibility-tracker.ts`,
+  `announce.ts`.
+  **No top-level `await` may enter `core.worker.ts`'s static import graph** —
+  see the invariant in the repo `CLAUDE.md`, and `core.worker.ts`'s own
+  header for the full account.
 - `csp-worker/` — the Cloudflare Worker `main` script wrangler.toml points
   at: adds the strict CSP header to every asset response so it ships as a
   served header (ADR-0004), not a meta tag.

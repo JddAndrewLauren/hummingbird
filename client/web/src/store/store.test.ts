@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { type CalendarState, coreStore, createCoreStore } from "./store";
+import { type CalendarState, type TaskState, coreStore, createCoreStore } from "./store";
 
 const initialCalendar: CalendarState = {
   connected: false,
@@ -12,6 +12,20 @@ const initialCalendar: CalendarState = {
   asOfMs: null,
 };
 
+const initialTask: TaskState = {
+  frontier: [],
+  triageInbox: [],
+  pending: {},
+  lastCapture: null,
+  lastSyncOutcome: null,
+  lastSyncAtMs: null,
+  syncOutcomeSeq: 0,
+  queueDepth: null,
+  deadLetters: [],
+  needsReconnect: false,
+  hostError: null,
+};
+
 describe("createCoreStore", () => {
   it("starts in the loading state with no api version and no error", () => {
     const store = createCoreStore();
@@ -21,6 +35,7 @@ describe("createCoreStore", () => {
       apiVersion: null,
       error: null,
       calendar: initialCalendar,
+      task: initialTask,
     });
   });
 
@@ -44,6 +59,7 @@ describe("createCoreStore", () => {
       apiVersion: 1,
       error: null,
       calendar: initialCalendar,
+      task: initialTask,
     });
   });
 
@@ -62,7 +78,55 @@ describe("createCoreStore", () => {
         connected: true,
         selectedCalendarIds: ["primary"],
       },
+      task: initialTask,
     });
+  });
+
+  it("setTaskState merges into the task slice without touching the rest", () => {
+    const store = createCoreStore();
+    store.setState({ status: "ready", apiVersion: 1 });
+
+    store.setTaskState({
+      frontier: [
+        {
+          id: "item-1",
+          seq: 1,
+          title: "buy milk",
+          description: null,
+          stage: "ready",
+          size: null,
+          energy: null,
+          context: null,
+          priority: 0,
+          projectId: null,
+          projectPos: null,
+          dueDate: null,
+          scheduledDate: null,
+          source: null,
+          sourceKey: null,
+          sourceUrl: null,
+          archivedAt: null,
+          createdAt: 1_000,
+          updatedAt: 1_000,
+          version: 0,
+        },
+      ],
+    });
+
+    expect(store.getSnapshot().task.frontier).toHaveLength(1);
+    expect(store.getSnapshot().calendar).toEqual(initialCalendar);
+  });
+
+  it("setTaskPending merges one item into the task slice's pending map, leaving the rest untouched", () => {
+    const store = createCoreStore();
+    store.setTaskPending("item-1", true);
+    store.setTaskPending("item-2", false);
+
+    expect(store.getSnapshot().task.pending).toEqual({ "item-1": true, "item-2": false });
+
+    store.setTaskPending("item-1", false);
+
+    expect(store.getSnapshot().task.pending).toEqual({ "item-1": false, "item-2": false });
   });
 
   it("stops notifying a listener once it unsubscribes", () => {
