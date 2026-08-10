@@ -34,8 +34,8 @@
 //! folding it in is `ffi-web`-side wiring that issue #126 (SharedWorker /
 //! ADR-0010) is landing concurrently with this one; forcing the merge here
 //! would collide with that work rather than avoid it. This is a deliberate
-//! deferral, not an oversight — a follow-up issue should do the actual fold
-//! once #126 lands.
+//! deferral, not an oversight — tracked as issue #169, which does the actual
+//! fold once #126 lands.
 //!
 //! Persistence lives in [`storage`] (#68).
 
@@ -198,25 +198,41 @@ fn item_from_create(create: &CreateItem, now_ms: i64) -> Item {
 /// the next successful cycle. Patches are not overlaid (out of this
 /// issue's scope — only [`Core::capture`] writes to the overlay today, and
 /// it never enqueues one).
-fn overlay_from_queue(queue: &sync::queue::OutboundQueue) -> BTreeMap<String, OverlayEntry> {
+///
+/// A create whose body no longer deserialises as [`CreateItem`] is an
+/// `Err`, never a silently-dropped overlay entry: the same
+/// never-silently-degrade rule [`sync::SyncCycle::load`]'s own module docs
+/// state for the queue itself ("this function does not special-case either
+/// table down to 'start fresh'") applies just as much to a projection built
+/// from it — the durable queue entry is untouched either way (drain can
+/// still retry it), but silently going overlay-blind on it would tell a
+/// reader nothing is pending when something still is.
+fn overlay_from_queue(
+    queue: &sync::queue::OutboundQueue,
+) -> Result<BTreeMap<String, OverlayEntry>, CoreInitError> {
     let mut overlay = BTreeMap::new();
     for entry in queue.entries() {
         if let MutationIntent::Create { path, body } = &entry.intent {
             if *path == sync::write::paths::items() {
-                if let Ok(create) = serde_json::from_value::<CreateItem>(body.clone()) {
-                    let item = item_from_create(&create, 0);
-                    overlay.insert(
-                        item.id.clone(),
-                        OverlayEntry {
-                            entry_id: entry.id.clone(),
-                            item,
-                        },
-                    );
-                }
+                let create: CreateItem = serde_json::from_value(body.clone()).map_err(|error| {
+                    CoreInitError(format!(
+                        "queue entry {} is a create for {path} whose body no longer \
+                         deserialises as CreateItem: {error}",
+                        entry.id
+                    ))
+                })?;
+                let item = item_from_create(&create, 0);
+                overlay.insert(
+                    item.id.clone(),
+                    OverlayEntry {
+                        entry_id: entry.id.clone(),
+                        item,
+                    },
+                );
             }
         }
     }
-    overlay
+    Ok(overlay)
 }
 
 /// One host-visible signal, drained rather than delivered by callback
@@ -314,7 +330,7 @@ impl Core<CoreStore, CoreStore> {
             .map_err(|error: LoadError<_, _>| CoreInitError(error.to_string()))?;
         let mut credential = AccessTokenSlot::default();
         credential.push(api_key.into());
-        let overlay = overlay_from_queue(cycle.queue());
+        let overlay = overlay_from_queue(cycle.queue())?;
         Ok(Self {
             cycle,
             credential,
@@ -346,30 +362,45 @@ where
         self.overlay.contains_key(item_id)
     }
 
-    /// What can actually be started right now — the owned-schema mirror's
-    /// live `Ready`/`InProgress` items, not blocked on an open blocker,
-    /// **with every not-yet-confirmed capture overlaid on top.**
+    /// Every item the mirror knows about live, with every not-yet-confirmed
+    /// capture overlaid on top — the shared read underneath both
+    /// [`Core::frontier`] and [`Core::triage_inbox`], so an overlaid item is
+    /// readable from *some* query whatever stage it captured into, not just
+    /// the one [`Core::frontier`] filters to.
     ///
-    /// A capture is readable here the instant [`Core::capture`] returns —
-    /// before [`Core::run`] has ever sent it — and stays readable,
-    /// unchanged, through every cycle attempt until either a completed
-    /// cycle's pull confirms it (the overlay clears because drain-before-
-    /// pull, ADR-0007, means this device's own write already landed by the
-    /// time that pull asked for truth) or a dead-lettered entry reverts it
-    /// to server truth. There is no cycle outcome that makes the item
-    /// disappear in between: a queue-side send failure, a pull failure, or
-    /// a credential hold all leave the overlay exactly as it was.
-    pub fn frontier(&self) -> Vec<Item> {
-        let mirror = self.cycle.mirror();
-        let mut items: BTreeMap<String, Item> = mirror
+    /// A capture is present here the instant [`Core::capture`] returns —
+    /// before [`Core::run`] has ever sent it — and stays present, unchanged,
+    /// through every cycle attempt until either a completed cycle's pull
+    /// confirms it (the overlay clears because drain-before-pull, ADR-0007,
+    /// means this device's own write already landed by the time that pull
+    /// asked for truth) or a dead-lettered entry reverts it to server
+    /// truth. There is no cycle outcome that makes the item disappear in
+    /// between: a queue-side send failure, a pull failure, or a credential
+    /// hold all leave the overlay exactly as it was.
+    fn overlaid_items(&self) -> BTreeMap<String, Item> {
+        let mut items: BTreeMap<String, Item> = self
+            .cycle
+            .mirror()
             .all_items()
             .map(|item| (item.id.clone(), item.clone()))
             .collect();
         for overlay in self.overlay.values() {
             items.insert(overlay.item.id.clone(), overlay.item.clone());
         }
-
         items
+    }
+
+    /// What can actually be started right now — the owned-schema mirror's
+    /// live `Ready`/`InProgress` items, not blocked on an open blocker,
+    /// with the overlay from [`Core::overlaid_items`] applied.
+    ///
+    /// A freshly captured item defaults to `Stage::Triage`
+    /// (`CreateItem::stage`'s own doc: "capture lands in the inbox") and so
+    /// is *not* on this query — see [`Core::triage_inbox`] for the reader
+    /// that actually makes such a capture visible anywhere.
+    pub fn frontier(&self) -> Vec<Item> {
+        let mirror = self.cycle.mirror();
+        self.overlaid_items()
             .into_values()
             .filter(|item| matches!(item.stage, Stage::Ready | Stage::InProgress))
             .filter(|item| {
@@ -379,6 +410,18 @@ where
                         .is_some_and(|blocker| blocker.stage != Stage::Done)
                 })
             })
+            .collect()
+    }
+
+    /// Items awaiting triage: captured, not yet promoted to an actionable
+    /// stage — the owned-schema counterpart to [`task::Mirror::triage_inbox`]'s
+    /// S1/Linear-era twin, and, unlike [`Core::frontier`], the query a
+    /// default (`Stage::Triage`) [`Core::capture`] is actually readable
+    /// from immediately.
+    pub fn triage_inbox(&self) -> Vec<Item> {
+        self.overlaid_items()
+            .into_values()
+            .filter(|item| item.stage == Stage::Triage)
             .collect()
     }
 
@@ -445,8 +488,15 @@ where
     /// The host calls this at init and on every credential rotation.
     /// Always resumes (a fresh push is the only way out of a hold), the
     /// same contract [`context::ContextPoller::push_token`] documents.
+    ///
+    /// Also drops any not-yet-drained [`CoreEvent::CredentialNeeded`]: once
+    /// a fresh key is pushed, that prompt is moot — a host that had not
+    /// gotten around to draining it yet must not see it fire after the
+    /// rotation it is asking for already happened.
     pub fn push_api_key(&mut self, api_key: impl Into<String>) {
         self.credential.push(api_key.into());
+        self.events
+            .retain(|event| !matches!(event, CoreEvent::CredentialNeeded { .. }));
     }
 
     /// Drains every [`CoreEvent`] recorded since the last drain — poll-style
@@ -486,6 +536,20 @@ where
             return CoreCycleOutcome::NoCredential;
         };
 
+        // The dead-letter journal is append-only (`OutboundQueue` never
+        // prunes it) and `deterministic_id` makes seed reuse the designed
+        // retry pattern (its own doc: replaying the same seed after a
+        // crash — or, here, after an earlier dead-letter — reuses the
+        // identical id on purpose). So a *new* capture that reuses a
+        // previously dead-lettered seed shares that old journal entry's id,
+        // and matching against the whole journal below would wrongly strip
+        // its overlay the moment any later cycle merely touches the queue
+        // (`Blocked`/`PullFailed`/`CredentialNeeded`) — exactly the
+        // "disappears mid-queue" state this overlay exists to prevent.
+        // Snapshotting the length here and only looking at what grew past
+        // it keeps the match scoped to entries *this* cycle dead-lettered.
+        let dead_letters_before_this_cycle = self.cycle.queue().dead_letters().len();
+
         let outcome = self
             .cycle
             .run(
@@ -501,16 +565,18 @@ where
 
         // A dead-lettered entry reverts to server truth regardless of what
         // the rest of this cycle did — matched by the queue entry id every
-        // `OverlayEntry` carries for exactly this.
-        let dead_lettered_ids: BTreeSet<&str> = self
+        // `OverlayEntry` carries for exactly this, but only among entries
+        // *this* cycle dead-lettered (see above).
+        let newly_dead_lettered_ids: BTreeSet<&str> = self
             .cycle
             .queue()
             .dead_letters()
             .iter()
+            .skip(dead_letters_before_this_cycle)
             .map(|dead_letter| dead_letter.entry.id.as_str())
             .collect();
         self.overlay
-            .retain(|_, overlay| !dead_lettered_ids.contains(overlay.entry_id.as_str()));
+            .retain(|_, overlay| !newly_dead_lettered_ids.contains(overlay.entry_id.as_str()));
 
         // A completed cycle is drain-then-pull both having finished
         // (ADR-0007): every overlay entry either just dead-lettered
@@ -901,5 +967,282 @@ mod tests {
             .await;
 
         assert_eq!(outcome, CoreCycleOutcome::NoCredential);
+    }
+
+    // ---------------------------------- the overlay survives every non-clearing outcome
+
+    /// Review finding on #168: only `CycleOutcome::Completed` (a full drain
+    /// AND a confirming pull) and a fresh dead-letter may ever touch the
+    /// overlay. Every other outcome — a blocked drain, a failed pull, a
+    /// failed persist, a skipped timer tick, or a held credential — must
+    /// leave it byte-for-byte as it was. This is the assertion that would
+    /// have caught the dead-letter-scoping bug fixed alongside it: pinning
+    /// every non-clearing branch, not just the two clearing ones.
+    #[tokio::test]
+    async fn a_blocked_drain_leaves_the_overlay_untouched() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        let read = ScriptedRead::default(); // must never be reached
+        let write = ScriptedWrite::new(vec![ok(503, "")]); // retryable: blocks
+
+        let outcome = core
+            .run(&read, &write, 2_000, Trigger::User, true, 1.0)
+            .await;
+
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Blocked { .. })
+        ));
+        assert!(core.is_pending(&id), "a blocked drain must not clear the overlay");
+        assert_eq!(core.frontier().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_pull_leaves_the_overlay_untouched() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        // The drain succeeds (the create is actually sent) but the pull
+        // that follows it fails outright — the overlay must still not
+        // clear, because nothing has confirmed this device's write yet.
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::new("connection reset"))]);
+        let write = ScriptedWrite::new(vec![ok(201, format!(r#"{{"id":"{id}","version":1}}"#))]);
+
+        let outcome = core
+            .run(&read, &write, 2_000, Trigger::User, true, 1.0)
+            .await;
+
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::PullFailed { .. })
+        ));
+        assert!(core.is_pending(&id), "a failed pull must not clear the overlay");
+    }
+
+    #[tokio::test]
+    async fn a_failed_persist_leaves_the_overlay_untouched() {
+        let mut core = Core {
+            cycle: SyncCycle::new(
+                storage::InstrumentedSnapshotStore::new(),
+                storage::InstrumentedSnapshotStore::new(),
+            ),
+            credential: AccessTokenSlot::default(),
+            overlay: BTreeMap::new(),
+            events: Vec::new(),
+        };
+        core.push_api_key("token-1");
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        // Fail the queue store's writes only after the capture's own
+        // enqueue (which must itself succeed) durably landed.
+        core.cycle.queue_store().set_failing(true);
+
+        // Drain still attempts the send — the queue's own persist (which
+        // is what this test fails) happens right after, per
+        // `SyncCycle::run`'s module docs — so the write transport is
+        // reached even though the pull never will be.
+        let read = ScriptedRead::default(); // must never be reached
+        let write = ScriptedWrite::new(vec![ok(201, format!(r#"{{"id":"{id}","version":1}}"#))]);
+
+        let outcome = core
+            .run(&read, &write, 2_000, Trigger::User, true, 1.0)
+            .await;
+
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::PersistFailed { .. })
+        ));
+        assert!(core.is_pending(&id), "a failed persist must not clear the overlay");
+    }
+
+    #[tokio::test]
+    async fn a_skipped_timer_tick_leaves_the_overlay_untouched() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        // First, a real attempt that records a backoff failure.
+        let blocking_read = ScriptedRead::default();
+        let blocking_write = ScriptedWrite::new(vec![ok(503, "")]);
+        let blocked = core
+            .run(&blocking_read, &blocking_write, 1_000, Trigger::User, true, 1.0)
+            .await;
+        assert!(matches!(
+            blocked,
+            CoreCycleOutcome::Cycle(CycleOutcome::Blocked { .. })
+        ));
+
+        // A `Trigger::Timer` tick before backoff's delay elapses must skip
+        // outright — neither transport reached, since both would panic if
+        // called.
+        let unreachable_read = ScriptedRead::default();
+        let unreachable_write = ScriptedWrite::default();
+        let outcome = core
+            .run(
+                &unreachable_read,
+                &unreachable_write,
+                1_100,
+                Trigger::Timer,
+                false,
+                1.0,
+            )
+            .await;
+
+        assert_eq!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Skipped)
+        );
+        assert!(core.is_pending(&id), "a skipped tick must not clear the overlay");
+    }
+
+    #[tokio::test]
+    async fn a_held_credential_leaves_the_overlay_untouched() {
+        let mut core = Core::new();
+        core.push_api_key("stale-token");
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+
+        // The drain succeeds first (the create is actually sent); the pull
+        // that follows it is what hits the 401.
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![ok(201, format!(r#"{{"id":"{id}","version":1}}"#))]);
+        let holding = core
+            .run(&read, &write, 1_000, Trigger::User, true, 1.0)
+            .await;
+        assert!(matches!(
+            holding,
+            CoreCycleOutcome::Cycle(CycleOutcome::CredentialNeeded { .. })
+        ));
+
+        let held_read = ScriptedRead::default();
+        let held_write = ScriptedWrite::default();
+        let outcome = core
+            .run(&held_read, &held_write, 2_000, Trigger::User, true, 1.0)
+            .await;
+
+        assert_eq!(outcome, CoreCycleOutcome::Held);
+        assert!(core.is_pending(&id), "a held credential must not clear the overlay");
+    }
+
+    /// The regression this review round exists to pin: the dead-letter
+    /// journal is append-only (`OutboundQueue` never prunes it), and
+    /// `deterministic_id` makes seed reuse the designed retry pattern, so a
+    /// *new* capture that reuses a previously dead-lettered seed shares
+    /// that old journal entry's id. Matching a dead-letter clear against
+    /// the *whole* journal (rather than just what this cycle added) would
+    /// wrongly strip the new capture's overlay the moment any later cycle
+    /// merely blocks or fails to pull — exactly the "disappears mid-queue"
+    /// state the overlay exists to prevent.
+    #[tokio::test]
+    async fn a_recapture_reusing_a_previously_dead_lettered_seed_keeps_its_overlay_while_still_queued(
+    ) {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        // Cycle 1: this capture is permanently rejected and dead-lettered.
+        // The cycle still *completes* (the drain finishes, the pull
+        // succeeds), which is the one outcome that legitimately clears the
+        // whole overlay — so this alone would not have caught the bug.
+        let id = core
+            .capture("seed-1", "buy milk v1", Stage::Ready, 1_000)
+            .await
+            .unwrap();
+        let read1 = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let write1 = ScriptedWrite::new(vec![ok(400, r#"{"error":"validation"}"#)]);
+        let outcome1 = core
+            .run(&read1, &write1, 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome1,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        assert!(!core.is_pending(&id));
+
+        // A fresh capture reuses the same seed on purpose (the designed
+        // retry pattern) — same deterministic id, back in the queue and
+        // the overlay.
+        let id2 = core
+            .capture("seed-1", "buy milk v2", Stage::Ready, 2_000)
+            .await
+            .unwrap();
+        assert_eq!(id2, id, "reusing the seed must mint the identical id");
+        assert!(core.is_pending(&id));
+
+        // Cycle 2 merely blocks — it dead-letters nothing new. The bug: a
+        // journal-wide match would still find `id` from cycle 1's
+        // dead-letter and strip the fresh overlay entry that shares it.
+        let read2 = ScriptedRead::default();
+        let write2 = ScriptedWrite::new(vec![ok(503, "")]);
+        let outcome2 = core
+            .run(&read2, &write2, 3_000, Trigger::User, true, 1.0)
+            .await;
+
+        assert!(matches!(
+            outcome2,
+            CoreCycleOutcome::Cycle(CycleOutcome::Blocked { .. })
+        ));
+        assert!(
+            core.is_pending(&id),
+            "a fresh capture reusing a previously dead-lettered seed must keep its overlay \
+             while it is still genuinely queued"
+        );
+        assert_eq!(core.frontier().len(), 1);
+    }
+
+    // -------------------------------------------------------- push_api_key
+
+    #[tokio::test]
+    async fn pushing_a_fresh_key_drops_an_undrained_credential_needed_event() {
+        let mut core = Core::new();
+        core.push_api_key("stale-token");
+
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0)
+            .await;
+
+        // The event is recorded but deliberately never drained here.
+        core.push_api_key("fresh-token");
+
+        assert_eq!(
+            core.take_events(),
+            Vec::new(),
+            "a fresh push must retract a prompt for a hold it just resolved"
+        );
+    }
+
+    // -------------------------------------------------------------- triage_inbox
+
+    #[tokio::test]
+    async fn a_default_stage_triage_capture_is_readable_from_the_triage_inbox_not_the_frontier() {
+        let mut core = Core::new();
+        core.capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+
+        assert!(
+            core.frontier().is_empty(),
+            "a Triage-stage capture must not appear on the frontier"
+        );
+        let inbox = core.triage_inbox();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].title, "someday maybe");
     }
 }
