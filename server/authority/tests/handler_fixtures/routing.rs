@@ -20,6 +20,8 @@ fn unknown_route_404_and_wrong_method_405() {
         ("DELETE", "/api/steps/s-1"),
         ("GET", "/api/blocked_by"),
         ("DELETE", "/api/blocked_by/a/b"),
+        ("GET", "/api/rules"),
+        ("DELETE", "/api/rules/r-1"),
     ] {
         let resp = req(&sql, method, path, None, Some("{}"), 0);
         assert_eq!(resp.status, 405, "{method} {path}: {}", resp.body);
@@ -36,6 +38,7 @@ fn post_and_patch_with_no_body_400() {
         ("POST", "/api/projects"),
         ("POST", "/api/steps"),
         ("POST", "/api/blocked_by"),
+        ("POST", "/api/rules"),
     ] {
         let resp = req(&sql, method, path, None, None, 0);
         assert_eq!(resp.status, 400, "{method} {path}: {}", resp.body);
@@ -52,6 +55,7 @@ fn trailing_slash_empty_id_404() {
         "/api/fog/",
         "/api/steps/",
         "/api/alerts/",
+        "/api/rules/",
     ] {
         let resp = req(&sql, "PATCH", path, None, Some(r#"{"expected_version": 1}"#), 0);
         assert_eq!(resp.status, 404, "PATCH {path}");

@@ -46,6 +46,7 @@ fn changes_since(since: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
         alerts: pull(sql, since, "alerts", "id", super::alerts::alert_from_row)?,
         context_snapshots: pull(sql, since, "context_snapshots", "source, key", snapshot_from_row)?,
         settings: pull(sql, since, "settings", "key", super::settings::setting_from_row)?,
+        rules: pull(sql, since, "rules", "id", super::rules::rule_from_row)?,
     };
     Ok(json(200, &response))
 }

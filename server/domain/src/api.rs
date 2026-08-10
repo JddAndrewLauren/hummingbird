@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::context::{Alert, ContextSnapshot, Setting};
 use crate::item::{Energy, Item, Size, Stage};
 use crate::project::{Fog, Project, Route};
+use crate::rule::{Condition, Rule, Tier};
 use crate::step::{BlockedBy, Step};
 use crate::token::Scope;
 
@@ -94,6 +95,10 @@ non_null_shim!(non_null_question, String, "question");
 non_null_shim!(non_null_position, i64, "position");
 non_null_shim!(non_null_body, String, "body");
 non_null_shim!(non_null_done, bool, "done");
+non_null_shim!(non_null_conditions, Vec<Condition>, "conditions");
+non_null_shim!(non_null_severity, String, "severity");
+non_null_shim!(non_null_tier, Tier, "tier");
+non_null_shim!(non_null_enabled, bool, "enabled");
 
 /// `PATCH /api/items/:id` body: `expected_version` plus absolute-value
 /// sets. Every mutation states the entire new value of each field it
@@ -234,6 +239,46 @@ pub struct BlockedByPatch {
     pub removed_at: Option<Option<i64>>,
 }
 
+/// `POST /api/rules` body. `id` is client-supplied so the create is
+/// idempotent by it, same rule as [`CreateItem`]. `event_kind` is nullable
+/// with no closed vocabulary (ADR-0013): `None` matches any kind.
+/// `enabled` defaults to `true` — a saved rule starts live.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRule {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<String>,
+    pub conditions: Vec<Condition>,
+    pub severity: String,
+    pub tier: Tier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// `PATCH /api/rules/:id` body: `expected_version` plus absolute-value
+/// sets, the same CAS contract as [`ItemPatch`]. `event_kind` is the one
+/// nullable column — double-`Option`, `null` clears it to "any kind" — every
+/// other field is `NOT NULL` and rejects an explicit `null`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RulePatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "non_null_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<Option<String>>,
+    #[serde(default, deserialize_with = "non_null_conditions", skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<Vec<Condition>>,
+    #[serde(default, deserialize_with = "non_null_severity", skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(default, deserialize_with = "non_null_tier", skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
+    #[serde(default, deserialize_with = "non_null_enabled", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
 /// `PUT /api/settings/:key` body. `expected_version: 0` is the create case
 /// (idempotent: a replay against the identical stored value is a no-op 200).
 /// `value` is typed JSON on the wire and stored as its canonical
@@ -301,7 +346,9 @@ pub struct MintToken {
 ///
 /// `tokens` and `meta` are deliberately absent: tokens are per-writer
 /// machinery that never syncs to clients, and `meta`'s counter is the
-/// `version` field itself.
+/// `version` field itself. `push_targets` and `deliveries` are absent too,
+/// for the same reason as `tokens`: neither carries a `version` column
+/// (#131) — they are server-side machinery, not delta-pulled records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangesResponse {
     pub version: i64,
@@ -314,6 +361,7 @@ pub struct ChangesResponse {
     pub alerts: Vec<Alert>,
     pub context_snapshots: Vec<ContextSnapshot>,
     pub settings: Vec<Setting>,
+    pub rules: Vec<Rule>,
 }
 
 impl ChangesResponse {
@@ -331,6 +379,7 @@ impl ChangesResponse {
             alerts: vec![],
             context_snapshots: vec![],
             settings: vec![],
+            rules: vec![],
         }
     }
 }
@@ -457,18 +506,7 @@ mod tests {
     /// is the export".
     #[test]
     fn changes_response_carries_exactly_the_synced_tables() {
-        let empty = ChangesResponse {
-            version: 0,
-            projects: vec![],
-            routes: vec![],
-            fog: vec![],
-            items: vec![],
-            steps: vec![],
-            blocked_by: vec![],
-            alerts: vec![],
-            context_snapshots: vec![],
-            settings: vec![],
-        };
+        let empty = ChangesResponse::empty(0);
         let value = serde_json::to_value(&empty).unwrap();
         // serde_json::Map sorts keys, so compare the set, not the order.
         let keys: Vec<&str> = value.as_object().unwrap().keys().map(|k| k.as_str()).collect();
@@ -483,9 +521,34 @@ mod tests {
             "alerts",
             "context_snapshots",
             "settings",
+            "rules",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected);
+    }
+
+    /// The acceptance criterion: `rules` participates in the delta pull like
+    /// any other entity — it must appear on the wire, not sit beside it.
+    #[test]
+    fn changes_response_carries_rules() {
+        let rule = Rule {
+            id: "r-1".into(),
+            name: "n".into(),
+            event_kind: None,
+            conditions: vec![],
+            severity: "high".into(),
+            tier: Tier::Urgent,
+            enabled: true,
+            updated_at: 0,
+            version: 1,
+        };
+        let response = ChangesResponse {
+            rules: vec![rule.clone()],
+            ..ChangesResponse::empty(1)
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let back: ChangesResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rules, vec![rule]);
     }
 
     #[test]

@@ -14,17 +14,20 @@ mod api;
 mod context;
 mod item;
 mod project;
+mod rule;
 mod step;
 mod token;
 
 pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, ChangesResponse, ConflictResponse,
-    CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreateStep, FogPatch, ItemPatch,
-    MintToken, ProjectPatch, PutSetting, RoutePatch, StepPatch, VERSION_CONFLICT,
+    CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreateRule, CreateStep, FogPatch,
+    ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch, RulePatch, StepPatch,
+    VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, Setting};
 pub use item::{Energy, Item, Size, Stage};
 pub use project::{Fog, Project, Route};
+pub use rule::{Condition, Delivery, Platform, PushTarget, Rule, Tier};
 pub use step::{BlockedBy, Step};
 pub use token::{MintedToken, Scope, TokenInfo};
 
