@@ -25,9 +25,9 @@ mod token;
 
 pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, ChangesResponse, ConflictResponse,
-    CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreateRule, CreateStep, FogPatch,
-    ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch, RulePatch, StepPatch,
-    VERSION_CONFLICT,
+    CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreatePushTarget, CreateRule,
+    CreateStep, FogPatch, ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch, RulePatch,
+    StepPatch, VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, Setting};
 pub use deadline::{deadline_sort_key, is_valid_deadline, parse_duration, shift, DurationUnit};
