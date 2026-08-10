@@ -1,7 +1,9 @@
 # Checked-in source of truth for the web client's Cloudflare Workers static
-# assets deploy (ADR-0006). Live deploy + the hb.twinion.net DNS binding are
-# a human step (#69's brief); everything here is exercised locally with
-# `wrangler dev` against a `pnpm build` output.
+# assets deploy (ADR-0006). **Live since 2026-08-10** (#238): the Custom
+# Domain below was bound by `wrangler deploy` itself from this file, so
+# `hb.twinion.net` serves the shell and no DNS record was ever authored by
+# hand. Everything here is also exercised locally with `wrangler dev`
+# against a `pnpm build` output.
 
 name = "hummingbird-web"
 main = "csp-worker/worker.ts"
@@ -12,9 +14,12 @@ compatibility_date = "2026-08-08"
 # keyed to the origin, so a deploy that landed on a provider hostname would
 # strand every device that had already onboarded there. It is declared here,
 # in the checked-in source of truth, rather than left to whoever runs the
-# deploy. `wrangler dev` ignores routes, so local builds are unaffected;
-# `wrangler deploy` fails until the human step (Cloudflare project + DNS)
-# binds the domain, which deploy-client.yml already documents as expected.
+# deploy. `wrangler dev` ignores routes, so local builds are unaffected.
+# The binding is done: `wrangler deploy` created the Custom Domain from this
+# declaration on the first live run, provisioning the proxied DNS record and
+# the edge certificate with it. A Custom Domain is a managed record — it is
+# not editable in the DNS tab, and a hand-authored record of the same name
+# would block the binding rather than substitute for it.
 #
 # This Custom Domain is hostname-exact and claims no path, which is what
 # leaves room for the authority worker to take `hb.twinion.net/api/*` as a
