@@ -15,12 +15,15 @@
 # reason — it carries an RSA private key, and the notification lane fails
 # closed without it by design.
 #
-# The first live run is a human step (#95's H3): creating the Cloudflare
-# Workers project and the `Authority` SQLite DO class, which is what the
-# `tag = "v1"` migration in server/worker/wrangler.toml does on its first
-# apply. Until that pass happens this workflow will fail at the
-# `wrangler deploy` step, which is expected and blocks nothing else — the
-# same posture deploy-client.yml documents for H1.
+# **Deploying for real since 2026-08-10** (#237). The `Authority` SQLite DO
+# class was created by the `tag = "v1"` migration in
+# server/worker/wrangler.toml on its first apply, done from the operator's
+# terminal so the run could be watched. Worth knowing if a future migration
+# ever needs the same scrutiny: **the deploy output says nothing about
+# migrations**, and neither does `wrangler deployments list` or
+# `versions view` — confirm against the API instead
+# (`/workers/durable_objects/namespaces` carries `use_sqlite`, and
+# `/workers/scripts` carries `migration_tag`).
 name: deploy-server
 
 # `workflow_dispatch` for the same reason as deploy-client.yml: a deploy that
@@ -42,6 +45,19 @@ on:
       - ".github/workflows/server-test.yml"
 
 jobs:
+  # Same reasoning as deploy-client.yml: the deploy job's `if:` prevents a
+  # non-main dispatch from shipping, but a skipped job shows green, and a
+  # green deploy run is read as a deploy that happened. Fail loudly instead.
+  refuse-non-main-dispatch:
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Refusing to deploy from $REF — this workflow deploys the authority devices sync against and runs only from main."
+          exit 1
+
   test:
     uses: ./.github/workflows/server-test.yml
 

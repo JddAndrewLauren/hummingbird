@@ -150,9 +150,16 @@ typed `EnvelopeProblem` naming *what* was wrong, never a quietly empty
 answer. The panes, the client-side `Freshness` carve-out and the
 `city-waste/v2` + race source-registry entries are each their own slice.
 
-Still no production deploy
-(that is #95's human gate H3) — `wrangler dev` + `server/scripts/smoke.sh`
-locally, `.github/workflows/server.yml` in CI. **The test recipe is shared,
+**Deployed in production since 2026-08-10** (#237): `hummingbird-authority`
+on Cloudflare Workers, answering `hb.twinion.net/api/*`, with `ADMIN_SECRET`
+set from the operator's terminal and the first `device`-scope token minted.
+`#95`'s human gate H3 is closed, and so is the rest of #234's map — the
+`Authority` SQLite DO was created by the first deploy's `tag = "v1"`
+migration, verified against the API (`use_sqlite: true`, `migration_tag:
+v1`) because **the deploy output never mentions migrations at all**, and
+neither does `wrangler deployments list` or `versions view`. Local
+development is unchanged: `wrangler dev` + `server/scripts/smoke.sh`. There
+is no production smoke script yet (#239/#240). **The test recipe is shared,
 not copied** (#229): `server-test.yml` is a `workflow_call`-only workflow
 holding clippy / native fixture tests / wasm32 build / `smoke.sh`, and both
 `server.yml` (pull requests only) and `deploy-server.yml` (`main`, `wrangler
@@ -162,8 +169,12 @@ exactly that reason — `main` is gated by the deploy workflow's own test job,
 and a second copy would run the same 30-minute job concurrently for no extra
 signal. `deploy-server.yml` carries no `schedule:` — the
 DO's own `alarm()` owns the cadence — and no `ADMIN_SECRET`/
-`FCM_SERVICE_ACCOUNT`; it is red-by-design until H3 creates the Workers
-project.
+`FCM_SERVICE_ACCOUNT`, which stay out of Actions deliberately: the first is
+the credential that mints every other token, the second carries an RSA
+private key. Both deploy workflows also carry a `workflow_dispatch` guarded
+with `if: github.ref == 'refs/heads/main'`, because a Cloudflare-side change
+(binding a domain, setting a secret) touches no file here and would
+otherwise have no trigger at all.
 
 ## The client sync engine
 
