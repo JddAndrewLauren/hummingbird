@@ -100,20 +100,27 @@ says destroys trust in the channel; a failure is logged and dropped. The
 one exception is FCM's `UNREGISTERED` error code, which revokes that
 `push_targets` row — and it is matched on the `FcmError` detail alone,
 never on the 404 status, because a wrong `project_id` 404s identically and
-would otherwise revoke every device the operator owns. **Not yet built,
-and not a small gap:** ADR-0014's separate "resolution pass" (stamping
-`resolved_at` on a live `item-threshold/v1` alert once its item is done,
-archived, deleted, or no longer matches). Without it, an item whose alert
-was never hand-dismissed, and whose item later stops matching on its own
-(done, archived, edited past the threshold), has **no path back to
-quiet — ever** — that alert sits live and top-of-stack permanently until a
-human dismisses it by hand; the sweep can detect "still matches" or
-"nothing to report," never "the condition ended." And the fix is not
-just "add the pass": `sweep_tick` calls `upsert_alert` with
-`resolved_at: None` on every tick, which sets that column *absolutely* —
-so a still-matching item's very next tick would silently erase a
-`resolved_at` the pass had just written, unless the pass and the sweep are
-wired together deliberately. Tracked in #217. Still no production deploy
+would otherwise revoke every device the operator owns. ADR-0014's
+**resolution pass** (#217) is the tick's second phase, and the reason the
+lane can ever go quiet on its own: it iterates live `item-threshold/v1`
+alerts — not items, since an item-side scan only reaches the alerts whose
+items it still sees, precisely the set that does not need resolving — and
+stamps `resolved_at` on each one the tick did not match. Phase one records
+the `source_key` of everything it minted, phase two resolves exactly the
+complement, so **the two phases partition the alert set** and neither can
+write a row the other touched; that is what makes ADR-0014's four triggers
+one test rather than four (done is skipped by phase one, archived is
+excluded by `load_live_items`, deleted is absent from `items`, and no
+longer matching yields no verdict). Only *live* alerts are considered, so
+the pass is idempotent — a resolved alert is not live next tick, and its
+stamp never creeps. Independently, **the sweep never clears
+`resolved_at`**: it carries the stored value back through `upsert_alert`
+rather than passing `None`, because that handler sets source-owned fields
+*absolutely* and would otherwise erase the pass's stamp one tick later.
+What supersedes a resolution is a later raise — `raised_at` overtakes the
+stamp, the alert is live again and rings, and the stamp stays legible
+underneath. Note that `done` is a *resolution* boundary only: #138's
+evaluation boundary is still `archived_at` alone. Still no production deploy
 (that is #95's human gate H3) — `wrangler dev` + `server/scripts/smoke.sh`
 locally, `.github/workflows/server.yml` in CI.
 
