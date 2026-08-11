@@ -5,8 +5,8 @@
 #
 # There is deliberately no `push:` trigger. deploy-server.yml (ADR-0006's CI
 # split) calls the same server-test.yml on `main` before it deploys, so a
-# `push:` here would run that ~30-minute job a second time, concurrently,
-# for no extra signal. `main` is therefore gated by deploy-server.yml's own
+# `push:` here would run that same job a second time, concurrently, for no
+# extra signal. `main` is therefore gated by deploy-server.yml's own
 # test job — the same bytes this workflow runs on the PR.
 name: server
 
