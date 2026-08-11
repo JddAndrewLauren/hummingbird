@@ -17,6 +17,9 @@ name: runner
 on:
   push:
     branches: [main]
+    # Duplicated verbatim under `pull_request:` below. GitHub Actions does
+    # not expand YAML anchors, so the two lists genuinely have to be
+    # written twice -- keep them identical.
     paths:
       - "runner/**"
       # The skills the image bakes in (runner/Dockerfile) are outside
@@ -24,6 +27,19 @@ on:
       # a schema-only edit that breaks `--json-schema` must not ship
       # through a workflow that never ran.
       - ".claude/skills/parse-capture/**"
+      - ".claude/skills/next-up-hb/**"
+      # The image also bakes in a *compiled* artifact (#116): the Rust
+      # builder stage emits `client/next-up`'s `next-up-rank`. So a change
+      # to `client/**` or `server/domain/**` can break this image while
+      # `client.yml` stays green -- it builds wasm, not this binary, and
+      # knows nothing about the builder stage's own constraints (no
+      # OpenSSL, no C toolchain). `rust-toolchain.toml` is here because the
+      # Dockerfile pins the same version and the two must move together.
+      - "client/**"
+      - "server/domain/**"
+      - "server/Cargo.toml"
+      - "rust-toolchain.toml"
+      - ".dockerignore"
       - ".github/workflows/runner.yml"
   # No `branches:` filter on purpose (server.yml does the same): a PR into a
   # batch integration branch must be gated exactly like a PR into main.
@@ -31,6 +47,12 @@ on:
     paths:
       - "runner/**"
       - ".claude/skills/parse-capture/**"
+      - ".claude/skills/next-up-hb/**"
+      - "client/**"
+      - "server/domain/**"
+      - "server/Cargo.toml"
+      - "rust-toolchain.toml"
+      - ".dockerignore"
       - ".github/workflows/runner.yml"
 
 # Superseded PR pushes cancel their stale runs.
@@ -41,7 +63,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Plain `node --test` over eight files with no install step; anything
+    # Plain `node --test` over nine files with no install step; anything
     # slower than this is a hung test, not a slow one.
     timeout-minutes: 5
     steps:
@@ -62,3 +84,70 @@ jobs:
       - name: node --test (runner)
         working-directory: runner
         run: node --test
+
+  # The gate the suite structurally cannot be. `runner/`'s tests inject a
+  # fake `spawn`, which is the right call -- no test should need a real
+  # `claude` binary -- but it means every fact about the *image* is
+  # invisible to them. Four separate release blockers lived in that gap at
+  # once (a builder stage that could not resolve `server/domain`'s
+  # workspace root, a missing C toolchain, a final image with no
+  # `libssl.so.3`, and an op that needed a shell it would never be granted)
+  # and all four passed `test` green. This job is the counterweight, the
+  # same role `runner/test/parse-capture.test.js` plays for the shipped
+  # schema file.
+  #
+  # It builds and runs; it does not push. Deploy is still a hand-run
+  # `fly deploy` (#41 decision 5, the image *is* the skill version).
+  image:
+    runs-on: ubuntu-latest
+    # The Rust builder stage is the whole cost here and it is a cold,
+    # cacheless release build of the ranker and its dependencies.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the runner image
+        run: docker build -f runner/Dockerfile -t hummingbird-runner:ci .
+
+      # The three Docker blockers were each invisible until something
+      # actually executed the artifact, so this runs it. `next-up-rank`
+      # reads its envelope from stdin and answers on stdout, which makes an
+      # empty sweep the whole smoke test: a dynamic-link failure, a missing
+      # binary and a bad COPY path all surface here as a non-zero exit.
+      #
+      # The sweep carries every `ChangesResponse` table because they are
+      # `Deserialize` without `#[serde(default)]` -- an omitted one is a
+      # parse error, not an empty table -- so this doubles as the wire
+      # shape's own tripwire.
+      - name: Smoke-run the baked ranker
+        run: |
+          echo '{"sweep":{"version":1,"projects":[],"routes":[],"fog":[],"items":[],"steps":[],"blocked_by":[],"alerts":[],"context_snapshots":[],"settings":[]},"now":{"local":"2026-08-11T09:53","epoch_ms":1786553580000}}' \
+            | docker run --rm -i hummingbird-runner:ci /usr/local/bin/next-up-rank \
+            | tee /dev/stderr \
+            | grep -q '"candidates"'
+
+      # The env var is the contract between the image and `main.js`; a
+      # rename on either side leaves the runner spawning a binary that is
+      # not there, and only an assertion against the built image can see it.
+      - name: HB_NEXT_UP_BIN points at a binary that exists and is executable
+        run: |
+          docker run --rm hummingbird-runner:ci \
+            sh -c 'test -x "$HB_NEXT_UP_BIN"'
+
+      # The skills are baked in from outside `runner/`, and `run-skill.js`
+      # spawns `claude` with `cwd` set to the repo root so its slash
+      # commands resolve against `<cwd>/.claude/skills`. An unresolved
+      # slash command fails *softly* -- passed through as prose, answered
+      # plausibly against the schema -- so nothing at runtime would say so.
+      - name: The shipped skills are where the repo root expects them
+        run: |
+          docker run --rm hummingbird-runner:ci \
+            sh -c 'test -f /app/.claude/skills/parse-capture/SKILL.md \
+                && test -f /app/.claude/skills/next-up-hb/SKILL.md \
+                && test -f /app/.claude/skills/next-up-hb/schema.json'
+
+      # `claude` is spawned by name from `main.js`; a base-image or npm
+      # change that moved it off PATH would otherwise only show up in
+      # production.
+      - name: The Claude Code CLI is on PATH
+        run: docker run --rm hummingbird-runner:ci sh -c 'command -v claude'

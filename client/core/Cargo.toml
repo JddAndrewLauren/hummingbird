@@ -23,13 +23,36 @@ hummingbird-domain = { path = "../../server/domain" }
 # there is nothing to filter to. ~70 KB of transfer, once, cached by the
 # service worker, is the price of all-day events landing on the right day.
 chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
-reqwest = { version = "0.12", features = ["json"] }
+# The live HTTP transports, and the ONLY thing in this crate that reaches
+# outside the process. Optional (see `[features]` below) because
+# `client/next-up` compiles this crate for `rank()` alone — a pure function
+# — and reqwest's default TLS backend is `native-tls`, i.e. `openssl-sys`,
+# i.e. a `pkg-config` + `libssl-dev` build dependency and a `libssl.so.3`
+# *runtime* dependency the runner image (`node:22-slim`, which carries
+# neither) cannot satisfy. Nothing about the ranker needs a TLS stack; the
+# feature is what lets it not have one.
+reqwest = { version = "0.12", features = ["json"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The write adapter's deterministic id derivation (#101) ports sweep.py's
 # `deterministic_v4` (sha256-then-force-v4-nibbles) — same primitive the
 # authority already uses for token hashing (server/authority/Cargo.toml).
 sha2 = "0.10"
+
+# The one seam that is a Cargo feature rather than a trait. Every transport
+# in this crate is already behind a trait (`ChangesTransport`,
+# `MutationTransport`, `EventsTransport`, `CalendarListTransport`); this
+# feature gates only the `reqwest`-backed *implementations* of them, so a
+# consumer that injects its own transport — or, like `client/next-up`,
+# calls `rank()` and makes no request at all — compiles the crate with no
+# TLS stack, no `openssl-sys` and no C toolchain.
+#
+# **On by default**, so `ffi-web`, `ffi-mobile` and every existing caller
+# are unchanged and cannot silently lose their transports; the ranker opts
+# out explicitly with `default-features = false`.
+[features]
+default = ["reqwest-transport"]
+reqwest-transport = ["dep:reqwest"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

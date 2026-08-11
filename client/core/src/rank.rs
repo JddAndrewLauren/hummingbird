@@ -10,9 +10,14 @@
 //! item's own fields, and priority is [`Item::priority`]'s raw `0..=4`,
 //! consumed directly rather than through a re-derived label type.
 //!
-//! The eventual `/next-up` skill (#116) owns free-text axis parsing, the
-//! *why* line, and delegation; this module owns only the six steps and
-//! the reason codes that let that skill cite the actual decisive rule.
+//! **Its caller is `client/next-up`** (#116): a member of this workspace
+//! whose `next-up-rank` binary turns one `GET /api/sweep` payload into
+//! candidates and calls [`rank`] on them, under the `/next-up-hb` skill.
+//! That skill owns free-text axis parsing and the *why* line; this module
+//! owns only the six steps and the reason codes that let it cite the
+//! actual decisive rule. Delegation is **not** in that split any more —
+//! the owned schema has no labels, no comments and so no way to express
+//! #10's protocol at all (see `.claude/skills/next-up-hb/SKILL.md`).
 //!
 //! # The six steps, in order
 //!

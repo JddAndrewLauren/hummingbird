@@ -1,0 +1,79 @@
+{
+  "title": "next-up-hb result",
+  "description": "One top pick, a few alternates, and the health footer's facts. The result shape of the /next-up-hb runner op (#116) -- versioned beside its SKILL.md (#41 decision 4). No $schema key: the CLI's --json-schema rejects the draft-2020-12 ref outright.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pick", "alternates", "health"],
+  "properties": {
+    "pick": {
+      "type": ["object", "null"],
+      "description": "The one top pick, or null when the candidate list came back empty -- never an invented pick.",
+      "additionalProperties": false,
+      "required": ["id", "title", "why"],
+      "properties": {
+        "id": { "type": "string" },
+        "seq": {
+          "type": ["integer", "null"],
+          "description": "The HB-42 display handle, when the item carries one."
+        },
+        "title": { "type": "string" },
+        "why": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One line, built from the candidate's own reason codes -- the actual decisive rule, never a step index and never a restatement of the six steps."
+        }
+      }
+    },
+    "alternates": {
+      "type": "array",
+      "description": "3-5 runners-up, one line each. Never the full list.",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "note"],
+        "properties": {
+          "id": { "type": "string" },
+          "seq": { "type": ["integer", "null"] },
+          "title": { "type": "string" },
+          "note": {
+            "type": "string",
+            "description": "The one label or date that matters for this alternate."
+          }
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "description": "The footer's facts, carried through from the ranker's own health block.",
+      "additionalProperties": false,
+      "required": ["triage", "grilling", "blocked_upstream", "fog_exhausted"],
+      "properties": {
+        "triage": { "type": "integer", "minimum": 0 },
+        "grilling": { "type": "integer", "minimum": 0 },
+        "blocked_upstream": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many otherwise-qualifying items were held back by a live blocker."
+        },
+        "fog_exhausted": {
+          "type": "array",
+          "description": "Projects whose actions are all shut while a fog question still names a real unknown -- the reading, already made, not the raw rows.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["project", "questions"],
+            "properties": {
+              "project": { "type": "string" },
+              "questions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "The open fog questions that were judged to name real unknowns, verbatim."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

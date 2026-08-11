@@ -56,6 +56,7 @@ pub mod adapter;
 pub mod cycle;
 pub mod mirror;
 pub mod queue;
+#[cfg(feature = "reqwest-transport")]
 pub mod reqwest_transport;
 pub mod transport;
 pub mod write;
@@ -64,5 +65,6 @@ pub use adapter::{fetch_delta, fetch_sweep, AdapterError};
 pub use cycle::{Backoff, CycleOutcome, LoadError, SyncCycle, Trigger};
 pub use mirror::SyncMirror;
 pub use queue::{DeadLetterEntry, DeadLetterReason, DrainOutcome, MutationIntent, OutboundQueue, QueueEntry};
+#[cfg(feature = "reqwest-transport")]
 pub use reqwest_transport::ReqwestSyncTransport;
 pub use transport::{ChangesTransport, TransportError};

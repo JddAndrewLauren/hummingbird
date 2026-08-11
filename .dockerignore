@@ -1,0 +1,14 @@
+# Shared by both images built from this repo root: the sweeper's
+# `Dockerfile` and the skill runner's `runner/Dockerfile`. It exists for the
+# second one -- #116 added a Rust builder stage that copies `client/` and
+# `server/` in, and without this the context carries multi-gigabyte
+# `target/` directories and `node_modules` that no stage ever reads.
+#
+# `server/` comes whole because `server/domain` inherits `version`/`edition`
+# from the workspace root and cargo demands every declared member exist;
+# `**/target` is what makes that affordable.
+**/target
+**/node_modules
+.git
+client/web/dist
+client/web/visual/.captures

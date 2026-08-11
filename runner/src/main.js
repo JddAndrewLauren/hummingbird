@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createServer } from "./server.js";
+import { createRankRunner } from "./rank-bin.js";
 
 const RUNNER_BEARER_TOKEN = process.env.RUNNER_BEARER_TOKEN;
 if (!RUNNER_BEARER_TOKEN) {
@@ -19,11 +20,18 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const DEFAULT_REPO_ROOT = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
 const REPO_ROOT = process.env.REPO_ROOT ?? DEFAULT_REPO_ROOT;
 
+// The prebuilt ranker the image bakes in (`runner/Dockerfile` sets
+// `HB_NEXT_UP_BIN`). `next-up-hb`'s `prepare` runs this before `claude`, so
+// the hosted model never needs a shell -- see `rank-bin.js`. The default
+// name keeps a PATH install working in local dev.
+const NEXT_UP_BIN = process.env.HB_NEXT_UP_BIN ?? "next-up-rank";
+
 const server = createServer({
   bearerToken: RUNNER_BEARER_TOKEN,
   repoRoot: REPO_ROOT,
   spawn,
   claudeBin: CLAUDE_BIN,
+  runRanker: createRankRunner({ spawn, bin: NEXT_UP_BIN }),
 });
 
 server.listen(PORT, () => {

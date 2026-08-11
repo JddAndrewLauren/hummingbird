@@ -4,6 +4,7 @@ members = [
     "core",
     "ffi-mobile",
     "ffi-web",
+    "next-up",
 ]
 
 [workspace.package]

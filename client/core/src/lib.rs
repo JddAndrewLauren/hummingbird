@@ -1772,6 +1772,7 @@ where
 /// A minimal placeholder proving the core owns HTTP via `reqwest` (ADR-0003):
 /// one async HTTP path serves every client, including the browser via
 /// `reqwest`'s Fetch-backed `wasm32` target.
+#[cfg(feature = "reqwest-transport")]
 pub async fn fetch_status(client: &reqwest::Client, url: &str) -> Result<u16, reqwest::Error> {
     let response = client.get(url).send().await?;
     Ok(response.status().as_u16())
@@ -1791,6 +1792,7 @@ mod tests {
         assert_eq!(core.api_version(), API_VERSION);
     }
 
+    #[cfg(feature = "reqwest-transport")]
     #[tokio::test]
     async fn fetch_status_compiles_and_is_callable() {
         // No network call in CI: this only proves the async reqwest-backed
