@@ -22,7 +22,6 @@ import {
   pollTimer,
   pushTokenToWorker,
   requestCalendarList,
-  requestCurrentNext,
   setCalendarIdsOnWorker,
   type WorkerLike,
 } from "../store/worker-client";
@@ -44,13 +43,12 @@ import {
 // `document.hidden`/`navigator.onLine` gate every tick below.
 const TIMER_INTERVAL_MS = 15 * 60 * 1000;
 
-// How often the "as of" label / stale styling re-samples the clock. This is
-// independent of the poll timer above (which early-returns while
-// `needsReconnect` is true): a credential hold must not freeze the
-// staleness display, so this ticks any time a tile is showing at all,
-// including during a credential hold. `formatAsOf`'s coarsest unit is a
-// minute, so a much finer tick would just be wasted renders.
-const CLOCK_TICK_MS = 30 * 1000;
+// This hook owns NO clock of its own beyond the 15-minute poll timer above.
+// It used to also run a 30-second tick, purely to keep the context tile's
+// "as of" label live and to re-ask for the current/next event as the moment
+// moved; #245 replaced that tile with ADR-0015's ranked pane region, and
+// `useSyncWiring.ts`'s existing unconditional 30-second `nowMs` is the one
+// clock the Now screen gets.
 
 export const GOOGLE_CLIENT_ID: string | undefined = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
@@ -64,8 +62,6 @@ function tokenClient(): TokenClient | null {
 }
 
 export interface CalendarWiring {
-  /** Re-sampled every 30s so the tile's "as of" label stays live. */
-  nowMs: number;
   handleConnectClick: () => Promise<void>;
   handleCalendarSelectionChange: (selectedCalendarIds: string[]) => void;
   handleRefreshClick: () => void;
@@ -77,7 +73,6 @@ export function useCalendarWiring(
   calendar: CalendarState,
 ): CalendarWiring {
   const [expiresAtMs, setExpiresAtMs] = useState<number | null>(null);
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   // When the last credential-recovery retry went out (0 = never). See
   // `resumeAfterReconnect`.
@@ -120,7 +115,6 @@ export function useCalendarWiring(
     // would replace the last good one.
     setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
     pollRefresh(worker, now);
-    requestCurrentNext(worker, now);
     requestCalendarList(worker);
   }
 
@@ -154,21 +148,13 @@ export function useCalendarWiring(
         // Both of these run even when the silent re-mint failed — the
         // offline-start case, which is exactly when they matter most.
         //
-        // The selection, because the worker was constructed with an empty
-        // one: leaving it empty means a later Reconnect polls zero
-        // calendars, and a zero-calendar poll SUCCEEDS with an empty
-        // snapshot, overwriting the last good one (`fetch_calendar_snapshot`
-        // simply iterates no ids). The last-good snapshot is a
-        // previously-connected device's only offline context; a reconnect
-        // must not be able to destroy it.
-        //
-        // The current/next request, because nothing else asks for one until
-        // a poll completes — and a held credential means no poll completes.
-        // Without this the persisted IndexedDB snapshot is never read and
-        // the tile claims "no current or upcoming event" on a device that
-        // has one, which is worse than showing it honestly stale.
+        // Because the worker was constructed with an empty selection:
+        // leaving it empty means a later Reconnect polls zero calendars, and
+        // a zero-calendar poll SUCCEEDS with an empty snapshot, overwriting
+        // the last good one (`fetch_calendar_snapshot` simply iterates no
+        // ids). The last-good snapshot is a previously-connected device's
+        // only offline context; a reconnect must not be able to destroy it.
         setCalendarIdsOnWorker(worker, selectedCalendarIds);
-        requestCurrentNext(worker, Date.now());
       }
       if (result.connected && !result.needsReconnect) {
         pollStart(worker, Date.now());
@@ -255,32 +241,6 @@ export function useCalendarWiring(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.connected, calendar.needsReconnect]);
 
-  // Keeps the context tile's "as of" label / stale styling live. Gated
-  // only on `calendar.connected` (the tile's own render condition) —
-  // deliberately NOT also gated on `!calendar.needsReconnect` like the poll
-  // timer effect above, so staleness keeps advancing (and correctly turns
-  // "stale") exactly during a credential hold, instead of freezing at
-  // whatever `Date.now()` happened to be sampled at the last render before
-  // the hold began.
-  useEffect(() => {
-    if (!calendar.connected) {
-      return;
-    }
-    const id = window.setInterval(() => {
-      const now = Date.now();
-      setNowMs(now);
-      // Re-query current/next, not just the clock. "Now" and "Next" are
-      // answers about a moment, and the moment moves: without this the tile
-      // keeps saying "Next" after an event has started and "Now" after it
-      // has ended, until the 15-minute network poll happens to correct it.
-      // This read is local (the persisted snapshot, no network), so it is
-      // also correct to run during a credential hold or offline.
-      requestCurrentNext(worker, now);
-    }, CLOCK_TICK_MS);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calendar.connected]);
-
   async function handleConnectClick() {
     const deps = connectionDeps();
     if (!deps) {
@@ -318,7 +278,6 @@ export function useCalendarWiring(
     coreStore.setCalendarState({ selectedCalendarIds });
     setCalendarIdsOnWorker(worker, selectedCalendarIds);
     pollRefresh(worker, Date.now());
-    requestCurrentNext(worker, Date.now());
   }
 
   // The user-facing manual refresh (#46/#72). Without it the only way to
@@ -332,8 +291,7 @@ export function useCalendarWiring(
     // the last good one.
     setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
     pollRefresh(worker, Date.now());
-    requestCurrentNext(worker, Date.now());
   }
 
-  return { nowMs, handleConnectClick, handleCalendarSelectionChange, handleRefreshClick };
+  return { handleConnectClick, handleCalendarSelectionChange, handleRefreshClick };
 }

@@ -6,6 +6,12 @@
 
 export const STALE_AFTER_MS = 20 * 60 * 1000; // 15-minute cadence + 5-minute slack
 
+// NOTE (#245): the context tile this was written for is gone — ADR-0015's
+// ranked pane region replaced it, and `tile-props.ts` went with it. The
+// module survives because `prototype-weekend-pane/` (#122, still live) reads
+// both functions; it is deleted with that prototype, or folded into whatever
+// the weekend question ends up needing.
+
 export function isStale(asOfMs: number, nowMs: number): boolean {
   return nowMs - asOfMs > STALE_AFTER_MS;
 }

@@ -53,17 +53,6 @@ export interface DemoRoute {
   actions: string[];
 }
 
-export interface DemoSnapshot {
-  name: string;
-  value: string;
-  note: string;
-}
-
-export interface DemoStandingQuestion {
-  q: string;
-  a: string;
-}
-
 export interface DemoRule {
   name: string;
   tier: AlertTier;
@@ -87,8 +76,6 @@ export interface DemoData {
   triage: DemoCapture[];
   alerts: DemoAlert[];
   route: DemoRoute;
-  snapshots: DemoSnapshot[];
-  standingQuestions: DemoStandingQuestion[];
   bindings: DemoBinding[];
   rules: DemoRule[];
   calendars: DemoCalendar[];
@@ -128,20 +115,13 @@ export const DEMO_DATA: DemoData = {
     ],
     actions: ["ION-142", "ION-151", "ION-160"],
   },
-  snapshots: [
-    { name: "Fly · machine hours", value: "112 / 160", note: "as of 4m ago" },
-    { name: "hb.twinion.net", value: "99.98%", note: "as of 9m ago" },
-    { name: "Outbound queue", value: "0 pending", note: "as of just now" },
-  ],
-  standingQuestions: [
-    { q: "Next race", a: "Ridgeline 10k · 16 days" },
-    { q: "Vacation", a: "Lisbon · 38 days" },
-    { q: "Which cans", a: "Recycling · Tuesday" },
-  ],
   bindings: [
     { key: "race-series", known: true, pending: false, value: { state: "text", text: "hyrox-uk" } },
     { key: "trips-calendar", known: true, pending: true, value: { state: "text", text: "travel@group.calendar.google.com" } },
-    { key: "city-waste-page", known: true, pending: false, value: { state: "unset" } },
+    // Set, not unset: #245's ranked region reads this binding, and the
+    // demo world's waste pane is answered — so the Settings editor and the
+    // Now aside have to agree about it.
+    { key: "city-waste-page", known: true, pending: false, value: { state: "text", text: "https://example.gov/waste/collection-day" } },
   ],
   rules: [
     { name: "Sweeper run failed", tier: "urgent", description: "Two consecutive adapter failures from one source." },

@@ -1,0 +1,280 @@
+// @vitest-environment jsdom
+
+import { describe, expect, it, vi } from "vitest";
+import { BINDING_KEY, SOURCE } from "../waste-pane/waste";
+import type { BindingDTO, PaneReadDTO } from "../../store/protocol";
+import { fireEvent, paneReadDTO, paneSnapshotDTO, render, screen, wasteBody } from "../../test/component";
+import type { StorageLike } from "./collapse";
+import { RankedRegion } from "./RankedRegion";
+
+// The wiring gate for #245's region. Every piece below is separately
+// unit-tested and separately right; what these tests cover is the thread —
+// that the captured order really is captured, that the collapsed row really
+// is the shell's, and that a stored override really survives a remount.
+
+const ZONE = "America/Los_Angeles";
+/** Monday 2026-08-10, 09:00 at the address. */
+const NOW = Date.parse("2026-08-10T16:00:00Z");
+
+function civilDate(dayOffset: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(NOW + dayOffset * 86_400_000));
+}
+
+function bound(): BindingDTO[] {
+  return [
+    {
+      key: BINDING_KEY,
+      known: true,
+      pending: false,
+      value: { state: "text", text: "https://example.gov/collection" },
+    },
+  ];
+}
+
+function readAt(dayOffset: number): Record<string, PaneReadDTO> {
+  const day = civilDate(dayOffset);
+  return {
+    [SOURCE]: paneReadDTO({
+      snapshots: [
+        paneSnapshotDTO({
+          envelope: {
+            kind: "ok",
+            schema: SOURCE,
+            polledEveryMs: 86_400_000,
+            body: wasteBody({ zone: ZONE, scheduled: day, collectedOn: day }),
+          },
+        }),
+      ],
+    }),
+  };
+}
+
+function fakeStorage(): StorageLike & { entries: Map<string, string> } {
+  const entries = new Map<string, string>();
+  return {
+    entries,
+    getItem: (key) => entries.get(key) ?? null,
+    setItem: (key, value) => void entries.set(key, value),
+    removeItem: (key) => void entries.delete(key),
+  };
+}
+
+describe("RankedRegion", () => {
+  it("renders an answered, imminent pane expanded, from real-shaped inputs", () => {
+    render(
+      <RankedRegion
+        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Trash Tonight")).toBeTruthy();
+    // The bins carry accessible names — colour alone is not a label.
+    expect(screen.getByLabelText("trash")).toBeTruthy();
+  });
+
+  it("draws a collapsed pane itself, with no pane markup at all", () => {
+    // Four days out is dormant, and dormant IS the collapsed row: there is
+    // no quiet card, and the pane ships no compact form of its own.
+    render(
+      <RankedRegion
+        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Friday · 4d")).toBeTruthy();
+    expect(screen.queryByText("Trash Friday")).toBeNull();
+    expect(screen.getByRole("button", { expanded: false })).toBeTruthy();
+  });
+
+  it("does not move a pane when only the band changed, but does update what it shows", () => {
+    // The whole point of capturing the order: the clock moving a pane from
+    // dormant to imminent must not re-sort the region under the reader's
+    // cursor — while the content it renders stays live.
+    const view = render(
+      <RankedRegion
+        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Trash Friday")).toBeTruthy();
+
+    view.rerender(
+      <RankedRegion
+        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    // Live content, no re-sort needed to see it.
+    expect(screen.getByText("Trash Tonight")).toBeTruthy();
+  });
+
+  it("re-samples the order when a cycle completes", () => {
+    const view = render(
+      <RankedRegion
+        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+    expect(screen.getByText("Friday · 4d")).toBeTruthy();
+
+    view.rerender(
+      <RankedRegion
+        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        nowMs={NOW}
+        syncOutcomeSeq={1}
+        onScreen={() => {}}
+      />,
+    );
+
+    // Re-ranked on the new facts: imminent, so it opens on its own.
+    expect(screen.getByText("Trash Tonight")).toBeTruthy();
+  });
+
+  it("re-samples at once when a pane's answer state changes, without waiting for a cycle", () => {
+    // A fresh mount whose bindings land a moment later must not sit in the
+    // wrong answer state for a whole minute — and while the table is unread
+    // it says so, rather than telling a configured reader to set it up.
+    const view = render(
+      <RankedRegion
+        inputs={{ bindings: null, paneReads: {} }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+    expect(screen.getByText("Checking setup")).toBeTruthy();
+    expect(screen.queryByText("Not set up")).toBeNull();
+
+    view.rerender(
+      <RankedRegion
+        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Trash Tonight")).toBeTruthy();
+  });
+
+  it("keeps a collapse override across a remount, through storage", () => {
+    const storage = fakeStorage();
+    const props = {
+      inputs: { bindings: bound(), paneReads: readAt(1) },
+      nowMs: NOW,
+      syncOutcomeSeq: 0,
+      storage,
+      onScreen: () => {},
+    };
+    const view = render(<RankedRegion {...props} />);
+
+    // Imminent, so it starts open; collapse it.
+    fireEvent.click(screen.getByRole("button", { expanded: true }));
+    expect(screen.queryByText("Trash Tonight")).toBeNull();
+
+    view.unmount();
+    render(<RankedRegion {...props} />);
+
+    expect(screen.queryByText("Trash Tonight")).toBeNull();
+    expect(screen.getByText("Trash tonight")).toBeTruthy();
+  });
+
+  it("renders a gap as a gap, with the reason in words", () => {
+    render(
+      <RankedRegion
+        inputs={{
+          bindings: bound(),
+          paneReads: {
+            [SOURCE]: paneReadDTO({
+              snapshots: [
+                paneSnapshotDTO({ envelope: { kind: "malformed", reason: "`body` is missing" } }),
+              ],
+            }),
+          },
+        }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("No answer yet")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText(/`body` is missing/)).toBeTruthy();
+  });
+
+  it("tells an unread bindings table apart from an unset binding, on screen", () => {
+    render(
+      <RankedRegion
+        inputs={{ bindings: null, paneReads: {} }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Checking your setup")).toBeTruthy();
+    // The one thing it must not do: tell someone who has already configured
+    // this to configure it.
+    expect(screen.queryByText("Open Settings")).toBeNull();
+  });
+
+  it("offers Settings when the binding exists but cannot be read", () => {
+    const onScreen = vi.fn();
+    render(
+      <RankedRegion
+        inputs={{
+          bindings: [{ key: BINDING_KEY, known: true, pending: false, value: { state: "other", raw: "7" } }],
+          paneReads: {},
+        }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={onScreen}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("That collection page can't be read")).toBeTruthy();
+    fireEvent.click(screen.getByText("Open Settings"));
+    expect(onScreen).toHaveBeenCalledWith("settings");
+  });
+
+  it("sorts an unbound question last and offers its setup prompt", () => {
+    const onScreen = vi.fn();
+    render(
+      <RankedRegion
+        inputs={{ bindings: [], paneReads: {} }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={onScreen}
+      />,
+    );
+
+    const rows = screen.getAllByRole("button");
+    expect(rows[rows.length - 1].textContent).toContain("Not set up");
+
+    fireEvent.click(screen.getByText("Not set up"));
+    fireEvent.click(screen.getByText("Open Settings"));
+    expect(onScreen).toHaveBeenCalledWith("settings");
+  });
+});

@@ -3,6 +3,9 @@ import type {
   BindingValueDTO,
   BlockedFrontierEntryDTO,
   DeadLetterEntryDTO,
+  FreshnessDTO,
+  PaneEnvelopeDTO,
+  PaneReadDTO,
   ProjectDTO,
   StepDTO,
   TaskEventDTO,
@@ -51,6 +54,10 @@ export interface TaskHostLike {
    * `{"kind": "ok"|"unknown_key"|"failed"|"busy", "error": string|null}`. */
   setBinding(seed: string, key: string, value: string, nowMs: number): Promise<string>;
   bindings(): string;
+  /** #245's generic pane read. Mirrors `hummingbird-ffi-web`'s
+   * `TaskHost::paneRead` — see `RawPaneReadResponse` below for the wire
+   * shape, which `client/ffi-web/src/task_host.rs` pins byte-for-byte. */
+  paneRead(source: string, nowMs: number): string;
   frontier(): string;
   triageInbox(): string;
   blocked(): string;
@@ -115,6 +122,47 @@ interface RawBindingListResponse {
 interface RawSetBindingResponse {
   kind: "ok" | "unknown_key" | "failed" | "busy";
   error: string | null;
+}
+
+// -- the pane read (#245) — pinned to `PaneReadResponse`'s serde output by
+// `client/ffi-web/src/task_host.rs`'s
+// `pane_read_response_serializes_with_the_exact_keys_the_pane_shell_ts_parses`.
+
+type RawFreshness =
+  | { state: "unknown" }
+  | { state: "age"; age_ms: number; declared_cadence_ms: number | null };
+
+type RawPaneEnvelope =
+  | { state: "parsed"; schema: string; polled_every_ms: number | null; body: string }
+  | { state: "malformed"; reason: string };
+
+interface RawPaneSnapshot {
+  source: string;
+  key: string;
+  fetched_at: number;
+  version: number;
+  freshness: RawFreshness;
+  envelope: RawPaneEnvelope;
+}
+
+/** A raw `hummingbird_domain::Alert` row. Only the fields a pane reads are
+ * named — the rest ride along in the JSON and are dropped by `mapPaneRead`,
+ * deliberately: `AlertsScreen` is the surface for the whole row, and a pane
+ * that could reach `severity` or `source_key` would be one join away from
+ * re-deriving occurrence identity, which ADR-0015 says is never a join key. */
+interface RawPaneAlert {
+  id: string;
+  subject_key: string | null;
+  title: string;
+  body: string | null;
+  raised_at: number;
+  expires_at: number | null;
+}
+
+interface RawPaneReadResponse {
+  kind: "ok" | "busy";
+  snapshots: RawPaneSnapshot[];
+  alerts: RawPaneAlert[];
 }
 
 interface RawProject {
@@ -264,6 +312,38 @@ function mapBinding(raw: RawBinding): BindingDTO {
     known: raw.known,
     pending: raw.pending,
     value: raw.value,
+  };
+}
+
+function mapFreshness(raw: RawFreshness): FreshnessDTO {
+  return raw.state === "unknown"
+    ? { kind: "unknown" }
+    : { kind: "age", ageMs: raw.age_ms, declaredCadenceMs: raw.declared_cadence_ms };
+}
+
+function mapEnvelope(raw: RawPaneEnvelope): PaneEnvelopeDTO {
+  return raw.state === "parsed"
+    ? { kind: "ok", schema: raw.schema, polledEveryMs: raw.polled_every_ms, body: raw.body }
+    : { kind: "malformed", reason: raw.reason };
+}
+
+function mapPaneRead(source: string, raw: RawPaneReadResponse): PaneReadDTO {
+  return {
+    source,
+    snapshots: raw.snapshots.map((snapshot) => ({
+      key: snapshot.key,
+      fetchedAtMs: snapshot.fetched_at,
+      envelope: mapEnvelope(snapshot.envelope),
+      freshness: mapFreshness(snapshot.freshness),
+    })),
+    liveAlerts: raw.alerts.map((alert) => ({
+      id: alert.id,
+      subjectKey: alert.subject_key,
+      title: alert.title,
+      body: alert.body,
+      raisedAtMs: alert.raised_at,
+      expiresAtMs: alert.expires_at,
+    })),
   };
 }
 
@@ -453,6 +533,17 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "bindings", bindings: raw.bindings.map(mapBinding) });
+      return;
+    }
+    case "getPaneRead": {
+      const raw = JSON.parse(host.paneRead(request.source, request.nowMs)) as RawPaneReadResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty answer — and it matters more here than
+        // most: an empty pane read renders as "nothing is due tonight",
+        // which is a claim, not a blank (`lib.rs`'s `BUSY_PANE_READ`).
+        return;
+      }
+      post({ type: "paneRead", read: mapPaneRead(request.source, raw) });
       return;
     }
     case "getFrontier": {

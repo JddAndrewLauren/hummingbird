@@ -49,6 +49,16 @@ export function Aside({ label, children }: { label: string; children: ReactNode 
         position: "sticky",
         top: 0,
         alignSelf: "flex-start",
+        // The panel is sticky, so its height is whatever its content is —
+        // and once Now's aside holds a ranked region that grows with the
+        // number of standing questions (#245, ADR-0015), that content can
+        // exceed the viewport and simply be unreachable: the shell's one
+        // scroll container scrolls the *page*, past a panel that is stuck to
+        // the top. Capping it at the viewport and letting it scroll itself is
+        // what keeps the bottom of the panel reachable on every screen that
+        // has one (Now, Settings, Alerts, Routes).
+        maxHeight: "100dvh",
+        overflowY: "auto",
         display: "flex",
         flexDirection: "column",
         gap: "var(--space-6)",

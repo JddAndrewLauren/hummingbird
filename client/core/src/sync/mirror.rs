@@ -221,6 +221,36 @@ impl SyncMirror {
             .get(&(source.to_string(), key.to_string())))
     }
 
+    /// Every live snapshot row for one source, `key` order — the snapshot
+    /// half of [`crate::Core::pane_read`] (#245, ADR-0015), where
+    /// [`SyncMirror::context_snapshot`] is the point lookup beside it. A row
+    /// the server has stopped sending is demoted like every other record
+    /// (ADR-0003) and never appears.
+    ///
+    /// **This mirror has no clock**, so nothing here is filtered by time;
+    /// freshness and alert liveness are applied by `Core::pane_read` from
+    /// its caller-injected `now_ms`.
+    pub fn context_snapshots_for<'a>(
+        &'a self,
+        source: &'a str,
+    ) -> impl Iterator<Item = &'a ContextSnapshot> {
+        self.context_snapshots
+            .values()
+            .filter_map(live_slot)
+            .filter(move |snapshot| snapshot.source == source)
+    }
+
+    /// Every live alert raised by one source, id order — the alert half of
+    /// [`crate::Core::pane_read`]. "Live" here is ADR-0003's presence only:
+    /// ADR-0014's `is_live` predicate needs a clock this type does not have,
+    /// so `Core::pane_read` applies it.
+    pub fn alerts_for_source<'a>(&'a self, source: &'a str) -> impl Iterator<Item = &'a Alert> {
+        self.alerts
+            .values()
+            .filter_map(live_slot)
+            .filter(move |alert| alert.source == source)
+    }
+
     pub fn setting(&self, key: &str) -> Option<&Setting> {
         live(self.settings.get(key))
     }

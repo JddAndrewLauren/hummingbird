@@ -2,14 +2,12 @@ import { useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
-import { Icon } from "../components/core/Icon";
-import { ContextTile } from "../components/domain/ContextTile";
 import { ItemDetailPanel } from "../components/domain/ItemDetailPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
-import type { CalendarTileProps } from "../calendar/tile-props";
-import type { DemoData, DemoSnapshot } from "../fixtures/demo";
+import type { DemoData } from "../fixtures/demo";
+import { demoQuestionInputs } from "../fixtures/demo-questions";
 import type { Screen } from "../shell/screens";
 import type { TaskActionName, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -18,6 +16,7 @@ import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
 import { applyItemAction, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+import { RankedRegion } from "./questions/RankedRegion";
 // PROTOTYPE (#119) — throwaway, dev-only, renders nothing without `?racepane`.
 // Shape settled (context panel); delete these two mounts with
 // `prototype-race-pane/`.
@@ -32,41 +31,19 @@ import {
   VacationPane,
   VacationPaneSwitcher,
 } from "./prototype-vacation-pane/VacationPanePrototype";
-// PROTOTYPE (#120) — throwaway, dev-only, renders nothing without
-// `?wastepane`. A driveable world rather than fixed scenarios; delete these
-// two mounts with `prototype-waste-pane/`.
-import { WastePane, WastePaneSwitcher } from "./prototype-waste-pane/WastePanePrototype";
 import { computeUrgency } from "./urgency";
-
-function SnapshotTile({ snapshot }: { snapshot: DemoSnapshot }) {
-  return (
-    <Card
-      padding="var(--space-5)"
-      style={{ flex: 1, display: "flex", flexDirection: "column", gap: "var(--space-2)" }}
-    >
-      <span className="hb-meta">{snapshot.name}</span>
-      <span style={{ font: "var(--weight-bold) 22px/1.1 var(--font-display)", color: "var(--text-primary)" }}>
-        {snapshot.value}
-      </span>
-      <span className="hb-meta" style={{ color: "var(--text-muted)" }}>
-        {snapshot.note}
-      </span>
-    </Card>
-  );
-}
 
 export interface NowScreenProps {
   demo: DemoData | null;
-  /** The real calendar context, or null on a device that never opted in. */
-  tile: CalendarTileProps | null;
   onScreen: (screen: Screen) => void;
   /** S10's real frontier data (issue #108) — rendered whenever `demo` is
    * null, i.e. always outside dev's `?demo` mode. */
   task: TaskState;
-  /** Sampled at the same ~30s granularity `useCalendarWiring.ts` already
-   * ticks at — coarse enough for urgency's own bucket sizes
-   * (`urgency.ts`), so this reuses that clock rather than adding a second
-   * one. */
+  /** `useSyncWiring.ts`'s unconditional 30s tick — coarse enough for
+   * urgency's own bucket sizes (`urgency.ts`) and for the ranked region's
+   * bands, and the ONE clock this screen gets. (It used to be
+   * `useCalendarWiring`'s own tick, whose only honest consumer was the
+   * context tile ADR-0015 replaced; that timer is gone.) */
   nowMs: number;
   selectedItemId: string | null;
   onOpenItem: (itemId: string) => void;
@@ -276,7 +253,6 @@ function RealFrontier({
 
 export function NowScreen({
   demo,
-  tile,
   onScreen,
   task,
   nowMs,
@@ -298,7 +274,6 @@ export function NowScreen({
       <RacePaneSwitcher />
       <VacationPaneSwitcher />
       <WeekendPaneSwitcher />
-      <WastePaneSwitcher />
       <Column>
         <WeekendPane slot="banner" />
         {demo && top ? (
@@ -377,108 +352,23 @@ export function NowScreen({
       </Column>
 
       <Aside label="Context">
+        {/* ADR-0015's ranked region replaces everything that used to be in
+            here — the context tile, the demo standing-question card and the
+            snapshot tiles — and it is the same component in both modes: only
+            the inputs differ, so `?demo` photographs the real shell. */}
+        <RankedRegion
+          inputs={demo ? demoQuestionInputs(nowMs) : { bindings: task.bindings, paneReads: task.paneReads }}
+          nowMs={nowMs}
+          syncOutcomeSeq={task.syncOutcomeSeq}
+          storage={typeof localStorage === "undefined" ? undefined : localStorage}
+          onScreen={onScreen}
+        />
+        {/* The surviving prototypes (#119/#121/#122), still dev-only and
+            param-gated, sit beside the region until each is folded into a
+            real question of its own. */}
         <RacePane />
-        <WastePane />
         <VacationPane />
         <WeekendPane slot="aside" />
-        <div>
-          <span className="hb-meta">calendar context</span>
-          <div
-            style={{
-              marginTop: "var(--space-4)",
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-4)",
-            }}
-          >
-            {demo ? (
-              <>
-                <ContextTile
-                  kind="in_progress"
-                  title="Design review"
-                  timeLabel="9:30–10:00 AM"
-                  href="#"
-                  asOf="just now"
-                />
-                <ContextTile
-                  kind="upcoming"
-                  title="School pickup"
-                  timeLabel="3:10–3:30 PM"
-                  asOf="42m ago"
-                  stale
-                />
-              </>
-            ) : tile ? (
-              <ContextTile
-                kind={tile.kind}
-                title={tile.title}
-                timeLabel={tile.timeLabel}
-                href={tile.href}
-                asOf={tile.asOf}
-                stale={tile.stale}
-              />
-            ) : (
-              <Card padding="var(--space-3)">
-                <EmptyState
-                  compact
-                  icon="calendar-clock"
-                  headingLevel={2}
-                  title="No calendar connected"
-                  body="Connect Google Calendar in Settings to see what's on now and next."
-                />
-              </Card>
-            )}
-          </div>
-        </div>
-
-        {demo ? (
-          <>
-            <div>
-              <span className="hb-meta">standing questions</span>
-              <Card
-                padding="var(--space-5)"
-                style={{
-                  marginTop: "var(--space-4)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--space-4)",
-                }}
-              >
-                {demo.standingQuestions.map((question) => (
-                  <div key={question.q} style={{ display: "flex", gap: "var(--space-4)" }}>
-                    <Icon
-                      name="help-circle"
-                      size={16}
-                      color="var(--text-muted)"
-                      style={{ marginTop: 2 }}
-                    />
-                    <div>
-                      <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-                        {question.q}
-                      </p>
-                      <p style={{ font: "var(--type-body-strong)" }}>{question.a}</p>
-                    </div>
-                  </div>
-                ))}
-              </Card>
-            </div>
-            <div>
-              <span className="hb-meta">context snapshots</span>
-              <div
-                style={{
-                  marginTop: "var(--space-4)",
-                  display: "flex",
-                  gap: "var(--space-4)",
-                  flexWrap: "wrap",
-                }}
-              >
-                {demo.snapshots.map((snapshot) => (
-                  <SnapshotTile key={snapshot.name} snapshot={snapshot} />
-                ))}
-              </div>
-            </div>
-          </>
-        ) : null}
       </Aside>
     </TwoColumn>
   );

@@ -14,9 +14,6 @@ function fakeHost(overrides: Partial<CalendarHostLike> = {}): CalendarHostLike {
     refresh: vi.fn().mockResolvedValue("no_credential"),
     onTimer: vi.fn().mockResolvedValue("no_credential"),
     takeCredentialEvents: vi.fn().mockReturnValue("[]"),
-    currentOrNext: vi
-      .fn()
-      .mockResolvedValue('{"kind":"no_snapshot","event":null,"as_of_ms":null}'),
     listCalendars: vi.fn().mockResolvedValue('{"kind":"ok","calendars":[]}'),
     ...overrides,
   };
@@ -86,64 +83,6 @@ describe("handleCalendarRequest", () => {
     expect(posted).toEqual([{ type: "pollOutcome", outcome: "held" }]);
   });
 
-  it("getCurrentNext maps an in-progress event's raw JSON into the DTO shape", async () => {
-    const host = fakeHost({
-      currentOrNext: vi.fn().mockResolvedValue(
-        JSON.stringify({
-          kind: "in_progress",
-          event: {
-            title: "Standup",
-            start: { instant_ms: 1_000 },
-            end: { instant_ms: 2_000 },
-            all_day: false,
-            html_link: "https://calendar.google.com/event?eid=abc",
-          },
-          as_of_ms: 9_000,
-        }),
-      ),
-    });
-
-    const posted = await run({ type: "getCurrentNext", nowMs: 1_500 }, host);
-
-    expect(posted).toEqual([
-      {
-        type: "currentNext",
-        kind: "in_progress",
-        event: {
-          title: "Standup",
-          startMs: 1_000,
-          endMs: 2_000,
-          allDay: false,
-          htmlLink: "https://calendar.google.com/event?eid=abc",
-        },
-        asOfMs: 9_000,
-      },
-    ]);
-  });
-
-  it("getCurrentNext with no snapshot maps to a null event", async () => {
-    const host = fakeHost();
-    const posted = await run({ type: "getCurrentNext", nowMs: 1_000 }, host);
-
-    expect(posted).toEqual([
-      { type: "currentNext", kind: "no_snapshot", event: null, asOfMs: null },
-    ]);
-  });
-
-  it('getCurrentNext posts nothing when the host answers "busy"', async () => {
-    // "busy" is the absence of an answer, not an empty one: posting it would
-    // blank a tile that is currently showing a real event.
-    const host = fakeHost({
-      currentOrNext: vi
-        .fn()
-        .mockResolvedValue('{"kind":"busy","event":null,"as_of_ms":null}'),
-    });
-
-    const posted = await run({ type: "getCurrentNext", nowMs: 1_000 }, host);
-
-    expect(posted).toEqual([]);
-  });
-
   it("listCalendars posts the core's options, carrying no token of its own", async () => {
     const host = fakeHost({
       listCalendars: vi.fn().mockResolvedValue(
@@ -201,7 +140,7 @@ describe("createRequestQueue", () => {
     // `RefCell` borrow across a poll's network await, so a request that
     // reached it mid-poll would panic the whole wasm module. Bursts are
     // routine -- a picker change posts setCalendarIds, pollRefresh and
-    // getCurrentNext back to back -- so nothing but a queue makes
+    // listCalendars back to back -- so nothing but a queue makes
     // "one at a time" true.
     const inFlight = deferred<string>();
     const host = fakeHost({
@@ -211,18 +150,18 @@ describe("createRequestQueue", () => {
     const enqueue = createRequestQueue(host, (response) => posted.push(response));
 
     void enqueue({ type: "pollRefresh", nowMs: 1_000 });
-    const second = enqueue({ type: "getCurrentNext", nowMs: 1_000 });
+    const second = enqueue({ type: "listCalendars" });
     await Promise.resolve();
 
-    expect(host.currentOrNext).not.toHaveBeenCalled();
+    expect(host.listCalendars).not.toHaveBeenCalled();
 
     inFlight.resolve("succeeded");
     await second;
 
-    expect(host.currentOrNext).toHaveBeenCalledWith(1_000);
+    expect(host.listCalendars).toHaveBeenCalled();
     expect(posted).toEqual([
       { type: "pollOutcome", outcome: "succeeded" },
-      { type: "currentNext", kind: "no_snapshot", event: null, asOfMs: null },
+      { type: "calendarList", calendars: [] },
     ]);
   });
 
@@ -237,12 +176,10 @@ describe("createRequestQueue", () => {
     const enqueue = createRequestQueue(host, (response) => posted.push(response));
 
     await enqueue({ type: "pollRefresh", nowMs: 1_000 });
-    await enqueue({ type: "getCurrentNext", nowMs: 2_000 });
+    await enqueue({ type: "listCalendars" });
 
     expect(consoleError).toHaveBeenCalled();
-    expect(posted).toEqual([
-      { type: "currentNext", kind: "no_snapshot", event: null, asOfMs: null },
-    ]);
+    expect(posted).toEqual([{ type: "calendarList", calendars: [] }]);
     consoleError.mockRestore();
   });
 
@@ -264,19 +201,14 @@ describe("createRequestQueue", () => {
       const enqueue = createRequestQueue(host, (response) => posted.push(response));
 
       const first = enqueue({ type: "pollRefresh", nowMs: 1_000 });
-      const second = enqueue({ type: "getCurrentNext", nowMs: 1_000 });
+      const second = enqueue({ type: "listCalendars" });
 
       await vi.advanceTimersByTimeAsync(10_100);
       await first;
       await second;
 
-      expect(host.currentOrNext).toHaveBeenCalledWith(1_000);
-      expect(posted).toContainEqual({
-        type: "currentNext",
-        kind: "no_snapshot",
-        event: null,
-        asOfMs: null,
-      });
+      expect(host.listCalendars).toHaveBeenCalled();
+      expect(posted).toContainEqual({ type: "calendarList", calendars: [] });
       consoleError.mockRestore();
     });
   });

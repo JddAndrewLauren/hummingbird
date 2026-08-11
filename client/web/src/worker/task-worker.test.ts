@@ -13,6 +13,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     setBinding: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
+    paneRead: vi.fn().mockReturnValue('{"kind":"ok","snapshots":[],"alerts":[]}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
@@ -711,6 +712,114 @@ describe("handleTaskRequest", () => {
         ],
       },
     ]);
+  });
+
+  it("getPaneRead camelCases the whole read, carrying the body through as opaque JSON text", async () => {
+    // Pinned against `client/ffi-web/src/task_host.rs`'s own
+    // `pane_read_response_serializes_with_the_exact_keys_the_pane_shell_ts_parses`
+    // — nothing on this side re-derives the shape from serde's output.
+    const host = fakeHost({
+      paneRead: vi.fn().mockReturnValue(
+        JSON.stringify({
+          kind: "ok",
+          snapshots: [
+            {
+              source: "city-waste/v2",
+              key: "collection",
+              fetched_at: 1_000,
+              version: 2,
+              freshness: { state: "age", age_ms: 60_000, declared_cadence_ms: 86_400_000 },
+              envelope: {
+                state: "parsed",
+                schema: "city-waste/v2",
+                polled_every_ms: 86_400_000,
+                body: '{"zone":"Europe/London"}',
+              },
+            },
+            {
+              source: "city-waste/v2",
+              key: "broken",
+              fetched_at: 2_000,
+              version: 1,
+              freshness: { state: "unknown" },
+              envelope: { state: "malformed", reason: "`body` is missing" },
+            },
+          ],
+          alerts: [
+            {
+              id: "alert-1",
+              source: "city-waste/v2",
+              source_key: "collection:2026-08-11",
+              subject_key: "collection",
+              title: "Collection moved",
+              body: null,
+              url: null,
+              severity: null,
+              raised_at: 900,
+              resolved_at: null,
+              dismissed_at: null,
+              expires_at: null,
+              version: 1,
+            },
+          ],
+        }),
+      ),
+    });
+
+    const posted = await run(
+      { type: "getPaneRead", source: "city-waste/v2", nowMs: 61_000 },
+      host,
+    );
+
+    expect(host.paneRead).toHaveBeenCalledWith("city-waste/v2", 61_000);
+    expect(posted).toEqual([
+      {
+        type: "paneRead",
+        read: {
+          source: "city-waste/v2",
+          snapshots: [
+            {
+              key: "collection",
+              fetchedAtMs: 1_000,
+              envelope: {
+                kind: "ok",
+                schema: "city-waste/v2",
+                polledEveryMs: 86_400_000,
+                body: '{"zone":"Europe/London"}',
+              },
+              freshness: { kind: "age", ageMs: 60_000, declaredCadenceMs: 86_400_000 },
+            },
+            {
+              key: "broken",
+              fetchedAtMs: 2_000,
+              envelope: { kind: "malformed", reason: "`body` is missing" },
+              freshness: { kind: "unknown" },
+            },
+          ],
+          liveAlerts: [
+            {
+              id: "alert-1",
+              subjectKey: "collection",
+              title: "Collection moved",
+              body: null,
+              raisedAtMs: 900,
+              expiresAtMs: null,
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('getPaneRead posts nothing when the host answers "busy"', async () => {
+    // An empty pane read renders as "nothing is due" — a claim, not a
+    // blank. A core that has not loaded has no standing to make it.
+    const host = fakeHost({
+      paneRead: vi.fn().mockReturnValue('{"kind":"busy","snapshots":[],"alerts":[]}'),
+    });
+    expect(
+      await run({ type: "getPaneRead", source: "city-waste/v2", nowMs: 1 }, host),
+    ).toEqual([]);
   });
 
   it('getBindings posts nothing when the host answers "busy"', async () => {

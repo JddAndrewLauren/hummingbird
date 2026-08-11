@@ -7,11 +7,10 @@ import type {
   BindingDTO,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
-  CurrentNextEventDTO,
   DeadLetterEntryDTO,
+  PaneReadDTO,
   PollOutcomeName,
   ProjectDTO,
-  RenderableCurrentNextKind,
   StepDTO,
   TaskActionName,
   TaskItemDTO,
@@ -34,9 +33,6 @@ export interface CalendarState {
    * from here is rendered as unavailable rather than silently dropped. */
   availableCalendars: CalendarListEntryDTO[];
   lastPollOutcome: PollOutcomeName | null;
-  tileKind: RenderableCurrentNextKind;
-  tileEvent: CurrentNextEventDTO | null;
-  asOfMs: number | null;
 }
 
 /** The last `Core::run` cycle's outcome, as far as the shell needs it —
@@ -114,6 +110,12 @@ export interface TaskState {
    * `bindings` answer arrives: an empty array is a real answer ("the table
    * is empty"), and the editor must not render it before one exists. */
   bindings: BindingDTO[] | null;
+  /** Every standing question's pane read (#245, ADR-0015), keyed by source —
+   * the `stepsByItem` shape: starts `{}` and only ever grows the sources a
+   * view actually asked about via `getPaneRead`, never a full mirror of
+   * every source the mirror holds. A missing entry means "not read yet",
+   * which a pane reads as a gap rather than as "no rows". */
+  paneReads: Record<string, PaneReadDTO>;
   /** Keyed by item id — only ever grows entries this view actually asked
    * about via `isPending`, never a full mirror of every pending item. */
   pending: Record<string, boolean>;
@@ -203,9 +205,6 @@ const initialCalendarState: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
-  tileKind: "no_snapshot",
-  tileEvent: null,
-  asOfMs: null,
 };
 
 const initialTaskState: TaskState = {
@@ -215,6 +214,7 @@ const initialTaskState: TaskState = {
   stepsByItem: {},
   projects: [],
   bindings: null,
+  paneReads: {},
   pending: {},
   lastCapture: null,
   lastAct: null,
@@ -275,6 +275,11 @@ export function createCoreStore() {
     setTaskState({ stepsByItem: { ...state.task.stepsByItem, [itemId]: steps } });
   }
 
+  // And for `paneReads` (#245), keyed by source rather than item id.
+  function setTaskPaneRead(source: string, read: PaneReadDTO): void {
+    setTaskState({ paneReads: { ...state.task.paneReads, [source]: read } });
+  }
+
   // A stable reference: this closure is created once, when the store is
   // created, and never reallocated per call. useSyncExternalStore relies on
   // that stability to avoid resubscribing every render.
@@ -292,6 +297,7 @@ export function createCoreStore() {
     setTaskState,
     setTaskPending,
     setTaskSteps,
+    setTaskPaneRead,
     subscribe,
   };
 }

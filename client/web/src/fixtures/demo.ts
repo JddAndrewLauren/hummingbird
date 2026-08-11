@@ -19,8 +19,6 @@ export type {
   DemoItem,
   DemoRoute,
   DemoRule,
-  DemoSnapshot,
-  DemoStandingQuestion,
 } from "./demo-data";
 
 export function demoData(): DemoData | null {

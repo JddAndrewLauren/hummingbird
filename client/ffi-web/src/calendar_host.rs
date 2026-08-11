@@ -6,7 +6,6 @@
 use hummingbird_core::calendar::google::{
     CalendarListEntry, GoogleProviderPoller, ReqwestGoogleTransport,
 };
-use hummingbird_core::calendar::{current_or_next_event, CurrentOrNext, EventRecord};
 use hummingbird_core::context::{ContextPoller, CredentialEvent, PollOutcome};
 
 // The snapshot store: real IndexedDB in the browser, in-memory on any other
@@ -33,14 +32,6 @@ type GooglePoller = ContextPoller<GoogleProviderPoller<ReqwestGoogleTransport>, 
 
 const SCHEMA_VERSION: u32 = 1;
 const PROVIDER: &str = "google_calendar";
-
-/// The response shape for `currentOrNext` (issue #73's context tile).
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct CurrentNextResponse {
-    pub kind: &'static str,
-    pub event: Option<EventRecord>,
-    pub as_of_ms: Option<u64>,
-}
 
 /// The response shape for `listCalendars` (issue #73's picker options).
 ///
@@ -116,28 +107,6 @@ impl CalendarHostCore {
     pub fn take_credential_events(&mut self) -> Vec<CredentialEvent> {
         self.poller.take_credential_events()
     }
-
-    pub async fn current_or_next(&self, now_ms: i64) -> CurrentNextResponse {
-        match self.poller.current_snapshot().await {
-            None => CurrentNextResponse {
-                kind: "no_snapshot",
-                event: None,
-                as_of_ms: None,
-            },
-            Some(envelope) => {
-                let (kind, event) = match current_or_next_event(&envelope.payload, now_ms) {
-                    CurrentOrNext::InProgress(event) => ("in_progress", Some(event.clone())),
-                    CurrentOrNext::Upcoming(event) => ("upcoming", Some(event.clone())),
-                    CurrentOrNext::None => ("none", None),
-                };
-                CurrentNextResponse {
-                    kind,
-                    event,
-                    as_of_ms: Some(envelope.as_of),
-                }
-            }
-        }
-    }
 }
 
 /// Maps a [`PollOutcome`] to the stable string name the web host's protocol
@@ -158,18 +127,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_fresh_host_has_no_snapshot_and_no_credential_events() {
+    async fn a_fresh_host_has_no_credential_events() {
         let mut host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
 
         assert_eq!(host.take_credential_events(), Vec::new());
-        assert_eq!(
-            host.current_or_next(1_000).await,
-            CurrentNextResponse {
-                kind: "no_snapshot",
-                event: None,
-                as_of_ms: None,
-            }
-        );
     }
 
     #[tokio::test]

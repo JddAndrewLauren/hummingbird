@@ -13,7 +13,7 @@ import {
   pushTokenToWorker,
   reportViewVisibility,
   requestCalendarList,
-  requestCurrentNext,
+  requestPaneRead,
   requestDeadLetters,
   requestBlocked,
   requestFrontier,
@@ -36,9 +36,6 @@ const initialCalendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
-  tileKind: "no_snapshot",
-  tileEvent: null,
-  asOfMs: null,
 };
 
 const initialTask: TaskState = {
@@ -48,6 +45,7 @@ const initialTask: TaskState = {
   stepsByItem: {},
   projects: [],
   bindings: null,
+  paneReads: {},
   pending: {},
   lastCapture: null,
   lastAct: null,
@@ -121,20 +119,20 @@ describe("attachWorkerClient", () => {
     });
   });
 
-  it("records the latest poll outcome and re-requests currentNext on a pollOutcome message", () => {
+  it("records the latest poll outcome", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store, () => 7_000);
+    attachWorkerClient(worker, store);
 
     worker.onmessage?.({
       data: { type: "pollOutcome", outcome: "succeeded" },
     } as MessageEvent);
 
     expect(store.getSnapshot().calendar.lastPollOutcome).toBe("succeeded");
-    expect(worker.postMessage).toHaveBeenCalledWith({
-      type: "getCurrentNext",
-      nowMs: 7_000,
-    });
+    // #245: nothing is re-requested behind a poll outcome any more. The
+    // context tile that used to be refreshed here is gone, and the ranked
+    // pane region's own reads belong to `usePaneReadsWiring`.
+    expect(worker.postMessage).not.toHaveBeenCalled();
   });
 
   it("flags needsReconnect when a non-empty credentialEvents message arrives", () => {
@@ -162,40 +160,6 @@ describe("attachWorkerClient", () => {
     } as MessageEvent);
 
     expect(store.getSnapshot().calendar.needsReconnect).toBe(false);
-  });
-
-  it("writes the tile fields on a currentNext message", () => {
-    const worker = fakeWorker();
-    const store = createCoreStore();
-    attachWorkerClient(worker, store);
-
-    worker.onmessage?.({
-      data: {
-        type: "currentNext",
-        kind: "upcoming",
-        event: {
-          title: "Standup",
-          startMs: 1_000,
-          endMs: 2_000,
-          allDay: false,
-          htmlLink: null,
-        },
-        asOfMs: 500,
-      },
-    } as MessageEvent);
-
-    expect(store.getSnapshot().calendar).toEqual({
-      ...initialCalendar,
-      tileKind: "upcoming",
-      tileEvent: {
-        title: "Standup",
-        startMs: 1_000,
-        endMs: 2_000,
-        allDay: false,
-        htmlLink: null,
-      },
-      asOfMs: 500,
-    });
   });
 
   it("writes the picker's options on a calendarList message", () => {
@@ -395,6 +359,36 @@ describe("attachWorkerClient", () => {
     expect(worker.postMessage).not.toHaveBeenCalled();
   });
 
+  it("lands a pane read under its own source, and only grows what was asked for", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    // Starts empty — a source with no entry means "not read yet", which a
+    // pane reads as a gap rather than as "no rows".
+    expect(store.getSnapshot().task.paneReads).toEqual({});
+
+    const read = {
+      source: "city-waste/v2",
+      snapshots: [],
+      liveAlerts: [
+        {
+          id: "alert-1",
+          subjectKey: "collection",
+          title: "Collection moved",
+          body: null,
+          raisedAtMs: 900,
+          expiresAtMs: null,
+        },
+      ],
+    };
+    worker.onmessage?.({ data: { type: "paneRead", read } } as MessageEvent);
+
+    // Keyed by the source the message itself names, never by whichever
+    // request this view happened to have outstanding: this is a broadcast.
+    expect(store.getSnapshot().task.paneReads).toEqual({ "city-waste/v2": read });
+  });
+
   it("writes the bindings on a bindings message", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
@@ -562,7 +556,7 @@ describe("attachWorkerClient", () => {
   it("records the sync outcome and the sweep time on a syncOutcome message", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store, () => 5_000);
+    attachWorkerClient(worker, store);
 
     worker.onmessage?.({
       data: {
@@ -589,7 +583,7 @@ describe("attachWorkerClient", () => {
   it("records the sweep time on a held or failed outcome too — staleness must not freeze", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store, () => 7_000);
+    attachWorkerClient(worker, store);
 
     worker.onmessage?.({
       data: {
@@ -623,7 +617,7 @@ describe("attachWorkerClient", () => {
     const store = createCoreStore();
     // A view connecting hours after the cycle this outcome describes — its
     // own receipt-time clock is nowhere near the cycle's real time.
-    attachWorkerClient(worker, store, () => 999_999_999);
+    attachWorkerClient(worker, store);
 
     const cycleTimeMs = 5_000;
     worker.onmessage?.({
@@ -728,7 +722,7 @@ describe("attachWorkerClient", () => {
     // two distinct seq values), independent of who currently reads it.
     const worker = fakeWorker();
     const store = createCoreStore();
-    attachWorkerClient(worker, store, () => 5_000);
+    attachWorkerClient(worker, store);
     const steadyStateOutcome = {
       type: "syncOutcome",
       kind: "completed",
@@ -902,13 +896,12 @@ describe("the calendar send helpers", () => {
     });
   });
 
-  it("pollStart/pollRefresh/pollTimer/requestCurrentNext post their matching request", () => {
+  it("pollStart/pollRefresh/pollTimer post their matching request", () => {
     const worker = fakeWorker();
 
     pollStart(worker, 1);
     pollRefresh(worker, 2);
     pollTimer(worker, 3);
-    requestCurrentNext(worker, 4);
 
     expect(worker.postMessage).toHaveBeenNthCalledWith(1, {
       type: "pollStart",
@@ -922,9 +915,15 @@ describe("the calendar send helpers", () => {
       type: "pollTimer",
       nowMs: 3,
     });
-    expect(worker.postMessage).toHaveBeenNthCalledWith(4, {
-      type: "getCurrentNext",
-      nowMs: 4,
+  });
+
+  it("requestPaneRead posts the source and the clock its answer is measured against", () => {
+    const worker = fakeWorker();
+    requestPaneRead(worker, "city-waste/v2", 61_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "getPaneRead",
+      source: "city-waste/v2",
+      nowMs: 61_000,
     });
   });
 

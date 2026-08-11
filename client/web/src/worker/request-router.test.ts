@@ -21,6 +21,7 @@ describe("isTaskWorkerRequest", () => {
       context: null,
       nowMs: 1,
     },
+    { type: "getPaneRead", source: "city-waste/v2", nowMs: 1 },
     { type: "getFrontier" },
     { type: "getTriageInbox" },
     { type: "getBlocked" },
@@ -41,7 +42,6 @@ describe("isTaskWorkerRequest", () => {
     { type: "pollStart", nowMs: 1 },
     { type: "pollRefresh", nowMs: 1 },
     { type: "pollTimer", nowMs: 1 },
-    { type: "getCurrentNext", nowMs: 1 },
     { type: "listCalendars" },
   ])("routes every calendar request type ($type) to the calendar queue", (request) => {
     expect(isTaskWorkerRequest(request)).toBe(false);

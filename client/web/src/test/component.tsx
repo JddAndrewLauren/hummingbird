@@ -25,6 +25,8 @@ import { afterEach } from "vitest";
 import type {
   BindingDTO,
   BlockedFrontierEntryDTO,
+  PaneReadDTO,
+  PaneSnapshotDTO,
   ProjectDTO,
   TaskItemDTO,
 } from "../store/protocol";
@@ -79,6 +81,55 @@ export function bindingDTO(overrides: Partial<BindingDTO> = {}): BindingDTO {
   };
 }
 
+/** One `PaneSnapshotDTO` (#245) at a boring default: a well-formed
+ * `city-waste/v2` envelope, fetched 40 minutes ago against a daily cadence.
+ * `body` is a JSON *string*, exactly as it crosses the seam. */
+export function paneSnapshotDTO(overrides: Partial<PaneSnapshotDTO> = {}): PaneSnapshotDTO {
+  return {
+    key: "collection",
+    fetchedAtMs: 1_000,
+    envelope: {
+      kind: "ok",
+      schema: "city-waste/v2",
+      polledEveryMs: 86_400_000,
+      body: wasteBody(),
+    },
+    freshness: { kind: "age", ageMs: 40 * 60_000, declaredCadenceMs: 86_400_000 },
+    ...overrides,
+  };
+}
+
+/** One `PaneReadDTO` (#245) at a boring default: one good snapshot, no live
+ * alerts. Spelled out for the same reason `itemDTO` is. */
+export function paneReadDTO(overrides: Partial<PaneReadDTO> = {}): PaneReadDTO {
+  return {
+    source: "city-waste/v2",
+    snapshots: [paneSnapshotDTO()],
+    liveAlerts: [],
+    ...overrides,
+  };
+}
+
+/** A `city-waste/v2` payload body as its JSON text — the shape
+ * `screens/waste-pane/waste.ts` parses. Whole-day civil dates plus the IANA
+ * zone they are civil *in*, since the address's day is what a collection
+ * happens on, never the device's. */
+export function wasteBody(
+  overrides: {
+    zone?: string;
+    scheduled?: string;
+    collectedOn?: string;
+    streams?: string[];
+  } = {},
+): string {
+  return JSON.stringify({
+    zone: overrides.zone ?? "America/Los_Angeles",
+    scheduled: overrides.scheduled ?? "2026-08-17",
+    collected_on: overrides.collectedOn ?? "2026-08-17",
+    streams: overrides.streams ?? ["trash", "yard"],
+  });
+}
+
 export function projectDTO(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   return {
     id: "project-1",
@@ -111,6 +162,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     stepsByItem: {},
     projects: [],
     bindings: null,
+    paneReads: {},
     pending: {},
     lastCapture: null,
     lastAct: null,

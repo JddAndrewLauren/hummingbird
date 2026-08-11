@@ -2,8 +2,6 @@ import type {
   CalendarListEntryDTO,
   CalendarWorkerRequest,
   CredentialEventDTO,
-  CurrentNextEventDTO,
-  CurrentNextKind,
   PollOutcomeName,
   WorkerResponse,
 } from "../store/protocol";
@@ -26,7 +24,6 @@ export interface CalendarHostLike {
   refresh(nowMs: number): Promise<string>;
   onTimer(nowMs: number): Promise<string>;
   takeCredentialEvents(): string;
-  currentOrNext(nowMs: number): Promise<string>;
   listCalendars(): Promise<string>;
 }
 
@@ -35,36 +32,9 @@ interface RawCredentialEvent {
   at_ms: number;
 }
 
-interface RawEventRecord {
-  title: string;
-  start: { instant_ms: number };
-  end: { instant_ms: number };
-  all_day: boolean;
-  html_link: string | null;
-}
-
-interface RawCurrentNextResponse {
-  kind: CurrentNextKind;
-  event: RawEventRecord | null;
-  as_of_ms: number | null;
-}
-
 interface RawCalendarListResponse {
   kind: "ok" | "no_credential" | "failed" | "busy";
   calendars: CalendarListEntryDTO[];
-}
-
-function mapEvent(raw: RawEventRecord | null): CurrentNextEventDTO | null {
-  if (raw === null) {
-    return null;
-  }
-  return {
-    title: raw.title,
-    startMs: raw.start.instant_ms,
-    endMs: raw.end.instant_ms,
-    allDay: raw.all_day,
-    htmlLink: raw.html_link,
-  };
 }
 
 function mapCredentialEvents(raw: RawCredentialEvent[]): CredentialEventDTO[] {
@@ -118,23 +88,6 @@ export async function handleCalendarRequest(
     case "pollTimer":
       await runPollTrigger((ms) => host.onTimer(ms), request.nowMs, host, post);
       return;
-    case "getCurrentNext": {
-      const raw = JSON.parse(
-        await host.currentOrNext(request.nowMs),
-      ) as RawCurrentNextResponse;
-      if (raw.kind === "busy") {
-        // No answer, not an empty answer: posting this would blank a tile
-        // that is currently showing something true.
-        return;
-      }
-      post({
-        type: "currentNext",
-        kind: raw.kind,
-        event: mapEvent(raw.event),
-        asOfMs: raw.as_of_ms,
-      });
-      return;
-    }
     case "listCalendars": {
       const raw = JSON.parse(await host.listCalendars()) as RawCalendarListResponse;
       if (raw.kind !== "ok") {
@@ -169,7 +122,7 @@ export const CALENDAR_REQUEST_TIMEOUT_MS = 10_000;
  * the whole module, not just the one call. `onmessage` alone gives no such
  * guarantee — it fires a fresh, unsequenced handler per message, and the
  * main thread genuinely does send bursts (the picker posts `setCalendarIds`,
- * `pollRefresh` and `getCurrentNext` back to back). Queueing here is what
+ * `pollRefresh` and `listCalendars` back to back). Queueing here is what
  * makes "one call at a time" true rather than merely intended.
  *
  * Requests are processed strictly in arrival order, which is also the
