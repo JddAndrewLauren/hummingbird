@@ -20,6 +20,7 @@ import {
 import type { DemoData } from "../fixtures/demo";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
+import { effectiveCalendarIds, tripsCalendarId } from "../calendar/selection";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import {
   deadLetterHeading,
@@ -355,7 +356,6 @@ export function SettingsScreen({
     calendar.selectedCalendarIds,
     calendar.availableCalendars,
   );
-
   // Demo mode toggles a local copy and nothing else: the fixture ids are not
   // real calendars, and routing them through `onSelectionChange` would persist
   // them to localStorage and poll the worker for calendars that do not exist.
@@ -363,6 +363,16 @@ export function SettingsScreen({
     const first = demo?.calendars[0]?.id;
     return first === undefined ? [] : [first];
   });
+
+  // #121: designating a Trips calendar opts this device into polling it, so
+  // its row renders checked and locked with the reason said out loud —
+  // never a calendar fetched with nothing on screen to explain it. `demo` has
+  // no bindings table to read and no real calendars to poll, so it locks
+  // nothing.
+  const tripsId = demo ? null : tripsCalendarId(task.bindings);
+  const polledIds = demo
+    ? demoSelectedIds
+    : effectiveCalendarIds(calendar.selectedCalendarIds, tripsId);
 
   // The design-system picker always renders its fieldset, so an empty one is
   // an empty box captioned "Calendars to poll" — a control over nothing.
@@ -377,16 +387,25 @@ export function SettingsScreen({
           ) : status !== "ready" ? (
             <Note>Calendar context is unavailable until the local core loads.</Note>
           ) : demo || hasCalendars ? (
-            <CalendarPicker
-              calendars={demo ? demo.calendars : calendar.availableCalendars}
-              selectedIds={demo ? demoSelectedIds : calendar.selectedCalendarIds}
-              unavailableIds={demo ? [] : unavailableIds}
-              onToggle={(id) =>
-                demo
-                  ? setDemoSelectedIds((current) => toggleCalendarId(current, id))
-                  : onSelectionChange(toggleCalendarId(calendar.selectedCalendarIds, id))
-              }
-            />
+            <>
+              <CalendarPicker
+                calendars={demo ? demo.calendars : calendar.availableCalendars}
+                selectedIds={polledIds}
+                unavailableIds={demo ? [] : unavailableIds}
+                lockedIds={tripsId === null ? [] : [tripsId]}
+                lockedHint={
+                  <>
+                    Polled because it answers <em>How long to the next vacation</em>. Change it
+                    under <a href="#standing-questions">Standing questions</a>.
+                  </>
+                }
+                onToggle={(id) =>
+                  demo
+                    ? setDemoSelectedIds((current) => toggleCalendarId(current, id))
+                    : onSelectionChange(toggleCalendarId(polledIds, id))
+                }
+              />
+            </>
           ) : (
             <Note>
               No calendars have been listed yet — nothing to choose from until Google Calendar
@@ -395,7 +414,7 @@ export function SettingsScreen({
           )}
         </Section>
 
-        <Section title="Standing questions">
+        <Section title="Standing questions" id="standing-questions">
           {demo === null && status !== "ready" ? (
             <Note>Bindings are unavailable until the local core loads.</Note>
           ) : demo === null && task.bindings === null ? (

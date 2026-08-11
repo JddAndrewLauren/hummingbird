@@ -6,6 +6,7 @@
 use hummingbird_core::calendar::google::{
     CalendarListEntry, GoogleProviderPoller, ReqwestGoogleTransport,
 };
+use hummingbird_core::calendar::CalendarSelection;
 use hummingbird_core::calendar::{events_overlapping_interval, CalendarSnapshot, EventRecord, Interval};
 use hummingbird_core::context::{ContextPoller, CredentialEvent, PollOutcome};
 use hummingbird_core::freshness::Freshness;
@@ -93,10 +94,10 @@ pub struct CalendarHostCore {
 }
 
 impl CalendarHostCore {
-    pub fn new(namespace: String, calendar_ids: Vec<String>) -> Self {
+    pub fn new(namespace: String, selections: Vec<CalendarSelection>) -> Self {
         let store = new_store(&namespace);
         let transport = ReqwestGoogleTransport::default();
-        let fetcher = GoogleProviderPoller::new(transport, calendar_ids);
+        let fetcher = GoogleProviderPoller::new(transport, selections);
         let poller = ContextPoller::new(PROVIDER, fetcher, store, SCHEMA_VERSION);
         Self { poller }
     }
@@ -105,8 +106,10 @@ impl CalendarHostCore {
         self.poller.push_token(token);
     }
 
-    pub fn set_calendar_ids(&self, calendar_ids: Vec<String>) {
-        self.poller.fetcher().set_calendar_ids(calendar_ids);
+    /// The picker's current selection (#121: each entry carries its own poll
+    /// horizon). Takes effect on the next poll trigger.
+    pub fn set_calendar_selections(&self, selections: Vec<CalendarSelection>) {
+        self.poller.fetcher().set_calendar_selections(selections);
     }
 
     pub async fn start(&mut self, now_ms: i64) -> PollOutcome {
@@ -410,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_host_has_no_credential_events() {
-        let mut host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
+        let mut host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
 
         assert_eq!(host.take_credential_events(), Vec::new());
     }
@@ -422,7 +425,7 @@ mod tests {
         // but this is the one state reachable without a network call, and it
         // proves the wiring from `current_snapshot()` through to the pure
         // `build_events_response` above.
-        let host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
+        let host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
 
         let response = host.events_in_interval(0, 1_000, 1_000).await;
 
@@ -434,7 +437,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_with_no_pushed_token_reports_no_credential() {
-        let mut host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
+        let mut host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
         let outcome = host.start(1_000).await;
         assert_eq!(outcome_name(outcome), "no_credential");
     }
@@ -445,7 +448,7 @@ mod tests {
         // picker calls this on a device whose silent re-mint failed, and a
         // "no_credential" answer must leave the existing options alone
         // rather than clearing them.
-        let host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
+        let host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
 
         assert_eq!(
             host.list_calendars().await,
@@ -457,12 +460,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_calendar_ids_is_readable_back_through_the_wrapped_fetcher() {
-        let host = CalendarHostCore::new("test-ns".to_string(), vec!["a".to_string()]);
-        host.set_calendar_ids(vec!["b".to_string(), "c".to_string()]);
+    async fn set_calendar_selections_is_readable_back_through_the_wrapped_fetcher() {
+        let host = CalendarHostCore::new(
+            "test-ns".to_string(),
+            vec![CalendarSelection::standard("a")],
+        );
+        host.set_calendar_selections(vec![
+            CalendarSelection::standard("b"),
+            CalendarSelection::long("c"),
+        ]);
         assert_eq!(
-            host.poller.fetcher().calendar_ids(),
-            vec!["b".to_string(), "c".to_string()]
+            host.poller.fetcher().calendar_selections(),
+            vec![CalendarSelection::standard("b"), CalendarSelection::long("c")]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_selection_list_crosses_the_wasm_seam_as_json_text() {
+        // `lib.rs`'s `setCalendarSelections` takes one JSON string rather
+        // than positional arguments, the same shape `TriageEdits` uses: a
+        // `Vec<String>` cannot carry a per-entry horizon, and a parallel
+        // second array would let the two drift by length.
+        let parsed: Vec<CalendarSelection> =
+            serde_json::from_str(r#"[{"id":"primary","horizon":"standard"},{"id":"trips","horizon":"long"}]"#)
+                .unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                CalendarSelection::standard("primary"),
+                CalendarSelection::long("trips")
+            ]
         );
     }
 }

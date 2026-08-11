@@ -39,13 +39,15 @@ export function isKnownZone(zone: string): boolean {
   }
 }
 
-/** The civil date it is *right now* at the address — the day "today" means
- * to the person whose bins these are.
+/** What civil date `atMs` falls on in `zone` — the one primitive every
+ * day-shaped question here is built from.
  *
  * `en-CA` because its short date format is already `YYYY-MM-DD`; the locale
  * is a formatting choice, not a language one, and nothing user-facing is
- * rendered from it. Returns `null` for a zone this runtime cannot resolve. */
-export function civilTodayInZone(nowMs: number, zone: string): CivilDate | null {
+ * rendered from it. Returns `null` for a zone this runtime cannot resolve —
+ * including `""`, which `protocol.ts` documents as a real value on the
+ * calendar wire and which `Intl.DateTimeFormat` throws a `RangeError` on. */
+export function civilDateInZone(atMs: number, zone: string): CivilDate | null {
   if (!isKnownZone(zone)) {
     return null;
   }
@@ -54,8 +56,45 @@ export function civilTodayInZone(nowMs: number, zone: string): CivilDate | null 
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
+  }).format(new Date(atMs));
+  return isCivilDate(formatted) ? formatted : null;
+}
+
+/** The civil date it is *right now* at the address — the day "today" means
+ * to the person whose bins these are. */
+export function civilTodayInZone(nowMs: number, zone: string): CivilDate | null {
+  return civilDateInZone(nowMs, zone);
+}
+
+/** The civil date it is right now in the **device's own** zone — "today" for
+ * the person reading, which is deliberately not the same question as
+ * [`civilTodayInZone`] (#121: a trip's dates resolve in the event's carried
+ * zone, but "today" resolves here; resolving both in the event's zone would
+ * say "departing tomorrow" off a midnight in Kolkata while the reader is in
+ * California). */
+export function deviceCivilToday(nowMs: number): CivilDate | null {
+  const formatted = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
   }).format(new Date(nowMs));
   return isCivilDate(formatted) ? formatted : null;
+}
+
+/** `date` shifted by whole civil days — calendar arithmetic, never
+ * `instant ± n × 86_400_000`, which is the `endMs - DAY` defect ADR-0015
+ * records on #121: an exclusive end minus one *day of milliseconds* lands on
+ * the wrong civil date across a DST boundary or a non-midnight boundary. */
+export function addCivilDays(date: CivilDate, days: number): CivilDate | null {
+  if (!isCivilDate(date)) {
+    return null;
+  }
+  const base = Date.parse(`${date}T00:00:00Z`);
+  if (Number.isNaN(base)) {
+    return null;
+  }
+  const shifted = new Date(base + days * 86_400_000).toISOString().slice(0, 10);
+  return isCivilDate(shifted) ? shifted : null;
 }
 
 /** What `zone`'s clock read at the instant `utcMs`, expressed as if it were

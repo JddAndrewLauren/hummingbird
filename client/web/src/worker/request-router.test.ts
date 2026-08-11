@@ -36,7 +36,7 @@ describe("isTaskWorkerRequest", () => {
 
   it.each<CalendarWorkerRequest>([
     { type: "pushToken", token: "t" },
-    { type: "setCalendarIds", calendarIds: [] },
+    { type: "setCalendarSelections", selections: [] },
     { type: "pollStart", nowMs: 1 },
     { type: "pollRefresh", nowMs: 1 },
     { type: "pollTimer", nowMs: 1 },

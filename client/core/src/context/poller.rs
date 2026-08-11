@@ -94,7 +94,7 @@ where
 
     /// The wrapped provider poller, for host wiring that needs to reach
     /// provider-specific configuration (#73's calendar picker driving
-    /// [`crate::calendar::google::GoogleProviderPoller::set_calendar_ids`])
+    /// [`crate::calendar::google::GoogleProviderPoller::set_calendar_selections`])
     /// without this type needing to know that method exists.
     pub fn fetcher(&self) -> &P {
         &self.fetcher

@@ -103,7 +103,8 @@ import { VisibilityTracker } from "./visibility-tracker";
 
 // The IndexedDB database name (ADR-0003: the host contributes exactly one
 // thing at init — a storage path/namespace). No calendars are selected
-// until the picker (a view) calls `setCalendarIds`.
+// until the picker (a view) calls `setCalendarSelections` — `"[]"` is the
+// empty selection, in the JSON text that seam takes (#121).
 const CALENDAR_NAMESPACE = "hummingbird-calendar";
 
 // The owned-schema task binding's own namespace (#105/S7) — a sibling
@@ -221,7 +222,7 @@ void (async () => {
     const wasmModule = await import("../wasm/pkg/hummingbird_ffi_web");
     const { CalendarHost, core_api_version, createTaskHost } = wasmModule;
 
-    const calendarHost = new CalendarHost(CALENDAR_NAMESPACE, []);
+    const calendarHost = new CalendarHost(CALENDAR_NAMESPACE, "[]");
     // Every request goes through one at-a-time queue: `CalendarHost` is not
     // re-entrant (see createRequestQueue), and per-port `onmessage` handlers
     // on their own would run a fresh handler per message with no regard for

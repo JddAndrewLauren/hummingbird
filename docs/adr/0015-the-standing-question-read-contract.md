@@ -460,5 +460,60 @@ source bump does not orphan a binding in a table that has no DELETE.
   promoting it — every prototype was built under prototype rules, and each
   carries open questions its verdict did not close (the weekend window's
   Friday edge and its degenerate Sunday-night case; the vacation +90d
-  horizon, landing day, and what the pane reads mid-trip; the race schedule
+  horizon, landing day, and what the pane reads mid-trip — **all three of the
+  vacation ones closed by #121, see the amendment below**; the race schedule
   source itself, closed at #266 on Jolpica before #119's pane starts).
+
+## Amendment (2026-08-11, #121): the vacation pane's three open questions, answered
+
+`screens/vacation-pane/` shipped, and it closes every question this document
+left open for it. The prototype is deleted, not promoted.
+
+**The +90d horizon → a per-calendar window, host-selected.** The flagship
+example above ("India in 395 days") was outside the mirror entirely, and
+nothing in the winning verdict noticed. ADR-0005's amendment of the same date
+is the fix: `CalendarSelection { id, horizon }` replaces the bare id list
+through the adapter, the poller and the worker protocol, and
+`CalendarHorizon::Long` polls −7d/+730d where `Standard` keeps −7d/+90d. So
+the empty answer names its own horizon — *"Nothing booked in the next 2
+years"* — because the pane still cannot tell "genuinely nothing" from "beyond
+what this device polls", and a bare "Nothing booked" would make an `answered`
+state a lie.
+
+**Landing day → the return day is still the trip.** The issue's "the day you
+land home it is already counting to the next one" was loose phrasing, not a
+decision: an all-day event's end is the provider's *exclusive* end (local
+midnight after the last day), so the trip is live until then. Five phases —
+`upcoming` / `departs_today` / `under_way` / `returns_today` / `past` — and
+`returns_today` reads *"Home today from Lisbon"*.
+
+**Mid-trip → the trip you are in leads.** *"In Lisbon · day 3 of 6"*, with the
+queue below unchanged so the next trip is still one line down.
+`collapsedHeadline` is free prose, so a pane that is a countdown ~94% of the
+time and a status line the rest costs nothing structurally.
+
+**And the zone rule the "India in 394 days" section above was written
+against.** #46's two-arm all-day shape never landed and this pane did not need
+it: an `EventTime` carries an instant **plus the IANA zone the provider
+associated with it**, so the civil date is recoverable by resolving the
+instant in the carried zone. The pane therefore resolves **the trip's** dates
+in the *event's* zone and **"today"** in the *device's* zone, counts every
+distance with `civilDaysBetween` over two `YYYY-MM-DD` values, and derives the
+last day as the exclusive end's civil date minus one **civil day**.
+`endMs - DAY` appears nowhere. Resolving "today" in the event's zone too was
+rejected: self-consistent, but it says "departing tomorrow" off a midnight in
+Kolkata while the reader is in California, and it is unfalsifiable at home, so
+it would only ever break on the trip itself. An **unusable zone excludes the
+event** — `""` is a real value on the wire and `Intl.DateTimeFormat` throws a
+`RangeError` on it, so the trip is dropped rather than resolved against a
+guess that would move it by a day.
+
+**"Dormant is not a synonym for far away" is now load-bearing code.** Any
+booked trip keeps this pane out of `dormant`, at 31 days or 731; dormant here
+means *there is nothing to count to*. Rejected: `distant` decaying to
+`dormant` past ~180 days, which would ship the flagship 395-day case collapsed
+by default, inverting this document.
+
+**Still true, and worth restating: the pane raises no alerts by construction**
+— there is no material change to report, the number goes down by one a day on
+cadence, and `subject_key` is unused.

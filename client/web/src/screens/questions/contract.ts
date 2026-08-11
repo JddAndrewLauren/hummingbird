@@ -100,13 +100,13 @@ export interface PaneAnswer {
  * the same reasoning as `BindingKey` in Rust: the registry is what makes
  * "every question, in a declared order" a fact the type system checks, not a
  * list someone has to remember to update. */
-export type StandingQuestion = "waste" | "weekend";
+export type StandingQuestion = "waste" | "weekend" | "vacation";
 
 /** Declared display order — the last axis of the cross-pane sort, and the
  * order the wiring unions its sources in. Declaration order, not
  * alphabetical, so a question's place does not move when another is
  * renamed. */
-export const QUESTION_ORDER: readonly StandingQuestion[] = ["waste", "weekend"];
+export const QUESTION_ORDER: readonly StandingQuestion[] = ["waste", "weekend", "vacation"];
 
 /** Everything a question needs to answer, and nothing else: the bindings
  * table, whatever pane reads have landed, and the clock.
@@ -190,8 +190,9 @@ export interface QuestionDef {
   subjects(inputs: QuestionInputs): string[];
   answer(subjectKey: string, inputs: QuestionInputs): PaneAnswer;
   /** Every #267 calendar-arm interval this question needs, given the clock
-   * — `undefined` for a question that reads no calendar lane at all (every
-   * question but the weekend-plans pane, today). A function of `nowMs`
+   * — `undefined` for a question that reads no calendar lane at all (the
+   * waste pane, today; both calendar-lane questions declare one). A function
+   * of `nowMs`
    * rather than a fixed interval because a window like #122's rolls
    * forward as the clock advances; `registry.ts`'s `requiredCalendarRequests`
    * is the union of every registered question's answer here, exactly the

@@ -1348,7 +1348,9 @@ moment, never a duration and never a unit each pane picks for itself**, so
 the sort reads no clock and a captured value cannot age between renders — a
 one-line `collapsedHeadline` and up to
 `MAX_GLYPHS` labelled glyphs — plus its whole expanded rendering and
-nothing else; `registry.ts`'s `Record<StandingQuestion, QuestionDef>` is
+nothing else; `StandingQuestion` is the closed vocabulary
+(`waste | weekend | vacation`) and `registry.ts`'s
+`Record<StandingQuestion, QuestionDef>` is
 compile-time exhaustive, so a question added to the vocabulary and not
 registered is a type error rather than a pane that silently never appears,
 and `requiredSources()` is what `shell/usePaneReadsWiring.ts` requests, so
@@ -1415,7 +1417,8 @@ enrollment's readers are elsewhere — #145's mint gate, and the per-table
 `Writes` check on each of the two ingest write handlers.)
 
 `screens/weekend-pane/` is the shell's second pane (#122), and the first
-question to read no snapshot lane at all: the merge is entirely at read
+question to read no snapshot lane at all (the vacation pane below is the
+second, and `calendarRequests` is now declared by both): the merge is entirely at read
 time, over `QuestionInputs.calendarReads` (#267's calendar-events arm —
 never a second calendar read, `requiredCalendarRequests()` unions this
 question's own `calendarRequests(nowMs)` alongside `requiredSources()`) and
@@ -1451,6 +1454,84 @@ above — a pure field edit, never a promotion — threaded from
 `WeekendPaneExpanded`'s `PlanChips` through `QuestionDef.Expanded`'s
 `onSetScheduledDate` prop, the one write affordance a pane carries in the
 shell contract.
+
+`screens/vacation-pane/` is the shell's third pane (#121, ADR-0015's
+2026-08-11 amendment), the second calendar-lane question, and the one that
+**changed the calendar lane itself to become answerable**. It is a countdown
+~94% of the time and a status line the rest: *"Lisbon in 16 days"* → *"Lisbon
+tomorrow"* → *"Lisbon today"* → *"In Lisbon · day 3 of 6"* → *"Home today from
+Lisbon"*, with the whole trip queue listed under it and **never truncated**.
+Three rules carry the whole design.
+
+**Civil dates only — no instant is ever subtracted.** A trip's dates resolve
+in **the event's own carried `EventTime.timeZone`** (`zoned-day.ts`'s
+`Intl.DateTimeFormat` precedent, now shared out of `waste-pane/`), while
+**"today"** resolves in the **device's** zone, and every count is
+`civilDaysBetween` over two `YYYY-MM-DD` values. The last day is the
+provider's *exclusive* end minus one **civil day**; `endMs - DAY` appears
+nowhere, because that is the *"India in 394 days"* defect ADR-0015 records
+here and the same arithmetic fires `returns_today` a day early. Resolving
+"today" in the event's zone too is rejected and unfalsifiable at home — it
+would only ever break on the trip itself. An unusable zone (`""` is a real
+value on the wire) **excludes the event** rather than guessing one.
+
+**Any booked trip keeps the pane out of `dormant`, at 31 days or 731** —
+`collapse.ts` collapses dormant by default, and ADR-0015 names this pane as
+the reason *dormant is not a synonym for far away*. Dormant here means there
+is nothing to count to, which is also the only state with a `null`
+`withinBand`; otherwise it is the next trip's start while upcoming and the
+current trip's end while live. The empty answer **names its own horizon**
+("Nothing booked in the next 2 years"): nothing-in-horizon is `answered`, and
+the pane cannot tell that from "booked beyond what this device polls", so a
+bare "Nothing booked" would make the answer a lie. `STALE_AFTER_MS = 24h`
+sits **beside the band function**, and unlike the waste pane **stale never
+suppresses the answer** — the countdown still renders with its age stated
+beneath it, because a trip 45 days out does not rot. **No glyphs**: one
+subject, and the answer is already a sentence. **It raises no alerts by
+construction** — deliberately, unlike every sibling pane in #117: there is no
+material change to report, the number goes down by one a day on cadence, and
+`subject_key` is unused.
+
+**Every non-cancelled event on the bound calendar is a trip** — all-day or
+timed, no filter and no merging. The calendar is the authority (#117); a pane
+that decided some events on the Trips calendar are not trips would have
+started keeping a vacation record of its own, and the flight-plus-trip
+duplicate-row case is operator discipline (one event per trip) rather than an
+invisible heuristic that hides a trip the first time it guesses wrong. The
+only rewriting is the prototype's title strip — a leading `Trip:`/`Holiday:`
+goes, nothing else.
+
+**Designating a Trips calendar opts this device into polling it, and that is
+what made ADR-0005 narrow.** The binding is a **synced** `settings` row while
+`selectedCalendarIds` is per-device and `localStorage`-owned, so the polled
+set is **derived** at every push seam — `calendar/selection.ts`'s
+`effectiveSelection(storedIds, tripsCalendarId)` = the ticked calendars ∪ the
+bound one — and **never written back into `localStorage`**, since deriving is
+what makes a re-binding re-compute cleanly rather than leaving the old
+calendar polled forever with nothing that knows why. The Settings picker
+renders that row **checked and locked**, with the reason in words and a link
+to the bindings editor, and `handleCalendarSelectionChange`
+(`acceptSelectionChange`) **refuses** to untick it rather than accepting and
+silently re-adding it: a calendar fetched with no on-screen reason is the
+consent surprise ADR-0005 guarded against, and a control that springs back is
+the same surprise with a worse explanation.
+
+**The window is per calendar, and the core owns the numbers.**
+`fetch_calendar_snapshot` takes `&[CalendarSelection]` (`{ id, horizon }`) and
+computes its bounds **per calendar**: −7d for every horizon, `+90d`
+(`WINDOW_AFTER_DAYS`) or `+730d` (`WINDOW_AFTER_DAYS_LONG`, `Long`). The
+trailing edge is unchanged for both — nothing wants more history, and widening
+it would change what the weekend pane sees. The host says *which* calendar is
+long, never *how* long: a raw `horizonDays` on the wire would give the window
+constant a second home in TypeScript. That selection crosses the wasm seam as
+**JSON text** (`setCalendarSelections`, `CalendarHost`'s constructor), for the
+reason `TriageEdits` records for its own one-string seam — a positional
+`Vec<String>` cannot carry a per-entry horizon without a second,
+separately-lengthed array. Rejected: widening the global constant (the
+snapshot is a full atomic replace, so the primary calendar would re-fetch two
+years every 15 minutes) and a per-calendar *role* (`primary | trips`), which
+smuggles a standing question's vocabulary into a lane that knows nothing about
+questions.
 
 The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
 re-requests its queries once the core is ready and again on every

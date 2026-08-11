@@ -60,12 +60,15 @@ describe("requiredSources", () => {
 });
 
 describe("requiredCalendarRequests", () => {
-  it("picks up the weekend-plans pane's interval without requiredCalendarRequests itself changing (#122)", () => {
-    // This was the empty steady state before #122 registered a real
-    // calendar-lane question — proof the union mechanism, not a fixed
-    // list, is what decides this.
+  it("unions every registered calendar-lane question's own interval (#122, #121)", () => {
+    // This was the empty steady state before #122 registered the first
+    // calendar-lane question, and it grew again with #121's — proof the
+    // union mechanism, not a fixed list, is what decides this.
     const requests = requiredCalendarRequests(1_000);
-    expect(requests).toEqual([{ key: "weekend", startMs: expect.any(Number), endMs: expect.any(Number) }]);
+    expect(requests.map((request) => request.key)).toEqual(["weekend", "vacation"]);
+    for (const request of requests) {
+      expect(request.endMs).toBeGreaterThan(request.startMs);
+    }
   });
 
   it("is a pure function of the clock, with no calendar read of its own", () => {

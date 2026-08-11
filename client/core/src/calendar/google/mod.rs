@@ -16,7 +16,7 @@ mod raw;
 mod reqwest_transport;
 mod transport;
 
-pub use adapter::{fetch_calendar_snapshot, AdapterError};
+pub use adapter::{fetch_calendar_snapshot, AdapterError, CalendarHorizon, CalendarSelection};
 pub use calendar_list::{list_calendars, CalendarListEntry, CalendarListError};
 pub use map::MapError;
 pub use provider_poller::GoogleProviderPoller;

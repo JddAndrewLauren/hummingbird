@@ -14,6 +14,7 @@ import {
   writeConnected,
   writeSelectedCalendarIds,
 } from "../calendar/persistence";
+import { acceptSelectionChange, effectiveSelection } from "../calendar/selection";
 import { createGisTokenClient, type TokenClient } from "../google/gis";
 import { coreStore, type CalendarState, type CoreStatus } from "../store/store";
 import {
@@ -22,7 +23,7 @@ import {
   pollTimer,
   pushTokenToWorker,
   requestCalendarList,
-  setCalendarIdsOnWorker,
+  setCalendarSelectionsOnWorker,
   type WorkerLike,
 } from "../store/worker-client";
 
@@ -71,12 +72,24 @@ export function useCalendarWiring(
   worker: WorkerLike,
   status: CoreStatus,
   calendar: CalendarState,
+  /** #121: the designated Trips calendar, read off the synced `settings`
+   * table (`calendar/selection.ts`'s `tripsCalendarId`). It contributes to
+   * the polled set at every push site below — derived, never persisted. */
+  tripsCalendarId: string | null,
 ): CalendarWiring {
   const [expiresAtMs, setExpiresAtMs] = useState<number | null>(null);
 
   // When the last credential-recovery retry went out (0 = never). See
   // `resumeAfterReconnect`.
   const lastRecoveryPollAtRef = useRef(0);
+
+  // Every push of the selection goes through here (#121), so the derived
+  // union — ticked calendars ∪ the bound Trips calendar, each with its
+  // horizon — cannot be applied at four call sites and forgotten at the
+  // fifth.
+  function pushSelection(storedIds: string[]) {
+    setCalendarSelectionsOnWorker(worker, effectiveSelection(storedIds, tripsCalendarId));
+  }
 
   function connectionDeps(): ConnectionDeps | null {
     const client = tokenClient();
@@ -113,7 +126,7 @@ export function useCalendarWiring(
     // trigger here does: a worker restarted by the browser holds an empty
     // one, and a zero-calendar poll succeeds with an empty snapshot that
     // would replace the last good one.
-    setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
+    pushSelection(calendar.selectedCalendarIds);
     pollRefresh(worker, now);
     requestCalendarList(worker);
   }
@@ -154,7 +167,7 @@ export function useCalendarWiring(
         // the last good one (`fetch_calendar_snapshot` simply iterates no
         // ids). The last-good snapshot is a previously-connected device's
         // only offline context; a reconnect must not be able to destroy it.
-        setCalendarIdsOnWorker(worker, selectedCalendarIds);
+        pushSelection(selectedCalendarIds);
       }
       if (result.connected && !result.needsReconnect) {
         pollStart(worker, Date.now());
@@ -226,6 +239,20 @@ export function useCalendarWiring(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.connected, calendar.needsReconnect, expiresAtMs]);
 
+  // #121: a `trips-calendar` binding edited on ANY device reaches this one
+  // through the ordinary delta pull, and the polled set is derived from it —
+  // so the moment it moves, the worker's copy of the selection is stale and
+  // the newly-designated calendar has never been fetched. Re-push and poll,
+  // which is exactly what the picker does for a tick.
+  useEffect(() => {
+    if (status !== "ready" || !calendar.connected || calendar.needsReconnect) {
+      return;
+    }
+    pushSelection(calendar.selectedCalendarIds);
+    pollRefresh(worker, Date.now());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, calendar.connected, calendar.needsReconnect, tripsCalendarId]);
+
   // The foreground 15-minute context-poll timer (#46, under ADR-0005).
   useEffect(() => {
     if (!calendar.connected || calendar.needsReconnect) {
@@ -267,16 +294,24 @@ export function useCalendarWiring(
       // empty here (a startup whose silent re-mint failed, a worker
       // restarted by the browser) — polling with an empty selection would
       // quietly replace the last good snapshot with an empty one.
-      setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
+      pushSelection(calendar.selectedCalendarIds);
       pollStart(worker, Date.now());
       requestCalendarList(worker);
     }
   }
 
-  function handleCalendarSelectionChange(selectedCalendarIds: string[]) {
+  function handleCalendarSelectionChange(requestedCalendarIds: string[]) {
+    // #121: the bound Trips calendar's row is locked in the picker, and the
+    // refusal is repeated here rather than trusted to it — a handler that
+    // accepted the untick and let `effectiveSelection` silently re-add the
+    // calendar would leave the picker showing a control that springs back.
+    const selectedCalendarIds = acceptSelectionChange(requestedCalendarIds, tripsCalendarId);
+    if (selectedCalendarIds === null) {
+      return;
+    }
     writeSelectedCalendarIds(localStorage, selectedCalendarIds);
     coreStore.setCalendarState({ selectedCalendarIds });
-    setCalendarIdsOnWorker(worker, selectedCalendarIds);
+    pushSelection(selectedCalendarIds);
     pollRefresh(worker, Date.now());
   }
 
@@ -289,7 +324,7 @@ export function useCalendarWiring(
     // does: a worker restarted by the browser holds an empty one, and a
     // zero-calendar poll succeeds with an empty snapshot that would replace
     // the last good one.
-    setCalendarIdsOnWorker(worker, calendar.selectedCalendarIds);
+    pushSelection(calendar.selectedCalendarIds);
     pollRefresh(worker, Date.now());
   }
 

@@ -276,8 +276,23 @@ describe("RankedRegion", () => {
         // `unbound` state here — this test is about the waste question's
         // unset binding, and a second "Not set up" row from the weekend
         // pane (unbound only via `!calendarConnected`, #122 review fix)
-        // would make "the" unbound row ambiguous.
-        inputs={{ bindings: [], paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
+        // would make "the" unbound row ambiguous. The `trips-calendar`
+        // binding does the same job for #121's vacation pane, whose second
+        // unbound reason is an undesignated Trips calendar.
+        inputs={{
+          bindings: [
+            {
+              key: "trips-calendar",
+              known: true,
+              pending: false,
+              value: { state: "text", text: "trips@g" },
+            },
+          ],
+          paneReads: {},
+          calendarReads: {},
+          calendarConnected: true,
+          items: [],
+        }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={onScreen}
