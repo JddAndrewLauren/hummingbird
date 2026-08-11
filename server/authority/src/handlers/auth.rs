@@ -98,6 +98,20 @@ pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
         ("POST", ["items"]) => matches!(scope, Scope::Device | Scope::Sweeper),
         ("POST", ["alerts"]) => matches!(scope, Scope::Ingest),
         ("POST", ["snapshots"]) => matches!(scope, Scope::Ingest),
+        // The one read a non-device scope gets (#120). An ingest token's
+        // poller needs the binding that tells it *what* to poll, and the
+        // alternative — duplicating that URL into the poller's own
+        // environment — would give the one fact the binding editor exists to
+        // own two sources of truth and make the editor decorative.
+        //
+        // The widening is real and worth stating plainly: an ingest token
+        // can read ANY setting by name, not just one belonging to its own
+        // source. What bounds it is that `settings` is a small closed
+        // vocabulary of binding facts (`client/core/src/bindings.rs`), it
+        // holds no credential, and the route is read-only — a token that
+        // could already write alerts and snapshots for its source gains no
+        // ability to change anything here.
+        ("GET", ["settings", _]) => matches!(scope, Scope::Device | Scope::Ingest),
         _ => matches!(scope, Scope::Device),
     }
 }

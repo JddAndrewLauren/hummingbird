@@ -147,6 +147,7 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("DELETE", ["push_targets", id]) if !id.is_empty() => {
             push_targets::revoke(id, now_ms, sql)
         }
+        ("GET", ["settings", key]) if !key.is_empty() => settings::get(key, sql),
         ("GET", ["changes"]) => changes::changes(req.query, sql),
         ("GET", ["sweep"]) => changes::sweep(sql),
         // A known collection or entity path with the wrong method is a 405;

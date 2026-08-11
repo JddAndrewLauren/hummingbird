@@ -73,6 +73,26 @@ pub fn put(
     }
 }
 
+/// `GET /api/settings/:key` — one row by key, 404 if unset.
+///
+/// The one read a non-device scope reaches (see `auth::permitted`). It
+/// exists because a poller needs the binding that tells it *what* to poll,
+/// and there is no other way to ask: `GET /api/changes` is device-only, and
+/// duplicating the value into the poller's own environment would give the
+/// one fact the binding editor exists to own two sources of truth and make
+/// that editor decorative.
+///
+/// 404 rather than a 200 with a null: "nobody has set this" is a state the
+/// caller must handle (`client/core/src/bindings.rs`'s `Unset` makes the
+/// same distinction), and a poller's correct response to it is to exit
+/// without writing anything rather than to poll a guessed address.
+pub fn get(key: &str, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+    match select_setting(sql, key)? {
+        Some(row) => Ok(json(200, &setting_from_row(&row)?)),
+        None => Ok(error(404, "not_found", "no such setting")),
+    }
+}
+
 fn select_setting(sql: &dyn Sql, key: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(

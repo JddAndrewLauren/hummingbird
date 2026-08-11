@@ -377,6 +377,31 @@ pub struct AlertIngest {
     pub resolved_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    /// Opt in to "re-raise only when something actually changed" (#120).
+    /// Default `false`, so no shipped source moves.
+    ///
+    /// It exists for a **repeatedly-polled** source, where the same
+    /// occurrence is re-reported every run for days. Such a source needs
+    /// both halves of one rule and cannot express either on its own: a
+    /// daily re-poll of an unchanged holiday slide must *not* restamp
+    /// `raised_at` (`is_live` compares it against `dismissed_at`, so
+    /// restamping undoes the human's dismissal every morning), while a
+    /// genuine correction — Tuesday's slide moving to Wednesday — must
+    /// re-ring even over that dismissal, because it is new information.
+    ///
+    /// The decision has to be the server's: an ingest token cannot read the
+    /// alert back, so the poller has no way to know whether its write
+    /// changes anything. With this set, the handler stamps `raised_at` with
+    /// its own **write clock** on exactly the raises that change a
+    /// source-owned field. The write clock, and not the poll's nominal cron
+    /// slot, is load-bearing: a correction stamped at an 06:00 bucket lands
+    /// *before* an 08:00 dismissal made the same morning and stays silently
+    /// quiet.
+    ///
+    /// Mutually exclusive with an explicit `raised_at` (400): the two are
+    /// contradictory instructions about the same field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restamp_on_change: bool,
 }
 
 /// `PATCH /api/alerts/:id` body (`device` scope): the human-owned dismiss
