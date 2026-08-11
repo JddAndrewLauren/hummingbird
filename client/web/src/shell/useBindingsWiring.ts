@@ -44,11 +44,20 @@ export function useBindingsWiring(
   return {
     setBinding: (key: string, value: string) => {
       const nowMs = Date.now();
-      // Deterministic, not random — same "caller-injected, no clock/RNG that
-      // panics on bare wasm32" reasoning `Core::set_binding`'s own `seed`
-      // parameter documents (mirrors `useTriageWiring.ts`'s seed shape).
-      const seed = `${key}:binding:${nowMs}`;
+      const seed = mintBindingSeed(key, nowMs);
       setBinding(worker, seed, key, value, nowMs);
     },
   };
+}
+
+/** Mints this binding write's seed. Deterministic — `client/core/src/
+ * sync/mod.rs`'s seed-minting rule (#223): a binding write touches a
+ * `settings` row keyed by `key`, which either already exists or is created
+ * idempotently at `expected_version: 0`, so retrying the identical intent
+ * (same key, same `nowMs`) must reproduce the identical seed. Exported
+ * standalone, not inlined in the hook body, so it is directly testable
+ * without rendering a component — `useCaptureWiring.ts`'s own `mintSeed`
+ * split. */
+export function mintBindingSeed(key: string, nowMs: number): string {
+  return `${key}:binding:${nowMs}`;
 }

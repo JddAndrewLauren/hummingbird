@@ -14,13 +14,24 @@ export interface TriageWiring {
   triage: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
 }
 
+/** Mints this triage's seed. Deterministic — `client/core/src/sync/mod.rs`'s
+ * seed-minting rule (#223): triaging touches an item that already exists,
+ * so retrying the identical intent (same item, same destination, same
+ * `nowMs`) must reproduce the identical seed. Exported standalone, not
+ * inlined in the hook body, so it is directly testable without rendering a
+ * component — `useCaptureWiring.ts`'s own `mintSeed` split. */
+export function mintTriageSeed(
+  itemId: string,
+  destination: TriageDestinationName,
+  nowMs: number,
+): string {
+  return `${itemId}:triage:${destination}:${nowMs}`;
+}
+
 export function useTriageWiring(worker: WorkerLike): TriageWiring {
   function triage(itemId: string, destination: TriageDestinationName, edits: TriageEdits): void {
     const nowMs = Date.now();
-    // Deterministic, not random — same "caller-injected, no clock/RNG that
-    // panics on bare wasm32" reasoning `Core::triage`'s own `seed` parameter
-    // documents (mirrors `useItemActions.ts`'s own seed shape).
-    const seed = `${itemId}:triage:${destination}:${nowMs}`;
+    const seed = mintTriageSeed(itemId, destination, nowMs);
     triageItem(worker, seed, itemId, destination, edits, nowMs);
   }
 

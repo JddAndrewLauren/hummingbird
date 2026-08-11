@@ -27,12 +27,13 @@ export interface CaptureWiring {
   submitCapture: (title: string, nowMs: number, fields?: CaptureFields) => void;
 }
 
-/** Mints a fresh, non-deterministic seed for one capture. Only the seed's
- * *uniqueness* matters here — `Core::capture` (client/core) hashes it into
- * the item's deterministic id, and the offline-replay dedup guarantee comes
- * from the same seed being reused only across a retry of the SAME capture,
- * never from this function's output being predictable. */
-function mintSeed(): string {
+/** Mints a fresh, non-deterministic seed for one capture. Non-deterministic
+ * — `client/core/src/sync/mod.rs`'s seed-minting rule (#223): a capture
+ * mints a *new* item with no prior identity to derive a seed from, so two
+ * identical captures in the same millisecond must not collide into one
+ * item. Only the seed's *uniqueness* matters here — `Core::capture`
+ * (client/core) hashes it into the item's deterministic id. */
+export function mintSeed(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
