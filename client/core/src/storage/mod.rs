@@ -118,25 +118,38 @@ impl<E: std::fmt::Debug> std::error::Error for SnapshotError<E> {}
 /// credential type would have to deliberately implement `Persistable` to
 /// become storable here, and none does.
 ///
+/// The payload is taken **by reference**: serialisation only ever reads it,
+/// and a caller that has just built a candidate value it may or may not
+/// install (see [`crate::sync::SyncCycle`]) should not have to clone it to
+/// write it. The `T: Persistable` bound is still on `T` itself, so the
+/// sealed opt-in is unchanged — `&T: Serialize` is what does the work.
+///
 /// ```compile_fail
 /// # use hummingbird_core::storage::{save_snapshot, MemorySnapshotStore};
 /// # async fn example() {
 /// let store = MemorySnapshotStore::default();
 /// // `String` never implements `Persistable` — this must not compile.
-/// save_snapshot(&store, 1, 0, "a secret token".to_string()).await.unwrap();
+/// save_snapshot(&store, 1, 0, &"a secret token".to_string()).await.unwrap();
 /// # }
 /// ```
 pub async fn save_snapshot<T, S>(
     store: &S,
     schema_version: u32,
     as_of: u64,
-    payload: T,
+    payload: &T,
 ) -> Result<(), SnapshotError<S::Error>>
 where
     T: Persistable,
     S: SnapshotStore,
 {
-    let envelope = Envelope::new(schema_version, as_of, payload);
+    // Built field-wise rather than through `Envelope::new`, which carries the
+    // by-value `T: Persistable` bound; the fields are `pub`, and `&T:
+    // Serialize` is all serialisation needs.
+    let envelope = Envelope {
+        schema_version,
+        as_of,
+        payload,
+    };
     let bytes = serde_json::to_vec(&envelope).map_err(SnapshotError::Serialize)?;
     store.write(bytes).await.map_err(SnapshotError::Store)
 }
@@ -235,7 +248,7 @@ mod tests {
             count: 3,
         };
 
-        save_snapshot(&store, 7, 1_700_000_000_000, payload.clone())
+        save_snapshot(&store, 7, 1_700_000_000_000, &payload)
             .await
             .unwrap();
 

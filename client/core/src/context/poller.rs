@@ -168,7 +168,7 @@ where
                 // An atomic replace-or-untouched write (#68): a storage
                 // failure here leaves the previous snapshot intact, same as
                 // any other transient failure.
-                match save_snapshot(&self.store, self.schema_version, now_ms as u64, snapshot).await
+                match save_snapshot(&self.store, self.schema_version, now_ms as u64, &snapshot).await
                 {
                     Ok(()) => PollOutcome::Succeeded,
                     Err(_) => PollOutcome::TransientFailure,

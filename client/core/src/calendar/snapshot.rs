@@ -56,7 +56,7 @@ mod tests {
         let store = MemorySnapshotStore::default();
         let snapshot = CalendarSnapshot::new(vec![one_event("evt-1"), one_event("evt-2")]);
 
-        save_snapshot(&store, 1, 1_700_000_000_000, snapshot.clone())
+        save_snapshot(&store, 1, 1_700_000_000_000, &snapshot)
             .await
             .unwrap();
 
@@ -69,7 +69,7 @@ mod tests {
         let store = MemorySnapshotStore::default();
         let snapshot = CalendarSnapshot::new(vec![one_event("evt-1")]);
 
-        save_snapshot(&store, 3, 1_700_000_555_000, snapshot.clone())
+        save_snapshot(&store, 3, 1_700_000_555_000, &snapshot)
             .await
             .unwrap();
 

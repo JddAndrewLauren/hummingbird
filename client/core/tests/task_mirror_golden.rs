@@ -174,12 +174,7 @@ async fn the_whole_mirror_round_trips_through_the_snapshot_store() {
         at_ms: 1_500,
     });
 
-    save_snapshot(
-        &store,
-        MIRROR_SCHEMA_VERSION,
-        1_700_000_000_000,
-        mirror.clone(),
-    )
+    save_snapshot(&store, MIRROR_SCHEMA_VERSION, 1_700_000_000_000, &mirror)
     .await
     .unwrap();
     let envelope = load_snapshot::<Mirror, _>(&store).await.unwrap().unwrap();

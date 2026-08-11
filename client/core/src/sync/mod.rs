@@ -14,7 +14,11 @@
 //! `write`. `cycle` (S5/#103) is ADR-0007/ADR-0008's one cycle — drain then
 //! pull, delta as the normal pull with a full sweep as the backstop —
 //! wired on top of `queue`, `adapter`, and `mirror`, plus the backoff and
-//! active-issue-count machinery around it.
+//! active-issue-count machinery around it. It persists each of its two
+//! slots **only when that slot's value actually changed** (#165), which is
+//! what keeps a 60-second cadence from rewriting the whole read model
+//! against a mirror nothing touched; see [`cycle`]'s own docs for why
+//! skipping is safe and what it costs the envelope's `as_of`.
 //!
 //! **The seed-minting rule (#223).** Every `Core` mutation entry point
 //! takes a caller-minted `seed` and feeds it to [`write::deterministic_id`]
