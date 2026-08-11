@@ -186,3 +186,35 @@ broader token instead (avoiding that one extra consent) remains available
 if the operator prefers it, but that is the operator's call to make
 explicitly, not something an implementer may decide silently by shipping
 it — see the issue-135 thread for the open question.
+
+## Addendum: #136 follows the same scaffolding, and the credential table above was already right
+
+*2026-08-10, from #136's implementation.*
+
+`server/calendar-poll` (#136) follows #135's amendment onto the exact same
+out-of-process shape: its own GitHub Actions `schedule:`
+(`.github/workflows/calendar-poll.yml`), reading `GET /api/rules` and
+`GET /api/snapshots` as an `ingest` token bound to `google-calendar/v1`,
+never running inside `hummingbird-authority-worker`.
+
+Unlike Gmail, the credential question here needed no fresh resolution: the
+decision table at the top of this ADR already specified "Google Calendar:
+same OAuth app, scope re-mint per the `docs/sweeper.md` runbook
+(`calendar.readonly` added)" — i.e. the SAME dedicated readonly token
+`gmail-poll.yml` now uses (`GOOGLE_REFRESH_TOKEN`, minted narrow per the
+amendment above), re-minted to also carry `calendar.readonly`. Every
+Calendar call `server/calendar-poll` makes (`events.list`) is a read, so
+this stays on the correct side of CLAUDE.md's Actions blast-radius rule for
+the same reason `gmail.readonly` did — narrower in kind, not just in name.
+One credential, two scopes, one workflow secret; the still-open question on
+issue #135 (reuse the operator's broader existing token instead) covers
+this leg too and is not duplicated here.
+
+`server/calendar-poll` also writes the `busy_now` gauge — an ordinary
+server-polled *snapshot* row (the lane this ADR's "gains a row" section
+distinguishes from the evaluated-stream lane by lifecycle), reusing the
+same `google-calendar/v1` source and the same `ingest` token as the
+evaluated-stream leg's alerts and cursor. Nothing about that snapshot
+widens the credential question above: it is the same read-only API call
+family, posted through the same `POST /api/snapshots` route #135 already
+added.
