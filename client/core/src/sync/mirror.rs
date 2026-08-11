@@ -1068,7 +1068,7 @@ mod tests {
         mirror.apply_sweep(seeded_workspace(1), 1_000);
 
         let store = MemorySnapshotStore::default();
-        save_snapshot(&store, 1, 1_000, mirror.clone())
+        save_snapshot(&store, 1, 1_000, &mirror)
             .await
             .unwrap();
 

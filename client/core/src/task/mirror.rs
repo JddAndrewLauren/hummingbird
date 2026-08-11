@@ -349,12 +349,7 @@ mod tests {
         mirror.reconcile(sweep(&["a", "b"]), 1_000);
         mirror.reconcile(sweep(&["a"]), 2_000);
 
-        save_snapshot(
-            &store,
-            MIRROR_SCHEMA_VERSION,
-            1_700_000_000_000,
-            mirror.clone(),
-        )
+        save_snapshot(&store, MIRROR_SCHEMA_VERSION, 1_700_000_000_000, &mirror)
         .await
         .unwrap();
         let envelope = load_snapshot::<Mirror, _>(&store).await.unwrap().unwrap();

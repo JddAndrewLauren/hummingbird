@@ -654,6 +654,56 @@ caller-injected on every call — bare `wasm32-unknown-unknown` has no clock or
 RNG that does not panic. There is no `docs/sync.md`; the map is the module
 docs in `client/core/src/sync/mod.rs` and each submodule's own header.
 
+**A slot is persisted only when its value actually changed** (#165). #161
+measured the amplification the 60-second cadence caused: a steady-state tick
+— empty queue, zero-row delta — rewrote the whole read model anyway (~89 KB
+at ADR-0001's 250-item watchline, ~122 MiB/day), and since #105 each write is
+a real IndexedDB open+transaction. The fix attacks *how often*, not how big:
+`run` compares before writing — the mirror against the applied candidate, the
+queue against a clone taken before `drain` — and writes neither slot when
+neither moved, still returning `Completed` (the cycle succeeded; only the
+persist had nothing to do). **Skipping is correct precisely because disk
+already equals memory** — it does not weaken #102's persist-then-swap
+ordering, it is the one case where the ordering has nothing to order — and
+the compare is structural `PartialEq` over the whole value, so it *proves*
+that equality rather than inferring it from what an `apply_*` or a
+`DrainOutcome` reported. The asymmetry between the two clones is deliberate
+and commented: the mirror clones to build a candidate it may discard, the
+queue clones to keep a witness of what `drain` overwrote in place.
+`save_snapshot` takes its payload by `&T` for it (the sealed `Persistable`
+opt-in is unchanged; `&T: Serialize` is what does the work), which removes one
+full clone from every write path including `enqueue`. **What the safety
+argument rests on is that memory always equals disk**, and two edges carry
+the whole risk of breaking it. A **zero-row delta at a higher version still
+writes**, because `version` is a field of `SyncMirror` and the apply advances
+it — a guard that compared only the row tables would strand the delta cursor
+on disk. And the **queue** needs a private `queue_needs_write` flag for the
+divergences the payload compare structurally cannot see, of which there are
+exactly two and they are the same fact: a payload loaded at a stale
+`schema_version` (the queue's load is deliberately version-blind — #102's
+never-lose-captures decision — where the mirror's discards a mismatch before
+the payload is parsed), and **a failed persist**. `OutboundQueue::drain`
+mutates in place — it cannot be persist-then-swap, having already sent what
+it drained — so a failed write leaves memory one drain ahead of disk, and
+every later cycle would find the queue equal to itself and skip the write
+that heals it, stranding the divergence for the process's lifetime; the
+unconditional per-cycle write used to heal that for free, and it is precisely
+the write the guard removed. `SyncCycle::enqueue` needs no such flag, being
+persist-then-swap itself, and neither does the mirror, whose every assignment
+follows a successful write. The generalisable rule: **a skip-if-unchanged
+persist guard needs an explicit dirty flag wherever a value can move without
+a successful write behind it.** The one standing
+consequence: the stored envelope's `as_of` now means "when the content last
+changed", not "when we last checked". Nothing reads the mirror's or the
+queue's `as_of` today — the only non-test reader of any `as_of` is the
+calendar slot's, in `ffi-web/src/calendar_host.rs` — but it is now a property
+to preserve. No schema bump, no on-disk format change, no ADR amendment.
+Options 1 and 2 from #165 (slot split, postcard) stay deferred, and option 3
+(journal pruning) stays parked behind the unbuilt acknowledge affordance —
+`the_queue_snapshot_carries_the_dead_letter_journal_on_every_enqueue` keeps
+that remaining cost pinned, since an enqueue always changes the queue and so
+always writes.
+
 **A 409 is a three-way decision, not two** (#163/#164). `write/rebase.rs`'s
 `decide` diffs every touched field against both the client's `base` and the
 409's `current`: a field that moved to some third value is a `Collision`,

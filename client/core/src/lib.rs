@@ -621,7 +621,7 @@ pub enum CoreCycleOutcome {
 /// // named at the API key specifically: there is no way to route it
 /// // through `save_snapshot`, so `Core` cannot accidentally persist it.
 /// let api_key = "sk-super-secret".to_string();
-/// save_snapshot(&store, 1, 0, api_key).await.unwrap();
+/// save_snapshot(&store, 1, 0, &api_key).await.unwrap();
 /// # }
 /// ```
 pub struct Core<QS = MemorySnapshotStore, MS = MemorySnapshotStore> {

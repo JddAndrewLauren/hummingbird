@@ -67,6 +67,41 @@
 //! two tables diverge — the mirror is discarded and rebuilt, the queue is
 //! loaded anyway; see [`SyncCycle::load`].
 //!
+//! **A slot is persisted only when its value actually changed** (#165). The
+//! dominant cost of ADR-0007's 60-second cadence was *how often* a whole
+//! slot is rewritten, not how big it is: a steady-state tick — an empty
+//! queue and a delta carrying zero rows — used to rewrite the entire read
+//! model (~89 KB at ADR-0001's 250-item watchline, ~122 MiB/day) against a
+//! mirror nothing had touched. `run` now compares before writing: the
+//! mirror against the applied candidate, the queue against a clone taken
+//! before `drain`. **Skipping is correct precisely because disk already
+//! equals memory** — it does not weaken the persist-then-swap ordering
+//! above; it is the one case where the ordering has nothing to order, and
+//! the compare is structural (`PartialEq` over the whole value) so it
+//! *proves* that equality rather than inferring it from what an `apply_*`
+//! or a [`DrainOutcome`] reported. A cycle that skipped both writes is
+//! still [`CycleOutcome::Completed`] — the cycle succeeded, only the
+//! persist had nothing to do.
+//!
+//! **What that argument rests on is that memory always equals disk**, and
+//! the queue is where it needs help. The mirror maintains it by
+//! construction — `self.mirror` is only ever assigned a value that was
+//! just written, or one read back at load — but [`OutboundQueue::drain`]
+//! mutates in place, so a *failed* queue persist leaves memory one drain
+//! ahead of disk, and every later compare would find the queue equal to
+//! itself and skip the write that heals it. The `queue_needs_write` flag
+//! carries exactly the divergences the payload compare cannot see (that
+//! one, and a payload loaded at a stale `schema_version`); a guard like
+//! this needs such a flag wherever a value can move without a successful
+//! write behind it.
+//!
+//! The one consequence to preserve: the stored envelope's `as_of` now means
+//! "when this content last changed", not "when we last checked". Nothing
+//! reads the mirror's or the queue's `as_of` today — the only non-test
+//! reader of any `as_of` is the calendar slot's, in
+//! `ffi-web/src/calendar_host.rs` — but a future reader wanting "when did
+//! we last poll" cannot get it from here.
+//!
 //! **Time and jitter are both injected.** `now_ms` and `jitter_unit` are
 //! caller-supplied on every call, never sampled internally — the same
 //! "bare wasm32-unknown-unknown has no clock (or RNG) that does not panic"
@@ -256,6 +291,32 @@ pub struct SyncCycle<QS, MS> {
     /// process)", which [`SyncCycle::run`] treats as due. In-memory only;
     /// see the module docs.
     last_full_sweep_at_ms: Option<i64>,
+    /// **Disk does not hold what memory holds, for a reason the payload
+    /// compare cannot see** — the escape hatch #165's write-skip guard
+    /// needs, and the queue's alone. Two facts set it, and they are the
+    /// same fact:
+    ///
+    /// 1. *The stamp moved, not the value.* The guard compares payloads,
+    ///    but `save_snapshot` also writes `schema_version`, and the queue's
+    ///    load is deliberately version-blind (#102's never-lose-captures
+    ///    decision — see [`SyncCycle::load`]), so an unchanged payload can
+    ///    be sitting on disk at an old version and would otherwise skip its
+    ///    own migration forever. The mirror cannot reach this state:
+    ///    [`load_snapshot_at_version`] discards a mismatch before the
+    ///    payload is parsed.
+    /// 2. *A write failed.* [`OutboundQueue::drain`] mutates `self.queue`
+    ///    **in place** — it cannot be persist-then-swap, having already
+    ///    sent what it drained — so a failed persist leaves memory ahead of
+    ///    disk. The next cycle drains nothing, compares equal to itself,
+    ///    and would skip the write that heals it, stranding the divergence
+    ///    permanently. This is the one place the guard's own safety
+    ///    argument ("disk already equals memory") does not hold on its own,
+    ///    so the flag carries it instead. [`SyncCycle::enqueue`] needs no
+    ///    such flag: it *is* persist-then-swap, so its failure discards the
+    ///    candidate and leaves memory exactly where disk is.
+    ///
+    /// Any successful queue write clears it.
+    queue_needs_write: bool,
     queue_store: QS,
     mirror_store: MS,
 }
@@ -274,6 +335,7 @@ where
             mirror: SyncMirror::new(),
             backoff: Backoff::new(),
             last_full_sweep_at_ms: None,
+            queue_needs_write: false,
             queue_store,
             mirror_store,
         }
@@ -311,10 +373,18 @@ where
     /// storage was cleared by hand. A discard-on-mismatch rule has to decide
     /// on the version *first* or it only covers the changes serde tolerates.
     pub async fn load(queue_store: QS, mirror_store: MS) -> Result<Self, LoadError<QS::Error, MS::Error>> {
-        let queue = match load_snapshot::<OutboundQueue, _>(&queue_store).await {
-            // Deliberately version-blind: old bytes are loaded anyway.
-            Ok(Some(envelope)) => envelope.payload,
-            Ok(None) => OutboundQueue::new(),
+        let (queue, queue_needs_write) = match load_snapshot::<OutboundQueue, _>(&queue_store).await
+        {
+            // Deliberately version-blind: old bytes are loaded anyway. The
+            // version is still *read* off the envelope rather than
+            // discarded, because a queue loaded at an old version has to
+            // write once even if its payload never changes — see
+            // `queue_needs_write`.
+            Ok(Some(envelope)) => (
+                envelope.payload,
+                envelope.schema_version != QUEUE_SCHEMA_VERSION,
+            ),
+            Ok(None) => (OutboundQueue::new(), false),
             Err(error) => return Err(LoadError::Queue(error)),
         };
         let mirror =
@@ -333,6 +403,7 @@ where
             mirror,
             backoff: Backoff::new(),
             last_full_sweep_at_ms: None,
+            queue_needs_write,
             queue_store,
             mirror_store,
         })
@@ -386,10 +457,14 @@ where
             &self.queue_store,
             QUEUE_SCHEMA_VERSION,
             as_of_ms.max(0) as u64,
-            candidate.clone(),
+            &candidate,
         )
         .await?;
         self.queue = candidate;
+        // An enqueue always changes the queue, so it always writes — and
+        // that write is at the current version, which settles any staleness
+        // the load carried in.
+        self.queue_needs_write = false;
         Ok(())
     }
 
@@ -430,21 +505,37 @@ where
             Trigger::Timer => {}
         }
 
+        // The witness. `drain` mutates `self.queue` in place, so once it has
+        // run there is no "before" left to compare against — and
+        // `DrainOutcome` is not a substitute for one (it reports what the
+        // drain *did*, which is a different claim from "the persisted value
+        // moved"). The asymmetry with the mirror below is deliberate: the
+        // mirror clones to build a candidate it may discard, the queue
+        // clones to keep a witness of what it had.
+        let queue_before = self.queue.clone();
         let drain_outcome = self.queue.drain(write_transport, access_token, now_ms).await;
 
-        if let Err(error) = save_snapshot(
-            &self.queue_store,
-            QUEUE_SCHEMA_VERSION,
-            now_ms.max(0) as u64,
-            self.queue.clone(),
-        )
-        .await
-        {
-            let retry_after_ms = self.backoff.record_failure(now_ms, jitter_unit);
-            return CycleOutcome::PersistFailed {
-                message: error.to_string(),
-                retry_after_ms,
-            };
+        if self.queue != queue_before || self.queue_needs_write {
+            if let Err(error) = save_snapshot(
+                &self.queue_store,
+                QUEUE_SCHEMA_VERSION,
+                now_ms.max(0) as u64,
+                &self.queue,
+            )
+            .await
+            {
+                // Memory is now ahead of disk and `drain` has no undo, so
+                // the next cycle's compare — which will find the queue
+                // equal to itself — must not be what decides whether to
+                // write. See `queue_needs_write`.
+                self.queue_needs_write = true;
+                let retry_after_ms = self.backoff.record_failure(now_ms, jitter_unit);
+                return CycleOutcome::PersistFailed {
+                    message: error.to_string(),
+                    retry_after_ms,
+                };
+            }
+            self.queue_needs_write = false;
         }
 
         // ADR-0007: "401 is not a failure of the cycle: queue holds,
@@ -496,21 +587,31 @@ where
                     PullResponse::Sweep(response) => candidate.apply_sweep(response, now_ms),
                     PullResponse::Delta(response) => candidate.apply_delta(response),
                 }
-                if let Err(error) = save_snapshot(
-                    &self.mirror_store,
-                    SYNC_MIRROR_SCHEMA_VERSION,
-                    now_ms.max(0) as u64,
-                    candidate.clone(),
-                )
-                .await
-                {
-                    let retry_after_ms = self.backoff.record_failure(now_ms, jitter_unit);
-                    return CycleOutcome::PersistFailed {
-                        message: error.to_string(),
-                        retry_after_ms,
-                    };
+                // ...unless the applied candidate is what the mirror already
+                // holds, in which case there is nothing to persist and
+                // nothing to swap: the structural compare *proves* disk
+                // equals memory rather than trusting an `apply_*` report,
+                // and skipping is correct precisely because of that
+                // equality. The persist-then-swap ordering above is
+                // untouched — this is the one case where the ordering has
+                // nothing to order.
+                if candidate != self.mirror {
+                    if let Err(error) = save_snapshot(
+                        &self.mirror_store,
+                        SYNC_MIRROR_SCHEMA_VERSION,
+                        now_ms.max(0) as u64,
+                        &candidate,
+                    )
+                    .await
+                    {
+                        let retry_after_ms = self.backoff.record_failure(now_ms, jitter_unit);
+                        return CycleOutcome::PersistFailed {
+                            message: error.to_string(),
+                            retry_after_ms,
+                        };
+                    }
+                    self.mirror = candidate;
                 }
-                self.mirror = candidate;
                 if was_full_sweep {
                     self.last_full_sweep_at_ms = Some(now_ms);
                 }
@@ -1524,7 +1625,7 @@ mod tests {
     #[tokio::test]
     async fn load_propagates_a_deserialize_failure_rather_than_defaulting_to_an_empty_queue() {
         let queue_store = MemorySnapshotStore::default();
-        save_snapshot(&queue_store, 1, 0, crate::task::Mirror::new())
+        save_snapshot(&queue_store, 1, 0, &crate::task::Mirror::new())
             .await
             .unwrap();
 
@@ -1561,7 +1662,7 @@ mod tests {
             },
             1_000,
         );
-        save_snapshot(&mirror_store, SYNC_MIRROR_SCHEMA_VERSION - 1, 0, stale_mirror.clone())
+        save_snapshot(&mirror_store, SYNC_MIRROR_SCHEMA_VERSION - 1, 0, &stale_mirror)
             .await
             .unwrap();
         // Sanity: these bytes are not corrupt — they load into the current
@@ -1577,7 +1678,7 @@ mod tests {
         let queue_store = MemorySnapshotStore::default();
         let mut queue = OutboundQueue::new();
         queue.enqueue(create_entry("m-1", "a-1"));
-        save_snapshot(&queue_store, QUEUE_SCHEMA_VERSION - 1, 0, queue)
+        save_snapshot(&queue_store, QUEUE_SCHEMA_VERSION - 1, 0, &queue)
             .await
             .unwrap();
 
@@ -1623,7 +1724,7 @@ mod tests {
             &mirror_store,
             SYNC_MIRROR_SCHEMA_VERSION - 1,
             0,
-            crate::task::Mirror::new(),
+            &crate::task::Mirror::new(),
         )
         .await
         .unwrap();
@@ -1641,7 +1742,7 @@ mod tests {
         let queue_store = MemorySnapshotStore::default();
         let mut queue = OutboundQueue::new();
         queue.enqueue(create_entry("m-1", "a-1"));
-        save_snapshot(&queue_store, QUEUE_SCHEMA_VERSION, 0, queue)
+        save_snapshot(&queue_store, QUEUE_SCHEMA_VERSION, 0, &queue)
             .await
             .unwrap();
 
@@ -1670,14 +1771,17 @@ mod tests {
     /// was measured: **89,178 bytes on 2026-08-09**, at PR #161's head
     /// (88,848 for the slightly leaner item shape the same day's live
     /// measurement used — the two agree to within half a percent). At
-    /// ADR-0007's 60-second timer that is ~5.1 MiB/hour, ~122 MiB/day
-    /// rewritten against a mirror nothing changed.
+    /// ADR-0007's 60-second timer that *was* ~5.1 MiB/hour, ~122 MiB/day
+    /// rewritten against a mirror nothing changed — the cost #165's
+    /// write-skip removed, and the reason it was worth removing.
     ///
     /// The assertions below hold a *band* around this figure rather than
     /// the figure itself: adding a field to [`hummingbird_domain::Item`]
-    /// moves it, and that is churn, not a regression. The invariant worth
-    /// pinning is the equality across ticks — a cycle that applied nothing
-    /// rewrites the byte-identical full payload anyway.
+    /// moves it, and that is churn, not a regression. What the figure is
+    /// *for*, since #165, is the size of the write that no longer happens
+    /// on a steady-state tick — a write this big is still what one real
+    /// change costs, so the read model's size stays measured even though
+    /// the per-tick rewrite is gone.
     const MEASURED_WATCHLINE_MIRROR_BYTES: usize = 89_178;
 
     /// Half to double the measured figure — see
@@ -1730,14 +1834,20 @@ mod tests {
         cycle
     }
 
-    /// #95's write-amplification question, half one: **how many** writes.
-    /// Exactly two per cycle — the queue (always, right after `drain`) and
-    /// the mirror (on any successful pull) — regardless of how little the
-    /// cycle actually changed. Nothing here is per-row or per-entity, so
-    /// this count is the multiplier ADR-0007's 60-second timer applies to
-    /// whatever the next test measures.
+    /// #95's write-amplification question, half one: **how many** writes —
+    /// and #165's answer to it. A steady-state tick (an empty queue, a
+    /// delta carrying no rows at the version the mirror already holds)
+    /// writes **neither** slot: the queue is byte-for-byte what it was
+    /// before `drain`, the applied candidate is byte-for-byte the mirror,
+    /// and persisting either would be writing a value disk already holds.
+    /// The cycle still completes — only the persist had nothing to do.
+    ///
+    /// This is the inversion of the test that measured the problem: it used
+    /// to assert exactly one write per slot per cycle "however little
+    /// changed", which at ADR-0007's 60-second timer was the multiplier on
+    /// [`MEASURED_WATCHLINE_MIRROR_BYTES`].
     #[tokio::test]
-    async fn one_cycle_writes_each_snapshot_slot_exactly_once_however_little_changed() {
+    async fn a_steady_state_tick_writes_neither_snapshot_slot() {
         let log = CallLog::default();
         let mut cycle = cycle_seeded_with_a_watchline_mirror(&log).await;
         let queue_writes_before = cycle.queue_store().write_count();
@@ -1762,31 +1872,30 @@ mod tests {
                     ..
                 }
             ),
-            "expected a completed delta cycle, got {outcome:?}"
+            "the cycle still succeeded — skipping a persist is not a failure — got {outcome:?}"
         );
         assert_eq!(
             cycle.queue_store().write_count() - queue_writes_before,
-            1,
-            "the queue is re-serialised once per cycle even with nothing to drain"
+            0,
+            "an empty queue that drained nothing is what disk already holds; re-serialising it \
+             is the cost #165 removed"
         );
         assert_eq!(
             cycle.mirror_store().write_count() - mirror_writes_before,
-            1,
-            "the mirror is re-serialised once per cycle even with nothing to apply"
+            0,
+            "a delta that applied no rows leaves a candidate equal to the mirror — the whole \
+             read model must not be rewritten to say so"
         );
     }
 
-    /// #95's write-amplification question, half two: **how much**. A delta
-    /// that returned zero rows still rewrites the entire mirror, because
-    /// `save_snapshot` sits outside the Sweep/Delta match — the payload is
-    /// the whole read model, never the delta that produced it.
-    ///
-    /// The load-bearing assertion is the *equality*: two consecutive ticks
-    /// with nothing between them write byte-identical payloads. The band
-    /// check is the order-of-magnitude guard — see
-    /// [`MEASURED_WATCHLINE_MIRROR_BYTES`].
+    /// #95's write-amplification question, half two: **how much** — the
+    /// figure that made the skip worth building. A zero-row delta produces
+    /// no mirror write at all now, so the only write in the store is the
+    /// seed sweep's (empty mirror → 250 items genuinely differs), and it is
+    /// that write the band is anchored to: one real change still costs the
+    /// whole read model, which is why the per-tick repetition mattered.
     #[tokio::test]
-    async fn a_zero_row_delta_re_serialises_the_whole_mirror_not_the_delta() {
+    async fn a_zero_row_delta_writes_nothing_though_one_real_change_costs_the_whole_read_model() {
         let log = CallLog::default();
         let mut cycle = cycle_seeded_with_a_watchline_mirror(&log).await;
 
@@ -1801,37 +1910,38 @@ mod tests {
             .await;
 
         let sizes = cycle.mirror_store().write_sizes();
-        assert_eq!(sizes.len(), 2, "one seed sweep, then one steady-state tick");
-        let (seeded, steady) = (sizes[0], sizes[1]);
-
         assert_eq!(
-            steady, seeded,
-            "a tick that applied no rows rewrote a payload of a different size than the tick \
-             before it — the mirror snapshot is supposed to be the whole read model either way"
+            sizes.len(),
+            1,
+            "the seed sweep wrote; the steady-state tick after it did not"
         );
+        let seeded = sizes[0];
+
         assert!(
-            steady > delta_body.len() * 100,
-            "the persisted payload ({steady} bytes) should dwarf the delta that produced it \
-             ({} bytes) — that gap is the amplification #95 asks about",
+            seeded > delta_body.len() * 100,
+            "the persisted payload ({seeded} bytes) should dwarf a delta of this size \
+             ({} bytes) — that gap is the amplification #95 asked about, and it is what a \
+             per-tick rewrite used to pay",
             delta_body.len()
         );
-        assert_within_measured_band(steady, "a steady-state mirror rewrite");
+        assert_within_measured_band(seeded, "a mirror write carrying the watchline population");
     }
 
     /// #95 names only the mirror, but the queue's persisted payload has the
     /// same unbounded-growth shape: it bundles the never-pruned dead-letter
-    /// journal with the live FIFO, so a queue with nothing left to send
-    /// still re-serialises every entry that ever failed permanently — on
-    /// every cycle, and on every capture through
-    /// [`SyncCycle::enqueue`]. Nothing prunes that journal today; only the
-    /// unbuilt "1 edit didn't apply" affordance would.
+    /// journal with the live FIFO. #165's skip takes that cost off *idle*
+    /// cycles — nothing changed, nothing written — but the journal still
+    /// rides along on **every [`SyncCycle::enqueue`]**, since an enqueue
+    /// always changes the queue. Nothing prunes it today; only the unbuilt
+    /// "1 edit didn't apply" affordance would, so the remaining cost stays
+    /// pinned here.
     #[tokio::test]
-    async fn the_queue_snapshot_carries_the_dead_letter_journal_on_every_later_cycle() {
+    async fn the_queue_snapshot_carries_the_dead_letter_journal_on_every_enqueue() {
         let log = CallLog::default();
         let mut cycle = SyncCycle::new(InstrumentedSnapshotStore::new(), InstrumentedSnapshotStore::new());
 
-        // Tick 1: an empty queue, so the baseline payload is the queue's
-        // own overhead and nothing else.
+        // Tick 1: an empty queue that drains nothing — under the guard this
+        // writes nothing at all, so the queue store is still untouched.
         let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
         let idle_write = ScriptedWrite {
             log: &log,
@@ -1840,7 +1950,10 @@ mod tests {
         cycle
             .run(&read, &idle_write, "token", 1_000, Trigger::User, true, 0.0)
             .await;
-        let empty_queue_bytes = cycle.queue_store().write_sizes()[0];
+        assert!(
+            cycle.queue_store().write_sizes().is_empty(),
+            "an empty queue that drained nothing has nothing to persist"
+        );
 
         // One capture that the authority rejects permanently: it leaves the
         // FIFO empty again, but the journal keeps it forever.
@@ -1864,24 +1977,33 @@ mod tests {
             "expected the capture to dead-letter, got {outcome:?}"
         );
 
-        // Tick 3: nothing queued, nothing returned, nothing to do.
+        // Tick 3: nothing queued, nothing returned, nothing to do — and now
+        // nothing written either.
         let read = ScriptedRead::changes_only(&log, Ok(empty_body(1)));
         cycle
             .run(&read, &idle_write, "token", 3_000, Trigger::Timer, false, 0.0)
             .await;
 
+        // A second capture: the journal rides along with it.
+        cycle.enqueue(create_entry("m-2", "a-2"), 4_000).await.unwrap();
+
         let sizes = cycle.queue_store().write_sizes();
-        let (idle, journalled, still_journalled) = (sizes[0], sizes[2], sizes[3]);
-        assert_eq!(idle, empty_queue_bytes, "sanity: tick 1's write is the baseline");
-        assert!(
-            journalled > idle,
-            "the dead-lettered entry must be in the persisted payload ({journalled} bytes \
-             against an empty queue's {idle})"
-        );
         assert_eq!(
-            still_journalled, journalled,
-            "a cycle with an empty FIFO and nothing to drain still rewrote the whole journal — \
-             which is the point: this cost never goes away on its own"
+            sizes.len(),
+            3,
+            "the first enqueue, the tick that dead-lettered it, and the second enqueue — the \
+             two idle ticks either side wrote nothing; got {sizes:?}"
+        );
+        let (first_enqueue, dead_lettered, second_enqueue) = (sizes[0], sizes[1], sizes[2]);
+        assert!(
+            dead_lettered > 0 && first_enqueue > 0,
+            "sanity: both of those writes really happened"
+        );
+        assert!(
+            second_enqueue > first_enqueue,
+            "the second capture's write carries the journal the first one's did not \
+             ({second_enqueue} bytes against {first_enqueue}) — every capture pays for every \
+             entry that ever failed permanently, and nothing prunes that"
         );
 
         let loaded: OutboundQueue = load_snapshot(cycle.queue_store())
@@ -1889,11 +2011,248 @@ mod tests {
             .unwrap()
             .unwrap()
             .payload;
-        assert!(loaded.is_empty(), "the FIFO itself drained");
+        assert_eq!(loaded.len(), 1, "the second capture is still queued");
         assert_eq!(
             loaded.dead_letters().len(),
             1,
-            "and what is being re-serialised every tick is the journal"
+            "and the journal is durable — it is carried, not dropped, by the skip"
+        );
+    }
+
+    /// The guard's failure mode is silent staleness on disk, and this is
+    /// the test that would catch it: when each slot *genuinely* changed —
+    /// one queued entry drains successfully, and a delta applies one row —
+    /// each slot is written exactly once, as it always was.
+    ///
+    /// The second half is the subtler case: a delta carrying **zero rows at
+    /// a higher version** still changes the mirror, because `version` is a
+    /// field of [`SyncMirror`] and the apply advances it. A guard that
+    /// compared only the row tables would leave the delta cursor on disk
+    /// behind memory's, and the next boot would re-pull from the old one.
+    #[tokio::test]
+    async fn a_cycle_that_really_changed_a_slot_writes_that_slot_including_a_bare_cursor_move() {
+        let log = CallLog::default();
+        let mut cycle = cycle_seeded_with_a_watchline_mirror(&log).await;
+        cycle.enqueue(create_entry("m-1", "a-1"), 1_500).await.unwrap();
+        let queue_writes_before = cycle.queue_store().write_count();
+        let mirror_writes_before = cycle.mirror_store().write_count();
+
+        // Both halves move: the queued entry sends successfully (so the
+        // FIFO empties) and the delta carries a row (so the mirror grows).
+        let one_row_delta = serde_json::to_string(&ChangesResponse {
+            version: 2,
+            items: vec![item_fixture("a-new", hummingbird_domain::Stage::Ready)],
+            ..ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::changes_only(&log, Ok(one_row_delta));
+        let write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![ok(201, r#"{"id":"a-1","version":1}"#)].into()),
+        };
+        let outcome = cycle
+            .run(&read, &write, "token", 2_000, Trigger::Timer, false, 0.0)
+            .await;
+        assert!(
+            matches!(outcome, CycleOutcome::Completed { .. }),
+            "expected a completed cycle, got {outcome:?}"
+        );
+
+        assert_eq!(
+            cycle.queue_store().write_count() - queue_writes_before,
+            1,
+            "a queue that drained an entry is not the queue disk holds — it must be written"
+        );
+        assert_eq!(
+            cycle.mirror_store().write_count() - mirror_writes_before,
+            1,
+            "a delta that applied a row must be written"
+        );
+
+        // Now the bare cursor move: no rows at all, but a higher version.
+        let mirror_writes_before = cycle.mirror_store().write_count();
+        let read = ScriptedRead::changes_only(&log, Ok(empty_body(3)));
+        let write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        cycle
+            .run(&read, &write, "token", 3_000, Trigger::Timer, false, 0.0)
+            .await;
+
+        assert_eq!(
+            cycle.mirror_store().write_count() - mirror_writes_before,
+            1,
+            "a zero-row delta at a higher version still moved the delta cursor, so the mirror \
+             on disk is stale until it is written"
+        );
+        let durable: SyncMirror = load_snapshot(cycle.mirror_store())
+            .await
+            .unwrap()
+            .unwrap()
+            .payload;
+        assert_eq!(
+            durable.version(),
+            3,
+            "and the cursor that is durable is the one memory holds"
+        );
+    }
+
+    /// The escape hatch the payload compare needs. The guard compares
+    /// payloads, but `save_snapshot` also stamps `schema_version` — and the
+    /// queue's load is deliberately version-blind (#102: never lose
+    /// captures), so a queue can be in memory at the current version's
+    /// *shape* while disk still says the old version. Without the
+    /// `queue_needs_write` flag an idle device would skip its own
+    /// migration forever, leaving bytes on disk stamped at a version that
+    /// no longer describes them.
+    ///
+    /// The mirror cannot reach this state: `load_snapshot_at_version`
+    /// discards a version mismatch before the payload is parsed, so a
+    /// loaded mirror is always at the current version.
+    #[tokio::test]
+    async fn a_queue_stored_at_an_old_schema_version_is_rewritten_once_then_left_alone() {
+        let log = CallLog::default();
+        let queue_store = InstrumentedSnapshotStore::new();
+        // An identical payload — an empty queue — at the previous version:
+        // nothing about the value changes, only the stamp on it.
+        save_snapshot(&queue_store, QUEUE_SCHEMA_VERSION - 1, 0, &OutboundQueue::new())
+            .await
+            .unwrap();
+        let writes_seeding = queue_store.write_count();
+
+        let mut cycle = SyncCycle::load(queue_store, InstrumentedSnapshotStore::new())
+            .await
+            .expect("the queue loads whatever its version says — #102's asymmetry");
+
+        let idle_write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        let read = ScriptedRead::sweep_only(&log, Ok(empty_body(0)));
+        cycle
+            .run(&read, &idle_write, "token", 1_000, Trigger::User, true, 0.0)
+            .await;
+
+        assert_eq!(
+            cycle.queue_store().write_count() - writes_seeding,
+            1,
+            "an unchanged payload at a stale version must still be written once, or it skips \
+             its own migration"
+        );
+        let envelope = load_snapshot::<OutboundQueue, _>(cycle.queue_store())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            envelope.schema_version,
+            QUEUE_SCHEMA_VERSION,
+            "and that write restamps it at the current version"
+        );
+
+        // The tick after that has nothing left to settle.
+        let writes_before = cycle.queue_store().write_count();
+        let read = ScriptedRead::changes_only(&log, Ok(empty_body(0)));
+        cycle
+            .run(&read, &idle_write, "token", 2_000, Trigger::Timer, false, 0.0)
+            .await;
+        assert_eq!(
+            cycle.queue_store().write_count() - writes_before,
+            0,
+            "the escape hatch fires once, not on every tick forever"
+        );
+    }
+
+    /// The write-skip guard's own failure mode, and the one case its safety
+    /// argument does not cover on its own. The guard is safe because memory
+    /// equals disk — but [`OutboundQueue::drain`] mutates `self.queue` in
+    /// place (it cannot be persist-then-swap, having already sent what it
+    /// drained), so a *failed* queue persist leaves memory one drain ahead
+    /// of disk. The next cycle has nothing to drain, finds the queue equal
+    /// to itself, and — without `queue_needs_write` — would skip the write
+    /// that heals it, stranding the divergence for the process's lifetime.
+    /// Before #165 the unconditional per-cycle write healed this for free;
+    /// that is exactly the write the guard removed.
+    ///
+    /// The mirror needs no equivalent: `self.mirror` is only ever assigned
+    /// a value that was just written, so its failed persist leaves memory
+    /// and disk together — pinned by
+    /// `a_failed_mirror_persist_leaves_the_mirror_and_its_cursor_where_the_store_is`.
+    #[tokio::test]
+    async fn a_failed_queue_persist_is_retried_next_cycle_not_stranded_by_the_write_skip() {
+        let log = CallLog::default();
+        let mut cycle = SyncCycle::new(InstrumentedSnapshotStore::new(), MemorySnapshotStore::default());
+        cycle.enqueue(create_entry("m-1", "a-1"), 500).await.unwrap();
+
+        // The store breaks, and this cycle's drain sends the entry — so the
+        // in-memory queue empties while the store still holds it.
+        cycle.queue_store().set_failing(true);
+        let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
+        let sending_write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![ok(201, r#"{"id":"a-1","version":1}"#)].into()),
+        };
+        let outcome = cycle
+            .run(&read, &sending_write, "token", 1_000, Trigger::User, true, 1.0)
+            .await;
+        assert!(
+            matches!(outcome, CycleOutcome::PersistFailed { .. }),
+            "expected the queue persist to fail, got {outcome:?}"
+        );
+        assert!(cycle.queue().is_empty(), "sanity: the drain really happened in memory");
+        let stranded: OutboundQueue = load_snapshot(cycle.queue_store())
+            .await
+            .unwrap()
+            .unwrap()
+            .payload;
+        assert_eq!(
+            stranded.len(),
+            1,
+            "sanity: disk is one drain behind memory — this is the divergence"
+        );
+
+        // The store recovers. The next cycle drains nothing at all, so the
+        // payload compare alone would see no reason to write.
+        cycle.queue_store().set_failing(false);
+        let writes_before = cycle.queue_store().write_count();
+        // Still the sweep path: the failed cycle returned before its pull,
+        // so no full sweep has ever landed and the backstop is still due.
+        let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
+        let idle_write = ScriptedWrite {
+            log: &log,
+            responses: Mutex::new(vec![].into()),
+        };
+        cycle
+            .run(&read, &idle_write, "token", 2_000, Trigger::User, false, 0.0)
+            .await;
+
+        assert_eq!(
+            cycle.queue_store().write_count() - writes_before,
+            1,
+            "a queue whose last persist failed must be written again even though nothing \
+             drained — the compare cannot see that divergence"
+        );
+        let healed: OutboundQueue = load_snapshot(cycle.queue_store())
+            .await
+            .unwrap()
+            .unwrap()
+            .payload;
+        assert!(
+            healed.is_empty(),
+            "and disk is back level with memory, so a reload cannot replay an entry that \
+             already reached the authority"
+        );
+
+        // Healed means healed: the tick after that has nothing to write.
+        let writes_before = cycle.queue_store().write_count();
+        let read = ScriptedRead::changes_only(&log, Ok(empty_body(1)));
+        cycle
+            .run(&read, &idle_write, "token", 3_000, Trigger::User, false, 0.0)
+            .await;
+        assert_eq!(
+            cycle.queue_store().write_count() - writes_before,
+            0,
+            "the flag clears on the write that healed it, rather than pinning every later cycle"
         );
     }
 }

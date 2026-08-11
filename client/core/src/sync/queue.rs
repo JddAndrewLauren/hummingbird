@@ -510,7 +510,7 @@ mod tests {
         let mut queue = OutboundQueue::new();
         queue.enqueue(create_entry("m-1", "a-1"));
 
-        save_snapshot(&store, QUEUE_SCHEMA_VERSION, 1, queue.clone())
+        save_snapshot(&store, QUEUE_SCHEMA_VERSION, 1, &queue)
             .await
             .unwrap();
 
@@ -732,7 +732,7 @@ mod tests {
         let store = MemorySnapshotStore::default();
         let mut queue = OutboundQueue::new();
         queue.enqueue(patch_entry("m-1", "a-1", 1));
-        save_snapshot(&store, QUEUE_SCHEMA_VERSION, 1, queue.clone())
+        save_snapshot(&store, QUEUE_SCHEMA_VERSION, 1, &queue)
             .await
             .unwrap();
 
@@ -796,7 +796,7 @@ mod tests {
         let store = MemorySnapshotStore::default();
         let mut queue = OutboundQueue::new();
         queue.enqueue(create_entry("m-1", "a-1"));
-        save_snapshot(&store, QUEUE_SCHEMA_VERSION, 1, queue.clone())
+        save_snapshot(&store, QUEUE_SCHEMA_VERSION, 1, &queue)
             .await
             .unwrap();
 
