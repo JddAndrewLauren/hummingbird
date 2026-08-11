@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
 import type { IconName } from "../../components/core/Icon";
-import type { BindingDTO, PaneReadDTO } from "../../store/protocol";
+import type { BindingDTO, CalendarReadDTO, PaneReadDTO, TaskItemDTO } from "../../store/protocol";
 
 // ADR-0015's **pane shell contract** (#245): the one thing every standing
 // question answers, and the one shape the shell knows how to rank, collapse
@@ -100,13 +100,13 @@ export interface PaneAnswer {
  * the same reasoning as `BindingKey` in Rust: the registry is what makes
  * "every question, in a declared order" a fact the type system checks, not a
  * list someone has to remember to update. */
-export type StandingQuestion = "waste";
+export type StandingQuestion = "waste" | "weekend";
 
 /** Declared display order — the last axis of the cross-pane sort, and the
  * order the wiring unions its sources in. Declaration order, not
  * alphabetical, so a question's place does not move when another is
  * renamed. */
-export const QUESTION_ORDER: readonly StandingQuestion[] = ["waste"];
+export const QUESTION_ORDER: readonly StandingQuestion[] = ["waste", "weekend"];
 
 /** Everything a question needs to answer, and nothing else: the bindings
  * table, whatever pane reads have landed, and the clock.
@@ -122,7 +122,51 @@ export interface QuestionInputs {
   /** Keyed by source, only what was actually requested (the `stepsByItem`
    * shape). A missing entry is "not read yet", never "no rows". */
   paneReads: Record<string, PaneReadDTO | undefined>;
+  /** Issue #267's calendar-reads arm — the core-to-view seam #122's
+   * weekend-plans pane (and any future calendar-lane question) reads
+   * through, never a second read of its own (the Agent Brief's "do not
+   * build a second read"). Keyed by the caller-chosen request `key` (never
+   * a source — the calendar mirror has no source vocabulary), same "only
+   * what was actually requested" shape as `paneReads`: a missing entry is
+   * "not requested yet", and `CalendarReadDTO`'s own `"not_read"` state is
+   * the further, core-answered distinction "requested, but this device has
+   * never synced its calendar at all". */
+  calendarReads: Record<string, CalendarReadDTO | undefined>;
+  /** Issue #122 review fix: whether this device has ever connected a
+   * calendar at all (`CalendarState.connected`, `store/store.ts`) —
+   * distinct from whether a *snapshot* has landed. A calendar-lane
+   * question's `not_read` read state is the core's "no snapshot at all",
+   * which also covers a connected-but-unpolled device, an offline one, or
+   * one sitting on `needsReconnect` — none of those are "never set up".
+   * Only `!calendarConnected` may render the setup prompt; `not_read` while
+   * connected is `bound-but-unacquired`, the same "the table hasn't
+   * answered yet" reading `waste.ts`'s unread pane read gives. */
+  calendarConnected: boolean;
+  /** Every actionable item this device currently knows about — `task.frontier`
+   * and `task.blocked`'s items, unioned (#122). The weekend-plans pane is
+   * the first question to read items directly rather than through a
+   * snapshot lane: unlike the pane-read/calendar arms it needs no separate
+   * "not read yet" state, because `frontier`/`blocked` already answer that
+   * (an empty list before the first sync and a genuinely empty mirror are
+   * indistinguishable here on purpose — the same steady state `frontier`
+   * itself renders while offline on a fresh device). Never filtered or
+   * re-derived by a question; each one reads only the fields it needs
+   * (`deadline`/`scheduledDate`/`stage`) off the same list `NowScreen`
+   * already renders. */
+  items: TaskItemDTO[];
   nowMs: number;
+}
+
+/** One `getCalendarEvents` request a question declares it needs — #267's
+ * calendar arm's own request shape, named here (rather than in `registry.ts`,
+ * which only unions these) because `QuestionDef.calendarRequests` has to
+ * reference it too. */
+export interface CalendarEventsRequest {
+  /** The caller's own identity for this request — becomes the
+   * `QuestionInputs.calendarReads` map key. */
+  key: string;
+  startMs: number;
+  endMs: number;
 }
 
 /** One question's whole implementation, as the shell sees it. */
@@ -145,6 +189,14 @@ export interface QuestionDef {
    * nobody had bound it would be a question nobody could ever discover. */
   subjects(inputs: QuestionInputs): string[];
   answer(subjectKey: string, inputs: QuestionInputs): PaneAnswer;
+  /** Every #267 calendar-arm interval this question needs, given the clock
+   * — `undefined` for a question that reads no calendar lane at all (every
+   * question but the weekend-plans pane, today). A function of `nowMs`
+   * rather than a fixed interval because a window like #122's rolls
+   * forward as the clock advances; `registry.ts`'s `requiredCalendarRequests`
+   * is the union of every registered question's answer here, exactly the
+   * way `requiredSources()` unions `sources`. */
+  calendarRequests?(nowMs: number): CalendarEventsRequest[];
   /** The pane's own expanded rendering. Rendered with the **live** inputs on
    * every render — only position and band chrome come from the shell's
    * sample, so an expanded pane is never a frame behind what it knows. */
@@ -152,6 +204,13 @@ export interface QuestionDef {
     subjectKey: string;
     inputs: QuestionInputs;
     onSetupNavigate?: () => void;
+    /** #122: set (a day) or clear (`null`) an item's do-date, through the
+     * triage mutation entry point (`Core::triage`, `destination: None`).
+     * `undefined` for every pane with no write affordance — every one but
+     * the weekend-plans pane, today. Threaded the same way
+     * `onSetupNavigate` is: a plain callback prop, never something read out
+     * of `QuestionInputs`, which stays a plain, writable-nothing value. */
+    onSetScheduledDate?: (itemId: string, date: string | null) => void;
   }>;
 }
 

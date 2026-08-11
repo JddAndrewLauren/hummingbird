@@ -288,6 +288,52 @@ describe("handleTaskRequest", () => {
     ]);
   });
 
+  it("triage forwards a scheduledDate set as a null-destination, edits-only call", async () => {
+    const host = fakeHost();
+    await run(
+      {
+        type: "triage",
+        seed: "seed-triage-2",
+        itemId: "item-1",
+        destination: null,
+        edits: { scheduledDate: "2026-08-15" },
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(host.triage).toHaveBeenCalledWith(
+      "seed-triage-2",
+      "item-1",
+      null,
+      '{"scheduledDate":"2026-08-15"}',
+      2_000,
+    );
+  });
+
+  it("triage forwards a scheduledDate clear as an explicit null, never a dropped key", async () => {
+    const host = fakeHost();
+    await run(
+      {
+        type: "triage",
+        seed: "seed-triage-3",
+        itemId: "item-1",
+        destination: null,
+        edits: { scheduledDate: null },
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(host.triage).toHaveBeenCalledWith(
+      "seed-triage-3",
+      "item-1",
+      null,
+      '{"scheduledDate":null}',
+      2_000,
+    );
+  });
+
   it("triage posts a failed result with its error message", async () => {
     const host = fakeHost({
       triage: vi.fn().mockResolvedValue('{"kind":"failed","error":"unrecognised size \\"giant\\""}'),

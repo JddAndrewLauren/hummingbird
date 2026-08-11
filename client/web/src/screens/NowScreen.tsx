@@ -9,21 +9,19 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import type { DemoData } from "../fixtures/demo";
 import { demoQuestionInputs } from "../fixtures/demo-questions";
 import type { Screen } from "../shell/screens";
-import type { TaskActionName, TaskItemDTO } from "../store/protocol";
+import type { CalendarReadDTO, TaskActionName, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { blockedReasonLabel } from "./blocked-reason";
 import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 // PROTOTYPE (#119) — throwaway, dev-only, renders nothing without `?racepane`.
 // Shape settled (context panel); delete these two mounts with
 // `prototype-race-pane/`.
 import { RacePane, RacePaneSwitcher } from "./prototype-race-pane/RacePanePrototype";
-// PROTOTYPE (#122) — throwaway, dev-only, renders nothing without
-// `?weekendpane`. Delete these three mounts with `prototype-weekend-pane/`.
-import { WeekendPane, WeekendPaneSwitcher } from "./prototype-weekend-pane/WeekendPanePrototype";
 // PROTOTYPE (#121) — throwaway, dev-only, renders nothing without
 // `?vacationpane`. Shape decided (A, context panel); delete these two mounts
 // with `prototype-vacation-pane/` once it is folded into the real pane.
@@ -51,6 +49,43 @@ export interface NowScreenProps {
   /** S11/#109's act affordances (start/complete/block/cancel), forwarded to
    * whichever item is currently open in detail. */
   onAct: (itemId: string, action: TaskActionName) => void;
+  /** Issue #267's calendar-events arm — `CalendarState.eventReads`, threaded
+   * through exactly as `task.paneReads` is: the region's `QuestionInputs`
+   * needs a real value here, not a literal `{}`, or every calendar-lane
+   * question #122 goes on to register renders as though nothing was ever
+   * requested. */
+  calendarReads: Record<string, CalendarReadDTO | undefined>;
+  /** #122 review fix: `CalendarState.connected` (`store/store.ts`), threaded
+   * straight through — the fact that separates "never set up" from "no
+   * snapshot yet" for every calendar-lane question's `QuestionInputs`. */
+  calendarConnected: boolean;
+  /** #122's do-date write affordance — forwarded straight to `RankedRegion`,
+   * `undefined` in demo mode like every other real-write callback here. */
+  onSetScheduledDate?: (itemId: string, date: string | null) => void;
+}
+
+/** The real-data half of `QuestionInputs` (never demo's) — exported so a
+ * component test can drive the exact object this screen threads to
+ * `RankedRegion` through a genuinely mounted consumer, proving delivery
+ * rather than merely inspecting the store snapshot (#267's review point).
+ *
+ * `items` (#122) is `task.frontier` and `task.blocked`'s items unioned —
+ * exactly `RealFrontier`'s own `allItems`, computed a second time here
+ * because that helper is scoped to `RealFrontier`'s render and this
+ * function has to stay callable standalone by both `NowScreen` and its own
+ * tests. */
+export function realQuestionInputs(
+  task: TaskState,
+  calendarReads: Record<string, CalendarReadDTO | undefined>,
+  calendarConnected: boolean,
+): Omit<QuestionInputs, "nowMs"> {
+  return {
+    bindings: task.bindings,
+    paneReads: task.paneReads,
+    calendarReads,
+    calendarConnected,
+    items: [...task.frontier, ...task.blocked.map((entry) => entry.item)],
+  };
 }
 
 /** Real-data frontier/blocked rendering (issue #108) — kept out of the
@@ -268,6 +303,9 @@ export function NowScreen({
   onOpenItem,
   onCloseItemDetail,
   onAct,
+  calendarReads,
+  calendarConnected,
+  onSetScheduledDate,
 }: NowScreenProps) {
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
@@ -281,9 +319,7 @@ export function NowScreen({
     <TwoColumn>
       <RacePaneSwitcher />
       <VacationPaneSwitcher />
-      <WeekendPaneSwitcher />
       <Column>
-        <WeekendPane slot="banner" />
         {demo && top ? (
           <>
             <div>
@@ -369,18 +405,23 @@ export function NowScreen({
             snapshot tiles — and it is the same component in both modes: only
             the inputs differ, so `?demo` photographs the real shell. */}
         <RankedRegion
-          inputs={demo ? demoQuestionInputs(nowMs) : { bindings: task.bindings, paneReads: task.paneReads }}
+          inputs={
+            demo
+              ? demoQuestionInputs(nowMs)
+              : realQuestionInputs(task, calendarReads, calendarConnected)
+          }
           nowMs={nowMs}
           syncOutcomeSeq={task.syncOutcomeSeq}
           storage={typeof localStorage === "undefined" ? undefined : localStorage}
           onScreen={onScreen}
+          onSetScheduledDate={demo ? undefined : onSetScheduledDate}
         />
-        {/* The surviving prototypes (#119/#121/#122), still dev-only and
+        {/* The surviving prototypes (#119/#121), still dev-only and
             param-gated, sit beside the region until each is folded into a
-            real question of its own. */}
+            real question of its own — #122's own weekend pane is folded in
+            already, registered in the shell above. */}
         <RacePane />
         <VacationPane />
-        <WeekendPane slot="aside" />
       </Aside>
     </TwoColumn>
   );

@@ -68,7 +68,7 @@ describe("RankedRegion", () => {
   it("renders an answered, imminent pane expanded, from real-shaped inputs", () => {
     render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -85,7 +85,7 @@ describe("RankedRegion", () => {
     // no quiet card, and the pane ships no compact form of its own.
     render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -94,7 +94,10 @@ describe("RankedRegion", () => {
 
     expect(screen.getByText("Friday · 4d")).toBeTruthy();
     expect(screen.queryByText("Trash Friday")).toBeNull();
-    expect(screen.getByRole("button", { expanded: false })).toBeTruthy();
+    // `weekend`'s own row is ALSO collapsed here (an unrequested calendar
+    // read is `bound-but-unacquired`, dormant) — scoped by name to the
+    // waste pane specifically, the same "no pane markup at all" proof.
+    expect(screen.getByRole("button", { name: /which cans/i, expanded: false })).toBeTruthy();
   });
 
   it("does not move a pane when only the band changed, but does update what it shows", () => {
@@ -103,18 +106,18 @@ describe("RankedRegion", () => {
     // cursor — while the content it renders stays live.
     const view = render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    fireEvent.click(screen.getByRole("button", { name: /which cans/i, expanded: false }));
     expect(screen.getByText("Trash Friday")).toBeTruthy();
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -128,7 +131,7 @@ describe("RankedRegion", () => {
   it("re-samples the order when a cycle completes", () => {
     const view = render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -138,7 +141,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={1}
         onScreen={() => {}}
@@ -153,9 +156,13 @@ describe("RankedRegion", () => {
     // A fresh mount whose bindings land a moment later must not sit in the
     // wrong answer state for a whole minute — and while the table is unread
     // it says so, rather than telling a configured reader to set it up.
+    // `calendarConnected: true` throughout — this test is about the waste
+    // question's own unread-bindings state, and a weekend-pane "Not set up"
+    // row (unbound only via `!calendarConnected`, #122 review fix) would
+    // make the `queryByText("Not set up")` assertion ambiguous.
     const view = render(
       <RankedRegion
-        inputs={{ bindings: null, paneReads: {} }}
+        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -166,7 +173,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -179,7 +186,7 @@ describe("RankedRegion", () => {
   it("keeps a collapse override across a remount, through storage", () => {
     const storage = fakeStorage();
     const props = {
-      inputs: { bindings: bound(), paneReads: readAt(1) },
+      inputs: { bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] },
       nowMs: NOW,
       syncOutcomeSeq: 0,
       storage,
@@ -210,6 +217,7 @@ describe("RankedRegion", () => {
               ],
             }),
           },
+          calendarReads: {}, calendarConnected: false, items: [],
         }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -218,21 +226,21 @@ describe("RankedRegion", () => {
     );
 
     expect(screen.getByText("No answer yet")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    fireEvent.click(screen.getByRole("button", { name: /which cans/i, expanded: false }));
     expect(screen.getByText(/`body` is missing/)).toBeTruthy();
   });
 
   it("tells an unread bindings table apart from an unset binding, on screen", () => {
     render(
       <RankedRegion
-        inputs={{ bindings: null, paneReads: {} }}
+        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    fireEvent.click(screen.getByRole("button", { name: /which cans/i, expanded: false }));
     expect(screen.getByText("Checking your setup")).toBeTruthy();
     // The one thing it must not do: tell someone who has already configured
     // this to configure it.
@@ -246,6 +254,7 @@ describe("RankedRegion", () => {
         inputs={{
           bindings: [{ key: BINDING_KEY, known: true, pending: false, value: { state: "other", raw: "7" } }],
           paneReads: {},
+          calendarReads: {}, calendarConnected: false, items: [],
         }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -253,7 +262,7 @@ describe("RankedRegion", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    fireEvent.click(screen.getByRole("button", { name: /which cans/i, expanded: false }));
     expect(screen.getByText("That collection page can't be read")).toBeTruthy();
     fireEvent.click(screen.getByText("Open Settings"));
     expect(onScreen).toHaveBeenCalledWith("settings");
@@ -263,7 +272,12 @@ describe("RankedRegion", () => {
     const onScreen = vi.fn();
     render(
       <RankedRegion
-        inputs={{ bindings: [], paneReads: {} }}
+        // `calendarConnected: true` keeps the weekend pane out of its own
+        // `unbound` state here — this test is about the waste question's
+        // unset binding, and a second "Not set up" row from the weekend
+        // pane (unbound only via `!calendarConnected`, #122 review fix)
+        // would make "the" unbound row ambiguous.
+        inputs={{ bindings: [], paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={onScreen}

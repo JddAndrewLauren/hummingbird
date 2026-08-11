@@ -12,6 +12,7 @@ import {
   pushTaskApiKey,
   pushTokenToWorker,
   reportViewVisibility,
+  requestCalendarEvents,
   requestCalendarList,
   requestPaneRead,
   requestDeadLetters,
@@ -25,6 +26,7 @@ import {
   requestTriageInbox,
   setCalendarIdsOnWorker,
   setMirrorSnapshotHandler,
+  triageItem,
   triggerSyncFocus,
   triggerSyncManual,
   type WorkerLike,
@@ -36,6 +38,7 @@ const initialCalendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  eventReads: {},
 };
 
 const initialTask: TaskState = {
@@ -185,6 +188,47 @@ describe("attachWorkerClient", () => {
     });
   });
 
+  it("writes a calendarEvents message into eventReads, keyed by the request's own key", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "calendarEvents",
+        key: "weekend",
+        read: { state: "not_read" },
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().calendar).toEqual({
+      ...initialCalendar,
+      eventReads: { weekend: { state: "not_read" } },
+    });
+  });
+
+  it("keeps other request keys' reads intact when a new one lands", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "calendarEvents", key: "weekend", read: { state: "not_read" } },
+    } as MessageEvent);
+    worker.onmessage?.({
+      data: {
+        type: "calendarEvents",
+        key: "today",
+        read: { state: "read", events: [], freshness: { kind: "unknown" } },
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().calendar.eventReads).toEqual({
+      weekend: { state: "not_read" },
+      today: { state: "read", events: [], freshness: { kind: "unknown" } },
+    });
+  });
+
   // -- task binding (#105/S7) -----------------------------------------
 
   it("records a captureResult keyed by its seed", () => {
@@ -297,6 +341,10 @@ describe("attachWorkerClient", () => {
     // next sync cycle (this issue's acceptance).
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getTriageInbox" });
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
+    // #122: a `null`-destination triage (the weekend-plans pane's do-date
+    // chip) can touch a relation-blocked item, so `blocked` needs the same
+    // immediate re-read `actResult` already gives it.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
   });
 
   it("records a failed triageResult without re-requesting anything", () => {
@@ -967,6 +1015,18 @@ describe("the calendar send helpers", () => {
     requestCalendarList(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "listCalendars" });
   });
+
+  it("requestCalendarEvents posts the request's key, interval and clock", () => {
+    const worker = fakeWorker();
+    requestCalendarEvents(worker, "weekend", 1_000, 2_000, 1_500);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "getCalendarEvents",
+      key: "weekend",
+      startMs: 1_000,
+      endMs: 2_000,
+      nowMs: 1_500,
+    });
+  });
 });
 
 describe("the task send helpers (#105/S7)", () => {
@@ -1039,6 +1099,31 @@ describe("the task send helpers (#105/S7)", () => {
       action: "block",
       nowMs: 2_000,
     });
+  });
+
+  it("triageItem posts a null destination and a set scheduledDate edit (#122's do-date write)", () => {
+    const worker = fakeWorker();
+    triageItem(worker, "seed-triage-9", "item-1", null, { scheduledDate: "2026-08-15" }, 2_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "triage",
+      seed: "seed-triage-9",
+      itemId: "item-1",
+      destination: null,
+      edits: { scheduledDate: "2026-08-15" },
+      nowMs: 2_000,
+    });
+  });
+
+  it("triageItem posts a clear scheduledDate edit distinguishably from an untouched field", () => {
+    const worker = fakeWorker();
+    triageItem(worker, "seed-triage-10", "item-1", null, { scheduledDate: null }, 2_000);
+    const call = worker.postMessage.mock.calls[0][0] as { edits?: { scheduledDate?: unknown } };
+    expect(call.edits?.scheduledDate).toBeNull();
+
+    worker.postMessage.mockClear();
+    triageItem(worker, "seed-triage-11", "item-1", null, {}, 2_000);
+    const untouchedCall = worker.postMessage.mock.calls[0][0] as { edits?: { scheduledDate?: unknown } };
+    expect(untouchedCall.edits?.scheduledDate).toBeUndefined();
   });
 
   it("requestFrontier/requestTriageInbox/requestIsPending post their matching request", () => {

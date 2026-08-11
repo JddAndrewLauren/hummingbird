@@ -15,6 +15,7 @@ function fakeHost(overrides: Partial<CalendarHostLike> = {}): CalendarHostLike {
     onTimer: vi.fn().mockResolvedValue("no_credential"),
     takeCredentialEvents: vi.fn().mockReturnValue("[]"),
     listCalendars: vi.fn().mockResolvedValue('{"kind":"ok","calendars":[]}'),
+    eventsInInterval: vi.fn().mockResolvedValue('{"kind":"not_read","events":[],"freshness":null}'),
     ...overrides,
   };
 }
@@ -123,6 +124,105 @@ describe("handleCalendarRequest", () => {
       expect(await run({ type: "listCalendars" }, host)).toEqual([]);
     },
   );
+
+  // -- getCalendarEvents (issue #267) ------------------------------------
+
+  it("passes the interval and clock straight through to the host", async () => {
+    const host = fakeHost();
+    await run({ type: "getCalendarEvents", key: "weekend", startMs: 1_000, endMs: 2_000, nowMs: 1_500 }, host);
+    expect(host.eventsInInterval).toHaveBeenCalledWith(1_000, 2_000, 1_500);
+  });
+
+  it('posts "not_read" as-is when the host has never synced this calendar', async () => {
+    const host = fakeHost({
+      eventsInInterval: vi
+        .fn()
+        .mockResolvedValue('{"kind":"not_read","events":[],"freshness":null}'),
+    });
+
+    const posted = await run(
+      { type: "getCalendarEvents", key: "weekend", startMs: 1_000, endMs: 2_000, nowMs: 1_500 },
+      host,
+    );
+
+    expect(posted).toEqual([
+      { type: "calendarEvents", key: "weekend", read: { state: "not_read" } },
+    ]);
+  });
+
+  it("maps a real read's events and freshness, camelCasing every field", async () => {
+    const host = fakeHost({
+      eventsInInterval: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          kind: "read",
+          events: [
+            {
+              provider_event_id: "evt-1",
+              calendar_id: "cal-primary",
+              title: "Standup",
+              start: { instant_ms: 1_000, time_zone: "America/Los_Angeles" },
+              end: { instant_ms: 2_000, time_zone: "America/Los_Angeles" },
+              all_day: false,
+              recurrence_id: null,
+              location: null,
+              organizer: null,
+              status: "confirmed",
+              provider_updated_at_ms: 900,
+              html_link: null,
+            },
+          ],
+          freshness: { state: "age", age_ms: 60_000, declared_cadence_ms: 900_000 },
+        }),
+      ),
+    });
+
+    const posted = await run(
+      { type: "getCalendarEvents", key: "weekend", startMs: 0, endMs: 5_000, nowMs: 61_000 },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "calendarEvents",
+        key: "weekend",
+        read: {
+          state: "read",
+          events: [
+            {
+              providerEventId: "evt-1",
+              calendarId: "cal-primary",
+              title: "Standup",
+              start: { instantMs: 1_000, timeZone: "America/Los_Angeles" },
+              end: { instantMs: 2_000, timeZone: "America/Los_Angeles" },
+              allDay: false,
+              recurrenceId: null,
+              location: null,
+              organizer: null,
+              status: "confirmed",
+              providerUpdatedAtMs: 900,
+              htmlLink: null,
+            },
+          ],
+          freshness: { kind: "age", ageMs: 60_000, declaredCadenceMs: 900_000 },
+        },
+      },
+    ]);
+  });
+
+  it('posts nothing when the host answers "busy" — no answer, not an empty one', async () => {
+    const host = fakeHost({
+      eventsInInterval: vi
+        .fn()
+        .mockResolvedValue('{"kind":"busy","events":[],"freshness":null}'),
+    });
+
+    expect(
+      await run(
+        { type: "getCalendarEvents", key: "weekend", startMs: 0, endMs: 1_000, nowMs: 500 },
+        host,
+      ),
+    ).toEqual([]);
+  });
 });
 
 describe("createRequestQueue", () => {

@@ -5,7 +5,6 @@ import type {
   ConditionDTO,
   DeadLetterEntryDTO,
   FieldTypeName,
-  FreshnessDTO,
   KindEntryDTO,
   KindRegistryDTO,
   LedgerRowDTO,
@@ -21,6 +20,7 @@ import type {
   TaskWorkerResponse,
   TierName,
 } from "../store/protocol";
+import { mapFreshness, type RawFreshness } from "./freshness-wire";
 import { createSerialQueue } from "./serial-queue";
 
 // The worker's half of #105/S7's task binding, kept free of the wasm import
@@ -59,11 +59,14 @@ export interface TaskHostLike {
    * only an object can carry the difference between a key being absent
    * ("leave this field alone") and `null` ("clear it"). Resolved to JSON:
    * `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`, where
-   * an unreadable `edits` payload is one of the `"failed"` answers. */
+   * an unreadable `edits` payload is one of the `"failed"` answers.
+   * `destination` is `null` (#122) to leave `stage` untouched entirely — the
+   * weekend-plans pane's do-date chip triages an item that may already be
+   * `InProgress`, which the destination vocabulary cannot name. */
   triage(
     seed: string,
     itemId: string,
-    destination: string,
+    destination: string | null,
     edits: string,
     nowMs: number,
   ): Promise<string>;
@@ -245,10 +248,6 @@ interface RawKindRegistryResponse {
 // -- the pane read (#245) — pinned to `PaneReadResponse`'s serde output by
 // `client/ffi-web/src/task_host.rs`'s
 // `pane_read_response_serializes_with_the_exact_keys_the_pane_shell_ts_parses`.
-
-type RawFreshness =
-  | { state: "unknown" }
-  | { state: "age"; age_ms: number; declared_cadence_ms: number | null };
 
 type RawPaneEnvelope =
   | { state: "parsed"; schema: string; polled_every_ms: number | null; body: string }
@@ -489,12 +488,6 @@ function mapKindRegistry(raw: RawKindRegistryResponse): KindRegistryDTO {
     alarmIntervalMs: raw.alarm_interval_ms,
     severities: raw.severities,
   };
-}
-
-function mapFreshness(raw: RawFreshness): FreshnessDTO {
-  return raw.state === "unknown"
-    ? { kind: "unknown" }
-    : { kind: "age", ageMs: raw.age_ms, declaredCadenceMs: raw.declared_cadence_ms };
 }
 
 function mapEnvelope(raw: RawPaneEnvelope): PaneEnvelopeDTO {

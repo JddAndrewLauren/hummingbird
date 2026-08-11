@@ -24,6 +24,7 @@ const calendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  eventReads: {},
 };
 
 interface SettingsOptions {

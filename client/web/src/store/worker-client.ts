@@ -17,7 +17,9 @@ import type {
 /** Re-exported so a screen importing the triage mutation gets its edit shape
  * from the same module (the type itself lives with the rest of the wire
  * contract, `store/protocol.ts` — an absent key leaves a field alone, a `null`
- * clears it, a value sets it). */
+ * clears it, a value sets it; `scheduledDate` — #122's do-date edit — is the
+ * same absent/null/value contract as every other field, not a separate
+ * clear-flag shape). */
 export type { TriageEdits } from "./protocol";
 
 /** The capture box's optional Energy/Size/Context selections (#208) — the
@@ -66,6 +68,7 @@ type Store = Pick<
   ReturnType<typeof createCoreStore>,
   | "setState"
   | "setCalendarState"
+  | "setCalendarEventRead"
   | "setTaskState"
   | "setTaskPending"
   | "setTaskSteps"
@@ -117,6 +120,13 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
         return;
       case "calendarList":
         store.setCalendarState({ availableCalendars: message.calendars });
+        return;
+      case "calendarEvents":
+        // Keyed by the request's own `key`, echoed back on the message —
+        // never by which request happened to be outstanding here, since
+        // this is a broadcast to every port (same discipline `paneRead`
+        // documents for `source`).
+        store.setCalendarEventRead(message.key, message.read);
         return;
       // -- task binding (#105/S7) — broadcasts fanned out to every port,
       // never a reply targeted at just the requesting view (protocol.ts).
@@ -182,6 +192,13 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
           // frontier through the mirror, not local bookkeeping).
           requestTriageInbox(worker);
           requestFrontier(worker);
+          // #122: a `null`-destination triage (the weekend-plans pane's
+          // do-date chip) can touch an item sitting in `task.blocked` —
+          // relation-blocked but still Ready/InProgress, exactly
+          // `actResult`'s own targets above — so that list needs the same
+          // immediate re-read or a just-set do-date reads stale there until
+          // the next sync cycle.
+          requestBlocked(worker);
         }
         return;
       case "setBindingResult":
@@ -379,6 +396,20 @@ export function requestCalendarList(worker: WorkerLike): void {
   worker.postMessage({ type: "listCalendars" });
 }
 
+/** Issue #267: the non-cancelled events overlapping `[startMs, endMs)`.
+ * `key` is caller-chosen and comes back unchanged on the `calendarEvents`
+ * broadcast — see `protocol.ts`'s `getCalendarEvents` doc for why the
+ * calendar lane keys by request rather than by source. */
+export function requestCalendarEvents(
+  worker: WorkerLike,
+  key: string,
+  startMs: number,
+  endMs: number,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "getCalendarEvents", key, startMs, endMs, nowMs });
+}
+
 // -- the task binding's send helpers (#105/S7) — same "only after ready,
 // never at construction time" rule as the calendar helpers above, and the
 // same one-request-one-postMessage shape.
@@ -453,12 +484,16 @@ export function actOnTask(
 
 /** S13/#111's triage mutation: edits whatever fields `edits` sets and
  * promotes to `destination`, as one CAS `PATCH`. `seed` mints `Core::triage`'s
- * own queue-entry id — same caller-mints contract as `actOnTask`'s. */
+ * own queue-entry id — same caller-mints contract as `actOnTask`'s.
+ *
+ * `destination` is `null` (#122) for a pure field edit that leaves `stage`
+ * untouched — the weekend-plans pane's do-date chip's own call shape, since
+ * `TriageDestinationName` cannot name an item that is already `InProgress`. */
 export function triageItem(
   worker: WorkerLike,
   seed: string,
   itemId: string,
-  destination: TriageDestinationName,
+  destination: TriageDestinationName | null,
   edits: TriageEdits,
   nowMs: number,
 ): void {

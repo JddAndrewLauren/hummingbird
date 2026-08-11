@@ -15,7 +15,9 @@
 mod calendar_host;
 mod task_host;
 
-pub use calendar_host::{CalendarHostCore, CalendarListResponse};
+pub use calendar_host::{
+    CalendarEventsResponse, CalendarHostCore, CalendarListResponse, CALENDAR_POLL_INTERVAL_MS,
+};
 pub use task_host::{
     ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, CoreFieldDTO,
     CreateRuleResponse, DeadLetterEntryDTO, DeadLetterFieldDTO, DeadLettersResponse,
@@ -152,6 +154,13 @@ mod wasm_bindings {
     /// leaves the picker's existing options alone rather than emptying it.
     const BUSY_CALENDAR_LIST: &str = r#"{"kind":"busy","calendars":[]}"#;
 
+    /// The "nothing was attempted" answer for `eventsInInterval` (issue
+    /// #267) — the third state alongside `CalendarEventsResponse`'s own
+    /// `"not_read"`/`"read"`, added here because only the wasm wrapper can
+    /// ever find the core checked out. Never `[]` events read as a real
+    /// answer: a busy core has no standing to say "nothing scheduled".
+    const BUSY_CALENDAR_EVENTS: &str = r#"{"kind":"busy","events":[],"freshness":null}"#;
+
     /// Which `ContextPoller` trigger a `poll` call stands for. The three
     /// exported triggers differ only in this, so they share one body rather
     /// than three copies of the check-out/await/check-in dance.
@@ -256,6 +265,29 @@ mod wasm_bindings {
             self.inner.take_credential_events()
         }
 
+        /// Issue #267: every non-cancelled event overlapping `[start_ms,
+        /// end_ms)`, as JSON: `{"kind": "not_read"|"read"|"busy",
+        /// "events": [...], "freshness": null|{"state":...}}`. Same
+        /// check-out/check-in dance as the poll triggers — this is a plain
+        /// `&self` read on [`CalendarHostCore`], but the underlying snapshot
+        /// store load still awaits, so a poll already in flight must not
+        /// see a second borrow.
+        #[wasm_bindgen(js_name = eventsInInterval)]
+        pub fn events_in_interval(&self, start_ms: f64, end_ms: f64, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(core) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CALENDAR_EVENTS));
+                };
+                let response = core
+                    .events_in_interval(start_ms as i64, end_ms as i64, now_ms as i64)
+                    .await;
+                inner.check_in(core);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CalendarEventsResponse serializes"),
+                ))
+            })
+        }
     }
 
     // ------------------------------------------------------------ TaskHost
@@ -835,8 +867,8 @@ mod wasm_bindings {
         }
 
         /// Triages an already-captured item (S13/#111: edit every field of it
-        /// but the source, and promote to Grilling or Ready), as one CAS
-        /// `PATCH`. Resolves to JSON:
+        /// but the source, and optionally promote to Grilling or Ready), as
+        /// one CAS `PATCH`. Resolves to JSON:
         /// `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
         ///
         /// `edits` is a JSON object, not a positional list: it carries nine
@@ -845,12 +877,14 @@ mod wasm_bindings {
         /// ("clear it"), which positional `Option<String>` arguments cannot
         /// express (see [`TriageEdits`]). Malformed JSON, an unknown key, or a
         /// `null` on a `NOT NULL` field is a `"failed"` answer carrying the
-        /// parse error, never a partially applied edit.
+        /// parse error, never a partially applied edit. `destination` is
+        /// `undefined`/`null` (#122) to leave `stage` untouched entirely —
+        /// see [`TaskHostCore::triage`]'s doc.
         pub fn triage(
             &self,
             seed: String,
             item_id: String,
-            destination: String,
+            destination: Option<String>,
             edits: String,
             now_ms: f64,
         ) -> js_sys::Promise {
@@ -872,7 +906,7 @@ mod wasm_bindings {
                     return Ok(JsValue::from_str(BUSY_TRIAGE));
                 };
                 let response = host
-                    .triage(&seed, &item_id, &destination, edits, now_ms as i64)
+                    .triage(&seed, &item_id, destination.as_deref(), edits, now_ms as i64)
                     .await;
                 inner.check_in(host);
                 Ok(JsValue::from_str(

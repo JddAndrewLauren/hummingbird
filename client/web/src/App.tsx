@@ -18,6 +18,7 @@ import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
 import { syncStatusLabel } from "./shell/sync-status";
+import { useCalendarEventsWiring } from "./shell/useCalendarEventsWiring";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
@@ -122,6 +123,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
+  // #267: the calendar arm's exact twin — every interval the registered
+  // standing questions need from the calendar mirror. #122's the first real
+  // caller, which is what makes `getCalendarEvents` reachable at all rather
+  // than an exported, unit-tested, never-wired hook.
+  useCalendarEventsWiring(worker, status, task.syncOutcomeSeq);
   // The Ledger/Done reads, refreshed per cycle AND per mutation result — the
   // hook's own doc says why the mutation-result refresh lives there rather
   // than in worker-client.ts.
@@ -200,6 +206,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   }, []);
   const { act: handleAct } = useItemActions(worker);
   const { triage: handleTriage } = useTriageWiring(worker);
+  // #122's do-date write: the same triage mutation entry point every other
+  // triage edit uses, with `destination: null` (leave `stage` untouched —
+  // `useTriageWiring.ts`'s own doc) and only `scheduledDate` set. Not its
+  // own hook: it is one more call shape of the wiring already threaded
+  // through this component, not a second mutation entry point.
+  function handleSetScheduledDate(itemId: string, date: string | null): void {
+    handleTriage(itemId, null, { scheduledDate: date });
+  }
   const syncLabel = syncStatusLabel({
     online,
     lastSyncOutcome: task.lastSyncOutcome,
@@ -280,6 +294,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onOpenItem={handleOpenItem}
               onCloseItemDetail={handleCloseItemDetail}
               onAct={handleAct}
+              calendarReads={calendar.eventReads}
+              calendarConnected={calendar.connected}
+              onSetScheduledDate={demo ? undefined : handleSetScheduledDate}
             />
           )}
           {screen === "triage" && (

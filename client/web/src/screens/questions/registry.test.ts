@@ -8,14 +8,21 @@ import {
   type QuestionInputs,
   type StandingQuestion,
 } from "./contract";
-import { QUESTIONS, panesFrom, rankPanes, requiredSources } from "./registry";
+import { QUESTIONS, panesFrom, rankPanes, requiredCalendarRequests, requiredSources } from "./registry";
 
 // The registry, and the two properties that keep it honest: it names every
 // question exactly once, and it ranks every subject of every question — not
 // just the one-subject case the only shipped pane happens to be.
 
 function emptyInputs(): QuestionInputs {
-  return { bindings: [], paneReads: {}, nowMs: 1_000 };
+  return {
+    bindings: [],
+    paneReads: {},
+    calendarReads: {},
+    calendarConnected: false,
+    items: [],
+    nowMs: 1_000,
+  };
 }
 
 /** A registry of questions that do not exist in the shipped vocabulary —
@@ -52,14 +59,35 @@ describe("requiredSources", () => {
   });
 });
 
+describe("requiredCalendarRequests", () => {
+  it("picks up the weekend-plans pane's interval without requiredCalendarRequests itself changing (#122)", () => {
+    // This was the empty steady state before #122 registered a real
+    // calendar-lane question — proof the union mechanism, not a fixed
+    // list, is what decides this.
+    const requests = requiredCalendarRequests(1_000);
+    expect(requests).toEqual([{ key: "weekend", startMs: expect.any(Number), endMs: expect.any(Number) }]);
+  });
+
+  it("is a pure function of the clock, with no calendar read of its own", () => {
+    const a = requiredCalendarRequests(1_000);
+    const b = requiredCalendarRequests(1_000);
+    expect(a).toEqual(b);
+  });
+});
+
 describe("rankPanes", () => {
-  it("still emits a pane for a question nobody has bound", () => {
-    // The setup prompt is how the question is discovered at all — a
-    // registry that dropped unbound questions would hide every one of them
-    // from the person who has to configure them.
+  it("still emits a pane for every question, none of them answered, when nothing is set up", () => {
+    // The setup prompt is how a question is discovered at all — a registry
+    // that dropped an unconfigured question would hide it from the person
+    // who has to set it up. Not every question reads `unbound` from
+    // `emptyInputs()` specifically: `waste` (an unset binding) does, while
+    // `weekend` (a calendar arm nobody has requested a read for yet) is
+    // `bound-but-unacquired` — both are gaps, and the shared assertion here
+    // is the one thing every registered question owes: never `answered`
+    // with nothing behind it.
     const panes = rankPanes(emptyInputs());
     expect(panes.length).toBeGreaterThan(0);
-    expect(panes.every((pane) => pane.answer.answerState === "unbound")).toBe(true);
+    expect(panes.every((pane) => pane.answer.answerState !== "answered")).toBe(true);
   });
 
   it("keys each pane by question and subject, never by position", () => {

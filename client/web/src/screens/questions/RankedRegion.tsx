@@ -68,6 +68,11 @@ export interface RankedRegionProps {
   /** Injectable for tests, the `calendar/persistence.ts` idiom. */
   storage?: StorageLike;
   onScreen: (screen: Screen) => void;
+  /** #122's do-date write affordance, forwarded verbatim to whichever
+   * pane's `Expanded` component asks for it — see `contract.ts`'s
+   * `QuestionDef.Expanded` doc. `undefined` in demo mode, same as every
+   * other real-write callback this screen threads. */
+  onSetScheduledDate?: (itemId: string, date: string | null) => void;
 }
 
 function Glyph({ glyph }: { glyph: PaneGlyph }) {
@@ -148,6 +153,7 @@ export function RankedRegion({
   syncOutcomeSeq,
   storage,
   onScreen,
+  onSetScheduledDate,
 }: RankedRegionProps) {
   const live = rankPanes({ ...inputs, nowMs });
 
@@ -219,6 +225,7 @@ export function RankedRegion({
                 subjectKey={pane.subjectKey}
                 inputs={{ ...inputs, nowMs }}
                 onSetupNavigate={() => onScreen("settings")}
+                onSetScheduledDate={onSetScheduledDate}
               />
             </div>
           </div>

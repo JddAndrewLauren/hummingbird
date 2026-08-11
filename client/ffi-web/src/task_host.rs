@@ -131,7 +131,10 @@ pub struct TriageEdits {
     #[serde(default, deserialize_with = "touched")]
     pub deadline: Option<Option<String>>,
     /// A whole civil day (`YYYY-MM-DD`) and never a date-time: a scheduled
-    /// date is the do-date a human chose, which has no minute.
+    /// date is the do-date a human chose, which has no minute. #122's
+    /// three-state do-date edit — `TriagePatch::scheduled_date`'s own shape,
+    /// unchanged across this seam: outer `None` leaves it alone,
+    /// `Some(None)` clears it, `Some(Some(date))` sets it.
     #[serde(default, deserialize_with = "touched")]
     pub scheduled_date: Option<Option<String>>,
 }
@@ -1146,28 +1149,41 @@ impl TaskHostCore {
     /// Triages an already-captured item (S13/#111): edits whatever
     /// `edits` sets and promotes it to `destination`, as one CAS `PATCH`
     /// (never one mutation per field — [`Core::triage`]'s own doc).
+    /// `destination` is the wire's snake_case destination name
+    /// ([`parse_destination`]), or `None` (#122) to leave `stage` untouched
+    /// entirely — the weekend-plans pane's do-date chip triages an item that
+    /// may already be `InProgress`, which `TriageDestination`'s two-value
+    /// vocabulary cannot name, so a caller that only wants
+    /// `edits.scheduled_date` applied passes no destination at all rather
+    /// than one that would silently demote the item back to `Ready`.
     ///
-    /// Everything a wire value could get wrong is rejected HERE, before
+    /// Everything else a wire value could get wrong is rejected HERE, before
     /// [`Core::triage`] is ever called, the same "reject before the seam"
     /// discipline [`TaskHostCore::capture`]/[`TaskHostCore::act`] use:
-    /// `destination` and `edits.size`/`edits.energy` are resolved by name
-    /// through the shared vocabulary ([`parse_destination`], `Size::parse`,
-    /// `Energy::parse`), `edits.priority` must be 0..=4, `edits.deadline`
-    /// must satisfy `hummingbird_domain::is_valid_deadline`, and
-    /// `edits.scheduled_date` must be a whole civil day. Each of those is a
-    /// rule the authority also enforces with a 400 — checking here is what
-    /// turns a rejected write into a message on the form instead of a
-    /// dead-lettered mutation the person cannot see.
+    /// `edits.size`/`edits.energy` are resolved by name through the shared
+    /// vocabulary (`Size::parse`, `Energy::parse`), `edits.priority` must be
+    /// 0..=4, `edits.deadline` must satisfy
+    /// `hummingbird_domain::is_valid_deadline`, and `edits.scheduled_date`
+    /// must be a whole civil day. Each of those is a rule the authority also
+    /// enforces with a 400 — checking here is what turns a rejected write
+    /// into a message on the form instead of a dead-lettered mutation the
+    /// person cannot see.
     pub async fn triage(
         &mut self,
         seed: &str,
         item_id: &str,
-        destination: &str,
+        destination: Option<&str>,
         edits: TriageEdits,
         now_ms: i64,
     ) -> TriageResponse {
-        let Some(destination) = parse_destination(destination) else {
-            return reject(format!("unrecognised triage destination {destination:?}"));
+        let destination = match destination {
+            Some(raw) => match parse_destination(raw) {
+                Some(destination) => Some(destination),
+                None => {
+                    return reject(format!("unrecognised triage destination {raw:?}"));
+                }
+            },
+            None => None,
         };
         if edits.title.as_deref() == Some("") {
             // The authority answers 400 on an empty title; a `NOT NULL`
@@ -1413,7 +1429,7 @@ mod triage_tests {
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
-            .triage("seed-triage-1", &id, "backlog", TriageEdits::default(), 2_000)
+            .triage("seed-triage-1", &id, Some("backlog"), TriageEdits::default(), 2_000)
             .await;
 
         assert_eq!(response.kind, "failed");
@@ -1435,7 +1451,7 @@ mod triage_tests {
             .triage(
                 "seed-triage-1",
                 &id,
-                "ready",
+                Some("ready"),
                 TriageEdits { size: Some(Some("giant".to_string())), ..TriageEdits::default() },
                 2_000,
             )
@@ -1522,7 +1538,7 @@ mod triage_tests {
         ];
 
         for (what, edits) in rejected {
-            let response = host.triage("seed-triage-1", &id, "ready", edits, 2_000).await;
+            let response = host.triage("seed-triage-1", &id, Some("ready"), edits, 2_000).await;
             assert_eq!(response.kind, "failed", "{what} must be refused");
             assert!(response.error.is_some(), "{what} must say what was wrong");
             assert_eq!(
@@ -1538,7 +1554,7 @@ mod triage_tests {
             .triage(
                 "seed-triage-ok",
                 &id,
-                "ready",
+                Some("ready"),
                 TriageEdits {
                     priority: Some(4),
                     deadline: Some(Some("2026-08-14T09:30".to_string())),
@@ -1565,7 +1581,7 @@ mod triage_tests {
         host.triage(
             "seed-triage-1",
             &id,
-            "grilling",
+            Some("grilling"),
             TriageEdits {
                 context: Some(Some("@computer".to_string())),
                 size: Some(Some("deep".to_string())),
@@ -1579,7 +1595,7 @@ mod triage_tests {
             .triage(
                 "seed-triage-2",
                 &id,
-                "ready",
+                Some("ready"),
                 TriageEdits { size: Some(None), ..Default::default() },
                 3_000,
             )
@@ -1604,7 +1620,7 @@ mod triage_tests {
             .unwrap();
 
         let response = host
-            .triage("seed-triage-1", "no-such-item", "ready", TriageEdits::default(), 1_000)
+            .triage("seed-triage-1", "no-such-item", Some("ready"), TriageEdits::default(), 1_000)
             .await;
 
         assert_eq!(response.kind, "not_found");
@@ -1628,7 +1644,7 @@ mod triage_tests {
             .triage(
                 "seed-triage-1",
                 &id,
-                "ready",
+                Some("ready"),
                 TriageEdits {
                     title: Some("buy milk".to_string()),
                     project_id: Some(Some("project-1".to_string())),
@@ -1665,12 +1681,82 @@ mod triage_tests {
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
-            .triage("seed-triage-1", &id, "grilling", TriageEdits::default(), 2_000)
+            .triage("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
             .await;
 
         assert_eq!(response.kind, "ok");
         assert_eq!(host.triage_inbox().items.len(), 0);
         assert_eq!(host.frontier().items.len(), 0);
+    }
+
+    /// #122: `destination: None` at this seam must reach `Core::triage` as
+    /// a genuine `None`, not accidentally coerced into some destination —
+    /// the whole reason the weekend-plans pane's do-date chip can touch an
+    /// `InProgress` item without demoting it.
+    #[tokio::test]
+    async fn a_none_destination_edits_scheduled_date_without_touching_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-6");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+        host.act("seed-act-1", &id, "start", 1_500).await;
+        assert_eq!(host.frontier().items[0].item.stage, Stage::InProgress);
+
+        let response = host
+            .triage(
+                "seed-triage-6",
+                &id,
+                None,
+                TriageEdits {
+                    scheduled_date: Some(Some("2026-08-15".to_string())),
+                    ..TriageEdits::default()
+                },
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        let item = &host.frontier().items[0].item;
+        assert_eq!(item.stage, Stage::InProgress, "a None destination must never change stage");
+        assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-15"));
+    }
+
+    /// The clear half of the same three-state edit, at this seam.
+    #[tokio::test]
+    async fn clearing_scheduled_date_through_this_seam_is_a_real_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-7");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+        host.triage(
+            "seed-triage-7a",
+            &id,
+            None,
+            TriageEdits {
+                scheduled_date: Some(Some("2026-08-15".to_string())),
+                ..TriageEdits::default()
+            },
+            1_500,
+        )
+        .await;
+        assert_eq!(host.frontier().items[0].item.scheduled_date.as_deref(), Some("2026-08-15"));
+
+        host.triage(
+            "seed-triage-7b",
+            &id,
+            None,
+            TriageEdits { scheduled_date: Some(None), ..TriageEdits::default() },
+            2_000,
+        )
+        .await;
+
+        assert_eq!(host.frontier().items[0].item.scheduled_date, None);
     }
 }
 

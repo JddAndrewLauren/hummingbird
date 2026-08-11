@@ -7,6 +7,7 @@ const initialCalendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  eventReads: {},
 };
 
 const initialTask: TaskState = {
@@ -89,6 +90,23 @@ describe("createCoreStore", () => {
         selectedCalendarIds: ["primary"],
       },
       task: initialTask,
+    });
+  });
+
+  it("setCalendarEventRead writes into eventReads keyed by request, leaving other keys alone", () => {
+    const store = createCoreStore();
+    store.setState({ status: "ready", apiVersion: 1 });
+
+    store.setCalendarEventRead("weekend", { state: "not_read" });
+    store.setCalendarEventRead("today", {
+      state: "read",
+      events: [],
+      freshness: { kind: "unknown" },
+    });
+
+    expect(store.getSnapshot().calendar.eventReads).toEqual({
+      weekend: { state: "not_read" },
+      today: { state: "read", events: [], freshness: { kind: "unknown" } },
     });
   });
 
