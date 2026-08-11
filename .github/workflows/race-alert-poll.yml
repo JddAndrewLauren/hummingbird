@@ -1,0 +1,62 @@
+# The race-start alert (#266): every fifteen minutes, reads the season
+# race-schedule-poll.yml already stored and raises one alert when a race is
+# starting inside `LEAD_MS` (90 minutes). It fetches no feed and writes no
+# snapshot.
+#
+# **A seventh Actions `schedule:`, and it does not reopen issue #8's ban.**
+# See race-schedule-poll.yml's header, and city-waste.yml's for the original
+# argument. Nothing else decides this question, so there is no live clock to
+# compete with.
+#
+# **This cron is deliberately NOT a declared cadence** — the inverse of the
+# note race-schedule-poll.yml carries. This binary writes no
+# `context_snapshots` row, so it declares no `polled_every_ms` and nothing
+# about `Freshness` or the pane's staleness band is computed from it. What
+# the interval buys is alert precision: ±15 minutes, the first cadence at
+# which a 90-minute lead means what it says, which is why the alert's own
+# body says "in about 90 minutes".
+#
+# **Accepted cost, stated so it is not rediscovered as a bug.** GitHub
+# Actions `schedule:` is best-effort — runs are routinely minutes late and
+# can be dropped entirely under load. So a race-start alert may fire late, or
+# occasionally not at all. The DO's own `alarm()` has far better timing
+# fidelity, but routing this through it would drag a schedule-body parser
+# into the wasm32 worker build, which CLAUDE.md forbids for exactly this
+# crate class.
+#
+# **The credential** is the same `RACE_INGEST_TOKEN` — one `ingest`-scope
+# token bound to `race-schedule/v1`. This binary needs `GET /api/settings`,
+# `GET /api/snapshots` and `POST /api/alerts` but never
+# `POST /api/snapshots`; there is no finer scope to mint, and the blast
+# radius is unchanged (a wrong race time).
+name: race-alert-poll
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: race-alert-poll
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Raise the race-start alert
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          HB_INGEST_TOKEN: ${{ secrets.RACE_INGEST_TOKEN }}
+        run: cargo run -q -p hummingbird-race-poll --bin race-alert-poll

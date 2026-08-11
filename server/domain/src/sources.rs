@@ -34,12 +34,15 @@
 //! the recipe *functions'* own frozen test vectors, not off this field,
 //! which stays pure documentation.
 //!
-//! **Enrollment is at wiring time, not speculative.** ADR-0009 names three
-//! snapshot-only sources this registry does not yet carry
-//! (`anthropic-usage/v1`, `github-hummingbird/v1`, the races lane) — each
-//! enrolls when its own lane is built, exactly as every alert source above
-//! did. `find` returning `None` for one of them today means "not enrolled
-//! yet," not "will never write here."
+//! **Enrollment is at wiring time, not speculative.** ADR-0009 named three
+//! sources this registry did not yet carry; the races lane is now enrolled
+//! (`race-schedule/v1`, #266 — and as `Writes::Both`, not the snapshot-only
+//! entry the ADR anticipated, because the same lane's second binary raises
+//! the race-start alert under the same string). Two remain unenrolled
+//! (`anthropic-usage/v1`, `github-hummingbird/v1`), and each enrolls when
+//! its own lane is built, exactly as every source above did. `find`
+//! returning `None` for one of them today means "not enrolled yet," not
+//! "will never write here."
 //!
 //! Nothing here validates a recipe at runtime: `source_key` is opaque to
 //! the server by design (no delimiter grammar, no parsing — ADR-0009 rule
@@ -223,6 +226,15 @@ pub const GOOGLE_CALENDAR_V1: &str = "google-calendar/v1";
 /// `context_snapshots` row.
 pub const M365_CALENDAR_V1: &str = "m365-calendar/v1";
 
+/// `race-schedule/v1`'s frozen namespace, named for [`CITY_WASTE_V2`]'s
+/// reason: two consumers share one literal — the registry entry below and
+/// `server/race-poll` (#266), whose `race-schedule-poll` binary writes one
+/// `context_snapshots` row per adapted series under it and whose
+/// `race-alert-poll` binary mints the race-start alert under the same
+/// string — so a future retirement to `/v2` is a compile error at the
+/// poller rather than a source string that quietly keeps resolving.
+pub const RACE_SCHEDULE_V1: &str = "race-schedule/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -314,6 +326,25 @@ pub const REGISTRY: &[SourceEntry] = &[
         expires_at: Expiry::Always(
             "end of the LATER of the scheduled and the slid-to collection date",
         ),
+        retired_as: None,
+    },
+    SourceEntry {
+        source: RACE_SCHEDULE_V1,
+        // Event: a race start is a discrete occurrence, not the state of a
+        // thing — `source_key` names the start instant, and the row leaves
+        // live by ack or expiry rather than by resolving.
+        shape: Shape::Event,
+        // Both (#266): one context_snapshots row per adapted series, every
+        // six hours, and the race-start alert at the lead time — one string,
+        // two binaries, ADR-0009's join constraint intact.
+        writes: Writes::Both,
+        key_recipe: Some(
+            "<series>:<race start instant, epoch ms> — the START INSTANT, \
+             never season:round: a postponement must mint a NEW occurrence \
+             so it rings, and the tidier season:round key silently would \
+             not (no source-owned field changes, so nothing restamps)",
+        ),
+        expires_at: Expiry::Always("the race's start time"),
         retired_as: None,
     },
     SourceEntry {
@@ -450,6 +481,30 @@ pub fn city_waste_v2_key(scheduled_date: &str) -> String {
     scheduled_date.to_string()
 }
 
+/// `race-schedule/v1`: `<series>:<race start instant in epoch ms>`.
+///
+/// **The start instant, and deliberately not `season:round`.** `season:round`
+/// is the tidier identity and it is what the feed hands over — and it fails
+/// to ring on a postponement. The alert row would already exist under that
+/// key; the title is clock-free by design (`race_poll::alert::plan` takes no
+/// clock, for `city-waste`'s own reason), so no source-owned field changes,
+/// so `restamp_on_change` does not restamp, and a race moved by a month
+/// never re-raises. Keying on the start instant makes a rescheduled race a
+/// *new* occurrence, which rings — correct for an [`Shape::Event`] source,
+/// where `source_key` names the occurrence and not the thing. It also
+/// self-cleans: `expires_at = starts_at_ms` means the occurrence left behind
+/// by a reschedule expires at its own, now past, start time.
+///
+/// Two consequences. Keying on the instant is what lets `season` and `round`
+/// stay **out** of the stored body — a `season:round` key would have forced
+/// them back in, since `race-alert-poll` reads its material from the
+/// snapshot. And a same-day *time correction* of a few minutes mints a new
+/// occurrence and rings a second time; F1 start times rarely move once
+/// published, and a start that did move is arguably worth a second ring.
+pub fn race_schedule_v1_key(series: &str, starts_at_ms: i64) -> String {
+    format!("{series}:{starts_at_ms}")
+}
+
 /// `item-threshold/v1`: `item:<id>`. Keyed on the item, not
 /// `item:<id>:<deadline>` — a re-committed deadline must re-raise the same
 /// row, never mint a second (ADR-0014).
@@ -544,6 +599,13 @@ mod tests {
                 ),
                 None,
             ),
+            (
+                "race-schedule/v1",
+                Shape::Event,
+                Writes::Both,
+                Expiry::Always("the race's start time"),
+                None,
+            ),
             ("item-threshold/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("healthchecks/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("home-assistant/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
@@ -619,9 +681,11 @@ mod tests {
     }
 
     /// A locally built snapshot-only entry — the case ADR-0009's
-    /// `anthropic-usage/v1`/`github-hummingbird/v1`/races lane will
-    /// eventually be — is representable and correctly rejected for the
-    /// alerts table, exactly like [`a_retired_source_is_representable_and_distinct_from_unknown`]
+    /// `anthropic-usage/v1`/`github-hummingbird/v1` will eventually be (the
+    /// third lane it named, races, enrolled at #266 as `Writes::Both`
+    /// instead, since its second binary also raises an alert) — is
+    /// representable and correctly rejected for the alerts table, exactly
+    /// like [`a_retired_source_is_representable_and_distinct_from_unknown`]
     /// exercises retirement without a second real retired entry.
     #[test]
     fn a_snapshot_only_entry_is_representable_and_not_alert_writing() {
@@ -646,6 +710,18 @@ mod tests {
         let entry = find(CITY_WASTE_V2).expect("city-waste/v2 is registered");
         assert!(entry.writes_alerts());
         assert!(entry.writes_snapshots());
+    }
+
+    /// `race-schedule/v1` is the second live `Writes::Both` entry (#266) —
+    /// the six-hourly season snapshot per adapted series and the race-start
+    /// alert, under one string and two binaries.
+    #[test]
+    fn race_schedule_v1_is_registered_for_both_tables() {
+        let entry = find(RACE_SCHEDULE_V1).expect("race-schedule/v1 is registered");
+        assert!(entry.writes_alerts());
+        assert!(entry.writes_snapshots());
+        assert_eq!(entry.shape, Shape::Event, "a race start is an occurrence");
+        assert_eq!(entry.expires_at, Expiry::Always("the race's start time"));
     }
 
     /// `item-threshold/v1` is the one live example of an alerts-only entry
@@ -906,6 +982,62 @@ mod tests {
         assert_ne!(
             city_waste_v2_key("2026-12-21"),
             city_waste_v2_key("2026-12-28")
+        );
+    }
+
+    /// `race-schedule/v1`'s frozen vector: the series and the start instant,
+    /// in epoch ms, and nothing else. The literal is the 2026 Australian
+    /// Grand Prix's own start as the feed publishes it.
+    #[test]
+    fn race_schedule_v1_keys_on_the_series_and_the_start_instant() {
+        assert_eq!(race_schedule_v1_key("f1", 1_772_942_400_000), "f1:1772942400000");
+    }
+
+    /// The property the recipe exists for, and the one `season:round` would
+    /// have failed: a **postponed** race is a new occurrence, so it rings —
+    /// while an unchanged re-poll of the same race lands on the same row for
+    /// six months of twice-hourly polls, so it does not.
+    #[test]
+    fn race_schedule_v1_makes_a_postponement_a_new_occurrence() {
+        struct RaceReading {
+            /// Neither of these is a parameter — they are what a
+            /// `season:round` key would have used, and what this one must
+            /// ignore.
+            season: &'static str,
+            round: &'static str,
+            starts_at_ms: i64,
+        }
+        let published = RaceReading { season: "2026", round: "1", starts_at_ms: 1_772_942_400_000 };
+        let postponed = RaceReading {
+            season: "2026",
+            round: "1",
+            starts_at_ms: 1_772_942_400_000 + 28 * 24 * 60 * 60 * 1000,
+        };
+        assert_eq!(
+            (published.season, published.round),
+            (postponed.season, postponed.round),
+            "the feed calls a postponed race the same season and round"
+        );
+        assert_ne!(
+            race_schedule_v1_key("f1", published.starts_at_ms),
+            race_schedule_v1_key("f1", postponed.starts_at_ms),
+            "a postponement must mint a new occurrence, or it never rings"
+        );
+        assert_eq!(
+            race_schedule_v1_key("f1", published.starts_at_ms),
+            race_schedule_v1_key("f1", published.starts_at_ms),
+            "an unchanged re-poll lands on the row it already minted"
+        );
+    }
+
+    /// Two series' races at the same instant are two occurrences — the
+    /// series is in the key, not merely in the `subject_key`, so an IndyCar
+    /// adapter landing later cannot overwrite an F1 row.
+    #[test]
+    fn race_schedule_v1_keys_two_series_apart_at_the_same_instant() {
+        assert_ne!(
+            race_schedule_v1_key("f1", 1_772_942_400_000),
+            race_schedule_v1_key("indycar", 1_772_942_400_000)
         );
     }
 

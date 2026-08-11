@@ -510,9 +510,15 @@ this is defense in depth for a *declared-but-wrong-table* source, not a
 second enrollment gate.
 
 **Enrollment is at wiring time, not speculative.** This amendment does not
-enroll `anthropic-usage/v1`, `github-hummingbird/v1`, or the races lane —
-each enrolls when its own lane is actually built, exactly as every alert
-source above did. What it does enroll for real is `city-waste/v2`'s
+enroll `anthropic-usage/v1` or `github-hummingbird/v1` — each enrolls when
+its own lane is actually built, exactly as every alert source above did. The
+races lane did exactly that at #266 (2026-08-11) and is now enrolled as
+`race-schedule/v1`: `Shape::Event`, `Writes::Both`, `Expiry::Always("the
+race's start time")`, keyed `<series>:<race start instant, epoch ms>` — the
+start instant rather than the tidier `season:round`, because a postponement
+must mint a *new* occurrence to ring at all (under `season:round` the row
+already exists, the clock-free title changes nothing source-owned, so
+`restamp_on_change` never restamps and a race moved by a month is silent). What it does enroll for real is `city-waste/v2`'s
 `writes: Writes::Both` declaration, absorbing #245's open note that the
 snapshot half of that source had never been registered at all (the read
 side never checked the registry, so the gap was silent rather than
