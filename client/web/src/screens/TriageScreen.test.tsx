@@ -76,8 +76,8 @@ describe("TriageScreen — the capture box", () => {
     expect(button.hasAttribute("disabled")).toBe(false);
   });
 
-  it("submits the draft and clears the box", () => {
-    const { onSubmitCapture } = renderTriage(taskState());
+  it("submits the draft, and clears the box once the result comes back ok", () => {
+    const { onSubmitCapture, rerender } = renderTriage(taskState());
     const input = screen.getByLabelText("Capture") as HTMLInputElement;
 
     fireEvent.change(input, { target: { value: "Call the plumber" } });
@@ -85,7 +85,9 @@ describe("TriageScreen — the capture box", () => {
 
     expect(onSubmitCapture).toHaveBeenCalledTimes(1);
     expect(onSubmitCapture.mock.calls[0][0]).toBe("Call the plumber");
-    expect(input.value).toBe("");
+
+    rerender(taskState({ lastCapture: { seed: "s1", kind: "ok", id: "item-9", error: null } }));
+    expect((screen.getByLabelText("Capture") as HTMLInputElement).value).toBe("");
   });
 
   it("submits on Enter", () => {
@@ -152,17 +154,90 @@ describe("TriageScreen — the capture box", () => {
     });
   });
 
-  it("clears the Energy/Size/Context controls back to rest after submit", () => {
-    renderTriage(taskState());
+  it("clears the Energy/Size/Context controls back to rest on an ok result", () => {
+    const { rerender } = renderTriage(taskState());
     fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Buy soil" } });
     const energySlider = screen.getByRole("slider", { name: "Energy" });
     fireEvent.keyDown(energySlider, { key: "End" });
     fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
 
     fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    rerender(taskState({ lastCapture: { seed: "s1", kind: "ok", id: "item-9", error: null } }));
 
-    expect(energySlider.getAttribute("aria-valuenow")).toBe("-1");
+    expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("-1");
     expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("");
+  });
+
+  // #208 made the capture box's Energy/Size/Context genuinely persist, so
+  // this caption's old real-arm suffix — "(not yet stored on a real
+  // capture)" — became false, on the very arm that now DOES store them.
+  // Asserted verbatim so it cannot silently rot again.
+  it("does not claim the capture meta is unstored", () => {
+    renderTriage(taskState());
+    expect(
+      screen.getByText("optional — stage, dates and everything else are decided at mint time"),
+    ).toBeDefined();
+    expect(screen.queryByText(/not yet stored/i)).toBeNull();
+  });
+
+  // The capture half of issue #222's rule, which that issue deliberately
+  // scoped out: a write that has not been acknowledged yet must not take the
+  // reader's work with it. Since #208 that work is the title PLUS three
+  // selections.
+  it("keeps the whole draft while the capture is still in flight", () => {
+    renderTriage(taskState());
+    fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Buy soil" } });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Size" }), { key: "End" });
+    fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+
+    // No result has come back — neither ok nor failed.
+    expect((screen.getByLabelText("Capture") as HTMLInputElement).value).toBe("Buy soil");
+    expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("2");
+    expect(screen.getByRole("slider", { name: "Size" }).getAttribute("aria-valuenow")).toBe("2");
+    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("@garden");
+  });
+
+  it("keeps the title and all three meta fields when the capture comes back failed", () => {
+    const { rerender } = renderTriage(taskState());
+    fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Buy soil" } });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Size" }), { key: "Home" });
+    fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
+    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+
+    rerender(
+      taskState({ lastCapture: { seed: "s1", kind: "failed", id: null, error: "Offline." } }),
+    );
+
+    expect(screen.getByText("Offline.")).toBeDefined();
+    expect((screen.getByLabelText("Capture") as HTMLInputElement).value).toBe("Buy soil");
+    expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("2");
+    expect(screen.getByRole("slider", { name: "Size" }).getAttribute("aria-valuenow")).toBe("0");
+    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("@garden");
+  });
+
+  // The seed guard, from the other side: a result already processed must not
+  // clear a draft the reader has started since. Without it, every unrelated
+  // re-render carrying the same stale `lastCapture` would wipe the box.
+  it("does not re-clear a draft typed after an already-processed ok result", () => {
+    const ok = { seed: "s1", kind: "ok", id: "item-9", error: null } as const;
+    const { rerender } = renderTriage(taskState({ lastCapture: ok }));
+
+    fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Second thought" } });
+    // Same seed, an unrelated re-render (a sync outcome, say).
+    rerender(taskState({ lastCapture: ok, syncOutcomeSeq: 3 }));
+
+    expect((screen.getByLabelText("Capture") as HTMLInputElement).value).toBe("Second thought");
+  });
+
+  it("announces a failed capture to a screen reader", () => {
+    renderTriage(
+      taskState({ lastCapture: { seed: "s1", kind: "failed", id: null, error: "Offline." } }),
+    );
+    expect(screen.getByRole("alert").textContent).toBe("Offline.");
   });
 
   it("surfaces a failed capture near the capture box", () => {
@@ -281,6 +356,16 @@ describe("TriageScreen — the inbox", () => {
     expect(screen.getByText("Nope.")).toBeDefined();
     // The edits are still here to retry or amend.
     expect((rowField("Title") as HTMLInputElement).value).toBe("Order the worktop");
+  });
+
+  it("announces a failed triage to a screen reader", () => {
+    renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i1", kind: "failed", error: "Nope." },
+      }),
+    );
+    expect(screen.getByRole("alert").textContent).toBe("Nope.");
   });
 
   it("does not wear a failure that belongs to a different item", () => {

@@ -20,6 +20,19 @@ import { SingleColumn } from "./layout";
 
 const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiting"];
 
+/** The capture box's Energy/Size `Slider` stops, left to right — the display
+ * labels, which are NOT always the domain vocabulary ("normal" is the middle
+ * size stop; `hummingbird_domain::Size` calls it `short`).
+ *
+ * Exported only so `capture-meta.test.ts` can pin them against that module's
+ * own `CAPTURE_SIZE_NAMES`/`CAPTURE_ENERGY_NAMES`, which are indexed by the
+ * raw slider index and hand-aligned with these. Nothing mechanical connects
+ * the two sides: a fourth stop added here and not there resolves to
+ * `undefined`, which reads downstream as "not set" — a dropped selection
+ * with no error anywhere. The length assertion is that missing mechanism. */
+export const CAPTURE_ENERGY_STOPS: string[] = ["low", "medium", "high"];
+export const CAPTURE_SIZE_STOPS: string[] = ["quick", "normal", "deep"];
+
 /** S13/#111's triage promotion form: `hummingbird_domain::Size`/`Energy`'s
  * own vocabulary names, exactly (`quick`/`short`/`deep`,
  * `low`/`medium`/`high`) — never the capture box's own looser display
@@ -166,20 +179,43 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
       ? (task.lastCapture.error ?? "That capture didn't go through.")
       : null;
 
+  // The exact rule #222 gave triage above, now applied to capture — the two
+  // halves of this one screen had drifted apart on it, and #208 tripled what
+  // a failed capture discards (the title PLUS size, energy and context). The
+  // draft and the three meta selections survive until a result actually
+  // reports `"ok"`; while the write is in flight (no result yet) and after a
+  // `"failed"` one, everything the reader typed and chose is still here to
+  // retry or amend. Same mechanism as `processedTriageSeed`, deliberately:
+  // the render-phase "adjusting state when a prop changes" pattern, guarded
+  // on the result's own `seed`, so a broadcast already observed can never
+  // clear a draft twice and a replayed/stale seed clears nothing at all.
+  // A capture carries no item id, so there is no per-item keying to do —
+  // the seed IS the identity.
+  const [processedCaptureSeed, setProcessedCaptureSeed] = useState<string | null>(null);
+  if (task.lastCapture && task.lastCapture.seed !== processedCaptureSeed) {
+    setProcessedCaptureSeed(task.lastCapture.seed);
+    if (task.lastCapture.kind === "ok") {
+      setDraft("");
+      setMeta(EMPTY_CAPTURE_META);
+    }
+  }
+
   function submit() {
     if (!canSubmit) {
       return;
     }
     if (demo) {
+      // Demo mode has no worker behind it and so no `captureResult` will ever
+      // arrive to clear on — the fixture queue IS the acknowledgement.
       setQueue((current) => [
         { id: `CAP-${current.length + 8}`, title: draft, source: "Typed here", age: "just now" },
         ...current,
       ]);
-    } else {
-      onSubmitCapture(draft, Date.now(), resolveCaptureFields(meta));
+      setDraft("");
+      setMeta(EMPTY_CAPTURE_META);
+      return;
     }
-    setDraft("");
-    setMeta(EMPTY_CAPTURE_META);
+    onSubmitCapture(draft, Date.now(), resolveCaptureFields(meta));
   }
 
   function drop(id: string) {
@@ -227,13 +263,13 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
         >
           <Slider
             label="Energy"
-            options={["low", "medium", "high"]}
+            options={CAPTURE_ENERGY_STOPS}
             value={meta.energy}
             onChange={(energy) => setMeta({ ...meta, energy })}
           />
           <Slider
             label="Size"
-            options={["quick", "normal", "deep"]}
+            options={CAPTURE_SIZE_STOPS}
             value={meta.size}
             onChange={(size) => setMeta({ ...meta, size })}
           />
@@ -247,13 +283,19 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
             ]}
           />
         </div>
+        {/* One string, not a ternary: #208 made the capture box's
+            Energy/Size/Context genuinely persist onto `CreateItem`, so the
+            real arm's old "(not yet stored on a real capture)" suffix went
+            from true to false — and it sat on the arm that now DOES store
+            them, while demo mode got the clean sentence. With the suffix
+            gone the two arms said the same thing, so there is nothing left
+            to branch on. `TriageScreen.test.tsx` pins the text the real arm
+            renders so it cannot silently rot back. */}
         <span className="hb-meta">
-          {demo
-            ? "optional — stage, dates and everything else are decided at mint time"
-            : "optional — stage, dates and everything else are decided at mint time (not yet stored on a real capture)"}
+          optional — stage, dates and everything else are decided at mint time
         </span>
         {captureError ? (
-          <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{captureError}</p>
+          <p role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{captureError}</p>
         ) : null}
       </Card>
 
@@ -466,7 +508,10 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
                         </Button>
                       </div>
                       {triageErrorFor(item.id) ? (
-                        <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+                        <p
+                          role="alert"
+                          style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}
+                        >
                           {triageErrorFor(item.id)}
                         </p>
                       ) : null}
