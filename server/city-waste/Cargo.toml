@@ -33,4 +33,4 @@ jiff = "0.2"
 [dependencies.ureq]
 version = "3"
 default-features = false
-features = ["rustls"]
+features = ["rustls", "json"]
