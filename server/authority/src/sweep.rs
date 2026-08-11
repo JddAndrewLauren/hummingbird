@@ -99,8 +99,8 @@ use hummingbird_rules_engine::{evaluate_rules, RuleOutcome, Verdict};
 
 use crate::delivery::{deliver, DeliveryOutcome};
 use crate::handlers::{
-    find_alert_by_identity, find_live_alerts_by_source, item_from_row, resolve_alert,
-    rule_from_row, upsert_alert,
+    find_alert_by_identity, find_live_alerts_by_source, item_from_row, load_enabled_rules,
+    resolve_alert, rule_from_row, upsert_alert,
 };
 use crate::sql::{Row, Sql, SqlError};
 
@@ -285,10 +285,6 @@ fn resolution_pass(
         }
     }
     Ok(())
-}
-
-fn load_enabled_rules(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
-    sql.exec("SELECT * FROM rules WHERE enabled = 1", &[])
 }
 
 /// Archived items are excluded from evaluation entirely (ADR-0014): the

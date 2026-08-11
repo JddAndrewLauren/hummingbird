@@ -263,6 +263,14 @@ pub fn list(token_source: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, Sq
     Ok(json(200, &rules))
 }
 
+/// Every enabled rule, shared by both `deliver` callers (#138's DO-alarm
+/// sweep and #255's `POST /api/alerts` inline hook) so evaluate-then-
+/// deliver has exactly one query to load its rule set from rather than two
+/// copies drifting apart.
+pub(crate) fn load_enabled(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
+    sql.exec("SELECT * FROM rules WHERE enabled = 1", &[])
+}
+
 fn select_rule(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(

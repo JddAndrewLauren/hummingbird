@@ -172,6 +172,27 @@ stamp, the alert is live again and rings, and the stamp stays legible
 underneath. Note that `done` is a *resolution* boundary only: #138's
 evaluation boundary is still `archived_at` alone.
 
+`deliver` gained a second caller at #255 (ADR-0013's 2026-08-11 amendment):
+`POST /api/alerts`'s ingest handler now evaluates every enabled rule
+against the alert it just upserted, presented as an `alert_raised` event
+(`mints: false` — "the pushed alert *is* the event," per ADR-0013), and
+calls the exact same `deliver` `sweep_tick` calls — sync-decide, one
+implementation, two callers, never a second copy. This is what makes a
+webhook source (`healthchecks/v1`, `home-assistant/v1`, `gmail-alert/v1`,
+`github/v1`, `photo-site/v1`, …) actually ring a device rather than reach
+it only through the delta pull; `sweep_tick`'s own `item-threshold/v1`
+alerts are unaffected — the hook lives in the `ingest` HTTP handler alone,
+never inside the shared `upsert` core both callers mint/ratchet through,
+so the sweep's alerts are never double-evaluated as `alert_raised` on top
+of the delivery it already runs for them. Evaluated unconditionally on
+every ingest call, with no "did this raise change anything" pre-filter —
+`deliver`'s own transitions-only dedupe is already that decision, and a
+second filter ahead of it would be a second, driftable copy. The worker
+shim sends via `State::wait_until` rather than an inline `.await`, so the
+ingest response is never held hostage by FCM latency; the no-retry policy
+holds regardless, since `deliver` still commits the claim row before any
+send is attempted.
+
 **ADR-0015's server half** is `SCHEMA_VERSION` 4, and it is the first growth
 that is not purely a new table: `alerts.subject_key` is a nullable column on
 an existing table, where `CREATE TABLE IF NOT EXISTS` is a silent no-op — the
@@ -366,10 +387,12 @@ in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
 below) are the fourth and fifth — see any of their headers for why a
 repeated scoped exception does not reopen the general ban.
 
-**Not covered, and not this slice's to fix:** `POST /api/alerts` does not
-trigger delivery. `deliver` runs only from `sweep_tick`, which evaluates
-`item-threshold/v1` — so "the notification lane still delivers it" is
-aspirational today for **every** webhook source, not just this one.
+**No longer true, closed by #255:** this section originally recorded that
+`POST /api/alerts` did not trigger delivery — `deliver` ran only from
+`sweep_tick`, so "the notification lane still delivers it" was
+aspirational for every webhook source, not just this one. See "The
+authority server" section above, `deliver`'s second caller, and
+ADR-0013's 2026-08-11 amendment for the fix.
 
 ## The Gmail evaluated-stream poller
 

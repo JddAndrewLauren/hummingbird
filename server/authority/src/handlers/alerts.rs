@@ -3,14 +3,26 @@
 //! track versions, and the source is authoritative for its own fields
 //! (ADR-0009 rule 3). `PATCH /api/alerts/:id` (device scope) writes the one
 //! human-owned field, `dismissed_at`, under normal CAS.
+//!
+//! #255's inline evaluate-then-deliver hook lives here too, in [`ingest`]
+//! alone — never inside [`upsert`], which #138's sweep also calls to
+//! mint/ratchet its own `item-threshold/v1` alerts. Hooking it into `upsert`
+//! would double-evaluate the sweep's own alerts as `alert_raised` events on
+//! top of the delivery `sweep_tick` already runs for them.
 
-use hummingbird_domain::{find_source, higher_severity, Alert, AlertIngest, AlertPatch};
+use std::collections::BTreeMap;
+
+use hummingbird_domain::{
+    find_source, higher_severity, now_as_deadline, Alert, AlertIngest, AlertPatch, Event,
+};
+use hummingbird_rules_engine::{evaluate_rules, RuleOutcome};
 
 use super::{
-    auth, conflict, empty_status, error, json, parse_body, read_meta_version, write_meta_version,
-    ApiResponse,
+    auth, conflict, empty_status, error, json, load_enabled_rules, parse_body, read_meta_version,
+    rule_from_row, write_meta_version, ApiResponse,
 };
 use crate::codec::{RowReader, Sets};
+use crate::delivery::{deliver, DeliveryOutcome};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
 /// `token_source` is the caller's bound source (#145) — `None` for a
@@ -75,7 +87,68 @@ pub fn ingest(
     }
 
     let (status, alert) = upsert(sql, now_ms, ingest)?;
-    Ok(json(status, &alert))
+    // Evaluated unconditionally, on every ingest call — not gated on
+    // whether `upsert` above actually wrote something (the 2026-08-10
+    // grilling decision's own "no did-this-change pre-filter": `deliver`'s
+    // own dedupe, `UNIQUE(alert_id, rule_id, generation, severity)`, is
+    // already the mechanism that makes an unchanged replay silent, so a
+    // second filter here would just be a second copy of the same
+    // decision).
+    let deliveries = evaluate_and_deliver(sql, now_ms, &alert)?;
+    let mut response = json(status, &alert);
+    response.deliveries = deliveries;
+    Ok(response)
+}
+
+/// The notification lane's second `deliver` caller (#255): `POST
+/// /api/alerts`'s inline evaluate-then-deliver hook, the sync-decide half
+/// exactly like #138's `sweep_tick` — the worker shim sends via
+/// `waitUntil` so the ingest response is never held hostage by FCM
+/// latency. ADR-0013's `alert_raised` kind (`mints: false`) is "the pushed
+/// alert *is* the event": no synthetic fields, no `extras`, and severity
+/// rides the alert's own (never `rules.severity`, unused for this kind per
+/// ADR-0013 as written). A rule naming no `event_kind` (`NULL` = "any
+/// kind") evaluates against this event's core fields exactly like every
+/// other kind.
+fn evaluate_and_deliver(
+    sql: &dyn Sql,
+    now_ms: i64,
+    alert: &Alert,
+) -> Result<Vec<DeliveryOutcome>, SqlError> {
+    let rules: Vec<_> =
+        load_enabled_rules(sql)?.iter().filter_map(|row| rule_from_row(row).ok()).collect();
+    if rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let event = alert_raised_event(alert);
+    let now = now_as_deadline(now_ms);
+    let mut outcomes = Vec::new();
+    for (rule_id, outcome) in evaluate_rules(&rules, &event, &now) {
+        let RuleOutcome::Matched(verdict) = outcome else { continue };
+        outcomes.push(deliver(sql, now_ms, alert, &rule_id, verdict.tier)?);
+    }
+    Ok(outcomes)
+}
+
+/// ADR-0013's `alert_raised` event, straight off the alert row `upsert`
+/// just wrote/ratcheted. `occurred_at` is the alert's own `raised_at`, not
+/// this call's process clock — a still-live re-raise keeps its original
+/// `raised_at` (see `upsert`'s own doc), so a relative-time rule condition
+/// reads when the alert's occurrence actually began, not when this
+/// particular re-poll happened to run.
+fn alert_raised_event(alert: &Alert) -> Event {
+    Event {
+        source: alert.source.clone(),
+        source_key: alert.source_key.clone(),
+        occurred_at: now_as_deadline(alert.raised_at),
+        title: alert.title.clone(),
+        body: alert.body.clone(),
+        url: alert.url.clone(),
+        severity: alert.severity.clone(),
+        calendar_busy: None,
+        event_kind: Some("alert_raised".to_string()),
+        extras: BTreeMap::new(),
+    }
 }
 
 /// The mint/ratchet core, HTTP-agnostic — shared verbatim by the webhook

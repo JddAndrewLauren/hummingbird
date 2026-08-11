@@ -15,10 +15,11 @@ mod fcm;
 mod shim {
     use std::cell::Cell;
     use std::collections::HashMap;
+    use std::rc::Rc;
 
     use hummingbird_authority::{
-        handle, init_schema, revoke_dead_target, ApiRequest, Entropy, HandleContext, Row, SendVerdict,
-        Sql, SqlError, SqlValue,
+        handle, init_schema, revoke_dead_target, ApiRequest, DeliveryOutcome, Entropy,
+        HandleContext, Row, SendVerdict, Sql, SqlError, SqlValue,
     };
     use hummingbird_domain::ApiError;
     use worker::*;
@@ -96,9 +97,13 @@ mod shim {
         /// dev`) means the admin routes fail closed with a 401.
         admin_secret: Option<String>,
         /// The FCM send leg (#219), over the `FCM_SERVICE_ACCOUNT` secret;
-        /// absent means no push can send, and `alarm()` logs each
-        /// transition it had to drop.
-        fcm: Option<FcmSender>,
+        /// absent means no push can send, and `alarm()`/`fetch()` log each
+        /// transition they had to drop. `Rc`-wrapped (#255) so `fetch()`'s
+        /// webhook-delivery hook can clone an owned handle into the
+        /// `'static` future `State::wait_until` requires — the alarm's own
+        /// `alarm()` handler stays fully `.await`ed and never needs the
+        /// clone, since nothing there returns before sending completes.
+        fcm: Option<Rc<FcmSender>>,
     }
 
     impl DurableObject for Authority {
@@ -107,7 +112,7 @@ mod shim {
                 state,
                 schema_ready: Cell::new(false),
                 admin_secret: env.secret("ADMIN_SECRET").map(|s| s.to_string()).ok(),
-                fcm: FcmSender::from_env(&env),
+                fcm: FcmSender::from_env(&env).map(Rc::new),
             }
         }
 
@@ -144,7 +149,8 @@ mod shim {
             let url = req.url()?;
             let authorization = req.headers().get("authorization")?;
             let body = req.text().await?;
-            let api = handle(
+            let now_ms = Date::now().as_millis() as i64;
+            let mut api = handle(
                 &ApiRequest {
                     method: &method,
                     path: url.path(),
@@ -153,12 +159,29 @@ mod shim {
                     authorization: authorization.as_deref(),
                 },
                 &HandleContext {
-                    now_ms: Date::now().as_millis() as i64,
+                    now_ms,
                     admin_secret: self.admin_secret.as_deref(),
                     entropy: &WorkersEntropy,
                 },
                 &sql,
             );
+
+            // #255: `POST /api/alerts`'s inline evaluate-then-deliver hook
+            // may have logged deliveries above — the sync-decide half,
+            // exactly like `sweep_tick`'s. The actual FCM sends are async
+            // and must not hold this response hostage (the whole value of
+            // a pushed source is its latency), so they run in the
+            // background via `State::wait_until` instead of being awaited
+            // here. `sql` is moved into that future rather than cloned —
+            // nothing below this point needs it again.
+            let deliveries = std::mem::take(&mut api.deliveries);
+            if !deliveries.is_empty() {
+                let fcm = self.fcm.clone();
+                self.state.wait_until(async move {
+                    send_logged_deliveries(fcm.as_deref(), &sql, now_ms, deliveries).await;
+                });
+            }
+
             json_response(api.status, api.body)
         }
 
@@ -191,68 +214,83 @@ mod shim {
                 .await?;
 
             let matches = tick_result.map_err(|e| Error::RustError(e.message))?;
-            for tick_match in matches {
-                let hummingbird_authority::DeliveryOutcome::Logged {
-                    delivery_id,
-                    targets,
-                    notification,
-                } = tick_match.outcome
-                else {
-                    continue;
-                };
+            let outcomes = matches.into_iter().map(|tick_match| tick_match.outcome).collect();
+            // Awaited directly, unlike `fetch()`'s own call below: `alarm()`
+            // has no response to hold hostage — it already runs to
+            // completion before the runtime considers the alarm handled.
+            send_logged_deliveries(self.fcm.as_deref(), &sql, now_ms, outcomes).await;
+            Response::empty()
+        }
+    }
 
-                let Some(sender) = self.fcm.as_ref() else {
-                    // The credential is missing, and the claim row is
-                    // already committed — this transition will never ring.
-                    // Loud, and per delivery, because it is silent data
-                    // loss on the operator's highest-trust channel.
-                    console_error!(
-                        "delivery {delivery_id} (alert {}) is logged but unsendable: \
-                         FCM_SERVICE_ACCOUNT is not configured",
-                        notification.alert_id,
-                    );
-                    continue;
-                };
+    /// Attempts the FCM send for every [`DeliveryOutcome::Logged`] among
+    /// `outcomes`, sequentially — shared by `alarm()` (awaited inline, no
+    /// response to hold hostage) and `fetch()`'s `POST /api/alerts` hook
+    /// (#255, awaited inside a `State::wait_until` future instead, so the
+    /// send never delays the ingest response). Neither caller re-derives
+    /// this loop; `deliver` already decided what to send and to whom —
+    /// this only drives the send itself and reacts to what FCM says.
+    async fn send_logged_deliveries(
+        fcm: Option<&FcmSender>,
+        sql: &dyn Sql,
+        now_ms: i64,
+        outcomes: Vec<DeliveryOutcome>,
+    ) {
+        for outcome in outcomes {
+            let DeliveryOutcome::Logged { delivery_id, targets, notification } = outcome else {
+                continue;
+            };
 
-                for target in targets {
-                    // Sequential rather than concurrent: an alarm sends to
-                    // a handful of the operator's own devices, and one
-                    // shared access token minted on the first send is
-                    // reused by the rest.
-                    match sender.send(&notification, &target, now_ms).await {
-                        SendVerdict::Delivered => {}
-                        SendVerdict::TokenDead => {
-                            console_warn!(
-                                "push target {} ({}) is UNREGISTERED with FCM; revoking",
-                                target.id,
-                                target.name,
-                            );
-                            // A revoke that itself fails must not abandon
-                            // the remaining targets: the next dead-token
-                            // response revokes it again (the write is
-                            // idempotent), and the alternative is a live
-                            // device never hearing this alert.
-                            if let Err(e) = revoke_dead_target(&sql, &target.id, now_ms) {
-                                console_error!(
-                                    "could not revoke dead push target {}: {}",
-                                    target.id,
-                                    e.message,
-                                );
-                            }
-                        }
-                        SendVerdict::Failed { detail } => {
-                            // Never retried: `deliver` committed the claim
-                            // before this send, so a retry would risk the
-                            // double-ring ADR-0012 rules out.
+            let Some(sender) = fcm else {
+                // The credential is missing, and the claim row is already
+                // committed — this transition will never ring. Loud, and
+                // per delivery, because it is silent data loss on the
+                // operator's highest-trust channel.
+                console_error!(
+                    "delivery {delivery_id} (alert {}) is logged but unsendable: \
+                     FCM_SERVICE_ACCOUNT is not configured",
+                    notification.alert_id,
+                );
+                continue;
+            };
+
+            for target in targets {
+                // Sequential rather than concurrent: a caller sends to a
+                // handful of the operator's own devices, and one shared
+                // access token minted on the first send is reused by the
+                // rest.
+                match sender.send(&notification, &target, now_ms).await {
+                    SendVerdict::Delivered => {}
+                    SendVerdict::TokenDead => {
+                        console_warn!(
+                            "push target {} ({}) is UNREGISTERED with FCM; revoking",
+                            target.id,
+                            target.name,
+                        );
+                        // A revoke that itself fails must not abandon the
+                        // remaining targets: the next dead-token response
+                        // revokes it again (the write is idempotent), and
+                        // the alternative is a live device never hearing
+                        // this alert.
+                        if let Err(e) = revoke_dead_target(sql, &target.id, now_ms) {
                             console_error!(
-                                "delivery {delivery_id} to push target {} failed, not retried: {detail}",
+                                "could not revoke dead push target {}: {}",
                                 target.id,
+                                e.message,
                             );
                         }
                     }
+                    SendVerdict::Failed { detail } => {
+                        // Never retried: `deliver` committed the claim
+                        // before this send, so a retry would risk the
+                        // double-ring ADR-0012 rules out.
+                        console_error!(
+                            "delivery {delivery_id} to push target {} failed, not retried: {detail}",
+                            target.id,
+                        );
+                    }
                 }
             }
-            Response::empty()
         }
     }
 
