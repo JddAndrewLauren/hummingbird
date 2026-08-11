@@ -157,6 +157,21 @@ describe("NowScreen — the act lifecycle (PR #207 round 2)", () => {
     rerender(taskState({ frontier: [item, other], lastAct: failure }), "i2");
     expect(screen.getByText("Nope.")).toBeDefined();
   });
+
+  it("announces a failed act to a screen reader", () => {
+    // The danger-text colour was the whole signal, and the paragraph appears
+    // with no other change on the page — so without a live region a failed
+    // act says nothing at all to a non-sighted reader.
+    const item = itemDTO({ id: "i1", stage: "ready" });
+    renderNow(
+      taskState({
+        frontier: [item],
+        lastAct: { seed: "s", itemId: "i1", action: "start", kind: "failed", error: "Nope." },
+      }),
+      "i1",
+    );
+    expect(screen.getByRole("alert").textContent).toBe("Nope.");
+  });
 });
 
 describe("NowScreen — the frontier list", () => {

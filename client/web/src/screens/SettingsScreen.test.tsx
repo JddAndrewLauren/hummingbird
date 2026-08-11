@@ -216,6 +216,8 @@ describe("SettingsScreen — the bindings editor", () => {
     });
 
     expect(screen.getByText(/the queue could not be written/i)).toBeDefined();
+    // And announces it: the danger colour was otherwise the whole signal.
+    expect(screen.getByRole("alert").textContent).toBe("the queue could not be written");
   });
 
   it("offers no Save at all when the host cannot write bindings", () => {
