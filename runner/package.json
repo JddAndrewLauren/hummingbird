@@ -1,0 +1,14 @@
+{
+  "name": "hummingbird-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The skill-runner endpoint (#41, #256): POST /run {skill, args} -> SSE/NDJSON progress ending in {ok, skill, result, error?}.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test"
+  }
+}
