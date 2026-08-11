@@ -6,6 +6,7 @@
 //!   "sweep": ChangesResponse,          // GET /api/sweep, verbatim
 //!   "axes": {"context": "@computer", "energy": "low", "size": "quick"},
 //!   "now":  {"local": "2026-08-11T09:53", "epoch_ms": 1786553580000},
+//!   "agent_only": false,                // #10's fourth axis; default false
 //!   "calendar": {                       // optional; #70's shape verbatim
 //!     "current_or_next": {"status": "in_progress", "event": EventRecord},
 //!     "today": [EventRecord, ...]
@@ -13,8 +14,7 @@
 //! }
 //! ```
 //!
-//! The calendar block is issue #70's read contract, field-for-field, the
-//! same shape `.claude/skills/next-up-personal/SKILL.md` already documents —
+//! The calendar block is issue #70's read contract, field-for-field —
 //! not a shape invented here, and no provider's field names anywhere in it.
 //!
 //! [`hummingbird_core::rank::CalendarContext`] and
@@ -44,6 +44,12 @@ pub struct Envelope {
     pub now: WireNow,
     #[serde(default)]
     pub calendar: Option<WireCalendar>,
+    /// #10's fourth axis: `true` narrows the survey to `agent`-marked
+    /// items. Its own key rather than a member of [`WireAxes`], because
+    /// those three are `rank`'s and this one is [`crate::select`]'s — see
+    /// [`crate::select::Who`] for why the split is real and not cosmetic.
+    #[serde(default)]
+    pub agent_only: bool,
 }
 
 /// The three declared axes, already parsed — free-text parsing is the

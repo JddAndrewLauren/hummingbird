@@ -80,6 +80,15 @@ test("validateArgs rejects an axis outside the owned schema's closed vocabulary"
   assert.match(size.error, /size/);
 });
 
+test("agent_only is optional, boolean, and rides through to the ranker", () => {
+  assert.deepEqual(nextUp.validateArgs({ sweep, now }), { ok: true });
+  assert.deepEqual(nextUp.validateArgs({ sweep, now, agent_only: true }), { ok: true });
+  assert.deepEqual(nextUp.validateArgs({ sweep, now, agent_only: false }), { ok: true });
+  const bad = nextUp.validateArgs({ sweep, now, agent_only: "yes" });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /agent_only/);
+});
+
 // The ranker names a status/event mismatch itself; re-deciding it here
 // would be a second copy of the rule that can drift from the deciding one.
 test("a calendar block rides through validation untouched", () => {
@@ -120,6 +129,19 @@ test("prepare hands buildPrompt the ranked answer and drops the raw sweep", asyn
   // Everything the model DOES read is untouched.
   assert.deepEqual(step.args.now, now);
   assert.deepEqual(step.args.axes, { size: "quick" });
+});
+
+// The selector, not the model, applies the axis -- so it has to reach the
+// ranker, and it must NOT survive into the prompt as a second instruction
+// the model might act on a second time.
+test("agent_only reaches the ranker inside the envelope", async () => {
+  let seen;
+  const runRanker = async (envelope) => {
+    seen = envelope;
+    return { ok: true, ranked };
+  };
+  await nextUp.prepare({ sweep, now, agent_only: true }, { runRanker });
+  assert.equal(seen.agent_only, true);
 });
 
 test("a calendar block survives prepare -- the display line is the model's job", async () => {

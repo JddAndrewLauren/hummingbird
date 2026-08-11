@@ -15,8 +15,11 @@
 //! [`hummingbird_core::rank::Now`] takes it, and the survey fetch is the
 //! shell script's job.
 //!
-//! **v1 is read-only.** Nothing here touches a write route, and the skill
-//! layered on it cannot either.
+//! **This crate is read-only.** Nothing here touches a write route. The
+//! skill's delegation branch (#115/#291) does write — three CAS patches
+//! through its own shell script — but never through anything in here: the
+//! ranker's whole job is deciding, and a binary that could also mutate the
+//! authority would be a second write path with no queue behind it.
 //!
 //! It is a member of the `client/` workspace rather than a `[[bin]]` inside
 //! `client/core`: that crate is the binding-agnostic sync engine and its
@@ -33,7 +36,7 @@ use serde::Serialize;
 
 pub use envelope::{Envelope, EnvelopeProblem};
 pub use health::Health;
-pub use select::Selection;
+pub use select::{Selection, Who};
 
 /// What the binary writes to stdout: the ranked candidates (serialized by
 /// `client/core`'s own derive, so the reason codes cross unchanged) and the
@@ -53,7 +56,8 @@ pub fn run(envelope: &Envelope) -> Result<Output, EnvelopeProblem> {
     let now = envelope.now.to_rank_now();
     let axes = envelope.axes.to_rank_axes();
 
-    let selection = select::select(&envelope.sweep, &now);
+    let who = if envelope.agent_only { Who::AgentOnly } else { Who::Anyone };
+    let selection = select::select(&envelope.sweep, &now, who);
 
     // The calendar context borrows from the owned wire shape, so it has to
     // outlive the `rank` call — hence the binding rather than an inline

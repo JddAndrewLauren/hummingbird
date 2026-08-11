@@ -47,7 +47,7 @@
       "type": "object",
       "description": "The footer's facts, carried through from the ranker's own health block.",
       "additionalProperties": false,
-      "required": ["triage", "grilling", "blocked_upstream", "fog_exhausted"],
+      "required": ["triage", "grilling", "blocked_upstream", "agent_doable", "fog_exhausted"],
       "properties": {
         "triage": { "type": "integer", "minimum": 0 },
         "grilling": { "type": "integer", "minimum": 0 },
@@ -55,6 +55,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "How many otherwise-qualifying items were held back by a live blocker."
+        },
+        "agent_doable": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many live, unshut items carry #10's agent axis -- what could be handed off. Carried through from the ranker's health block, never recounted."
         },
         "fog_exhausted": {
           "type": "array",

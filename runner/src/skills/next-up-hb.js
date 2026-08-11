@@ -19,7 +19,12 @@
  * trade. A ranking failure is an envelope `error` before any model token
  * is spent, rather than prose from a model narrating a failed command.
  *
- * Read-only either way: v1 of `/next-up-hb` touches no write route.
+ * **Read-only on this arm, and structurally so.** The skill's delegation
+ * branch (#115/#291) does write -- three CAS patches -- but only on the
+ * interactive arm, through `scripts/next-up.sh`. This one holds no
+ * authority token and has no shell, so it cannot reach a write route even
+ * if the prompt asked it to; a survey here can *report* that N chores are
+ * hand-off-able (`health.agent_doable`) and nothing more.
  */
 
 /** The owned schema's own spellings -- `hummingbird_domain::{Energy, Size}`. */
@@ -80,6 +85,13 @@ export const nextUp = {
       if (size !== undefined && !SIZES.includes(size)) {
         return { ok: false, error: `"axes.size" must be one of ${SIZES.join(", ")}` };
       }
+    }
+
+    // #10's fourth axis. Its own key, not a member of `axes`: those three
+    // are the ranker's and this one is the selector's -- see
+    // `client/next-up`'s `Who` for why that split is real.
+    if (args.agent_only !== undefined && typeof args.agent_only !== "boolean") {
+      return { ok: false, error: '"agent_only" must be a boolean when present' };
     }
 
     return { ok: true };

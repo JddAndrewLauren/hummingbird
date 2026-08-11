@@ -233,6 +233,7 @@ fn item_from_create(create: &CreateItem, now_ms: i64) -> Item {
         source_key: create.source_key.clone(),
         source_url: create.source_url.clone(),
         archived_at: None,
+        agent: create.agent.unwrap_or(false),
         created_at: now_ms,
         updated_at: now_ms,
         version: 0,
@@ -1345,6 +1346,9 @@ where
             source: None,
             source_key: None,
             source_url: None,
+            // No client affordance sets the delegation axis (#115): the
+            // skill is its only writer today, so a capture is the human's.
+            agent: None,
         };
         let body = serde_json::to_value(&create).expect("CreateItem always serializes");
         let entry = QueueEntry {
@@ -2616,6 +2620,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1_000,
             updated_at: 1_000,
             version: 1,
@@ -2714,6 +2719,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1_000,
             updated_at: 1_000,
             version: 1,
@@ -3497,6 +3503,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1,
             updated_at: 1,
             version: 1,

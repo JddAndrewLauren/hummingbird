@@ -23,6 +23,31 @@ fn create_returns_201_with_stamped_item() {
     assert_eq!(meta_version(&sql), 1);
 }
 
+/// #10's delegation axis, both directions. `agent` defaults to false — the
+/// human does it — and the loop #10 insists on (set it, claim it, clear it
+/// on finish so the next survey does not re-offer the same hand-off) is
+/// three ordinary CAS patches with no bespoke route anywhere.
+#[test]
+fn the_delegation_axis_defaults_to_the_human_and_round_trips_through_create_and_patch() {
+    let sql = RusqliteSql::new();
+    let plain = item(&post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000));
+    assert!(!plain.agent, "unmarked means the human does it");
+
+    let marked = item(&post(
+        &sql,
+        r#"{"id": "a-2", "title": "compare three insurance quotes", "agent": true}"#,
+        1000,
+    ));
+    assert!(marked.agent, "a create may mint the axis directly");
+
+    let cleared = item(&patch(&sql, "a-2", r#"{"expected_version": 2, "agent": false}"#, 2000));
+    assert!(!cleared.agent, "false is how the finish step closes the loop");
+    assert_eq!(cleared.version, 3, "clearing it is a real write");
+
+    let noop = patch(&sql, "a-2", r#"{"expected_version": 3, "agent": false}"#, 3000);
+    assert_eq!(item(&noop).version, 3, "re-clearing an already-clear axis is a no-op");
+}
+
 #[test]
 fn create_replay_same_id_returns_200_current_item_without_bump() {
     let sql = RusqliteSql::new();
@@ -313,6 +338,7 @@ fn patch_null_on_not_null_field_400() {
         (r#"{"expected_version": 1, "title": null}"#, "title"),
         (r#"{"expected_version": 1, "stage": null}"#, "stage"),
         (r#"{"expected_version": 1, "priority": null}"#, "priority"),
+        (r#"{"expected_version": 1, "agent": null}"#, "agent"),
     ] {
         let resp = patch(&sql, "a-1", body, 2000);
         assert_eq!(resp.status, 400, "null `{field}`: {}", resp.body);

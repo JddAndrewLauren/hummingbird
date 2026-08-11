@@ -73,6 +73,7 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         source_key: create.source_key,
         source_url: create.source_url,
         archived_at: None,
+        agent: create.agent.unwrap_or(false),
         created_at: now_ms,
         updated_at: now_ms,
         version,
@@ -80,8 +81,8 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     sql.exec(
         "INSERT INTO items (id, seq, title, description, stage, size, energy, context, \
          priority, project_id, project_pos, deadline, scheduled_date, source, source_key, \
-         source_url, archived_at, created_at, updated_at, version) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         source_url, archived_at, agent, created_at, updated_at, version) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &item_params(&item),
     )?;
     write_meta_version(sql, version)?;
@@ -193,6 +194,11 @@ pub fn patch(
             sets.set("archived_at", SqlValue::from_opt_i64(archived_at));
         }
     }
+    if let Some(agent) = patch.agent {
+        if agent != current.agent {
+            sets.set("agent", SqlValue::Integer(i64::from(agent)));
+        }
+    }
 
     // No settable field actually changes the stored value: answer with the
     // current row, no UPDATE — a version bump here would force every peer
@@ -250,6 +256,7 @@ fn item_params(item: &Item) -> Vec<SqlValue> {
         SqlValue::from_opt_text(item.source_key.as_deref()),
         SqlValue::from_opt_text(item.source_url.as_deref()),
         SqlValue::from_opt_i64(item.archived_at),
+        SqlValue::Integer(i64::from(item.agent)),
         SqlValue::Integer(item.created_at),
         SqlValue::Integer(item.updated_at),
         SqlValue::Integer(item.version),
@@ -277,6 +284,7 @@ pub(crate) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
         source_key: r.opt_text("source_key"),
         source_url: r.opt_text("source_url"),
         archived_at: r.opt_int("archived_at"),
+        agent: r.bool_int("agent")?,
         created_at: r.int("created_at")?,
         updated_at: r.int("updated_at")?,
         version: r.int("version")?,
