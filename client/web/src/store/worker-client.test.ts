@@ -98,11 +98,16 @@ describe("attachWorkerClient", () => {
     const store = createCoreStore();
     attachWorkerClient(worker, store);
 
-    worker.onmessage?.({ data: { type: "ready", apiVersion: 3 } } as MessageEvent);
+    worker.onmessage?.({
+      // #172: the handshake also carries the core instance identity.
+      data: { type: "ready", apiVersion: 3, coreId: "3f2a1b8c", viewOrdinal: 2 },
+    } as MessageEvent);
 
     expect(store.getSnapshot()).toEqual({
       status: "ready",
       apiVersion: 3,
+      coreId: "3f2a1b8c",
+      viewOrdinal: 2,
       error: null,
       calendar: initialCalendar,
       task: initialTask,
@@ -121,6 +126,8 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot()).toEqual({
       status: "error",
       apiVersion: null,
+      coreId: null,
+      viewOrdinal: null,
       error: "wasm init failed",
       calendar: initialCalendar,
       task: initialTask,

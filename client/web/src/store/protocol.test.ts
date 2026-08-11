@@ -110,7 +110,7 @@ describe("protocol round-trips", () => {
 
   it("WorkerResponse accepts every TaskWorkerResponse variant alongside the calendar ones", () => {
     const responses: WorkerResponse[] = [
-      { type: "ready", apiVersion: 1 },
+      { type: "ready", apiVersion: 1, coreId: "3f2a1b8c", viewOrdinal: 1 },
       { type: "error", message: "boom" },
       { type: "pollOutcome", outcome: "succeeded" },
       { type: "frontier", items: [] },

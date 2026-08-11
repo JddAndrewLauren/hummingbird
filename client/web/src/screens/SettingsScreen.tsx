@@ -19,6 +19,7 @@ import {
 } from "./bindings";
 import type { DemoData } from "../fixtures/demo";
 import { APP_VERSION } from "../shell/build-version";
+import { coreInstanceLabel } from "../shell/status-label";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import {
   deadLetterHeading,
@@ -297,6 +298,10 @@ export interface SettingsScreenProps {
   demo: DemoData | null;
   status: CoreStatus;
   apiVersion: number | null;
+  /** #172's ADR-0010 diagnostic — see `coreInstanceLabel`. Both `null`
+   * before the handshake, which renders no line at all. */
+  coreId: string | null;
+  viewOrdinal: number | null;
   error: string | null;
   calendar: CalendarState;
   themePreference: ThemePreference;
@@ -326,6 +331,8 @@ export function SettingsScreen({
   demo,
   status,
   apiVersion,
+  coreId,
+  viewOrdinal,
   error,
   calendar,
   themePreference,
@@ -343,6 +350,7 @@ export function SettingsScreen({
   syncNowMs,
   onDownloadMirror,
 }: SettingsScreenProps) {
+  const instanceLabel = coreInstanceLabel(coreId, viewOrdinal);
   const unavailableIds = unavailableSelectedIds(
     calendar.selectedCalendarIds,
     calendar.availableCalendars,
@@ -485,6 +493,16 @@ export function SettingsScreen({
           <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
             {`Build v${APP_VERSION}.`}
           </p>
+          {/* #172: ADR-0010's probe, and the reason it ships rather than
+              being a throwaway page — a standalone PWA window has no URL
+              bar, so the only reachable place to read this is inside the
+              app's own `start_url`. Same instance id in two windows means
+              they share one core. Absent until the handshake lands. */}
+          {instanceLabel !== null ? (
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+              {instanceLabel}
+            </p>
+          ) : null}
         </Card>
 
         {status === "ready" && GOOGLE_CLIENT_ID ? (

@@ -884,7 +884,13 @@ export type TaskWorkerResponse =
 // -- worker -> main -----------------------------------------------------
 
 export type WorkerResponse =
-  | { type: "ready"; apiVersion: number }
+  /** The per-port handshake (`worker/announce.ts`). `coreId`/`viewOrdinal`
+   * are issue #172's ADR-0010 diagnostic and are **required**, not optional:
+   * the registry always knows both by the time it announces, and an optional
+   * field would let a future caller drop them silently. Two views showing the
+   * same `coreId` prove they share one core (ADR-0010 as written); two
+   * different ones refute it. */
+  | { type: "ready"; apiVersion: number; coreId: string; viewOrdinal: number }
   | { type: "error"; message: string }
   | { type: "pollOutcome"; outcome: PollOutcomeName }
   | { type: "credentialEvents"; events: CredentialEventDTO[] }

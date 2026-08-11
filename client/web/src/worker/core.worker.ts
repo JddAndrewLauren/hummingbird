@@ -95,6 +95,7 @@ import {
 } from "../shell/sync-cadence";
 import { createRequestQueue } from "./calendar-worker";
 import { createDispatch } from "./dispatch";
+import { mintCoreId } from "./core-id";
 import { PortRegistry, type PortLike } from "./ports";
 import { createSyncRunGuard } from "./sync-run-guard";
 import { createTaskRequestQueue, TASK_REQUEST_TIMEOUT_MS, type TaskHostLike } from "./task-worker";
@@ -135,7 +136,16 @@ const TASK_NAMESPACE = "hummingbird-task";
 // unset in every checked-in configuration.
 const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? self.location.origin;
 
-const registry = new PortRegistry();
+// Issue #172: the id every view's handshake carries, minted once per
+// `SharedWorker` global scope — this module is evaluated exactly once per
+// core, so the constant IS the core instance. `mintCoreId` owns the
+// secure-context guard, and owns it in a sibling module precisely so a
+// missing `crypto.randomUUID` can never throw here, where a throw would
+// happen before `self.onconnect` is assigned and hang every view (see
+// `core-id.ts`). A plain static call either way: this file's invariant is
+// no top-level `await` in its static import graph, which that module does
+// not touch.
+const registry = new PortRegistry(mintCoreId());
 
 // The shared cadence's own view-visibility aggregate (S9 round-1 review) —
 // see the module doc above and `visibility-tracker.ts`. Declared alongside

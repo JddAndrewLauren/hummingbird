@@ -83,28 +83,43 @@ re-entrant). Duplicate triggers are therefore wasteful, never incorrect;
 collapsing them into a "cycle already running" no-op is an optimization, not a
 correctness requirement.
 
-### The assumption this rests on, and what reopens it
+### The assumption this rested on — probed and confirmed
 
 **Assumed:** an installed PWA standalone window shares a `SharedWorker` instance
 with ordinary browser tabs on the same origin.
 
-This could not be confirmed from Chrome or MDN documentation, and it was
-deliberately committed to without a probe. It is load-bearing: if a standalone
-PWA window is its own SharedWorker scope, then the intended configuration — the
-installed app alongside a drift of tabs — produces two independent cores, and
-every guarantee above evaporates in exactly the case
+**Confirmed by live probe on 2026-08-11**
+([#172](https://github.com/JddAndrewLauren/hummingbird/issues/172), build
+`v0.1.0+dev`, Chrome on macOS): two ordinary tabs and the installed standalone
+window all reported the **same** core instance id (`01d13673`) with ordinals
+#1, #2 and #3 — one core, three views, exactly as this ADR specifies. It was
+committed to without a probe (neither Chrome's nor MDN's documentation settles
+it), and two earlier agent runs could not run one — no PWA install in a sandbox,
+and a confirmation-gated browser tool in an unattended batch — so it stood as a
+recorded open question through #126 and #105. It is load-bearing: had a
+standalone PWA window been its own SharedWorker scope, the intended
+configuration — the installed app alongside a drift of tabs — would have
+produced two independent cores, and every guarantee above would have evaporated
+in exactly the case
 [#97](https://github.com/JddAndrewLauren/hummingbird/issues/97) named as
 arriving immediately.
 
-**If it proves false, this ADR is superseded by `navigator.locks` leader
-election** (the first rejected alternative below), which carries no platform
-assumption. The place it gets exercised for real is
-**S7 ([#105](https://github.com/JddAndrewLauren/hummingbird/issues/105))**, when
-the worker protocol is first wired against a real installed PWA; whoever builds
-S7 owns checking it and reporting the verdict on this ADR either way. The cheap
-check is a `SharedWorker` that increments a counter in `onconnect` and posts it
-back: one tab plus the PWA window reaching 2 confirms the assumption; two
-instances each reporting 1 refutes it.
+**Had it proved false, this ADR would have been superseded by `navigator.locks`
+leader election** (the first rejected alternative below), which carries no
+platform assumption, and #102's outbound-queue single-writer-per-origin
+guarantee would have had to be re-examined. That branch is closed.
+
+The probe is **not** a counter posted from a throwaway page, which is what this
+section originally proposed: a standalone window has no URL bar, so a
+`/probe.html` is unreachable from inside one (and `vite-plugin-pwa`'s
+`navigateFallback` would fight it anyway), and `PortRegistry.ports` is never
+pruned, so a raw `ports.size` of 2 cannot tell two live views from one tab
+opened twice. It ships instead as a **permanent diagnostic inside the app's own
+`start_url`** — a core-instance id minted once per `SharedWorker` scope plus a
+per-connect ordinal, both riding the `ready` handshake and rendered in Settings'
+"Local core" card. Same instance id in two windows proves sharing; two different
+ids refute it. Re-running it costs opening Settings in two windows, so a future
+platform change is cheap to re-check.
 
 ### Scope
 
@@ -167,7 +182,9 @@ over `dist/assets/core.worker-*.js` — it belongs in CI, not in review.
 ## Rejected alternatives
 
 - **`navigator.locks` leader election, with read-only followers.** The strongest
-  alternative, and the fallback if the PWA assumption above fails. Rejected
+  alternative, and the fallback had the PWA assumption above failed — it did
+  not (probed 2026-08-11, #172), so this stays rejected on its own merits
+  below rather than waiting in reserve. Rejected
   because its guarantee is *behavioural*: the lock prevents a follower from
   draining only if the follower's code asks, while the follower still holds a
   complete in-memory mirror and a live handle on the same IndexedDB database —

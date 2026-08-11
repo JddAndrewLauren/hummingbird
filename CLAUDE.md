@@ -875,7 +875,21 @@ core that has not loaded may not make, so the host drops it.
 ## The web worker layer
 
 `client/web/src/worker/` is where the device half meets the browser: **one
-`SharedWorker` per origin, N views** (ADR-0010, #126). `core.worker.ts` is
+`SharedWorker` per origin, N views** (ADR-0010, #126) — **and that is now a
+measured fact rather than the platform assumption the ADR was accepted on**
+(#172, 2026-08-11): two ordinary tabs and an installed PWA standalone window
+all reported the same core instance with ordinals #1/#2/#3. The probe ships
+as a permanent diagnostic rather than a reverted throwaway, because a
+standalone window has no URL bar and cannot reach a `/probe.html` at all —
+`PortRegistry` takes a caller-injected `coreId` (the repo's
+injected-randomness idiom; `core.worker.ts` mints it once at module scope, so
+the registry IS the core instance) and mints a per-connect ordinal in
+`connect()` rather than `wire()`, so a port queued during the wasm import
+keeps its arrival order; both ride the per-port `ready` handshake as
+**required** fields and render in Settings' "Local core" card via
+`shell/status-label.ts`'s `coreInstanceLabel`. The signal is deliberately NOT
+`ports.size` — that set is never pruned, so a "2" cannot tell two live views
+from one tab opened twice. `core.worker.ts` is
 the shim only — it loads the wasm core with a dynamic `import()`, wires
 `ports.ts`'s `PortRegistry` (the port list, the per-port `ready`/`error`
 handshake, the broadcast fan-out; a port that connects before the core
