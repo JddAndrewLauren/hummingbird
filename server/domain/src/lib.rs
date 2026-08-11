@@ -46,7 +46,8 @@ pub use sources::{
     city_waste_v1_key, city_waste_v2_key, find as find_source, github_v1_key, gmail_alert_v1_key,
     gmail_v1_key, google_calendar_v1_key, healthchecks_v1_key, home_assistant_v1_key,
     item_threshold_v1_key, m365_calendar_v1_key, m365_mail_v1_key, photo_site_v1_key, Expiry,
-    Shape, SourceEntry, CITY_WASTE_V2, GMAIL_V1, GOOGLE_CALENDAR_V1, ITEM_THRESHOLD_V1, REGISTRY,
+    Shape, SourceEntry, CITY_WASTE_V2, GMAIL_V1, GOOGLE_CALENDAR_V1, ITEM_THRESHOLD_V1,
+    M365_CALENDAR_V1, M365_MAIL_V1, REGISTRY,
 };
 pub use step::{BlockedBy, Step};
 pub use token::{MintedToken, Scope, TokenInfo};

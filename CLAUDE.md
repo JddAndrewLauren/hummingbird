@@ -336,10 +336,11 @@ Actions secrets on the blast-radius reasoning that keeps `ADMIN_SECRET`
 out: that one mints every other token, this one reaches three routes for
 one source and its worst-case abuse is a wrong bin day. `polled_every_ms`
 in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
-(#135, below) is the second Actions `schedule:` on the same reasoning, and
-`.github/workflows/calendar-poll.yml` (#136, below) is the third — see
-either header for why a repeated scoped exception does not reopen the
-general ban.
+(#135, below) is the second Actions `schedule:` on the same reasoning,
+`.github/workflows/calendar-poll.yml` (#136, below) is the third, and
+`.github/workflows/graph-mail-poll.yml`/`graph-calendar-poll.yml` (#137,
+below) are the fourth and fifth — see any of their headers for why a
+repeated scoped exception does not reopen the general ban.
 
 **Not covered, and not this slice's to fix:** `POST /api/alerts` does not
 trigger delivery. `deliver` runs only from `sweep_tick`, which evaluates
@@ -486,6 +487,84 @@ second mapping entry alongside `gmail/v1`'s: an `ingest` token bound to
 `google-calendar/v1` reads `calendar_event`-kind rules (and every any-kind
 rule) through `GET /api/rules`, never `email`-kind ones — the two mapping
 entries are independent and fixture-tested as such.
+
+## The M365 evaluated-stream pollers
+
+`server/graph-poll/` (#137, ADR-0011) is the third of #135-137 (built after
+#135's Gmail leg and #136's Google Calendar leg above), and the
+first built against app-only Microsoft Graph rather than Google's OAuth
+grants: one crate, two binaries (`graph-mail-poll` for `m365-mail/v1`,
+`graph-calendar-poll` for `m365-calendar/v1`), sharing the auth leg
+(`auth.rs`) and the whole delta-cursor shape (`delta.rs`, `resume.rs`) —
+Microsoft Graph uses one envelope (`value`/`@odata.nextLink`/
+`@odata.deltaLink`) for every delta-query resource collection, so unlike
+the two Google pollers (whose delta shapes genuinely differ) there is
+nothing lane-specific to write twice. Each binary follows
+`gmail_poll`/`calendar_poll`'s exact split: everything decidable lives in
+the lib and is natively tested; `main.rs` holds only `std::env`, the OAuth
+HTTP call, and the Graph/authority HTTP calls.
+
+**The client-assertion signature itself is decidable here, unlike
+`authority/src/fcm.rs`.** `authority/src/fcm.rs`/`worker/src/fcm.rs` split
+the OAuth assertion's bytes (lib, tested) from its RS256 signature (worker,
+untested by construction) only because `hummingbird-authority-worker` is
+wasm32 and has no WebCrypto equivalent in a native Rust crate. This crate
+is an ordinary out-of-process binary with no such constraint, so `auth.rs`
+builds AND signs the whole client-credentials-with-certificate JWT bearer
+assertion natively, tested end-to-end against a fixture keypair generated
+for this crate's tests alone.
+
+**Both delta cursors survive restart and recover by bounded re-sync on
+Graph's HTTP 410 Gone** (`resume.rs`, shared, `gmail_poll::resume`'s
+pattern generalized over one delta-page shape) — but the two lanes' bounded
+resyncs differ, because Graph's mail-delta endpoint does not accept
+`$filter`/`$orderby` the way its ordinary listing does (documented Graph
+behaviour, unconfirmed against a live tenant): `graph-mail-poll`'s resync
+is two calls (an ordinary `$filter`-bounded messages listing for the
+catch-up items, then `$deltatoken=latest` for a fresh cursor anchored at
+"now"), while `graph-calendar-poll`'s resync is one (`calendarView/delta`
+accepts `startDateTime`/`endDateTime` directly on its initial request, the
+standard documented shape, closer to `calendar_poll`'s own Google
+resync). Every calendar request carries `Prefer: outlook.timezone="UTC"` —
+without it, Graph's default `start`/`end` shape carries a Windows time-zone
+name rather than an IANA one, which this crate has no tzdb for.
+
+**The recurring-occurrence key's second half has no Graph-native source.**
+#158's `m365_calendar_v1_key(id, series_master_id, original_start)` mirrors
+Google's `<eventId or recurringEventId>:<originalStartTime>` shape, but
+Microsoft Graph's `event` resource carries no `originalStartTime`-equivalent
+field at all. `calendar_item.rs` populates `original_start` from the
+occurrence's own Graph `id` instead — Microsoft documents that id as stable
+across a reschedule of that occurrence, which is the one invariant the key
+recipe actually needs, so this uses the fact Graph guarantees rather than
+inventing one it doesn't provide. Recorded, not silently assumed: this is
+the exact "case most likely to produce duplicate alerts if invented
+locally" the issue's own brief calls out, unconfirmed against a live
+tenant's first real reschedule (`server/city-waste/src/page.rs`'s own
+"still open" precedent) — see the issue #137 thread.
+
+`authority/src/handlers/rules.rs`'s `event_kinds_readable_by` gains two
+more independent mapping entries: `m365-mail/v1 → email`,
+`m365-calendar/v1 → calendar_event`, fixture-tested the same way as
+`gmail/v1`'s and `google-calendar/v1`'s.
+
+**Credential posture — narrower in kind, not yet narrower in blast
+radius.** `Mail.Read`/`Calendars.Read` (application permissions, admin
+consent) are the brief's own named grants and both are read-only, the same
+"every call this poller makes is a read" reasoning that justified
+`gmail.readonly`/`calendar.readonly` for #135/#136. But an app-only Graph
+permission is tenant-wide by default (every mailbox/calendar in the
+tenant, not just the operator's own) unless the operator additionally
+applies an Exchange Online Application Access Policy — an operator-side
+step this crate cannot perform or verify, and one that moves the
+credential's actual worst-case abuse away from
+`CITY_WASTE_INGEST_TOKEN`'s "a wrong bin day" side of CLAUDE.md's
+blast-radius line. `GRAPH_CLIENT_PRIVATE_KEY` is written against GitHub
+Actions secrets on #135/#136's own established precedent (out-of-process
+poller = Actions secrets, not the Worker secret ADR-0011's original table
+names), and the tenant-wide-vs-scoped question is posted as an explicit
+operator question on issue #137 rather than decided here — cross-referencing
+issue #135's still-open credential question, the same category of decision.
 
 ## The client sync engine
 

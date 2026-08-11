@@ -1,0 +1,68 @@
+# The M365 mail evaluated-stream poller (#137, ADR-0011): advances a Graph
+# `deltaLink` cursor over `mailFolders('inbox')/messages/delta`, evaluates
+# each new message in memory against the live rule set, and upserts an
+# alert for a match — never anything else. Non-matches never touch storage.
+#
+# A third Actions `schedule:`, on `gmail-poll.yml`/`calendar-poll.yml`'s own
+# reasoning: this lane has no competing clock (ADR-0011 assigns this
+# cadence to nothing else, and nothing else polls M365 mail).
+name: graph-mail-poll
+
+on:
+  # Every 15 minutes — `hummingbird_graph_poll::mail_cursor::POLLED_EVERY_MS`
+  # must match this interval.
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# One poller at a time. Two overlapping runs would race on the same
+# `deltaLink` cursor row.
+concurrency:
+  group: graph-mail-poll
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Poll M365 mail
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          # An `ingest`-scope token bound to `m365-mail/v1`, minted from the
+          # operator's terminal against `ADMIN_SECRET` — a deploy-time step,
+          # not an implementation step of this issue.
+          HB_INGEST_TOKEN: ${{ secrets.M365_MAIL_INGEST_TOKEN }}
+          # The operator's own mailbox address — app-only Graph has no `/me`,
+          # so this is required to name which mailbox to poll.
+          GRAPH_MAILBOX_UPN: ${{ vars.GRAPH_MAILBOX_UPN }}
+          GRAPH_TENANT_ID: ${{ vars.GRAPH_TENANT_ID }}
+          GRAPH_CLIENT_ID: ${{ vars.GRAPH_CLIENT_ID }}
+          # The registered certificate's SHA-1 thumbprint, base64url-encoded
+          # — identifies a PUBLIC key and is not itself sensitive, so it is
+          # an Actions *variable*, not a secret.
+          GRAPH_CERT_THUMBPRINT_B64URL: ${{ vars.GRAPH_CERT_THUMBPRINT_B64URL }}
+          # The certificate's PRIVATE key (ADR-0011: "certificate preferred
+          # over a client secret, since secrets are portal-capped at 24
+          # months"). **Posture note, not yet fully resolved — see
+          # `server/graph-poll/src/lib.rs`'s module doc and the open
+          # operator question on issue #137**: this credential is narrower
+          # in *kind* than a full mail/calendar admin credential the same
+          # way #135/#136's dedicated readonly OAuth tokens are (only
+          # `Mail.Read`/`Calendars.Read`, both read-only, per the brief's
+          # own named application permissions), but an app-only Graph grant
+          # is tenant-wide by default — bounding it to one mailbox needs an
+          # operator-side Exchange Application Access Policy, which this
+          # workflow cannot verify is in place.
+          GRAPH_CLIENT_PRIVATE_KEY: ${{ secrets.GRAPH_CLIENT_PRIVATE_KEY }}
+        run: cargo run -q -p hummingbird-graph-poll --bin graph-mail-poll

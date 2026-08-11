@@ -1,0 +1,52 @@
+# The M365 calendar evaluated-stream poller (#137, ADR-0011): advances a
+# Graph `deltaLink` cursor over `calendarView/delta`, evaluates each new/
+# changed occurrence in memory against the live rule set, and upserts an
+# alert for a match — never anything else. Non-matches never touch storage.
+# There is no `busy_now` snapshot here — that gauge belongs to #136's
+# Google Calendar leg only.
+#
+# A fourth Actions `schedule:`, on the other three pollers' own reasoning:
+# no competing clock (ADR-0011 assigns this cadence to nothing else, and
+# nothing else polls M365 calendar).
+name: graph-calendar-poll
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: graph-calendar-poll
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Poll M365 calendar
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          # An `ingest`-scope token bound to `m365-calendar/v1`.
+          HB_INGEST_TOKEN: ${{ secrets.M365_CALENDAR_INGEST_TOKEN }}
+          GRAPH_MAILBOX_UPN: ${{ vars.GRAPH_MAILBOX_UPN }}
+          GRAPH_TENANT_ID: ${{ vars.GRAPH_TENANT_ID }}
+          GRAPH_CLIENT_ID: ${{ vars.GRAPH_CLIENT_ID }}
+          GRAPH_CERT_THUMBPRINT_B64URL: ${{ vars.GRAPH_CERT_THUMBPRINT_B64URL }}
+          # Same app registration and certificate as `graph-mail-poll.yml`
+          # — one Entra app registration carries both `Mail.Read` and
+          # `Calendars.Read` (ADR-0011's table: "same app registration").
+          # See that workflow's own comment for the credential posture note
+          # this issue leaves open.
+          GRAPH_CLIENT_PRIVATE_KEY: ${{ secrets.GRAPH_CLIENT_PRIVATE_KEY }}
+        run: cargo run -q -p hummingbird-graph-poll --bin graph-calendar-poll
