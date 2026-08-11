@@ -27,6 +27,13 @@ pub struct Health {
     /// How many otherwise-qualifying items [`crate::select`] dropped for a
     /// live blocker: the footer's "4 more blocked upstream".
     pub blocked_dropped: usize,
+    /// Live, unshut items carrying #10's `agent` axis — "N you could hand
+    /// off". Counted off the whole sweep, never off the candidates, and
+    /// deliberately so: on an ordinary survey the candidate list is *not*
+    /// filtered to `agent`, so counting there would answer a different
+    /// question depending on which arm asked it. It exists to make the
+    /// hand-off offer possible without a second survey.
+    pub agent_doable: usize,
     /// Projects whose minted actions are all shut while open fog remains.
     /// Empty is the normal case.
     pub fog_exhausted: Vec<FogExhausted>,
@@ -54,8 +61,18 @@ pub fn health(sweep: &ChangesResponse, blocked_dropped: usize) -> Health {
         triage: count_stage(sweep, Stage::Triage),
         grilling: count_stage(sweep, Stage::Grilling),
         blocked_dropped,
+        agent_doable: agent_doable(sweep),
         fog_exhausted: fog_exhausted(sweep),
     }
+}
+
+/// Live `agent`-marked items that are still open. `Done` and archived are
+/// both excluded — a finished chore is not something to hand off — but
+/// `Blocked` is *included*, because #10's own protocol has an agent report
+/// a genuine external blocker and stop there, and that item still carries
+/// work the agent could resume.
+fn agent_doable(sweep: &ChangesResponse) -> usize {
+    sweep.items.iter().filter(|item| item.agent && !is_shut(item)).count()
 }
 
 fn count_stage(sweep: &ChangesResponse, stage: Stage) -> usize {
@@ -161,6 +178,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1_000,
             updated_at: 1_000,
             version: 1,
@@ -307,6 +325,36 @@ mod tests {
             0,
         );
         assert!(health.fog_exhausted.is_empty());
+    }
+
+    /// The footer's hand-off count, and every exclusion in it. `Blocked`
+    /// counts — #10's protocol has an agent report a real external blocker
+    /// and stop, and that chore still has agent work left on it — while
+    /// `Done` and archived do not.
+    #[test]
+    fn the_hand_off_count_is_live_marked_and_unshut() {
+        let mut ready = item("a1", Stage::Ready, None);
+        ready.agent = true;
+        let mut blocked = item("a2", Stage::Blocked, None);
+        blocked.agent = true;
+        let mut done = item("a3", Stage::Done, None);
+        done.agent = true;
+        let mut archived = item("a4", Stage::Ready, None);
+        archived.agent = true;
+        archived.archived_at = Some(1);
+        let mine = item("a5", Stage::Ready, None);
+
+        let health = health(
+            &sweep(vec![ready, blocked, done, archived, mine], vec![], vec![]),
+            0,
+        );
+        assert_eq!(health.agent_doable, 2);
+    }
+
+    #[test]
+    fn the_hand_off_count_is_zero_when_nothing_is_marked() {
+        let health = health(&sweep(vec![item("a1", Stage::Ready, None)], vec![], vec![]), 0);
+        assert_eq!(health.agent_doable, 0, "unmarked means the human does it");
     }
 
     #[test]

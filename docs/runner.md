@@ -79,9 +79,10 @@ Two ops ship today, and **both write to nothing**:
   ranking failure is therefore an envelope `error` in the ranker's own
   words, before a single model token is spent.
 
-`microtask` still waits behind the write-target decision.
-`next-up-personal` never becomes a runner op: it targets Linear, which the
-image deliberately bakes nothing for.
+`microtask` and `/to-actions` now use the app-owned authority helpers in
+interactive sessions, but they are not hosted runner operations. The retired
+`next-up-personal` selector is not registered here; `/next-up-hb` is its
+app-owned replacement.
 
 **Confirmed against a live run**, and the CLI contract is narrower than it
 first looked. Both halves were assumed wrong on the first pass, and both

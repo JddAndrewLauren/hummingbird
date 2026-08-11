@@ -128,6 +128,18 @@ pub struct Item {
     pub source_url: Option<String>,
     /// ms epoch; `None` = live. Rows are never deleted, only flagged.
     pub archived_at: Option<i64>,
+    /// #10's fourth axis, *who does this*: `true` = an agent could do this
+    /// chore, `false` = the human. There is no `for-human` marker — the
+    /// default is the human, which is why this is a plain `bool` and not an
+    /// `Option`. Deliberately **not** `context`: context is the one hard
+    /// filter (*where* can this be done) and folding delegation into it
+    /// would break that filter's meaning.
+    ///
+    /// `#[serde(default)]` so a client mirror snapshot written before this
+    /// column existed still parses, the same trick `ChangesResponse.rules`
+    /// uses — which is what keeps `SYNC_MIRROR_SCHEMA_VERSION` where it is.
+    #[serde(default)]
+    pub agent: bool,
     pub created_at: i64,
     pub updated_at: i64,
     /// CAS target + delta cursor, stamped from the workspace counter.
@@ -180,6 +192,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1,
             updated_at: 2,
             version: 3,
@@ -187,5 +200,23 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         let back: Item = serde_json::from_str(&json).unwrap();
         assert_eq!(back, item);
+    }
+
+    /// The reason `agent` carries `#[serde(default)]`: a mirror snapshot
+    /// persisted before the column existed has no such key, and must still
+    /// parse rather than force a `SYNC_MIRROR_SCHEMA_VERSION` bump that
+    /// would discard every stored item.
+    #[test]
+    fn an_item_written_before_the_agent_column_still_parses_as_the_human_s() {
+        let pre_agent = r#"{
+            "id": "a-1", "seq": 1, "title": "hello", "description": null,
+            "stage": "triage", "size": null, "energy": null, "context": null,
+            "priority": 0, "project_id": null, "project_pos": null,
+            "deadline": null, "scheduled_date": null,
+            "source": null, "source_key": null, "source_url": null,
+            "archived_at": null, "created_at": 1, "updated_at": 2, "version": 3
+        }"#;
+        let item: Item = serde_json::from_str(pre_agent).unwrap();
+        assert!(!item.agent);
     }
 }

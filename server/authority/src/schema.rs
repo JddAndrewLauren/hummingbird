@@ -28,7 +28,15 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// taken: the ADR names `SCHEMA_VERSION` 3 → 4 explicitly, and a `wrangler
 /// dev` state dir is a genuinely-v3 store that outlives the change even if
 /// no production one does.
-pub const SCHEMA_VERSION: i64 = 4;
+///
+/// 5 adds `items.agent` (#115/#291, #10's delegation axis), and is the
+/// **first growth after a production deploy** — `hummingbird-authority` has
+/// been live since 2026-08-10 (#237), so re-freezing is no longer even
+/// available: a real store with real rows carries the old shape and
+/// [`add_missing_columns`] is the only thing that grows it. Same mechanism
+/// as 3→4, second arm, and the same load-bearing formatting trap on
+/// [`CREATE_ITEMS`].
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -76,6 +84,22 @@ CREATE TABLE IF NOT EXISTS fog (
 /// skips it) — acceptable because every pre-2 consumer is ephemeral; see
 /// [`SCHEMA_VERSION`]. FKs are documentation here regardless: enforcement
 /// is off by default in SQLite, and handlers validate referents explicitly.
+///
+/// **The trailing `, agent …)` on its own line is load-bearing, not a
+/// typo**, and — the part worth reading twice — it is a *different* shape
+/// from [`CREATE_ALERTS`]'s inline one even though both encode the same
+/// rule. Both must spell the table exactly as `ALTER TABLE … ADD COLUMN`
+/// splices it, because the growth tests assert a migrated store and a fresh
+/// one hold **byte-identical** `sqlite_master.sql`. But SQLite's splice
+/// point is not "after the last column": it is the start of the
+/// **table-constraint list**, and only falls back to the closing paren when
+/// there is no table constraint at all. `alerts` ends in
+/// `UNIQUE(source, source_key)`, so its column lands snug against
+/// `version`'s line; `items` has no table constraint, so `agent` lands
+/// after the newline, immediately before the `)`. Copying `alerts`'
+/// formatting here was the first attempt and
+/// `init_schema_grows_a_schema_2_database_additively` failed on that one
+/// newline.
 pub const CREATE_ITEMS: &str = "\
 CREATE TABLE IF NOT EXISTS items (
   id          TEXT PRIMARY KEY,
@@ -99,7 +123,7 @@ CREATE TABLE IF NOT EXISTS items (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
   version     INTEGER NOT NULL
-)";
+, agent INTEGER NOT NULL DEFAULT 0)";
 
 pub const CREATE_STEPS: &str = "\
 CREATE TABLE IF NOT EXISTS steps (
@@ -306,7 +330,9 @@ pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
 }
 
 /// Every column added to an already-existing table since the schema was
-/// first written — today just `alerts.subject_key` (3→4, ADR-0015).
+/// first written — `alerts.subject_key` (3→4, ADR-0015) and `items.agent`
+/// (4→5, #115). The arms are independent and each reads its own column's
+/// presence, so a store at any starting version reaches the same shape.
 ///
 /// Runs **after** the create loop, which is what makes one rule cover every
 /// starting shape: by this point `alerts` certainly exists, either because
@@ -323,6 +349,9 @@ pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
 fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     if !column_exists(sql, "alerts", "subject_key")? {
         sql.exec("ALTER TABLE alerts ADD COLUMN subject_key TEXT", &[])?;
+    }
+    if !column_exists(sql, "items", "agent")? {
+        sql.exec("ALTER TABLE items ADD COLUMN agent INTEGER NOT NULL DEFAULT 0", &[])?;
     }
     Ok(())
 }

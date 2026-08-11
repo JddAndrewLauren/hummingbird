@@ -419,7 +419,82 @@ fn init_schema_grows_a_schema_3_database_additively() {
     );
 }
 
-/// Running `init_schema` twice over a grown store must not attempt the
+/// A genuine v4 store: the frozen v2+v3 DDL plus 3→4's own `ALTER`, which
+/// is how every real v4 store came to be. Built this way rather than by
+/// freezing a fourth DDL block because that is exactly the text a v4
+/// database holds — and, crucially, its `items` still genuinely lacks
+/// `agent`, which is what the 4→5 growth has to find.
+///
+/// This is the first fixture standing in for a shape that was **really
+/// deployed** (#237, 2026-08-10), so the re-freeze doctrine the header
+/// describes no longer applies to it: there is a live store out there in
+/// this shape and the migration is the only thing that grows it.
+fn v4_store() -> RusqliteSql {
+    let sql = v3_store();
+    sql.exec("ALTER TABLE alerts ADD COLUMN subject_key TEXT", &[])
+        .expect("3→4's own ALTER applies");
+    sql.exec("UPDATE meta SET schema_version = 4 WHERE id = 1", &[])
+        .expect("v4 meta row seeds");
+    sql
+}
+
+/// The 4→5 growth path (#115/#291): `items.agent`, the second column ever
+/// added to an existing table, and the first added after a production
+/// deploy.
+///
+/// The DDL assertion is the one with a wrong answer available, and it is
+/// **not** the same wrong answer 3→4 had. `ALTER TABLE … ADD COLUMN`
+/// splices its text at the start of the table-constraint list, falling back
+/// to the closing paren when a table has no constraints at all — so
+/// `alerts` (which ends in `UNIQUE(…)`) takes the column snug against
+/// `version`'s line, while `items` (which has no table constraint) takes it
+/// after the newline. Formatting `CREATE_ITEMS` the way `CREATE_ALERTS` is
+/// formatted fails here on that single newline, which is how this was
+/// found.
+#[test]
+fn init_schema_grows_a_schema_4_database_additively() {
+    let migrated = v4_store();
+    assert_eq!(schema_version(&migrated), 4, "starts genuinely at v4");
+    assert!(
+        !column_names(&migrated, "items").contains(&"agent".to_string()),
+        "the v4 fixture must not already carry agent",
+    );
+    // A row written before the growth, to prove the ALTER keeps data.
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, priority, created_at, updated_at, version) \
+             VALUES ('i', 'compare three insurance quotes', 'ready', 0, 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(
+        column_names(&migrated, "items").contains(&"agent".to_string()),
+        "the migrated store actually has the column, not just a bumped version",
+    );
+    let rows = migrated.exec("SELECT id, agent FROM items", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+    assert_eq!(
+        rows[0].get("agent"),
+        Some(&SqlValue::Integer(0)),
+        "an item minted before the delegation axis is the human's — the column's \
+         NOT NULL DEFAULT 0 is what makes the ALTER legal on a non-empty table at all",
+    );
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v4 store and a fresh store end up with byte-identical DDL — which is \
+         why CREATE_ITEMS declares agent after the newline, before the closing paren, \
+         and NOT inline the way CREATE_ALERTS declares subject_key",
+    );
+}
+
+/// Running `init_schema` twice over a grown store must not attempt either
 /// `ALTER` again — a duplicate column is a hard SQLite error, and
 /// `init_schema` runs on every Durable Object construction.
 #[test]
@@ -434,6 +509,14 @@ fn the_column_migration_is_idempotent() {
             .count(),
         1,
         "exactly one subject_key column",
+    );
+    assert_eq!(
+        column_names(&migrated, "items")
+            .iter()
+            .filter(|name| *name == "agent")
+            .count(),
+        1,
+        "exactly one agent column",
     );
 }
 

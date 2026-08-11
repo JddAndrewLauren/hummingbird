@@ -1,10 +1,15 @@
 # hummingbird
 
-Personal GTD-style task system. The task authority is moving from Linear
-(org `twinion`, team `ION`) to an app-owned server (ADR-0008); the Linear
-workspace stays the live working surface — and the skills below still target
-it — until the owned stack is daily-usable. See `CONTEXT.md` for the domain
-glossary.
+Personal GTD-style task system. The task authority **is** the app-owned
+server (ADR-0008), deployed at `hb.twinion.net` since 2026-08-10 (#237), and
+since #115 every skill here targets it: `/next-up-hb`, `/to-actions` and
+`/microtask` all speak `hb.twinion.net/api/*` with a `device` token from
+`~/.config/hummingbird/api-token`. **Nothing in this repo reads
+`~/.config/linear/api-key` any more** — `/next-up-personal` is deleted and
+the other two swapped `linear.sh` for their own `hb.sh`. The one remaining
+Linear caller is `sweep.py`, which takes `LINEAR_API_KEY` from the
+*environment* (a Fly secret, not the dotfile) and is itself OFF pending
+#123. See `CONTEXT.md` for the domain glossary.
 
 ## The sweeper
 
@@ -132,7 +137,7 @@ open registry key, not a closed vocabulary), and `worker` (the thin `workers-rs`
 shim — one Worker, one SQLite-backed Durable Object). It carries the full
 amended ADR-0009 schema plus the notification lane's
 `rules`/`push_targets`/`deliveries` (14 tables,
-`SCHEMA_VERSION 4`, ADR-0012/0013/0014/0015), entity-level CAS writes (absolute
+`SCHEMA_VERSION 5`, ADR-0012/0013/0014/0015/0009-as-amended), entity-level CAS writes (absolute
 sets + `expected_version`, 409 carries the current entity, creates
 idempotent by client id), the all-tables delta pull with `GET /api/sweep`
 as its byte-identical backstop — complete for every table but `alerts`,
@@ -312,7 +317,32 @@ carries, parsed shallowly — `body` is carried through opaque, an unrecognised
 `schema` is passed through untouched (it must never grow a `REGISTRY` check),
 an absent `polled_every_ms` is a legitimate state, and everything else is a
 typed `EnvelopeProblem` naming *what* was wrong, never a quietly empty
-answer. The panes, the client-side `Freshness` carve-out and the
+answer.
+
+**`SCHEMA_VERSION` 5 is `items.agent`** (#115/#291, ADR-0009's 2026-08-11
+amendment), the second column ever added to an existing table and the first
+growth *after* a production deploy — so re-freezing the fixture is no
+longer even available: a live store carries the old shape and
+`add_missing_columns`'s second arm is the only thing that grows it. **Its
+formatting trap is real but is NOT the same one, and copying `alerts`'
+shape here fails the growth test on a single newline.** `ALTER TABLE … ADD
+COLUMN` splices its text at the **start of the table-constraint list**,
+falling back to the closing paren only when a table has no constraint at
+all — `alerts` ends in `UNIQUE(source, source_key)` so `subject_key` lands
+inline on `version`'s line, while `items` has no table constraint so
+`agent` lands *after* the newline, immediately before the `)`. Both shapes
+are documented at their point of use and neither may be tidied toward the
+other. On the wire the column is a plain `bool` with `#[serde(default)]`,
+which is what keeps `SYNC_MIRROR_SCHEMA_VERSION` where it is — a mirror
+snapshot written before the column parses as the human's rather than being
+discarded — and `ItemPatch.agent` is single-`Option` through
+`non_null_agent`, so clearing the axis is `false` and an explicit `null` is
+a 400. Deliberately **not** in `event.rs`'s `CORE_FIELDS` or the kind
+registry (a delegation marker that can fire a push is a different
+feature), and no client UI sets it: `/next-up-hb`'s script is its only
+writer today.
+
+The panes, the client-side `Freshness` carve-out and the
 `city-waste/v2` + race source-registry entries are each their own slice.
 
 **Deployed in production since 2026-08-10** (#237): `hummingbird-authority`
@@ -1108,9 +1138,17 @@ holds the mechanical filters (archived out; `Ready`/`InProgress` always;
 `Blocked` and `Done` never; then any item with a live `blocked_by` edge
 whose blocker is not itself shut — **counted**, because the footer says
 "4 more blocked upstream"), every deadline comparison going through
-`hummingbird_domain::deadline_sort_key`, never a second key. `health.rs`
+`hummingbird_domain::deadline_sort_key`, never a second key. It also holds
+**`select::Who`**, #10's fourth axis (#115): an agent-only survey keeps only
+`items.agent` rows, and it lives here rather than in `rank.rs` for two
+reasons — it is a *selection* (which items are eligible), not a ranking
+(their order), and #162's six steps are frozen. It runs **before** the
+blocked partition, so `blocked_dropped` counts what was dropped from the
+list actually being offered. `health.rs`
 carries the footer's **facts and never its wording**: the Triage/Grilling
-counts, that blocked count, and each project whose actions are all shut
+counts, that blocked count, `agent_doable` (live unshut marked items —
+counted off the whole sweep, never the candidates, so it answers the same
+question on either arm), and each project whose actions are all shut
 while fog rows are still open — with every open `question` handed back
 **verbatim**, because whether a question names a real unknown is a reading
 ("None — the unknowns are carried inside the two investigation actions"
@@ -1119,13 +1157,13 @@ changed is that fog arrives as structured rows, so that check no longer
 parses a markdown section. `envelope.rs` owns the stdin contract and the
 one place the wire's owned calendar block meets `rank`'s borrowing
 `CurrentOrNext`/`CalendarContext`; a `status`/`event` mismatch is a named
-`EnvelopeProblem`, never a quietly absent calendar. **v1 is read-only** —
-no artifact under `.claude/skills/next-up-hb/` or `client/next-up/` touches a
-write route — and **delegation is deliberately out**: the owned schema has
-no labels column, no labels table and no comments table, so all three legs
-of #10's protocol (the `agent` axis, the findings comment, the `unlabel`
-that stops the re-offer loop) are unexpressible; #291 tracks the
-owned-schema delegation marker that would let it come back. Zero Linear anywhere in this lane.
+`EnvelopeProblem`, never a quietly absent calendar. **The crate itself
+stays read-only** — nothing in `client/next-up` touches a write route, and
+that is not incidental: its whole job is deciding, and a binary that could
+also mutate the authority would be a second write path with no queue behind
+it. The skill's delegation branch does write, through
+`scripts/next-up.sh`'s own CAS verbs (#115) and never through here. Zero
+Linear anywhere in this lane.
 
 `client/core/src/freshness.rs` is the third top-level module, and ADR-0015's
 Rust half of the Rust/TS carve-out: `Freshness` is **not a boolean** but
@@ -1789,16 +1827,80 @@ Default vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-f
 `wontfix`, plus the non-triage `plan` role. All exist on the tracker.
 See `docs/agents/triage-labels.md`.
 
+### The three personal skills share one shape
+
+`/next-up-hb`, `/to-actions` and `/microtask` each own a script in their own
+directory (`scripts/next-up.sh`, `scripts/hb.sh`, `scripts/hb.sh`) that
+speaks the owned API, and the **duplication between them is deliberate**:
+`runner/Dockerfile` bakes skill directories in individually, so a shared
+helper living outside one skill's tree would simply not ship in the image.
+Three shapes fall out of the API and each script states them once:
+
+- **Every read is the whole sweep.** There is no `GET /api/items/:id` and no
+  per-table listing, so a read verb fetches `GET /api/sweep` once and filters
+  in jq. This is why the old GraphQL query-cost findings are not merely
+  obsolete but meaningless.
+- **`HB-<seq>` is a client-side affordance.** No route accepts or resolves
+  it; `seq` is server-minted and appears only in `Item.seq`, so each script
+  maps it onto a uuid off the sweep it already holds.
+- **A write is CAS with exactly one bounded retry** — disjoint touched fields
+  are resent against the carried current version, an already-applied value is
+  accepted, and a divergent touched field stops rather than being overwritten.
+
+Two bash traps are load-bearing and both were got wrong first, so neither is
+reasoning to redo. **The sweep cache is a file, not a variable**: the ref
+resolvers are called as `$(…)`, and a variable assigned inside a command
+substitution never reaches the parent, so a variable cache silently
+re-fetches on every read and lets one run reason over two different sweeps.
+(An `EXIT` trap does not fire in a command substitution, so the temp file
+survives — measured, not assumed.) And **a ref must be assigned before it is
+used**, never inlined as `f "$(resolve_ref "$x")"`: a `die` inside `$(…)`
+exits only that subshell, and `set -e` ignores a failed substitution in an
+*argument* position, so the inline form calls `f ""` and answers cheerfully
+for an item that does not exist. `tests/test_hb_helper.py` caught that one
+and pins both.
+
+Ids are minted by a bash port of `deterministic_id` under a frozen
+per-skill namespace (disjoint from the client's and the sweeper's), and
+**every id in a batch is settled before the first write** — which is what
+makes a partially-failed mint replayable by simply re-running it, rather
+than hand-reconciled.
+
+`.github/workflows/skills.yml` is their gate. It exists as its own workflow
+because `deploy.yml` — which does discover these tests — is `push: main`
+only under a sweeper `paths:` filter, so a PR touching a skill script would
+run zero checks and look green; and adding `.claude/skills/**` to *that*
+filter would fire a Fly deploy on a skill edit.
+
 ### Microtasking
 
-`/microtask <issue-id>` breaks one already-selected, stalled Linear issue into a checklist of
-~2–5-minute Steps written into its body. See `.claude/skills/microtask/SKILL.md`.
+`/microtask <ref>` breaks one already-selected, stalled item into a
+checklist of ~2–5-minute Steps, written as **`steps` rows** (ADR-0009), not
+markdown. The Linear-era `<!-- microtask:start -->` markers, the
+read-modify-write merge and the `- [x]`/`- [X]` normalisation are **deleted
+rather than ported**: all three existed only because the body was one opaque
+string two parties wrote to. Which steps a re-run supersedes stays a
+judgment in prose — `hb.sh` deliberately will not reconcile a checklist,
+because "this no longer applies" is a reading of the work, not a diff. Scope
+guard: it writes `steps` rows and nothing else, and that is structural (no
+verb reaches any other route, pinned by test).
+See `.claude/skills/microtask/SKILL.md`.
 
-### next-up-personal
+### to-actions
 
-`/next-up-personal` picks what to do right now from the Linear workspace — one ranked top
-pick plus a health footer — and `/next-up-personal <issue-id>` hands one `agent`-labelled
-issue to an agent. See `.claude/skills/next-up-personal/SKILL.md`.
+`/to-actions` breaks a project into actions. **The Route is four records,
+not four markdown sections** — `routes.destination`, `routes.notes`, `fog`
+rows, and items ordered by `project_pos` — which is one of the two things
+that triggered ADR-0008, so the template is gone rather than reimplemented
+over a description field. Two consequences worth knowing before editing:
+creating a project creates its Route row (there is no `POST /api/routes`),
+and **`blocked_by` has no direction to get backwards** — `{item_id,
+blocker_id}` reads as written, so Linear's inverted `issueRelationCreate`
+recipe and the warning about silently inverting the frontier are both gone.
+An open `fog` row *is* fog, which retires the "the fog check is a reading,
+not a regex" rule along with its worked example. Cancel is `archived_at`;
+the owned schema has no Canceled stage and no Duplicate quirk.
+See `.claude/skills/to-actions/SKILL.md` and its `REFERENCE.md`.
 
 ### next-up-hb
 
@@ -1812,9 +1914,7 @@ next-up-hb.test.js` pins that they agree.
 `/next-up-hb` (#116) is the owned-authority selector: one read-only
 `GET /api/sweep`, ranked by `client/core/src/rank.rs` through
 `client/next-up`'s `next-up-rank` binary, presented as one top pick, 3–5
-alternates and a one-line health footer. **Zero Linear**, no write of any
-kind, and no delegation branch (the owned schema cannot express #10's
-protocol — see the `client/next-up` paragraph above). It **must not**
+alternates and a one-line health footer. **Zero Linear.** It **must not**
 restate the six ranking steps: `rank.rs` is their single authority and a
 prose copy is exactly the drift this skill was built to delete. Two arms —
 `scripts/next-up.sh survey` (interactive, carries the operator's device
@@ -1828,11 +1928,47 @@ Node equivalent of, and stays the way to drive the ranker by hand.
 **The candidate set is the Frontier *plus* due-soon ungroomed work**, which
 is wider than `CONTEXT.md`'s Frontier (Ready/In Progress, unblocked) and
 deliberately so: `select.rs` also admits `Triage`/`Grilling` items that are
-overdue, due today or due within seven days, mirroring
-`/next-up-personal`'s own `DUE_SOON_DAYS = 7` — untriaged work that has run
-out of runway is actionable whether or not it has been groomed. Neither
-`SKILL.md` nor this file may call that set "the frontier"; the glossary
-term is narrower and the prose has been corrected accordingly.
+overdue, due today or due within seven days, carrying over the Linear-era
+selector's own `DUE_SOON_DAYS = 7` — untriaged work that has run out of
+runway is actionable whether or not it has been groomed. Neither `SKILL.md`
+nor this file may call that set "the frontier"; the glossary term is
+narrower and the prose has been corrected accordingly.
+
+**It absorbed `/next-up-personal`, delegation branch and all** (#115, which
+also closes #291's first two legs). That skill is deleted, not retargeted:
+#294 had already shipped this one as the owned-API selector, so retargeting
+would have left two near-duplicate selectors, and the only thing
+`/next-up-personal` still had that this lacked was #10's protocol. So the
+protocol moved here — `get` / `move` / `note` / `unflag-agent` on
+`scripts/next-up.sh`, plus `--agent` and a `health.agent_doable` count — on
+the `items.agent` column the same PR added. **The survey half stays
+read-only; the delegation half is three CAS writes**, and `move <ref> done`
+is refused by the script with its reason, because #10's "an agent chore
+advances a chore, it does not complete it" is worth enforcing rather than
+asking for. The hosted runner arm cannot delegate at all — no credential,
+no shell — which is structural rather than a rule.
+
+**`agent` inverts the rule the other hard filter follows**, and this is the
+thing most likely to be got wrong: context is a hard filter that *untagged
+work survives* (an item naming no context is doable anywhere), while
+`agent` is a hard filter that *untagged work fails* (an item carrying no
+marker is the human's). There is no "for-human" marker; the absence is the
+marker. The filter lives in `client/next-up`'s `select::Who`, **not** in
+`rank.rs` — it narrows which items are eligible rather than reordering
+eligible ones, and #162's six steps stay frozen. It runs before the blocked
+partition, so an agent-only survey's "N more blocked upstream" counts
+agent-doable chores rather than the human's.
+
+**Findings go in `description` under `<!-- agent-findings -->` markers, and
+that is an acknowledged stopgap**, recorded in ADR-0009's 2026-08-11
+amendment: there is no comments table. Do not read it as a contradiction of
+`/microtask` deleting *its* markers in the same change — Steps were
+structured records two parties edited inside one opaque string, which is
+why they needed a merge and got a table; findings are append-only prose from
+one writer, and what they lack is not structure but *identity* (no per-note
+`version`, so no CAS and no delta lane of their own). A real `notes` table
+is the follow-up, and the flip condition is anything needing a note to be
+addressable on its own.
 See `.claude/skills/next-up-hb/SKILL.md`.
 
 ### Domain docs

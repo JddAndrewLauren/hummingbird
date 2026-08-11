@@ -61,7 +61,11 @@ command -v jq >/dev/null || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v curl >/dev/null || { echo "FAIL: curl is required" >&2; exit 1; }
 
 HOST="${SMOKE_HOST:-https://hb.twinion.net}"
-TOKEN_FILE="${HB_TOKEN_FILE:-$HOME/.hb-device-token}"
+# The canonical resting place, shared with the three skills' scripts
+# (`HB_API_TOKEN_PATH` there, the same file). One device token, one path:
+# a second location is a second thing to rotate and a second thing to
+# forget is still lying around.
+TOKEN_FILE="${HB_TOKEN_FILE:-$HOME/.config/hummingbird/api-token}"
 
 # The token never appears on the command line (where it would land in the
 # shell history and in every ps listing) — it arrives in the environment or

@@ -4,8 +4,8 @@ import { nextUp } from "./skills/next-up-hb.js";
 /**
  * The ops this build ships: `parse-capture` (#256) and `next-up-hb` (#116).
  * Adding a skill here is exactly the registration a new op needs; nothing
- * else in `server.js` names a skill directly. `microtask` still waits
- * behind the write-target decision -- both ops here write to nothing.
+ * else in `server.js` names a skill directly. `microtask` and `to-actions`
+ * use the app-owned authority interactively but are not hosted ops.
  */
 const SKILLS = new Map([
   [parseCapture.name, parseCapture],

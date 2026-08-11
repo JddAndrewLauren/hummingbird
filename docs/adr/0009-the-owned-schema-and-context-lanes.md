@@ -333,3 +333,81 @@ API — verify per source at wiring time; may be unpollable.
 - **A passthrough bag on items** — there is no foreign authority whose
   unmodelled fields need preserving; "the mirror is the export" is now
   satisfied by the schema itself.
+
+## Amendment (2026-08-11): `items.agent`, the delegation axis
+
+`SCHEMA_VERSION` 4 → 5. `items` gains one column:
+
+```sql
+agent INTEGER NOT NULL DEFAULT 0   -- #10's fourth axis: who does this
+```
+
+**Why the schema had to grow at all.** Issue #10 fixed a delegation
+protocol — mark a chore agent-doable, claim it, leave findings, clear the
+mark on finish — and told later work not to re-decide it. The Linear-era
+`/next-up-personal` expressed that with an `agent` *label*. This schema
+"dissolves `labels` into typed `size`/`energy`/`context`" (the Decision
+section above), so #116's `/next-up-hb` shipped with no delegation branch
+at all and #291 was filed to design one. This is that design's first half.
+
+**Why a column and not `context`.** Context is the one *hard* filter — it
+answers *where* can this be done, and an item with no context survives it.
+Delegation answers *who does this*, and its default is the opposite: an
+unmarked item is the human's, so an agent-only survey must **exclude**
+unmarked items. Folding the two into one string would make that filter's
+meaning depend on which question was being asked.
+
+**Why a column and not a table.** #291 left this open, weighing a column
+(`ALTER TABLE` through `add_missing_columns`, ADR-0015's precedent) against
+a small table (`CREATE TABLE IF NOT EXISTS` plus one more delta lane). The
+column wins on the evidence available: there is exactly one axis, it is a
+per-item boolean with no attributes of its own, and it must ride the delta
+pull a device already makes. A table buys extensibility for a *second*
+axis nobody has named. The flip condition is written down rather than
+implied: **the day a second who-does-this axis is real** — an assignee, a
+named agent, a delegation with its own state — a boolean column is the
+wrong shape and a table is worth the migration.
+
+**The findings lane is `description`, under a marker, and it is an
+acknowledged stopgap.** #291's second leg — somewhere for an agent to leave
+what a human acts on in ten seconds — has no table. `description` is the
+only free-prose field this schema has, so the protocol's finish step
+appends to it under a delimited section rather than waiting for one.
+
+That deserves a defence, because **this same change deletes marker-
+delimited machinery from `/microtask`** and the two must not be confused.
+What made `<!-- microtask:start -->` wrong was never the markers: it was
+that Steps are *structured records two parties edit*, so every write had to
+read-modify-write around a human's edits inside an opaque blob, and a
+`- [x]` was a checkbox pretending to be a column. Steps now have a table
+with a `done` column and a `version`, and the markers went with the need.
+Findings are the opposite shape — append-only prose, one writer, read by a
+human and by nothing mechanical. Prose in the prose field is where it
+belongs; what it lacks is not structure but *identity* (no per-note
+`version`, so no CAS, no delta lane of its own, and no way to show a note
+in the client apart from the description it sits in).
+
+The re-run hazard #10 worries about — an agent redoing its research into a
+second near-identical comment — is closed by the marker axis above, not by
+the lane: clearing `agent` on finish is what stops the next survey
+re-offering the hand-off at all. **The follow-up is a real `notes` table**,
+filed as its own issue, and the flip condition is anything that needs a
+note to be addressable on its own: a second note on one item, a note the
+client renders as a distinct thing, or a note another device may edit.
+
+**What it is not wired into.** `agent` is not in
+`server/domain/src/event.rs`'s `CORE_FIELDS` or the kind registry, so it is
+not a rule condition and does not appear in the rules UI; and no client UI
+sets it. The skill is its only writer today. Both are scope calls, not
+oversights — a delegation marker that can fire a push notification is a
+different feature.
+
+**The migration's own trap, recorded because it differs from ADR-0015's.**
+`add_missing_columns` grows this column with a real `ALTER TABLE`, and
+`CREATE_ITEMS` must spell the table exactly as SQLite splices it or the
+frozen-DDL byte-equality tests fail. The splice point is **the start of the
+table-constraint list**, falling back to the closing paren when a table has
+none — so `alerts` (which ends in `UNIQUE(source, source_key)`) takes
+`subject_key` inline on `version`'s line, while `items` (which has no table
+constraint) takes `agent` after the newline, immediately before the `)`.
+The two are formatted differently on purpose.
