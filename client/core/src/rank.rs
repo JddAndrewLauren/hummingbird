@@ -51,7 +51,7 @@
 use hummingbird_domain::{deadline_sort_key, Energy, Item, Size, Stage};
 use serde::{Deserialize, Serialize};
 
-use crate::calendar::{is_actionable, CurrentOrNext, EventRecord};
+use crate::calendar::{is_actionable, CurrentOrNext, EventRecord, EventWhen};
 
 /// The 30-minute window step 5's calendar nudge fires inside.
 const NUDGE_WINDOW_MS: i64 = 30 * 60 * 1000;
@@ -72,8 +72,9 @@ pub struct Axes {
 /// "Now", caller-supplied — the one door through which the current instant
 /// enters [`rank`]. Two shapes of the same instant, because the two things
 /// `rank` compares it against are naive-local ([`Item::deadline`]) and a
-/// real instant ([`EventRecord`]'s `instant_ms`); deriving one from the
-/// other would need a time zone this crate has no business guessing at.
+/// real instant ([`EventWhen::Timed`]'s own milliseconds); deriving one
+/// from the other would need a time zone this crate has no business
+/// guessing at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Now {
     /// Naive local "now", in exactly [`Item::deadline`]'s own shape
@@ -258,33 +259,46 @@ fn size_fits(item: &Item, axes: &Axes) -> bool {
     )
 }
 
+/// The start instant of `event`, or `None` for an all-day event.
+///
+/// **An all-day event can never fire the nudge**, and that is a property of
+/// the shape rather than a rule applied over it (ADR-0015's 2026-08-10
+/// amendment): [`EventWhen::AllDay`] carries civil dates and no instant, so
+/// there is no moment to be thirty minutes before. Resolving one to an
+/// instant here would need a time zone this crate has no business guessing
+/// — the same reason [`Now`] arrives in two shapes.
+fn timed_start_ms(event: &EventRecord) -> Option<i64> {
+    match event.when {
+        EventWhen::Timed { start_ms, .. } => Some(start_ms),
+        EventWhen::AllDay { .. } => None,
+    }
+}
+
 /// The next event start after `now`, reading `today` instead of
 /// `current_or_next` whenever an in-progress event (timed or all-day —
 /// [`CurrentOrNext::InProgress`] covers both) would otherwise mask it.
-/// `None` when nothing is upcoming, or when no calendar context was
+/// `None` when nothing timed is upcoming, or when no calendar context was
 /// supplied at all.
 ///
 /// The masked scan filters `today` through the exact predicate
 /// [`crate::calendar::query`]'s own reads use ([`is_actionable`]) — the
-/// snapshot keeps cancelled instances (`showDeleted=true`, stored with
-/// `start == end`), and that module's invariant is explicit: a cancelled
+/// snapshot keeps cancelled instances (`showDeleted=true`, stored as a
+/// zero-length span), and that module's invariant is explicit: a cancelled
 /// future instance must never become "Next" or bias task ranking.
 fn next_start_ms(calendar: Option<&CalendarContext>, now: &Now) -> Option<i64> {
     let calendar = calendar?;
     match calendar.current_or_next {
-        CurrentOrNext::Upcoming(event) => Some(event.start.instant_ms),
+        CurrentOrNext::Upcoming(event) => timed_start_ms(event),
         CurrentOrNext::InProgress(_) => calendar
             .today
             .iter()
             .filter(|event| is_actionable(event))
-            .filter(|event| event.start.instant_ms > now.epoch_ms)
-            .min_by(|a, b| {
-                a.start
-                    .instant_ms
-                    .cmp(&b.start.instant_ms)
-                    .then(a.provider_event_id.cmp(&b.provider_event_id))
+            .filter_map(|event| {
+                timed_start_ms(event).map(|start_ms| (start_ms, event.provider_event_id.as_str()))
             })
-            .map(|event| event.start.instant_ms),
+            .filter(|(start_ms, _)| *start_ms > now.epoch_ms)
+            .min()
+            .map(|(start_ms, _)| start_ms),
         CurrentOrNext::None => None,
     }
 }
@@ -377,7 +391,7 @@ pub fn rank(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::calendar::{EventStatus, EventTime};
+    use crate::calendar::{EventStatus, EventWhen};
 
     fn item(id: &str) -> Item {
         Item {
@@ -416,9 +430,7 @@ mod tests {
             provider_event_id: id.to_string(),
             calendar_id: "cal-primary".to_string(),
             title: id.to_string(),
-            start: EventTime::timed(start_ms, "America/Los_Angeles"),
-            end: EventTime::timed(end_ms, "America/Los_Angeles"),
-            all_day: false,
+            when: EventWhen::timed(start_ms, end_ms),
             recurrence_id: None,
             location: None,
             organizer: None,
@@ -721,10 +733,7 @@ mod tests {
         let now = now("2026-08-10T09:00", 0);
 
         let results = rank(&[deep, quick], &axes, &now, None);
-        assert_eq!(
-            ids(&results),
-            vec!["quick".to_string(), "deep".to_string()]
-        );
+        assert_eq!(ids(&results), vec!["quick".to_string(), "deep".to_string()]);
         assert!(results[0].reasons.contains(&ReasonCode::SizeFits));
         assert!(!results[1].reasons.contains(&ReasonCode::SizeFits));
     }
@@ -893,19 +902,21 @@ mod tests {
             .any(|c| c.reasons.contains(&ReasonCode::QuickBeforeNextStart)));
     }
 
+    fn all_day_event(id: &str, start_date: &str, end_date: &str) -> EventRecord {
+        EventRecord {
+            when: EventWhen::all_day(start_date, end_date),
+            ..timed_event(id, 0, 0)
+        }
+    }
+
     #[test]
     fn an_all_day_event_masks_the_next_start_the_same_way_as_in_progress() {
-        // An all-day event reports `InProgress` for any instant inside its
-        // span (see `calendar::query::current_or_next_event`), so it takes
-        // the exact same masking path as a normal in-progress meeting.
-        let day_ms = 24 * 60 * 60 * 1000_i64;
-        let all_day = {
-            let mut e = timed_event("conference", 0, day_ms);
-            e.all_day = true;
-            e.start = EventTime::all_day(0, "America/Los_Angeles");
-            e.end = EventTime::all_day(day_ms, "America/Los_Angeles");
-            e
-        };
+        // An all-day event covering today reports `InProgress` (see
+        // `calendar::query::current_or_next_event`), so it takes the exact
+        // same masking path as a normal in-progress meeting: the nudge is
+        // decided by the next TIMED start in `today`, not by the all-day
+        // event itself.
+        let all_day = all_day_event("conference", "2026-08-10", "2026-08-11");
         let lunch_meeting = timed_event("lunch", 12 * 60 * 60 * 1000, 13 * 60 * 60 * 1000);
 
         let quick = {
@@ -926,6 +937,60 @@ mod tests {
         assert!(results[0]
             .reasons
             .contains(&ReasonCode::QuickBeforeNextStart));
+    }
+
+    #[test]
+    fn an_all_day_event_never_fires_the_nudge_itself() {
+        // ADR-0015's amendment made this structural: an all-day event
+        // carries civil dates and no instant, so there is no moment to be
+        // thirty minutes before — whether it arrives as the upcoming event
+        // or as the only other thing on today's calendar. Under the old
+        // flattened shape it carried a local-midnight instant, which a
+        // device reading in another zone could land inside the nudge
+        // window for no reason anyone could see.
+        let tomorrow_off = all_day_event("day-off", "2026-08-11", "2026-08-12");
+
+        let quick = {
+            let mut i = item("quick");
+            i.size = Some(Size::Quick);
+            i.created_at = 500;
+            i
+        };
+        let older_non_quick = {
+            let mut i = item("older");
+            i.size = Some(Size::Short);
+            i.created_at = 100;
+            i
+        };
+
+        let axes = Axes::default();
+        let now = now("2026-08-10T23:40", 23 * 60 * 60 * 1000 + 40 * 60 * 1000);
+
+        for calendar in [
+            CalendarContext {
+                current_or_next: CurrentOrNext::Upcoming(&tomorrow_off),
+                today: std::slice::from_ref(&tomorrow_off),
+            },
+            CalendarContext {
+                current_or_next: CurrentOrNext::InProgress(&tomorrow_off),
+                today: std::slice::from_ref(&tomorrow_off),
+            },
+        ] {
+            let results = rank(
+                &[older_non_quick.clone(), quick.clone()],
+                &axes,
+                &now,
+                Some(&calendar),
+            );
+            assert_eq!(
+                ids(&results),
+                vec!["older".to_string(), "quick".to_string()],
+                "an all-day event must not promote the quick item"
+            );
+            assert!(!results
+                .iter()
+                .any(|c| c.reasons.contains(&ReasonCode::QuickBeforeNextStart)));
+        }
     }
 
     #[test]

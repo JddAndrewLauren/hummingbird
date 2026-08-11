@@ -10,19 +10,17 @@ chrono = { version = "0.4.45", features = ["serde"] }
 # The owned-schema wire DTOs and domain records (ADR-0008/0009), compiled by
 # both sides — this crate deserialises them, never redefines them (#100/#101).
 hummingbird-domain = { path = "../../server/domain" }
-# The IANA time zone database, for one job: resolving a Google all-day
-# boundary (`date`, no time) to the instant of local midnight in the
-# calendar's own zone. `chrono` alone cannot — it has no zone table — and
-# guessing UTC shifts every all-day event by the calendar's offset. Default
-# features off drops the `chrono-tz-build` path; `std` is all the lookup
-# needs, and it compiles for wasm32 unchanged.
-#
-# It is not free: the zone table takes the release wasm from 525 KB to
-# 1.41 MB (brotli 175 KB -> 247 KB over the wire). `filter-by-regex` would
-# trim it, but the set of zones is whatever calendars the user connects, so
-# there is nothing to filter to. ~70 KB of transfer, once, cached by the
-# service worker, is the price of all-day events landing on the right day.
-chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
+# NO `chrono-tz`, deliberately, and it is not an omission to be repaired.
+# It was here for exactly one job — resolving a Google all-day boundary
+# (`date`, no time) to the instant of local midnight in the calendar's own
+# zone — and ADR-0015's 2026-08-10 amendment deleted that job: an all-day
+# event now carries the provider's civil dates verbatim
+# (`calendar::EventWhen::AllDay`), because flattening a day to an instant
+# and reading it back one zone east lands a calendar day out. This crate
+# resolves no civil date to an instant anywhere; the reader does, in its
+# own zone. Adding a zone table back would re-open that door, and it is not
+# free either: the table took the release wasm from 525 KB to 1.41 MB
+# (brotli 175 KB -> 247 KB over the wire), and dropping it takes that back.
 # The live HTTP transports, and the ONLY thing in this crate that reaches
 # outside the process. Optional (see `[features]` below) because
 # `client/next-up` compiles this crate for `rank()` alone — a pure function

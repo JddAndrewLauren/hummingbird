@@ -89,9 +89,23 @@ schema file the first time this skill grows one, don't restate it from memory.
 
 `EventRecord` is #70's struct, field-for-field, serialized as-is (see
 `client/core/src/calendar/event.rs`): `provider_event_id`, `calendar_id`, `title`,
-`start` / `end` (`{instant_ms, time_zone}`), `all_day`, `recurrence_id`, `location`,
-`organizer`, `status`, `provider_updated_at_ms`, `html_link`. No field here is
-Google-specific and none is renamed for this skill.
+`when`, `recurrence_id`, `location`, `organizer`, `status`,
+`provider_updated_at_ms`, `html_link`. No field here is Google-specific and none is
+renamed for this skill.
+
+`when` is a two-armed, `kind`-tagged union (ADR-0015's 2026-08-10 amendment), and
+which arm an event is on is the *only* place all-day-ness is recorded — there is no
+`all_day` flag beside it, and no time zone on either arm:
+
+```jsonc
+{"kind": "timed",   "start_ms": 1786551000000, "end_ms": 1786554600000}
+{"kind": "all_day", "start_date": "2026-09-09", "end_date": "2026-09-16"}  // end exclusive
+```
+
+An all-day event carries the provider's civil dates verbatim and no instant, so it can
+never fire the 30-minute nudge — there is no moment to be thirty minutes before.
+Flattening one to a midnight instant is the "India in **394** days" defect that
+amendment exists to prevent; never do it when composing this block by hand.
 
 **How it's supplied.** The hosted skill-runner (#41) stays context-blind — calendar
 context arrives, if at all, in the `{skill, args}` payload from the calling device's
@@ -105,17 +119,20 @@ is the default and the common case until #73 ships.
 **Field present:**
 
 1. **Display first.** Before the top pick, print one line for `current_or_next`:
-   - `in_progress` → `Now: <title> (until <end local time>)`
-   - `upcoming` → `Next: <title> at <start local time>`
+   - a timed `in_progress` event → `Now: <title> (until <end local time>)`
+   - an all-day `in_progress` event → `Now: <title> (all day)`
+   - a timed `upcoming` event → `Next: <title> at <start local time>`
+   - an all-day `upcoming` event → `Next: <title> (all day, <start_date>)`
    - `none` → omit the line entirely (nothing to show, not an error)
-2. **Soft size-ranking shift, never a filter.** First find **the next start**: the
-   soonest event start strictly after the declared "now". That is
-   `current_or_next.event.start` when `status` is `upcoming` — but when the status is
-   `in_progress` the next start is *not* in that field at all, so read it off `today`
-   instead (the earliest entry whose `start` is after "now"). Do the same when the
-   in-progress event is all-day: an all-day event runs all day and would otherwise mask
-   every meeting behind it, which is exactly when a 30-minute warning matters most. If
-   there is no such start, there is no shift.
+2. **Soft size-ranking shift, never a filter.** First find **the next timed start**:
+   the soonest timed event `when.start_ms` strictly after the declared "now". Use
+   `current_or_next.event.when.start_ms` only when that event is both `upcoming` and
+   `kind: "timed"`; otherwise read `today` for its earliest timed entry with a
+   `when.start_ms` after "now". Do this when the in-progress event is all-day too: an
+   all-day event runs all day and would otherwise mask every meeting behind it, which is
+   exactly when a 30-minute warning matters most. All-day dates are deliberately not
+   converted to instants for this lookup, so an all-day event itself never triggers this
+   30-minute shift. If there is no such timed start, there is no shift.
 
    If the next start is **within 30 minutes** of the declared "now",
    treat it as an added signal inside ranking step 5 (Energy/size fit, below): a

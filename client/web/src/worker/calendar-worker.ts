@@ -1,5 +1,6 @@
 import type {
   CalendarEventDTO,
+  CalendarEventWhenDTO,
   CalendarListEntryDTO,
   CalendarReadDTO,
   CalendarWorkerRequest,
@@ -28,7 +29,13 @@ export interface CalendarHostLike {
   onTimer(nowMs: number): Promise<string>;
   takeCredentialEvents(): string;
   listCalendars(): Promise<string>;
-  eventsInInterval(startMs: number, endMs: number, nowMs: number): Promise<string>;
+  eventsInInterval(
+    startMs: number,
+    endMs: number,
+    startDate: string,
+    endDate: string,
+    nowMs: number,
+  ): Promise<string>;
 }
 
 interface RawCredentialEvent {
@@ -45,18 +52,18 @@ interface RawCalendarListResponse {
 // serde output by `client/ffi-web/src/calendar_host.rs`'s own
 // `the_wire_shape_is_kind_events_freshness_never_a_flattened_shape` test.
 
-interface RawCalendarEventTime {
-  instant_ms: number;
-  time_zone: string;
-}
+// `when` is serde's internally-tagged `EventWhen` — the two arms and
+// their tag values are pinned by `calendar_host.rs`'s own
+// `a_full_read_serializes_every_key_calendar_worker_ts_names_in_raw_calendar_event`.
+type RawCalendarEventWhen =
+  | { kind: "all_day"; start_date: string; end_date: string }
+  | { kind: "timed"; start_ms: number; end_ms: number };
 
 interface RawCalendarEvent {
   provider_event_id: string;
   calendar_id: string;
   title: string;
-  start: RawCalendarEventTime;
-  end: RawCalendarEventTime;
-  all_day: boolean;
+  when: RawCalendarEventWhen;
   recurrence_id: string | null;
   location: string | null;
   organizer: string | null;
@@ -71,8 +78,14 @@ interface RawCalendarEventsResponse {
   freshness: RawFreshness | null;
 }
 
-function mapCalendarEventTime(raw: RawCalendarEventTime) {
-  return { instantMs: raw.instant_ms, timeZone: raw.time_zone };
+/** The one place the wire's snake_case two-arm shape becomes the DTO's
+ * camelCase one. Arm for arm and nothing else: no instant is derived from
+ * a date here (or anywhere on this side of the worker), which is what
+ * ADR-0015's amendment is for. */
+function mapCalendarEventWhen(raw: RawCalendarEventWhen): CalendarEventWhenDTO {
+  return raw.kind === "all_day"
+    ? { kind: "allDay", startDate: raw.start_date, endDate: raw.end_date }
+    : { kind: "timed", startMs: raw.start_ms, endMs: raw.end_ms };
 }
 
 function mapCalendarEvent(raw: RawCalendarEvent): CalendarEventDTO {
@@ -80,9 +93,7 @@ function mapCalendarEvent(raw: RawCalendarEvent): CalendarEventDTO {
     providerEventId: raw.provider_event_id,
     calendarId: raw.calendar_id,
     title: raw.title,
-    start: mapCalendarEventTime(raw.start),
-    end: mapCalendarEventTime(raw.end),
-    allDay: raw.all_day,
+    when: mapCalendarEventWhen(raw.when),
     recurrenceId: raw.recurrence_id,
     location: raw.location,
     organizer: raw.organizer,
@@ -174,7 +185,13 @@ export async function handleCalendarRequest(
     }
     case "getCalendarEvents": {
       const raw = JSON.parse(
-        await host.eventsInInterval(request.startMs, request.endMs, request.nowMs),
+        await host.eventsInInterval(
+          request.startMs,
+          request.endMs,
+          request.startDate,
+          request.endDate,
+          request.nowMs,
+        ),
       ) as RawCalendarEventsResponse;
       if (raw.kind === "busy") {
         // No answer, not an empty answer — an empty `events` read renders

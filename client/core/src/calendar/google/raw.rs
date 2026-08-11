@@ -11,12 +11,11 @@ pub struct RawEventsPage {
     pub items: Vec<RawEvent>,
     #[serde(rename = "nextPageToken")]
     pub next_page_token: Option<String>,
-    /// The calendar's own IANA time zone, which `events.list` reports once
-    /// per page rather than per event. It is the only thing that gives an
-    /// all-day boundary (`date`, no time, no zone of its own) a real
-    /// instant — see [`super::map::map_event`].
-    #[serde(rename = "timeZone")]
-    pub time_zone: Option<String>,
+    // The page's own `timeZone` is deliberately NOT transcribed: it
+    // existed here only to resolve all-day boundaries to local-midnight
+    // instants, which ADR-0015's 2026-08-10 amendment forbids (an all-day
+    // event keeps the provider's civil dates verbatim). Nothing reads it,
+    // so nothing parses it.
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,15 +43,17 @@ pub struct RawOrganizer {
     pub display_name: Option<String>,
 }
 
-/// Google's `EventDateTime`: either a `date` (all-day) or a `dateTime` +
-/// `timeZone` (timed). Exactly one of `date`/`date_time` is expected to be
-/// present per the API contract; [`super::map`] treats neither being present
-/// as malformed input.
+/// Google's `EventDateTime`: either a `date` (all-day) or a `dateTime`
+/// (timed, carrying its own UTC offset). Exactly one of `date`/`date_time`
+/// is expected to be present per the API contract; [`super::map`] treats
+/// neither being present as malformed input.
+///
+/// The boundary's optional `timeZone` is deliberately not transcribed
+/// either: a `dateTime` already carries the offset that fixes its instant,
+/// and a zone is exactly what ADR-0015's amendment says must not be stored.
 #[derive(Debug, Deserialize)]
 pub struct RawEventDateTime {
     pub date: Option<String>,
     #[serde(rename = "dateTime")]
     pub date_time: Option<String>,
-    #[serde(rename = "timeZone")]
-    pub time_zone: Option<String>,
 }

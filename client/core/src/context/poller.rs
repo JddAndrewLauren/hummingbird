@@ -1,9 +1,11 @@
 //! [`ContextPoller`]: the poll trigger + credential seam for one context
 //! provider (issue #72, per ADR-0005's placement decision).
 
-use crate::storage::{load_snapshot, save_snapshot, Envelope, Persistable, SnapshotStore};
 #[cfg(test)]
 use crate::storage::PersistableSealed;
+use crate::storage::{
+    load_snapshot_at_version, save_snapshot, Envelope, Persistable, SnapshotStore,
+};
 
 use super::credential::CredentialState;
 
@@ -124,8 +126,22 @@ where
     /// nothing has been successfully polled yet — the read side of the
     /// same store `attempt` writes through, for a host (#73's context tile)
     /// to render without needing its own store handle.
+    ///
+    /// **Version-discarding** ([`load_snapshot_at_version`], the storage
+    /// module's documented idiom for a caller whose answer to a stale
+    /// version is "throw it away"): a context mirror is disposable by
+    /// construction — it is a copy of what the provider says, re-fetchable
+    /// on the next poll — so a snapshot written at another
+    /// `schema_version` reads as "nothing polled yet" and costs one poll
+    /// interval of `not_read`, rather than failing the read outright.
+    /// Reaching for the version-blind [`crate::storage::load_snapshot`] instead
+    /// would parse the old payload as the new type and, on the commonest
+    /// kind of change, error the read forever until storage is cleared by
+    /// hand.
     pub async fn current_snapshot(&self) -> Option<Envelope<P::Snapshot>> {
-        load_snapshot(&self.store).await.unwrap_or(None)
+        load_snapshot_at_version(&self.store, self.schema_version)
+            .await
+            .unwrap_or(None)
     }
 
     /// Drains every [`CredentialEvent`] recorded since the last drain. Poll-
@@ -168,7 +184,8 @@ where
                 // An atomic replace-or-untouched write (#68): a storage
                 // failure here leaves the previous snapshot intact, same as
                 // any other transient failure.
-                match save_snapshot(&self.store, self.schema_version, now_ms as u64, &snapshot).await
+                match save_snapshot(&self.store, self.schema_version, now_ms as u64, &snapshot)
+                    .await
                 {
                     Ok(()) => PollOutcome::Succeeded,
                     Err(_) => PollOutcome::TransientFailure,
@@ -219,7 +236,7 @@ mod tests {
     }
 
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     impl ProviderPoller for ScriptedPoller {
         type Snapshot = FakeSnapshot;
 
@@ -419,6 +436,28 @@ mod tests {
         let snapshot = poller.current_snapshot().await.unwrap();
         assert_eq!(snapshot.as_of, 9_000);
         assert_eq!(snapshot.payload.events, vec!["evt-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_written_at_another_schema_version_reads_as_nothing_polled_yet() {
+        // The version-discard migration (#46's two-arm event shape bumped
+        // the calendar lane 1 -> 2): a mirror written by an older build is
+        // thrown away rather than parsed, and the next poll refills it.
+        let store = MemorySnapshotStore::default();
+        save_snapshot(
+            &store,
+            1,
+            9_000,
+            &FakeSnapshot {
+                events: vec!["written-at-v1".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+        let poller = ContextPoller::new("google_calendar", ScriptedPoller::new(vec![]), store, 2);
+
+        assert_eq!(poller.current_snapshot().await, None);
     }
 
     #[tokio::test]
