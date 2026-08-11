@@ -19,6 +19,30 @@ decided upstream; read `docs/sweeper.md` before touching any of them.
 server (ADR-0008); it retargets to `POST /api/items` when the owned stack is
 daily-usable.
 
+## The skill runner
+
+`runner/` (#41, #256) is the fourth actor #41's grilling named: a scale-to-zero
+Fly app, structurally a sibling of the sweeper that takes orders over HTTP
+(`POST /run {skill, args}`, one static bearer token) instead of a cron tick —
+if it is down, capture/read/triage/sync all still work, only "run a skill for
+me" degrades. Node stdlib-only server code (`node:http`, `node:child_process`,
+no framework), unit-tested with an injected fake `spawn` so no test needs a
+real `claude` binary. The response is an SSE/NDJSON progress stream ending in
+`{ok, skill, result, error?}` — streaming defeats Fly's 60s idle-connection
+kill — built from `claude -p --output-format json --json-schema <path>`,
+where the schema is versioned per-skill beside its `SKILL.md`. **v1 ships
+`parse-capture` only** (#256, 2026-08-10 decision): #42's own minimal
+`{title, notes}` schema, writing to nothing — the write-target question
+(Linear vs. the ADR-0008 owned server) is explicitly deferred, which is what
+lets this ship without taking that decision early. `next-up-personal` and
+`microtask` wait behind it. The image bakes in the Claude Code CLI and
+whichever skills v1 ships (today: `.claude/skills/parse-capture/` alone) —
+a skill change ships by `fly deploy`, the image *is* the skill version.
+**#256 is build-only**: `runner/`, its `Dockerfile`, and the deploy runbook
+are agent-built; provisioning (`fly launch`, secrets, minting the bearer
+token) is an operator gate, the same posture #237's server deploy used. Full
+shape, contract and the deploy runbook: `docs/runner.md`.
+
 ## The authority server
 
 `server/` is the app-owned authority (ADR-0008/0009), its own Cargo
