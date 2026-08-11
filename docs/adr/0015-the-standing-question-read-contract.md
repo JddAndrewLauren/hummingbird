@@ -439,10 +439,19 @@ source bump does not orphan a binding in a table that has no DELETE.
   optional field on the ingest DTO, the frozen-DDL text in
   `handler_fixtures/schema.rs`, and envelope parsing for
   `context_snapshots`.
-- **The source registry** — `city-waste/v2` is not registered (`v1` is
-  retired), and the race payload shape is explicitly a prototype guess with
-  no feed chosen yet. Both need registering before their panes are real;
-  the envelope's `schema` field has no legal value for either until then.
+- **The source registry** — both lanes this ADR named are now registered.
+  `city-waste/v2` enrolled at #254 (`Writes::Both`), and the race lane at
+  #266 as `race-schedule/v1` (`Shape::Event`, `Writes::Both`,
+  `Expiry::Always("the race's start time")`), which is also where the
+  payload stopped being a prototype guess: the feed is Jolpica
+  (`api.jolpi.ca/ergast/f1/current.json`, the maintained Ergast successor)
+  and the body is `{events: [{name, locality, starts_at_ms, sessions: [{kind,
+  label, starts_at_ms}]}]}` — epoch ms and no `zone`, because a race start
+  is an instant rather than a civil date, and the whole season unfiltered,
+  because "next" is a read-time answer. `server/race-poll`'s
+  `tests/fixtures/golden-body.json` is that body's committed contract, which
+  #119's pane parser is written against. The envelope's `schema` now has a
+  legal value for both.
 - **#46** — the two-arm event shape above, and it now blocks two panes.
 - **#217** — unchanged and still open, but worth naming here: the
   `item-threshold/v1` resolution pass has no bearing on panes, because
@@ -452,4 +461,4 @@ source bump does not orphan a binding in a table that has no DELETE.
   carries open questions its verdict did not close (the weekend window's
   Friday edge and its degenerate Sunday-night case; the vacation +90d
   horizon, landing day, and what the pane reads mid-trip; the race schedule
-  source itself).
+  source itself, closed at #266 on Jolpica before #119's pane starts).

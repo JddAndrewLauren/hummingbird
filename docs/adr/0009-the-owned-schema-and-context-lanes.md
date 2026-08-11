@@ -257,6 +257,22 @@ lanes above, decided in the 2026-08-09 grilling:
   may later machine-raise a "race in 90 minutes" alert (rule 2's threshold
   carve-out) — the question answers, the alert interrupts, never one
   mechanism.
+
+  **Note (#266, 2026-08-11): "the same cron" shipped as two, and the
+  principle survives the split.** The lane has two jobs and only one needs
+  the network: `race-schedule-poll` fetches the feed every six hours and
+  writes the row, `race-alert-poll` decides "is a race inside the lead time"
+  — a pure function of (stored schedule, now) — every fifteen minutes. One
+  cron for both would have forced a 15-minute declared `polled_every_ms`,
+  whose ADR-0015 `2 × cadence` staleness threshold GitHub Actions' own cron
+  jitter trips routinely, requiring an amendment to carve this lane out of
+  that rule; the split deletes that special case instead of adding one. The
+  principle this bullet states is that the *pane* must not be what
+  interrupts, and that holds unchanged: the alert is still a separate
+  mechanism from the answer, and neither binary reads the other's output as
+  a decision. The enrolled source is `race-schedule/v1` (one row per series,
+  the series as the row `key`), not the per-series `source` strings sketched
+  above. IndyCar has no adapter yet and renders as a gap.
 - **Weekend plans** — no new data: calendar-mirror events in the window,
   plus items *scheduled* or *due* in it. This is what forced the
   `scheduled_date`/`deadline` split — a do-date is a preference, a deadline

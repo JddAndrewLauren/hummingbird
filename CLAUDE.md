@@ -478,8 +478,10 @@ in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
 (#135, below) is the second Actions `schedule:` on the same reasoning,
 `.github/workflows/calendar-poll.yml` (#136, below) is the third, and
 `.github/workflows/graph-mail-poll.yml`/`graph-calendar-poll.yml` (#137,
-below) are the fourth and fifth — see any of their headers for why a
-repeated scoped exception does not reopen the general ban.
+below) are the fourth and fifth, and
+`.github/workflows/race-schedule-poll.yml`/`race-alert-poll.yml` (#266,
+below) the sixth and seventh — see any of their headers for why a repeated
+scoped exception does not reopen the general ban.
 
 **The holiday-week alert this lane raises actually rings** (#255, ADR-0013's
 2026-08-11 amendment). `POST /api/alerts` triggers delivery inline: the
@@ -709,6 +711,110 @@ poller = Actions secrets, not the Worker secret ADR-0011's original table
 names), and the tenant-wide-vs-scoped question is posted as an explicit
 operator question on issue #137 rather than decided here — cross-referencing
 issue #135's still-open credential question, the same category of decision.
+
+## The race-schedule poller
+
+`server/race-poll/` (#266) is the lane behind the next-race standing
+question, and the first here to ship **two binaries with two crons for one
+lane**: `race-schedule-poll` (`0 */6 * * *`) fetches the season and writes
+one `context_snapshots` row per adapted series; `race-alert-poll`
+(`*/15 * * * *`) reads that row back through `GET /api/snapshots` and raises
+the race-start alert, fetching nothing upstream and writing no snapshot. A
+workspace member so CI gates it, never a dependency of
+`hummingbird-authority-worker` (wasm32, and this crate holds an HTTP
+client), and the same split every poller here keeps — everything decidable
+in the lib and natively tested, each `main.rs` holding only `std::env`, the
+fetches and the writes.
+
+**The split is not a competing clock, and it deletes a special case rather
+than adding one.** ADR-0009 said "the same cron that refreshes the snapshot
+is what may later machine-raise"; the lane has two jobs and only one needs
+the network, since "is a race starting inside the lead time" is a pure
+function of (stored schedule, now). What the split buys, in order:
+`polled_every_ms` stays **6h**, so ADR-0015's `2 × cadence` staleness rule
+works unchanged at 12h — a single `*/15` cron for both would have needed a
+15-minute declared cadence whose `2 ×` is a 30-minute threshold that GitHub
+Actions' own cron jitter trips routinely, forcing an ADR-0015 amendment to
+carve this lane out. It also drops Jolpica traffic from 96 to 4 requests a
+day and keeps alert precision at ±15 minutes, the first cadence at which a
+90-minute lead means what it says. CLAUDE.md's competing-clock ban is about
+two clocks owning **one cadence**; here two clocks own two different jobs,
+as `graph-poll` already ships two binaries. ADR-0009 carries the one-line
+note, not a reversal. The rejected alternative — `*/15` with a conditional
+fetch when the stored snapshot has aged — fails for its own reason: the
+workflow's cron and `polled_every_ms` would then disagree and the header
+could no longer state the cadence. (#120's "`fetched_at` is part of the
+value" constrains the *server handler*, not how often a poller fetches
+upstream; that misreading is tempting and was made first.)
+
+**The feed is [Jolpica](https://github.com/jolpica/jolpica-f1)** — the
+maintained Ergast successor — `GET /ergast/f1/current.json`, the whole
+season in one 14 KB call, `current` deliberately over a hardcoded year and
+over `current/next.json` (storing "the next race" would be storing an
+answer, ADR-0002). Two facts live in the adapter headers because a later
+tidy-up deletes them: **a custom `User-Agent` is load-bearing, not
+politeness** (an unset or default UA is answered 403, measured), and Jolpica
+is volunteer-run with no SLA and rate limits it says may tighten. It is the
+first upstream here needing **no credential at all**. **IndyCar is
+deferred** and the deferral is the honest answer: no free JSON API of
+comparable standing and no authoritative ICS, and the per-event scrape is
+materially worse than the council page `city-waste` reads (N+1 fetches, no
+year on the date, a broadcast time zone). `indycar` stays legal in the
+`race-series` binding, has no adapter, is skipped-and-logged, and renders as
+ADR-0015's `bound-but-unacquired` gap. The recorded cost: `race-schedule`
+reaches production with exactly **one** subject, so the
+`(source, subject_key)` ↔ `(source, key)` join ADR-0015 added a column for —
+citing this lane as its forcing case — has never had two subjects in it.
+
+**The occurrence key is the start instant, not `season:round`** —
+`race_schedule_v1_key(series, starts_at_ms)` → `"f1:1772942400000"`.
+`season:round` is tidier and is what the feed hands over, and it **fails to
+ring on a postponement**: the row already exists, the title is clock-free by
+design so nothing source-owned changes, `restamp_on_change` therefore does
+not restamp, and a race moved by a month is silent. Keying on the instant
+makes a rescheduled race a new occurrence, and self-cleans, since
+`expires_at = starts_at_ms` retires the abandoned one at its own past start.
+It is also what lets `season`/`round` stay out of the body. `alert::plan`
+**takes no clock**, for `city-waste`'s reason with more force — a race pane
+whose whole subject is a countdown is the most tempting possible place to
+write "in 42 minutes", and that phrase would restamp `raised_at` on every
+one of the ~6 re-posts inside one 90-minute window and undo the reader's
+dismissal.
+`re_posting_the_same_race_alert_is_byte_identical_at_every_lead_offset` is
+the only thing that catches it, and it compares the whole serialized
+payload. `LEAD_MS` (90 min) is a named `const` in the lib like
+`ALARM_INTERVAL_MS` — "configured" means named and documented, not
+user-tunable. The binary is stateless and re-posts on every run inside the
+window, which is safe because `deliver`'s dedupe is transitions-only and its
+row commits before any send.
+
+**Four outcomes, and only two are failures.** A dead feed or a shape the
+parser does not recognise exits non-zero and writes nothing (`fetched_at`
+freezes, the pane bands stale at 12h, Actions emails the run) — but an
+**off-season** (fetch fine, every race in the past) writes the snapshot
+normally, and an **unset or non-text binding** writes nothing and exits 0.
+Not configured is not broken, and neither is a winter; routing either
+through the failure path would have the pane say "stale, cannot answer" when
+the true answer is "nothing is scheduled". `tests/fixtures/golden-body.json`
+is how the body contract is guarded **before its consumer exists**: the
+exact envelope this poller emits from the committed Jolpica response,
+byte-compared, and what #119's parser and its own `contract.rs` are written
+against — the same move as `runner/test/parse-capture.test.js` reading the
+real shipped schema off disk. The Jolpica fixture ships **verbatim**, which
+is the opposite of `city-waste`'s reduced-and-sanitised policy and for a
+reason recorded in `tests/fixtures/README.md`: those carried the operator's
+address and CSRF tokens, this is public sports data. `RACE_INGEST_TOKEN`
+goes in Actions secrets on `CITY_WASTE_INGEST_TOKEN`'s blast-radius
+reasoning (worst-case abuse is a wrong race time); minting it is an
+**operator gate**, agent-built and operator-provisioned, #256's posture.
+`.github/workflows/race-schedule-poll.yml` and `race-alert-poll.yml` are the
+sixth and seventh Actions `schedule:` — see either header for why a repeated
+scoped exception does not reopen issue #8's ban, and note that the alert
+workflow's cron is deliberately **not** a declared cadence, since it writes
+no snapshot. Both accept that Actions `schedule:` is best-effort, so a
+race-start alert may fire late or occasionally not at all; routing it
+through the DO's `alarm()` would drag a schedule-body parser into the wasm32
+worker build.
 
 ## The client sync engine
 
