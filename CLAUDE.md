@@ -19,6 +19,49 @@ decided upstream; read `docs/sweeper.md` before touching any of them.
 server (ADR-0008); it retargets to `POST /api/items` when the owned stack is
 daily-usable.
 
+## The skill runner
+
+`runner/` (#41, #256) is the fourth actor #41's grilling named: a scale-to-zero
+Fly app, structurally a sibling of the sweeper that takes orders over HTTP
+(`POST /run {skill, args}`, one static bearer token) instead of a cron tick —
+if it is down, capture/read/triage/sync all still work, only "run a skill for
+me" degrades. Node stdlib-only server code (`node:http`, `node:child_process`,
+no framework), unit-tested with an injected fake `spawn` so no test needs a
+real `claude` binary. The response is an SSE/NDJSON progress stream ending in
+`{ok, skill, result, error?}` — streaming defeats Fly's 60s idle-connection
+kill — built from `claude -p --output-format json --json-schema <schema>`,
+where the schema is versioned per-skill beside its `SKILL.md`. **Three
+things about that CLI contract are load-bearing and were each got wrong
+first**, every one of them invisible to a suite whose `spawn` is a fake:
+`--json-schema` takes the schema's **text**, never a path (a path is
+rejected as invalid JSON before the skill runs); a shipped schema file may
+carry **no `$schema` key** (the draft-2020-12 ref is rejected outright);
+and `--output-format json` answers with the CLI's **metadata envelope**, so
+the schema-constrained object is `structured_output`, not stdout parsed
+whole (`result` holds the same object as a string). `readOutcome` is that
+unwrap, split out of the spawn plumbing so each shape is one direct test.
+The counterweight to a fake `spawn` is `runner/test/parse-capture.test.js`,
+which reads the real shipped schema file off disk — which is also why the
+workflow's `paths:` filter watches `.claude/skills/parse-capture/**`
+alongside `runner/**`, since the image bakes that directory in from outside
+`runner/`. Relatedly, `readBody`'s oversize path **drains and discards**
+rather than `req.destroy()`: destroying tears down the socket the 413 has
+to travel on, so the client reads `UND_ERR_SOCKET` instead of the
+rejection — and for the same reason the 413 carries no `connection: close`,
+which loses the identical race against a client still uploading (both
+measured, not reasoned). **v1 ships
+`parse-capture` only** (#256, 2026-08-10 decision): #42's own minimal
+`{title, notes}` schema, writing to nothing — the write-target question
+(Linear vs. the ADR-0008 owned server) is explicitly deferred, which is what
+lets this ship without taking that decision early. `next-up-personal` and
+`microtask` wait behind it. The image bakes in the Claude Code CLI and
+whichever skills v1 ships (today: `.claude/skills/parse-capture/` alone) —
+a skill change ships by `fly deploy`, the image *is* the skill version.
+**#256 is build-only**: `runner/`, its `Dockerfile`, and the deploy runbook
+are agent-built; provisioning (`fly launch`, secrets, minting the bearer
+token) is an operator gate, the same posture #237's server deploy used. Full
+shape, contract and the deploy runbook: `docs/runner.md`.
+
 ## The authority server
 
 `server/` is the app-owned authority (ADR-0008/0009), its own Cargo
@@ -147,6 +190,27 @@ What supersedes a resolution is a later raise — `raised_at` overtakes the
 stamp, the alert is live again and rings, and the stamp stays legible
 underneath. Note that `done` is a *resolution* boundary only: #138's
 evaluation boundary is still `archived_at` alone.
+
+`deliver` gained a second caller at #255 (ADR-0013's 2026-08-11 amendment):
+`POST /api/alerts`'s ingest handler now evaluates every enabled rule
+against the alert it just upserted, presented as an `alert_raised` event
+(`mints: false` — "the pushed alert *is* the event," per ADR-0013), and
+calls the exact same `deliver` `sweep_tick` calls — sync-decide, one
+implementation, two callers, never a second copy. This is what makes a
+webhook source (`healthchecks/v1`, `home-assistant/v1`, `gmail-alert/v1`,
+`github/v1`, `photo-site/v1`, …) actually ring a device rather than reach
+it only through the delta pull; `sweep_tick`'s own `item-threshold/v1`
+alerts are unaffected — the hook lives in the `ingest` HTTP handler alone,
+never inside the shared `upsert` core both callers mint/ratchet through,
+so the sweep's alerts are never double-evaluated as `alert_raised` on top
+of the delivery it already runs for them. Evaluated unconditionally on
+every ingest call, with no "did this raise change anything" pre-filter —
+`deliver`'s own transitions-only dedupe is already that decision, and a
+second filter ahead of it would be a second, driftable copy. The worker
+shim sends via `State::wait_until` rather than an inline `.await`, so the
+ingest response is never held hostage by FCM latency; the no-retry policy
+holds regardless, since `deliver` still commits the claim row before any
+send is attempted.
 
 **ADR-0015's server half** is `SCHEMA_VERSION` 4, and it is the first growth
 that is not purely a new table: `alerts.subject_key` is a nullable column on
@@ -342,10 +406,15 @@ in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
 below) are the fourth and fifth — see any of their headers for why a
 repeated scoped exception does not reopen the general ban.
 
-**Not covered, and not this slice's to fix:** `POST /api/alerts` does not
-trigger delivery. `deliver` runs only from `sweep_tick`, which evaluates
-`item-threshold/v1` — so "the notification lane still delivers it" is
-aspirational today for **every** webhook source, not just this one.
+**The holiday-week alert this lane raises actually rings** (#255, ADR-0013's
+2026-08-11 amendment). `POST /api/alerts` triggers delivery inline: the
+ingest handler evaluates the live rule set against the alert it just
+upserted, presented as an `alert_raised` event, and calls the same
+`deliver` `sweep_tick` does. So a slide reaches a device as a push, not
+only through the delta pull — and that is true for every webhook source,
+not just this one. See `deliver`'s second caller in "The authority server"
+above for the shape of the hook and why it sits in the `ingest` handler
+rather than in the shared `upsert`.
 
 ## The Gmail evaluated-stream poller
 
@@ -1059,11 +1128,14 @@ one thing the prototype left open: the payload carries an IANA `zone` and
 every day-shaped question is resolved in it via `Intl.DateTimeFormat`, so
 "tonight" flips at the address's midnight and not the device's — a per-pane
 exception documented at its point of use. An unusable zone is a malformed
-payload, never a crash. (Still open, and *not* discharged by this slice:
-`city-waste/v2` is not in `server/domain/src/sources.rs` — only the retired
-`v1` is. Harmless here, since the read side never checks the registry and
-ADR-0015 forbids checking `schema` against it; the registration is
-#135–137's.)
+payload, never a crash. (#245 left one thing open here and #254 closed it:
+`city-waste/v2` is now enrolled in `server/domain/src/sources.rs` as
+`Writes::Both` — the daily poll body and the holiday-week alert under one
+string — where before only the retired `v1` had an entry at all. Nothing
+about this pane changes: the read side still never checks the registry, and
+ADR-0015 still forbids resolving a snapshot's `schema` against it. The
+enrollment's readers are elsewhere — #145's mint gate, and the per-table
+`Writes` check on each of the two ingest write handlers.)
 
 `screens/weekend-pane/` is the shell's second pane (#122), and the first
 question to read no snapshot lane at all: the merge is entirely at read

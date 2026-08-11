@@ -153,14 +153,14 @@ fn scope_matrix_default_arm_denies_every_other_route() {
 #[test]
 fn bound_ingest_token_posting_for_its_own_source_succeeds() {
     let sql = RusqliteSql::new();
-    bind_ingest_token(&sql, "hc");
+    bind_ingest_token(&sql, "healthchecks/v1");
     let resp = req_as(
         &sql,
         INGEST_TOKEN,
         "POST",
         "/api/alerts",
         None,
-        Some(r#"{"source": "hc", "source_key": "k", "title": "t"}"#),
+        Some(r#"{"source": "healthchecks/v1", "source_key": "k", "title": "t"}"#),
         0,
     );
     assert_eq!(resp.status, 201, "{}", resp.body);

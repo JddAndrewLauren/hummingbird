@@ -1,0 +1,25 @@
+# The skill-runner endpoint (#41, #256): a scale-to-zero Fly app, separate
+# from the sweeper (docs/sweeper.md forbids [http_service] there -- this app
+# is the opposite shape on purpose, an HTTP service that answers on demand).
+#
+# The build context is the REPO ROOT, not this directory -- Dockerfile's
+# COPY lines reach into .claude/skills/, so every flyctl command here must
+# be run from the repo root with an explicit --config/--dockerfile, e.g.:
+#   fly deploy --config runner/fly.toml --dockerfile runner/Dockerfile
+# See docs/runner.md ("Deploy runbook") for the full deploy runbook.
+
+app = "hummingbird-runner"
+primary_region = "sjc"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

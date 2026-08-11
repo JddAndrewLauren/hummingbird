@@ -12,7 +12,7 @@
 //! could not be routed without either encoding the source or growing a
 //! grammar over path segments.
 
-use hummingbird_domain::{ContextSnapshot, SnapshotEnvelope, SnapshotIngest};
+use hummingbird_domain::{find_source, ContextSnapshot, SnapshotEnvelope, SnapshotIngest};
 
 use super::{
     empty_status, error, json, parse_body, query_param, read_meta_version, write_meta_version,
@@ -57,6 +57,21 @@ pub fn ingest(
     // coincide for `city-waste/v2`; nothing couples them.
     if let Err(problem) = SnapshotEnvelope::parse(&payload) {
         return Ok(error(400, "validation", &problem.to_string()));
+    }
+    // ADR-0014's 2026-08-11 amendment (#254): the mirror of the check in
+    // `alerts.rs::ingest` — a source the registry knows and does not
+    // declare for `context_snapshots` (e.g. `item-threshold/v1`, alerts-only)
+    // is rejected here rather than silently writing a table it was never
+    // enrolled to write. An unenrolled source is left alone; enrollment is
+    // the mint gate's job.
+    if let Some(entry) = find_source(&ingest.source) {
+        if !entry.writes_snapshots() {
+            return Ok(error(
+                400,
+                "validation",
+                &format!("`{}` is not declared for snapshots", ingest.source),
+            ));
+        }
     }
     if token_source != Some(ingest.source.as_str()) {
         return Ok(empty_status(403));

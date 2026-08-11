@@ -1,32 +1,45 @@
-//! The frozen alert-source registry (ADR-0014). One entry per `source`
-//! string that can appear on an **alert** — i.e. every source `alerts.rs`
-//! mints ids for, which is the exact table given in the #158 brief and in
-//! ADR-0014's conventions table. `alerts.rs` mints an alert id as
-//! `sha256(source, source_key)`, so the `source_key` recipe *is* occurrence
-//! identity: changing it silently orphans every row already minted, or
-//! silently absorbs new occurrences into stale ones. Neither symptom rings
-//! — this registry is `sweep.py`'s frozen-namespace lesson re-learned for
-//! alerts.
+//! The frozen source registry (ADR-0014, widened by ADR-0014's 2026-08-11
+//! amendment, #254). One entry per `source` string that can appear on
+//! **any** of the three provenance-carrying tables ADR-0009 rule 4 gives
+//! one frozen namespace convention to — `alerts`, `context_snapshots`, or
+//! both — because a source's binding at mint time (#145) must be checked
+//! against the same registry no matter which table it is destined to
+//! write. `alerts.rs` mints an alert id as `sha256(source, source_key)` for
+//! every alert-writing entry, so the `source_key` recipe *is* occurrence
+//! identity there: changing it silently orphans every row already minted,
+//! or silently absorbs new occurrences into stale ones. Neither symptom
+//! rings — this registry is `sweep.py`'s frozen-namespace lesson re-learned
+//! for the owned-server tables.
 //!
-//! **Out of scope, deliberately:** `items.source` and
-//! `context_snapshots.source` (e.g. `web/v1`, `anthropic-usage/v1`,
-//! `github-hummingbird/v1`, `f1/v1`) are the same frozen namespace by
-//! ADR-0009 rule 4 and must carry the same `/vN` version-suffix
-//! convention, but they are not alert sources, mint no `source_key`
-//! through `alerts.rs`, and are not enrolled here. `find` returning `None`
-//! for one of them means "not an alert source," not "unversioned" or
-//! "unknown to the codebase" — do not read absence from this registry as a
-//! naming-convention violation on those tables.
+//! **Each entry declares [`Writes`]** — which of `alerts`/`context_snapshots`
+//! it may write. This is the second reader of the declaration, alongside
+//! the mint gate: `POST /api/alerts` rejects a source [`SourceEntry`] finds
+//! but does not declare [`Writes::writes_alerts`] for, and `POST
+//! /api/snapshots` its `writes_snapshots` mirror. A source may of course be
+//! *both* ([`Writes::Both`]): `city-waste/v2` writes a `context_snapshots`
+//! row every poll **and** mints an alert on a holiday week, under one
+//! string, because ADR-0009's join constraint is that the snapshot's
+//! `source` and the alert's `source` are the same value. So do every
+//! evaluated-stream poller's sources (`gmail/v1`, `m365-mail/v1`,
+//! `google-calendar/v1`, `m365-calendar/v1`): each mints alerts on a rule
+//! match **and** writes its own delta cursor (and, for
+//! `google-calendar/v1`, the `busy_now` gauge too) as a `context_snapshots`
+//! row under the same string.
 //!
-//! A source may of course be *both*: `city-waste/v2` writes a
-//! `context_snapshots` row every poll **and** mints an alert on a holiday
-//! week, under one string, because ADR-0009's join constraint is that the
-//! snapshot's `source` and the alert's `source` are the same value. It is
-//! enrolled here for the alert half; the snapshot half is not something
-//! this registry has an opinion about. What that does mean is that a
-//! future **snapshot-only** source will not be enrolled and so cannot be
-//! bound to an ingest token — see `handlers/admin_tokens.rs::mint`, which
-//! is where that bites.
+//! **`key_recipe` exists only where [`Writes::writes_alerts`] is true** —
+//! it documents an alert's `source_key` recipe, which a snapshot-only entry
+//! simply has none of (a snapshot's identity is `(source, key)`, authored
+//! by the poller directly, never derived through a recipe function here).
+//! The frozen-recipe tripwire below loses nothing from this: it keys off
+//! the recipe *functions'* own frozen test vectors, not off this field,
+//! which stays pure documentation.
+//!
+//! **Enrollment is at wiring time, not speculative.** ADR-0009 names three
+//! snapshot-only sources this registry does not yet carry
+//! (`anthropic-usage/v1`, `github-hummingbird/v1`, the races lane) — each
+//! enrolls when its own lane is built, exactly as every alert source above
+//! did. `find` returning `None` for one of them today means "not enrolled
+//! yet," not "will never write here."
 //!
 //! Nothing here validates a recipe at runtime: `source_key` is opaque to
 //! the server by design (no delimiter grammar, no parsing — ADR-0009 rule
@@ -76,10 +89,43 @@ pub enum Expiry {
     IfProvided(&'static str),
 }
 
+/// Which of the two provenance-carrying tables a source may write
+/// (ADR-0014's 2026-08-11 amendment, #254). A wiring-time declaration, like
+/// [`Shape`] — nothing here is derivable from a `source` string alone, since
+/// two sources sharing one string convention (`/vN`) can differ completely
+/// in which tables their adapter actually touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writes {
+    /// Mints alert rows only — every webhook source enrolled before #254,
+    /// plus `item-threshold/v1`, the internal DO-alarm sweep source.
+    Alerts,
+    /// Writes `context_snapshots` rows only. No shipped source is this yet
+    /// (see the module doc's "enrollment is at wiring time"); the shape
+    /// exists so a snapshot-only adapter has somewhere to enroll without
+    /// forcing a `key_recipe` it has no use for.
+    Snapshots,
+    /// Both — every evaluated-stream poller's source (a delta cursor, and
+    /// for `google-calendar/v1` the `busy_now` gauge too, alongside the
+    /// alerts it mints) and `city-waste/v2` (its daily poll body alongside
+    /// its holiday-week alert).
+    Both,
+}
+
+impl Writes {
+    pub fn writes_alerts(&self) -> bool {
+        matches!(self, Writes::Alerts | Writes::Both)
+    }
+
+    pub fn writes_snapshots(&self) -> bool {
+        matches!(self, Writes::Snapshots | Writes::Both)
+    }
+}
+
 /// One registered source: its frozen, versioned `source` string, its
-/// declared [`Shape`], its `source_key` recipe (documentation — nothing
-/// machine-checks it beyond the recipe function's own frozen test vector),
-/// its [`Expiry`], and its retirement state.
+/// declared [`Shape`], which tables it may [`Writes`] to, its `source_key`
+/// recipe where alert-writing makes one meaningful (documentation —
+/// nothing machine-checks it beyond the recipe function's own frozen test
+/// vector), its [`Expiry`], and its retirement state.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceEntry {
     /// The versioned frozen namespace, e.g. `"gmail/v1"`. Every source
@@ -87,10 +133,16 @@ pub struct SourceEntry {
     /// name.
     pub source: &'static str,
     pub shape: Shape,
-    /// The `source_key` recipe, as documentation. Not machine-checked here;
-    /// the corresponding `*_key` function's frozen test vector is what
-    /// actually catches drift.
-    pub key_recipe: &'static str,
+    /// Which of `alerts`/`context_snapshots` this source may write —
+    /// [`POST /api/alerts`](crate) and `POST /api/snapshots` each reject a
+    /// source this entry does not declare for their own table.
+    pub writes: Writes,
+    /// The `source_key` recipe, as documentation. `None` when
+    /// `writes.writes_alerts()` is false — a snapshot-only source mints no
+    /// `source_key` and so has no recipe to document. Not machine-checked
+    /// here regardless; the corresponding `*_key` function's frozen test
+    /// vector is what actually catches drift.
+    pub key_recipe: Option<&'static str>,
     pub expires_at: Expiry,
     /// `Some(successor)` marks this source retired in favor of a newer
     /// version (e.g. `"city-waste/v2"`). Old rows under a retired source
@@ -102,6 +154,14 @@ pub struct SourceEntry {
 impl SourceEntry {
     pub fn is_retired(&self) -> bool {
         self.retired_as.is_some()
+    }
+
+    pub fn writes_alerts(&self) -> bool {
+        self.writes.writes_alerts()
+    }
+
+    pub fn writes_snapshots(&self) -> bool {
+        self.writes.writes_snapshots()
     }
 }
 
@@ -172,29 +232,40 @@ pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: GMAIL_V1,
         shape: Shape::Event,
-        key_recipe: "the Gmail message id",
+        // Both: mints an alert on a rule match, and separately writes/reads
+        // its own delta cursor as a context_snapshots row (ADR-0011).
+        writes: Writes::Both,
+        key_recipe: Some("the Gmail message id"),
         expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: M365_MAIL_V1,
         shape: Shape::Event,
-        key_recipe: "the mail's internetMessageId — never the Graph `id`, \
-                      which changes on a folder move",
+        writes: Writes::Both,
+        key_recipe: Some(
+            "the mail's internetMessageId — never the Graph `id`, \
+             which changes on a folder move",
+        ),
         expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: GOOGLE_CALENDAR_V1,
         shape: Shape::Event,
-        key_recipe: "<eventId or recurringEventId>:<originalStartTime>",
+        // Both: mints an alert on a rule match, and writes both its delta
+        // sync-token cursor and the busy_now gauge as context_snapshots
+        // rows under the same string (two distinct `key`s, one source).
+        writes: Writes::Both,
+        key_recipe: Some("<eventId or recurringEventId>:<originalStartTime>"),
         expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
     },
     SourceEntry {
         source: M365_CALENDAR_V1,
         shape: Shape::Event,
-        key_recipe: "<seriesMasterId or id>:<originalStart>",
+        writes: Writes::Both,
+        key_recipe: Some("<seriesMasterId or id>:<originalStart>"),
         expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
     },
@@ -212,22 +283,34 @@ pub const REGISTRY: &[SourceEntry] = &[
     // the ordinary retired case: it 400s at mint with its successor named,
     // and `v2` mints. Do NOT edit `v1`'s strings — a retired entry is
     // frozen, including the `key_recipe` and `expires_at` wording that
-    // describe what its already-minted rows meant.
+    // describe what its already-minted rows meant. `v1` predates the
+    // city-waste poller entirely, so it was only ever an alert source —
+    // `Writes::Alerts`, never `Both`.
     SourceEntry {
         source: "city-waste/v1",
         shape: Shape::Event,
-        key_recipe: "<stream>:<scheduled-date> — the originally scheduled \
-                      collection date, never whatever date a later \
-                      correction slides to",
+        writes: Writes::Alerts,
+        key_recipe: Some(
+            "<stream>:<scheduled-date> — the originally scheduled \
+             collection date, never whatever date a later \
+             correction slides to",
+        ),
         expires_at: Expiry::Always("end of the affected collection date"),
         retired_as: Some(CITY_WASTE_V2),
     },
     SourceEntry {
         source: CITY_WASTE_V2,
         shape: Shape::Event,
-        key_recipe: "the originally scheduled collection date, alone — never \
-                      the date a correction slides to, and never qualified \
-                      by which bins go out",
+        // Both, from #254's amendment: the daily poll body every run
+        // (context_snapshots) and a holiday-week alert (alerts) — #120's
+        // "a source may of course be both," now a declared fact instead of
+        // an unenrolled gap (absorbing #245's open note).
+        writes: Writes::Both,
+        key_recipe: Some(
+            "the originally scheduled collection date, alone — never \
+             the date a correction slides to, and never qualified \
+             by which bins go out",
+        ),
         expires_at: Expiry::Always(
             "end of the LATER of the scheduled and the slid-to collection date",
         ),
@@ -236,42 +319,50 @@ pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: ITEM_THRESHOLD_V1,
         shape: Shape::State,
-        key_recipe: "item:<id>",
+        // Alerts only: the internal DO-alarm sweep mints alerts against
+        // items it reads directly — it writes no context_snapshots row.
+        writes: Writes::Alerts,
+        key_recipe: Some("item:<id>"),
         expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: "healthchecks/v1",
         shape: Shape::State,
-        key_recipe: "the check id, authored in the webhook body",
+        writes: Writes::Alerts,
+        key_recipe: Some("the check id, authored in the webhook body"),
         expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: "home-assistant/v1",
         shape: Shape::State,
-        key_recipe: "the entity id, authored in the webhook body",
+        writes: Writes::Alerts,
+        key_recipe: Some("the entity id, authored in the webhook body"),
         expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
         source: "github/v1",
         shape: Shape::Event,
-        key_recipe: "the source's own event id",
+        writes: Writes::Alerts,
+        key_recipe: Some("the source's own event id"),
         expires_at: Expiry::IfProvided("an expiry carried in the event payload, if any"),
         retired_as: None,
     },
     SourceEntry {
         source: "photo-site/v1",
         shape: Shape::Event,
-        key_recipe: "the source's own event id",
+        writes: Writes::Alerts,
+        key_recipe: Some("the source's own event id"),
         expires_at: Expiry::IfProvided("an expiry carried in the event payload, if any"),
         retired_as: None,
     },
     SourceEntry {
         source: "gmail-alert/v1",
         shape: Shape::Event,
-        key_recipe: "the source's own message id",
+        writes: Writes::Alerts,
+        key_recipe: Some("the source's own message id"),
         expires_at: Expiry::Never,
         retired_as: None,
     },
@@ -406,7 +497,7 @@ mod tests {
         }
     }
 
-    /// Frozen table-pin: every entry's `(source, shape, expires_at,
+    /// Frozen table-pin: every entry's `(source, shape, writes, expires_at,
     /// retired_as)` tuple, verbatim, in registration order. `source` and
     /// `shape` are half of the `sha256(source, source_key)` alert id and
     /// drive the occurrence-lifecycle mechanism
@@ -414,54 +505,63 @@ mod tests {
     /// catches `"gmail/v1"` silently drifting to `"gmail/v2"`, or
     /// `item-threshold/v1` silently flipping to `Shape::Event`, neither of
     /// which the version-suffix check or a single spot-checked entry would
-    /// notice.
+    /// notice. `writes` is #254's own addition to the pin — the same drift
+    /// class applies to a source silently losing (or gaining) a table
+    /// declaration, since that is exactly what `POST /api/alerts` and
+    /// `POST /api/snapshots` gate on.
     #[test]
     fn registry_matches_the_frozen_adr_0014_table() {
-        let expected: &[(&str, Shape, Expiry, Option<&str>)] = &[
-            ("gmail/v1", Shape::Event, Expiry::Never, None),
-            ("m365-mail/v1", Shape::Event, Expiry::Never, None),
+        let expected: &[(&str, Shape, Writes, Expiry, Option<&str>)] = &[
+            ("gmail/v1", Shape::Event, Writes::Both, Expiry::Never, None),
+            ("m365-mail/v1", Shape::Event, Writes::Both, Expiry::Never, None),
             (
                 "google-calendar/v1",
                 Shape::Event,
+                Writes::Both,
                 Expiry::Always("the instance's end time"),
                 None,
             ),
             (
                 "m365-calendar/v1",
                 Shape::Event,
+                Writes::Both,
                 Expiry::Always("the instance's end time"),
                 None,
             ),
             (
                 "city-waste/v1",
                 Shape::Event,
+                Writes::Alerts,
                 Expiry::Always("end of the affected collection date"),
                 Some("city-waste/v2"),
             ),
             (
                 "city-waste/v2",
                 Shape::Event,
+                Writes::Both,
                 Expiry::Always(
                     "end of the LATER of the scheduled and the slid-to collection date",
                 ),
                 None,
             ),
-            ("item-threshold/v1", Shape::State, Expiry::Never, None),
-            ("healthchecks/v1", Shape::State, Expiry::Never, None),
-            ("home-assistant/v1", Shape::State, Expiry::Never, None),
+            ("item-threshold/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
+            ("healthchecks/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
+            ("home-assistant/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             (
                 "github/v1",
                 Shape::Event,
+                Writes::Alerts,
                 Expiry::IfProvided("an expiry carried in the event payload, if any"),
                 None,
             ),
             (
                 "photo-site/v1",
                 Shape::Event,
+                Writes::Alerts,
                 Expiry::IfProvided("an expiry carried in the event payload, if any"),
                 None,
             ),
-            ("gmail-alert/v1", Shape::Event, Expiry::Never, None),
+            ("gmail-alert/v1", Shape::Event, Writes::Alerts, Expiry::Never, None),
         ];
 
         assert_eq!(
@@ -469,9 +569,10 @@ mod tests {
             expected.len(),
             "registry gained or lost a source"
         );
-        for (entry, (source, shape, expires_at, retired_as)) in REGISTRY.iter().zip(expected) {
+        for (entry, (source, shape, writes, expires_at, retired_as)) in REGISTRY.iter().zip(expected) {
             assert_eq!(entry.source, *source);
             assert_eq!(entry.shape, *shape, "{} shape drifted", entry.source);
+            assert_eq!(entry.writes, *writes, "{} writes drifted", entry.source);
             assert_eq!(
                 entry.expires_at, *expires_at,
                 "{} expires_at drifted",
@@ -483,6 +584,79 @@ mod tests {
                 entry.source
             );
         }
+    }
+
+    /// Every alert-writing entry documents a recipe; every entry that is
+    /// NOT alert-writing documents none — `key_recipe` and
+    /// `writes_alerts()` never disagree, or the field is decoration for one
+    /// direction and a silent gap for the other.
+    #[test]
+    fn key_recipe_is_present_iff_the_entry_writes_alerts() {
+        for entry in REGISTRY {
+            assert_eq!(
+                entry.key_recipe.is_some(),
+                entry.writes_alerts(),
+                "{}: key_recipe presence must match writes_alerts()",
+                entry.source
+            );
+        }
+    }
+
+    /// Acceptance: `Writes` answers `writes_alerts`/`writes_snapshots`
+    /// correctly for all three states, including the case no shipped source
+    /// exercises yet (`Snapshots`-only) — proven directly on the enum
+    /// rather than waiting for a real snapshot-only entry to enroll.
+    #[test]
+    fn writes_predicates_cover_all_three_states() {
+        assert!(Writes::Alerts.writes_alerts());
+        assert!(!Writes::Alerts.writes_snapshots());
+
+        assert!(!Writes::Snapshots.writes_alerts());
+        assert!(Writes::Snapshots.writes_snapshots());
+
+        assert!(Writes::Both.writes_alerts());
+        assert!(Writes::Both.writes_snapshots());
+    }
+
+    /// A locally built snapshot-only entry — the case ADR-0009's
+    /// `anthropic-usage/v1`/`github-hummingbird/v1`/races lane will
+    /// eventually be — is representable and correctly rejected for the
+    /// alerts table, exactly like [`a_retired_source_is_representable_and_distinct_from_unknown`]
+    /// exercises retirement without a second real retired entry.
+    #[test]
+    fn a_snapshot_only_entry_is_representable_and_not_alert_writing() {
+        let entry = SourceEntry {
+            source: "anthropic-usage/v1",
+            shape: Shape::State,
+            writes: Writes::Snapshots,
+            key_recipe: None,
+            expires_at: Expiry::Never,
+            retired_as: None,
+        };
+        assert!(!entry.writes_alerts(), "a snapshot-only entry must not declare alerts");
+        assert!(entry.writes_snapshots());
+        assert!(entry.key_recipe.is_none(), "no recipe to document");
+    }
+
+    /// `city-waste/v2` is the one live example of `Writes::Both` reachable
+    /// through the real registry (#254 amends it in) — pinned directly so a
+    /// regression to `Alerts`-only silently re-breaks #120's snapshot lane.
+    #[test]
+    fn city_waste_v2_is_registered_for_both_tables() {
+        let entry = find(CITY_WASTE_V2).expect("city-waste/v2 is registered");
+        assert!(entry.writes_alerts());
+        assert!(entry.writes_snapshots());
+    }
+
+    /// `item-threshold/v1` is the one live example of an alerts-only entry
+    /// that is NOT a webhook source — pinned so the internal DO-alarm sweep
+    /// never silently gains a snapshot-writing declaration it has no writer
+    /// for.
+    #[test]
+    fn item_threshold_v1_is_alerts_only() {
+        let entry = find(ITEM_THRESHOLD_V1).expect("item-threshold/v1 is registered");
+        assert!(entry.writes_alerts());
+        assert!(!entry.writes_snapshots());
     }
 
     /// A duplicate `source` string would shadow silently in [`find`]
@@ -538,7 +712,8 @@ mod tests {
         let retired = SourceEntry {
             source: "city-waste/v1",
             shape: Shape::Event,
-            key_recipe: "<stream>:<scheduled-date>",
+            writes: Writes::Alerts,
+            key_recipe: Some("<stream>:<scheduled-date>"),
             expires_at: Expiry::Always("end of the affected collection date"),
             retired_as: Some("city-waste/v2"),
         };

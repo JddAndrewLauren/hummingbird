@@ -1,0 +1,64 @@
+# The skill-runner endpoint (#41, #256): its test gate, and only that.
+# `runner/` arrived with no workflow matching `runner/**`, so its
+# `node --test` suite ran nowhere; this closes that gap.
+#
+# There is deliberately no `schedule:` trigger. This is a push/PR gate with
+# no clock of its own — see deploy.yml's header for the standing ban and
+# city-waste.yml's for the one scoped exception; neither is in play here.
+#
+# There is also no deploy job. The runner ships by a hand-run `fly deploy`
+# of runner/Dockerfile (the image *is* the skill version, #41 decision 5),
+# so unlike client.yml/deploy-server.yml there is no deploy workflow running
+# this same recipe on `main` — which is why, unlike server.yml, this one
+# does carry a `push:` trigger for main, and why no reusable
+# `workflow_call` split is warranted for a single shared-by-nobody step.
+name: runner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "runner/**"
+      # The skills the image bakes in (runner/Dockerfile) are outside
+      # `runner/`, and the runner's tests read the schema file directly --
+      # a schema-only edit that breaks `--json-schema` must not ship
+      # through a workflow that never ran.
+      - ".claude/skills/parse-capture/**"
+      - ".github/workflows/runner.yml"
+  # No `branches:` filter on purpose (server.yml does the same): a PR into a
+  # batch integration branch must be gated exactly like a PR into main.
+  pull_request:
+    paths:
+      - "runner/**"
+      - ".claude/skills/parse-capture/**"
+      - ".github/workflows/runner.yml"
+
+# Superseded PR pushes cancel their stale runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Plain `node --test` over eight files with no install step; anything
+    # slower than this is a hung test, not a slow one.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the major the image bakes in (runner/Dockerfile is
+      # `FROM node:22-slim`, and runner/package.json declares
+      # `engines.node >= 22`), so CI and the deployed image agree. Bump both
+      # together, deliberately.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # No install step and no cache key: `runner/` is dependency-free plain
+      # ESM — every import is either a `node:` builtin or a relative path,
+      # and there is no lockfile to install from. Adding a dependency means
+      # adding an install step here.
+      - name: node --test (runner)
+        working-directory: runner
+        run: node --test

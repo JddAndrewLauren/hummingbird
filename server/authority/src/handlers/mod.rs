@@ -25,6 +25,7 @@ pub(crate) use alerts::find_live_by_source as find_live_alerts_by_source;
 pub(crate) use alerts::resolve as resolve_alert;
 pub(crate) use alerts::upsert as upsert_alert;
 pub(crate) use items::item_from_row;
+pub(crate) use rules::load_enabled as load_enabled_rules;
 pub(crate) use rules::rule_from_row;
 
 // Re-exported for `delivery.rs` (#139/#220), so its id derivation shares
@@ -35,6 +36,7 @@ pub(crate) use auth::sha256_hex;
 use hummingbird_domain::{ApiError, ConflictResponse, VERSION_CONFLICT};
 use serde::Serialize;
 
+use crate::delivery::DeliveryOutcome;
 use crate::entropy::Entropy;
 use crate::sql::{Sql, SqlError, SqlValue};
 
@@ -61,6 +63,14 @@ pub struct ApiRequest<'a> {
 pub struct ApiResponse {
     pub status: u16,
     pub body: String,
+    /// #255's inline evaluate-then-deliver hook: `POST /api/alerts` is the
+    /// second caller of `deliver` (`sweep_tick`'s DO alarm is the first),
+    /// and — unlike the alarm's own `tick_result` return — an HTTP handler
+    /// has no separate return channel of its own, so whatever it logged
+    /// rides back on the response the caller (the worker shim) already
+    /// has to unwrap. Empty for every other route: nothing else in this
+    /// crate calls `deliver`.
+    pub deliveries: Vec<DeliveryOutcome>,
 }
 
 /// Everything injected around a request: the clock, the `ADMIN_SECRET`
@@ -228,6 +238,7 @@ fn json<T: Serialize>(status: u16, value: &T) -> ApiResponse {
     ApiResponse {
         status,
         body: serde_json::to_string(value).expect("DTOs serialize"),
+        deliveries: Vec::new(),
     }
 }
 
@@ -250,5 +261,6 @@ fn empty_status(status: u16) -> ApiResponse {
     ApiResponse {
         status,
         body: String::new(),
+        deliveries: Vec::new(),
     }
 }

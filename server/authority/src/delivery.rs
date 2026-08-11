@@ -78,8 +78,19 @@ pub enum SuppressReason {
     /// The alert is not currently live under ADR-0014's three-clause
     /// predicate — nothing should ring for a settled or expired alert.
     NotLive,
-    /// No severity to stamp on the delivery. A rule always names one at
-    /// mint time, so this is a defensive guard, not an expected path.
+    /// No severity to stamp on the delivery. This was a defensive guard
+    /// while `sweep_tick` was the only caller — a `mints: true` rule always
+    /// names a severity at mint time. **#255 made it reachable**: an
+    /// `alert_raised` match cannot stamp one (`rules.severity` is unused
+    /// for that kind, per ADR-0013), so it rides the alert's own, and
+    /// `AlertIngest::severity` is optional. A webhook source that raises
+    /// without one therefore matches a rule and then rings nothing,
+    /// silently. Every shipped poller happens to carry a rule-derived
+    /// severity, so nothing hits this today; a hand-rolled source
+    /// (`healthchecks/v1`, `github/v1`) would. Left as-is deliberately —
+    /// the fix is a decision about the ingest contract (default a
+    /// severity, or reject a severity-less raise at the route), not a
+    /// change to this suppressor.
     NoSeverity,
     /// No live (non-revoked) `push_targets` row exists. Distinct from a
     /// send failure: nothing was attempted, so nothing needs to be

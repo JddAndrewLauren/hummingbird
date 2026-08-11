@@ -400,3 +400,50 @@ field is renamed and widened rather than the example being narrowed.
   catalogue addition, not a migration.
 - **Non-numeric, non-declared snapshot payload access** — see JSON-path
   above; reopen if a source's shape resists a declared value type.
+
+## Amendment (2026-08-11): `deliver` gains a second caller — `POST /api/alerts`, inline
+
+`alert_raised` (`mints: false`) was registered here from the start, but
+nothing ever evaluated it: `deliver` ran only from #138's DO-alarm
+`sweep_tick`, so a webhook-raised alert — every source but
+`item-threshold/v1` — reached devices through the delta pull alone and
+rang nothing (#255). The gap sat on this ADR because the missing piece was
+squarely a rule-matching question: which rules a pushed alert should
+evaluate against, and when.
+
+**Evaluation runs inline in `POST /api/alerts`, immediately after the
+upsert.** The handler builds the `alert_raised` event straight off the
+alert row `upsert` just wrote/ratcheted (`occurred_at` is the alert's own
+`raised_at`, never the ingest call's process clock — a still-live re-raise
+keeps its stored `raised_at`, so a relative-time rule condition reads when
+the occurrence actually began), evaluates every enabled rule against it,
+and calls the **same** `hummingbird_authority::deliver` `sweep_tick`
+already calls — sync-decide, one implementation, two callers, never a
+second copy. Not deferred to the next alarm tick: latency is the entire
+value of a pushed source, and a 15-minute wait would defeat the reason a
+webhook exists at all.
+
+**Hooked into the `ingest` handler, never into the shared `upsert` core.**
+`upsert` is also #138's own mint/ratchet path for `item-threshold/v1` —
+evaluating `alert_raised` there would double-evaluate the sweep's own
+alerts as if a webhook had raised them, on top of the delivery
+`sweep_tick` already runs for them via its own `item_threshold` event.
+
+**Evaluated unconditionally, on every ingest call — no
+did-this-change pre-filter.** `deliver`'s own dedupe key
+(`UNIQUE(alert_id, rule_id, generation, severity)`) already makes an
+unchanged replay silent; a second "did the raise actually change
+anything" filter ahead of it would just be a second, driftable copy of
+the same decision. Severity rides the alert's own (`mints: false`;
+`rules.severity` stays unused for this kind, per this ADR as written).
+Default-deny still stands: an alert matching no enabled rule delivers
+nothing and logs nothing, and the row still reaches devices via the delta
+pull regardless.
+
+**The worker shim sends via `waitUntil`** (`State::wait_until` in
+`workers-rs` terms), so the ingest response is never held hostage by FCM
+latency — the same sync-decide/async-send split `sweep_tick`'s alarm
+handler already has, just triggered from an HTTP route instead of a
+timer. The no-retry policy is unaffected: the claim row commits inside
+`deliver`, before any send is even scheduled, whichever caller triggered
+it.
