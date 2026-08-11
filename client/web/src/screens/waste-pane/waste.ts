@@ -1,5 +1,6 @@
 import type { FreshnessDTO, PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
 import type { PaneAnswer, PaneGlyph, QuestionInputs } from "../questions/contract";
+import { isStaleFreshness } from "../questions/freshness";
 import {
   civilDaysBetween,
   civilTodayInZone,
@@ -166,15 +167,11 @@ export function parseWasteBody(snapshot: PaneSnapshotDTO | undefined): WastePars
 }
 
 /** Whether an answer is old enough to say so, against this pane's own
- * threshold.
- *
- * `"unknown"` is **never fresh** — the whole reason `Freshness` is a tagged
- * union rather than a nullable age. A pane that had no stamp to measure has
- * not measured anything, and "we don't know how old this is" must never
- * render as "this is current". */
-export function isStaleFreshness(freshness: FreshnessDTO, thresholdMs: number): boolean {
-  return freshness.kind === "unknown" || freshness.ageMs > thresholdMs;
-}
+ * threshold — re-exported from the shell (`questions/freshness.ts`) since
+ * #119's race pane needs the identical reading at its own 12h threshold.
+ * The threshold stays here, per ADR-0015; only the `"unknown"` arm is
+ * shared, so no pane can lose it by copying the comparison alone. */
+export { isStaleFreshness };
 
 /** Kerb order, never the order the payload happened to list. */
 export function orderedStreams(streams: readonly Stream[]): Stream[] {

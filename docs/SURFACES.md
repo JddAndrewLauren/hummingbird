@@ -21,7 +21,7 @@ human gate.
 | --- | --- |
 | **Code root** | `client/web/src/` |
 | **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Done, Ledger, Settings |
-| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
+| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121, `screens/race-pane/` #119 — the first question emitting one pane *per subject*, so the aside's height varies with the `race-series` binding). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
 | **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx`, `shell/CapturePopover.tsx` (the capture box, over any screen), `shell/UpdateBanner.tsx` (the "new version — reload" strip, under the header), `screens/layout.tsx` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 16-component library |
 | **Toolset** | Playwright (`client/web/playwright.config.ts`, `client/web/visual/`) |
@@ -58,7 +58,8 @@ plus the card fitting inside 768 are only decidable with it open. `?demo` drives
 the *real* ranked region through a hand-authored world
 (`src/fixtures/demo-questions.ts` — a bound waste question collecting
 tomorrow at the address, so what is photographed is an answered, imminent
-pane); there is deliberately no demo-only rendering of the region, so the
+pane, plus a bound `f1` race question twelve days out, the `distant` state
+the race pane holds for most of the year); there is deliberately no demo-only rendering of the region, so the
 capture is the shipping component. The empty
 states matter on their own: they are what a new device actually shows, and
 no fixture screen exercises them. **Rules is populated under `?demo` too**

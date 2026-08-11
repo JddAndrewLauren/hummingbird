@@ -159,7 +159,9 @@ describe("RankedRegion", () => {
     // `calendarConnected: true` throughout — this test is about the waste
     // question's own unread-bindings state, and a weekend-pane "Not set up"
     // row (unbound only via `!calendarConnected`, #122 review fix) would
-    // make the `queryByText("Not set up")` assertion ambiguous.
+    // make the "Not set up" assertion ambiguous. Both assertions are scoped
+    // to the waste row for the same reason since #119: the race pane reads
+    // the same unread `bindings` table and says the same words about it.
     const view = render(
       <RankedRegion
         inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
@@ -168,8 +170,9 @@ describe("RankedRegion", () => {
         onScreen={() => {}}
       />,
     );
-    expect(screen.getByText("Checking setup")).toBeTruthy();
-    expect(screen.queryByText("Not set up")).toBeNull();
+    const wasteRow = () => screen.getByRole("button", { name: /which cans/i });
+    expect(wasteRow().textContent).toContain("Checking setup");
+    expect(wasteRow().textContent).not.toContain("Not set up");
 
     view.rerender(
       <RankedRegion
@@ -278,7 +281,9 @@ describe("RankedRegion", () => {
         // pane (unbound only via `!calendarConnected`, #122 review fix)
         // would make "the" unbound row ambiguous. The `trips-calendar`
         // binding does the same job for #121's vacation pane, whose second
-        // unbound reason is an undesignated Trips calendar.
+        // unbound reason is an undesignated Trips calendar. The race pane's
+        // own unset binding still says it too (#119), so assertions target
+        // the waste question by name rather than by the shared headline.
         inputs={{
           bindings: [
             {
@@ -299,10 +304,14 @@ describe("RankedRegion", () => {
       />,
     );
 
+    // Every unbound question sinks below the one that merely has no data
+    // yet (the weekend pane, connected but unpolled here) — the sort's first
+    // axis, with two unbound questions in the world since #119.
     const rows = screen.getAllByRole("button");
     expect(rows[rows.length - 1].textContent).toContain("Not set up");
+    expect(rows[0].textContent).not.toContain("Not set up");
 
-    fireEvent.click(screen.getByText("Not set up"));
+    fireEvent.click(screen.getByRole("button", { name: /which cans/i }));
     fireEvent.click(screen.getByText("Open Settings"));
     expect(onScreen).toHaveBeenCalledWith("settings");
   });

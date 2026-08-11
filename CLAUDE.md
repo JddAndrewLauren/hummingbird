@@ -796,10 +796,11 @@ normally, and an **unset or non-text binding** writes nothing and exits 0.
 Not configured is not broken, and neither is a winter; routing either
 through the failure path would have the pane say "stale, cannot answer" when
 the true answer is "nothing is scheduled". `tests/fixtures/golden-body.json`
-is how the body contract is guarded **before its consumer exists**: the
-exact envelope this poller emits from the committed Jolpica response,
-byte-compared, and what #119's parser and its own `contract.rs` are written
-against — the same move as `runner/test/parse-capture.test.js` reading the
+is how the body contract is guarded: the exact envelope this poller emits
+from the committed Jolpica response, byte-compared by `tests/golden.rs` —
+and since #119 it has both its consumers, `race.ts`'s parser (whose own
+vitest reads that very file off disk) and `tests/contract.rs`, which asserts
+the key spellings and the shared constants against the TypeScript's text — the same move as `runner/test/parse-capture.test.js` reading the
 real shipped schema off disk. The Jolpica fixture ships **verbatim**, which
 is the opposite of `city-waste`'s reduced-and-sanitised policy and for a
 reason recorded in `tests/fixtures/README.md`: those carried the operator's
@@ -1349,7 +1350,7 @@ the sort reads no clock and a captured value cannot age between renders — a
 one-line `collapsedHeadline` and up to
 `MAX_GLYPHS` labelled glyphs — plus its whole expanded rendering and
 nothing else; `StandingQuestion` is the closed vocabulary
-(`waste | weekend | vacation`) and `registry.ts`'s
+(`waste | weekend | vacation | race`) and `registry.ts`'s
 `Record<StandingQuestion, QuestionDef>` is
 compile-time exhaustive, so a question added to the vocabulary and not
 registered is a type error rather than a pane that silently never appears,
@@ -1387,8 +1388,10 @@ day, or any day of a holiday week) with a real `withinBand` even while
 dormant, `STALE_AFTER_MS = 26h` **beside the band function** (the cost of a
 wrong answer, not `2 × cadence`), the bin colours (a documented exception to
 "colour encodes status": here it encodes object identity, and every glyph
-still carries a label), and `isStaleFreshness`, where `unknown` is never
-fresh. **A collection already in the past is refused outright**, not
+still carries a label), and (until #119) `isStaleFreshness`, where `unknown` is never
+fresh — now `screens/questions/freshness.ts`, shared with the race pane at
+its own threshold, since the threshold is per-pane by ADR-0015 but the
+`unknown`-is-never-fresh reading must not be copied. **A collection already in the past is refused outright**, not
 described: the poll is daily, so between the address's midnight and that
 day's fetch the snapshot still names yesterday — well inside 26h, so
 freshness says nothing — and a `daysAway <= 0` reading rendered that as
@@ -1455,7 +1458,8 @@ above — a pure field edit, never a promotion — threaded from
 `onSetScheduledDate` prop, the one write affordance a pane carries in the
 shell contract.
 
-`screens/vacation-pane/` is the shell's third pane (#121, ADR-0015's
+`screens/vacation-pane/` is the shell's calendar-lane vacation pane (#121,
+ADR-0015's
 2026-08-11 amendment), the second calendar-lane question, and the one that
 **changed the calendar lane itself to become answerable**. It is a countdown
 ~94% of the time and a status line the rest: *"Lisbon in 16 days"* → *"Lisbon
@@ -1532,6 +1536,39 @@ snapshot is a full atomic replace, so the primary calendar would re-fetch two
 years every 15 minutes) and a per-calendar *role* (`primary | trips`), which
 smuggles a standing question's vocabulary into a lane that knows nothing about
 questions.
+`screens/race-pane/` is the shell's race-schedule pane (#119, over #266's lane), and
+the first question that emits **one pane per subject**: `subjects()` is the
+`race-series` binding's own comma-separated list, read exactly as
+`server/race-poll/src/binding.rs` reads it (trimmed, lowercased, blanks and
+repeats dropped, order kept), so following another series is an edit in
+Settings and no code change here — and a series with no adapter upstream
+(today `indycar`) still gets a pane, as a `bound-but-unacquired` gap, which
+is what keeps #266's deferral visible instead of silent. `race.ts` pins the
+`race-schedule/v1` body, and its counterweight is the producer's own
+committed artifact: `race.test.ts` parses
+`server/race-poll/tests/fixtures/golden-body.json` off disk, and
+`server/race-poll/tests/contract.rs` asserts these key spellings, `SOURCE`,
+`BINDING_KEY` and the 12h (`2 ×` cadence) stale line back against this
+file's text. **The alert join is the point of this pane**: ADR-0015 added
+`alerts.subject_key` naming it as the forcing case, and `liveAlertFor` is
+the one place `(source, subjectKey)` ↔ `(source, key)` is spelled — one
+source carries every series, so joining on `source` alone would light every
+pane at once. The `live` band *is* that join (never a second time
+threshold), so the pane and the 90-minute notification cannot disagree about
+one race; `countdown` keeps minutes to 120 for the same reason. **Two of the
+prototype's settled verdicts are deliberately reversed**, both by decisions
+taken after it: the hardcoded `America/Los_Angeles` and its "PT" suffix are
+gone (ADR-0015 is device-local, and a race appearing to move when you travel
+is the accepted cost), and the "Practice 3 under way" headline is **dropped
+with its verdict** rather than silently lost — saying it needs a session end
+time, the feed publishes none, #266 refused to invent one, and computing it
+at read time from a start alone only moves the invention across the seam. So
+the **race start is the horizon** (`nextRaceAt`), which is the reading the
+lane already takes, since `race-schedule/v1` is registered with
+`Expiry::Always("the race's start time")`; the recorded cost is that for the
+couple of hours a race is actually running the pane names the *following*
+race. Off-season is an answer (`dormant`, "no races scheduled"), never a
+gap — `body.rs` says so from the other side.
 
 The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
 re-requests its queries once the core is ready and again on every
