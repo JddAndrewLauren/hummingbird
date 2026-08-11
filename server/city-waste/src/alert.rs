@@ -71,18 +71,38 @@ impl AlertPlan {
 
 /// The alert decision for one reading. `None` means there is nothing to say
 /// — which is only ever the on-cadence case, i.e. most days.
-pub fn plan(cadence: Cadence, deviation: Deviation, today: Date) -> Option<AlertPlan> {
+///
+/// **It takes no clock, and that is load-bearing rather than tidy.** The
+/// words this returns become the alert's `title` and `body`, and the
+/// authority decides `restamp_on_change` by asking whether a re-raise
+/// changed a source-owned field. So *anything* clock-dependent in these
+/// strings makes every daily re-poll of an unchanged slide a change, which
+/// restamps `raised_at`, which — since `is_live` compares it against
+/// `dismissed_at` — undoes the human's dismissal every single morning. That
+/// is the exact failure the whole design exists to prevent, and it arrives
+/// through the most innocuous-looking field there is.
+///
+/// An earlier revision interpolated a relative phrase ("in 4 days",
+/// "tomorrow") and did precisely that; the prototype carried the same shape.
+/// Dropping the `today` parameter is what makes the bug unwritable rather
+/// than merely absent: a function with no clock cannot produce a
+/// clock-dependent string. **Do not add one back.** How far away the
+/// collection is is read-time urgency, computed where every other read-time
+/// fact in this system is computed (ADR-0002) — on the pane, from the
+/// snapshot, never written into a stored row.
+pub fn plan(cadence: Cadence, deviation: Deviation) -> Option<AlertPlan> {
     match deviation {
         Deviation::OnCadence => None,
         Deviation::Slide { scheduled, slides_to } => Some(AlertPlan {
             scheduled,
             affected: if slides_to > scheduled { slides_to } else { scheduled },
-            // The title states the change itself, never that one happened.
+            // The title states the change itself, never that one happened —
+            // and names the date, so two consecutive holiday weeks read
+            // differently on a lock screen as well as in the key.
             title: format!(
-                "Collection moves from {} to {} {}",
+                "Collection moves from {} to {} ({slides_to})",
                 scheduled.weekday(),
                 slides_to.weekday(),
-                when_phrase(scheduled, today)
             ),
             body: format!(
                 "Collection is normally {}. This cycle moves from {scheduled} to {slides_to}.",
@@ -92,28 +112,12 @@ pub fn plan(cadence: Cadence, deviation: Deviation, today: Date) -> Option<Alert
         Deviation::SkippedCycle { missed, next_seen } => Some(AlertPlan {
             scheduled: missed,
             affected: missed,
-            title: format!("No {} collection {}", missed.weekday(), when_phrase(missed, today)),
+            title: format!("No collection on {} ({missed})", missed.weekday()),
             body: format!(
                 "The council's page shows no pickup for {missed}; the next collection it lists \
                  is {next_seen}."
             ),
         }),
-    }
-}
-
-/// Words for how far off a date is. A seven-day window from today rather
-/// than real week boundaries — the prototype flagged this as unfinished and
-/// it still is, deliberately: "this week" is a calendar-week question, and
-/// answering it needs the address's week start, which the page does not
-/// state. The wording is chosen to survive the imprecision ("in N days"
-/// beyond a week rather than "the week of").
-fn when_phrase(date: Date, today: Date) -> String {
-    match date.days() - today.days() {
-        d if d < 0 => "(already past)".to_string(),
-        0 => "today".to_string(),
-        1 => "tomorrow".to_string(),
-        d if d < 7 => format!("in {d} days"),
-        d => format!("on {date} ({d} days away)"),
     }
 }
 
@@ -141,7 +145,7 @@ mod tests {
             let today = d("2026-08-11").add_days(offset);
             let collected_on = c.next_on_or_after(today);
             assert_eq!(
-                plan(c, judge(c, collected_on, today), today),
+                plan(c, judge(c, collected_on, today)),
                 None,
                 "polled {today}, page says {collected_on}"
             );
@@ -157,7 +161,7 @@ mod tests {
         let mut keys = std::collections::BTreeSet::new();
         for offset in 0..=7 {
             let today = d("2026-08-11").add_days(offset);
-            let plan = plan(c, judge(c, collected_on, today), today).expect("a slide rings");
+            let plan = plan(c, judge(c, collected_on, today)).expect("a slide rings");
             keys.insert(plan.source_key());
             assert!(
                 plan.title.contains("Monday") && plan.title.contains("Tuesday"),
@@ -173,6 +177,43 @@ mod tests {
         );
     }
 
+    /// **The regression test, and the property whose absence let the bug
+    /// through.** Every daily re-poll of one unchanged slide must produce a
+    /// *byte-identical* wire payload — not just the same key, the same
+    /// everything — because the authority decides whether to restamp
+    /// `raised_at` by diffing the re-raise against the stored row. One
+    /// clock-dependent character anywhere in this payload and the daily poll
+    /// silently becomes a daily re-ring over the reader's dismissal.
+    ///
+    /// The suite already had "the same `source_key` every day" and "a
+    /// dismissal survives four re-polls" (with a hand-written fixed title,
+    /// authority-side) — and neither could see a title that moved. Compare
+    /// the whole payload, not the identity.
+    #[test]
+    fn a_week_of_re_polls_of_one_unchanged_slide_is_byte_identical_every_day() {
+        let c = weekly();
+        let collected_on = d("2026-08-18");
+        let payloads: std::collections::BTreeSet<String> = (0..=7)
+            .map(|offset| {
+                let today = d("2026-08-11").add_days(offset);
+                let ingest = plan(c, judge(c, collected_on, today))
+                    .expect("a slide rings")
+                    .ingest("America/Los_Angeles")
+                    .expect("a real zone");
+                serde_json::to_string(&ingest).expect("the wire payload serializes")
+            })
+            .collect();
+        assert_eq!(
+            payloads.len(),
+            1,
+            "eight polls of one unchanged slide produced {} distinct payloads; \
+             every one after the first is a write, and with `restamp_on_change` \
+             a write is a fresh `raised_at` over the reader's dismissal:\n{}",
+            payloads.len(),
+            payloads.iter().cloned().collect::<Vec<_>>().join("\n")
+        );
+    }
+
     /// A correction lands on the same row — that is what keying on the
     /// scheduled date buys — while changing the words, which is what earns
     /// the server-side restamp.
@@ -180,8 +221,8 @@ mod tests {
     fn a_correction_keeps_the_key_and_changes_the_words() {
         let c = weekly();
         let today = d("2026-08-12");
-        let first = plan(c, judge(c, d("2026-08-18"), today), today).unwrap();
-        let corrected = plan(c, judge(c, d("2026-08-19"), today), today).unwrap();
+        let first = plan(c, judge(c, d("2026-08-18"), today)).unwrap();
+        let corrected = plan(c, judge(c, d("2026-08-19"), today)).unwrap();
         assert_eq!(first.source_key(), corrected.source_key(), "one occurrence");
         assert_ne!(first.title, corrected.title, "and new information in it");
         assert!(corrected.title.contains("Wednesday"), "{}", corrected.title);
@@ -195,7 +236,7 @@ mod tests {
     fn expiry_is_the_end_of_the_later_date() {
         let c = weekly();
         let today = d("2026-08-12");
-        let plan = plan(c, judge(c, d("2026-08-18"), today), today).unwrap();
+        let plan = plan(c, judge(c, d("2026-08-18"), today)).unwrap();
         assert_eq!(plan.affected, d("2026-08-18"), "the later of the two");
 
         let zone = "America/Los_Angeles";
@@ -219,7 +260,7 @@ mod tests {
     fn a_backward_slide_expires_on_the_scheduled_date() {
         let c = weekly();
         let today = d("2026-08-12");
-        let plan = plan(c, judge(c, d("2026-08-15"), today), today).unwrap();
+        let plan = plan(c, judge(c, d("2026-08-15"), today)).unwrap();
         assert_eq!(plan.scheduled, d("2026-08-17"));
         assert_eq!(plan.affected, d("2026-08-17"), "the later of the two");
     }
@@ -228,9 +269,9 @@ mod tests {
     fn a_skipped_cycle_is_loud() {
         let c = weekly();
         let today = d("2026-08-18");
-        let plan = plan(c, judge(c, d("2026-08-31"), today), today).expect("a skip rings");
+        let plan = plan(c, judge(c, d("2026-08-31"), today)).expect("a skip rings");
         assert_eq!(plan.source_key(), "2026-08-24");
-        assert!(plan.title.starts_with("No Monday collection"), "{}", plan.title);
+        assert!(plan.title.starts_with("No collection on Monday"), "{}", plan.title);
     }
 
     /// The poller never sends `raised_at` — it asks the server to decide,
@@ -239,7 +280,7 @@ mod tests {
     fn the_ingest_asks_the_server_to_stamp_and_never_stamps_itself() {
         let c = weekly();
         let today = d("2026-08-12");
-        let ingest = plan(c, judge(c, d("2026-08-18"), today), today)
+        let ingest = plan(c, judge(c, d("2026-08-18"), today))
             .unwrap()
             .ingest("America/Los_Angeles")
             .unwrap();
@@ -256,7 +297,7 @@ mod tests {
         let c = weekly();
         let today = d("2026-08-12");
         assert_eq!(
-            plan(c, judge(c, d("2026-08-18"), today), today).unwrap().ingest("Mars/Olympus"),
+            plan(c, judge(c, d("2026-08-18"), today)).unwrap().ingest("Mars/Olympus"),
             None
         );
     }

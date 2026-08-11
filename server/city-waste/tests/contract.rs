@@ -110,7 +110,7 @@ fn the_alert_this_poller_posts_carries_restamp_on_change_on_the_wire() {
     let cadence = Cadence { anchor: Date::parse("2026-08-03").unwrap(), every_n_weeks: 1 };
     let today = Date::parse("2026-08-12").unwrap();
     let collected_on = Date::parse("2026-08-18").unwrap();
-    let ingest = plan(cadence, judge(cadence, collected_on, today), today)
+    let ingest = plan(cadence, judge(cadence, collected_on, today))
         .expect("a slide rings")
         .ingest("America/Los_Angeles")
         .expect("a real zone");

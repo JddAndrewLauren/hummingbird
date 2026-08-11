@@ -119,6 +119,27 @@ impl Date {
         NAMES[self.0.rem_euclid(7) as usize]
     }
 
+    /// What civil day it is **at the address**, given an instant.
+    ///
+    /// The second question that needs a zone, and the one the client carved
+    /// `zoned-day.ts` out to stop drifting: "today" is not a property of an
+    /// epoch stamp. Deriving it as `now_ms / 86_400_000` gives the *runner's*
+    /// UTC day, which agrees with Los Angeles at the 06:40 local cron and
+    /// disagrees on any `workflow_dispatch` after 17:00 local — quietly, and
+    /// on exactly the manual run someone would do to check a holiday.
+    ///
+    /// `None` for a zone the tzdb has never heard of, like
+    /// [`Date::end_of_day_ms`], and never a silent UTC.
+    pub fn today_in_zone(now_ms: i64, zone: &str) -> Option<Date> {
+        let tz = jiff::tz::TimeZone::get(zone).ok()?;
+        let there = jiff::Timestamp::from_millisecond(now_ms).ok()?.to_zoned(tz).date();
+        Some(Date::ymd(
+            i64::from(there.year()),
+            i64::from(there.month()),
+            i64::from(there.day()),
+        ))
+    }
+
     /// The instant this civil day ends **at the address** — the address's
     /// next midnight, as epoch milliseconds.
     ///
@@ -201,5 +222,34 @@ mod tests {
     #[test]
     fn an_unknown_zone_is_none_never_a_silent_utc() {
         assert_eq!(Date::parse("2026-08-18").unwrap().end_of_day_ms("Mars/Olympus"), None);
+        assert_eq!(Date::today_in_zone(0, "Mars/Olympus"), None);
+    }
+
+    /// The drift this function exists to stop: at 03:00 UTC it is still the
+    /// previous day in Los Angeles, and a poller reading `now_ms / 86_400_000`
+    /// would judge and describe the wrong day.
+    #[test]
+    fn today_is_read_at_the_address_not_at_utc() {
+        // 2026-08-19T03:00:00Z — 2026-08-18 at 20:00 PDT.
+        let now_ms = Date::parse("2026-08-19").unwrap().days() * 86_400_000 + 3 * 3_600_000;
+        assert_eq!(Date::today_in_zone(now_ms, "UTC").unwrap().iso(), "2026-08-19");
+        assert_eq!(
+            Date::today_in_zone(now_ms, "America/Los_Angeles").unwrap().iso(),
+            "2026-08-18",
+            "still the previous evening at the address"
+        );
+    }
+
+    /// And it agrees with the naive reading at the hour the cron actually
+    /// fires, which is why the bug would have stayed invisible in production
+    /// while biting every manual dispatch.
+    #[test]
+    fn today_agrees_with_the_naive_reading_at_the_scheduled_hour() {
+        // 13:40 UTC, the workflow's cron — 06:40 PDT.
+        let now_ms = Date::parse("2026-08-18").unwrap().days() * 86_400_000 + 13 * 3_600_000;
+        assert_eq!(
+            Date::today_in_zone(now_ms, "America/Los_Angeles").unwrap().iso(),
+            "2026-08-18"
+        );
     }
 }

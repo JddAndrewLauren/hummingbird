@@ -18,15 +18,11 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hummingbird_city_waste::alert::plan;
+use hummingbird_city_waste::binding::{page_url_from_response, BINDING_KEY};
 use hummingbird_city_waste::body::{WasteBody, SNAPSHOT_KEY};
 use hummingbird_city_waste::date::Date;
 use hummingbird_city_waste::judge::judge;
 use hummingbird_city_waste::page;
-
-/// The binding key, resolved by name at the seam exactly as
-/// `client/core/src/bindings.rs` does — unversioned, so a
-/// `city-waste/v1 → /v2` source bump cannot orphan it.
-const BINDING_KEY: &str = "city-waste-page";
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -64,14 +60,21 @@ fn run() -> Result<Outcome, String> {
         return Ok(Outcome::Unbound);
     };
 
-    let html = get_text(&page_url, None).map_err(|e| format!("fetching {page_url}: {e}"))?;
+    let html = get_text(&page_url).map_err(|e| format!("fetching {page_url}: {e}"))?;
     let reading = page::parse(&html).map_err(|e| e.to_string())?;
 
     // One clock read, used for both the freshness stamp and "today". Two
     // reads could straddle midnight and make the snapshot describe a
     // different day than the alert judges.
+    //
+    // "Today" is resolved **in the address's zone**, never as
+    // `now_ms / 86_400_000`: that is the runner's UTC day, which agrees with
+    // the address at the 06:40-local cron and disagrees on any manual
+    // dispatch in the local evening — quietly, and on exactly the run
+    // someone would do by hand to check a holiday.
     let now_ms = now_ms()?;
-    let today = Date::from_days(now_ms.div_euclid(86_400_000));
+    let today = Date::today_in_zone(now_ms, &reading.zone)
+        .ok_or_else(|| format!("`{}` is not a time zone this build can resolve", reading.zone))?;
 
     // Snapshot first, alert second — deliberately. A death between them
     // leaves the pane showing the corrected day, which IS the answer, with
@@ -91,7 +94,7 @@ fn run() -> Result<Outcome, String> {
     )?;
 
     let deviation = judge(reading.cadence, reading.collected_on, today);
-    let Some(plan) = plan(reading.cadence, deviation, today) else {
+    let Some(plan) = plan(reading.cadence, deviation) else {
         return Ok(Outcome::Wrote { alerted: false });
     };
     let ingest = plan
@@ -101,8 +104,16 @@ fn run() -> Result<Outcome, String> {
     Ok(Outcome::Wrote { alerted: true })
 }
 
+/// A set-but-empty variable is treated as unset. An Actions secret that was
+/// never created expands to the empty string rather than failing the step, so
+/// without this the run reaches the API with `Bearer ` and reports a 401 —
+/// which reads as "the token is wrong" when the truth is "the token was never
+/// minted".
 fn env(name: &str) -> Result<String, String> {
-    std::env::var(name).map_err(|_| format!("{name} is not set"))
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Ok(value),
+        _ => Err(format!("{name} is not set")),
+    }
 }
 
 fn now_ms() -> Result<i64, String> {
@@ -126,23 +137,24 @@ fn read_binding(base_url: &str, token: &str) -> Result<Option<String>, String> {
         Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(e) => return Err(format!("reading `{BINDING_KEY}`: {e}")),
     };
-    let setting: serde_json::Value = serde_json::from_str(&text).map_err(fmt)?;
-    // `Setting::value` is canonical JSON text, so a URL arrives as a quoted
-    // JSON string and has to be parsed once more. A row holding something
-    // that is not a string is a bound-but-unusable binding, which the pane
-    // renders as a gap — here it is a refusal, not a guess.
-    match serde_json::from_str::<serde_json::Value>(setting["value"].as_str().unwrap_or_default()) {
-        Ok(serde_json::Value::String(url)) if !url.is_empty() => Ok(Some(url)),
-        _ => Err(format!("`{BINDING_KEY}` does not hold a page URL")),
-    }
+    // The decode itself lives in the library, where it is tested — this file
+    // keeps only the call and the 404.
+    page_url_from_response(&text).map(Some).map_err(|e| e.to_string())
 }
 
-fn get_text(url: &str, token: Option<&str>) -> Result<String, String> {
-    let mut request = ureq::get(url).config().timeout_global(Some(HTTP_TIMEOUT)).build();
-    if let Some(token) = token {
-        request = request.header("Authorization", &format!("Bearer {token}"));
-    }
-    request.call().map_err(fmt)?.body_mut().read_to_string().map_err(fmt)
+/// The council's page: a plain unauthenticated GET, deliberately — this is
+/// the one request in the run that goes anywhere other than the authority,
+/// and it must never carry the ingest token.
+fn get_text(url: &str) -> Result<String, String> {
+    ureq::get(url)
+        .config()
+        .timeout_global(Some(HTTP_TIMEOUT))
+        .build()
+        .call()
+        .map_err(fmt)?
+        .body_mut()
+        .read_to_string()
+        .map_err(fmt)
 }
 
 fn post(base_url: &str, token: &str, path: &str, body: &serde_json::Value) -> Result<(), String> {

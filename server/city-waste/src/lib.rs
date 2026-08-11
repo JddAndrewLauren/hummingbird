@@ -35,6 +35,7 @@
 //! * [`body`] — the snapshot payload, one half of a cross-language contract
 //!   with `waste.ts`;
 //! * [`alert`] — what a deviation would post, returned rather than performed;
+//! * [`binding`] — reading the address's page URL out of `settings`;
 //! * [`page`] — the council's HTML, and the one module still unbuilt.
 //!
 //! # Two orderings that matter
@@ -49,6 +50,7 @@
 //! answers 404 for an unset binding precisely so that state is distinguishable.
 
 pub mod alert;
+pub mod binding;
 pub mod body;
 pub mod cadence;
 pub mod date;

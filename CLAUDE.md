@@ -264,6 +264,27 @@ arithmetic on day numbers except for one delegated question: when a
 collection day ends *at the address*, which needs a tzdb (`jiff`) and cannot
 be derived from a day number; an unknown zone is `None`, never a silent UTC.
 
+**`alert::plan` takes no clock, and that is load-bearing rather than tidy.**
+Its return becomes the alert's `title`/`body`, and the authority decides
+`restamp_on_change` by diffing a re-raise against the stored row — so
+anything clock-dependent in those strings makes *every* daily re-poll of an
+unchanged slide a change, which restamps `raised_at`, which (since `is_live`
+compares it against `dismissed_at`) undoes the reader's dismissal every
+morning. That is the precise failure the whole design exists to prevent, and
+it arrives through the most innocuous field there is: a relative phrase in a
+title ("in 4 days", "tomorrow"). Both the prototype and this slice's first
+revision wrote one. Dropping the `today` parameter is what makes it
+unwritable rather than merely absent — **do not add one back**; how far away
+the collection is is read-time urgency, computed on the pane like every
+other read-time fact (ADR-0002), never written into a stored row.
+`a_week_of_re_polls_of_one_unchanged_slide_is_byte_identical_every_day`
+compares the whole serialized payload, not the identity, because "the same
+`source_key` every day" is exactly the assertion that could not see it. For
+the same reason `Date::today_in_zone` exists beside `end_of_day_ms`: "today"
+resolved as `now_ms / 86_400_000` is the *runner's* UTC day, which agrees
+with the address at the 06:40-local cron and disagrees on a manual dispatch
+in the local evening.
+
 `tests/contract.rs` is the only guard against the body drifting from
 `waste.ts`, and it exists because **nothing mechanical connects the two
 sides** — the body inside ADR-0015's envelope is opaque to the server by
