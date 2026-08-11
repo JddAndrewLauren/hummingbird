@@ -2,7 +2,7 @@
 // a router: there are five screens, no deep links yet, and no URL contract to
 // honour — adding a router would be a dependency carrying no weight.
 
-export type Screen = "now" | "triage" | "routes" | "alerts" | "settings";
+export type Screen = "now" | "triage" | "routes" | "alerts" | "rules" | "settings";
 
 /** Rail order, defined once. `NavRail` maps over this and looks its labels and
  * icons up by screen, so the order lives here and nowhere else. */
@@ -11,6 +11,7 @@ export const SCREENS: readonly Screen[] = [
   "triage",
   "routes",
   "alerts",
+  "rules",
   "settings",
 ] as const;
 
@@ -21,5 +22,6 @@ export const SCREEN_TITLES: Record<Screen, string> = {
   triage: "Triage",
   routes: "Routes",
   alerts: "Alerts",
+  rules: "Rules",
   settings: "Settings",
 };

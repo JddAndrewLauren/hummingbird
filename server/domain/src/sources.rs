@@ -144,6 +144,18 @@ pub const GMAIL_V1: &str = "gmail/v1";
 /// keeps resolving.
 pub const M365_MAIL_V1: &str = "m365-mail/v1";
 
+/// `google-calendar/v1`'s frozen namespace, for [`GMAIL_V1`]'s own reason:
+/// two consumers share one literal — the registry entry above and
+/// `server/calendar-poll` (#136), the out-of-process poller that mints
+/// alerts under it and also writes/reads both its delta sync-token cursor
+/// and the `busy_now` snapshot as `context_snapshots` rows under it
+/// (ADR-0011's "per-source delta cursor", and this issue's "a source may of
+/// course be both" — an alert source and a snapshot source at once, exactly
+/// like `city-waste/v2`) — so a future retirement to `/v2` is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving.
+pub const GOOGLE_CALENDAR_V1: &str = "google-calendar/v1";
+
 /// `m365-calendar/v1`'s frozen namespace, named for [`M365_MAIL_V1`]'s
 /// reason: two consumers share one literal — the registry entry below and
 /// `server/graph-poll`'s `graph-calendar-poll` binary (#137), which mints
@@ -173,7 +185,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         retired_as: None,
     },
     SourceEntry {
-        source: "google-calendar/v1",
+        source: GOOGLE_CALENDAR_V1,
         shape: Shape::Event,
         key_recipe: "<eventId or recurringEventId>:<originalStartTime>",
         expires_at: Expiry::Always("the instance's end time"),

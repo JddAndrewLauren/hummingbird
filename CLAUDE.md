@@ -336,9 +336,11 @@ Actions secrets on the blast-radius reasoning that keeps `ADMIN_SECRET`
 out: that one mints every other token, this one reaches three routes for
 one source and its worst-case abuse is a wrong bin day. `polled_every_ms`
 in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
-(#135, below) is the second Actions `schedule:` on the same reasoning —
-see its own header for why a second scoped exception does not reopen the
-general ban.
+(#135, below) is the second Actions `schedule:` on the same reasoning,
+`.github/workflows/calendar-poll.yml` (#136, below) is the third, and
+`.github/workflows/graph-mail-poll.yml`/`graph-calendar-poll.yml` (#137,
+below) are the fourth and fifth — see any of their headers for why a
+repeated scoped exception does not reopen the general ban.
 
 **Not covered, and not this slice's to fix:** `POST /api/alerts` does not
 trigger delivery. `deliver` runs only from `sweep_tick`, which evaluates
@@ -413,9 +415,83 @@ for the full reasoning and the operator question this still leaves open
 (reuse the broader token instead, or mint the narrower one) — tracked on
 issue #135.
 
+## The Google Calendar evaluated-stream poller
+
+`server/calendar-poll/` (#136, ADR-0011) is the second of the
+evaluated-stream pollers, built directly onto #135's scaffolding: the same
+lib/`main.rs` split, the same `resume.rs` cursor-loss pattern (here over a
+`syncToken` rather than a `historyId`), the same evaluate-in-poll
+persistence principle. **Two jobs in one poll**, not one: the evaluated
+stream (a `google-calendar/v1` alert per matching `calendar_event`, via the
+exact `POST /api/alerts` lane every other source uses) and the
+`busy_now` snapshot this issue adds on top — `server/gmail-poll` had no
+second job, so this is genuinely new ground, not a re-tread.
+
+**`events.list` already returns full event bodies**, unlike Gmail's
+`history.list` (ids only, needing a separate `messages.get` per id) — so
+there is no `batch.rs` analogue here for a per-item fetch failure; the only
+network call in the evaluated-stream leg is the one `events.list` page
+fetch itself, and `main.rs` aborts with `?` before ever calling
+`post_cursor` if that fails, the same discipline `gmail_poll::batch`
+enforces through an extra module. What stays decidable and lives in the
+lib is `stream.rs`'s pure fold of each already-fetched item into either an
+evaluation candidate or a named, non-fatal skip — a **cancelled** event
+(Google's own deletion marker inside an incremental sync page, expected and
+permanent) and an **unparseable** one (a malformed 200 body, also
+permanent) are two different skip reasons that must not share a branch,
+`gmail_poll`'s own lesson carried over.
+
+**The occurrence key follows #158's `google_calendar_v1_key` convention**
+(`<eventId or recurringEventId>:<originalStartTime>`) exactly, which is
+what makes a recurring event's *instances* distinct occurrences rather than
+one alert overwritten on every recurrence, while a reschedule (Google can
+issue a new `id` on some reschedules, but `originalStartTime` is stable)
+still lands on the row minted for its original slot. `google-calendar/v1`
+is registered with `Expiry::Always("the instance's end time")` — unlike
+`gmail/v1`, which never expires — so `evaluate::Candidate`/`evaluate::Match`
+carry `ends_at_ms` through to `alert::plan`, which is the one place this
+poller's `Match` shape diverges from `gmail_poll`'s.
+
+**The `busy_now` snapshot stores window boundaries, never a boolean**
+(`busy.rs`) — the part of the brief most likely to be got wrong. The engine
+reads this row and compares `now` against the stored boundaries **at its
+own evaluation time**, not the poll's, so a poll-old snapshot still answers
+correctly between polls; a boolean captured at poll time would go stale the
+instant the meeting it described ended. Busy means a timed event in
+progress (`start_ms <= now_ms < end_ms`); three exclusions never mark
+busy — transparent/free, declined (read off the attendee entry carrying
+`"self": true`; its absence is "organizer, not invited as self", never
+read as declined), and all-day — each preventing over-suppression of a
+notification the brief cares about ringing anyway. This job rides **no
+cursor at all**: it is a fresh, always-run `events.list` query bounded
+around "now" (`timeMin`/`timeMax`, `main.rs`'s own job), independent of the
+sync-token cursor, which only ever answers "what changed" — busy needs
+"what's true right now," including for an event the evaluated-stream leg
+already saw and evaluated on an earlier poll. The cursor and the busy gauge
+share one bound source (`google-calendar/v1`) under two different
+`context_snapshots.key`s (`cursor`, `busy_now`) — `sources.rs`'s "a source
+may of course be both," extended here to a source being three things at
+once: an alert source and two independent snapshot rows.
+
+**The credential needed no fresh resolution.** ADR-0011's original
+decision table already named "same OAuth app, scope re-mint... adding
+`calendar.readonly`" for this leg — i.e. the SAME dedicated readonly token
+`gmail-poll.yml` introduced (`GOOGLE_REFRESH_TOKEN`), re-minted to also
+carry `calendar.readonly`, rather than a second separate credential. See
+[ADR-0011's addendum](docs/adr/0011-context-ingestion-moves-server-side.md#addendum-136-follows-the-same-scaffolding-and-the-credential-table-above-was-already-right)
+for the full reasoning; the still-open operator question on issue #135
+(reuse the broader existing token instead) covers this leg too.
+
+`authority/src/handlers/rules.rs`'s `event_kinds_readable_by` gained a
+second mapping entry alongside `gmail/v1`'s: an `ingest` token bound to
+`google-calendar/v1` reads `calendar_event`-kind rules (and every any-kind
+rule) through `GET /api/rules`, never `email`-kind ones — the two mapping
+entries are independent and fixture-tested as such.
+
 ## The M365 evaluated-stream pollers
 
-`server/graph-poll/` (#137, ADR-0011) is the third of #135-137, and the
+`server/graph-poll/` (#137, ADR-0011) is the third of #135-137 (built after
+#135's Gmail leg and #136's Google Calendar leg above), and the
 first built against app-only Microsoft Graph rather than Google's OAuth
 grants: one crate, two binaries (`graph-mail-poll` for `m365-mail/v1`,
 `graph-calendar-poll` for `m365-calendar/v1`), sharing the auth leg

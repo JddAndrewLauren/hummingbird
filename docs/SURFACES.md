@@ -20,7 +20,7 @@ human gate.
 | | |
 | --- | --- |
 | **Code root** | `client/web/src/` |
-| **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Settings |
+| **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Settings |
 | **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
 | **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx`, `screens/layout.tsx` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 16-component library |
@@ -30,7 +30,7 @@ human gate.
 
 ### Matrix
 
-Three widths × two themes × six screen states, per run.
+Three widths × two themes × seven screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ Themes: `light` and `dark`, seeded into `localStorage` at `hb.theme` before
 first paint (the app resolves `light | dark | system` onto
 `[data-theme]` — `src/theme/`).
 
-Screen states: the five screens under `?demo` (deterministic, populated
+Screen states: six screens under `?demo` (deterministic, populated
 fixtures) plus **Now's honest empty state** without the flag. `?demo` drives
 the *real* ranked region through a hand-authored world
 (`src/fixtures/demo-questions.ts` — a bound waste question collecting
@@ -50,7 +50,12 @@ tomorrow at the address, so what is photographed is an answered, imminent
 pane); there is deliberately no demo-only rendering of the region, so the
 capture is the shipping component. The empty
 states matter on their own: they are what a new device actually shows, and
-no fixture screen exercises them.
+no fixture screen exercises them. **Rules is the one screen `?demo` does not
+populate** (#140): it reads the live task store (`task.rules`/
+`task.kindRegistry`), not the `demo` fixture object every other screen here
+takes, so its capture is the honest "core still loading" state on a dev
+machine with no `wrangler dev` behind it — a real busy state, not a
+fixture gap.
 
 There are **no committed golden images and no pixel diff.** The project has
 no baseline history, and a pixel gate with nobody to arbitrate it produces

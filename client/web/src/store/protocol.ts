@@ -184,6 +184,91 @@ export interface BindingDTO {
   value: BindingValueDTO;
 }
 
+// -- rules (#140, ADR-0012/0013) --------------------------------------------
+//
+// The rules screen: condition rows, a per-row "not" toggle, the
+// enable/disable CAS toggle, and backtest. The kind registry
+// (`hummingbird_domain::kind_registry_json`, #133) is the single source for
+// which kinds/fields/operators exist — never a hand-maintained list here.
+
+/** One ANDed field test — the wire shape of `hummingbird_domain::Condition`.
+ * `value` is carried as `unknown`: its shape depends on the field's declared
+ * type (a string, a string array, a number, a bool, or a duration string for
+ * `within_next`/`within_last`), decided by `screens/rules/registry.ts`
+ * against the kind registry, never by this type. */
+export interface ConditionDTO {
+  field: string;
+  op: string;
+  value: unknown;
+  negate: boolean;
+}
+
+/** The two notification tiers (ADR-0012) — `hummingbird_domain::Tier`'s wire
+ * spelling. */
+export type TierName = "urgent" | "normal";
+
+/** One `rules` row — a 1:1 field mirror of `hummingbird_domain::Rule`,
+ * camelCased. `eventKind: null` is ADR-0013's "any kind" — narrows the
+ * editor's field list to the Event core rather than naming no fields at
+ * all. */
+export interface RuleDTO {
+  id: string;
+  name: string;
+  eventKind: string | null;
+  conditions: ConditionDTO[];
+  severity: string;
+  tier: TierName;
+  enabled: boolean;
+  updatedAt: number;
+  version: number;
+}
+
+/** The typed catalogue ADR-0013 gates operators by —
+ * `hummingbird_domain::FieldType`'s wire spelling. `"dynamic"` is
+ * `snapshot_change.value`/`.previous` only; the rules screen resolves its
+ * legal operators against the concrete value present, never this type
+ * alone (`screens/rules/operators.ts`). */
+export type FieldTypeName =
+  | "string"
+  | "string_list"
+  | "number"
+  | "bool"
+  | "timestamp"
+  | "date"
+  | "dynamic";
+
+/** One field a kind (or the Event core) declares. */
+export interface KindFieldDTO {
+  name: string;
+  fieldType: FieldTypeName;
+}
+
+/** One registry entry — `hummingbird_domain::EventKindEntry`'s wire shape.
+ * `mints` is ADR-0013's raw-stream-vs-already-an-alert flag; a `mints:
+ * false` kind (`alert_raised`) is still selectable, since a rule can react
+ * to an alert even though it never re-mints one. */
+export interface KindEntryDTO {
+  key: string;
+  mints: boolean;
+  fields: KindFieldDTO[];
+}
+
+/** The kind registry export (#133/#140, ADR-0013): the exact catalogue the
+ * rule engine evaluates against, so a kind added there surfaces here with
+ * no UI-side change. `alarmIntervalMs` is the DO alarm interval (#138) —
+ * what a `within_next`/`within_last` duration shorter than this should warn
+ * about, never reject. */
+export interface KindRegistryDTO {
+  kinds: KindEntryDTO[];
+  coreFields: KindFieldDTO[];
+  alarmIntervalMs: number;
+  /** `hummingbird_domain::SEVERITIES`, verbatim and in rank order —
+   * `server/domain/src/severity.rs`'s own vocabulary, exported so the rules
+   * screen's severity dropdown can never disagree with the ADR-0014 ratchet
+   * order a hand-typed string would silently rank `0` against. */
+  severities: string[];
+}
+
 // -- the pane read (#245, ADR-0015) ----------------------------------------
 //
 // The generic read every standing question's pane starts from:
@@ -399,6 +484,46 @@ export type TaskWorkerRequest =
    * contract as `"act"`. */
   | { type: "setBinding"; seed: string; key: string; value: string; nowMs: number }
   | { type: "getBindings" }
+  /** #140: the kind registry export. Carries no argument and needs no
+   * `Core` state — see `TaskHostCore::kind_registry`'s own doc. */
+  | { type: "getKindRegistry" }
+  | { type: "getRules" }
+  /** #140's rule create: one `POST /api/rules`, enqueued durably like every
+   * other mutation. `tier` is the wire's snake_case name, resolved by name
+   * in `client/ffi-web/src/task_host.rs`'s `create_rule` before it can
+   * reach `Core`. Same caller-mints-`seed` contract as `"capture"`. */
+  | {
+      type: "createRule";
+      seed: string;
+      name: string;
+      eventKind: string | null;
+      conditions: ConditionDTO[];
+      severity: string;
+      tier: TierName;
+      enabled: boolean;
+      nowMs: number;
+    }
+  /** #140's rule patch — the enable/disable toggle and every other rule
+   * edit share this one message, exactly the "one CAS field" acceptance
+   * criterion for the toggle: `null` on every optional field but `enabled`
+   * IS the toggle. `current` is the caller's own last-known copy of the
+   * row (from the `rules` push) — the CAS `base` a 409 is diffed against.
+   * `eventKindTouched` distinguishes "leave `eventKind` alone" from "set
+   * it, possibly to `null` for any kind" — the same double-`Option`
+   * `RulePatch` itself carries, flattened for the wire. */
+  | {
+      type: "patchRule";
+      seed: string;
+      current: RuleDTO;
+      name: string | null;
+      eventKindTouched: boolean;
+      eventKind: string | null;
+      conditions: ConditionDTO[] | null;
+      severity: string | null;
+      tier: TierName | null;
+      enabled: boolean | null;
+      nowMs: number;
+    }
   /** #245's generic pane read: one source's snapshot rows and its live
    * alerts. `nowMs` is the request's own clock — it decides both the
    * measured ages and the liveness filter, core-side, so nothing on this
@@ -526,6 +651,36 @@ export type TaskWorkerResponse =
       error: string | null;
     }
   | { type: "bindings"; bindings: BindingDTO[] }
+  /** #140's rule create result, matched back by `seed` — same
+   * broadcast-not-reply contract as `captureResult`. `"failed"` covers both
+   * a rejected wire vocabulary (an unrecognised `tier`) and a durability
+   * failure enqueueing the create; a *save-time* rule problem (#186 — an
+   * unknown field, an illegal operator, a malformed duration) is discovered
+   * later, at drain time, and surfaces through the ordinary dead-letter
+   * journal rather than this result. */
+  | {
+      type: "createRuleResult";
+      seed: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  /** #140's rule patch result (the enable/disable toggle and every other
+   * edit), matched back by `seed`. A 409 is **handled, not swallowed**: it
+   * is enqueued through the ordinary CAS path and either auto-rebases or
+   * lands in the dead-letter journal, same as any other conflicted write —
+   * this result only reports whether the enqueue itself succeeded. */
+  | {
+      type: "patchRuleResult";
+      seed: string;
+      ruleId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  | { type: "rules"; rules: RuleDTO[] }
+  /** Answers `getKindRegistry` (#140). Never `"busy"` — see
+   * `TaskHostCore::kind_registry`'s own doc. */
+  | { type: "kindRegistry"; registry: KindRegistryDTO }
   /** Answers `getPaneRead` (#245). Never posted for a `"busy"` read: an
    * empty pane read renders as "nothing is due", which a core that has not
    * loaded has no standing to claim — no answer, not an empty one. */

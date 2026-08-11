@@ -221,6 +221,7 @@ fn event_kinds_readable_by(source: &str) -> &'static [&'static str] {
     match source {
         hummingbird_domain::GMAIL_V1 => &["email"],
         hummingbird_domain::M365_MAIL_V1 => &["email"],
+        hummingbird_domain::GOOGLE_CALENDAR_V1 => &["calendar_event"],
         hummingbird_domain::M365_CALENDAR_V1 => &["calendar_event"],
         _ => &[],
     }
