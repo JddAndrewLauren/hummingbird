@@ -82,19 +82,33 @@ describe("submitCaptureRequest", () => {
 });
 
 // #223: pins the non-deterministic half of the sync module's seed-minting
-// rule (client/core/src/sync/mod.rs) — a capture mints a *new* item with no
-// prior identity to derive a seed from, so two captures of identical text
-// must never collide into one item.
+// rule (client/core/src/sync/mod.rs) — a capture mints a *new* item, its
+// seed's hash becomes the item's id on the authority's client-id-keyed
+// create path, so two captures of identical text must never collide into
+// one item.
 describe("mintSeed", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  it("two captures of identical text mint different seeds", () => {
-    const first = mintSeed();
-    const second = mintSeed();
+  // Through the real submit path, with the title AND the clock identical —
+  // `mintSeed()` itself takes neither, so only a whole-message assertion can
+  // actually claim "identical text".
+  it("two captures of identical text at the same nowMs mint different seeds", () => {
+    const worker = fakeWorker();
 
-    expect(first).not.toEqual(second);
+    submitCaptureRequest(worker, "buy milk", 1_000);
+    submitCaptureRequest(worker, "buy milk", 1_000);
+
+    const captures = worker.postMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "capture") as Array<{
+      title: string;
+      seed: string;
+    }>;
+    expect(captures.map((message) => message.title)).toEqual(["buy milk", "buy milk"]);
+    expect(captures[0].seed).not.toEqual(captures[1].seed);
   });
 
   // The arm that could actually collide: without `crypto.randomUUID`, the
@@ -109,8 +123,6 @@ describe("mintSeed", () => {
 
     const first = mintSeed();
     const second = mintSeed();
-
-    vi.useRealTimers();
 
     expect(first).not.toEqual(second);
   });

@@ -18,10 +18,12 @@ export interface ItemActions {
 
 /** Mints this act's seed. Deterministic — `client/core/src/sync/mod.rs`'s
  * seed-minting rule (#223): acting touches an item that already exists, so
- * retrying the identical intent (same item, same action, same `nowMs`) must
- * reproduce the identical seed. Exported standalone, not inlined in the
- * hook body, so it is directly testable without rendering a component —
- * `useCaptureWiring.ts`'s own `mintSeed` split. */
+ * the seed's hash becomes only the mutation's local queue-entry id, and
+ * retrying the identical intent (same item, same action, same `nowMs`)
+ * must reproduce the identical entry rather than enqueue a second one.
+ * Exported standalone, not inlined in the hook body, so it is directly
+ * testable without rendering a component — `useCaptureWiring.ts`'s own
+ * `mintSeed` split. */
 export function mintActSeed(itemId: string, action: TaskActionName, nowMs: number): string {
   return `${itemId}:${action}:${nowMs}`;
 }

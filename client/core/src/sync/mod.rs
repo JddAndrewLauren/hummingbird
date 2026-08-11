@@ -21,21 +21,28 @@
 //! — caller-minted rather than sampled here, because bare
 //! `wasm32-unknown-unknown` has no clock or RNG that does not panic. Which
 //! *shape* of seed a caller mints is decided by one criterion, not a list
-//! of today's call sites: a mutation naming an entity that **already
-//! exists** mints a **deterministic** seed, composed from that entity's own
-//! identity plus the caller's `now_ms`, so a retry of the identical intent
-//! (same identity, same operation, same instant) reproduces the identical
-//! seed and therefore the identical id — idempotent against the
-//! authority's client-id-keyed create path (`Core::act`, `Core::triage`,
-//! `Core::set_binding`). A mutation minting a **new** entity has no prior
-//! identity to derive a seed from and must mint a **non-deterministic**
-//! seed instead, because two identical intents in the same millisecond
-//! would otherwise collide into a single entity (`Core::capture`, the one
-//! entry point that creates rather than touches). A future mutation kind
-//! is tested against this same criterion, not appended to an enumeration;
-//! the seed-minting call sites in the web shell (`useCaptureWiring.ts`,
-//! `useItemActions.ts`, `useTriageWiring.ts`, `useBindingsWiring.ts`)
-//! reference this paragraph rather than restating it.
+//! of today's call sites: **which id the seed's hash becomes**. For a
+//! mutation that touches an entity that **already exists**, the hash is
+//! only the mutation's own `QueueEntry` id — a local durable-queue key
+//! that never crosses the wire, since the intent is a CAS write against
+//! the entity's existing id — so the seed is **deterministic**, composed
+//! from that entity's identity, the operation, and the caller's `now_ms`:
+//! a retried or crash-replayed enqueue of the identical intent (same
+//! identity, same operation, same instant) reproduces the identical entry
+//! rather than minting a second one, and the dead-letter journal can name
+//! the entry it buried. For a mutation that mints a **new** entity, the
+//! hash *is* the entity's id, landing on the authority's client-id-keyed
+//! create path — so the seed must be **non-deterministic**, because two
+//! identical intents in the same millisecond must become two entities,
+//! never collide into one. The create-side idempotency lives there and
+//! only there: `Core::capture`'s offline-replay dedup comes from a retry
+//! reusing that capture's own already-minted seed (the queue holds it, so
+//! the replayed create carries the identical id and lands on the
+//! authority's "already exists" path), never from the minting function's
+//! output being predictable. A future mutation kind is tested against
+//! this same criterion — which id does its seed become? — not appended to
+//! an enumeration; the web shell's seed-minting functions reference this
+//! paragraph rather than restating it.
 
 pub mod adapter;
 pub mod cycle;

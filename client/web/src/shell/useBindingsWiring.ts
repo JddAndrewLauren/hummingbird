@@ -51,13 +51,14 @@ export function useBindingsWiring(
 }
 
 /** Mints this binding write's seed. Deterministic — `client/core/src/
- * sync/mod.rs`'s seed-minting rule (#223): a binding write touches a
- * `settings` row keyed by `key`, which either already exists or is created
- * idempotently at `expected_version: 0`, so retrying the identical intent
- * (same key, same `nowMs`) must reproduce the identical seed. Exported
- * standalone, not inlined in the hook body, so it is directly testable
- * without rendering a component — `useCaptureWiring.ts`'s own `mintSeed`
- * split. */
+ * sync/mod.rs`'s seed-minting rule (#223): a binding write touches the
+ * `settings` row `key` itself names (the key IS the entity's identity —
+ * no id is ever minted from this seed's hash beyond the mutation's local
+ * queue-entry id), so retrying the identical intent (same key, same
+ * `nowMs`) must reproduce the identical entry rather than enqueue a
+ * second one. Exported standalone, not inlined in the hook body, so it is
+ * directly testable without rendering a component — `useCaptureWiring.ts`'s
+ * own `mintSeed` split. */
 export function mintBindingSeed(key: string, nowMs: number): string {
   return `${key}:binding:${nowMs}`;
 }

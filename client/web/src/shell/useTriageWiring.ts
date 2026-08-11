@@ -16,10 +16,12 @@ export interface TriageWiring {
 
 /** Mints this triage's seed. Deterministic — `client/core/src/sync/mod.rs`'s
  * seed-minting rule (#223): triaging touches an item that already exists,
- * so retrying the identical intent (same item, same destination, same
- * `nowMs`) must reproduce the identical seed. Exported standalone, not
- * inlined in the hook body, so it is directly testable without rendering a
- * component — `useCaptureWiring.ts`'s own `mintSeed` split. */
+ * so the seed's hash becomes only the mutation's local queue-entry id, and
+ * retrying the identical intent (same item, same destination, same `nowMs`)
+ * must reproduce the identical entry rather than enqueue a second one.
+ * Exported standalone, not inlined in the hook body, so it is directly
+ * testable without rendering a component — `useCaptureWiring.ts`'s own
+ * `mintSeed` split. */
 export function mintTriageSeed(
   itemId: string,
   destination: TriageDestinationName,

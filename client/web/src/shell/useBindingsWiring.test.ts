@@ -3,9 +3,10 @@ import { mintBindingSeed } from "./useBindingsWiring";
 
 // #223: pins the deterministic half of the sync module's seed-minting rule
 // (client/core/src/sync/mod.rs) for `Core::set_binding` — a binding write
-// touches a `settings` row that either already exists or is created
-// idempotently at `expected_version: 0`, so a retry of the identical intent
-// must reproduce the identical seed.
+// touches the `settings` row `key` itself names, so the seed's hash becomes
+// only the mutation's local queue-entry id and a retry of the identical
+// intent must reproduce the identical seed (and therefore the identical
+// entry, never a second one).
 describe("mintBindingSeed", () => {
   it("retrying the same binding write (same key, nowMs) mints the same seed", () => {
     const first = mintBindingSeed("city-waste-page", 5_000);
