@@ -15,7 +15,17 @@
 # is the live schema the schema we built, does the domain answer JSON. That
 # is all this script asserts.
 #
-# It is READ-ONLY, by decision (#239). Four consequences, each deliberate:
+# It is READ-ONLY, by decision (#239) — precisely: it writes nothing that any
+# client can ever see. Not *literally* nothing, and the difference is worth
+# stating rather than discovering later: `auth::authenticate` ends every
+# successful authentication with `UPDATE tokens SET last_seen`, so each run of
+# this script makes four such writes to its own token's row. That is outside
+# the delta contract by design — `tokens` never syncs, and the update
+# deliberately takes no meta bump, since bumping there would make every authed
+# read dirty the cursor. So: zero writes to synced data, zero rows a device or
+# the UI could observe, and four stamps on one token row.
+#
+# Four consequences of the posture, each deliberate:
 #
 #   1. Nothing here writes to the production task database. There is no
 #      delete route anywhere in the API (ADR-0003: absence demotes, it never
@@ -81,19 +91,43 @@ fail() {
 # collapsing two lines into one and shifting the status out of position. One
 # line with `read` handles a missing content type as a missing field, which
 # is what it is.
+# The timeouts are not optional. Without them a hung TLS connect blocks
+# forever, and a smoke that hangs has failed at the one thing it must always
+# do — report. `smoke.sh` bounds its own probe for the same reason.
 get() {
   local expected_status=$1 path=$2 token=${3:-}
-  local args=(-s -w '\n%{http_code} %{content_type}' "$HOST$path")
+  local args=(-s --connect-timeout 10 --max-time 30
+              -w '\n%{http_code} %{content_type}' "$HOST$path")
   [ -n "$token" ] && args+=(-H "Authorization: Bearer $token")
   local raw
-  raw=$(curl "${args[@]}") || fail "GET $path: curl could not reach $HOST"
+  raw=$(curl "${args[@]}") || fail "GET $path: curl could not reach $HOST (or timed out)"
   local trailer=${raw##*$'\n'}
   BODY=${raw%$'\n'*}
   local status
   read -r status CTYPE <<<"$trailer"
-  CTYPE=${CTYPE:-}
   [ "$status" = "$expected_status" ] ||
     fail "GET $path -> ${status:-<none>} (wanted $expected_status): $BODY"
+}
+
+# Reads `.version` into $VERSION_READ, proving it is a non-negative integer.
+#
+# Both callers below run inside `if ! some_function` blocks, where bash
+# suspends `set -e` for the whole call — so an unnoticed jq failure there would
+# flow on as an empty string and be misread as a concurrent write, burning the
+# retry and then failing with a race-flavoured message that names the wrong
+# cause. Validating here turns that into a clean, accurate failure instead.
+#
+# It sets a global rather than echoing: `fail` inside `$(...)` would exit only
+# the subshell, hand the caller a non-zero assignment, and — `set -e` being
+# suspended in exactly these blocks — carry on with an empty value. The bug
+# this guard exists to prevent, reintroduced by the guard itself.
+read_version() {
+  local json=$1 label=$2
+  VERSION_READ=$(jq -r '.version' <<<"$json") ||
+    fail "$label: could not read .version"
+  case "$VERSION_READ" in
+    ''|null|*[!0-9]*) fail "$label: .version is not a non-negative integer: '$VERSION_READ'";;
+  esac
 }
 
 echo "smoke-prod: $HOST"
@@ -141,10 +175,8 @@ for lane in version projects routes fog items steps blocked_by alerts \
   [ "$(jq -r --arg k "$lane" 'has($k)' <<<"$SWEEP")" = "true" ] ||
     fail "the sweep is missing the '$lane' lane — the live schema is not the one we built"
 done
-VERSION=$(jq -r '.version' <<<"$SWEEP")
-case "$VERSION" in
-  ''|*[!0-9]*) fail "the sweep's version is not a non-negative integer: '$VERSION'";;
-esac
+read_version "$SWEEP" "the sweep"
+VERSION=$VERSION_READ
 
 # --------------------------------------------- sweep == delta-from-zero
 #
@@ -155,12 +187,15 @@ esac
 # `version` is that race and not a defect, so it is retried once; a
 # difference at the SAME version is a genuine disagreement and fails.
 compare_sweep_to_delta() {
-  local sweep=$1 delta
+  local sweep=$1 delta sweep_version delta_version
   get 200 "/api/changes?since=0" "$TOKEN"
   delta=$BODY
   [ "$sweep" = "$delta" ] && return 0
-  DELTA_VERSION=$(jq -r '.version' <<<"$delta")
-  [ "$DELTA_VERSION" != "$(jq -r '.version' <<<"$sweep")" ] && return 1
+  read_version "$sweep" "the sweep"
+  sweep_version=$VERSION_READ
+  read_version "$delta" "delta-from-zero"
+  delta_version=$VERSION_READ
+  [ "$delta_version" != "$sweep_version" ] && return 1
   fail "sweep and delta-from-zero differ at the same version:
 sweep: $sweep
 delta: $delta"
@@ -169,7 +204,8 @@ if ! compare_sweep_to_delta "$SWEEP"; then
   echo "  (a write landed mid-run; re-reading)"
   get 200 /api/sweep "$TOKEN"
   SWEEP=$BODY
-  VERSION=$(jq -r '.version' <<<"$SWEEP")
+  read_version "$SWEEP" "the re-read sweep"
+  VERSION=$VERSION_READ
   compare_sweep_to_delta "$SWEEP" ||
     fail "sweep and delta-from-zero still disagree after a re-read"
 fi
@@ -188,9 +224,16 @@ cursor_is_empty() {
   # be swallowed and land in the mismatch branch below with a misleading
   # message.
   local at rows
-  at=$(jq -r '.version' <<<"$BODY")
+  read_version "$BODY" "since=current"
+  at=$VERSION_READ
   rows=$(jq -r '[.projects,.routes,.fog,.items,.steps,.blocked_by,.alerts,
-                 .context_snapshots,.settings,.rules] | map(length) | add' <<<"$BODY")
+                 .context_snapshots,.settings,.rules] | map(length) | add' <<<"$BODY") ||
+    fail "since=current: could not count the response's rows"
+  # `at` is proven numeric by read_version, so the -gt below cannot become a
+  # bash arithmetic error mid-assertion; `rows` is checked for the same reason.
+  case "$rows" in
+    ''|null|*[!0-9]*) fail "since=current: row count is not a number: '$rows'";;
+  esac
   if [ "$rows" != "0" ]; then
     [ "$at" -gt "$VERSION" ] && return 1
     fail "since=current returned $rows rows at the unchanged version $VERSION"
@@ -202,7 +245,8 @@ cursor_is_empty() {
 if ! cursor_is_empty; then
   echo "  (a write landed mid-run; re-reading the cursor)"
   get 200 /api/sweep "$TOKEN"
-  VERSION=$(jq -r '.version' <<<"$BODY")
+  read_version "$BODY" "the re-read sweep"
+  VERSION=$VERSION_READ
   cursor_is_empty || fail "the version cursor still does not settle after a re-read"
 fi
 
