@@ -212,7 +212,32 @@ request 400 POST /api/snapshots '{"source":"healthchecks/v1","key":"k","fetched_
 request 403 POST /api/snapshots "$SNAP" "$DEVICE"
 [ -z "$BODY" ] || fail "snapshot 403 leaked a body: $BODY"
 
-# The one read a non-device scope reaches, and its unset case.
+# GET /api/snapshots (#135-137): the cursor read-back an evaluated-stream
+# poller needs. Source-bound for an ingest token exactly like the write
+# side; a device token reads any source.
+request 200 GET "/api/snapshots?source=healthchecks/v1&key=collection" '' "$INGEST"
+[ "$(jq -r '.source' <<<"$BODY")" = "healthchecks/v1" ] || fail "snapshot read-back: $BODY"
+request 200 GET "/api/snapshots?source=healthchecks/v1&key=collection" '' "$DEVICE"
+request 403 GET "/api/snapshots?source=home-assistant/v1&key=x" '' "$INGEST"
+[ -z "$BODY" ] || fail "snapshot read 403 leaked a body: $BODY"
+request 404 GET "/api/snapshots?source=healthchecks/v1&key=no-such-key" '' "$INGEST"
+
+# GET /api/rules (#135-137): every non-device scope reaches two routes now,
+# not one — this is the poller's own read of the live rule set it
+# evaluates in memory. A device token reads every rule; an ingest token's
+# read is filtered to the rules its bound source's event_kind may see
+# (`rules::event_kinds_readable_by`) plus every any-kind rule. The smoke
+# ingest token above is bound to "healthchecks/v1", which
+# `event_kinds_readable_by` has no mapping for, so it reads only rules with
+# no `event_kind` at all — this asserts the response shape and the
+# device/ingest/sweeper matrix, not the per-kind filter itself (covered by
+# the native fixture suite).
+request 200 GET /api/rules '' "$DEVICE"
+request 200 GET /api/rules '' "$INGEST"
+request 403 GET /api/rules '' "$SWEEPER"
+[ -z "$BODY" ] || fail "rules 403 leaked a body: $BODY"
+
+# The two reads a non-device scope reaches, and settings' unset case.
 request 201 PUT /api/settings/city-waste-page '{"expected_version":0,"value":"https://city.example/x"}' "$DEVICE"
 request 200 GET /api/settings/city-waste-page '' "$INGEST"
 [ "$(jq -r '.value' <<<"$BODY")" = '"https://city.example/x"' ] || fail "settings read: $BODY"

@@ -428,6 +428,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hummingbird-gmail-poll"
+version = "0.1.0"
+dependencies = [
+ "hummingbird-domain",
+ "hummingbird-rules-engine",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "hummingbird-rules-engine"
 version = "0.1.0"
 dependencies = [

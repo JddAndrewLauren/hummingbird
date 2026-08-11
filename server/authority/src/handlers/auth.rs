@@ -112,6 +112,29 @@ pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
         // could already write alerts and snapshots for its source gains no
         // ability to change anything here.
         ("GET", ["settings", _]) => matches!(scope, Scope::Device | Scope::Ingest),
+        // The evaluated-stream pollers' own reads (#135-137). An
+        // out-of-process poller (Gmail, Google Calendar, M365 mail/calendar)
+        // evaluates rules in memory against its own fetched batch
+        // (ADR-0011) and needs the operator's live rule set to do it, and
+        // its own previously-written cursor so a restart resumes rather
+        // than replays (ADR-0011's "per-source delta cursor"). Neither
+        // widens what an ingest token can already reach in kind — it could
+        // already write `alerts`/`snapshots` for its bound source; reading
+        // its own snapshot rows (source-bound below, in `snapshots::get`)
+        // does not let it write anything new. **`rules` is not the same
+        // shape as `settings`**, unlike the carve-out above — it is
+        // operator-authored content, not a small closed vocabulary of
+        // binding facts — so this scope check alone would hand every
+        // ingest token (including `CITY_WASTE_INGEST_TOKEN`, which sits in
+        // GitHub Actions) the operator's entire rule set. `rules::list`
+        // itself narrows the *response*, not this gate, to only the rules
+        // the calling token's bound source is entitled to see
+        // (`rules::event_kinds_readable_by`) — the same shape as the
+        // source-binding check on `snapshots::get` and the alert/snapshot
+        // write lanes, just applied inside the handler because it depends
+        // on each rule's own `event_kind`, not just the request.
+        ("GET", ["rules"]) => matches!(scope, Scope::Device | Scope::Ingest),
+        ("GET", ["snapshots"]) => matches!(scope, Scope::Device | Scope::Ingest),
         _ => matches!(scope, Scope::Device),
     }
 }

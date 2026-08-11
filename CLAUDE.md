@@ -321,26 +321,97 @@ repo is public; only the ordinary-week one is a real observation, the
 off-week and holiday ones move dates on that capture and say so in their own
 header comments.
 
-`.github/workflows/city-waste.yml` is the repo's **one Actions `schedule:`**,
-and it is a scoped exception rather than a drift. #8's overturn had four
-clauses and three were about a *private* repo's Actions billing (pooled
-minutes, whole-minute rounding, the $0 cap); hummingbird is public, so only
-the 60-day auto-disable survives in general — and this lane is
-self-monitoring, since the pane bands its own answer stale at 26h and then
-refuses to answer, so a stalled poller is loud within a day. The ban still
-holds absolutely where it was really about *competing clocks*: supercronic
-owns the sweeper's cadence and the DO's `alarm()` owns the sweep tick, and a
-second cron for either would compete with a live one. This poller has no
-competing clock at all. `CITY_WASTE_INGEST_TOKEN` goes in Actions secrets on
-the blast-radius reasoning that keeps `ADMIN_SECRET` out: that one mints
-every other token, this one reaches three routes for one source and its
-worst-case abuse is a wrong bin day. `polled_every_ms` in `body.rs` must
-match the cron.
+`.github/workflows/city-waste.yml` was the repo's first Actions
+`schedule:`, and it is a scoped exception rather than a drift. #8's
+overturn had four clauses and three were about a *private* repo's Actions
+billing (pooled minutes, whole-minute rounding, the $0 cap); hummingbird is
+public, so only the 60-day auto-disable survives in general — and this lane
+is self-monitoring, since the pane bands its own answer stale at 26h and
+then refuses to answer, so a stalled poller is loud within a day. The ban
+still holds absolutely where it was really about *competing clocks*:
+supercronic owns the sweeper's cadence and the DO's `alarm()` owns the
+sweep tick, and a second cron for either would compete with a live one.
+This poller has no competing clock at all. `CITY_WASTE_INGEST_TOKEN` goes in
+Actions secrets on the blast-radius reasoning that keeps `ADMIN_SECRET`
+out: that one mints every other token, this one reaches three routes for
+one source and its worst-case abuse is a wrong bin day. `polled_every_ms`
+in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
+(#135, below) is the second Actions `schedule:` on the same reasoning —
+see its own header for why a second scoped exception does not reopen the
+general ban.
 
 **Not covered, and not this slice's to fix:** `POST /api/alerts` does not
 trigger delivery. `deliver` runs only from `sweep_tick`, which evaluates
 `item-threshold/v1` — so "the notification lane still delivers it" is
 aspirational today for **every** webhook source, not just this one.
+
+## The Gmail evaluated-stream poller
+
+`server/gmail-poll/` (#135, ADR-0011) is the first of the evaluated-stream
+pollers #136/#137 follow: once every 15 minutes it advances a `historyId`
+delta cursor, evaluates each new message **in memory** against the live
+rule set, and upserts an alert only for a match — non-matches never touch
+storage, ADR-0011's own persistence principle. A workspace member (CI
+gates it); it must **never** become a dependency of
+`hummingbird-authority-worker` for the same reason `server/city-waste`
+isn't one — that build is wasm32 and has no business carrying an HTTP
+client or an OAuth token exchange. It follows `server/city-waste`'s exact
+split: everything decidable is in the lib and natively tested against
+saved Gmail API fixtures (`cursor.rs`, `history.rs`, `message.rs`,
+`event.rs`, `evaluate.rs`, `alert.rs`, plus `resume.rs` and `batch.rs`
+below); `main.rs` holds only `std::env`, the OAuth token exchange, and the
+Gmail/authority HTTP calls.
+
+**The cursor-loss decision is `resume.rs`, not `main.rs`.** `resume(stored,
+HistoryOutcome)` is a pure fold over the previously stored `historyId` and
+the outcome of one `history.list` attempt (`Page` or `Expired`, Gmail's own
+404 once a `historyId` has aged out — main.rs's only job is reading that
+real HTTP status); `main.rs` shrinks to that one status→outcome mapping.
+This is what makes AC6's cursor-loss fixture case (first-run, expired,
+normal-advance, and the no-`historyId`-in-response case — the cursor holds
+and the next poll's batch replays rather than rewinding) natively testable
+rather than stuck in the untestable edge. `batch.rs`'s `fold_messages` is
+its sibling for the per-message fetch loop: a transient fetch failure
+(transport error, a 5xx) aborts the **whole batch** — `Err`, before
+`main.rs` ever calls `post_cursor` — so a dropped message's id stays inside
+the *next* poll's window rather than being lost the instant the cursor
+advances past it; a permanently unparseable message (fetched fine, will
+never parse) is skipped loudly but non-fatally, since one bad message must
+not wedge the poller forever. The two failure modes deliberately do not
+share a branch.
+
+**Two authority routes exist only for the evaluated-stream pollers.**
+Neither was in #135's brief; both were added because an `ingest` token had
+no way to read its own state back. `GET /api/snapshots?source=&key=`
+(`snapshots::get`) is the cursor's read-back half — query params, not path
+segments, because `handlers/mod.rs` splits the path on `/` and every
+source string contains a slash — `Device | Ingest`, and source-bound for
+`Ingest` exactly like the write side (a mismatched source is a 403).
+`GET /api/rules` (`rules::list`) is the live rule set a poller evaluates
+in memory against; for a device token it is every rule, enabled or not
+(the poller decides `enabled` itself, via `hummingbird_rules_engine`, so
+filtering here would be a second, driftable copy of that check). **For an
+`ingest` token it is source-bound too**, but differently: `rules::list`
+filters the *response* to only the rules whose `event_kind` the calling
+token's bound source can actually emit
+(`rules::event_kinds_readable_by`), plus every rule with `event_kind: None`
+(the "any kind" state, which applies to every source's events). This is
+what keeps `GET /api/rules` from silently widening every ingest token's
+reach to the operator's whole rule catalogue — including
+`CITY_WASTE_INGEST_TOKEN`, which sits in GitHub Actions under the
+recorded justification that its worst-case abuse is a wrong bin day; an
+unmapped or unbound source reads only the any-kind rules, never
+everything, by default.
+
+**The credential does not follow ADR-0011's original "Worker secret" table**
+— `.github/workflows/gmail-poll.yml` is a GitHub Actions `schedule:`, a
+different trust boundary, and it is written against a **dedicated
+`gmail.readonly`-scope refresh token**, deliberately narrower than the
+sweeper's existing `gmail.modify` one: every Gmail call this poller makes
+is a read. See [ADR-0011's amendment](docs/adr/0011-context-ingestion-moves-server-side.md#amendment-the-poller-runs-out-of-process-and-its-credential-is-narrowed-accordingly)
+for the full reasoning and the operator question this still leaves open
+(reuse the broader token instead, or mint the narrower one) — tracked on
+issue #135.
 
 ## The client sync engine
 

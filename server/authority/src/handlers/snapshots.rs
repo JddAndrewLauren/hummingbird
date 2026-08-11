@@ -15,7 +15,8 @@
 use hummingbird_domain::{ContextSnapshot, SnapshotEnvelope, SnapshotIngest};
 
 use super::{
-    empty_status, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse,
+    empty_status, error, json, parse_body, query_param, read_meta_version, write_meta_version,
+    ApiResponse,
 };
 use crate::codec::RowReader;
 use crate::sql::{Row, Sql, SqlError, SqlValue};
@@ -134,6 +135,43 @@ pub fn ingest(
             version,
         },
     ))
+}
+
+/// `GET /api/snapshots?source=&key=` — one row by identity (#135-137).
+/// Query params, not path segments, for `handlers/mod.rs`'s own reason
+/// (module doc above): every source string contains a slash. `Device |
+/// Ingest` (see `auth::permitted`): an evaluated-stream poller reads its own
+/// previously-written cursor here so a restart resumes rather than replays
+/// (ADR-0011) — the durable home `POST /api/snapshots` already gave it a
+/// write path to, with no way back in. An `ingest` token is bound to the
+/// row's `source`, exactly as on the write side; `token_source: None` means
+/// a device token, which already reads every row through `GET /api/sweep`
+/// and is let through unrestricted here too.
+///
+/// 404 for no such row, distinctly from a 400 for a missing/empty query
+/// param — a poller's first-ever run (no cursor written yet) must be able
+/// to tell "read the identity wrong" apart from "nothing here yet, this is
+/// a legitimate start-from-scratch state."
+pub fn get(
+    query: Option<&str>,
+    token_source: Option<&str>,
+    sql: &dyn Sql,
+) -> Result<ApiResponse, SqlError> {
+    let Some(source) = query_param(query, "source").filter(|s| !s.is_empty()) else {
+        return Ok(error(400, "validation", "source is required"));
+    };
+    let Some(key) = query_param(query, "key").filter(|k| !k.is_empty()) else {
+        return Ok(error(400, "validation", "key is required"));
+    };
+    if let Some(bound) = token_source {
+        if bound != source {
+            return Ok(empty_status(403));
+        }
+    }
+    match select_snapshot(sql, source, key)? {
+        Some(row) => Ok(json(200, &snapshot_from_row(&row)?)),
+        None => Ok(error(404, "not_found", "no such snapshot")),
+    }
 }
 
 fn select_snapshot(sql: &dyn Sql, source: &str, key: &str) -> Result<Option<Row>, SqlError> {
