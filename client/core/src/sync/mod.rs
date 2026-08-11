@@ -29,8 +29,12 @@
 //! from that entity's identity, the operation, and the caller's `now_ms`:
 //! a retried or crash-replayed enqueue of the identical intent (same
 //! identity, same operation, same instant) reproduces the identical entry
-//! rather than minting a second one, and the dead-letter journal can name
-//! the entry it buried. For a mutation that mints a **new** entity, the
+//! *id* rather than minting a second, unrelated one, and the dead-letter
+//! journal can name the entry it buried. Identity only:
+//! [`queue::OutboundQueue::enqueue`] is a bare append with no id dedupe, so
+//! two such enqueues are two entries sharing one id, never one entry — a
+//! determinism this criterion uses for naming, not for collapsing
+//! duplicates. For a mutation that mints a **new** entity, the
 //! hash *is* the entity's id, landing on the authority's client-id-keyed
 //! create path — so the seed must be **non-deterministic**, because two
 //! identical intents in the same millisecond must become two entities,
