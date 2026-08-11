@@ -505,21 +505,18 @@ queue below unchanged so the next trip is still one line down.
 `collapsedHeadline` is free prose, so a pane that is a countdown ~94% of the
 time and a status line the rest costs nothing structurally.
 
-**And the zone rule the "India in 394 days" section above was written
-against.** #46's two-arm all-day shape never landed and this pane did not need
-it: an `EventTime` carries an instant **plus the IANA zone the provider
-associated with it**, so the civil date is recoverable by resolving the
-instant in the carried zone. The pane therefore resolves **the trip's** dates
-in the *event's* zone and **"today"** in the *device's* zone, counts every
-distance with `civilDaysBetween` over two `YYYY-MM-DD` values, and derives the
-last day as the exclusive end's civil date minus one **civil day**.
-`endMs - DAY` appears nowhere. Resolving "today" in the event's zone too was
-rejected: self-consistent, but it says "departing tomorrow" off a midnight in
-Kolkata while the reader is in California, and it is unfalsifiable at home, so
-it would only ever break on the trip itself. An **unusable zone excludes the
-event** — `""` is a real value on the wire and `Intl.DateTimeFormat` throws a
-`RangeError` on it, so the trip is dropped rather than resolved against a
-guess that would move it by a day.
+**And the `EventWhen` rule the "India in 394 days" section above now
+enforces.** #46's two-arm shape carries an all-day trip as the provider's own
+`start_date`/exclusive `end_date` strings, with **no instant and no source
+zone**, while a timed trip carries only `start_ms`/`end_ms` instants. The pane
+therefore reads all-day dates directly and resolves timed instants in the
+**device's** zone — the same zone that decides **"today"** — then counts every
+distance with `civilDaysBetween` over two `YYYY-MM-DD` values. Only the
+all-day arm derives its last day as the exclusive end minus one **civil day**;
+the timed arm keeps the real end instant's device civil date. `endMs - DAY`
+appears nowhere. This makes the old failure mode unrepresentable: there is no
+zone-resolved all-day midnight for a reader west of Kolkata to turn into the
+previous day, and no carried zone to guess or reject.
 
 **"Dormant is not a synonym for far away" is now load-bearing code.** Any
 booked trip keeps this pane out of `dormant`, at 31 days or 731; dormant here

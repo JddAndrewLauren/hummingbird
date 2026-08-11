@@ -1506,17 +1506,16 @@ tomorrow"* → *"Lisbon today"* → *"In Lisbon · day 3 of 6"* → *"Home today
 Lisbon"*, with the whole trip queue listed under it and **never truncated**.
 Three rules carry the whole design.
 
-**Civil dates only — no instant is ever subtracted.** A trip's dates resolve
-in **the event's own carried `EventTime.timeZone`** (`zoned-day.ts`'s
-`Intl.DateTimeFormat` precedent, now shared out of `waste-pane/`), while
-**"today"** resolves in the **device's** zone, and every count is
-`civilDaysBetween` over two `YYYY-MM-DD` values. The last day is the
-provider's *exclusive* end minus one **civil day**; `endMs - DAY` appears
-nowhere, because that is the *"India in 394 days"* defect ADR-0015 records
-here and the same arithmetic fires `returns_today` a day early. Resolving
-"today" in the event's zone too is rejected and unfalsifiable at home — it
-would only ever break on the trip itself. An unusable zone (`""` is a real
-value on the wire) **excludes the event** rather than guessing one.
+**Civil dates only — no instant is ever subtracted.** `EventWhen` keeps the
+provider's `YYYY-MM-DD` strings directly for an all-day trip, with no instant
+or source zone to recover them from; a timed trip carries only UTC instants,
+whose civil dates resolve in the **device's** zone — the same zone that
+decides **"today"**. Every count is `civilDaysBetween` over the resulting
+dates. Only an all-day trip has the provider's *exclusive* end, whose last day
+is minus one **civil day**; a timed trip's real end instant stays on its own
+device civil date. `endMs - DAY` appears nowhere, because flattening an
+all-day date to an instant is the *"India in 394 days"* defect ADR-0015
+records here and the same arithmetic fires `returns_today` a day early.
 
 **Any booked trip keeps the pane out of `dormant`, at 31 days or 731** —
 `collapse.ts` collapses dormant by default, and ADR-0015 names this pane as

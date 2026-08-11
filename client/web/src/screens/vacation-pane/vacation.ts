@@ -393,7 +393,10 @@ export function vacationAnswer(inputs: QuestionInputs): PaneAnswer {
 
 /** The pane's own calendar-arm request (#267): the long horizon, exactly the
  * window `CalendarHorizon::Long` polls, so the read never asks for an
- * interval the mirror was never filled for. */
+ * interval the mirror was never filled for. The civil upper bound is the day
+ * **after** the one containing `endMs`: all-day events have no instant, so a
+ * timed window ending part-way through the +730d day corresponds to asking
+ * the all-day arm about that whole civil day, with its usual exclusive end. */
 export function vacationCalendarInterval(nowMs: number): {
   startMs: number;
   endMs: number;
@@ -402,11 +405,16 @@ export function vacationCalendarInterval(nowMs: number): {
 } {
   const startMs = nowMs - HORIZON_BEFORE_DAYS * DAY_MS;
   const endMs = nowMs + HORIZON_AHEAD_DAYS * DAY_MS;
+  const endDay = deviceCivilToday(endMs) ?? new Date(endMs).toISOString().slice(0, 10);
+  const endDate = addCivilDays(endDay, 1);
+  if (endDate === null) {
+    throw new Error(`calendar horizon produced an invalid civil end day: ${endDay}`);
+  }
   return {
     startMs,
     endMs,
     startDate: deviceCivilToday(startMs) ?? new Date(startMs).toISOString().slice(0, 10),
-    endDate: deviceCivilToday(endMs) ?? new Date(endMs).toISOString().slice(0, 10),
+    endDate,
   };
 }
 

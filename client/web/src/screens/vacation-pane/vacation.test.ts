@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { BindingDTO, CalendarEventDTO, CalendarReadDTO } from "../../store/protocol";
 import type { QuestionInputs } from "../questions/contract";
+import { addCivilDays, deviceCivilToday } from "../waste-pane/zoned-day";
 import {
   CALENDAR_REQUEST_KEY,
+  HORIZON_AHEAD_DAYS,
   HORIZON_LABEL,
   STALE_AFTER_MS,
   isStaleFreshness,
@@ -10,6 +12,7 @@ import {
   tripQueue,
   vacationAnswer,
   vacationBand,
+  vacationCalendarInterval,
   vacationHeadline,
   vacationView,
 } from "./vacation";
@@ -91,6 +94,38 @@ describe("tripName", () => {
 
   it("never empties a title that is only the prefix", () => {
     expect(tripName("Trip:")).toBe("Trip:");
+  });
+});
+
+describe("vacationCalendarInterval", () => {
+  it("includes an all-day trip on the +730d horizon day with an exclusive civil end", () => {
+    const interval = vacationCalendarInterval(nowAt("2026-03-01", 12));
+    const horizonDay = deviceCivilToday(interval.endMs);
+    expect(horizonDay).not.toBeNull();
+    const dayAfterHorizon = addCivilDays(horizonDay!, 1);
+
+    // The instant arm reaches noon-ish on the horizon day (DST may move the
+    // wall clock by an hour), so timed events earlier that day are included.
+    const timedOnHorizonDay = new Date(`${horizonDay}T00:30:00`).getTime();
+    expect(timedOnHorizonDay).toBeLessThan(interval.endMs);
+
+    // The civil arm represents that same final day as a whole-day fact. Its
+    // end is exclusive, so the day itself must be strictly below `endDate`.
+    expect(interval.endDate).toBe(dayAfterHorizon);
+    expect(horizonDay! < interval.endDate).toBe(true);
+    const horizonTrip = allDay("horizon", "Trip: Horizon", horizonDay!, dayAfterHorizon!);
+    expect(horizonTrip.when).toEqual({
+      kind: "allDay",
+      startDate: horizonDay,
+      endDate: dayAfterHorizon,
+    });
+    if (horizonTrip.when.kind === "allDay") {
+      expect(
+        horizonTrip.when.startDate < interval.endDate &&
+          horizonTrip.when.endDate > interval.startDate,
+      ).toBe(true);
+    }
+    expect(HORIZON_AHEAD_DAYS).toBe(730);
   });
 });
 
