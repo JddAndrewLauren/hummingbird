@@ -11,21 +11,14 @@ import type { DemoCapture, DemoData } from "../fixtures/demo";
 import { CAPTURE_INPUT_ID } from "../shell/capture-hotkey";
 import type { TriageDestinationName } from "../store/protocol";
 import type { TaskState } from "../store/store";
-import type { TriageEdits } from "../store/worker-client";
+import type { CaptureFields, TriageEdits } from "../store/worker-client";
+import { EMPTY_CAPTURE_META, resolveCaptureFields } from "./capture-meta";
 import { canSubmitCapture } from "./capture-validation";
 import { buildTriageEdits, EMPTY_TRIAGE_DRAFT, type TriageDraft } from "./triage-form";
 import { orderTriage } from "./triage-order";
 import { SingleColumn } from "./layout";
 
 const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiting"];
-
-interface CaptureMeta {
-  energy: number | null;
-  size: number | null;
-  context: string;
-}
-
-const EMPTY_META: CaptureMeta = { energy: null, size: null, context: "" };
 
 /** S13/#111's triage promotion form: `hummingbird_domain::Size`/`Energy`'s
  * own vocabulary names, exactly (`quick`/`short`/`deep`,
@@ -53,8 +46,12 @@ export interface TriageScreenProps {
   /** Enqueues a real capture — `shell/useCaptureWiring.ts`'s `submitCapture`.
    * Never called with an empty/whitespace-only draft: `canSubmitCapture`
    * gates the button this component renders before this is ever reached
-   * (#110's "an empty capture is refused client-side"). */
-  onSubmitCapture: (title: string, nowMs: number) => void;
+   * (#110's "an empty capture is refused client-side"). `fields` (#208)
+   * carries the capture box's Energy/Size/Context selections, already
+   * resolved to the wire's vocabulary names by `capture-meta.ts`'s
+   * `resolveCaptureFields` — never the slider's own indices or the
+   * select's raw empty-string resting value. */
+  onSubmitCapture: (title: string, nowMs: number, fields: CaptureFields) => void;
   /** S13/#111's triage mutation — `shell/useTriageWiring.ts`'s `triage`.
    * Edits whatever `edits` sets and promotes the item to `destination`, as
    * one call. Optional so a demo-only render (no worker behind it) never
@@ -72,7 +69,7 @@ export interface TriageScreenProps {
 export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusRequestId }: TriageScreenProps) {
   const [queue, setQueue] = useState<DemoCapture[]>(demo?.triage ?? []);
   const [draft, setDraft] = useState("");
-  const [meta, setMeta] = useState<CaptureMeta>(EMPTY_META);
+  const [meta, setMeta] = useState(EMPTY_CAPTURE_META);
   const [triageDrafts, setTriageDrafts] = useState<Record<string, TriageDraft>>({});
   const mounted = useRef(false);
 
@@ -132,10 +129,10 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
         ...current,
       ]);
     } else {
-      onSubmitCapture(draft, Date.now());
+      onSubmitCapture(draft, Date.now(), resolveCaptureFields(meta));
     }
     setDraft("");
-    setMeta(EMPTY_META);
+    setMeta(EMPTY_CAPTURE_META);
   }
 
   function drop(id: string) {

@@ -1,6 +1,11 @@
 import { useEffect } from "react";
 import type { CoreStatus } from "../store/store";
-import { captureTask, requestTriageInbox, type WorkerLike } from "../store/worker-client";
+import {
+  captureTask,
+  requestTriageInbox,
+  type CaptureFields,
+  type WorkerLike,
+} from "../store/worker-client";
 
 // Issue #110/S12's capture wiring: requests the triage inbox once the core
 // is ready, and again after every sync cycle — the same "refresh once
@@ -19,7 +24,7 @@ import { captureTask, requestTriageInbox, type WorkerLike } from "../store/worke
 // screen BEFORE this is ever reached — this hook trusts its caller and
 // enqueues whatever it is handed.
 export interface CaptureWiring {
-  submitCapture: (title: string, nowMs: number) => void;
+  submitCapture: (title: string, nowMs: number, fields?: CaptureFields) => void;
 }
 
 /** Mints a fresh, non-deterministic seed for one capture. Only the seed's
@@ -55,14 +60,20 @@ function mintSeed(): string {
  * without rendering a component — the view-side twin of the `worker/*`
  * pure-module split this repo already uses for cadence/routing logic.
  * `seed` defaults to a freshly minted one; a test supplies its own for a
- * deterministic assertion. */
+ * deterministic assertion.
+ *
+ * `fields` (#208) carries the capture box's Energy/Size/Context selections
+ * onto the same `captureTask` call — never a follow-up patch — and
+ * defaults to `{}` (all three absent), the same resting-state contract
+ * `captureTask` itself documents. */
 export function submitCaptureRequest(
   worker: WorkerLike,
   title: string,
   nowMs: number,
+  fields: CaptureFields = {},
   seed: string = mintSeed(),
 ): void {
-  captureTask(worker, seed, title, "triage", nowMs);
+  captureTask(worker, seed, title, "triage", nowMs, fields);
   requestTriageInbox(worker);
 }
 
@@ -85,8 +96,8 @@ export function useCaptureWiring(
   }, [ready, syncOutcomeSeq]);
 
   return {
-    submitCapture: (title: string, nowMs: number) => {
-      submitCaptureRequest(worker, title, nowMs);
+    submitCapture: (title: string, nowMs: number, fields: CaptureFields = {}) => {
+      submitCaptureRequest(worker, title, nowMs, fields);
     },
   };
 }

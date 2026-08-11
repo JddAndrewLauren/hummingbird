@@ -16,8 +16,8 @@ use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
 use hummingbird_core::{
-    ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction, TriageDestination,
-    TriagePatch,
+    ActError, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction,
+    TriageDestination, TriagePatch,
 };
 use hummingbird_domain::{Alert, Energy, Item, Project, Size, Stage};
 
@@ -651,11 +651,23 @@ impl TaskHostCore {
     /// (`hummingbird_domain::Stage::parse`); an unrecognised one fails
     /// without ever touching [`Core::capture`], the same "reject before the
     /// seam" discipline `calendar_host.rs` uses for its own inputs.
+    ///
+    /// `size`/`energy` (#208) are each resolved by name through
+    /// `hummingbird_domain`'s own vocabulary (`Size::parse`/`Energy::parse`),
+    /// the same "reject before the seam" discipline
+    /// [`TaskHostCore::triage`] already applies to its own `size`/`energy`
+    /// edits — an unrecognised name fails here and never reaches
+    /// [`Core::capture`]. `context` carries straight through unparsed, same
+    /// as `TriageEdits::context`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn capture(
         &mut self,
         seed: &str,
         title: &str,
         stage: &str,
+        size: Option<String>,
+        energy: Option<String>,
+        context: Option<String>,
         now_ms: i64,
     ) -> CaptureResponse {
         let Some(stage) = Stage::parse(stage) else {
@@ -665,7 +677,34 @@ impl TaskHostCore {
                 error: Some(format!("unrecognised stage {stage:?}")),
             };
         };
-        match self.core.capture(seed, title, stage, now_ms).await {
+        let size = match size {
+            Some(raw) => match Size::parse(&raw) {
+                Some(size) => Some(size),
+                None => {
+                    return CaptureResponse {
+                        kind: "failed",
+                        id: None,
+                        error: Some(format!("unrecognised size {raw:?}")),
+                    };
+                }
+            },
+            None => None,
+        };
+        let energy = match energy {
+            Some(raw) => match Energy::parse(&raw) {
+                Some(energy) => Some(energy),
+                None => {
+                    return CaptureResponse {
+                        kind: "failed",
+                        id: None,
+                        error: Some(format!("unrecognised energy {raw:?}")),
+                    };
+                }
+            },
+            None => None,
+        };
+        let options = CaptureOptions { size, energy, context };
+        match self.core.capture(seed, title, stage, now_ms, options).await {
             Ok(id) => CaptureResponse {
                 kind: "ok",
                 id: Some(id),
@@ -851,7 +890,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "not-an-action", 2_000).await;
@@ -884,7 +923,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "complete", 2_000).await;
@@ -906,7 +945,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "block", 2_000).await;
@@ -926,7 +965,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "cancel", 2_000).await;
@@ -953,7 +992,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -972,7 +1011,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -1016,7 +1055,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -1055,7 +1094,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -1132,12 +1171,100 @@ mod tests {
             .await
             .unwrap();
 
-        let response = host.capture("seed-1", "buy milk", "not-a-stage", 1_000).await;
+        let response = host.capture("seed-1", "buy milk", "not-a-stage", None, None, None, 1_000).await;
 
         assert_eq!(response.kind, "failed");
         assert!(response.id.is_none());
         assert!(response.error.is_some());
         assert_eq!(host.frontier().items.len(), 0);
+    }
+
+    /// #208: an unrecognised size name is rejected at the seam and never
+    /// reaches `Core::capture` — same "reject before the seam" discipline
+    /// `capturing_with_an_unrecognised_stage_never_reaches_core_capture`
+    /// pins for `stage`, and `triaging_with_an_unrecognised_size_never_reaches_core_triage`
+    /// pins for triage's own `size` edit.
+    #[tokio::test]
+    async fn capturing_with_an_unrecognised_size_never_reaches_core_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-capture-size");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host
+            .capture(
+                "seed-1",
+                "buy milk",
+                "ready",
+                Some("giant".to_string()),
+                None,
+                None,
+                1_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.id.is_none());
+        assert!(response.error.is_some());
+        assert_eq!(host.frontier().items.len(), 0);
+    }
+
+    /// #208: same rejection, for an unrecognised energy name.
+    #[tokio::test]
+    async fn capturing_with_an_unrecognised_energy_never_reaches_core_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-capture-energy");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host
+            .capture(
+                "seed-1",
+                "buy milk",
+                "ready",
+                None,
+                Some("blazing".to_string()),
+                None,
+                1_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.id.is_none());
+        assert!(response.error.is_some());
+        assert_eq!(host.frontier().items.len(), 0);
+    }
+
+    /// #208's headline acceptance at this layer: setting Energy, Size and
+    /// Context and capturing produces an item carrying exactly those
+    /// values, resolved by name through `hummingbird_domain`'s vocabulary.
+    #[tokio::test]
+    async fn capturing_with_size_energy_and_context_sets_them_on_the_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-capture-meta");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host
+            .capture(
+                "seed-1",
+                "buy milk",
+                "ready",
+                Some("deep".to_string()),
+                Some("high".to_string()),
+                Some("@errands".to_string()),
+                1_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        let frontier = host.frontier();
+        assert_eq!(frontier.items[0].item.size, Some(Size::Deep));
+        assert_eq!(frontier.items[0].item.energy, Some(Energy::High));
+        assert_eq!(frontier.items[0].item.context.as_deref(), Some("@errands"));
     }
 
     #[tokio::test]
@@ -1148,7 +1275,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let response = host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
 
         assert_eq!(response.kind, "ok");
         let id = response.id.clone().unwrap();
@@ -1183,7 +1310,7 @@ mod tests {
             .await
             .unwrap();
 
-        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
 
         assert_eq!(host.frontier().items.len(), 0);
         assert_eq!(host.triage_inbox().items.len(), 1);
@@ -1253,7 +1380,7 @@ mod tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
             .await
             .unwrap();
-        let response = host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let response = host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
         let id = response.id.unwrap();
 
         host.clear_api_key();
@@ -1304,7 +1431,7 @@ mod tests {
             .await
             .unwrap();
 
-        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
 
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
     }
