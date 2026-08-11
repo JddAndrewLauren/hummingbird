@@ -18,8 +18,8 @@
 // way `worker-client.ts` really walks it, and assert the row comes back.
 
 import { describe, expect, it, vi } from "vitest";
-import { NowScreen, realQuestionInputs } from "./NowScreen";
-import { CalendarReadProbe } from "./questions/CalendarReadProbe";
+import { NowScreen } from "./NowScreen";
+import { CALENDAR_REQUEST_KEY, weekendWindow } from "./weekend-pane/weekend";
 import {
   blockedEntryDTO,
   bindingDTO,
@@ -55,6 +55,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
       onCloseItemDetail={onCloseItemDetail}
       onAct={onAct}
       calendarReads={{}}
+      calendarConnected={false}
     />,
   );
   const rerender = (next: TaskState, nextSelected: string | null = selectedItemId) =>
@@ -69,6 +70,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
         onCloseItemDetail={onCloseItemDetail}
         onAct={onAct}
         calendarReads={{}}
+        calendarConnected={false}
       />,
     );
   return { onAct, onOpenItem, onCloseItemDetail, rerender };
@@ -289,6 +291,7 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
         onCloseItemDetail={() => {}}
         onAct={() => {}}
         calendarReads={{}}
+        calendarConnected={false}
       />,
     );
 
@@ -296,16 +299,21 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
   });
 });
 
-describe("NowScreen — the calendar-reads arm (#267)", () => {
-  it("threads a delivered calendar read into a mounted consumer's render, not just the store snapshot", () => {
+describe("NowScreen — the calendar-reads arm (#267/#122)", () => {
+  it("threads a delivered calendar read into the weekend pane's own render, not just the store snapshot", () => {
     // The defect this pins: `calendarReads: {}` was hardcoded at the call
     // site, so `CalendarState.eventReads` had zero production readers even
-    // though the store leg was real. `realQuestionInputs` is the exact
-    // function `NowScreen` itself uses to build the region's inputs — this
-    // renders a real consumer (`CalendarReadProbe`) from that same function,
-    // fed the same `calendarReads` prop `NowScreen` was given, proving the
-    // value actually reaches a render rather than only a store field.
+    // though the store leg was real. `CalendarReadProbe` used to be the
+    // stand-in consumer that proved delivery; #122 registered the real one
+    // (the weekend-plans pane), so this now asserts against ITS render —
+    // an event landing on screen through the actual `NowScreen` ->
+    // `realQuestionInputs` -> `RankedRegion` -> `weekendQuestion` thread.
     const task = taskState();
+    // Anchored to the module's OWN window calculation (never a fixed date
+    // string) so the test is timezone-independent: an hour into the
+    // current-or-next weekend is unambiguously `live`, which is what keeps
+    // the pane expanded by default (`collapse.ts`'s `defaultCollapsed`).
+    const testNowMs = weekendWindow(Date.now()).startMs + 60 * 60 * 1000;
     const read: CalendarReadDTO = {
       state: "read",
       events: [
@@ -313,41 +321,36 @@ describe("NowScreen — the calendar-reads arm (#267)", () => {
           providerEventId: "evt-1",
           calendarId: "cal-primary",
           title: "Standup",
-          start: { instantMs: 1_000, timeZone: "America/Los_Angeles" },
-          end: { instantMs: 2_000, timeZone: "America/Los_Angeles" },
+          start: { instantMs: testNowMs, timeZone: "America/Los_Angeles" },
+          end: { instantMs: testNowMs + 3_600_000, timeZone: "America/Los_Angeles" },
           allDay: false,
           recurrenceId: null,
           location: null,
           organizer: null,
           status: "confirmed",
-          providerUpdatedAtMs: 900,
+          providerUpdatedAtMs: testNowMs - 900,
           htmlLink: null,
         },
       ],
-      freshness: { kind: "unknown" },
+      freshness: { kind: "age", ageMs: 60_000, declaredCadenceMs: 900_000 },
     };
-    const calendarReads = { weekend: read };
+    const calendarReads = { [CALENDAR_REQUEST_KEY]: read };
 
     render(
-      <>
-        <NowScreen
-          demo={null}
-          onScreen={() => {}}
-          task={task}
-          nowMs={NOW_MS}
-          selectedItemId={null}
-          onOpenItem={() => {}}
-          onCloseItemDetail={() => {}}
-          onAct={() => {}}
-          calendarReads={calendarReads}
-        />
-        <CalendarReadProbe
-          requestKey="weekend"
-          inputs={{ ...realQuestionInputs(task, calendarReads), nowMs: NOW_MS }}
-        />
-      </>,
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={task}
+        nowMs={testNowMs}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={calendarReads}
+        calendarConnected
+      />,
     );
 
-    expect(screen.getByTestId("calendar-read-probe").textContent).toBe("Standup");
+    expect(screen.getByText("Standup")).toBeTruthy();
   });
 });

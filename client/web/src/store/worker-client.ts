@@ -20,6 +20,11 @@ export interface TriageEdits {
   size?: "quick" | "short" | "deep" | null;
   energy?: "low" | "medium" | "high" | null;
   context?: string | null;
+  /** #122's do-date edit — the one field here that can be CLEARED, not just
+   * set. An omitted key leaves `scheduled_date` alone (never `null`, unlike
+   * every other field above); `{ clear: true }` clears it; `{ clear: false,
+   * value }` sets it. */
+  scheduledDate?: { clear: true } | { clear: false; value: string };
 }
 
 /** The capture box's optional Energy/Size/Context selections (#208) — the
@@ -184,6 +189,13 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
           // frontier through the mirror, not local bookkeeping).
           requestTriageInbox(worker);
           requestFrontier(worker);
+          // #122: a `null`-destination triage (the weekend-plans pane's
+          // do-date chip) can touch an item sitting in `task.blocked` —
+          // relation-blocked but still Ready/InProgress, exactly
+          // `actResult`'s own targets above — so that list needs the same
+          // immediate re-read or a just-set do-date reads stale there until
+          // the next sync cycle.
+          requestBlocked(worker);
         }
         return;
       case "setBindingResult":
@@ -437,12 +449,16 @@ export function actOnTask(
 
 /** S13/#111's triage mutation: edits whatever fields `edits` sets and
  * promotes to `destination`, as one CAS `PATCH`. `seed` mints `Core::triage`'s
- * own queue-entry id — same caller-mints contract as `actOnTask`'s. */
+ * own queue-entry id — same caller-mints contract as `actOnTask`'s.
+ *
+ * `destination` is `null` (#122) for a pure field edit that leaves `stage`
+ * untouched — the weekend-plans pane's do-date chip's own call shape, since
+ * `TriageDestinationName` cannot name an item that is already `InProgress`. */
 export function triageItem(
   worker: WorkerLike,
   seed: string,
   itemId: string,
-  destination: TriageDestinationName,
+  destination: TriageDestinationName | null,
   edits: TriageEdits,
   nowMs: number,
 ): void {
@@ -456,6 +472,7 @@ export function triageItem(
     size: edits.size ?? null,
     energy: edits.energy ?? null,
     context: edits.context ?? null,
+    scheduledDate: edits.scheduledDate,
     nowMs,
   });
 }

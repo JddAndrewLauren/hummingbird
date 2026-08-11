@@ -101,6 +101,10 @@ pub struct TriageEdits {
     /// (`hummingbird_domain::Energy::parse`).
     pub energy: Option<String>,
     pub context: Option<String>,
+    /// #122's three-state do-date edit — `TriagePatch::scheduled_date`'s own
+    /// shape, unchanged across this seam: outer `None` leaves it alone,
+    /// `Some(None)` clears it, `Some(Some(date))` sets it.
+    pub scheduled_date: Option<Option<String>>,
 }
 
 /// Maps S11/#109's wire action name to [`ItemAction`] — the one place a
@@ -747,25 +751,37 @@ impl TaskHostCore {
     /// `edits` sets and promotes it to `destination`, as one CAS `PATCH`
     /// (never four separate mutations — [`Core::triage`]'s own doc).
     /// `destination` is the wire's snake_case destination name
-    /// ([`parse_destination`]); `edits.size`/`edits.energy` are each
-    /// resolved by name through `hummingbird_domain`'s own vocabulary
-    /// (`Size::parse`/`Energy::parse`). Any unrecognised name fails without
-    /// ever touching [`Core::triage`], the same "reject before the seam"
-    /// discipline [`TaskHostCore::capture`]/[`TaskHostCore::act`] use for
-    /// their own inputs.
+    /// ([`parse_destination`]), or `None` (#122) to leave `stage` untouched
+    /// entirely — the weekend-plans pane's do-date chip triages an item that
+    /// may already be `InProgress`, which `TriageDestination`'s two-value
+    /// vocabulary cannot name, so a caller that only wants
+    /// `edits.scheduled_date` applied passes no destination at all rather
+    /// than one that would silently demote the item back to `Ready`.
+    /// `edits.size`/`edits.energy` are each resolved by name through
+    /// `hummingbird_domain`'s own vocabulary (`Size::parse`/`Energy::parse`).
+    /// Any unrecognised name fails without ever touching [`Core::triage`],
+    /// the same "reject before the seam" discipline
+    /// [`TaskHostCore::capture`]/[`TaskHostCore::act`] use for their own
+    /// inputs.
     pub async fn triage(
         &mut self,
         seed: &str,
         item_id: &str,
-        destination: &str,
+        destination: Option<&str>,
         edits: TriageEdits,
         now_ms: i64,
     ) -> TriageResponse {
-        let Some(destination) = parse_destination(destination) else {
-            return TriageResponse {
-                kind: "failed",
-                error: Some(format!("unrecognised triage destination {destination:?}")),
-            };
+        let destination = match destination {
+            Some(raw) => match parse_destination(raw) {
+                Some(destination) => Some(destination),
+                None => {
+                    return TriageResponse {
+                        kind: "failed",
+                        error: Some(format!("unrecognised triage destination {raw:?}")),
+                    };
+                }
+            },
+            None => None,
         };
         let size = match edits.size {
             Some(raw) => match Size::parse(&raw) {
@@ -797,6 +813,7 @@ impl TaskHostCore {
             size,
             energy,
             context: edits.context,
+            scheduled_date: edits.scheduled_date,
         };
         match self.core.triage(seed, item_id, destination, patch, now_ms).await {
             Ok(()) => TriageResponse { kind: "ok", error: None },
@@ -996,7 +1013,7 @@ mod triage_tests {
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
-            .triage("seed-triage-1", &id, "backlog", TriageEdits::default(), 2_000)
+            .triage("seed-triage-1", &id, Some("backlog"), TriageEdits::default(), 2_000)
             .await;
 
         assert_eq!(response.kind, "failed");
@@ -1018,7 +1035,7 @@ mod triage_tests {
             .triage(
                 "seed-triage-1",
                 &id,
-                "ready",
+                Some("ready"),
                 TriageEdits { size: Some("giant".to_string()), ..TriageEdits::default() },
                 2_000,
             )
@@ -1038,7 +1055,7 @@ mod triage_tests {
             .unwrap();
 
         let response = host
-            .triage("seed-triage-1", "no-such-item", "ready", TriageEdits::default(), 1_000)
+            .triage("seed-triage-1", "no-such-item", Some("ready"), TriageEdits::default(), 1_000)
             .await;
 
         assert_eq!(response.kind, "not_found");
@@ -1062,13 +1079,14 @@ mod triage_tests {
             .triage(
                 "seed-triage-1",
                 &id,
-                "ready",
+                Some("ready"),
                 TriageEdits {
                     title: Some("buy milk".to_string()),
                     project_id: Some("project-1".to_string()),
                     size: Some("quick".to_string()),
                     energy: Some("low".to_string()),
                     context: Some("@errands".to_string()),
+                    ..TriageEdits::default()
                 },
                 2_000,
             )
@@ -1098,12 +1116,82 @@ mod triage_tests {
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
-            .triage("seed-triage-1", &id, "grilling", TriageEdits::default(), 2_000)
+            .triage("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
             .await;
 
         assert_eq!(response.kind, "ok");
         assert_eq!(host.triage_inbox().items.len(), 0);
         assert_eq!(host.frontier().items.len(), 0);
+    }
+
+    /// #122: `destination: None` at this seam must reach `Core::triage` as
+    /// a genuine `None`, not accidentally coerced into some destination —
+    /// the whole reason the weekend-plans pane's do-date chip can touch an
+    /// `InProgress` item without demoting it.
+    #[tokio::test]
+    async fn a_none_destination_edits_scheduled_date_without_touching_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-6");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+        host.act("seed-act-1", &id, "start", 1_500).await;
+        assert_eq!(host.frontier().items[0].item.stage, Stage::InProgress);
+
+        let response = host
+            .triage(
+                "seed-triage-6",
+                &id,
+                None,
+                TriageEdits {
+                    scheduled_date: Some(Some("2026-08-15".to_string())),
+                    ..TriageEdits::default()
+                },
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        let item = &host.frontier().items[0].item;
+        assert_eq!(item.stage, Stage::InProgress, "a None destination must never change stage");
+        assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-15"));
+    }
+
+    /// The clear half of the same three-state edit, at this seam.
+    #[tokio::test]
+    async fn clearing_scheduled_date_through_this_seam_is_a_real_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-7");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+        host.triage(
+            "seed-triage-7a",
+            &id,
+            None,
+            TriageEdits {
+                scheduled_date: Some(Some("2026-08-15".to_string())),
+                ..TriageEdits::default()
+            },
+            1_500,
+        )
+        .await;
+        assert_eq!(host.frontier().items[0].item.scheduled_date.as_deref(), Some("2026-08-15"));
+
+        host.triage(
+            "seed-triage-7b",
+            &id,
+            None,
+            TriageEdits { scheduled_date: Some(None), ..TriageEdits::default() },
+            2_000,
+        )
+        .await;
+
+        assert_eq!(host.frontier().items[0].item.scheduled_date, None);
     }
 }
 

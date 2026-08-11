@@ -15,16 +15,30 @@ import { requestCalendarEvents, type WorkerLike } from "../store/worker-client";
 // itself rather than taking a `requests` prop: a caller-supplied list would
 // re-open the drift `requiredSources()` closes for the snapshot arm — #122
 // could register a calendar-lane question and have it silently never
-// requested, because nothing forces this hook's caller to also update. It
-// returns empty today, since no shipped question reads the calendar arm yet
-// (that is #122's job); mounted here with today's empty list, this hook
-// still has a real caller, which is the point.
+// requested, because nothing forces this hook's caller to also update. #122
+// registered the weekend-plans pane as the first (and, today, only)
+// calendar-lane question, so `requiredCalendarRequests()` now returns its
+// one rolling window rather than the empty list this hook used to be
+// mounted against.
 //
-// Thin glue and **no clock of its own**: `Date.now()` below is the
-// request's own `nowMs`, the instant `freshness` is measured against,
-// core-side — not a timer. No `setInterval`/`setTimeout` is added here or
-// anywhere this hook touches: ADR-0007's single 60-second SharedWorker
-// interval is still the only clock the origin gets.
+// Thin glue and **no clock of its own**: `Date.now()` is the request's own
+// `nowMs`, the instant both "which interval" (a declared window like #122's
+// rolling weekend one can itself be a function of "now") and `freshness`
+// are measured against, core-side — not a timer. No `setInterval`/
+// `setTimeout` is added here or anywhere this hook touches: ADR-0007's
+// single 60-second SharedWorker interval is still the only clock the
+// origin gets.
+//
+// `Date.now()` is read **inside** the effect, never during render
+// (react-hooks/purity — a render is allowed to run more than once, or be
+// thrown away, for reasons that have nothing to do with this hook, and a
+// clock read there would silently let a re-render decide which interval
+// gets requested). Because `requiredCalendarRequests()` is now called only
+// once per actual effect run, there is no longer a render-computed array
+// whose identity needs guarding against — the old `JSON.stringify`
+// by-value key existed solely to keep that render-time array out of the
+// effect's own dependency list without disabling `exhaustive-deps`, and
+// that problem disappears once nothing but the effect ever calls it.
 
 export function useCalendarEventsWiring(
   worker: WorkerLike,
@@ -35,21 +49,15 @@ export function useCalendarEventsWiring(
   syncOutcomeSeq: number,
 ): void {
   const ready = status === "ready";
-  const requests = requiredCalendarRequests();
-  // Requests are compared by value, not by the array's own identity: the
-  // registry recomputing an equivalent array on every call must not re-fire
-  // the effect every render just because the reference changed underneath
-  // an unchanged value.
-  const requestsKey = JSON.stringify(requests);
 
   useEffect(() => {
     if (!ready) {
       return;
     }
     const nowMs = Date.now();
-    for (const request of requests) {
+    for (const request of requiredCalendarRequests(nowMs)) {
       requestCalendarEvents(worker, request.key, request.startMs, request.endMs, nowMs);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, syncOutcomeSeq, requestsKey]);
+  }, [ready, syncOutcomeSeq]);
 }

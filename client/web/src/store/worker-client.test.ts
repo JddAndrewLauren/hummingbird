@@ -26,6 +26,7 @@ import {
   requestTriageInbox,
   setCalendarIdsOnWorker,
   setMirrorSnapshotHandler,
+  triageItem,
   triggerSyncFocus,
   triggerSyncManual,
   type WorkerLike,
@@ -331,6 +332,10 @@ describe("attachWorkerClient", () => {
     // next sync cycle (this issue's acceptance).
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getTriageInbox" });
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
+    // #122: a `null`-destination triage (the weekend-plans pane's do-date
+    // chip) can touch a relation-blocked item, so `blocked` needs the same
+    // immediate re-read `actResult` already gives it.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
   });
 
   it("records a failed triageResult without re-requesting anything", () => {
@@ -1061,6 +1066,36 @@ describe("the task send helpers (#105/S7)", () => {
       action: "block",
       nowMs: 2_000,
     });
+  });
+
+  it("triageItem posts a null destination and a set scheduledDate edit (#122's do-date write)", () => {
+    const worker = fakeWorker();
+    triageItem(worker, "seed-triage-9", "item-1", null, { scheduledDate: { clear: false, value: "2026-08-15" } }, 2_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "triage",
+      seed: "seed-triage-9",
+      itemId: "item-1",
+      destination: null,
+      title: null,
+      projectId: null,
+      size: null,
+      energy: null,
+      context: null,
+      scheduledDate: { clear: false, value: "2026-08-15" },
+      nowMs: 2_000,
+    });
+  });
+
+  it("triageItem posts a clear scheduledDate edit distinguishably from an untouched field", () => {
+    const worker = fakeWorker();
+    triageItem(worker, "seed-triage-10", "item-1", null, { scheduledDate: { clear: true } }, 2_000);
+    const call = worker.postMessage.mock.calls[0][0] as { scheduledDate?: unknown };
+    expect(call.scheduledDate).toEqual({ clear: true });
+
+    worker.postMessage.mockClear();
+    triageItem(worker, "seed-triage-11", "item-1", null, {}, 2_000);
+    const untouchedCall = worker.postMessage.mock.calls[0][0] as { scheduledDate?: unknown };
+    expect(untouchedCall.scheduledDate).toBeUndefined();
   });
 
   it("requestFrontier/requestTriageInbox/requestIsPending post their matching request", () => {

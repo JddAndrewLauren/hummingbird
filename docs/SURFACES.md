@@ -21,7 +21,7 @@ human gate.
 | --- | --- |
 | **Code root** | `client/web/src/` |
 | **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Settings |
-| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
+| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/`, #122). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
 | **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx`, `screens/layout.tsx` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 16-component library |
 | **Toolset** | Playwright (`client/web/playwright.config.ts`, `client/web/visual/`) |

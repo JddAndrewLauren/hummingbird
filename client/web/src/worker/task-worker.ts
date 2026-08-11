@@ -49,16 +49,24 @@ export interface TaskHostLike {
   /** S13/#111's triage mutation. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::triage` exactly (`client/ffi-web/src/lib.rs`) — five
    * `undefined`-or-`string` edit fields plus `destination`, resolved to
-   * JSON: `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`. */
+   * JSON: `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
+   * `destination` is `null` (#122) to leave `stage` untouched.
+   * `scheduledDate`/`clearScheduledDate` together carry the three-state
+   * do-date edit `Option<Option<String>>` cannot cross this boundary as a
+   * single value: `clearScheduledDate = true` clears regardless of
+   * `scheduledDate`; otherwise a non-null `scheduledDate` sets it and `null`
+   * leaves it alone. */
   triage(
     seed: string,
     itemId: string,
-    destination: string,
+    destination: string | null,
     title: string | null,
     projectId: string | null,
     size: string | null,
     energy: string | null,
     context: string | null,
+    scheduledDate: string | null,
+    clearScheduledDate: boolean,
     nowMs: number,
   ): Promise<string>;
   /** #118's binding write. Mirrors `hummingbird-ffi-web`'s
@@ -500,6 +508,7 @@ export async function handleTaskRequest(
       return;
     }
     case "triage": {
+      const scheduledDateEdit = request.scheduledDate;
       const raw = JSON.parse(
         await host.triage(
           request.seed,
@@ -510,6 +519,8 @@ export async function handleTaskRequest(
           request.size,
           request.energy,
           request.context,
+          scheduledDateEdit && !scheduledDateEdit.clear ? scheduledDateEdit.value : null,
+          scheduledDateEdit?.clear === true,
           request.nowMs,
         ),
       ) as RawTriageResponse;
