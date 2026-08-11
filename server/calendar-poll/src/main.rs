@@ -36,6 +36,16 @@
 //! alert. The busy snapshot is written before the cursor for the same
 //! reason applied to job 2: if it fails, the cursor must not advance either
 //! — the run is retried as a whole next poll rather than half-landing.
+//!
+//! **`SHARED_LIST_PARAMS` is the sync and full builders' one shared
+//! identity** (`singleEvents=true`, `showDeleted=false`), built once and
+//! used by both — Google binds a `syncToken` to the parameters of the full
+//! sync that minted it, so the two must never drift. The bug this exists to
+//! prevent (round 1 of PR #268's review: the incremental builder alone
+//! omitted `singleEvents`) could not be seen by any fixture-shaped test,
+//! since fixtures are hand-built already in instance shape — so
+//! `sync_query`/`full_query` are pure and unit-tested directly on their
+//! constructed parameters, in this file's own `#[cfg(test)]` module.
 
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -234,6 +244,45 @@ fn calendar_get(access_token: &str, query: &[(&str, &str)]) -> Result<String, Ca
     }
 }
 
+/// The identity of an `events.list` request — Google binds a `syncToken` to
+/// the parameters of the full sync that minted it, so the full sync and
+/// every incremental request resuming from its token must ask for the same
+/// shape or risk one of two failures: `singleEvents=false` (its default)
+/// returns recurring **masters** rather than instances, which collapses
+/// `google_calendar_v1_key` onto one alert per series and makes
+/// `ends_at_ms` the first instance's end (an `expires_at` already in the
+/// past); or Google notices the drift and answers 410, which reads as
+/// cursor loss and full-resyncs forever. Built ONCE, here, and used by both
+/// [`calendar_events_list_sync`] and [`calendar_events_list_full`] so a
+/// third builder can never drift from it — these are part of the cursor's
+/// identity, not per-call tuning.
+const SHARED_LIST_PARAMS: [(&str, &str); 2] = [("singleEvents", "true"), ("showDeleted", "false")];
+
+/// The incremental request's own query, built on top of
+/// [`SHARED_LIST_PARAMS`] — pure, so the class of bug that dropped
+/// `singleEvents` from just this builder is testable without a network
+/// mock.
+fn sync_query<'a>(sync_token: &'a str, page_token: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
+    let mut query: Vec<(&str, &str)> = SHARED_LIST_PARAMS.to_vec();
+    query.push(("syncToken", sync_token));
+    if let Some(token) = page_token {
+        query.push(("pageToken", token));
+    }
+    query
+}
+
+/// The full (bounded-resync) request's own query, built on top of
+/// [`SHARED_LIST_PARAMS`] — see [`sync_query`].
+fn full_query<'a>(updated_min: &'a str, max_results: &'a str, page_token: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
+    let mut query: Vec<(&str, &str)> = SHARED_LIST_PARAMS.to_vec();
+    query.push(("updatedMin", updated_min));
+    query.push(("maxResults", max_results));
+    if let Some(token) = page_token {
+        query.push(("pageToken", token));
+    }
+    query
+}
+
 /// One incremental sync attempt from a stored `syncToken`, paginated to
 /// completion. Only the LAST page carries `nextSyncToken` — every earlier
 /// page's raw events are still collected, `gmail_poll::gmail_history_list`'s
@@ -245,10 +294,7 @@ fn calendar_events_list_sync(
     let mut page = hummingbird_calendar_poll::SyncPage::default();
     let mut page_token: Option<String> = None;
     loop {
-        let mut query: Vec<(&str, &str)> = vec![("syncToken", sync_token)];
-        if let Some(token) = &page_token {
-            query.push(("pageToken", token));
-        }
+        let query = sync_query(sync_token, page_token.as_deref());
         let body = calendar_get(access_token, &query)?;
         let this_page = parse_events_list(&body).map_err(|e| CalendarError::Parse(e.to_string()))?;
         page.raw_events.extend(this_page.raw_events);
@@ -274,15 +320,7 @@ fn calendar_events_list_full(access_token: &str, updated_min_ms: i64) -> Result<
     let mut sync_token: Option<String> = None;
     let mut page_token: Option<String> = None;
     loop {
-        let mut query: Vec<(&str, &str)> = vec![
-            ("updatedMin", &updated_min),
-            ("singleEvents", "true"),
-            ("showDeleted", "false"),
-            ("maxResults", &max_results),
-        ];
-        if let Some(token) = &page_token {
-            query.push(("pageToken", token));
-        }
+        let query = full_query(&updated_min, &max_results, page_token.as_deref());
         let body = calendar_get(access_token, &query)?;
         let page = parse_events_list(&body).map_err(|e| CalendarError::Parse(e.to_string()))?;
         raw_events.extend(page.raw_events);
@@ -421,4 +459,43 @@ fn post_busy(
 
 fn post_alert(base_url: &str, token: &str, ingest: &hummingbird_domain::AlertIngest) -> Result<(), String> {
     hb_post(base_url, token, "/api/alerts", &serde_json::to_value(ingest).map_err(|e| e.to_string())?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // This is the class of bug review #268 round 1 caught: the incremental
+    // request builder set neither `singleEvents` nor `showDeleted`, which no
+    // fixture-shaped test could see (fixtures are hand-built already in
+    // instance shape). These assert the constructed request parameters
+    // themselves, not the parsing of a response.
+
+    #[test]
+    fn sync_and_full_queries_both_carry_every_shared_list_param() {
+        let sync = sync_query("token-123", None);
+        let full = full_query("2026-08-01T00:00:00Z", "250", None);
+        for pair in SHARED_LIST_PARAMS {
+            assert!(sync.contains(&pair), "sync_query missing {pair:?}: {sync:?}");
+            assert!(full.contains(&pair), "full_query missing {pair:?}: {full:?}");
+        }
+    }
+
+    #[test]
+    fn sync_query_carries_its_sync_token_and_optional_page_token() {
+        let first_page = sync_query("token-123", None);
+        assert!(first_page.contains(&("syncToken", "token-123")));
+        assert!(!first_page.iter().any(|(k, _)| *k == "pageToken"));
+
+        let later_page = sync_query("token-123", Some("page-2"));
+        assert!(later_page.contains(&("syncToken", "token-123")));
+        assert!(later_page.contains(&("pageToken", "page-2")));
+    }
+
+    #[test]
+    fn full_query_carries_its_updated_min_and_max_results() {
+        let q = full_query("2026-08-01T00:00:00Z", "250", None);
+        assert!(q.contains(&("updatedMin", "2026-08-01T00:00:00Z")));
+        assert!(q.contains(&("maxResults", "250")));
+    }
 }

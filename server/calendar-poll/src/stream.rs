@@ -48,10 +48,25 @@ pub fn fold_events(raw_events: &[String]) -> Batch {
                 candidates.push(Candidate { event, ends_at_ms: evt.ends_at_ms });
             }
             Ok(ParsedCalendarEvent::Cancelled(id)) => skipped.push((id, "cancelled".to_string())),
-            Err(e) => skipped.push(("?".to_string(), e.to_string())),
+            Err(e) => skipped.push((raw_event_id(raw), e.to_string())),
         }
     }
     Batch { candidates, skipped }
+}
+
+/// A best-effort id for a permanently-skipped, unparseable item — the
+/// cursor advances past it either way, so this is the log's only trace.
+/// `MissingField`/`BadTimestamp` both arrive from bodies that DO carry an
+/// `"id"` (only some other field is missing or malformed), so reading it
+/// off the raw JSON directly — bypassing the very parse that just failed —
+/// recovers the real id in exactly those cases. `"?"` survives only when
+/// even that read comes up empty (a body too malformed to hold an id at
+/// all), `gmail_poll::batch`'s own "name the real id" discipline.
+fn raw_event_id(raw: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.get("id").and_then(|id| id.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "?".to_string())
 }
 
 #[cfg(test)]
@@ -88,7 +103,19 @@ mod tests {
         let batch = fold_events(&raw);
         assert_eq!(batch.candidates.len(), 1);
         assert_eq!(batch.skipped.len(), 1);
+        // Not even valid JSON, so there is no `id` to recover.
         assert_eq!(batch.skipped[0].0, "?");
+    }
+
+    #[test]
+    fn an_unparseable_item_with_a_known_id_names_it_instead_of_a_placeholder() {
+        // Valid JSON, missing `start`/`end` — `parse_calendar_event` fails
+        // with `MissingField`, but the raw body still carries `"id"`.
+        let raw = vec![r#"{"id": "e1", "status": "confirmed", "summary": "s"}"#.to_string()];
+        let batch = fold_events(&raw);
+        assert!(batch.candidates.is_empty());
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].0, "e1");
     }
 
     #[test]

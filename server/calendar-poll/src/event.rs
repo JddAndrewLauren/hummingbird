@@ -44,6 +44,12 @@ pub fn calendar_event_to_event(evt: &CalendarEvent) -> Event {
         body: evt.description.clone(),
         url: evt.html_link.clone(),
         severity: None,
+        // Always `None` here, even though `main.rs`'s job 2 computes the
+        // real busy window a few lines after this runs — a rule carrying a
+        // `calendar_busy` condition evaluates false by ADR-0013's default
+        // in this lane. Out of scope: the brief scopes that default to
+        // #133's consumer, which does not exist yet. Recorded per PR #268's
+        // review, not fixed here.
         calendar_busy: None,
         event_kind: Some("calendar_event".to_string()),
         extras,
