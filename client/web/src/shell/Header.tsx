@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { IconButton } from "../components/core/IconButton";
+import { CAPTURE_TRIGGER_ID } from "./CapturePopover";
 
 export interface HeaderProps {
   title: string;
@@ -19,6 +20,8 @@ export interface HeaderProps {
    * on what `App.tsx`'s `refresh-gate.ts` found refreshable — never just the
    * calendar, even on a device with both. */
   onRefresh?: () => void;
+  /** Opens the shell's capture popover (`CapturePopover`). Named for the
+   * internal verb, labelled "New" in the UI. */
   onCapture: () => void;
 }
 
@@ -74,13 +77,19 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
       {onRefresh ? (
         <IconButton icon="refresh-cw" label="Refresh" onClick={onRefresh} />
       ) : null}
-      {/* The shell owns capture (#107): the box itself lives on Triage, and
-          this is the always-present way to reach it from any screen. The
-          global focus hotkey (#110/S12) is `App.tsx`'s `capture-hotkey.ts`
-          listener — this button fires the identical "focus the box"
-          request. */}
-      <Button iconLeft="feather" onClick={onCapture}>
-        Capture
+      {/* The shell owns capture (#107): this opens `CapturePopover` over
+          whatever screen is showing, rather than navigating to Triage. The
+          global hotkey (#110/S12) is `App.tsx`'s `capture-hotkey.ts`
+          listener and fires the identical request.
+
+          Labelled "New" — what the person is doing, not the internal verb.
+          Capture is still the verb everywhere it belongs: the field's own
+          label, the `feather` icon (the brand's capture glyph), the wire
+          message, `Core::capture`. */}
+      {/* The id is what `CapturePopover` measures to hang itself under this
+          button; see `CAPTURE_TRIGGER_ID`. */}
+      <Button id={CAPTURE_TRIGGER_ID} iconLeft="feather" onClick={onCapture}>
+        New
       </Button>
     </header>
   );

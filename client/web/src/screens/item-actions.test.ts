@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { TaskItemDTO } from "../store/protocol";
-import { applyItemAction, availableActions, resolveFallbackPending } from "./item-actions";
+import {
+  applyItemAction,
+  availableActions,
+  canMarkDone,
+  resolveFallbackPending,
+} from "./item-actions";
 
 const baseItem: TaskItemDTO = {
   id: "item-1",
@@ -32,8 +37,10 @@ describe("availableActions", () => {
     expect(availableActions("grilling")).toEqual([]);
   });
 
-  it("offers start, block and cancel for a Ready item", () => {
-    expect(availableActions("ready")).toEqual(["start", "block", "cancel"]);
+  it("offers start, complete, block and cancel for a Ready item", () => {
+    // `complete` from Ready is the row-checkmark amendment: finishing is one
+    // click from any live stage, never gated on having said "start" first.
+    expect(availableActions("ready")).toEqual(["start", "complete", "block", "cancel"]);
   });
 
   it("offers complete, block and cancel for an In Progress item, never start", () => {
@@ -42,14 +49,33 @@ describe("availableActions", () => {
     expect(actions).not.toContain("start");
   });
 
-  it("offers start and cancel for a Blocked item, but never block again", () => {
+  it("offers start, complete and cancel for a Blocked item, but never block again", () => {
     const actions = availableActions("blocked");
-    expect(actions).toEqual(["start", "cancel"]);
+    expect(actions).toEqual(["start", "complete", "cancel"]);
     expect(actions).not.toContain("block");
   });
 
   it("offers nothing for a finished item", () => {
     expect(availableActions("done")).toEqual([]);
+  });
+});
+
+// The one deciding function for which rows carry the mark-done checkmark —
+// wider than `availableActions` on purpose (Triage/Grilling rows get it even
+// though the detail panel's vocabulary still offers them nothing).
+describe("canMarkDone", () => {
+  it("allows every live, unarchived stage — Triage and Grilling included", () => {
+    for (const stage of ["triage", "grilling", "ready", "in_progress", "blocked"] as const) {
+      expect(canMarkDone({ stage, archivedAt: null })).toBe(true);
+    }
+  });
+
+  it("refuses a finished item — there is nothing left to mark", () => {
+    expect(canMarkDone({ stage: "done", archivedAt: null })).toBe(false);
+  });
+
+  it("refuses an archived item — cancelled is settled, not completable", () => {
+    expect(canMarkDone({ stage: "ready", archivedAt: 2_000 })).toBe(false);
   });
 });
 

@@ -6,7 +6,7 @@
 import type { CaptureFields } from "../store/worker-client";
 
 /** The capture box's local Energy/Size/Context state
- * (`screens/TriageScreen.tsx`). `energy`/`size` are `Slider` stop indices
+ * (`screens/CaptureBox.tsx`). `energy`/`size` are `Slider` stop indices
  * (`null` = not set, the resting state); `context` is the `Select`'s own
  * value (`""` = not set). */
 export interface CaptureMeta {
@@ -18,12 +18,12 @@ export interface CaptureMeta {
 export const EMPTY_CAPTURE_META: CaptureMeta = { energy: null, size: null, context: "" };
 
 /** `Slider` index -> `hummingbird_domain::Size`'s own wire name, in the
- * slider's own left-to-right stop order (`TriageScreen.tsx`'s
+ * slider's own left-to-right stop order (`CaptureBox.tsx`'s
  * `CAPTURE_SIZE_STOPS` — "normal" is the slider's
  * display label; the domain vocabulary at that stop is `"short"`).
  *
  * Indexed by the raw slider index, and hand-aligned with
- * `TriageScreen.tsx`'s `CAPTURE_SIZE_STOPS` — nothing mechanical connects
+ * `CaptureBox.tsx`'s `CAPTURE_SIZE_STOPS` — nothing mechanical connects
  * the two, so `capture-meta.test.ts` asserts their lengths agree. An index
  * past the end resolves to `undefined`, which reads downstream as "not set":
  * a silently dropped selection, never an error. Exported for that test
@@ -37,7 +37,7 @@ export const CAPTURE_SIZE_NAMES: ReadonlyArray<"quick" | "short" | "deep"> = [
 /** `Slider` index -> `hummingbird_domain::Energy`'s own wire name — the
  * slider's display labels already match the domain vocabulary here. Same
  * hand-alignment hazard as `CAPTURE_SIZE_NAMES` above, against
- * `TriageScreen.tsx`'s `CAPTURE_ENERGY_STOPS`. */
+ * `CaptureBox.tsx`'s `CAPTURE_ENERGY_STOPS`. */
 export const CAPTURE_ENERGY_NAMES: ReadonlyArray<"low" | "medium" | "high"> = [
   "low",
   "medium",

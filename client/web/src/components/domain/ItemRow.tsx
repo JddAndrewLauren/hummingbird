@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CSSProperties, HTMLAttributes } from "react";
 import { Icon } from "../core/Icon";
+import { MarkDoneButton } from "./MarkDoneButton";
 import { hasPriority, priorityLabel } from "../../screens/priority";
 import { StageBadge } from "./StageBadge";
 import type { Stage } from "./StageBadge";
@@ -32,6 +33,11 @@ export interface ItemRowProps extends Omit<HTMLAttributes<HTMLDivElement>, "styl
    * from confirmed server truth. */
   pending?: boolean;
   selected?: boolean;
+  /** The one-click "mark done" checkmark (`item-actions.ts`'s
+   * `canMarkDone` decides who gets one — callers pass this only for items
+   * it allows). Rendered trailing — the row's bottom-right — and disabled
+   * while `pending` so a second act can never race the queued one. */
+  onComplete?: () => void;
   style?: CSSProperties;
 }
 
@@ -40,7 +46,7 @@ const URGENCY: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "va
 // the stored enum is not what a reader wants hovering a coloured dot.
 const URGENCY_LABEL: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "Calm", soon: "Due soon", now: "Due now", overdue: "Overdue" };
 
-export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, priority, blockedBy, steps, pending = false, selected = false, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
+export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, priority, blockedBy, steps, pending = false, selected = false, onComplete, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
   const [hover, setHover] = useState(false);
   // No onClick, no affordance: a row that does nothing must not take focus,
   // announce itself as a button, or claim a pointer.
@@ -54,7 +60,10 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
       onKeyDown={(event) => {
         // onClick on a div never fires from the keyboard, so Enter and Space
         // are wired by hand; Space is prevented first or it scrolls the list.
-        if (activatable && (event.key === "Enter" || event.key === " ")) {
+        // Guarded to the row itself: a keypress on the checkmark button
+        // bubbles up here, and its own native activation must not also open
+        // the row.
+        if (activatable && event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
           event.preventDefault();
           event.currentTarget.click();
         }
@@ -109,6 +118,18 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
         </span>
       ) : null}
       <StageBadge stage={stage} />
+      {onComplete ? (
+        <MarkDoneButton
+          title={title}
+          disabled={pending}
+          onClick={(event) => {
+            // The row's own click opens item detail — finishing something
+            // must never also open it.
+            event.stopPropagation();
+            onComplete();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

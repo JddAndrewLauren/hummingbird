@@ -16,6 +16,8 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     paneRead: vi.fn().mockReturnValue('{"kind":"ok","snapshots":[],"alerts":[]}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
+    ledger: vi.fn().mockReturnValue('{"kind":"ok","rows":[]}'),
+    done: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
     steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
     projects: vi.fn().mockReturnValue('{"kind":"ok","projects":[]}'),
@@ -248,11 +250,16 @@ describe("handleTaskRequest", () => {
         seed: "seed-triage-1",
         itemId: "item-1",
         destination: "ready",
-        title: "buy milk",
-        projectId: "project-1",
-        size: "quick",
-        energy: "low",
-        context: "@errands",
+        edits: {
+          title: "buy milk",
+          projectId: "project-1",
+          size: "quick",
+          energy: "low",
+          context: "@errands",
+          // A clear and an untouched field, so this asserts the whole
+          // absent/null/value contract crosses the seam intact.
+          deadline: null,
+        },
         nowMs: 2_000,
       },
       host,
@@ -262,11 +269,10 @@ describe("handleTaskRequest", () => {
       "seed-triage-1",
       "item-1",
       "ready",
-      "buy milk",
-      "project-1",
-      "quick",
-      "low",
-      "@errands",
+      // One JSON payload: the keys present are the fields touched, `null` is a
+      // clear, and everything else is absent — which is what `JSON.stringify`
+      // guarantees here.
+      '{"title":"buy milk","projectId":"project-1","size":"quick","energy":"low","context":"@errands","deadline":null}',
       2_000,
     );
     expect(posted).toEqual([
@@ -284,11 +290,7 @@ describe("handleTaskRequest", () => {
         seed: "seed-triage-1",
         itemId: "item-1",
         destination: "ready",
-        title: null,
-        projectId: null,
-        size: "giant" as never,
-        energy: null,
-        context: null,
+        edits: { size: "giant" as never },
         nowMs: 2_000,
       },
       host,
@@ -315,11 +317,7 @@ describe("handleTaskRequest", () => {
         seed: "seed-triage-1",
         itemId: "no-such-item",
         destination: "ready",
-        title: null,
-        projectId: null,
-        size: null,
-        energy: null,
-        context: null,
+        edits: {},
         nowMs: 2_000,
       },
       host,
@@ -385,6 +383,69 @@ describe("handleTaskRequest", () => {
     const posted = await run({ type: "getFrontier" }, host);
 
     expect(posted).toEqual([{ type: "frontier", items: [{ ...dtoItem, pending: true }] }]);
+  });
+
+  it("getLedger passes the request's nowMs through and maps rows, item fields flat", async () => {
+    const host = fakeHost({
+      ledger: vi.fn().mockReturnValue(
+        JSON.stringify({
+          kind: "ok",
+          rows: [
+            {
+              ...rawItem,
+              stage: "done",
+              archived_at: 900,
+              absent_since_ms: 900,
+              dead_lettered: true,
+              has_live_alert: true,
+            },
+          ],
+        }),
+      ),
+    });
+    const posted = await run({ type: "getLedger", nowMs: 4_000 }, host);
+
+    expect(host.ledger).toHaveBeenCalledWith(4_000);
+    expect(posted).toEqual([
+      {
+        type: "ledger",
+        rows: [
+          {
+            ...dtoItem,
+            stage: "done",
+            archivedAt: 900,
+            absentSinceMs: 900,
+            deadLettered: true,
+            hasLiveAlert: true,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('getLedger posts nothing when the host answers "busy" — an empty ledger is a claim', async () => {
+    const host = fakeHost({
+      ledger: vi.fn().mockReturnValue('{"kind":"busy","rows":[]}'),
+    });
+    expect(await run({ type: "getLedger", nowMs: 4_000 }, host)).toEqual([]);
+  });
+
+  it("getDone maps every raw item to its camelCase DTO", async () => {
+    const host = fakeHost({
+      done: vi.fn().mockReturnValue(
+        JSON.stringify({ kind: "ok", items: [{ ...rawItem, stage: "done" }] }),
+      ),
+    });
+    const posted = await run({ type: "getDone" }, host);
+
+    expect(posted).toEqual([{ type: "done", items: [{ ...dtoItem, stage: "done" }] }]);
+  });
+
+  it('getDone posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      done: vi.fn().mockReturnValue('{"kind":"busy","items":[]}'),
+    });
+    expect(await run({ type: "getDone" }, host)).toEqual([]);
   });
 
   it("getTriageInbox maps every raw item to its camelCase DTO", async () => {
