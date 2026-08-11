@@ -454,3 +454,130 @@ fn an_empty_subject_key_is_rejected() {
     let rows = sql.exec("SELECT id FROM alerts", &[]).unwrap();
     assert!(rows.is_empty(), "nothing was written");
 }
+
+// --- restamp_on_change (#120) ------------------------------------------
+//
+// The polled-source rule, in two halves that must both hold or the
+// which-cans lane is unusable: a daily re-poll of an unchanged occurrence
+// must not disturb a dismissal, and a correction must ring over one. The
+// server decides which is which, because an ingest token cannot read the
+// alert back.
+
+/// AC: a dismissal survives four daily re-polls. The re-poll is
+/// byte-identical, so it does not even reach the restamp — the no-op
+/// return above it is what protects the dismissal, and this pins that the
+/// flag does not change that.
+#[test]
+fn a_dismissal_survives_four_daily_re_polls() {
+    let sql = RusqliteSql::new();
+    const DAY: i64 = 86_400_000;
+    let raise = r#"{"source": "city-waste/v2", "source_key": "2026-08-17",
+                    "subject_key": "collection", "restamp_on_change": true,
+                    "title": "Monday collection moves to Tuesday",
+                    "body": "Collection normally on Monday. This cycle moves to 2026-08-18."}"#;
+
+    let resp = ingest_alert(&sql, raise, DAY);
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    let alert: Alert = body_as(&resp);
+    assert_eq!(alert.raised_at, DAY, "first raise stamps the write clock");
+
+    // The human waves it away that afternoon.
+    let dismissed_at = DAY + 8 * 3_600_000;
+    let resp = patch_at(
+        &sql,
+        &format!("/api/alerts/{}", alert.id),
+        &format!(r#"{{"expected_version": {}, "dismissed_at": {dismissed_at}}}"#, alert.version),
+        dismissed_at,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let dismissed: Alert = body_as(&resp);
+    assert!(!dismissed.is_live(dismissed_at), "dismissed is not live");
+
+    for day in 2..=5 {
+        let now = day * DAY;
+        let resp = ingest_alert(&sql, raise, now);
+        assert_eq!(resp.status, 200, "day {day}: {}", resp.body);
+        let alert: Alert = body_as(&resp);
+        assert_eq!(alert.raised_at, DAY, "day {day} must not restamp");
+        assert_eq!(alert.dismissed_at, Some(dismissed_at), "day {day}");
+        assert!(!alert.is_live(now), "day {day}: the dismissal still holds");
+    }
+}
+
+/// The other half: a Tuesday → Wednesday correction is new information, so
+/// it re-rings *over* the dismissal. `raised_at` overtakes `dismissed_at`
+/// and ADR-0014's live predicate says live again.
+#[test]
+fn a_correction_re_rings_over_a_dismissal() {
+    let sql = RusqliteSql::new();
+    const DAY: i64 = 86_400_000;
+    let first = r#"{"source": "city-waste/v2", "source_key": "2026-08-17",
+                    "subject_key": "collection", "restamp_on_change": true,
+                    "title": "Monday collection moves to Tuesday"}"#;
+    let corrected = r#"{"source": "city-waste/v2", "source_key": "2026-08-17",
+                        "subject_key": "collection", "restamp_on_change": true,
+                        "title": "Monday collection moves to Wednesday"}"#;
+
+    let alert: Alert = body_as(&ingest_alert(&sql, first, DAY));
+    let dismissed_at = DAY + 3_600_000;
+    patch_at(
+        &sql,
+        &format!("/api/alerts/{}", alert.id),
+        &format!(r#"{{"expected_version": {}, "dismissed_at": {dismissed_at}}}"#, alert.version),
+        dismissed_at,
+    );
+
+    let now = 2 * DAY;
+    let resp = ingest_alert(&sql, corrected, now);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let alert: Alert = body_as(&resp);
+    assert_eq!(alert.id, body_as::<Alert>(&ingest_alert(&sql, corrected, now)).id);
+    assert_eq!(alert.raised_at, now, "the correction stamps the write clock");
+    assert_eq!(alert.dismissed_at, Some(dismissed_at), "never touched by ingest");
+    assert!(alert.is_live(now), "a later raise overtakes the dismissal and rings again");
+}
+
+/// The stamp is the server's write clock, not anything the caller sends —
+/// which is the point. A poller stamping its own nominal cron slot (06:00)
+/// would land a correction *before* an 08:00 dismissal made the same
+/// morning, and it would stay silently quiet.
+#[test]
+fn the_restamp_uses_the_servers_write_clock() {
+    let sql = RusqliteSql::new();
+    let body = |title: &str| {
+        format!(
+            r#"{{"source": "city-waste/v2", "source_key": "2026-08-17",
+                 "restamp_on_change": true, "title": "{title}"}}"#
+        )
+    };
+    ingest_alert(&sql, &body("first"), 1_000);
+    let alert: Alert = body_as(&ingest_alert(&sql, &body("corrected"), 777_000));
+    assert_eq!(alert.raised_at, 777_000);
+}
+
+/// Default false, so no shipped source moves: without the flag, a re-raise
+/// that changes a field keeps the stored stamp exactly as before #120.
+#[test]
+fn without_the_flag_a_changed_re_raise_keeps_the_stored_stamp() {
+    let sql = RusqliteSql::new();
+    ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "down"}"#, 1_000);
+    let resp = ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "still down"}"#, 9_000);
+    let alert: Alert = body_as(&resp);
+    assert_eq!(alert.raised_at, 1_000, "the pre-#120 behaviour is unchanged");
+}
+
+/// Two contradictory instructions about one field: refused, not ordered.
+#[test]
+fn restamp_on_change_with_an_explicit_raised_at_is_a_400() {
+    let sql = RusqliteSql::new();
+    let resp = ingest_alert(
+        &sql,
+        r#"{"source": "hc", "source_key": "k", "title": "down",
+            "restamp_on_change": true, "raised_at": 5}"#,
+        0,
+    );
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    assert!(resp.body.contains("raised_at"), "{}", resp.body);
+    let rows = sql.exec("SELECT id FROM alerts", &[]).unwrap();
+    assert!(rows.is_empty(), "nothing was written");
+}

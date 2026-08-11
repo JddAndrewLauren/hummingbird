@@ -191,6 +191,7 @@ the single predicate all three call; no consumer re-spells it in SQL.
 | `google-calendar/v1` | event | `<eventId or recurringEventId>:<originalStartTime>` |
 | `m365-calendar/v1` | event | `<seriesMasterId or id>:<originalStart>` |
 | `city-waste/v1` ***(retired → `v2`, #189)*** | event | `<stream>:<scheduled-date>` — `trash:2026-08-17` |
+| `city-waste/v2` ***(#120)*** | event | the scheduled collection date alone — `2026-08-17` |
 | `item-threshold/v1` | **state** | `item:<id>` |
 | `healthchecks/v1`, `home-assistant/v1` | **state** | the check or entity id, authored in the webhook body |
 | `github/v1`, `photo-site/v1`, `gmail-alert/v1` | event | the source's own event or message id |
@@ -307,6 +308,37 @@ stays defined with its frozen vector intact — retirement is a namespace-string
 change, never a recipe change. No `city-waste/v2` entry exists in the
 registry yet; that lands with the poller that actually produces `/v2` rows.*
 
+*Amended 2026-08-10 by [#120](https://github.com/JddAndrewLauren/hummingbird/issues/120):
+`city-waste/v2` is registered, and it is not merely v1's recipe under a new
+string — three things changed, each recorded in the tables above.*
+
+*One: **the recipe drops the stream.** The domain corrected under this
+source after v1 was written — there is only ever one collection day, and
+everything going out that week goes out together — so one week's slide is
+one occurrence, and the key is the scheduled date alone. Keying per stream
+would mint three near-identical rows for one holiday, each wanting its own
+ack. Which bins go out is a property of the occurrence, carried in the alert
+body and in the snapshot the pane reads, never part of its identity. This is
+the one case so far where a `/vN` bump carried a real recipe change rather
+than a namespace change, which is exactly what the bump mechanism is for.*
+
+*Two: **the expiry wording is tightened to the later of the two dates.**
+v1's "end of the affected collection date" is ambiguous, and read as the
+originally-scheduled Monday it takes the holiday text off the pane on the
+Tuesday morning it exists to warn about. v1's own string stays as written —
+a retired entry is frozen, including the wording that describes what its
+already-minted rows meant.*
+
+*Three: **the shape stays `event`, despite one address with one schedule
+looking stateful.** The test above is whether the source can ever say *it's
+over*, and the council's page never reports a cancelled slide. Declaring it
+`state` would force resolution to be a diff against the previous reading,
+which destroys the one property this lane rests on (materiality is deviation
+from cadence, never a diff — that is why the ordinary roll-forward is
+silent). It also keeps two consecutive holiday weeks as two occurrences,
+which is ADR-0012's Christmas/New Year case, written about this very
+source.*
+
 This requires **every `source` string to carry a version suffix from the
 start**, uniformly. ADR-0009's examples were inconsistent (`'healthchecks'`,
 `'home-assistant'`, but `'gmail-alert/v1'`), and a bare name has no escape
@@ -339,6 +371,7 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | --- | --- |
 | `google-calendar/v1`, `m365-calendar/v1` | the instance's end time |
 | `city-waste/v1` ***(retired → `v2`)*** | end of the affected collection date |
+| `city-waste/v2` ***(#120)*** | end of the **later** of the scheduled and the slid-to collection date |
 | `gmail/v1`, `m365-mail/v1` | none, ever |
 | `github/v1`, `photo-site/v1` | none unless the event carries one |
 

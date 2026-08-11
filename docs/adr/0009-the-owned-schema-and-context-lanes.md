@@ -218,10 +218,20 @@ Rules that hold across every lane:
    is one tap, a capture with `source_key` = alert id, deterministic id,
    double-tap a no-op. A server poll may machine-raise an alert on a
    threshold crossing ("80% of weekly cap") or on a **material change in
-   its snapshot** (a holiday sliding trash pickup Monday → Tuesday). What
+   its snapshot** (a holiday sliding collection Monday → Tuesday). What
    counts as material is defined per source, at wiring time — a weekly
    "next date" rolling forward on cadence is not a change — and the alert
    must state the change itself, never just that one happened.
+
+   *Amended 2026-08-10 (#120): "each stream's cadence and next date" above
+   and in the Which-cans bullet below was wrong about the domain. There is
+   only ever **one collection day** — everything going out that week goes
+   out together — so there is one cadence and one next date, and which bins
+   go out is a property of the collection rather than a per-stream schedule.
+   The consequence that matters is on identity: one week's slide is **one**
+   occurrence, so `city-waste/v2`'s `source_key` is the scheduled date alone
+   (ADR-0014), where a per-stream key would mint three near-identical rows
+   for one holiday, each wanting its own dismissal.*
 3. **Authorities stay authoritative:** Home Assistant decides what to send;
    the photo site decides what to push; hummingbird receives and never
    configures their rules.
@@ -256,11 +266,13 @@ lanes above, decided in the 2026-08-09 grilling:
   auto-advances when a vacation passes.
 - **Which cans** — server-polled lane: a daily poll of the city's
   address-specific collection page (verified static HTML, 2026-08-09) →
-  one snapshot whose payload holds each stream's cadence and next date;
-  answered at read time as "which containers go out, and when." Holiday
-  slides are rule 2's material-change case: the adapter judges deviation
-  from cadence (the date rolling forward a week is not a change) and the
-  alert names the slide — "trash: Monday → Tuesday this week."
+  one snapshot whose payload holds the collection's cadence and the day it
+  actually happens (see rule 2's 2026-08-10 amendment: one collection day,
+  not one per stream); answered at read time as "which containers go out,
+  and when." Holiday slides are rule 2's material-change case: the adapter
+  judges deviation from cadence (the date rolling forward a week is not a
+  change) and the alert names the slide — "Collection moves from Monday to
+  Tuesday."
 
 Answers are never stored (ADR-0002 verbatim); the only persistent trace of
 a standing question is its binding facts in `settings`.

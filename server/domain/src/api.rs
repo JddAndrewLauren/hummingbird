@@ -304,6 +304,39 @@ pub struct PutSetting {
     pub value: serde_json::Value,
 }
 
+/// `POST /api/snapshots` body (server-polled context, `ingest` scope only).
+/// Identity is `(source, key)` and the row is replaced wholesale each poll
+/// — ADR-0009's gauge lane, so there is no `expected_version` here for
+/// [`AlertIngest`]'s reason: a poller tracks no versions and is
+/// authoritative for its own row.
+///
+/// `payload` is typed JSON on the wire and stored as its canonical
+/// serialization, like [`PutSetting::value`]. It must parse as ADR-0015's
+/// [`SnapshotEnvelope`]; the handler rejects a broken one with the
+/// [`EnvelopeProblem`]'s own wording, rather than storing a row every pane
+/// reading it will render as a gap.
+///
+/// **`fetched_at` is required, and that is load-bearing.** Defaulting it to
+/// the server clock would make an exact replay undecidable, and the replay
+/// no-op is the only thing standing between a daily poll and a version bump
+/// pushed to every device every morning for the life of an unchanged
+/// answer. It is also *part of the value*: a fresh poll that read the same
+/// answer still moves the stamp, because the stamp is what
+/// `Freshness::of_snapshot` reads, and freezing it would make "poller fine,
+/// nothing changed" indistinguishable from "poller dead".
+///
+/// [`SnapshotEnvelope`]: crate::SnapshotEnvelope
+/// [`EnvelopeProblem`]: crate::EnvelopeProblem
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotIngest {
+    pub source: String,
+    pub key: String,
+    pub payload: serde_json::Value,
+    /// When the source was actually read, on the poller's clock.
+    pub fetched_at: i64,
+}
+
 /// `POST /api/alerts` body (webhook ingest, `ingest` scope only). No
 /// `expected_version`: webhook sources cannot track versions, and the
 /// upsert on `(source, source_key)` is inherently absolute — the source is
@@ -344,6 +377,31 @@ pub struct AlertIngest {
     pub resolved_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    /// Opt in to "re-raise only when something actually changed" (#120).
+    /// Default `false`, so no shipped source moves.
+    ///
+    /// It exists for a **repeatedly-polled** source, where the same
+    /// occurrence is re-reported every run for days. Such a source needs
+    /// both halves of one rule and cannot express either on its own: a
+    /// daily re-poll of an unchanged holiday slide must *not* restamp
+    /// `raised_at` (`is_live` compares it against `dismissed_at`, so
+    /// restamping undoes the human's dismissal every morning), while a
+    /// genuine correction — Tuesday's slide moving to Wednesday — must
+    /// re-ring even over that dismissal, because it is new information.
+    ///
+    /// The decision has to be the server's: an ingest token cannot read the
+    /// alert back, so the poller has no way to know whether its write
+    /// changes anything. With this set, the handler stamps `raised_at` with
+    /// its own **write clock** on exactly the raises that change a
+    /// source-owned field. The write clock, and not the poll's nominal cron
+    /// slot, is load-bearing: a correction stamped at an 06:00 bucket lands
+    /// *before* an 08:00 dismissal made the same morning and stays silently
+    /// quiet.
+    ///
+    /// Mutually exclusive with an explicit `raised_at` (400): the two are
+    /// contradictory instructions about the same field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restamp_on_change: bool,
 }
 
 /// `PATCH /api/alerts/:id` body (`device` scope): the human-owned dismiss

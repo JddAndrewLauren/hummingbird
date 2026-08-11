@@ -29,6 +29,21 @@ Four prototypes ran before this ADR, one per question:
 that does not exist (its lifecycle findings survive; the browser twin
 carries them).
 
+*Deleted 2026-08-10 by [#120](https://github.com/JddAndrewLauren/hummingbird/issues/120).
+The sentence above is left as written — it is a historical statement about
+what ran before this ADR. Where the surviving findings went: `Cadence` and
+its arithmetic, the deviation judgement and all three `Deviation` arms are
+now `server/city-waste/`, tested and in the workspace CI gates; the
+"a daily poll must not restamp `raised_at`, but a correction must" finding
+became `AlertIngest::restamp_on_change` on the authority, because a poller
+holding an ingest token cannot read the alert back and so cannot decide it;
+"stamp with the write clock, never the poll's nominal slot" is that
+handler's `now_ms`; "`expires_at` is the end of the later of the two dates"
+is ADR-0014's amended `city-waste/v2` entry; and the backward-slide guard
+the prototype flagged and left open is `judge::MAX_SLIDE_DAYS`. The
+read-side half — `pane`, `Can`, `PaneView` — was already superseded by the
+browser twin and is not carried anywhere: the client owns it.*
+
 The rule applied when they disagreed with the plan: **the plan wins on data
 and plumbing, the prototypes win on UI.** A prototype was written under
 prototype rules — no tests, no error handling, stub mutations — so its

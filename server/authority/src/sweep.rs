@@ -229,6 +229,14 @@ pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
             // byte-identical no-op a repeat tick depends on.
             resolved_at: existing.as_ref().and_then(|alert| alert.resolved_at),
             expires_at: None,
+            // `false`, and it must stay so (#120). This path already
+            // decides the stamp itself, above: `raised_at` is `None` while
+            // the existing alert is still live and `Some(now_ms)` when it
+            // is not, which is the whole "an unchanged match is a quiet
+            // no-op, a settled alert rings again" mechanism. `true` here
+            // would restamp on any changed field — an edited item title
+            // would re-ring a threshold alert the reader had dismissed.
+            restamp_on_change: false,
         };
         let (_status, alert) = upsert_alert(sql, now_ms, ingest)?;
 
