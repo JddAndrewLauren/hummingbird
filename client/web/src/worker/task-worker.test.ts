@@ -15,7 +15,9 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
     kindRegistry: vi
       .fn()
-      .mockReturnValue('{"kind":"ok","kinds":[],"core_fields":[],"alarm_interval_ms":900000}'),
+      .mockReturnValue(
+        '{"kind":"ok","kinds":[],"core_fields":[],"alarm_interval_ms":900000,"severities":["low","normal","high","urgent"]}',
+      ),
     rules: vi.fn().mockReturnValue('{"kind":"ok","rules":[]}'),
     createRule: vi.fn().mockResolvedValue('{"kind":"ok","id":"rule-1","error":null}'),
     patchRule: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),

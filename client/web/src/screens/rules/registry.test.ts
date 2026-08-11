@@ -21,6 +21,7 @@ const registry: KindRegistryDTO = {
     { key: "alert_raised", mints: false, fields: [] },
   ],
   alarmIntervalMs: 900_000,
+  severities: ["low", "normal", "high", "urgent"],
 };
 
 describe("kindOptions", () => {

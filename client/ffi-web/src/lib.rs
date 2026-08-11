@@ -617,8 +617,9 @@ mod wasm_bindings {
         /// The kind registry export (#133/#140, ADR-0013), as JSON:
         /// `{"kind": "ok", "kinds": [EventKindEntry], "core_fields":
         /// [{"name": string, "field_type": string}], "alarm_interval_ms":
-        /// number}`. Never `"busy"` — [`TaskHostCore::kind_registry`] needs
-        /// no checked-out `Core` state at all, only static domain data.
+        /// number, "severities": string[]}`. Never `"busy"` —
+        /// [`TaskHostCore::kind_registry`] needs no checked-out `Core` state
+        /// at all, only static domain data.
         #[wasm_bindgen(js_name = kindRegistry)]
         pub fn kind_registry(&self) -> String {
             serde_json::to_string(&TaskHostCore::kind_registry())

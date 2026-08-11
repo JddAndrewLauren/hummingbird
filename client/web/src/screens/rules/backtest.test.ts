@@ -37,6 +37,46 @@ describe("backtest", () => {
     expect(result).toEqual({ kind: "unavailable", reason: "no_local_history" });
   });
 
+  it("is ok, not unavailable, for eventKind null (\"any kind\") — item_threshold still satisfies it", () => {
+    const matching = item({ id: "i-1", title: "renew passport" });
+    const result = backtest(
+      { eventKind: null, conditions: [{ field: "title", op: "contains", value: "passport", negate: false }] },
+      [matching],
+      NOW,
+    );
+    expect(result.kind).toBe("ok");
+  });
+
+  it("calendar_busy is always false — the server's own synthesis never sets it", () => {
+    const anItem = item({ id: "i-1" });
+    const busyMatch = backtest(
+      { eventKind: "item_threshold", conditions: [{ field: "calendar_busy", op: "is", value: true, negate: false }] },
+      [anItem],
+      NOW,
+    );
+    const notBusyMatch = backtest(
+      { eventKind: "item_threshold", conditions: [{ field: "calendar_busy", op: "is", value: false, negate: false }] },
+      [anItem],
+      NOW,
+    );
+    expect(busyMatch.kind === "ok" ? busyMatch.matches : []).toEqual([]);
+    expect(notBusyMatch.kind === "ok" ? notBusyMatch.matches.map((i) => i.id) : []).toEqual(["i-1"]);
+  });
+
+  it("occurred_at is derived from updatedAt, exactly matching now_as_deadline's UTC minute truncation", () => {
+    // updatedAt = 2026-08-15T11:00:30Z -> occurred_at "2026-08-15T11:00" (seconds truncated, UTC).
+    const recentlyUpdated = item({ id: "i-1", updatedAt: Date.UTC(2026, 7, 15, 11, 0, 30) });
+    const result = backtest(
+      {
+        eventKind: "item_threshold",
+        conditions: [{ field: "occurred_at", op: "within_last", value: "2h", negate: false }],
+      },
+      [recentlyUpdated],
+      NOW, // 2026-08-15T12:00:00Z
+    );
+    expect(result.kind === "ok" ? result.matches.map((i) => i.id) : []).toEqual(["i-1"]);
+  });
+
   it("matches item_threshold conditions against the mirrored item list", () => {
     const matching = item({ id: "i-1", title: "renew passport" });
     const other = item({ id: "i-2", title: "buy milk" });

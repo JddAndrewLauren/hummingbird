@@ -447,6 +447,13 @@ pub struct KindRegistryResponse {
     pub kinds: &'static [EventKindEntry],
     pub core_fields: Vec<CoreFieldDTO>,
     pub alarm_interval_ms: i64,
+    /// `hummingbird_domain::SEVERITIES`, verbatim and in its own order — the
+    /// exact vocabulary `severity_rank` (`server/domain/src/severity.rs`)
+    /// ranks against, so the rules screen's severity dropdown can never
+    /// disagree with the ADR-0014 ratchet. No import problem the
+    /// `alarm_interval_ms` doc above warns about: `hummingbird_domain` is
+    /// already this crate's dependency, unlike `hummingbird_authority`.
+    pub severities: &'static [&'static str],
 }
 
 /// Mirrors `hummingbird_authority::sweep::ALARM_INTERVAL_MS` — see
@@ -747,6 +754,7 @@ impl TaskHostCore {
                 })
                 .collect(),
             alarm_interval_ms: ALARM_INTERVAL_MS,
+            severities: &hummingbird_domain::SEVERITIES[..],
         }
     }
 
@@ -2416,10 +2424,12 @@ mod rule_tests {
         assert_eq!(response.core_fields.len(), hummingbird_domain::CORE_FIELDS.len());
         assert!(response.core_fields.iter().any(|f| f.name == "source"));
         assert_eq!(response.alarm_interval_ms, ALARM_INTERVAL_MS);
+        assert_eq!(response.severities, hummingbird_domain::SEVERITIES);
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains(r#""key":"email""#));
         assert!(json.contains(r#""alarm_interval_ms":900000"#));
+        assert!(json.contains(r#""severities":["low","normal","high","urgent"]"#));
     }
 
     #[tokio::test]

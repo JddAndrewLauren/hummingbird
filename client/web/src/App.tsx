@@ -244,12 +244,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           {screen === "alerts" && <AlertsScreen demo={demo} />}
           {screen === "rules" && (
             <RulesScreen
-              rules={task.rules}
-              kindRegistry={task.kindRegistry}
-              frontier={task.frontier}
-              lastRuleWrite={task.lastRuleWrite}
-              onCreateRule={handleCreateRule}
-              onPatchRule={handlePatchRule}
+              rules={demo ? demo.ruleDetails : task.rules}
+              kindRegistry={demo ? demo.ruleKindRegistry : task.kindRegistry}
+              frontier={demo ? demo.ruleBacktestItems : task.frontier}
+              lastRuleWrite={demo ? null : task.lastRuleWrite}
+              syncOutcomeSeq={task.syncOutcomeSeq}
+              onCreateRule={demo ? () => {} : handleCreateRule}
+              onPatchRule={demo ? () => {} : handlePatchRule}
             />
           )}
           {screen === "settings" && (

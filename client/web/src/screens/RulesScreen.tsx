@@ -10,10 +10,11 @@ import type { ConditionDTO, FieldTypeName, KindRegistryDTO, RuleDTO, TaskItemDTO
 import type { TaskState } from "../store/store";
 import { backtest } from "./rules/backtest";
 import { newCondition, retypeCondition, toggleNegate, widgetFor } from "./rules/condition-editor";
-import { durationUnitsFor, isBelowAlarmInterval } from "./rules/duration";
+import { datetimeInputValueFromDuration, durationFromDatetimeInputValue, type DeadlineOperator } from "./rules/deadline-picker";
+import { durationUnitsFor, formatDuration, isBelowAlarmInterval, type DurationUnit } from "./rules/duration";
 import { legalOperators, OPERATOR_LABELS, type OperatorName } from "./rules/operators";
 import { fieldsForKind, fieldType, kindLabel, kindOptions } from "./rules/registry";
-import { invalidFields } from "./rules/validity";
+import { isRuleValid } from "./rules/validity";
 
 // #140: the rules screen — one row per condition, enable/disable toggles,
 // rule create/edit, and the backtest action. Renders entirely from the
@@ -23,6 +24,16 @@ import { invalidFields } from "./rules/validity";
 // matches stays silent."
 
 const TIERS: TierName[] = ["urgent", "normal"];
+
+/** A Select's options, with `current` prepended (labelled as itself) when it
+ * is not already among `known` — the field-select and severity-select
+ * fallback for a value this build's registry no longer declares. Without
+ * this a `<Select value={current}>` whose `current` matches no `<option>`
+ * silently shows the browser's own blank/first-item behaviour rather than
+ * naming the value actually stored. */
+function withCurrentOption(known: string[], current: string): string[] {
+  return known.includes(current) || current === "" ? known : [current, ...known];
+}
 
 function ConditionRow({
   condition,
@@ -44,6 +55,10 @@ function ConditionRow({
     (condition.op === "within_next" || condition.op === "within_last") &&
     typeof condition.value === "string" &&
     isBelowAlarmInterval(condition.value, registry.alarmIntervalMs);
+  const fieldOptions = withCurrentOption(
+    fields.map((f) => f.name),
+    condition.field,
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
@@ -51,7 +66,7 @@ function ConditionRow({
         <Select
           label="Field"
           value={condition.field}
-          options={fields.map((f) => ({ value: f.name, label: f.name }))}
+          options={fieldOptions.map((name) => ({ value: name, label: name }))}
           onChange={(e) => {
             const newType = fieldType(registry, eventKind, e.target.value) ?? "string";
             onChange({ ...retypeCondition({ ...condition, field: e.target.value }, newType), field: e.target.value });
@@ -66,6 +81,7 @@ function ConditionRow({
         <ValueWidget
           widget={widget}
           fieldType={thisFieldType}
+          op={condition.op as OperatorName}
           value={condition.value}
           onChange={(value) => onChange({ ...condition, value })}
         />
@@ -90,15 +106,25 @@ function ConditionRow({
 function ValueWidget({
   widget,
   fieldType,
+  op,
   value,
   onChange,
 }: {
   widget: ReturnType<typeof widgetFor>;
   fieldType: FieldTypeName;
+  op: OperatorName;
   value: unknown;
   onChange: (value: unknown) => void;
 }) {
   const [chipDraft, setChipDraft] = useState("");
+  // The datetime picker's anchor clock — read once, at mount, via a lazy
+  // initializer rather than a bare `Date.now()` in the render body (React's
+  // purity rule: a component must render the same output for the same
+  // props/state). `ConditionRow` keys each row by index, so this remounts
+  // — and re-reads the clock — whenever a condition is added, removed, or
+  // the editor is reopened fresh; good enough for a picker's own moment,
+  // never a stored value anything must stay byte-identical against.
+  const [nowMs] = useState(() => Date.now());
   if (widget === "chips") {
     const chips = Array.isArray(value) ? (value as string[]) : [];
     return (
@@ -114,7 +140,7 @@ function ValueWidget({
                 type="button"
                 aria-label={`Remove ${chip}`}
                 onClick={() => onChange(chips.filter((_, idx) => idx !== i))}
-                style={{ marginLeft: 4, background: "none", border: "none", cursor: "pointer" }}
+                style={{ marginLeft: "var(--space-2)", background: "none", border: "none", cursor: "pointer" }}
               >
                 ×
               </button>
@@ -136,24 +162,48 @@ function ValueWidget({
       </div>
     );
   }
-  if (widget === "duration" || widget === "datetime") {
+  if (widget === "datetime") {
+    // Acceptance criterion 3: "date/time for `deadline`". The picker
+    // renders a concrete moment; `deadline-picker.ts` is what converts that
+    // moment to and from the wire's relative-duration value, against
+    // `Date.now()` — the same ephemeral, caller-side clock `BacktestPanel`
+    // already reads directly, since nothing here is a stored value that
+    // could later disagree with itself (`alert::plan`'s own concern does
+    // not apply to a picker, only to a written string).
+    const text = typeof value === "string" ? value : "";
+    const deadlineOp: DeadlineOperator = op === "within_last" ? "within_last" : "within_next";
+    return (
+      <Input
+        label="Deadline"
+        type="datetime-local"
+        value={datetimeInputValueFromDuration(text, deadlineOp, nowMs)}
+        onChange={(e) => {
+          const duration = durationFromDatetimeInputValue(e.target.value, deadlineOp, nowMs);
+          if (duration !== undefined) {
+            onChange(duration);
+          }
+        }}
+      />
+    );
+  }
+  if (widget === "duration") {
     const text = typeof value === "string" ? value : "";
     const units = durationUnitsFor(fieldType === "date" ? "date" : "timestamp");
     const match = /^(\d+)([mhd])$/.exec(text);
     const amount = match ? match[1] : "";
-    const unit = match ? match[2] : units[0];
+    const unit = (match ? match[2] : units[0]) as DurationUnit;
     return (
       <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "flex-end" }}>
         <Input
-          label={widget === "datetime" ? "Within" : "Duration"}
+          label="Duration"
           value={amount}
-          style={{ width: 80 }}
-          onChange={(e) => onChange(`${e.target.value.replace(/\D/g, "")}${unit}`)}
+          style={{ width: "var(--space-13)" }}
+          onChange={(e) => onChange(formatDuration(Number(e.target.value.replace(/\D/g, "")) || 0, unit))}
         />
         <Select
           value={unit}
           options={units.map((u) => ({ value: u, label: u }))}
-          onChange={(e) => onChange(`${amount}${e.target.value}`)}
+          onChange={(e) => onChange(formatDuration(Number(amount) || 0, e.target.value as DurationUnit))}
         />
       </div>
     );
@@ -182,17 +232,35 @@ function ValueWidget({
   );
 }
 
+/** Backtest (ADR-0011): "the match count is shown before save." Lives
+ * inside the editor, driven by the DRAFT being edited — never the last
+ * saved row — which is what makes the count available before a create or
+ * an edit is saved at all, closing the gap #140's review found (a draft's
+ * first tick would otherwise fire with nobody having seen a count). */
 function BacktestPanel({ rule, items }: { rule: Pick<RuleDTO, "eventKind" | "conditions">; items: TaskItemDTO[] }) {
   const [result, setResult] = useState<ReturnType<typeof backtest> | null>(null);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">backtest</span>
       <Button variant="secondary" size="sm" iconLeft="search" onClick={() => setResult(backtest(rule, items, Date.now()))}>
         Backtest
       </Button>
       {result?.kind === "ok" ? (
-        <span className="hb-meta">
-          {result.matches.length} {result.matches.length === 1 ? "match" : "matches"} — writes nothing
-        </span>
+        <>
+          <span className="hb-meta">
+            {result.matches.length} of {items.length} actionable {items.length === 1 ? "item" : "items"} would
+            match — writes nothing
+          </span>
+          {/* Honesty over a bare count (#140 review): this checks the same
+              corpus the Now screen's frontier shows — Ready or In Progress,
+              unblocked. `sweep_tick` itself evaluates every open item,
+              including Triage and blocked ones, which this check cannot
+              see. */}
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>
+            Checked against items you can currently act on. Rules fire against every open item at tick time —
+            including ones still in Triage or blocked — which this check does not include.
+          </span>
+        </>
       ) : null}
       {result?.kind === "unavailable" ? (
         <span className="hb-meta">No local event history to backtest this kind against.</span>
@@ -234,20 +302,40 @@ function editorStateFromRule(rule: RuleDTO): RuleEditorState {
   };
 }
 
+/** Whether `a` and `b` agree on every field the editor can touch — the
+ * reseed gate `RuleCard` checks on every render, `screens/bindings.ts`'s
+ * `sameBindingValue` pattern ported to a rule row: a pull carrying another
+ * device's edit (or this device's own write landing) must never leave a
+ * stale draft sitting over it with Save enabled to push the old values
+ * back, and that includes the operator's own toggle click. */
+function sameRuleEditableFields(a: RuleDTO, b: RuleDTO): boolean {
+  return (
+    a.name === b.name &&
+    a.eventKind === b.eventKind &&
+    a.severity === b.severity &&
+    a.tier === b.tier &&
+    a.enabled === b.enabled &&
+    JSON.stringify(a.conditions) === JSON.stringify(b.conditions)
+  );
+}
+
 function RuleEditorForm({
   registry,
   state,
+  items,
   onChange,
   onSave,
   saveLabel,
 }: {
   registry: KindRegistryDTO;
   state: RuleEditorState;
+  items: TaskItemDTO[];
   onChange: (next: RuleEditorState) => void;
   onSave: () => void;
   saveLabel: string;
 }) {
   const fields = fieldsForKind(registry, state.eventKind);
+  const severityOptions = withCurrentOption(registry.severities, state.severity);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
       <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
@@ -261,7 +349,12 @@ function RuleEditorForm({
             onChange({ ...state, eventKind, conditions: [] });
           }}
         />
-        <Input label="Severity" value={state.severity} onChange={(e) => onChange({ ...state, severity: e.target.value })} />
+        <Select
+          label="Severity"
+          value={state.severity}
+          options={severityOptions.map((s) => ({ value: s, label: s }))}
+          onChange={(e) => onChange({ ...state, severity: e.target.value })}
+        />
         <Select
           label="Tier"
           value={state.tier}
@@ -298,6 +391,7 @@ function RuleEditorForm({
           Add condition
         </Button>
       </div>
+      <BacktestPanel rule={state} items={items} />
       <Button variant="primary" onClick={onSave} disabled={state.name.trim() === ""}>
         {saveLabel}
       </Button>
@@ -309,18 +403,56 @@ function RuleCard({
   rule,
   registry,
   items,
+  syncOutcomeSeq,
+  lastRuleWrite,
   onToggle,
   onSave,
 }: {
   rule: RuleDTO;
   registry: KindRegistryDTO;
   items: TaskItemDTO[];
+  syncOutcomeSeq: number;
+  lastRuleWrite: TaskState["lastRuleWrite"];
   onToggle: (enabled: boolean) => void;
   onSave: (state: RuleEditorState) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<RuleEditorState>(() => editorStateFromRule(rule));
-  const invalid = invalidFields(rule, registry);
+
+  // Reseed the draft whenever the stored rule's own editable fields move
+  // underneath it — another device's edit, or this device's own write
+  // landing (which otherwise leaves the mount-time draft, including a
+  // stale `enabled`, sitting over the new row with Save still enabled to
+  // push it back). React's "adjust state while rendering" idiom, the same
+  // one `SettingsScreen.tsx`'s `BindingRow` uses for the identical reason.
+  const [seenRule, setSeenRule] = useState(rule);
+  if (!sameRuleEditableFields(seenRule, rule)) {
+    setSeenRule(rule);
+    setDraft(editorStateFromRule(rule));
+  }
+
+  // The enable/disable switch is otherwise fully controlled by
+  // `rule.enabled`: a click renders, then reverts the instant the DOM
+  // reflects that same `rule.enabled` prop again, because the write is
+  // only queued — up to a full cycle before it lands. Holding the clicked
+  // value locally (and saying so) is what keeps the switch from lying
+  // about what just happened; it clears the same render-time way, on the
+  // next completed cycle or this rule's own write outcome, whichever
+  // comes first.
+  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
+  const [seenSyncOutcomeSeq, setSeenSyncOutcomeSeq] = useState(syncOutcomeSeq);
+  const [seenLastRuleWrite, setSeenLastRuleWrite] = useState(lastRuleWrite);
+  if (syncOutcomeSeq !== seenSyncOutcomeSeq || lastRuleWrite !== seenLastRuleWrite) {
+    setSeenSyncOutcomeSeq(syncOutcomeSeq);
+    setSeenLastRuleWrite(lastRuleWrite);
+    if (pendingEnabled !== null) {
+      setPendingEnabled(null);
+    }
+  }
+
+  const valid = isRuleValid(rule, registry);
+  const displayedEnabled = pendingEnabled ?? rule.enabled;
+  const isPendingToggle = pendingEnabled !== null && pendingEnabled !== rule.enabled;
 
   return (
     <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
@@ -333,15 +465,28 @@ function RuleCard({
           <Badge tone="neutral" mono>
             {rule.eventKind === null ? "any kind" : kindLabel(rule.eventKind)}
           </Badge>
-          {invalid.length > 0 ? (
+          {!valid ? (
             <Badge tone="danger" icon="info">
               Invalid — names a field its kind no longer declares
             </Badge>
           ) : null}
         </div>
-        <Switch checked={rule.enabled} onChange={(e) => onToggle(e.target.checked)} label="Enabled" />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "var(--space-2)" }}>
+          <Switch
+            checked={displayedEnabled}
+            onChange={(e) => {
+              setPendingEnabled(e.target.checked);
+              onToggle(e.target.checked);
+            }}
+            label="Enabled"
+          />
+          {isPendingToggle ? (
+            <Badge dot mono tone="warn">
+              pending
+            </Badge>
+          ) : null}
+        </div>
       </div>
-      <BacktestPanel rule={rule} items={items} />
       <Button variant="ghost" size="sm" onClick={() => setEditing((v) => !v)}>
         {editing ? "Close" : "Edit"}
       </Button>
@@ -349,6 +494,7 @@ function RuleCard({
         <RuleEditorForm
           registry={registry}
           state={draft}
+          items={items}
           onChange={setDraft}
           onSave={() => {
             onSave(draft);
@@ -366,6 +512,7 @@ export interface RulesScreenProps {
   kindRegistry: KindRegistryDTO | null;
   frontier: TaskItemDTO[];
   lastRuleWrite: TaskState["lastRuleWrite"];
+  syncOutcomeSeq: number;
   onCreateRule: (
     name: string,
     eventKind: string | null,
@@ -392,6 +539,7 @@ export function RulesScreen({
   kindRegistry,
   frontier,
   lastRuleWrite,
+  syncOutcomeSeq,
   onCreateRule,
   onPatchRule,
 }: RulesScreenProps) {
@@ -427,6 +575,8 @@ export function RulesScreen({
             rule={rule}
             registry={kindRegistry}
             items={frontier}
+            syncOutcomeSeq={syncOutcomeSeq}
+            lastRuleWrite={lastRuleWrite}
             onToggle={(enabled) => onPatchRule(rule, { enabled })}
             onSave={(state) =>
               onPatchRule(rule, {
@@ -449,6 +599,7 @@ export function RulesScreen({
           <RuleEditorForm
             registry={kindRegistry}
             state={draft}
+            items={frontier}
             onChange={setDraft}
             onSave={() => {
               onCreateRule(draft.name, draft.eventKind, draft.conditions, draft.severity, draft.tier, draft.enabled);

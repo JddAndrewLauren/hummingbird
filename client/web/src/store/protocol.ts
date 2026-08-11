@@ -262,6 +262,11 @@ export interface KindRegistryDTO {
   kinds: KindEntryDTO[];
   coreFields: KindFieldDTO[];
   alarmIntervalMs: number;
+  /** `hummingbird_domain::SEVERITIES`, verbatim and in rank order —
+   * `server/domain/src/severity.rs`'s own vocabulary, exported so the rules
+   * screen's severity dropdown can never disagree with the ADR-0014 ratchet
+   * order a hand-typed string would silently rank `0` against. */
+  severities: string[];
 }
 
 // -- the pane read (#245, ADR-0015) ----------------------------------------

@@ -12,6 +12,7 @@ const registry: KindRegistryDTO = {
     },
   ],
   alarmIntervalMs: 900_000,
+  severities: ["low", "normal", "high", "urgent"],
 };
 
 function rule(overrides: Partial<RuleDTO> = {}): RuleDTO {

@@ -233,6 +233,7 @@ interface RawKindRegistryResponse {
   kinds: RawKindEntry[];
   core_fields: RawKindField[];
   alarm_interval_ms: number;
+  severities: string[];
 }
 
 // -- the pane read (#245) — pinned to `PaneReadResponse`'s serde output by
@@ -457,6 +458,7 @@ function mapKindRegistry(raw: RawKindRegistryResponse): KindRegistryDTO {
     kinds: raw.kinds.map(mapKindEntry),
     coreFields: raw.core_fields.map(mapKindField),
     alarmIntervalMs: raw.alarm_interval_ms,
+    severities: raw.severities,
   };
 }
 
