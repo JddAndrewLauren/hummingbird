@@ -6,7 +6,7 @@ import { fireEvent, render, screen } from "../../test/component";
 import { RankedRegion } from "../questions/RankedRegion";
 import { CALENDAR_REQUEST_KEY, weekendWindow } from "./weekend";
 
-// The pane shell's "component tests are the gate" rule (CLAUDE.md): a pure
+// The pane shell's "component tests are the gate" rule (`src/test/component.tsx`): a pure
 // module with no caller does not count as done, so this mounts the REAL
 // `WeekendPaneExpanded` through `RankedRegion` — the same path `NowScreen`
 // wires in production — and exercises the do-date chip affordance rather

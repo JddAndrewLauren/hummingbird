@@ -3,12 +3,19 @@
 // core speaks and never moves when the app changes; this one identifies the
 // build in front of you.
 //
-// The scheme (recorded in CLAUDE.md): the repo-root `VERSION` file holds a
-// plain `major.minor.patch` line, and the displayed patch is that patch plus
-// the number of commits on main since `VERSION` was last touched. So an
-// ordinary merge is +1, and the override gesture is editing `VERSION` in the
-// PR — at the commit that touches the file the count is 0, so that merge
-// lands as exactly what was written.
+// The scheme, stated here because nothing else states it: the repo-root
+// `VERSION` file holds a plain `major.minor.patch` line, and the displayed
+// patch is that patch plus the number of commits on main since `VERSION` was
+// last touched. So an ordinary merge is +1, and the override gesture is
+// editing `VERSION` in the PR — at the commit that touches the file the count
+// is 0, so that merge lands as exactly what was written. No bot commits back
+// to `main`, no tags, no release workflow.
+//
+// **The count is of every commit on `main`, not just `client/**` ones.**
+// `deploy-client.yml` is `paths:`-filtered, so a run of server-only merges
+// makes the *deployed* number jump (0.1.7 → 0.1.12) rather than step. That is
+// the scheme working: this number identifies a build, it does not enumerate
+// client releases.
 //
 // This module is the whole decision and does no I/O: `build-version.node.ts`
 // at the package root holds the `readFileSync`/`execFileSync` half, so
