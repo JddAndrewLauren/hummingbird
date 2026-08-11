@@ -55,12 +55,20 @@ export function createRankRunner({ spawn, bin = "next-up-rank", timeoutMs = RANK
         resolve(outcome);
       };
 
+      // Deliberately NOT `.unref()`d. Every path here -- close, error,
+      // timeout -- goes through `settle`, which clears it, so it can never
+      // outlive the call it bounds and there is nothing to unref away
+      // from; the runner's own HTTP server holds the loop open regardless.
+      // What unref'ing DID do was let the event loop drain while this
+      // timer was the only pending work, which is exactly the state a test
+      // with a silent fake child is in: node's test runner saw nothing
+      // left to wait for and cancelled the two timeout tests
+      // (`cancelledByParent`, not a failure). It passed locally and failed
+      // in CI, which is the signature of the race rather than a flake.
       const timer = setTimeout(() => {
         child.kill?.("SIGKILL");
         settle({ ok: false, error: `${bin} did not answer within ${timeoutMs}ms` });
       }, timeoutMs);
-      // Never hold the process open for this timer alone.
-      timer.unref?.();
 
       child.stdout?.on("data", (chunk) => {
         stdout += chunk.toString();
