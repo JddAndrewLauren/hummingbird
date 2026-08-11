@@ -13,6 +13,12 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     setBinding: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
+    kindRegistry: vi
+      .fn()
+      .mockReturnValue('{"kind":"ok","kinds":[],"core_fields":[],"alarm_interval_ms":900000}'),
+    rules: vi.fn().mockReturnValue('{"kind":"ok","rules":[]}'),
+    createRule: vi.fn().mockResolvedValue('{"kind":"ok","id":"rule-1","error":null}'),
+    patchRule: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     paneRead: vi.fn().mockReturnValue('{"kind":"ok","snapshots":[],"alerts":[]}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),

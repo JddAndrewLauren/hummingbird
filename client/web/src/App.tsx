@@ -3,6 +3,7 @@ import { demoData } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { NowScreen } from "./screens/NowScreen";
 import { RoutesScreen } from "./screens/RoutesScreen";
+import { RulesScreen } from "./screens/RulesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
@@ -21,6 +22,7 @@ import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { usePaneReadsWiring } from "./shell/usePaneReadsWiring";
+import { useRulesWiring } from "./shell/useRulesWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
 import { taskTokenUiState } from "./task/token-ui";
@@ -96,6 +98,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   } = useItemDetailWiring(worker, task.syncOutcomeSeq);
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
   const { setBinding: handleSetBinding } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
+  const { createRule: handleCreateRule, patchRule: handlePatchRule } = useRulesWiring(
+    worker,
+    status,
+    task.syncOutcomeSeq,
+  );
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
@@ -235,6 +242,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {screen === "routes" && <RoutesScreen demo={demo} />}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
+          {screen === "rules" && (
+            <RulesScreen
+              rules={task.rules}
+              kindRegistry={task.kindRegistry}
+              frontier={task.frontier}
+              lastRuleWrite={task.lastRuleWrite}
+              onCreateRule={handleCreateRule}
+              onPatchRule={handlePatchRule}
+            />
+          )}
           {screen === "settings" && (
             <SettingsScreen
               demo={demo}

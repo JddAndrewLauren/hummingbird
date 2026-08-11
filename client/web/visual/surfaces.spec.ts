@@ -26,6 +26,7 @@ const SCREENS = [
   { name: "triage", nav: "Triage" },
   { name: "routes", nav: "Routes" },
   { name: "alerts", nav: "Alerts" },
+  { name: "rules", nav: "Rules" },
   { name: "settings", nav: "Settings" },
 ] as const;
 
