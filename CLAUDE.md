@@ -482,13 +482,19 @@ question's pane, ordered by how much it deserves the eye. `contract.ts` is
 what a question owes the shell — an `answerState`
 (`answered | bound-but-unacquired | unbound`, three states because **a gap
 is not an absence**), a `band` from the five-word salience vocabulary, a
-`withinBand` tie-break inside it, a one-line `collapsedHeadline` and up to
+`withinBand` tie-break inside it — **epoch ms of the pane's next relevant
+moment, never a duration and never a unit each pane picks for itself**, so
+the sort reads no clock and a captured value cannot age between renders — a
+one-line `collapsedHeadline` and up to
 `MAX_GLYPHS` labelled glyphs — plus its whole expanded rendering and
 nothing else; `registry.ts`'s `Record<StandingQuestion, QuestionDef>` is
 compile-time exhaustive, so a question added to the vocabulary and not
 registered is a type error rather than a pane that silently never appears,
 and `requiredSources()` is what `shell/usePaneReadsWiring.ts` requests, so
-the two lists cannot drift. `sort.ts` is the cross-pane order (answerState →
+the two lists cannot drift. `panesFrom` is the 0..N expansion `rankPanes`
+runs, and it takes its registry as an argument for one reason: no shipped
+question emits more or fewer than one subject, so a test registry through
+the real loop is the only thing that exercises the expansion at all. `sort.ts` is the cross-pane order (answerState →
 band → `withinBand`, `null` after every non-null → declared question order →
 subject key; pure, clock-free, total, `frontier-order.ts`'s own discipline).
 `collapse.ts` is device-local and **band-scoped**, in the injectable-
@@ -519,7 +525,19 @@ dormant, `STALE_AFTER_MS = 26h` **beside the band function** (the cost of a
 wrong answer, not `2 × cadence`), the bin colours (a documented exception to
 "colour encodes status": here it encodes object identity, and every glyph
 still carries a label), and `isStaleFreshness`, where `unknown` is never
-fresh. A holiday is read off the snapshot (`collectedOn !== scheduled`) and
+fresh. **A collection already in the past is refused outright**, not
+described: the poll is daily, so between the address's midnight and that
+day's fetch the snapshot still names yesterday — well inside 26h, so
+freshness says nothing — and a `daysAway <= 0` reading rendered that as
+"Trash today". A negative distance is a gap with words (the schedule this
+device holds is out of date), the headlines test `=== 0`, and `WasteView`
+guarantees `daysAway >= 0`. `wasteSetup` is the binding read, and it is
+**four answers, not a boolean**: an unread `bindings` table (`null`) and a
+row holding something that is not text are both `bound-but-unacquired`,
+because only an actually-unset row may render "Not set up" — telling a
+configured reader to set the pane up for the round-trip between mount and
+the first `bindings` answer is a wrong answer, not a slow one. A holiday is
+read off the snapshot (`collectedOn !== scheduled`) and
 **`liveAlerts` is deliberately never read** — a holiday *is* the answer, and
 the alert row still serves the notification lane. `zoned-day.ts` closes the
 one thing the prototype left open: the payload carries an IANA `zone` and

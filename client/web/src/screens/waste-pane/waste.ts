@@ -198,9 +198,15 @@ export function wasteGlyphs(streams: readonly Stream[]): PaneGlyph[] {
  *
  * A holiday names its actual day even when that day is tomorrow — on the one
  * week the day is unusual, "Tonight" would hide the very thing that
- * changed. */
+ * changed.
+ *
+ * "Today" is `daysAway === 0` and **never `<= 0`**: a negative distance is a
+ * collection that has already happened, which `wasteView` refuses outright
+ * rather than describe. Written as equality anyway, because `<=` here is the
+ * exact line that rendered yesterday's collection as "Trash Today" for every
+ * hour between the address's midnight and the next daily poll. */
 export function wasteHeadline(daysAway: number, weekday: string, holiday: boolean): string {
-  if (daysAway <= 0) {
+  if (daysAway === 0) {
     return "Trash Today";
   }
   if (holiday) {
@@ -221,7 +227,7 @@ export function wasteCollapsedHeadline(
   weekday: string,
   holiday: boolean,
 ): string {
-  if (daysAway <= 0) {
+  if (daysAway === 0) {
     return "Trash today";
   }
   if (daysAway === 1 && !holiday) {
@@ -237,6 +243,9 @@ export interface WasteView {
   body: WasteBody;
   snapshot: PaneSnapshotDTO;
   today: CivilDate;
+  /** Whole days from today at the address to the collection. **Never
+   * negative** — a collection already in the past is not an answer this pane
+   * will render, and is refused by [`wasteView`]. */
   daysAway: number;
   /** The city moved this week's collection off its cadence day. Read
    * straight off the snapshot (`collectedOn !== scheduled`) — never from the
@@ -252,52 +261,105 @@ function snapshotFor(read: PaneReadDTO | undefined): PaneSnapshotDTO | undefined
   return read?.snapshots.find((snapshot) => snapshot.key === SNAPSHOT_KEY);
 }
 
-/** Whether the question has been asked at all: the `city-waste-page` binding
- * holding real text. An unset one — or one holding something that is not
- * text — is `unbound`, and the pane renders its setup prompt. */
-export function wasteBound(inputs: QuestionInputs): boolean {
-  const binding = inputs.bindings?.find((candidate) => candidate.key === BINDING_KEY);
-  return binding?.value.state === "text" && binding.value.text.trim() !== "";
+/** Whether the question has been asked at all — **four answers, not a
+ * boolean**, for the same reason `BindingValueDTO` is not `string | null`.
+ *
+ *   * `unread` — `bindings` is `null`, so nobody has read the table on this
+ *     device yet. This is *not* "nobody has set the page": reading it as one
+ *     showed every configured device the setup prompt for the whole
+ *     round-trip between mount and the first `bindings` answer.
+ *   * `unusable` — a row exists but holds something that is not text. A gap
+ *     the reader can act on, never an absence.
+ *   * `unset` — no row, or one holding nothing. The only arm that is
+ *     genuinely `unbound`.
+ */
+export type WasteSetup =
+  | { kind: "bound"; page: string }
+  | { kind: "unread" }
+  | { kind: "unusable" }
+  | { kind: "unset" };
+
+export function wasteSetup(inputs: QuestionInputs): WasteSetup {
+  if (inputs.bindings === null) {
+    return { kind: "unread" };
+  }
+  const binding = inputs.bindings.find((candidate) => candidate.key === BINDING_KEY);
+  if (binding === undefined || binding.value.state === "unset") {
+    return { kind: "unset" };
+  }
+  if (binding.value.state !== "text") {
+    return { kind: "unusable" };
+  }
+  const page = binding.value.text.trim();
+  // A row blanked to whitespace is the nearest thing `settings` has to a
+  // DELETE, and reads as never having been set.
+  return page === "" ? { kind: "unset" } : { kind: "bound", page };
 }
 
-/** The whole answered view, or `null` when there is nothing to answer with
- * (no snapshot, a body that could not be read, a zone this build cannot
- * resolve). The caller turns `null` into the right gap. */
-export function wasteView(inputs: QuestionInputs): WasteView | null {
+/** The whole answered view, or the reason there is none. One function, so
+ * the words a gap renders and the decision to be a gap cannot disagree. */
+type WasteResolve = { kind: "view"; view: WasteView } | { kind: "gap"; reason: string };
+
+function resolveWaste(inputs: QuestionInputs): WasteResolve {
   const snapshot = snapshotFor(inputs.paneReads[SOURCE]);
   const parsed = parseWasteBody(snapshot);
   if (parsed.kind !== "ok" || snapshot === undefined) {
-    return null;
+    return {
+      kind: "gap",
+      reason: parsed.kind === "gap" ? parsed.reason : UNRESOLVABLE_DAY,
+    };
   }
   const today = civilTodayInZone(inputs.nowMs, parsed.body.zone);
   const weekday = weekdayInZone(parsed.body.collectedOn, parsed.body.zone);
   const daysAway = today === null ? null : civilDaysBetween(today, parsed.body.collectedOn);
   if (today === null || weekday === null || daysAway === null) {
-    return null;
+    return { kind: "gap", reason: UNRESOLVABLE_DAY };
+  }
+  // **A collection in the past is not an answer.** The poll is daily, so
+  // between the address's midnight and the day's fetch the snapshot still
+  // names the collection that has already happened — comfortably inside the
+  // 26h stale line, so freshness says nothing about it. Rendering it would
+  // put "Trash today" on screen about yesterday; the honest reading is that
+  // this device's schedule is out of date, which is a gap with words.
+  if (daysAway < 0) {
+    return {
+      kind: "gap",
+      reason: `The collection schedule is out of date: it still names ${weekday} ${parsed.body.collectedOn}, which has passed.`,
+    };
   }
   return {
-    body: parsed.body,
-    snapshot,
-    today,
-    daysAway,
-    holiday: parsed.body.collectedOn !== parsed.body.scheduled,
-    weekday,
-    stale: isStaleFreshness(snapshot.freshness, STALE_AFTER_MS),
-    freshness: snapshot.freshness,
+    kind: "view",
+    view: {
+      body: parsed.body,
+      snapshot,
+      today,
+      daysAway,
+      holiday: parsed.body.collectedOn !== parsed.body.scheduled,
+      weekday,
+      stale: isStaleFreshness(snapshot.freshness, STALE_AFTER_MS),
+      freshness: snapshot.freshness,
+    },
   };
+}
+
+/** A body that parses but whose zone or dates cannot be resolved into a civil
+ * day — refused rather than rendered wrong. */
+const UNRESOLVABLE_DAY = "The collection schedule couldn't be resolved to a day.";
+
+/** The whole answered view, or `null` when there is nothing to answer with
+ * (no snapshot, a body that could not be read, a zone this build cannot
+ * resolve, a collection already past). The caller turns `null` into the
+ * right gap — see [`wasteGapReason`] for its words. */
+export function wasteView(inputs: QuestionInputs): WasteView | null {
+  const resolved = resolveWaste(inputs);
+  return resolved.kind === "view" ? resolved.view : null;
 }
 
 /** Why this pane has no answer, in words — read only when [`wasteView`]
  * returned `null`. */
 export function wasteGapReason(inputs: QuestionInputs): string {
-  const read = inputs.paneReads[SOURCE];
-  const parsed = parseWasteBody(snapshotFor(read));
-  if (parsed.kind === "gap") {
-    return parsed.reason;
-  }
-  // A body that parses but whose zone or dates cannot be resolved into a
-  // civil day — refused by `wasteView` rather than rendered wrong.
-  return "The collection schedule couldn't be resolved to a day.";
+  const resolved = resolveWaste(inputs);
+  return resolved.kind === "gap" ? resolved.reason : UNRESOLVABLE_DAY;
 }
 
 /** This question's answer for the shell (#245).
@@ -315,13 +377,31 @@ export function wasteGapReason(inputs: QuestionInputs): string {
  * same fact twice and give the reader something to dismiss that would not
  * change what they have to do. */
 export function wasteAnswer(inputs: QuestionInputs): PaneAnswer {
-  if (!wasteBound(inputs)) {
+  const setup = wasteSetup(inputs);
+  if (setup.kind === "unset") {
     return {
       answerState: "unbound",
       band: "dormant",
       withinBand: null,
       collapsedHeadline: "Not set up",
       icon: [{ kind: "icon", name: "help-circle", label: "not set up" }],
+    };
+  }
+  if (setup.kind !== "bound") {
+    // Neither answered nor unbound: the table has not been read yet, or it
+    // holds something this pane cannot use. Both are gaps — saying "Not set
+    // up" here would claim a fact about the reader's configuration that this
+    // device has not established.
+    return {
+      answerState: "bound-but-unacquired",
+      band: "dormant",
+      withinBand: null,
+      collapsedHeadline: setup.kind === "unread" ? "Checking setup" : "Setup needs a look",
+      icon: [
+        setup.kind === "unread"
+          ? { kind: "icon", name: "cloud-fog", label: "checking setup" }
+          : { kind: "icon", name: "help-circle", label: "setup needs a look" },
+      ],
     };
   }
 
@@ -336,15 +416,17 @@ export function wasteAnswer(inputs: QuestionInputs): PaneAnswer {
     };
   }
 
-  // Milliseconds until the collection day *starts* at the address — negative
-  // on the day itself, which is what sorts today ahead of tomorrow. A real
-  // number in every band, per the contract's own note.
+  // **Epoch ms of the collection day's start at the address**, not a
+  // duration: `withinBand` is an absolute instant by contract, so the sort
+  // reads no clock and the value cannot age between renders. Already in the
+  // past on the day itself, which is what sorts today ahead of tomorrow. A
+  // real number in every band, per the contract's own note.
   const startsAtMs = zonedMidnightMs(view.body.collectedOn, view.body.zone);
 
   return {
     answerState: "answered",
     band: view.holiday || view.daysAway <= 1 ? "imminent" : "dormant",
-    withinBand: startsAtMs === null ? null : startsAtMs - inputs.nowMs,
+    withinBand: startsAtMs,
     collapsedHeadline: wasteCollapsedHeadline(view.daysAway, view.weekday, view.holiday),
     icon: wasteGlyphs(view.body.streams),
   };

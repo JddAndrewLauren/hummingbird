@@ -36,9 +36,9 @@ export type AnswerState = "answered" | "bound-but-unacquired" | "unbound";
  * Deliberately a closed word list rather than a number: the bands are what
  * make two questions with entirely unrelated units — a race in 3 days, a bin
  * collection tonight, a trip in 6 weeks — comparable at all. A pane that
- * needs finer resolution than a band expresses it in `withinBand`, which
- * only ever breaks ties *inside* one band and can never move a pane across
- * one. */
+ * needs finer resolution than a band expresses it in `withinBand` — an
+ * instant, not a unit of its own — which only ever breaks ties *inside* one
+ * band and can never move a pane across one. */
 export type Band = "live" | "imminent" | "near" | "distant" | "dormant";
 
 /** Bands in salience order, most pressing first. The sort reads this; so
@@ -74,9 +74,14 @@ export function boundedGlyphs(glyphs: readonly PaneGlyph[] | undefined): PaneGly
 export interface PaneAnswer {
   answerState: AnswerState;
   band: Band;
-  /** How far into `band` this answer sits, smaller = sooner — the tie-break
-   * *within* a band, in whatever unit the pane finds natural (ms away, days
-   * away). Never compared across bands, so panes need not agree on a unit.
+  /** **Epoch ms of this answer's next relevant moment**, device clock —
+   * smaller = sooner, and the tie-break *within* a band.
+   *
+   * An absolute instant, never a duration, and not a unit each pane picks
+   * for itself: the sort then reads no clock at all, and a captured value
+   * cannot go stale between renders. A pane that subtracted "now" here would
+   * be the second place in the app that does that arithmetic, which is
+   * exactly the drift `Freshness`'s Rust carve-out exists to stop.
    *
    * `null` is "nothing to order by", and sorts after every non-null — the
    * same reading `frontier-order.ts` gives a missing deadline. A pane that

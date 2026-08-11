@@ -1,14 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { QUESTION_ORDER, boundedGlyphs, paneKey, type PaneGlyph, type QuestionDef, type QuestionInputs } from "./contract";
-import { orderPanes } from "./sort";
-import { QUESTIONS, rankPanes, requiredSources } from "./registry";
+import {
+  QUESTION_ORDER,
+  boundedGlyphs,
+  paneKey,
+  type PaneGlyph,
+  type QuestionDef,
+  type QuestionInputs,
+  type StandingQuestion,
+} from "./contract";
+import { QUESTIONS, panesFrom, rankPanes, requiredSources } from "./registry";
 
 // The registry, and the two properties that keep it honest: it names every
 // question exactly once, and it ranks every subject of every question — not
 // just the one-subject case the only shipped pane happens to be.
 
 function emptyInputs(): QuestionInputs {
-  return { bindings: null, paneReads: {}, nowMs: 1_000 };
+  return { bindings: [], paneReads: {}, nowMs: 1_000 };
+}
+
+/** A registry of questions that do not exist in the shipped vocabulary —
+ * the only way to run a multi-subject (or subject-less) question through the
+ * real expansion, since `StandingQuestion` is deliberately closed. */
+function fakeRegistry(
+  questions: Record<string, QuestionDef>,
+): Record<StandingQuestion, QuestionDef> {
+  return questions as unknown as Record<StandingQuestion, QuestionDef>;
 }
 
 describe("QUESTION_ORDER", () => {
@@ -52,11 +68,12 @@ describe("rankPanes", () => {
     }
   });
 
-  it("ranks every subject of a multi-subject question", () => {
-    // No shipped question emits more than one subject yet, so the 0..N
-    // contract is exercised here rather than left to be discovered by the
-    // first question that does.
-    const twoSubjects: QuestionDef = {
+  it("ranks every subject of a multi-subject question, and none of a question with no subjects", () => {
+    // No shipped question emits more than one subject — or none — so the
+    // 0..N contract is exercised here, through `panesFrom`, which is the
+    // expansion `rankPanes` itself runs. Hand-building the panes and sorting
+    // them would test the sort a second time and the expansion not at all.
+    const multi: QuestionDef = {
       label: "Two things",
       sources: [],
       subjects: () => ["b", "a"],
@@ -68,16 +85,18 @@ describe("rankPanes", () => {
       }),
       Expanded: () => null,
     };
-    const panes = ["b", "a"].map((subjectKey) => ({
-      question: "test" as never,
-      subjectKey,
-      paneKey: `test:${subjectKey}`,
-      answer: twoSubjects.answer(subjectKey, emptyInputs()),
-    }));
+    const none: QuestionDef = { ...multi, label: "Nothing yet", subjects: () => [] };
 
-    // Both subjects survive, and `withinBand` orders them rather than the
-    // order `subjects()` happened to return.
-    expect(orderPanes(panes, ["test"]).map((pane) => pane.subjectKey)).toEqual(["a", "b"]);
+    const panes = panesFrom(
+      fakeRegistry({ multi, none }),
+      ["multi", "none"] as unknown as StandingQuestion[],
+      emptyInputs(),
+    );
+
+    // Both of the one question's subjects survive, keyed by subject and
+    // ordered by `withinBand` rather than by the order `subjects()` returned
+    // — and the subject-less question contributes no pane at all.
+    expect(panes.map((pane) => pane.paneKey)).toEqual(["multi:a", "multi:b"]);
   });
 });
 

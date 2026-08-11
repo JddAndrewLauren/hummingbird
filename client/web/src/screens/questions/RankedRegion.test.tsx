@@ -151,7 +151,8 @@ describe("RankedRegion", () => {
 
   it("re-samples at once when a pane's answer state changes, without waiting for a cycle", () => {
     // A fresh mount whose bindings land a moment later must not sit in the
-    // wrong answer state for a whole minute.
+    // wrong answer state for a whole minute — and while the table is unread
+    // it says so, rather than telling a configured reader to set it up.
     const view = render(
       <RankedRegion
         inputs={{ bindings: null, paneReads: {} }}
@@ -160,7 +161,8 @@ describe("RankedRegion", () => {
         onScreen={() => {}}
       />,
     );
-    expect(screen.getByText("Not set up")).toBeTruthy();
+    expect(screen.getByText("Checking setup")).toBeTruthy();
+    expect(screen.queryByText("Not set up")).toBeNull();
 
     view.rerender(
       <RankedRegion
@@ -218,6 +220,43 @@ describe("RankedRegion", () => {
     expect(screen.getByText("No answer yet")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { expanded: false }));
     expect(screen.getByText(/`body` is missing/)).toBeTruthy();
+  });
+
+  it("tells an unread bindings table apart from an unset binding, on screen", () => {
+    render(
+      <RankedRegion
+        inputs={{ bindings: null, paneReads: {} }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Checking your setup")).toBeTruthy();
+    // The one thing it must not do: tell someone who has already configured
+    // this to configure it.
+    expect(screen.queryByText("Open Settings")).toBeNull();
+  });
+
+  it("offers Settings when the binding exists but cannot be read", () => {
+    const onScreen = vi.fn();
+    render(
+      <RankedRegion
+        inputs={{
+          bindings: [{ key: BINDING_KEY, known: true, pending: false, value: { state: "other", raw: "7" } }],
+          paneReads: {},
+        }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        onScreen={onScreen}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("That collection page can't be read")).toBeTruthy();
+    fireEvent.click(screen.getByText("Open Settings"));
+    expect(onScreen).toHaveBeenCalledWith("settings");
   });
 
   it("sorts an unbound question last and offers its setup prompt", () => {

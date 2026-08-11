@@ -38,16 +38,22 @@ export function requiredSources(): string[] {
   return sources;
 }
 
-/** Every question, every subject, ranked (ADR-0015's cross-pane order).
+/** The 0..N expansion itself: every question in `order`, every subject it
+ * currently has, each with its answer — ranked.
  *
- * Pure and clock-free beyond the `nowMs` on `inputs` — which is what lets
- * `RankedRegion` capture one ranking in state and re-sample it on its own
- * terms, and what lets the demo fixture rank a hand-authored world through
- * the very same code the real region uses. */
-export function rankPanes(inputs: QuestionInputs): RankedPane[] {
+ * Takes its registry rather than reading the module's, for one reason: no
+ * shipped question emits more than one subject (or none), so the only way
+ * the expansion is exercised at all is a test registry running through this
+ * exact code. A test that hand-built panes and called `orderPanes` would
+ * leave the loop below — the thing the 0..N contract is about — untested. */
+export function panesFrom(
+  questions: Record<StandingQuestion, QuestionDef>,
+  order: readonly StandingQuestion[],
+  inputs: QuestionInputs,
+): RankedPane[] {
   const panes: RankedPane[] = [];
-  for (const question of QUESTION_ORDER) {
-    const definition = QUESTIONS[question];
+  for (const question of order) {
+    const definition = questions[question];
     for (const subjectKey of definition.subjects(inputs)) {
       panes.push({
         question,
@@ -57,5 +63,15 @@ export function rankPanes(inputs: QuestionInputs): RankedPane[] {
       });
     }
   }
-  return orderPanes(panes, QUESTION_ORDER);
+  return orderPanes(panes, order);
+}
+
+/** Every question, every subject, ranked (ADR-0015's cross-pane order).
+ *
+ * Pure and clock-free beyond the `nowMs` on `inputs` — which is what lets
+ * `RankedRegion` capture one ranking in state and re-sample it on its own
+ * terms, and what lets the demo fixture rank a hand-authored world through
+ * the very same code the real region uses. */
+export function rankPanes(inputs: QuestionInputs): RankedPane[] {
+  return panesFrom(QUESTIONS, QUESTION_ORDER, inputs);
 }

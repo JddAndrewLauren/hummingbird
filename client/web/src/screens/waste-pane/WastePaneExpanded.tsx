@@ -3,7 +3,7 @@ import { Button } from "../../components/core/Button";
 import { Card } from "../../components/core/Card";
 import { EmptyState } from "../../components/feedback/EmptyState";
 import type { QuestionInputs } from "../questions/contract";
-import { BIN, orderedStreams, wasteBound, wasteGapReason, wasteHeadline, wasteView } from "./waste";
+import { BIN, orderedStreams, wasteGapReason, wasteHeadline, wasteSetup, wasteView } from "./waste";
 import type { Stream } from "./waste";
 
 // The which-cans pane's own expanded rendering — the *only* part of this
@@ -47,17 +47,41 @@ export function WastePaneExpanded({
   inputs: QuestionInputs;
   onSetupNavigate?: () => void;
 }) {
-  if (!wasteBound(inputs)) {
-    // A question nobody has answered yet is setup, and the honest thing to
-    // do with setup is offer the one action that resolves it.
+  const setup = wasteSetup(inputs);
+  if (setup.kind === "unread") {
+    // The bindings table has not answered yet. Not the setup prompt: this
+    // device does not yet know whether the question was ever asked, and
+    // saying "set this up" to someone who already did is a wrong answer, not
+    // a slow one.
+    return (
+      <Card padding="var(--space-3)">
+        <EmptyState
+          compact
+          icon="cloud-fog"
+          headingLevel={3}
+          title="Checking your setup"
+          body="Reading this device's settings."
+        />
+      </Card>
+    );
+  }
+  if (setup.kind !== "bound") {
+    // A question nobody has answered yet — or one whose answer this build
+    // cannot use — is setup, and the honest thing to do with setup is offer
+    // the one action that resolves it.
+    const unusable = setup.kind === "unusable";
     return (
       <Card padding="var(--space-3)">
         <EmptyState
           compact
           icon="help-circle"
           headingLevel={3}
-          title="Which cans go out?"
-          body="Set the council page your collection schedule is read from."
+          title={unusable ? "That collection page can't be read" : "Which cans go out?"}
+          body={
+            unusable
+              ? "The collection page setting holds something that isn't text. Set it again."
+              : "Set the council page your collection schedule is read from."
+          }
           action={
             onSetupNavigate ? (
               <Button variant="secondary" iconLeft="settings" onClick={onSetupNavigate}>

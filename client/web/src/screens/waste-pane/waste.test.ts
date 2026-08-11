@@ -10,6 +10,7 @@ import {
   parseWasteBody,
   wasteAnswer,
   wasteCollapsedHeadline,
+  wasteGapReason,
   wasteGlyphs,
   wasteHeadline,
   wasteView,
@@ -172,6 +173,14 @@ describe("the headlines", () => {
     expect(wasteHeadline(1, "Tuesday", true)).toBe("Trash Tuesday");
   });
 
+  it("says 'today' only about today, never about a day already gone", () => {
+    // `<= 0` here is what rendered yesterday's collection as today's; the
+    // pane refuses a past collection outright, and these read as equality so
+    // a future caller cannot reintroduce it.
+    expect(wasteHeadline(-1, "Sunday", false)).not.toMatch(/today/i);
+    expect(wasteCollapsedHeadline(-1, "Sunday", false)).not.toMatch(/today/i);
+  });
+
   it("collapses to one line, and a dormant pane's line names the day and the distance", () => {
     expect(wasteCollapsedHeadline(0, "Monday", false)).toBe("Trash today");
     expect(wasteCollapsedHeadline(1, "Tuesday", false)).toBe("Trash tonight");
@@ -201,9 +210,28 @@ describe("wasteAnswer", () => {
     expect(answer.collapsedHeadline).toBe("Not set up");
   });
 
-  it("is unbound when the binding holds something that is not text", () => {
+  it("is a gap, not 'not set up', when the binding holds something that is not text", () => {
+    // A row that exists but cannot be used is something the reader can act
+    // on. "Not set up" would describe a state this device can see is false.
     const answer = wasteAnswer(
       inputs({ bindings: [{ ...boundBinding(), value: { state: "other", raw: "7" } }] }),
+    );
+    expect(answer.answerState).toBe("bound-but-unacquired");
+    expect(answer.collapsedHeadline).toBe("Setup needs a look");
+  });
+
+  it("is a gap, not 'not set up', before the bindings table has been read at all", () => {
+    // `bindings: null` is every device's state for the round-trip between
+    // mount and the first `bindings` answer — reading it as unbound showed a
+    // configured reader the setup prompt on every single load.
+    const answer = wasteAnswer(inputs({ bindings: null }));
+    expect(answer.answerState).toBe("bound-but-unacquired");
+    expect(answer.collapsedHeadline).toBe("Checking setup");
+  });
+
+  it("reads a blanked binding as never set — `settings` has no DELETE", () => {
+    const answer = wasteAnswer(
+      inputs({ bindings: [{ ...boundBinding(), value: { state: "text", text: "   " } }] }),
     );
     expect(answer.answerState).toBe("unbound");
   });
@@ -224,9 +252,9 @@ describe("wasteAnswer", () => {
     const answer = wasteAnswer(inputs());
     expect(answer.answerState).toBe("answered");
     expect(answer.band).toBe("dormant");
-    expect(answer.withinBand).toBe(
-      Date.parse("2026-08-17T07:00:00Z") - NOW,
-    );
+    // An absolute instant — midnight at the address — never a duration: the
+    // sort reads no clock, and the value cannot age between renders.
+    expect(answer.withinBand).toBe(Date.parse("2026-08-17T07:00:00Z"));
     expect(answer.collapsedHeadline).toBe("Monday · 7d");
     expect(answer.icon).toHaveLength(2);
   });
@@ -245,9 +273,9 @@ describe("wasteAnswer", () => {
       })]) } }),
     );
     expect(today.band).toBe("imminent");
-    // Negative on the day itself — which is what sorts today ahead of
+    // Already past on the day itself — which is what sorts today ahead of
     // tomorrow inside the band.
-    expect(today.withinBand).toBeLessThan(0);
+    expect(today.withinBand).toBeLessThan(NOW);
 
     // Four days out, but the day has moved: awake all week, because the
     // pane is the only signal a holiday ever gets.
@@ -302,6 +330,33 @@ describe("wasteAnswer", () => {
     expect(view?.today).toBe("2026-08-10");
     expect(view?.daysAway).toBe(1);
     expect(view?.weekday).toBe("Tuesday");
+  });
+
+  it("never presents a collection that has already happened as today's", () => {
+    // The window this closes is ordinary, not exotic: the poll is daily, so
+    // from the address's midnight until that day's fetch the snapshot still
+    // names yesterday's collection — and at ~9 hours old it is nowhere near
+    // the 26h stale line, so freshness says nothing about it.
+    const yesterday = read([
+      snapshot({
+        envelope: {
+          kind: "ok",
+          schema: SOURCE,
+          polledEveryMs: 86_400_000,
+          body: body({ scheduled: "2026-08-09", collectedOn: "2026-08-09" }),
+        },
+      }),
+    ]);
+    const stale = inputs({ paneReads: { [SOURCE]: yesterday } });
+
+    expect(wasteView(stale)).toBeNull();
+    expect(wasteGapReason(stale)).toMatch(/out of date.*Sunday 2026-08-09.*passed/);
+
+    const answer = wasteAnswer(stale);
+    expect(answer.answerState).toBe("bound-but-unacquired");
+    // Not imminent, and above all not "Trash today".
+    expect(answer.band).toBe("dormant");
+    expect(answer.collapsedHeadline).toBe("No answer yet");
   });
 
   it("marks an answer stale past the threshold without losing it", () => {
