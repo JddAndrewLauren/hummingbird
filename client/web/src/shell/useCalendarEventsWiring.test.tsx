@@ -1,32 +1,30 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
+import * as registry from "../screens/questions/registry";
 import type { CoreStatus } from "../store/store";
 import type { WorkerLike } from "../store/worker-client";
 import { render } from "../test/component";
-import { type CalendarEventsRequest, useCalendarEventsWiring } from "./useCalendarEventsWiring";
+import { useCalendarEventsWiring } from "./useCalendarEventsWiring";
 
 // Mounted rather than called: a hook that is exported, unit-tested and never
 // wired compiles clean and does nothing, which is the failure this app's
 // component tests exist to catch (same rationale `usePaneReadsWiring.test.tsx`
-// documents for its own hook).
+// documents for its own hook). Requests are read from the registry, not a
+// prop — `requiredCalendarRequests` is stubbed per test so the general
+// request/re-request behaviour stays exercised even though the real
+// registry answers empty today (#122's job).
 
 function fakeWorker(): WorkerLike & { postMessage: ReturnType<typeof vi.fn> } {
   return { onmessage: null, postMessage: vi.fn() };
 }
 
-function Probe({
-  worker,
-  status,
-  syncOutcomeSeq,
-  requests,
-}: {
+function Probe({ worker, status, syncOutcomeSeq }: {
   worker: WorkerLike;
   status: CoreStatus;
   syncOutcomeSeq: number;
-  requests: readonly CalendarEventsRequest[];
 }) {
-  useCalendarEventsWiring(worker, status, syncOutcomeSeq, requests);
+  useCalendarEventsWiring(worker, status, syncOutcomeSeq);
   return null;
 }
 
@@ -37,64 +35,65 @@ function requestedKeys(worker: ReturnType<typeof fakeWorker>): string[] {
     .map((message) => message.key ?? "");
 }
 
-const WEEKEND: CalendarEventsRequest = { key: "weekend", startMs: 1_000, endMs: 2_000 };
+const WEEKEND = { key: "weekend", startMs: 1_000, endMs: 2_000 };
 
 describe("useCalendarEventsWiring", () => {
   it("asks nothing while the core is still loading", () => {
+    vi.spyOn(registry, "requiredCalendarRequests").mockReturnValue([WEEKEND]);
     const worker = fakeWorker();
-    render(<Probe worker={worker} status="loading" syncOutcomeSeq={0} requests={[WEEKEND]} />);
+    render(<Probe worker={worker} status="loading" syncOutcomeSeq={0} />);
+    expect(worker.postMessage).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it("asks nothing when the registry has no requests to make — today's real, empty steady state", () => {
+    // No mock: exercises the actual `requiredCalendarRequests()`, which
+    // returns `[]` until #122 registers a calendar-lane question.
+    const worker = fakeWorker();
+    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
     expect(worker.postMessage).not.toHaveBeenCalled();
   });
 
-  it("asks nothing when the caller has no requests to make", () => {
-    // #267 builds the seam, not a standing question — an empty request list
-    // is the correct steady state before any pane registers one.
+  it("requests every interval the registry declares once the core is ready", () => {
+    vi.spyOn(registry, "requiredCalendarRequests").mockReturnValue([WEEKEND]);
     const worker = fakeWorker();
-    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} requests={[]} />);
-    expect(worker.postMessage).not.toHaveBeenCalled();
-  });
-
-  it("requests every caller-supplied interval once the core is ready", () => {
-    const worker = fakeWorker();
-    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} requests={[WEEKEND]} />);
+    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
     expect(requestedKeys(worker)).toEqual(["weekend"]);
+    vi.restoreAllMocks();
   });
 
   it("re-requests on every completed cycle", () => {
+    vi.spyOn(registry, "requiredCalendarRequests").mockReturnValue([WEEKEND]);
     const worker = fakeWorker();
-    const view = render(
-      <Probe worker={worker} status="ready" syncOutcomeSeq={0} requests={[WEEKEND]} />,
-    );
-    view.rerender(<Probe worker={worker} status="ready" syncOutcomeSeq={1} requests={[WEEKEND]} />);
+    const view = render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
+    view.rerender(<Probe worker={worker} status="ready" syncOutcomeSeq={1} />);
     expect(requestedKeys(worker)).toEqual(["weekend", "weekend"]);
+    vi.restoreAllMocks();
   });
 
-  it("does not re-request on a render that changed nothing, even with a fresh array reference", () => {
+  it("does not re-request on a render that changed nothing, even with a fresh array reference each call", () => {
+    // A brand-new array with an equal value — the common case for a
+    // registry deriving the list fresh each call.
+    vi.spyOn(registry, "requiredCalendarRequests").mockImplementation(() => [
+      { key: "weekend", startMs: 1_000, endMs: 2_000 },
+    ]);
     const worker = fakeWorker();
-    const view = render(
-      <Probe worker={worker} status="ready" syncOutcomeSeq={3} requests={[WEEKEND]} />,
-    );
-    // A brand-new array with an equal value — the common case for a caller
-    // deriving the interval fresh each render.
-    view.rerender(
-      <Probe
-        worker={worker}
-        status="ready"
-        syncOutcomeSeq={3}
-        requests={[{ key: "weekend", startMs: 1_000, endMs: 2_000 }]}
-      />,
-    );
+    const view = render(<Probe worker={worker} status="ready" syncOutcomeSeq={3} />);
+    view.rerender(<Probe worker={worker} status="ready" syncOutcomeSeq={3} />);
     expect(requestedKeys(worker)).toEqual(["weekend"]);
+    vi.restoreAllMocks();
   });
 
   it("adds no interval or timeout of its own", () => {
+    vi.spyOn(registry, "requiredCalendarRequests").mockReturnValue([WEEKEND]);
     const setIntervalSpy = vi.spyOn(window, "setInterval");
     const setTimeoutSpy = vi.spyOn(window, "setTimeout");
     const worker = fakeWorker();
-    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} requests={[WEEKEND]} />);
+    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
     expect(setIntervalSpy).not.toHaveBeenCalled();
     expect(setTimeoutSpy).not.toHaveBeenCalled();
     setIntervalSpy.mockRestore();
     setTimeoutSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 });

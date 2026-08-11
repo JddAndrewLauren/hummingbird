@@ -8,7 +8,7 @@ import {
   type QuestionInputs,
   type StandingQuestion,
 } from "./contract";
-import { QUESTIONS, panesFrom, rankPanes, requiredSources } from "./registry";
+import { QUESTIONS, panesFrom, rankPanes, requiredCalendarRequests, requiredSources } from "./registry";
 
 // The registry, and the two properties that keep it honest: it names every
 // question exactly once, and it ranks every subject of every question — not
@@ -49,6 +49,15 @@ describe("requiredSources", () => {
         expect(sources).toContain(source);
       }
     }
+  });
+});
+
+describe("requiredCalendarRequests", () => {
+  it("answers empty today — no shipped question declares a calendar-arm request yet", () => {
+    // #122's job: the day a question does, this must pick it up without
+    // itself changing, the same guarantee `requiredSources` gives the
+    // snapshot arm.
+    expect(requiredCalendarRequests()).toEqual([]);
   });
 });
 

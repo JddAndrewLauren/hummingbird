@@ -56,7 +56,12 @@ export interface CalendarListEntryDTO {
  * device's own, say) shifts the whole event — the exact "India in 394 days"
  * defect ADR-0015 records on #121. A consumer recovers the civil date with
  * `Intl.DateTimeFormat` in `timeZone`, never by flattening to a device-local
- * day here. */
+ * day here — **except `timeZone` can be `""`** (`EventTime`'s own doc: a
+ * timed boundary whose provider reported no zone at all, at the calendar or
+ * the event), and `Intl.DateTimeFormat` throws a `RangeError` on an empty
+ * string rather than answering "unknown". Treat `""` as a malformed
+ * boundary, the way `waste-pane/zoned-day.ts` treats an unusable zone,
+ * never pass it to `Intl.DateTimeFormat` directly. */
 export interface CalendarEventTimeDTO {
   instantMs: number;
   timeZone: string;

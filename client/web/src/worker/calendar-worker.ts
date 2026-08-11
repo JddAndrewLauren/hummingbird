@@ -4,10 +4,10 @@ import type {
   CalendarReadDTO,
   CalendarWorkerRequest,
   CredentialEventDTO,
-  FreshnessDTO,
   PollOutcomeName,
   WorkerResponse,
 } from "../store/protocol";
+import { mapFreshness, type RawFreshness } from "./freshness-wire";
 import { createSerialQueue } from "./serial-queue";
 
 // The worker's half of issue #73's calendar wiring, kept free of the wasm
@@ -65,10 +65,6 @@ interface RawCalendarEvent {
   html_link: string | null;
 }
 
-type RawFreshness =
-  | { state: "unknown" }
-  | { state: "age"; age_ms: number; declared_cadence_ms: number | null };
-
 interface RawCalendarEventsResponse {
   kind: "not_read" | "read" | "busy";
   events: RawCalendarEvent[];
@@ -94,12 +90,6 @@ function mapCalendarEvent(raw: RawCalendarEvent): CalendarEventDTO {
     providerUpdatedAtMs: raw.provider_updated_at_ms,
     htmlLink: raw.html_link,
   };
-}
-
-function mapFreshness(raw: RawFreshness): FreshnessDTO {
-  return raw.state === "unknown"
-    ? { kind: "unknown" }
-    : { kind: "age", ageMs: raw.age_ms, declaredCadenceMs: raw.declared_cadence_ms };
 }
 
 /** `raw.kind === "busy"` is never passed here — the caller drops it before

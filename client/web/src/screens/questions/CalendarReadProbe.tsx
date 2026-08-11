@@ -10,7 +10,13 @@ import type { QuestionInputs } from "./contract";
 // mounted by `RankedRegion`, and it renders nothing beyond one plain line of
 // text. #122 (the weekend-plans pane) is the real, registered consumer this
 // arm exists for; this component's only job is to be a genuine caller of it
-// today, proven by `CalendarReadProbe.test.tsx`.
+// today, proven by `CalendarReadProbe.test.tsx` and by
+// `NowScreen.test.tsx`'s "the calendar-reads arm (#267)" suite.
+//
+// DELETE THIS FILE, and the two test mounts above, once #122 registers the
+// real calendar-lane question — the same fold-in the `prototype-*-pane/`
+// directories' own headers mark for themselves. Its only job is to keep the
+// seam demonstrably wired until then.
 
 /** The collapsed-to-one-line description of one calendar-events read —
  * pure, so the three states (`"not requested yet"` / `"not_read"` /

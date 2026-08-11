@@ -12,6 +12,7 @@ import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
 import { syncStatusLabel } from "./shell/sync-status";
+import { useCalendarEventsWiring } from "./shell/useCalendarEventsWiring";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
@@ -99,6 +100,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
+  // #267: the calendar arm's exact twin — every interval the registered
+  // standing questions need from the calendar mirror. Empty today (no
+  // shipped question reads it yet; #122's job), but a real caller, which is
+  // what makes `getCalendarEvents` reachable at all rather than an exported,
+  // unit-tested, never-wired hook.
+  useCalendarEventsWiring(worker, status, task.syncOutcomeSeq);
 
   // #110/S12's "always-present ... plus a global hotkey that focuses it"
   // (#98, restated on #110): a counter, not a boolean — `TriageScreen`'s own
@@ -222,6 +229,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onOpenItem={handleOpenItem}
               onCloseItemDetail={handleCloseItemDetail}
               onAct={handleAct}
+              calendarReads={calendar.eventReads}
             />
           )}
           {screen === "triage" && (

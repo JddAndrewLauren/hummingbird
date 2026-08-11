@@ -154,10 +154,11 @@ impl CalendarHostCore {
     ///
     /// **Reuses the core's own query and predicate, never a second copy.**
     /// [`events_overlapping_interval`] already filters cancelled instances
-    /// (via [`hummingbird_core::calendar::is_actionable`]) and returns them
-    /// in its own deterministic order; this method neither re-filters nor
-    /// re-sorts. The interval is the caller's, never sampled here — the
-    /// query's existing determinism is preserved exactly.
+    /// (via `hummingbird_core::calendar::is_actionable`, `pub(crate)` there
+    /// and so not linkable from this crate) and returns them in its own
+    /// deterministic order; this method neither re-filters nor re-sorts.
+    /// The interval is the caller's, never sampled here — the query's
+    /// existing determinism is preserved exactly.
     ///
     /// `"not_read"` vs `"read"` with an empty `events` is the whole reason
     /// this returns [`CalendarEventsResponse`] rather than a bare
@@ -341,6 +342,70 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, r#"{"kind":"not_read","events":[],"freshness":null}"#);
+    }
+
+    #[test]
+    fn a_full_read_serializes_every_key_calendar_worker_ts_names_in_raw_calendar_event() {
+        // Nothing mechanical connects this serde output to
+        // `calendar-worker.ts`'s hand-written `RawCalendarEvent` /
+        // `RawFreshness` — a rename on either side compiles and passes on
+        // both, the exact gap `server/city-waste/tests/contract.rs` closes
+        // for its own body. This pins the literal snake_case keys against
+        // the TypeScript's own text, for a `"read"` carrying one timed and
+        // one all-day event (the `"not_read"` case is already pinned above).
+        let timed = timed_event("morning", 1_000, 2_000);
+        let all_day = EventRecord {
+            all_day: true,
+            start: EventTime::all_day(86_400_000, "Pacific/Auckland"),
+            end: EventTime::all_day(172_800_000, "Pacific/Auckland"),
+            ..timed_event("holiday", 86_400_000, 172_800_000)
+        };
+        let response = CalendarEventsResponse {
+            kind: "read",
+            events: vec![timed, all_day],
+            freshness: Some(Freshness::Age {
+                age_ms: 60_000,
+                declared_cadence_ms: Some(CALENDAR_POLL_INTERVAL_MS),
+            }),
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+
+        for event in json["events"].as_array().unwrap() {
+            for key in [
+                "provider_event_id",
+                "calendar_id",
+                "title",
+                "start",
+                "end",
+                "all_day",
+                "recurrence_id",
+                "location",
+                "organizer",
+                "status",
+                "provider_updated_at_ms",
+                "html_link",
+            ] {
+                assert!(event.get(key).is_some(), "event missing key {key:?}: {event}");
+            }
+            for boundary in [&event["start"], &event["end"]] {
+                for key in ["instant_ms", "time_zone"] {
+                    assert!(
+                        boundary.get(key).is_some(),
+                        "boundary missing key {key:?}: {boundary}"
+                    );
+                }
+            }
+        }
+
+        assert_eq!(json["freshness"]["state"], "age");
+        for key in ["age_ms", "declared_cadence_ms"] {
+            assert!(
+                json["freshness"].get(key).is_some(),
+                "freshness missing key {key:?}: {}",
+                json["freshness"]
+            );
+        }
     }
 
     #[tokio::test]
