@@ -38,7 +38,7 @@ pub use event::{
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
 };
 pub use item::{Energy, Item, Size, Stage};
-pub use live::is_live;
+pub use live::{is_live, settled_at};
 pub use project::{Fog, Project, Route};
 pub use rule::{Condition, Delivery, Platform, PushTarget, Rule, Tier};
 pub use severity::{higher_severity, severity_rank, SEVERITIES};
