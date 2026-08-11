@@ -7,7 +7,7 @@ import type { CoreStatus } from "../store/store";
 
 export function coreStatusLabel(status: CoreStatus, apiVersion: number | null): string {
   if (status === "ready") {
-    return apiVersion === null ? "core ready" : `core ready · api v${apiVersion}`;
+    return apiVersion === null ? "core ready" : `api v${apiVersion} · core ready`;
   }
   return status === "error" ? "core failed" : "starting core…";
 }

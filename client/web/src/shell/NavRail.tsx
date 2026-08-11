@@ -42,6 +42,9 @@ export interface NavRailProps {
    * `rail-collapse.ts`). */
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** The mark is the way home: it selects Now and refreshes, the same two
+   * things the user would otherwise do by hand. */
+  onHome: () => void;
 }
 
 /** Collapsed width: one 36px control row centred inside the same
@@ -59,6 +62,7 @@ export function NavRail({
   onToggleTheme,
   collapsed,
   onToggleCollapsed,
+  onHome,
 }: NavRailProps) {
   return (
     <nav
@@ -78,47 +82,86 @@ export function NavRail({
     >
       {/* Mark + wordmark, as the design system's own NavRail draws it: the app
           icon at 26px, squircled with --radius-icon-app, and no plate or
-          border of its own ("never on a coloured plate of its own"). The mark
-          is decorative — the wordmark beside it already names the app, so
-          alt="" keeps screen readers from announcing the brand twice.
-          See design/brand/README.md for where the artwork comes from. */}
+          border of its own ("never on a coloured plate of its own").
+          See design/brand/README.md for where the artwork comes from.
+          The collapse control sits here rather than in the footer: it acts on
+          the whole rail, so it belongs beside the rail's own title. */}
       <div
         style={{
           display: "flex",
+          flexDirection: collapsed ? "column" : "row",
           alignItems: "center",
           gap: "var(--space-4)",
           padding: collapsed ? 0 : "0 var(--space-3)",
           justifyContent: collapsed ? "center" : "flex-start",
         }}
       >
-        <img
-          src={theme === "dark" ? markDark1x : markLight1x}
-          // Raster art, so hidpi needs real pixels rather than an upscale.
-          srcSet={
-            theme === "dark"
-              ? `${markDark1x} 1x, ${markDark2x} 2x, ${markDark3x} 3x`
-              : `${markLight1x} 1x, ${markLight2x} 2x, ${markLight3x} 3x`
-          }
-          alt=""
-          width={26}
-          height={26}
+        {/* The mark and the wordmark are one control — the way home. The img
+            keeps alt="" because the button is what carries the name. */}
+        <button
+          type="button"
+          onClick={onHome}
+          aria-label="hummingbird — go to Now and refresh"
+          title="Go to Now and refresh"
           style={{
-            display: "block",
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-4)",
+            flex: collapsed ? "0 0 auto" : 1,
+            minWidth: 0,
+            padding: 0,
+            background: "transparent",
+            border: "1px solid transparent",
+            borderRadius: "var(--radius-control)",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <img
+            src={theme === "dark" ? markDark1x : markLight1x}
+            // Raster art, so hidpi needs real pixels rather than an upscale.
+            srcSet={
+              theme === "dark"
+                ? `${markDark1x} 1x, ${markDark2x} 2x, ${markDark3x} 3x`
+                : `${markLight1x} 1x, ${markLight2x} 2x, ${markLight3x} 3x`
+            }
+            alt=""
+            width={26}
+            height={26}
+            style={{
+              display: "block",
+              flex: "0 0 auto",
+              borderRadius: "var(--radius-icon-app)",
+            }}
+          />
+          {collapsed ? null : (
+            <span
+              style={{
+                font: "var(--weight-bold) 18px/1 var(--font-display)",
+                letterSpacing: "-0.03em",
+                color: "var(--text-primary)",
+              }}
+            >
+              hummingbird
+            </span>
+          )}
+        </button>
+        {/* One chevron, rotated — `TriageRow`'s own idiom: pointing away
+            from the content to collapse, toward it to expand, and the label
+            says it in words. */}
+        <IconButton
+          icon="chevron-down"
+          label={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
+          size="sm"
+          onClick={onToggleCollapsed}
+          style={{
             flex: "0 0 auto",
-            borderRadius: "var(--radius-icon-app)",
+            width: 30,
+            height: 30,
+            transform: collapsed ? "rotate(-90deg)" : "rotate(90deg)",
+            transition: "transform var(--dur-base) var(--ease-flit)",
           }}
         />
-        {collapsed ? null : (
-          <span
-            style={{
-              font: "var(--weight-bold) 18px/1 var(--font-display)",
-              letterSpacing: "-0.03em",
-              color: "var(--text-primary)",
-            }}
-          >
-            hummingbird
-          </span>
-        )}
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
@@ -194,37 +237,33 @@ export function NavRail({
           padding: collapsed ? 0 : "0 var(--space-3)",
         }}
       >
-        {collapsed ? null : (
-          <span className="hb-meta" style={{ flex: 1 }}>
-            {statusLabel}
-          </span>
-        )}
-        {/* The build version, deliberately its own span rather than folded
+        {/* Two meta lines, stacked: the core's state (which carries the api
+            version) over the build version. Side by side at 11px they read as
+            one run-on string; stacked, each is its own fact.
+            The build version is deliberately its own span rather than folded
             into `coreStatusLabel`: it is known even when the core failed or
             is still starting, whereas that function's other two branches
             say nothing at all. */}
-        {collapsed ? null : <span className="hb-meta">{`v${APP_VERSION}`}</span>}
+        {collapsed ? null : (
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--space-1)",
+            }}
+          >
+            <span className="hb-meta">{statusLabel}</span>
+            <span className="hb-meta">{`v${APP_VERSION}`}</span>
+          </div>
+        )}
         <IconButton
           icon={theme === "dark" ? "sun" : "moon"}
           label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           size="sm"
           onClick={onToggleTheme}
-          style={{ width: 30, height: 30 }}
-        />
-        {/* One chevron, rotated — `TriageRow`'s own idiom: pointing away
-            from the content to collapse, toward it to expand, and the label
-            says it in words. */}
-        <IconButton
-          icon="chevron-down"
-          label={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
-          size="sm"
-          onClick={onToggleCollapsed}
-          style={{
-            width: 30,
-            height: 30,
-            transform: collapsed ? "rotate(-90deg)" : "rotate(90deg)",
-            transition: "transform var(--dur-base) var(--ease-flit)",
-          }}
+          style={{ flex: "0 0 auto", width: 30, height: 30 }}
         />
       </div>
     </nav>

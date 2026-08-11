@@ -14,19 +14,21 @@ import { NavRail } from "./NavRail";
 function renderRail(collapsed: boolean) {
   const onScreen = vi.fn();
   const onToggleCollapsed = vi.fn();
+  const onHome = vi.fn();
   render(
     <NavRail
       screen="now"
       onScreen={onScreen}
       counts={{ triage: 4, alerts: 3 }}
-      statusLabel="core ready · api v1"
+      statusLabel="api v1 · core ready"
       theme="light"
       onToggleTheme={() => {}}
       collapsed={collapsed}
       onToggleCollapsed={onToggleCollapsed}
+      onHome={onHome}
     />,
   );
-  return { onScreen, onToggleCollapsed };
+  return { onScreen, onToggleCollapsed, onHome };
 }
 
 describe("NavRail — collapsed", () => {
@@ -35,7 +37,7 @@ describe("NavRail — collapsed", () => {
 
     expect(screen.queryByText("Triage")).toBeNull();
     expect(screen.queryByText("hummingbird")).toBeNull();
-    expect(screen.queryByText("core ready · api v1")).toBeNull();
+    expect(screen.queryByText("api v1 · core ready")).toBeNull();
     expect(screen.queryByText(`v${APP_VERSION}`)).toBeNull();
 
     // Named via aria-label, still navigating.
@@ -53,7 +55,7 @@ describe("NavRail — collapsed", () => {
 
     expect(screen.getByText("Triage")).toBeDefined();
     expect(screen.getByText("hummingbird")).toBeDefined();
-    expect(screen.getByText("core ready · api v1")).toBeDefined();
+    expect(screen.getByText("api v1 · core ready")).toBeDefined();
     // The build version is a module constant, not a prop — this is the only
     // gate that it actually reaches the footer.
     expect(screen.getByText(`v${APP_VERSION}`)).toBeDefined();
@@ -66,5 +68,13 @@ describe("NavRail — collapsed", () => {
     const { onScreen } = renderRail(true);
     fireEvent.click(screen.getByRole("button", { name: "Ledger" }));
     expect(onScreen).toHaveBeenCalledWith("ledger");
+  });
+
+  // The mark is the way home in both forms — collapsed it is the only thing
+  // left of the wordmark, so it must stay a control.
+  it.each([true, false])("the mark goes home, collapsed=%s", (collapsed) => {
+    const { onHome } = renderRail(collapsed);
+    fireEvent.click(screen.getByRole("button", { name: "hummingbird — go to Now and refresh" }));
+    expect(onHome).toHaveBeenCalledTimes(1);
   });
 });
