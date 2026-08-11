@@ -111,6 +111,13 @@ use crate::sql::{Row, Sql, SqlError};
 /// minutes late"). A `const`, not a buried literal at the `set_alarm` call
 /// site — the shim reads it, and so can any future consumer that needs to
 /// compare a duration against it.
+///
+/// **Duplicated** as `client/ffi-web/src/task_host.rs`'s own
+/// `ALARM_INTERVAL_MS` (`KindRegistryResponse::alarm_interval_ms`), since
+/// that crate builds `wasm32-unknown-unknown` and this one (rusqlite,
+/// `std::fs` fixtures) is not a dependency it can carry. If this value ever
+/// changes, that copy must change with it — there is no mechanical guard
+/// against the drift today.
 pub const ALARM_INTERVAL_MS: i64 = 15 * 60 * 1000;
 
 /// One matching rule against one item, resolved all the way through

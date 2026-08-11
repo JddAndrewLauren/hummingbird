@@ -26,6 +26,7 @@ const SCREENS = [
   { name: "triage", nav: "Triage" },
   { name: "routes", nav: "Routes" },
   { name: "alerts", nav: "Alerts" },
+  { name: "rules", nav: "Rules" },
   { name: "settings", nav: "Settings" },
 ] as const;
 
@@ -50,6 +51,17 @@ async function show(page: Page, nav: string) {
   await page.getByRole("navigation").getByRole("button", { name: nav }).click();
 }
 
+/** The Rules screen's own capture prep: open the first rule card's editor
+ * so condition rows and the backtest panel — otherwise hidden behind an
+ * "Edit" click (#140 review: backtest moved into the draft editor, so it
+ * is never on-screen by default) — actually appear in the capture. Without
+ * this the capture proves nothing about the acceptance criterion it exists
+ * to exercise. */
+async function openFirstRuleEditor(page: Page) {
+  await page.getByRole("button", { name: "Edit" }).first().click();
+  await page.getByRole("button", { name: "Backtest" }).first().click();
+}
+
 /** No horizontal overflow at any width. The layout wraps rather than using
  * media queries (`screens/layout.tsx`), so an element that refuses to shrink
  * shows up here and nowhere else — a real clipping bug, machine-decidable
@@ -68,6 +80,9 @@ for (const theme of THEMES) {
       test(`${screen.name} renders and captures`, async ({ page }, testInfo) => {
         await openApp(page, theme, true);
         await show(page, screen.nav);
+        if (screen.name === "rules") {
+          await openFirstRuleEditor(page);
+        }
         await expectNoHorizontalOverflow(page);
         await page.screenshot({
           path: `visual/.captures/${screen.name}-${testInfo.project.name}-${theme}.png`,

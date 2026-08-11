@@ -17,11 +17,12 @@ mod task_host;
 
 pub use calendar_host::{CalendarHostCore, CalendarListResponse};
 pub use task_host::{
-    ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
-    DeadLetterFieldDTO, DeadLettersResponse, FreshnessResponse, FrontierItemDTO, IsPendingResponse,
-    ItemListResponse,
-    MirrorSnapshotResponse, PaneReadResponse, ProjectListResponse, QueueDepthResponse, RunResponse,
-    StepListResponse, TaskEventDTO, TaskHostCore, TriageEdits, TriageResponse,
+    ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, CoreFieldDTO,
+    CreateRuleResponse, DeadLetterEntryDTO, DeadLetterFieldDTO, DeadLettersResponse,
+    FreshnessResponse, FrontierItemDTO, IsPendingResponse, ItemListResponse, KindRegistryResponse,
+    MirrorSnapshotResponse, PaneReadResponse, PatchRuleResponse, ProjectListResponse,
+    QueueDepthResponse, RuleListResponse, RunResponse, StepListResponse, TaskEventDTO,
+    TaskHostCore, TriageEdits, TriageResponse,
 };
 
 use wasm_bindgen::prelude::*;
@@ -387,6 +388,10 @@ mod wasm_bindings {
     // is an answer — and the wrong one. Busy says nothing at all.
     const BUSY_BINDINGS: &str = r#"{"kind":"busy","bindings":[]}"#;
     const BUSY_SET_BINDING: &str = r#"{"kind":"busy","error":null}"#;
+    // #140: same "no answer, never an empty one" contract as BUSY_BINDINGS.
+    const BUSY_RULES: &str = r#"{"kind":"busy","rules":[]}"#;
+    const BUSY_CREATE_RULE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    const BUSY_PATCH_RULE: &str = r#"{"kind":"busy","error":null}"#;
     // ADR-0015: a core that has not loaded has measured nothing, so busy is
     // `unknown` — never `{"age_ms":0}`, which would render as fresh.
     const BUSY_FRESHNESS: &str = r#"{"kind":"busy","freshness":{"state":"unknown"}}"#;
@@ -597,6 +602,128 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("SetBindingResponse serializes"),
+                ))
+            })
+        }
+
+        /// Every rule (#140), as JSON: `{"kind": "ok"|"busy", "rules": [Rule]}`.
+        pub fn rules(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.rules()).expect("RuleListResponse serializes"),
+                None => BUSY_RULES.to_string(),
+            }
+        }
+
+        /// The kind registry export (#133/#140, ADR-0013), as JSON:
+        /// `{"kind": "ok", "kinds": [EventKindEntry], "core_fields":
+        /// [{"name": string, "field_type": string}], "alarm_interval_ms":
+        /// number, "severities": string[]}`. Never `"busy"` —
+        /// [`TaskHostCore::kind_registry`] needs no checked-out `Core` state
+        /// at all, only static domain data.
+        #[wasm_bindgen(js_name = kindRegistry)]
+        pub fn kind_registry(&self) -> String {
+            serde_json::to_string(&TaskHostCore::kind_registry())
+                .expect("KindRegistryResponse serializes")
+        }
+
+        /// Creates a rule (#140). Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
+        /// `tier` is the wire's snake_case name (`"urgent"`/`"normal"`),
+        /// resolved before it can reach `Core`. `conditions_json` is
+        /// `Vec<Condition>`'s own JSON array — an open-ended list has no
+        /// scalar-argument shape `wasm_bindgen` can carry.
+        #[wasm_bindgen(js_name = createRule)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn create_rule(
+            &self,
+            seed: String,
+            name: String,
+            event_kind: Option<String>,
+            conditions_json: String,
+            severity: String,
+            tier: String,
+            enabled: bool,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CREATE_RULE));
+                };
+                let response = host
+                    .create_rule(
+                        &seed,
+                        &name,
+                        event_kind,
+                        &conditions_json,
+                        &severity,
+                        &tier,
+                        enabled,
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CreateRuleResponse serializes"),
+                ))
+            })
+        }
+
+        /// Patches a rule (#140) — the enable/disable toggle and every other
+        /// rule edit share this one entry point. Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+        /// `current_json` is the caller's own last-known [`Rule`] (from
+        /// [`TaskHost::rules`]), as JSON — the `base` a 409's rebase diffs
+        /// against. `event_kind_touched` distinguishes "leave `event_kind`
+        /// alone" (`false`) from "set it, possibly to `null` for any kind"
+        /// (`true`, with `event_kind` carrying the new value or `None`) —
+        /// the same double-`Option` [`hummingbird_domain::RulePatch`]
+        /// itself carries, flattened for the wasm boundary.
+        #[wasm_bindgen(js_name = patchRule)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_rule(
+            &self,
+            seed: String,
+            current_json: String,
+            name: Option<String>,
+            event_kind_touched: bool,
+            event_kind: Option<String>,
+            conditions_json: Option<String>,
+            severity: Option<String>,
+            tier: Option<String>,
+            enabled: Option<bool>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Rule = match serde_json::from_str(&current_json) {
+                    Ok(rule) => rule,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed rule: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_RULE));
+                };
+                let response = host
+                    .patch_rule(
+                        &seed,
+                        &current,
+                        name,
+                        event_kind_touched,
+                        event_kind,
+                        conditions_json,
+                        severity,
+                        tier,
+                        enabled,
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchRuleResponse serializes"),
                 ))
             })
         }

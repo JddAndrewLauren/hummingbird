@@ -2,17 +2,23 @@ import type {
   BindingDTO,
   BindingValueDTO,
   BlockedFrontierEntryDTO,
+  ConditionDTO,
   DeadLetterEntryDTO,
+  FieldTypeName,
   FreshnessDTO,
+  KindEntryDTO,
+  KindRegistryDTO,
   PaneEnvelopeDTO,
   PaneReadDTO,
   ProjectDTO,
+  RuleDTO,
   StepDTO,
   TaskEventDTO,
   TaskItemDTO,
   TaskRunOutcomeKind,
   TaskWorkerRequest,
   TaskWorkerResponse,
+  TierName,
 } from "../store/protocol";
 import { createSerialQueue } from "./serial-queue";
 
@@ -66,6 +72,44 @@ export interface TaskHostLike {
    * `{"kind": "ok"|"unknown_key"|"failed"|"busy", "error": string|null}`. */
   setBinding(seed: string, key: string, value: string, nowMs: number): Promise<string>;
   bindings(): string;
+  /** #140's kind registry export. Mirrors `hummingbird-ffi-web`'s
+   * `TaskHost::kindRegistry` — never `"busy"`, so this resolves
+   * synchronously to `{"kind":"ok",…}` always. */
+  kindRegistry(): string;
+  /** #140's rules read. Mirrors `TaskHost::rules`, resolved to JSON:
+   * `{"kind": "ok"|"busy", "rules": [Rule]}`. */
+  rules(): string;
+  /** #140's rule create. Mirrors `TaskHost::createRule`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
+   * `conditionsJson` is `Condition[]`'s own JSON array. */
+  createRule(
+    seed: string,
+    name: string,
+    eventKind: string | null,
+    conditionsJson: string,
+    severity: string,
+    tier: string,
+    enabled: boolean,
+    nowMs: number,
+  ): Promise<string>;
+  /** #140's rule patch — the enable/disable toggle and every other rule
+   * edit. Mirrors `TaskHost::patchRule`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "error": string|null}`. `currentJson`
+   * is the caller's own last-known `Rule`, as JSON — the CAS `base` a 409
+   * is diffed against. `conditionsJson` is `Condition[]`'s own JSON array,
+   * or `undefined` to leave conditions untouched. */
+  patchRule(
+    seed: string,
+    currentJson: string,
+    name: string | null,
+    eventKindTouched: boolean,
+    eventKind: string | null,
+    conditionsJson: string | null,
+    severity: string | null,
+    tier: string | null,
+    enabled: boolean | null,
+    nowMs: number,
+  ): Promise<string>;
   /** #245's generic pane read. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::paneRead` — see `RawPaneReadResponse` below for the wire
    * shape, which `client/ffi-web/src/task_host.rs` pins byte-for-byte. */
@@ -134,6 +178,62 @@ interface RawBindingListResponse {
 interface RawSetBindingResponse {
   kind: "ok" | "unknown_key" | "failed" | "busy";
   error: string | null;
+}
+
+// -- rules (#140) ------------------------------------------------------
+
+interface RawCondition {
+  field: string;
+  op: string;
+  value: unknown;
+  negate: boolean;
+}
+
+interface RawRule {
+  id: string;
+  name: string;
+  event_kind: string | null;
+  conditions: RawCondition[];
+  severity: string;
+  tier: TierName;
+  enabled: boolean;
+  updated_at: number;
+  version: number;
+}
+
+interface RawRuleListResponse {
+  kind: "ok" | "busy";
+  rules: RawRule[];
+}
+
+interface RawCreateRuleResponse {
+  kind: "ok" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
+}
+
+interface RawPatchRuleResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawKindField {
+  name: string;
+  field_type: FieldTypeName;
+}
+
+interface RawKindEntry {
+  key: string;
+  mints: boolean;
+  fields: RawKindField[];
+}
+
+interface RawKindRegistryResponse {
+  kind: "ok";
+  kinds: RawKindEntry[];
+  core_fields: RawKindField[];
+  alarm_interval_ms: number;
+  severities: string[];
 }
 
 // -- the pane read (#245) — pinned to `PaneReadResponse`'s serde output by
@@ -324,6 +424,41 @@ function mapBinding(raw: RawBinding): BindingDTO {
     known: raw.known,
     pending: raw.pending,
     value: raw.value,
+  };
+}
+
+function mapCondition(raw: RawCondition): ConditionDTO {
+  return { field: raw.field, op: raw.op, value: raw.value, negate: raw.negate };
+}
+
+function mapRule(raw: RawRule): RuleDTO {
+  return {
+    id: raw.id,
+    name: raw.name,
+    eventKind: raw.event_kind,
+    conditions: raw.conditions.map(mapCondition),
+    severity: raw.severity,
+    tier: raw.tier,
+    enabled: raw.enabled,
+    updatedAt: raw.updated_at,
+    version: raw.version,
+  };
+}
+
+function mapKindField(raw: RawKindField): KindEntryDTO["fields"][number] {
+  return { name: raw.name, fieldType: raw.field_type };
+}
+
+function mapKindEntry(raw: RawKindEntry): KindEntryDTO {
+  return { key: raw.key, mints: raw.mints, fields: raw.fields.map(mapKindField) };
+}
+
+function mapKindRegistry(raw: RawKindRegistryResponse): KindRegistryDTO {
+  return {
+    kinds: raw.kinds.map(mapKindEntry),
+    coreFields: raw.core_fields.map(mapKindField),
+    alarmIntervalMs: raw.alarm_interval_ms,
+    severities: raw.severities,
   };
 }
 
@@ -553,6 +688,82 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "bindings", bindings: raw.bindings.map(mapBinding) });
+      return;
+    }
+    case "getKindRegistry": {
+      const raw = JSON.parse(host.kindRegistry()) as RawKindRegistryResponse;
+      post({ type: "kindRegistry", registry: mapKindRegistry(raw) });
+      return;
+    }
+    case "getRules": {
+      const raw = JSON.parse(host.rules()) as RawRuleListResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty one — an empty rule list reads as "no
+        // rules exist," same contract as `getBindings`.
+        return;
+      }
+      post({ type: "rules", rules: raw.rules.map(mapRule) });
+      return;
+    }
+    case "createRule": {
+      const raw = JSON.parse(
+        await host.createRule(
+          request.seed,
+          request.name,
+          request.eventKind,
+          JSON.stringify(request.conditions),
+          request.severity,
+          request.tier,
+          request.enabled,
+          request.nowMs,
+        ),
+      ) as RawCreateRuleResponse;
+      post({
+        type: "createRuleResult",
+        seed: request.seed,
+        kind: raw.kind,
+        id: raw.id,
+        error: raw.error,
+      });
+      return;
+    }
+    case "patchRule": {
+      const raw = JSON.parse(
+        await host.patchRule(
+          request.seed,
+          JSON.stringify({
+            id: request.current.id,
+            name: request.current.name,
+            event_kind: request.current.eventKind,
+            conditions: request.current.conditions.map((c) => ({
+              field: c.field,
+              op: c.op,
+              value: c.value,
+              negate: c.negate,
+            })),
+            severity: request.current.severity,
+            tier: request.current.tier,
+            enabled: request.current.enabled,
+            updated_at: request.current.updatedAt,
+            version: request.current.version,
+          }),
+          request.name,
+          request.eventKindTouched,
+          request.eventKind,
+          request.conditions === null ? null : JSON.stringify(request.conditions),
+          request.severity,
+          request.tier,
+          request.enabled,
+          request.nowMs,
+        ),
+      ) as RawPatchRuleResponse;
+      post({
+        type: "patchRuleResult",
+        seed: request.seed,
+        ruleId: request.current.id,
+        kind: raw.kind,
+        error: raw.error,
+      });
       return;
     }
     case "getPaneRead": {
