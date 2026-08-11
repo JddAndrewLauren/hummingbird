@@ -409,6 +409,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hummingbird-calendar-poll"
+version = "0.1.0"
+dependencies = [
+ "hummingbird-domain",
+ "hummingbird-rules-engine",
+ "jiff",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "hummingbird-city-waste"
 version = "0.1.0"
 dependencies = [

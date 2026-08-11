@@ -134,6 +134,18 @@ pub const CITY_WASTE_V2: &str = "city-waste/v2";
 /// poller rather than a source string that quietly keeps resolving.
 pub const GMAIL_V1: &str = "gmail/v1";
 
+/// `google-calendar/v1`'s frozen namespace, for [`GMAIL_V1`]'s own reason:
+/// two consumers share one literal — the registry entry above and
+/// `server/calendar-poll` (#136), the out-of-process poller that mints
+/// alerts under it and also writes/reads both its delta sync-token cursor
+/// and the `busy_now` snapshot as `context_snapshots` rows under it
+/// (ADR-0011's "per-source delta cursor", and this issue's "a source may of
+/// course be both" — an alert source and a snapshot source at once, exactly
+/// like `city-waste/v2`) — so a future retirement to `/v2` is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving.
+pub const GOOGLE_CALENDAR_V1: &str = "google-calendar/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -156,7 +168,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         retired_as: None,
     },
     SourceEntry {
-        source: "google-calendar/v1",
+        source: GOOGLE_CALENDAR_V1,
         shape: Shape::Event,
         key_recipe: "<eventId or recurringEventId>:<originalStartTime>",
         expires_at: Expiry::Always("the instance's end time"),

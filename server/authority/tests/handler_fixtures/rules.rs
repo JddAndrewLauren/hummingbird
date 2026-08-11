@@ -569,6 +569,35 @@ fn an_ingest_token_reads_only_its_own_sources_event_kind_plus_any_kind_rules() {
     assert!(!ids.contains(&"r-calendar".to_string()), "not this source's kind");
 }
 
+/// #136's own mapping entry, exercised the same way as #135's: an `ingest`
+/// token bound to `google-calendar/v1` reads a `calendar_event`-kind rule
+/// (its own kind) and the any-kind rule, but never the `email`-kind one —
+/// the two mapping entries are independent, so this pins that adding one
+/// did not accidentally widen or narrow the other.
+#[test]
+fn a_calendar_ingest_token_reads_only_calendar_event_plus_any_kind_rules() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-any"); // no event_kind: any kind
+    post_rule(
+        &sql,
+        r#"{"id": "r-email", "name": "n", "event_kind": "email", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    post_rule(
+        &sql,
+        r#"{"id": "r-calendar", "name": "n", "event_kind": "calendar_event", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+
+    let resp = get_rules_as_ingest_bound_to(&sql, hummingbird_domain::GOOGLE_CALENDAR_V1);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.contains(&"r-any".to_string()));
+    assert!(ids.contains(&"r-calendar".to_string()));
+    assert!(!ids.contains(&"r-email".to_string()), "not this source's kind");
+}
+
 /// An `ingest` token bound to a source this handler has no `event_kind`
 /// mapping for yet (or an unbound one — the rig's pre-#145 stand-in) reads
 /// only the any-kind rules: the safe default is nothing extra, never
