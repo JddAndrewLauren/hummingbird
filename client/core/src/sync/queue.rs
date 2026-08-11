@@ -818,6 +818,61 @@ mod tests {
         assert!(rebooted_queue.is_empty());
     }
 
+    /// The seed-minting rule (#223, [`super::super::sync`]'s module docs)
+    /// says a retried or crash-replayed enqueue of the identical intent
+    /// "reproduces the identical entry *id*" — and that is a claim about
+    /// **identity, never about queue length**. `enqueue` is a bare append
+    /// with no id dedupe, so the two readings the rule could be given
+    /// diverge here, and this test pins the true one: both entries carry the
+    /// one id `deterministic_id` derives from the shared seed, and the queue
+    /// holds **two** of them. Anything that later made `enqueue` collapse
+    /// duplicates — or reworded the rule to promise that it does — must
+    /// break loudly here rather than leave the next reader to guess which
+    /// crash-replay behaviour the paragraph describes.
+    #[tokio::test]
+    async fn re_enqueuing_one_identical_intent_reproduces_its_entry_id_but_not_a_single_entry() {
+        // Exactly what `Core::act` mints: the entry id is the seed's hash,
+        // and nothing else about the entry varies between the two calls.
+        let seed = "item:a-1:complete:2000";
+        let entry = QueueEntry {
+            id: crate::sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: "/api/items/a-1".to_string(),
+                method: HttpMethod::Patch,
+                base: json!({"id": "a-1", "stage": "ready", "version": 1}),
+                base_updated_at: 1_000,
+                patch_fields: json!({"stage": "done"}),
+                rebase_fields: None,
+            },
+        };
+
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(entry.clone());
+        queue.enqueue(entry.clone());
+
+        // NOT guaranteed: that the queue collapses them. Asserted first, so
+        // a build that started deduping fails on this sentence rather than
+        // on an out-of-bounds index below.
+        assert_eq!(
+            queue.len(),
+            2,
+            "`enqueue` appends without an id check — two enqueues are two \
+             entries sharing one id, never one entry"
+        );
+        // Guaranteed: the same seed is the same id, both times.
+        let entries: Vec<&QueueEntry> = queue.entries().collect();
+        assert_eq!(
+            entries[0].id,
+            crate::sync::write::deterministic_id(seed),
+            "the seed's hash is the entry id"
+        );
+        assert_eq!(
+            entries[0].id, entries[1].id,
+            "a re-enqueued identical intent reproduces the identical entry id"
+        );
+        assert_eq!(entries[0], entries[1], "and the identical entry value");
+    }
+
     // ---------------------------------------------------- schema-version bump
 
     /// #102 acceptance: "A schema-version bump loads the old queue rather

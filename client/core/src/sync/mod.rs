@@ -15,6 +15,38 @@
 //! pull, delta as the normal pull with a full sweep as the backstop —
 //! wired on top of `queue`, `adapter`, and `mirror`, plus the backoff and
 //! active-issue-count machinery around it.
+//!
+//! **The seed-minting rule (#223).** Every `Core` mutation entry point
+//! takes a caller-minted `seed` and feeds it to [`write::deterministic_id`]
+//! — caller-minted rather than sampled here, because bare
+//! `wasm32-unknown-unknown` has no clock or RNG that does not panic. Which
+//! *shape* of seed a caller mints is decided by one criterion, not a list
+//! of today's call sites: **which id the seed's hash becomes**. For a
+//! mutation that touches an entity that **already exists**, the hash is
+//! only the mutation's own `QueueEntry` id — a local durable-queue key
+//! that never crosses the wire, since the intent is a CAS write against
+//! the entity's existing id — so the seed is **deterministic**, composed
+//! from that entity's identity, the operation, and the caller's `now_ms`:
+//! a retried or crash-replayed enqueue of the identical intent (same
+//! identity, same operation, same instant) reproduces the identical entry
+//! *id* rather than minting a second, unrelated one, and the dead-letter
+//! journal can name the entry it buried. Identity only:
+//! [`queue::OutboundQueue::enqueue`] is a bare append with no id dedupe, so
+//! two such enqueues are two entries sharing one id, never one entry — a
+//! determinism this criterion uses for naming, not for collapsing
+//! duplicates. For a mutation that mints a **new** entity, the
+//! hash *is* the entity's id, landing on the authority's client-id-keyed
+//! create path — so the seed must be **non-deterministic**, because two
+//! identical intents in the same millisecond must become two entities,
+//! never collide into one. The create-side idempotency lives there and
+//! only there: `Core::capture`'s offline-replay dedup comes from a retry
+//! reusing that capture's own already-minted seed (the queue holds it, so
+//! the replayed create carries the identical id and lands on the
+//! authority's "already exists" path), never from the minting function's
+//! output being predictable. A future mutation kind is tested against
+//! this same criterion — which id does its seed become? — not appended to
+//! an enumeration; the web shell's seed-minting functions reference this
+//! paragraph rather than restating it.
 
 pub mod adapter;
 pub mod cycle;

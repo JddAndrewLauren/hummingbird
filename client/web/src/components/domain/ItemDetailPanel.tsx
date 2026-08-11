@@ -96,8 +96,13 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null }
         </div>
       ) : null}
 
+      {/* `role="alert"` on every one of this app's danger-text paragraphs
+          (here, both of `TriageScreen.tsx`'s, and `SettingsScreen.tsx`'s):
+          each renders only once a write has already failed, so it appears
+          with no other change on the page and a screen reader would
+          otherwise never announce it. Colour was the whole signal. */}
       {actError ? (
-        <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{actError}</p>
+        <p role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{actError}</p>
       ) : null}
 
       {item.description ? (

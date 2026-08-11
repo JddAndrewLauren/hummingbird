@@ -1,6 +1,11 @@
 import { useEffect } from "react";
 import type { CoreStatus } from "../store/store";
-import { captureTask, requestTriageInbox, type WorkerLike } from "../store/worker-client";
+import {
+  captureTask,
+  requestTriageInbox,
+  type CaptureFields,
+  type WorkerLike,
+} from "../store/worker-client";
 
 // Issue #110/S12's capture wiring: requests the triage inbox once the core
 // is ready, and again after every sync cycle — the same "refresh once
@@ -19,15 +24,18 @@ import { captureTask, requestTriageInbox, type WorkerLike } from "../store/worke
 // screen BEFORE this is ever reached — this hook trusts its caller and
 // enqueues whatever it is handed.
 export interface CaptureWiring {
-  submitCapture: (title: string, nowMs: number) => void;
+  submitCapture: (title: string, nowMs: number, fields?: CaptureFields) => void;
 }
 
-/** Mints a fresh, non-deterministic seed for one capture. Only the seed's
- * *uniqueness* matters here — `Core::capture` (client/core) hashes it into
- * the item's deterministic id, and the offline-replay dedup guarantee comes
+/** Mints a fresh, non-deterministic seed for one capture. Non-deterministic
+ * — `client/core/src/sync/mod.rs`'s seed-minting rule (#223): a capture
+ * mints a *new* item, so its seed's hash becomes the item's id on the
+ * authority's client-id-keyed create path, and two identical captures in
+ * the same millisecond must not collide into one item. Only the seed's
+ * *uniqueness* matters here — the offline-replay dedup guarantee comes
  * from the same seed being reused only across a retry of the SAME capture,
  * never from this function's output being predictable. */
-function mintSeed(): string {
+export function mintSeed(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
@@ -55,14 +63,20 @@ function mintSeed(): string {
  * without rendering a component — the view-side twin of the `worker/*`
  * pure-module split this repo already uses for cadence/routing logic.
  * `seed` defaults to a freshly minted one; a test supplies its own for a
- * deterministic assertion. */
+ * deterministic assertion.
+ *
+ * `fields` (#208) carries the capture box's Energy/Size/Context selections
+ * onto the same `captureTask` call — never a follow-up patch — and
+ * defaults to `{}` (all three absent), the same resting-state contract
+ * `captureTask` itself documents. */
 export function submitCaptureRequest(
   worker: WorkerLike,
   title: string,
   nowMs: number,
+  fields: CaptureFields = {},
   seed: string = mintSeed(),
 ): void {
-  captureTask(worker, seed, title, "triage", nowMs);
+  captureTask(worker, seed, title, "triage", nowMs, fields);
   requestTriageInbox(worker);
 }
 
@@ -85,8 +99,8 @@ export function useCaptureWiring(
   }, [ready, syncOutcomeSeq]);
 
   return {
-    submitCapture: (title: string, nowMs: number) => {
-      submitCaptureRequest(worker, title, nowMs);
+    submitCapture: (title: string, nowMs: number, fields: CaptureFields = {}) => {
+      submitCaptureRequest(worker, title, nowMs, fields);
     },
   };
 }

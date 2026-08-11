@@ -190,6 +190,19 @@ struct SettingOverlayEntry {
     setting: Setting,
 }
 
+/// The capture box's optional Energy/Size/Context selections (#208),
+/// grouped in one small struct rather than three more positional parameters
+/// on [`Core::capture`] — the same "params struct once the positional list
+/// reads long" call `ffi-web`'s `TriageEdits` already made for triage's own
+/// edit fields. `Default` is every field `None`, which is what keeps a
+/// caller that never sets these producing a capture with all three absent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CaptureOptions {
+    pub size: Option<Size>,
+    pub energy: Option<Energy>,
+    pub context: Option<String>,
+}
+
 /// Builds the optimistic [`Item`] a reader sees for a still-queued create,
 /// from the same [`CreateItem`] DTO the wire body holds — shared by
 /// [`Core::capture`] (which has `now_ms` fresh) and the overlay this module
@@ -1032,12 +1045,19 @@ where
     /// no-op) and discards the result: the `title` that reaches the
     /// mutation below is the caller's own string, verbatim, never the
     /// seam's output.
+    ///
+    /// `options` (#208) carries the capture box's Energy/Size/Context
+    /// selections onto the `CreateItem` — each field defaults to `None` in
+    /// [`CaptureOptions::default`], so a caller that never touches the
+    /// controls still produces a capture with all three absent, exactly the
+    /// "optional, decided at mint time" contract this issue must not break.
     pub async fn capture(
         &mut self,
         seed: &str,
         title: impl Into<String>,
         stage: Stage,
         now_ms: i64,
+        options: CaptureOptions,
     ) -> Result<String, SnapshotError<QS::Error>> {
         let id = sync::write::deterministic_id(seed);
         let title = title.into();
@@ -1048,9 +1068,9 @@ where
             title: title.clone(),
             description: None,
             stage: Some(stage),
-            size: None,
-            energy: None,
-            context: None,
+            size: options.size,
+            energy: options.energy,
+            context: options.context,
             priority: None,
             project_id: None,
             project_pos: None,
@@ -1514,7 +1534,7 @@ mod tests {
 
         let mut first = Core::init(ns, "api-key-1").await.unwrap();
         first
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         // Only the queue is durable at this point (no cycle ever ran) —
@@ -1541,7 +1561,7 @@ mod tests {
         let secret = "sk-do-not-persist-me";
 
         let mut core = Core::init(ns, secret).await.unwrap();
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1563,7 +1583,7 @@ mod tests {
 
         // `capture` never touches a transport, and none is even wired up —
         // proving this needs no network call at all.
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1576,12 +1596,88 @@ mod tests {
     async fn an_overlaid_item_is_distinguishable_as_pending() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
         assert!(core.is_pending(&id));
         assert!(!core.is_pending("some-other-id"));
+    }
+
+    /// #208's headline acceptance: setting Energy, Size and Context and
+    /// submitting produces an item whose fields match the selections —
+    /// asserted on the optimistic overlay [`Core::frontier`] returns before
+    /// any network call, which is what proves this rides the one capture
+    /// mutation rather than a follow-up patch.
+    #[tokio::test]
+    async fn capture_options_reach_the_optimistic_item() {
+        let mut core = Core::new();
+        core.capture(
+            "seed-1",
+            "buy milk",
+            Stage::Ready,
+            1_000,
+            CaptureOptions {
+                size: Some(Size::Deep),
+                energy: Some(Energy::High),
+                context: Some("@errands".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let frontier = core.frontier();
+        assert_eq!(frontier[0].size, Some(Size::Deep));
+        assert_eq!(frontier[0].energy, Some(Energy::High));
+        assert_eq!(frontier[0].context.as_deref(), Some("@errands"));
+    }
+
+    /// #208's other half: leaving every field at its resting state
+    /// (`CaptureOptions::default()`) still produces a capture with all
+    /// three absent — the "optional, decided at mint time" contract must
+    /// survive a caller that never touches the controls.
+    #[tokio::test]
+    async fn leaving_capture_options_unset_leaves_all_three_absent() {
+        let mut core = Core::new();
+        core.capture(
+            "seed-1",
+            "buy milk",
+            Stage::Ready,
+            1_000,
+            CaptureOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let frontier = core.frontier();
+        assert_eq!(frontier[0].size, None);
+        assert_eq!(frontier[0].energy, None);
+        assert_eq!(frontier[0].context, None);
+    }
+
+    /// Setting only one of the three sends that one and leaves the other
+    /// two absent — #208's third acceptance checkbox.
+    #[tokio::test]
+    async fn setting_only_one_capture_option_leaves_the_others_absent() {
+        let mut core = Core::new();
+        core.capture(
+            "seed-1",
+            "buy milk",
+            Stage::Ready,
+            1_000,
+            CaptureOptions {
+                size: Some(Size::Quick),
+                energy: None,
+                context: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let frontier = core.frontier();
+        assert_eq!(frontier[0].size, Some(Size::Quick));
+        assert_eq!(frontier[0].energy, None);
+        assert_eq!(frontier[0].context, None);
     }
 
     // ---------------------------------------------------------------- act
@@ -1593,7 +1689,7 @@ mod tests {
     async fn completing_offline_shows_done_immediately() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1614,7 +1710,7 @@ mod tests {
     async fn starting_an_item_moves_it_to_in_progress_immediately() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1631,7 +1727,7 @@ mod tests {
     async fn blocking_an_item_sets_the_blocked_stage_never_a_relation() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1652,7 +1748,7 @@ mod tests {
     async fn cancelling_an_item_archives_it_rather_than_setting_a_stage() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1692,7 +1788,7 @@ mod tests {
     async fn promoting_to_ready_moves_the_item_from_triage_to_the_frontier_immediately() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         assert_eq!(core.triage_inbox().len(), 1);
@@ -1720,7 +1816,7 @@ mod tests {
     async fn sending_to_grilling_leaves_triage_without_reaching_the_frontier() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1745,7 +1841,7 @@ mod tests {
     async fn a_multi_field_triage_is_exactly_one_queued_mutation() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         assert_eq!(core.queue_depth(), 1, "capture itself is the first entry");
@@ -1787,7 +1883,7 @@ mod tests {
     async fn an_unset_triage_patch_field_leaves_the_items_existing_value_untouched() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         core.triage(
@@ -1847,7 +1943,7 @@ mod tests {
     async fn triaging_offline_is_visible_immediately_with_no_transport_wired_up() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -1885,7 +1981,7 @@ mod tests {
 
         let mut first = Core::init(ns, "api-key-1").await.unwrap();
         let id = first
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         first
@@ -1923,7 +2019,7 @@ mod tests {
 
         let mut first = Core::init(ns, "api-key-1").await.unwrap();
         let id = first
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         first
@@ -2033,7 +2129,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2094,7 +2190,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         assert!(core.is_pending(&id));
@@ -2129,7 +2225,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2230,7 +2326,7 @@ mod tests {
         core.push_api_key("token-1");
         assert_eq!(core.queue_depth(), 0);
 
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         assert_eq!(core.queue_depth(), 1);
@@ -2249,7 +2345,7 @@ mod tests {
         assert!(core.dead_letters().is_empty());
 
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
@@ -2284,7 +2380,7 @@ mod tests {
         let mut core = Core::new();
         let secret = "sk-do-not-leak-into-the-mirror";
         core.push_api_key(secret);
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2297,7 +2393,7 @@ mod tests {
         let mut core = Core::new();
         let secret = "sk-do-not-leak-into-the-journal";
         core.push_api_key(secret);
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000)
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2384,7 +2480,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2408,7 +2504,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2443,7 +2539,7 @@ mod tests {
         };
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2474,7 +2570,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2517,7 +2613,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("stale-token");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2563,7 +2659,7 @@ mod tests {
         // succeeds), which is the one outcome that legitimately clears the
         // whole overlay — so this alone would not have caught the bug.
         let id = core
-            .capture("seed-1", "buy milk v1", Stage::Ready, 1_000)
+            .capture("seed-1", "buy milk v1", Stage::Ready, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         let read1 = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
@@ -2581,7 +2677,7 @@ mod tests {
         // retry pattern) — same deterministic id, back in the queue and
         // the overlay.
         let id2 = core
-            .capture("seed-1", "buy milk v2", Stage::Ready, 2_000)
+            .capture("seed-1", "buy milk v2", Stage::Ready, 2_000, CaptureOptions::default())
             .await
             .unwrap();
         assert_eq!(id2, id, "reusing the seed must mint the identical id");
@@ -2802,7 +2898,7 @@ mod tests {
     async fn clearing_never_touches_the_overlay() {
         let mut core = Core::new();
         core.push_api_key("device-token");
-        let id = core.capture("seed-1", "buy milk", Stage::Ready, 1_000).await.unwrap();
+        let id = core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default()).await.unwrap();
 
         core.clear_api_key();
 
@@ -2818,7 +2914,7 @@ mod tests {
     #[tokio::test]
     async fn a_default_stage_triage_capture_is_readable_from_the_triage_inbox_not_the_frontier() {
         let mut core = Core::new();
-        core.capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+        core.capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
 
@@ -2841,7 +2937,7 @@ mod tests {
         let raw = "  Buy   OAT milk\tand   eggs  ";
         let mut core = Core::new();
 
-        core.capture("seed-1", raw, Stage::Triage, 1_000).await.unwrap();
+        core.capture("seed-1", raw, Stage::Triage, 1_000, CaptureOptions::default()).await.unwrap();
 
         let inbox = core.triage_inbox();
         assert_eq!(inbox.len(), 1);
@@ -2867,9 +2963,9 @@ mod tests {
         // No `push_api_key` call yet — every capture below is enqueued
         // durably (`SyncCycle::enqueue`) with no transport ever touched,
         // which is offline capture end to end.
-        let id1 = core.capture("seed-a", "buy milk", Stage::Triage, 1_000).await.unwrap();
-        let id2 = core.capture("seed-b", "call dentist", Stage::Triage, 2_000).await.unwrap();
-        let id3 = core.capture("seed-c", "water plants", Stage::Triage, 3_000).await.unwrap();
+        let id1 = core.capture("seed-a", "buy milk", Stage::Triage, 1_000, CaptureOptions::default()).await.unwrap();
+        let id2 = core.capture("seed-b", "call dentist", Stage::Triage, 2_000, CaptureOptions::default()).await.unwrap();
+        let id3 = core.capture("seed-c", "water plants", Stage::Triage, 3_000, CaptureOptions::default()).await.unwrap();
         assert_eq!(core.queue_depth(), 3, "all three must be durably queued before any network call");
         assert_eq!(core.triage_inbox().len(), 3, "a capture is visible in the list before any network call");
 
