@@ -45,8 +45,8 @@ pub use indexed_db::{IndexedDbError, IndexedDbSnapshotStore};
 /// (method resolution requires the trait in scope, and `Sealed` cannot be
 /// imported) nor implement `SnapshotStore` for its own type (the blanket
 /// impl below requires `Sealed`, which it also cannot implement). Only
-/// [`save_snapshot`]/[`load_snapshot`] — gated on [`Persistable`] — reach
-/// storage from outside `core`.
+/// [`save_snapshot`]/[`load_snapshot`]/[`load_snapshot_at_version`] — each
+/// gated on [`Persistable`] — reach storage from outside `core`.
 mod sealed {
     /// Carries the byte-level `write`/`read` operations `core`'s own
     /// per-target [`super::SnapshotStore`] impls provide.
@@ -78,19 +78,19 @@ mod sealed {
 ///
 /// Each compile target gets its own implementation of this trait
 /// ([`MemorySnapshotStore`], [`FsSnapshotStore`], [`IndexedDbSnapshotStore`]).
-/// Callers use [`save_snapshot`]/[`load_snapshot`] rather than `write`/`read`
-/// directly — those are the only entry points that require a [`Persistable`]
-/// payload, which is what keeps secret material unrepresentable. `write` and
-/// `read` themselves live on the private [`sealed::Sealed`] supertrait, so
-/// this trait cannot be implemented, and its byte-level methods cannot be
-/// called, from outside this crate.
+/// Callers use [`save_snapshot`]/[`load_snapshot`]/[`load_snapshot_at_version`]
+/// rather than `write`/`read` directly — those are the only entry points that
+/// require a [`Persistable`] payload, which is what keeps secret material
+/// unrepresentable. `write` and `read` themselves live on the private
+/// [`sealed::Sealed`] supertrait, so this trait cannot be implemented, and its
+/// byte-level methods cannot be called, from outside this crate.
 pub trait SnapshotStore: sealed::Sealed {}
 
 impl<T: sealed::Sealed> SnapshotStore for T {}
 
-/// Errors from [`save_snapshot`]/[`load_snapshot`]: either the underlying
-/// store's medium failed, or `serde_json` failed to (de)serialise the
-/// envelope.
+/// Errors from [`save_snapshot`]/[`load_snapshot`]/
+/// [`load_snapshot_at_version`]: either the underlying store's medium failed,
+/// or `serde_json` failed to (de)serialise the envelope.
 #[derive(Debug)]
 pub enum SnapshotError<E> {
     /// The underlying store's medium (disk, IndexedDB, ...) failed.
@@ -143,6 +143,13 @@ where
 
 /// Reads and deserialises the current [`Envelope`], or `None` if nothing has
 /// been written yet.
+///
+/// Deliberately version-blind: the payload is deserialised into `T` whatever
+/// `schema_version` says, so a caller that reads the version off the returned
+/// envelope only ever sees versions whose payload still *parses* as `T`. For
+/// a caller whose answer to a stale version is "discard it", that is the
+/// wrong order of operations — use [`load_snapshot_at_version`], which
+/// decides on the version before the payload is ever parsed.
 pub async fn load_snapshot<T, S>(
     store: &S,
 ) -> Result<Option<Envelope<T>>, SnapshotError<S::Error>>
@@ -156,6 +163,52 @@ where
             let envelope =
                 serde_json::from_slice(&bytes).map_err(SnapshotError::Deserialize)?;
             Ok(Some(envelope))
+        }
+    }
+}
+
+/// [`load_snapshot`] for a caller that discards anything not written at
+/// `expected_version`: `Ok(None)` covers both "nothing stored" and "stored at
+/// another version", and the payload is only ever parsed as `T` once the
+/// version matches.
+///
+/// **The version is read before the payload, and that ordering is the whole
+/// point.** Checking `envelope.schema_version` on a [`load_snapshot`] result
+/// cannot work for the failure it exists to catch: the commonest schema
+/// change is a *new field*, and a stale snapshot missing it fails
+/// `serde_json` deserialisation outright — so the load errors before the
+/// caller's version check can discard it, and a version bump meant to make
+/// the upgrade silent instead bricks the device on boot until its storage is
+/// cleared by hand. Parsing the envelope's own two scalar fields first, and
+/// the payload only on a match, is what makes a bump of
+/// [`crate::sync::SYNC_MIRROR_SCHEMA_VERSION`] survivable regardless of how
+/// the payload's shape moved.
+pub async fn load_snapshot_at_version<T, S>(
+    store: &S,
+    expected_version: u32,
+) -> Result<Option<Envelope<T>>, SnapshotError<S::Error>>
+where
+    T: Persistable,
+    S: SnapshotStore,
+{
+    match store.read().await.map_err(SnapshotError::Store)? {
+        None => Ok(None),
+        Some(bytes) => {
+            // The payload stays raw for this first parse — `serde_json::Value`
+            // rather than `T` — so a shape mismatch cannot fail the read
+            // before the version has been consulted.
+            let envelope: Envelope<serde_json::Value> =
+                serde_json::from_slice(&bytes).map_err(SnapshotError::Deserialize)?;
+            if envelope.schema_version != expected_version {
+                return Ok(None);
+            }
+            let payload =
+                serde_json::from_value(envelope.payload).map_err(SnapshotError::Deserialize)?;
+            Ok(Some(Envelope {
+                schema_version: envelope.schema_version,
+                as_of: envelope.as_of,
+                payload,
+            }))
         }
     }
 }
