@@ -14,6 +14,7 @@ pub(crate) mod push_targets;
 mod routes;
 mod rules;
 mod settings;
+mod snapshots;
 mod steps;
 
 // Re-exported for #138's sweep module, which mints/ratchets
@@ -136,6 +137,9 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
             settings::put(key, req.body, now_ms, sql)
         }
         ("POST", ["alerts"]) => alerts::ingest(req.body, now_ms, principal.source.as_deref(), sql),
+        ("POST", ["snapshots"]) => {
+            snapshots::ingest(req.body, now_ms, principal.source.as_deref(), sql)
+        }
         ("PATCH", ["alerts", id]) if !id.is_empty() => alerts::dismiss(id, req.body, now_ms, sql),
         ("POST", ["rules"]) => rules::create(req.body, now_ms, sql),
         ("PATCH", ["rules", id]) if !id.is_empty() => rules::patch(id, req.body, now_ms, sql),
@@ -150,7 +154,7 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         (
             _,
             ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "rules"
-                | "push_targets" | "changes" | "sweep"],
+                | "push_targets" | "snapshots" | "changes" | "sweep"],
         ) => Ok(method_not_allowed()),
         (
             _,

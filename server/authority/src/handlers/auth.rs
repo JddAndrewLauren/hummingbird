@@ -97,6 +97,7 @@ pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
     match (method, segments) {
         ("POST", ["items"]) => matches!(scope, Scope::Device | Scope::Sweeper),
         ("POST", ["alerts"]) => matches!(scope, Scope::Ingest),
+        ("POST", ["snapshots"]) => matches!(scope, Scope::Ingest),
         _ => matches!(scope, Scope::Device),
     }
 }

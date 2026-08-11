@@ -148,6 +148,32 @@ fn mint_rejects_an_ingest_token_bound_to_a_retired_source() {
     );
 }
 
+/// The other half of that pair, and the one the poller actually needs
+/// (#120): the successor mints. Before `city-waste/v2` was registered,
+/// `city-waste` was entirely unmintable — `v1` 400d as retired and `v2` 400d
+/// as unregistered — so this is the test that says the lane can be credentialed
+/// at all.
+#[test]
+fn mint_accepts_an_ingest_token_bound_to_the_successor_source() {
+    let sql = RusqliteSql::new();
+    let resp = req_admin(
+        &sql,
+        "POST",
+        "/api/admin/tokens",
+        Some(r#"{"id": "t-waste", "name": "city waste poller", "scope": "ingest", "source": "city-waste/v2"}"#),
+        0,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    let bound = sql
+        .exec("SELECT source FROM tokens WHERE id = 't-waste'", &[])
+        .unwrap();
+    assert_eq!(
+        bound[0].get("source").unwrap().as_text(),
+        Some("city-waste/v2"),
+        "bound to the one source it may write for"
+    );
+}
+
 #[test]
 fn a_null_source_token_remains_valid_for_non_ingest_scopes() {
     let sql = RusqliteSql::new();

@@ -304,6 +304,39 @@ pub struct PutSetting {
     pub value: serde_json::Value,
 }
 
+/// `POST /api/snapshots` body (server-polled context, `ingest` scope only).
+/// Identity is `(source, key)` and the row is replaced wholesale each poll
+/// — ADR-0009's gauge lane, so there is no `expected_version` here for
+/// [`AlertIngest`]'s reason: a poller tracks no versions and is
+/// authoritative for its own row.
+///
+/// `payload` is typed JSON on the wire and stored as its canonical
+/// serialization, like [`PutSetting::value`]. It must parse as ADR-0015's
+/// [`SnapshotEnvelope`]; the handler rejects a broken one with the
+/// [`EnvelopeProblem`]'s own wording, rather than storing a row every pane
+/// reading it will render as a gap.
+///
+/// **`fetched_at` is required, and that is load-bearing.** Defaulting it to
+/// the server clock would make an exact replay undecidable, and the replay
+/// no-op is the only thing standing between a daily poll and a version bump
+/// pushed to every device every morning for the life of an unchanged
+/// answer. It is also *part of the value*: a fresh poll that read the same
+/// answer still moves the stamp, because the stamp is what
+/// `Freshness::of_snapshot` reads, and freezing it would make "poller fine,
+/// nothing changed" indistinguishable from "poller dead".
+///
+/// [`SnapshotEnvelope`]: crate::SnapshotEnvelope
+/// [`EnvelopeProblem`]: crate::EnvelopeProblem
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotIngest {
+    pub source: String,
+    pub key: String,
+    pub payload: serde_json::Value,
+    /// When the source was actually read, on the poller's clock.
+    pub fetched_at: i64,
+}
+
 /// `POST /api/alerts` body (webhook ingest, `ingest` scope only). No
 /// `expected_version`: webhook sources cannot track versions, and the
 /// upsert on `(source, source_key)` is inherently absolute — the source is

@@ -27,7 +27,7 @@ pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, ChangesResponse, ConflictResponse,
     CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreatePushTarget, CreateRule,
     CreateStep, FogPatch, ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch, RulePatch,
-    StepPatch, VERSION_CONFLICT,
+    SnapshotIngest, StepPatch, VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
 pub use deadline::{

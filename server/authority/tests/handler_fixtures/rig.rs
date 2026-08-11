@@ -337,6 +337,19 @@ pub fn ingest_alert(sql: &dyn Sql, body: &str, now_ms: i64) -> ApiResponse {
     req_as(sql, INGEST_TOKEN, "POST", "/api/alerts", None, Some(body), now_ms)
 }
 
+/// Server-polled context ingest — the second route the ingest scope
+/// reaches (#120). Rebinds the rig's ingest token to whatever `source` the
+/// body names, exactly as [`ingest_alert`] does and for the same reason;
+/// use `req_as` with `INGEST_TOKEN` directly to exercise a stale binding.
+pub fn ingest_snapshot(sql: &dyn Sql, body: &str, now_ms: i64) -> ApiResponse {
+    let source = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    bind_ingest_token(sql, &source);
+    req_as(sql, INGEST_TOKEN, "POST", "/api/snapshots", None, Some(body), now_ms)
+}
+
 /// Rebind `rig-ingest`'s bound source directly through the seam (mint's own
 /// pairing validation is exercised in `admin_tokens.rs`, not here).
 pub fn bind_ingest_token(sql: &dyn Sql, source: &str) {

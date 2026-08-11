@@ -51,6 +51,18 @@ pub fn mint(
     // and indistinguishably from a genuinely wrong-source push; one bound
     // to a **retired** source is the same drift the registry exists to
     // make loud ("nothing new should be minted under it").
+    //
+    // **Known gap, flagged not fixed (#120).** An ingest token now reaches
+    // `POST /api/snapshots` as well, but this gate consults a registry
+    // whose own module doc scopes it to *alert* sources. `city-waste/v2`
+    // passes because it is genuinely both — it writes a snapshot every poll
+    // and mints an alert on a holiday week. A future **snapshot-only**
+    // source (`anthropic-usage/v1`, `github-hummingbird/v1`) will not: it
+    // has no business being enrolled in an alert registry, and it will 400
+    // here with "not a registered alert source", which is technically true
+    // and useless as guidance. The fix is a decision this slice does not
+    // need to take (a second registry, a shape flag, or dropping the gate
+    // for a snapshot-only binding), so it stays a comment, not a guess.
     if let Some(source) = &mint.source {
         match find_source(source) {
             None => {
