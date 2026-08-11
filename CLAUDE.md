@@ -605,26 +605,31 @@ still has material, because the alternative is a `Conflict` with an empty
 field list masquerading as a real one, showing the reader nothing to act on.
 
 `Core` (`client/core/src/lib.rs`) is the one door onto all of that, and it
-has exactly **four mutation entry points**: `Core::capture` (a create,
+has exactly **six mutation entry points**: `Core::capture` (a create,
 whose `title` goes through `capture::parse_seam` — #110/#42's named no-op —
 and reaches the mutation verbatim regardless), `Core::act` (S11's closed
 `ItemAction` vocabulary: start / complete / block / cancel, where cancel
 sets `archived_at` and never a stage, because the owned schema has no
-"canceled"), and `Core::triage` (S13's `TriageDestination` + `TriagePatch`:
+"canceled"), `Core::triage` (S13's `TriageDestination` + `TriagePatch`:
 a multi-field triage is exactly ONE queued CAS `PATCH`, never one per
-field, so a 409 rebases or dead-letters the whole edit together), and
+field, so a 409 rebases or dead-letters the whole edit together),
 `Core::set_binding` (#118's standing-question bindings — one `settings` row,
-written as an ordinary absolute-value CAS `PUT`). **All four enqueue through
-`SyncCycle::enqueue` and none of them may reach `OutboundQueue::enqueue`** —
-the durability rule above is not per-caller advice, it is what makes an
-offline capture, act, triage or binding survive at all. All four take a
-caller-minted `seed` (deterministic id, same no-clock/no-RNG
-reasoning). The reads are `frontier` / `triage_inbox` / `blocked` /
-`steps_for` / `projects` / `bindings`; the three item queries are each a
-filter over one shared `overlaid_items` view, while `steps_for` and
-`projects` (over `SyncMirror::all_projects`) read the mirror directly — no
-mutation entry point mints a Step or a Project, so there is nothing
-optimistic to overlay there.
+written as an ordinary absolute-value CAS `PUT`), and `Core::create_rule` /
+`Core::patch_rule` (#140's rules editor — a `POST`/`PATCH` against
+`rules`, the same closed CAS shape as every entry above). **All six enqueue
+through `SyncCycle::enqueue` and none of them may reach
+`OutboundQueue::enqueue`** — the durability rule above is not per-caller
+advice, it is what makes an offline capture, act, triage, binding or rule
+edit survive at all. All six take a caller-minted `seed` (deterministic id,
+same no-clock/no-RNG reasoning). The reads are `frontier` / `triage_inbox` /
+`blocked` / `steps_for` / `projects` / `bindings` / `rules`; the three item
+queries are each a filter over one shared `overlaid_items` view, while
+`steps_for` and `projects` (over `SyncMirror::all_projects`) and `rules`
+(over `SyncMirror::all_rules`) read the mirror directly — no mutation entry
+point mints a Step, a Project or (unlike every other entry point here) an
+optimistic `Rule` overlay, so there is nothing optimistic to overlay for
+any of them; see the rules section below for why `Core::rules` in
+particular reads the mirror bare.
 
 **Bindings are `settings` rows and nothing more** (#118, ADR-0015).
 `bindings.rs` holds the closed, kebab-case, **unversioned** key vocabulary —
@@ -667,6 +672,49 @@ overlay-blind would tell a reader nothing is pending while something still
 is. It is keyed one entry per item id in FIFO order (last enqueued wins),
 which leaves the narrow `entry_id` gap `Core::act`'s own doc records —
 flagged there, not fixed.
+
+**The rules UI is #140's, and it is built on the same shape as bindings —
+an ordinary CAS-synced table, no bespoke plumbing.** `rules` is a table in
+the client mirror exactly like `settings`, `routes` or `fog`: it rides the
+ordinary delta pull and full sweep with no soft-delete flag of its own
+(`SyncMirror::all_rules`, ADR-0003's absence-demotion is what retires a
+row), and `Core::create_rule` / `Core::patch_rule` are the two mutation
+entry points above, `POST`/`PATCH` against `rules` through the same
+`SyncCycle::enqueue` durability rule and the same generic rebase-or-dead-
+letter conflict handling every other CAS write here already has — #140
+deliberately adds no bespoke conflict surface for rules. The one deviation
+from that symmetry is deliberate: unlike `bindings` (and unlike `capture`/
+`act`/`triage`), `Core::rules` carries **no optimistic overlay** — a
+locally-created or -patched rule becomes visible once the next completed
+cycle pulls it back, the same "read the mirror directly" contract
+`Core::steps_for`/`Core::projects` already follow for entities no mutation
+entry point overlays.
+
+`client/web/src/screens/rules/` is the pure-module half, the same split
+every other screen keeps: `registry.ts` reads the kind cascade (kind, then
+field, then operator, then value widget) straight off the exported kind
+registry (#133, `hummingbird_domain::kind_registry_json`) rather than
+hand-maintaining a second copy, so a kind added upstream surfaces with no
+UI change; `condition-editor.ts`, `operators.ts`, `duration.ts` and
+`deadline-picker.ts` hold the condition-row editing rules and value
+parsing; `validity.ts` decides whether a draft rule is save-worthy; and
+`RulesScreen.tsx` only threads React state through them. `backtest.ts` is
+the one that carries a documented, deliberate gap rather than a silent
+one: ADR-0011 asks for "re-fetch recent history and show which events a
+draft rule would have promoted," and this backtest answers it as a pure,
+client-side port of ADR-0013's evaluation semantics (never a call into
+`hummingbird-rules-engine`, a native-only crate this wasm build has no path
+to), restricted to `item_threshold` — the one kind this client holds raw
+material for; every other kind (`email`, `calendar_event`,
+`snapshot_change`, `alert_raised`) reports `"unavailable"` rather than a
+silent zero. Its corpus is deliberately narrow: `sweep_tick` evaluates
+every non-archived item (`load_live_items`), but this backtest only ever
+sees whatever `items` its caller passes — today `task.frontier`,
+`Ready`/`InProgress`, unarchived, *and* unblocked (`Core::frontier`), so
+triage-stage and blocked items never enter the count. That gap is not
+hidden behind a bare match count: the on-screen copy names the corpus
+explicitly, so a reader can't mistake this backtest's answer for the
+sweep's own.
 
 `client/core/src/rank.rs` is the other top-level module beside `Core`, and
 it is no part of the sync engine: `rank()` (#162) is

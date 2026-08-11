@@ -50,12 +50,12 @@ tomorrow at the address, so what is photographed is an answered, imminent
 pane); there is deliberately no demo-only rendering of the region, so the
 capture is the shipping component. The empty
 states matter on their own: they are what a new device actually shows, and
-no fixture screen exercises them. **Rules is the one screen `?demo` does not
-populate** (#140): it reads the live task store (`task.rules`/
-`task.kindRegistry`), not the `demo` fixture object every other screen here
-takes, so its capture is the honest "core still loading" state on a dev
-machine with no `wrangler dev` behind it — a real busy state, not a
-fixture gap.
+no fixture screen exercises them. **Rules is populated under `?demo` too**
+(#140): `demo-data.ts` carries its own `ruleDetails` / `ruleKindRegistry` /
+`ruleBacktestItems`, wired at `App.tsx`'s `screen === "rules"` branch
+alongside every other screen's `demo ? … : task.…` split, so its capture is
+a deterministic, populated rules screen — condition rows, toggles and a
+backtest count — the same as the other five.
 
 There are **no committed golden images and no pixel diff.** The project has
 no baseline history, and a pixel gate with nobody to arbitrate it produces

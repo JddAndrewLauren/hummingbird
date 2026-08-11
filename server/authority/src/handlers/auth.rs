@@ -98,7 +98,8 @@ pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
         ("POST", ["items"]) => matches!(scope, Scope::Device | Scope::Sweeper),
         ("POST", ["alerts"]) => matches!(scope, Scope::Ingest),
         ("POST", ["snapshots"]) => matches!(scope, Scope::Ingest),
-        // The one read a non-device scope gets (#120). An ingest token's
+        // The first read a non-device scope got (#120; #135-137 below add
+        // two more, `rules` and `snapshots`). An ingest token's
         // poller needs the binding that tells it *what* to poll, and the
         // alternative — duplicating that URL into the poller's own
         // environment — would give the one fact the binding editor exists to

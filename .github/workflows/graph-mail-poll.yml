@@ -3,7 +3,7 @@
 # each new message in memory against the live rule set, and upserts an
 # alert for a match — never anything else. Non-matches never touch storage.
 #
-# A third Actions `schedule:`, on `gmail-poll.yml`/`calendar-poll.yml`'s own
+# A fourth Actions `schedule:`, on `gmail-poll.yml`/`calendar-poll.yml`'s own
 # reasoning: this lane has no competing clock (ADR-0011 assigns this
 # cadence to nothing else, and nothing else polls M365 mail).
 name: graph-mail-poll

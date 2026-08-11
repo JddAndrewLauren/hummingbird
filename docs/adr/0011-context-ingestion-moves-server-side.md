@@ -221,7 +221,7 @@ added.
 
 ## Amendment: #137's M365 credential is narrower in kind, but not yet narrower in blast radius
 
-*2026-08-11, from #137's implementation.*
+*2026-08-10, from #137's implementation.*
 
 #135/#136 each resolved their own leg of the "Worker secret vs GitHub
 Actions secret" question above by narrowing the OAuth grant to the least

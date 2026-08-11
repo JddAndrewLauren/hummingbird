@@ -5,7 +5,7 @@
 # There is no `busy_now` snapshot here — that gauge belongs to #136's
 # Google Calendar leg only.
 #
-# A fourth Actions `schedule:`, on the other three pollers' own reasoning:
+# A fifth Actions `schedule:`, on the other four pollers' own reasoning:
 # no competing clock (ADR-0011 assigns this cadence to nothing else, and
 # nothing else polls M365 calendar).
 name: graph-calendar-poll

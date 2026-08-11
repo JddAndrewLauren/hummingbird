@@ -222,8 +222,8 @@ request 403 GET "/api/snapshots?source=home-assistant/v1&key=x" '' "$INGEST"
 [ -z "$BODY" ] || fail "snapshot read 403 leaked a body: $BODY"
 request 404 GET "/api/snapshots?source=healthchecks/v1&key=no-such-key" '' "$INGEST"
 
-# GET /api/rules (#135-137): every non-device scope reaches two routes now,
-# not one — this is the poller's own read of the live rule set it
+# GET /api/rules (#135-137): every non-device scope reaches three routes
+# now, not one — this is the poller's own read of the live rule set it
 # evaluates in memory. A device token reads every rule; an ingest token's
 # read is filtered to the rules its bound source's event_kind may see
 # (`rules::event_kinds_readable_by`) plus every any-kind rule. The smoke
@@ -237,7 +237,8 @@ request 200 GET /api/rules '' "$INGEST"
 request 403 GET /api/rules '' "$SWEEPER"
 [ -z "$BODY" ] || fail "rules 403 leaked a body: $BODY"
 
-# The two reads a non-device scope reaches, and settings' unset case.
+# The third of those reads (settings, alongside snapshots and rules above),
+# and settings' unset case.
 request 201 PUT /api/settings/city-waste-page '{"expected_version":0,"value":"https://city.example/x"}' "$DEVICE"
 request 200 GET /api/settings/city-waste-page '' "$INGEST"
 [ "$(jq -r '.value' <<<"$BODY")" = '"https://city.example/x"' ] || fail "settings read: $BODY"
