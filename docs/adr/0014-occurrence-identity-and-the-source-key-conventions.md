@@ -495,8 +495,15 @@ finds but does not declare `writes_alerts()` for, and
 `handlers/snapshots.rs::ingest` its `writes_snapshots()` mirror — each a
 400 naming the source and the table, both **after** the existing
 structural (400) validations and **before** the token-source mismatch
-(403) check, so a malformed payload or a wrong-source token still reports
-its own problem first. A source the registry has never heard of is left
+(403) check. A malformed payload therefore still reports its own problem
+first; a wrong-source token does not. A token bound elsewhere that posts a
+declared-but-wrong-table source is answered with this 400's body, not the
+empty 403 it would otherwise get — which discloses nothing, since the only
+facts the body names are the source string the caller itself sent and the
+table it itself chose, and it is the more useful of the two answers for the
+case the check exists for: a poller aimed at the wrong lane learns *that*,
+instead of an empty 403 that reads as a credential problem it does not
+have. A source the registry has never heard of is left
 alone at both write sites: enrollment itself stays the mint gate's sole
 job, and every legitimately-minted ingest token has already passed it —
 this is defense in depth for a *declared-but-wrong-table* source, not a

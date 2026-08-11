@@ -6,7 +6,7 @@
 # COPY lines reach into .claude/skills/, so every flyctl command here must
 # be run from the repo root with an explicit --config/--dockerfile, e.g.:
 #   fly deploy --config runner/fly.toml --dockerfile runner/Dockerfile
-# See runner/README.md for the full deploy runbook.
+# See docs/runner.md ("Deploy runbook") for the full deploy runbook.
 
 app = "hummingbird-runner"
 primary_region = "sjc"

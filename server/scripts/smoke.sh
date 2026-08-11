@@ -190,6 +190,77 @@ request 200 GET "/api/changes?since=0" '' "$DEVICE"
 request 200 PATCH "/api/alerts/$ALERT_ID" "{\"expected_version\":$AV,\"dismissed_at\":1}" "$DEVICE"
 [ "$(jq -r '.dismissed_at' <<<"$BODY")" = "1" ] || fail "dismiss did not apply: $BODY"
 
+# ------------------------------------------- webhook ingest -> deliver
+
+# #255 made `POST /api/alerts` call the same `hummingbird_authority::deliver`
+# that #138's sweep tick uses. Until here this script seeds no rule at all, so
+# `evaluate_and_deliver` returns before `deliver` is ever reached and the whole
+# hook could be deleted with every assertion above still green.
+#
+# **Nothing about a logged delivery is readable back through the API.**
+# `deliveries` carries no `version` column, so it is deliberately not a
+# sweep/delta lane (`changes.rs`'s own note, alongside `push_targets`), there
+# is no route that reads it, and the handler's `ApiResponse::deliveries` is
+# drained by the worker shim (`std::mem::take`) before the body is serialized
+# — the alert row a delivery was logged for is byte-identical to one it was
+# not. So the wire-visible proof is the lane **failing closed**: `wrangler dev`
+# sets no `FCM_SERVICE_ACCOUNT` secret, and `worker/src/lib.rs` answers each
+# `DeliveryOutcome::Logged` it is handed with exactly one `console_error!`
+# carrying the word "unsendable" — and answers a `Suppressed` outcome with
+# nothing at all. That word is therefore a faithful one-per-delivery-row
+# counter for this run, and asserting on it is asserting that the claim row
+# was committed, not that anything was sent (nothing is, and per CLAUDE.md
+# nothing may be retried).
+UNSENDABLE_LOG=/tmp/wrangler-smoke.log
+# Counted over the whole log with newlines collapsed, and on a single
+# unhyphenated word, so wrangler's own line wrapping cannot split a match.
+# `grep` exits 1 on no match, which under `pipefail` would abort the script
+# on the legitimate zero — hence the `|| true`.
+unsendable_count() {
+  tr '\n' ' ' <"$UNSENDABLE_LOG" | { grep -o 'unsendable' || true; } | wc -l | tr -d ' '
+}
+[ "$(unsendable_count)" = "0" ] || fail "a delivery was logged before any rule existed"
+
+# An enabled rule naming no `event_kind` ("any kind") with no conditions
+# matches every event, including the `alert_raised` one the ingest hook
+# synthesises; one live push target is what keeps `deliver` off its
+# `NoTargets` suppression, which logs nothing by design.
+request 201 POST /api/rules \
+  '{"id":"r-smoke","name":"ring on any alert","conditions":[],"severity":"high","tier":"normal"}' "$DEVICE"
+request 201 POST /api/push_targets \
+  '{"id":"pt-smoke","name":"smoke device","platform":"android","fcm_token":"smoke-fcm-token"}' "$DEVICE"
+
+PROBE='{"source":"city-waste/v2","source_key":"deliver-probe","title":"collection moved","severity":"high"}'
+request 201 POST /api/alerts "$PROBE" "$INGEST"
+PROBE_AV=$(jq -r '.version' <<<"$BODY")
+# The byte-identical replay: `upsert` is a no-op, `deliver` is still called
+# unconditionally, and its `UNIQUE(alert_id, rule_id, generation, severity)`
+# dedupe is what must absorb it — same `raised_at` (kept, not restamped) and
+# same severity, so the same generation.
+request 200 POST /api/alerts "$PROBE" "$INGEST"
+[ "$(jq -r '.version' <<<"$BODY")" = "$PROBE_AV" ] || fail "delivery probe replay bumped: $BODY"
+
+# A second, distinct occurrence is the barrier that makes the negative above
+# assertable rather than a timed guess: the sends run in a `wait_until`
+# future, so "no second line yet" could just mean "not flushed yet". This
+# raise is issued only after the replay has already been answered — and the
+# replay's suppression was decided synchronously, inside its own request —
+# so once the barrier's line is visible, a duplicate for the first probe
+# would have been too.
+request 201 POST /api/alerts \
+  '{"source":"city-waste/v2","source_key":"deliver-probe-2","title":"second occurrence","severity":"high"}' "$INGEST"
+
+for _ in $(seq 1 30); do
+  UNSENDABLE=$(unsendable_count)
+  [ "$UNSENDABLE" -ge 2 ] && break
+  sleep 1
+done
+[ "${UNSENDABLE:-0}" -ge 2 ] ||
+  fail "POST /api/alerts logged no delivery (saw $UNSENDABLE); the #255 hook did not run. Last 40 log lines:
+$(tail -40 "$UNSENDABLE_LOG")"
+[ "$UNSENDABLE" = "2" ] ||
+  fail "the replayed raise was delivered a second time ($UNSENDABLE deliveries, wanted 2) — the transitions-only dedupe is gone"
+
 # ---------------------------------------------------------- snapshots
 
 # The server-polled lane (#120), through the real DO rather than rusqlite:
