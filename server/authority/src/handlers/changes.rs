@@ -10,25 +10,38 @@
 //! on a cursor at all — they are server-side machinery, not delta-pulled
 //! records. See [`ChangesResponse`]'s twin note.
 //!
+//! A fifth table appears only *partially*: `alerts` is bounded by
+//! ADR-0016's wire horizon ([`ALERT_HORIZON_MS`]). A live alert rides every
+//! sweep forever, at any age; a settled one leaves the wire once every
+//! stamp that settled it is older than the horizon. The row itself is never
+//! deleted — this is a limit on what is transmitted, never on what is kept.
+//!
 //! [`ChangesResponse`]: hummingbird_domain::ChangesResponse
 
-use hummingbird_domain::ChangesResponse;
+use hummingbird_domain::{settled_at, ChangesResponse};
 
 use super::{error, json, query_param, read_meta_version, ApiResponse};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
-pub fn changes(query: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+/// ADR-0016: how far back the wire carries a *settled* alert. A named
+/// `const` on `ALARM_INTERVAL_MS`'s precedent — readable rather than a
+/// buried literal — and deliberately not a `settings` row: `settings` is
+/// device-writable and has no DELETE, so an accidental `0` would be an
+/// unrecoverable change to what every device can see.
+pub const ALERT_HORIZON_MS: i64 = 90 * 24 * 60 * 60 * 1_000;
+
+pub fn changes(query: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
     let Some(since) = query_param(query, "since").and_then(|v| v.parse::<i64>().ok()) else {
         return Ok(error(400, "validation", "since must be an integer"));
     };
-    changes_since(since, sql)
+    changes_since(since, now_ms, sql)
 }
 
-pub fn sweep(sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
-    changes_since(0, sql)
+pub fn sweep(now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+    changes_since(0, now_ms, sql)
 }
 
-fn changes_since(since: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+fn changes_since(since: i64, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
     // The gate: one meta row read answers "anything new?" — the unchanged
     // workspace never touches an entity table (ADR-0008's rows-read
     // argument).
@@ -48,7 +61,29 @@ fn changes_since(since: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
         items: pull(sql, since, "items", "id", super::items::item_from_row)?,
         steps: pull(sql, since, "steps", "id", super::steps::step_from_row)?,
         blocked_by: pull(sql, since, "blocked_by", "item_id, blocker_id", super::blocked_by::edge_from_row)?,
-        alerts: pull(sql, since, "alerts", "id", super::alerts::alert_from_row)?,
+        // The horizon is applied here, inside the one code path the sweep
+        // and the delta share, so their byte-for-byte agreement holds by
+        // construction. On the delta it is inert *in practice*: every
+        // writer stamps the settling field from its own clock at the
+        // moment of the write, so a row above the cursor carries a recent
+        // stamp and passes. That is a fact about the writers, not a
+        // guarantee — the cursor measures write order, never wall-clock
+        // age — so a settlement stamped with a historical time is omitted
+        // from the delta that would have carried it, and the device's next
+        // sweep is what retires it. ADR-0016, "The second gap".
+        alerts: pull(sql, since, "alerts", "id", super::alerts::alert_from_row)?
+            .into_iter()
+            .filter(|alert| {
+                settled_at(
+                    alert.raised_at,
+                    alert.resolved_at,
+                    alert.dismissed_at,
+                    alert.expires_at,
+                    now_ms,
+                )
+                .is_none_or(|settled| settled >= now_ms - ALERT_HORIZON_MS)
+            })
+            .collect(),
         context_snapshots: pull(
             sql,
             since,

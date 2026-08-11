@@ -162,8 +162,8 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("GET", ["snapshots"]) => {
             snapshots::get(req.query, principal.source.as_deref(), sql)
         }
-        ("GET", ["changes"]) => changes::changes(req.query, sql),
-        ("GET", ["sweep"]) => changes::sweep(sql),
+        ("GET", ["changes"]) => changes::changes(req.query, now_ms, sql),
+        ("GET", ["sweep"]) => changes::sweep(now_ms, sql),
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
         (

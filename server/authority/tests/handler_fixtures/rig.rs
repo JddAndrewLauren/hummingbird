@@ -303,11 +303,22 @@ pub fn patch(sql: &dyn Sql, id: &str, body: &str, now_ms: i64) -> ApiResponse {
 }
 
 pub fn changes(sql: &dyn Sql, query: &str) -> ApiResponse {
-    req(sql, "GET", "/api/changes", Some(query), None, 0)
+    changes_at(sql, query, 0)
 }
 
 pub fn sweep(sql: &dyn Sql) -> ApiResponse {
-    req(sql, "GET", "/api/sweep", None, None, 0)
+    sweep_at(sql, 0)
+}
+
+/// The two reads at an explicit clock — ADR-0016's horizon is the first
+/// thing either of them reads a clock for, so every test about it names
+/// `now_ms` rather than inheriting the `0` above.
+pub fn changes_at(sql: &dyn Sql, query: &str, now_ms: i64) -> ApiResponse {
+    req(sql, "GET", "/api/changes", Some(query), None, now_ms)
+}
+
+pub fn sweep_at(sql: &dyn Sql, now_ms: i64) -> ApiResponse {
+    req(sql, "GET", "/api/sweep", None, None, now_ms)
 }
 
 pub fn put_setting(sql: &dyn Sql, key: &str, body: &str, now_ms: i64) -> ApiResponse {

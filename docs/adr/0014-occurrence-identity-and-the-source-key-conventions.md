@@ -532,11 +532,10 @@ already used for retirement before `city-waste/v1` gave it a real one.
 
 ## Deferred, not rejected
 
-- **Pruning acked alert rows** (#155). Nothing ever deletes an alert, so the
-  table grows monotonically; the cost lands on `GET /api/sweep`, the
-  full-sweep backstop, and on a cold client's first sync. Needs its own
-  decision — predicate, tombstone-versus-delete, and who runs it — and
-  explicitly not a TTL.
+- **Pruning acked alert rows** (#155). Decided in
+  [ADR-0016](0016-the-alert-horizon.md): a *wire* horizon, not a prune —
+  rows are never deleted, and a settled alert stops riding the sweep 90 days
+  after every stamp that settled it. Not a TTL: a live alert rides forever.
 - **A `word`-boundary-style refinement for reply-all storms.** If
   message-level keying on a hot thread demonstrates as noise, the answer is
   a rule condition, not a key change.

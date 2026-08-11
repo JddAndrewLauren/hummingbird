@@ -81,7 +81,28 @@ amended ADR-0009 schema plus the notification lane's
 `SCHEMA_VERSION 4`, ADR-0012/0013/0014/0015), entity-level CAS writes (absolute
 sets + `expected_version`, 409 carries the current entity, creates
 idempotent by client id), the all-tables delta pull with `GET /api/sweep`
-as its byte-identical backstop, bearer-token auth (sha256 at rest; scopes
+as its byte-identical backstop — complete for every table but `alerts`,
+which is bounded by ADR-0016's **wire horizon** (`ALERT_HORIZON_MS`, 90
+days): a *live* alert rides every sweep forever at any age, a settled one
+leaves the wire once `hummingbird_domain::settled_at` — the sibling of
+`is_live`, so the predicate still has exactly one spelling — puts every
+stamp that settled it past the horizon, and the row itself is never
+deleted. The filter sits inside `changes_since`, the path both reads
+already share, so the byte-agreement survives, and it is inert on the delta
+**in practice but not by construction**: every writer stamps the settling
+field from its own clock at the write, so a row above the cursor carries a
+recent stamp and passes — but the cursor measures write order, never
+wall-clock age, so a settlement stamped historically (clock skew, a
+dismissal queued offline past the horizon, a re-raise dragging `expires_at`
+backwards) is omitted from the delta that would have carried it while the
+cursor advances past it, and since `apply_delta` is additive another device
+keeps rendering that alert live until its next sweep demotes it by absence.
+ADR-0016 records both gaps: that one, bounded by ADR-0007's app-open/daily
+sweep and carrying the flip condition (a writer that stamps a settlement
+with a historical time makes it real and the delta needs an explicit
+demotion signal), and the silence about where history starts — so whoever
+builds a real alerts-history screen ships `alerts_horizon_ms` on
+`ChangesResponse` in that same PR. Also bearer-token auth (sha256 at rest; scopes
 `device`/`sweeper`/`ingest`; `/api/admin/tokens` gated by `ADMIN_SECRET`;
 401 = bad credential, 403 = wrong scope or — for an `ingest` token, which is
 bound to one alert source — a source mismatch, all empty-bodied), the
