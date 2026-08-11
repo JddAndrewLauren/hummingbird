@@ -67,6 +67,15 @@ pub struct CalendarItem {
     pub body_preview: String,
     pub web_link: Option<String>,
     pub organizer_email: Option<String>,
+    /// Graph's `location.displayName` — `None` when absent or empty (Graph
+    /// sends `"displayName": ""` for an event with no location, and an
+    /// empty-but-present string is exactly what ADR-0013's missing-field
+    /// rule cannot see; `calendar_poll`'s `non_empty_text` discipline).
+    pub location: Option<String>,
+    /// Graph's top-level `responseStatus.response` — the operator's own
+    /// response to this event (`"accepted"`, `"declined"`, …). `None` when
+    /// absent or empty, same reasoning as `location`.
+    pub response: Option<String>,
     pub attendee_emails: Vec<String>,
     pub is_all_day: bool,
     pub starts_at_ms: i64,
@@ -108,6 +117,18 @@ pub fn parse_calendar_item(json: &str) -> Result<ParsedCalendarItem, CalendarIte
         .and_then(|e| e.get("address"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let location = object
+        .get("location")
+        .and_then(|l| l.get("displayName"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let response = object
+        .get("responseStatus")
+        .and_then(|r| r.get("response"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let series_master_id = object.get("seriesMasterId").and_then(|v| v.as_str()).map(str::to_string);
     let is_all_day = object.get("isAllDay").and_then(|v| v.as_bool()).unwrap_or(false);
     let attendee_emails = object
@@ -128,6 +149,8 @@ pub fn parse_calendar_item(json: &str) -> Result<ParsedCalendarItem, CalendarIte
         body_preview,
         web_link,
         organizer_email,
+        location,
+        response,
         attendee_emails,
         is_all_day,
         starts_at_ms,
@@ -209,6 +232,31 @@ mod tests {
         let ParsedCalendarItem::Live(evt) = parse_calendar_item(&json).unwrap() else { panic!() };
         assert_eq!(evt.organizer_email.as_deref(), Some("boss@contoso.com"));
         assert_eq!(evt.attendee_emails, vec!["me@contoso.com".to_string()]);
+    }
+
+    #[test]
+    fn location_and_response_are_read_from_their_nested_graph_shapes() {
+        let json = event_json(
+            "evt-1",
+            r#", "location": {"displayName": "Room 4"},
+                "responseStatus": {"response": "accepted", "time": "2026-08-10T00:00:00Z"}"#,
+        );
+        let ParsedCalendarItem::Live(evt) = parse_calendar_item(&json).unwrap() else { panic!() };
+        assert_eq!(evt.location.as_deref(), Some("Room 4"));
+        assert_eq!(evt.response.as_deref(), Some("accepted"));
+    }
+
+    /// Graph sends `"displayName": ""` for an event with no location — an
+    /// empty-but-present string must read as absent, never as a fact.
+    #[test]
+    fn an_empty_location_or_response_reads_as_absent() {
+        let json = event_json(
+            "evt-1",
+            r#", "location": {"displayName": ""}, "responseStatus": {"response": ""}"#,
+        );
+        let ParsedCalendarItem::Live(evt) = parse_calendar_item(&json).unwrap() else { panic!() };
+        assert_eq!(evt.location, None);
+        assert_eq!(evt.response, None);
     }
 
     #[test]

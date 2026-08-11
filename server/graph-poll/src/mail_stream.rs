@@ -17,6 +17,7 @@
 use crate::evaluate::Candidate;
 use crate::mail_event::mail_message_to_candidate;
 use crate::mail_message::{parse_mail_message, ParsedMailMessage};
+use crate::raw_id::raw_item_id;
 
 /// One poll's fold result: the candidates ready for
 /// [`crate::evaluate::evaluate_events`], plus every item skipped and why.
@@ -33,11 +34,15 @@ pub struct MailBatch {
 pub fn fold_mail_messages(raw_items: &[String]) -> MailBatch {
     let mut candidates = Vec::new();
     let mut skipped = Vec::new();
-    for (i, raw) in raw_items.iter().enumerate() {
+    for raw in raw_items {
         match parse_mail_message(raw) {
             Ok(ParsedMailMessage::Live(msg)) => candidates.push(mail_message_to_candidate(&msg)),
-            Ok(ParsedMailMessage::Removed) => skipped.push((i.to_string(), "removed".to_string())),
-            Err(e) => skipped.push((i.to_string(), e.to_string())),
+            // The cursor advances past a skipped item permanently, so its
+            // skip entry is the log's only trace — name the real Graph id
+            // read off the raw body (`raw_id.rs`'s own doc), never an
+            // array index or a placeholder.
+            Ok(ParsedMailMessage::Removed) => skipped.push((raw_item_id(raw), "removed".to_string())),
+            Err(e) => skipped.push((raw_item_id(raw), e.to_string())),
         }
     }
     MailBatch { candidates, skipped }
@@ -67,7 +72,7 @@ mod tests {
         let raw = vec![r#"{"id": "x1", "@removed": {"reason": "deleted"}}"#.to_string(), message_json("<c@d.com>")];
         let batch = fold_mail_messages(&raw);
         assert_eq!(batch.candidates.len(), 1);
-        assert_eq!(batch.skipped, vec![("0".to_string(), "removed".to_string())]);
+        assert_eq!(batch.skipped, vec![("x1".to_string(), "removed".to_string())]);
     }
 
     #[test]
@@ -76,6 +81,22 @@ mod tests {
         let batch = fold_mail_messages(&raw);
         assert_eq!(batch.candidates.len(), 1);
         assert_eq!(batch.skipped.len(), 1);
+        // Not even valid JSON, so there is no `id` to recover.
+        assert_eq!(batch.skipped[0].0, "?");
+    }
+
+    /// The cursor advances past a skipped item permanently, so the skip
+    /// entry is the log's only trace — a parse failure whose raw body
+    /// still carries `"id"` must name it, never an array index or `"?"`.
+    #[test]
+    fn an_unparseable_item_with_a_known_id_names_it_instead_of_a_placeholder() {
+        // Valid JSON with an id, missing `receivedDateTime` — the typed
+        // parse fails, but the raw body still carries `"id"`.
+        let raw = vec![r#"{"id": "m1", "subject": "s"}"#.to_string()];
+        let batch = fold_mail_messages(&raw);
+        assert!(batch.candidates.is_empty());
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].0, "m1");
     }
 
     #[test]

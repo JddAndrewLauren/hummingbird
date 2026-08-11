@@ -88,6 +88,7 @@ mod mail_cursor;
 mod mail_event;
 mod mail_message;
 mod mail_stream;
+mod raw_id;
 mod resume;
 
 pub use alert::plan as plan_alert;

@@ -11,6 +11,7 @@
 use crate::calendar_event::calendar_item_to_candidate;
 use crate::calendar_item::{parse_calendar_item, ParsedCalendarItem};
 use crate::evaluate::Candidate;
+use crate::raw_id::raw_item_id;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalendarBatch {
@@ -26,7 +27,10 @@ pub fn fold_calendar_items(raw_items: &[String]) -> CalendarBatch {
         match parse_calendar_item(raw) {
             Ok(ParsedCalendarItem::Live(evt)) => candidates.push(calendar_item_to_candidate(&evt)),
             Ok(ParsedCalendarItem::Removed(id)) => skipped.push((id, "removed".to_string())),
-            Err(e) => skipped.push(("?".to_string(), e.to_string())),
+            // The cursor advances past this item permanently, so this is
+            // the log's only trace — recover the real id off the raw body
+            // (`raw_id.rs`'s own doc) rather than a placeholder.
+            Err(e) => skipped.push((raw_item_id(raw), e.to_string())),
         }
     }
     CalendarBatch { candidates, skipped }
@@ -66,6 +70,22 @@ mod tests {
         let batch = fold_calendar_items(&raw);
         assert_eq!(batch.candidates.len(), 1);
         assert_eq!(batch.skipped.len(), 1);
+        // Not even valid JSON, so there is no `id` to recover.
+        assert_eq!(batch.skipped[0].0, "?");
+    }
+
+    /// The cursor advances past a skipped item permanently, so the skip
+    /// entry is the log's only trace — a parse failure whose raw body
+    /// still carries `"id"` must name it, never a placeholder.
+    #[test]
+    fn an_unparseable_item_with_a_known_id_names_it_instead_of_a_placeholder() {
+        // Valid JSON with an id, missing `start`/`end` — the typed parse
+        // fails with `MissingField`, but the raw body still carries `"id"`.
+        let raw = vec![r#"{"id": "e1", "subject": "s"}"#.to_string()];
+        let batch = fold_calendar_items(&raw);
+        assert!(batch.candidates.is_empty());
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.skipped[0].0, "e1");
     }
 
     #[test]

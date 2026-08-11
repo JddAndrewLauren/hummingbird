@@ -31,12 +31,12 @@ pub fn calendar_item_to_candidate(evt: &CalendarItem) -> Candidate {
     extras.insert("calendar".to_string(), FieldValue::Str(CALENDAR_ID.to_string()));
     extras.insert("title".to_string(), FieldValue::Str(title.clone()));
     extras.insert("organizer".to_string(), FieldValue::Str(evt.organizer_email.clone().unwrap_or_default()));
-    extras.insert("location".to_string(), FieldValue::Str(String::new()));
+    extras.insert("location".to_string(), FieldValue::Str(evt.location.clone().unwrap_or_default()));
     extras.insert("attendees".to_string(), FieldValue::StrList(evt.attendee_emails.clone()));
     extras.insert("starts_at".to_string(), FieldValue::Str(starts_at.clone()));
     extras.insert("ends_at".to_string(), FieldValue::Str(ends_at));
     extras.insert("is_all_day".to_string(), FieldValue::Bool(evt.is_all_day));
-    extras.insert("response".to_string(), FieldValue::Str(String::new()));
+    extras.insert("response".to_string(), FieldValue::Str(evt.response.clone().unwrap_or_default()));
 
     let event = Event {
         source: M365_CALENDAR_V1.to_string(),
@@ -65,6 +65,8 @@ mod tests {
             body_preview: "quarterly numbers".to_string(),
             web_link: Some("https://outlook.office.com/calendar/item/abc".to_string()),
             organizer_email: Some("boss@contoso.com".to_string()),
+            location: Some("Room 4".to_string()),
+            response: Some("accepted".to_string()),
             attendee_emails: vec!["boss@contoso.com".to_string(), "me@contoso.com".to_string()],
             is_all_day: false,
             starts_at_ms: 1_786_871_400_000,
@@ -138,6 +140,45 @@ mod tests {
         let candidate = calendar_item_to_candidate(&evt());
         assert_eq!(candidate.event.extras.get("organizer"), Some(&FieldValue::Str("boss@contoso.com".to_string())));
         assert_eq!(candidate.event.extras.get("is_all_day"), Some(&FieldValue::Bool(false)));
+        assert_eq!(candidate.event.extras.get("location"), Some(&FieldValue::Str("Room 4".to_string())));
+        assert_eq!(candidate.event.extras.get("response"), Some(&FieldValue::Str("accepted".to_string())));
+    }
+
+    /// The failure this fix exists for (PR #277's review): `location`/
+    /// `response` used to be inserted as invented empty strings for facts
+    /// Graph actually carries. ADR-0013's missing-field rule (false even
+    /// when negated) covers only an ABSENT field — a PRESENT empty string
+    /// makes a negated condition like "NOT (location eq 'Room 4')" evaluate
+    /// TRUE for an event that is in fact in Room 4, firing an alert on an
+    /// invented value. With the real value parsed through, the negated
+    /// condition correctly does not match.
+    #[test]
+    fn a_negated_location_condition_does_not_fire_on_an_event_actually_at_that_location() {
+        use hummingbird_domain::{Condition, Rule, Tier};
+        use hummingbird_rules_engine::{evaluate_rules, RuleOutcome};
+
+        let rule = Rule {
+            id: "r-1".to_string(),
+            name: "not room 4".to_string(),
+            event_kind: Some("calendar_event".to_string()),
+            conditions: vec![Condition {
+                field: "location".to_string(),
+                op: "eq".to_string(),
+                value: serde_json::json!("Room 4"),
+                negate: true,
+            }],
+            severity: "high".to_string(),
+            tier: Tier::Normal,
+            enabled: true,
+            updated_at: 0,
+            version: 1,
+        };
+        let candidate = calendar_item_to_candidate(&evt()); // location: "Room 4"
+        let outcomes = evaluate_rules(&[rule], &candidate.event, "2026-08-15T09:00");
+        assert!(
+            outcomes.iter().all(|(_, o)| !matches!(o, RuleOutcome::Matched(_))),
+            "an event actually in Room 4 must not fire NOT(location eq 'Room 4')"
+        );
     }
 
     #[test]
