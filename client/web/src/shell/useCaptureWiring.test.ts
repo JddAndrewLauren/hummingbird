@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkerLike } from "../store/worker-client";
-import { submitCaptureRequest } from "./useCaptureWiring";
+import { mintSeed, submitCaptureRequest } from "./useCaptureWiring";
 
 // Round-2 review of PR #206: acceptance criterion 1 ("A capture is visible
 // in the list before any network call") did not reach runtime — nothing
@@ -78,5 +78,52 @@ describe("submitCaptureRequest", () => {
       .filter((message) => message.type === "capture")
       .map((message) => (message as { seed: string }).seed);
     expect(seeds[0]).not.toEqual(seeds[1]);
+  });
+});
+
+// #223: pins the non-deterministic half of the sync module's seed-minting
+// rule (client/core/src/sync/mod.rs) — a capture mints a *new* item, its
+// seed's hash becomes the item's id on the authority's client-id-keyed
+// create path, so two captures of identical text must never collide into
+// one item.
+describe("mintSeed", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // Through the real submit path, with the title AND the clock identical —
+  // `mintSeed()` itself takes neither, so only a whole-message assertion can
+  // actually claim "identical text".
+  it("two captures of identical text at the same nowMs mint different seeds", () => {
+    const worker = fakeWorker();
+
+    submitCaptureRequest(worker, "buy milk", 1_000);
+    submitCaptureRequest(worker, "buy milk", 1_000);
+
+    const captures = worker.postMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "capture") as Array<{
+      title: string;
+      seed: string;
+    }>;
+    expect(captures.map((message) => message.title)).toEqual(["buy milk", "buy milk"]);
+    expect(captures[0].seed).not.toEqual(captures[1].seed);
+  });
+
+  // The arm that could actually collide: without `crypto.randomUUID`, the
+  // fallback composes `Date.now()` (frozen here via a fake timer, so two
+  // calls land in the same millisecond — exactly the case the fallback's
+  // own comment names) with `Math.random()`, which is what must carry the
+  // uniqueness burden alone.
+  it("the crypto.randomUUID-less fallback still mints distinct seeds for two captures in the same millisecond", () => {
+    vi.stubGlobal("crypto", {});
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+
+    const first = mintSeed();
+    const second = mintSeed();
+
+    expect(first).not.toEqual(second);
   });
 });
