@@ -96,3 +96,29 @@ fn the_source_and_snapshot_key_agree_with_the_pane() {
     assert_eq!(hummingbird_domain::CITY_WASTE_V2, "city-waste/v2");
     assert_eq!(hummingbird_city_waste::body::SNAPSHOT_KEY, "collection");
 }
+
+/// The alert half of the wire, checked as **JSON** rather than as a struct.
+/// `restamp_on_change` carries a `skip_serializing_if`, so a wrong predicate
+/// would drop it silently and every daily re-poll would stop asking the
+/// server to decide the stamp — the dismissal-undoing bug, reintroduced by a
+/// serde attribute and invisible to any assertion on the struct.
+#[test]
+fn the_alert_this_poller_posts_carries_restamp_on_change_on_the_wire() {
+    use hummingbird_city_waste::alert::plan;
+    use hummingbird_city_waste::judge::judge;
+
+    let cadence = Cadence { anchor: Date::parse("2026-08-03").unwrap(), every_n_weeks: 1 };
+    let today = Date::parse("2026-08-12").unwrap();
+    let collected_on = Date::parse("2026-08-18").unwrap();
+    let ingest = plan(cadence, judge(cadence, collected_on, today), today)
+        .expect("a slide rings")
+        .ingest("America/Los_Angeles")
+        .expect("a real zone");
+
+    let wire: serde_json::Value = serde_json::to_value(&ingest).unwrap();
+    assert_eq!(wire["restamp_on_change"], serde_json::json!(true));
+    assert_eq!(wire["source"], "city-waste/v2");
+    assert_eq!(wire["source_key"], "2026-08-17");
+    assert_eq!(wire["subject_key"], "collection");
+    assert!(wire.get("raised_at").is_none(), "sending both is a 400");
+}
