@@ -4,7 +4,7 @@
 //! (ADR-0009 rule 3). `PATCH /api/alerts/:id` (device scope) writes the one
 //! human-owned field, `dismissed_at`, under normal CAS.
 
-use hummingbird_domain::{higher_severity, Alert, AlertIngest, AlertPatch};
+use hummingbird_domain::{find_source, higher_severity, Alert, AlertIngest, AlertPatch};
 
 use super::{
     auth, conflict, empty_status, error, json, parse_body, read_meta_version, write_meta_version,
@@ -51,6 +51,24 @@ pub fn ingest(
             "validation",
             "restamp_on_change and an explicit raised_at cannot both be sent",
         ));
+    }
+    // ADR-0014's 2026-08-11 amendment (#254): the registry's per-table
+    // `Writes` declaration has a reader on the alerts side, or it is
+    // decoration. A source the registry has never heard of is left alone
+    // here — enrollment itself is the mint gate's job
+    // (`admin_tokens.rs::mint`), and every legitimately-bound ingest token
+    // has already passed it — but a source the registry *does* know and
+    // does not declare for `alerts` (a future snapshot-only source) is
+    // rejected here rather than silently minting an alert under a table it
+    // was never enrolled to write.
+    if let Some(entry) = find_source(&ingest.source) {
+        if !entry.writes_alerts() {
+            return Ok(error(
+                400,
+                "validation",
+                &format!("`{}` is not declared for alerts", ingest.source),
+            ));
+        }
     }
     if token_source != Some(ingest.source.as_str()) {
         return Ok(empty_status(403));

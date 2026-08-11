@@ -54,7 +54,7 @@ fn identity_shifted_colon_mints_distinct_ids() {
 #[test]
 fn identical_re_raise_is_a_noop() {
     let sql = RusqliteSql::new();
-    let body = r#"{"source": "hc", "source_key": "k", "title": "down", "severity": "high"}"#;
+    let body = r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "severity": "high"}"#;
     ingest_alert(&sql, body, 1000);
     let resp = ingest_alert(&sql, body, 2000);
     assert_eq!(resp.status, 200, "re-raise is success, not conflict");
@@ -71,7 +71,7 @@ fn changed_re_raise_updates_source_fields_absolutely() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "body": "details", "severity": "high"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "body": "details", "severity": "high"}"#,
         1000,
     );
     // The source resolves the alert and stops sending body/severity. `body`
@@ -83,7 +83,7 @@ fn changed_re_raise_updates_source_fields_absolutely() {
     // contrasting case).
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "resolved_at": 5000}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "resolved_at": 5000}"#,
         6000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
@@ -100,13 +100,13 @@ fn severity_clears_once_the_alert_has_left_live() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "severity": "high"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "severity": "high"}"#,
         1000,
     );
     // Resolve it — the row leaves live.
     ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "severity": "high", "resolved_at": 2000}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "severity": "high", "resolved_at": 2000}"#,
         2000,
     );
     // A later raise (a fresh occurrence) that omits severity clears it,
@@ -114,7 +114,7 @@ fn severity_clears_once_the_alert_has_left_live() {
     // exception applies only while the row it is guarding is still live.
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down again"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down again"}"#,
         3000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
@@ -129,12 +129,12 @@ fn normal_mint_does_not_downgrade_a_live_urgent_alert() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "severity": "urgent"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "severity": "urgent"}"#,
         1000,
     );
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "still down", "severity": "normal"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "still down", "severity": "normal"}"#,
         2000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
@@ -149,12 +149,12 @@ fn urgent_mint_escalates_a_live_normal_alert() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "severity": "normal"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "severity": "normal"}"#,
         1000,
     );
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "still down", "severity": "urgent"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "still down", "severity": "urgent"}"#,
         2000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
@@ -170,12 +170,12 @@ fn an_unranked_severity_does_not_win_the_ratchet_or_panic() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "severity": "normal"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "severity": "normal"}"#,
         1000,
     );
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "still down", "severity": "something-weird"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "still down", "severity": "something-weird"}"#,
         2000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
@@ -194,7 +194,7 @@ fn dismissed_alert_replaying_the_original_raise_stays_dismissed() {
     let sql = RusqliteSql::new();
     let alert: Alert = body_as(&ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         1000,
     ));
     patch_at(
@@ -206,7 +206,7 @@ fn dismissed_alert_replaying_the_original_raise_stays_dismissed() {
 
     // A crash-and-replay of the exact original payload: raised_at is
     // omitted, so the stored stamp (1000) is kept — before the dismissal.
-    let resp = ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "down"}"#, 3000);
+    let resp = ingest_alert(&sql, r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#, 3000);
     let replayed: Alert = body_as(&resp);
     assert!(
         !replayed.is_live(3000),
@@ -222,7 +222,7 @@ fn dismissed_alert_re_raised_after_the_dismissal_is_live_again() {
     let sql = RusqliteSql::new();
     let alert: Alert = body_as(&ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         1000,
     ));
     patch_at(
@@ -234,7 +234,7 @@ fn dismissed_alert_re_raised_after_the_dismissal_is_live_again() {
 
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down again", "raised_at": 3000}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down again", "raised_at": 3000}"#,
         3000,
     );
     let re_raised: Alert = body_as(&resp);
@@ -247,12 +247,12 @@ fn re_raise_omitting_expires_at_clears_it() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down", "expires_at": 9000}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "expires_at": 9000}"#,
         1000,
     );
     // The source stops sending its TTL: absent clears, like every other
     // source-owned optional — and a cleared field is a real change.
-    let resp = ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "down"}"#, 2000);
+    let resp = ingest_alert(&sql, r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#, 2000);
     assert_eq!(resp.status, 200, "{}", resp.body);
     let alert: Alert = body_as(&resp);
     assert_eq!(alert.expires_at, None, "absent expires_at clears");
@@ -263,10 +263,10 @@ fn re_raise_omitting_expires_at_clears_it() {
 #[test]
 fn ingest_never_touches_the_human_owned_dismissal() {
     let sql = RusqliteSql::new();
-    ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "down"}"#, 1000);
+    ingest_alert(&sql, r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#, 1000);
     let alert: Alert = body_as(&ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         1000,
     ));
 
@@ -284,7 +284,7 @@ fn ingest_never_touches_the_human_owned_dismissal() {
     // deferred to wiring time; the server stays dumb.
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "still down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "still down"}"#,
         3000,
     );
     let re_raised: Alert = body_as(&resp);
@@ -297,7 +297,7 @@ fn dismiss_is_cas_set_and_clear() {
     let sql = RusqliteSql::new();
     let alert: Alert = body_as(&ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         0,
     ));
     let path = format!("/api/alerts/{}", alert.id);
@@ -325,7 +325,7 @@ fn dismiss_setting_dismissed_at_to_its_current_value_is_a_noop() {
     let sql = RusqliteSql::new();
     let alert: Alert = body_as(&ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         0,
     ));
     let path = format!("/api/alerts/{}", alert.id);
@@ -344,7 +344,7 @@ fn dismiss_value_identical_dismissed_at_noops_even_when_the_row_reads_back_as_re
     let sql = RusqliteSql::new();
     let alert: Alert = body_as(&ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         0,
     ));
     let path = format!("/api/alerts/{}", alert.id);
@@ -363,7 +363,7 @@ fn dismiss_cannot_write_source_owned_fields() {
     let sql = RusqliteSql::new();
     let alert: Alert = body_as(&ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         0,
     ));
     let resp = patch_at(
@@ -433,7 +433,7 @@ fn an_alert_naming_no_subject_is_the_norm_and_not_an_error() {
     let sql = RusqliteSql::new();
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#,
         1000,
     );
     assert_eq!(resp.status, 201, "{}", resp.body);
@@ -447,7 +447,7 @@ fn an_empty_subject_key_is_rejected() {
     let sql = RusqliteSql::new();
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "subject_key": "", "title": "down"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "subject_key": "", "title": "down"}"#,
         1000,
     );
     assert_eq!(resp.status, 400, "{}", resp.body);
@@ -560,8 +560,8 @@ fn the_restamp_uses_the_servers_write_clock() {
 #[test]
 fn without_the_flag_a_changed_re_raise_keeps_the_stored_stamp() {
     let sql = RusqliteSql::new();
-    ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "down"}"#, 1_000);
-    let resp = ingest_alert(&sql, r#"{"source": "hc", "source_key": "k", "title": "still down"}"#, 9_000);
+    ingest_alert(&sql, r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down"}"#, 1_000);
+    let resp = ingest_alert(&sql, r#"{"source": "healthchecks/v1", "source_key": "k", "title": "still down"}"#, 9_000);
     let alert: Alert = body_as(&resp);
     assert_eq!(alert.raised_at, 1_000, "the pre-#120 behaviour is unchanged");
 }
@@ -572,7 +572,7 @@ fn restamp_on_change_with_an_explicit_raised_at_is_a_400() {
     let sql = RusqliteSql::new();
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "hc", "source_key": "k", "title": "down",
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down",
             "restamp_on_change": true, "raised_at": 5}"#,
         0,
     );
