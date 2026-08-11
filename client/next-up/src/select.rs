@@ -33,6 +33,27 @@ pub struct Selection {
     pub blocked_dropped: usize,
 }
 
+/// #10's fourth axis, *who does this*, as a selection question.
+///
+/// It lives here and not in [`hummingbird_core::rank`] deliberately.
+/// `rank`'s six steps are #162's and frozen; a seventh concern there would
+/// be exactly the drift both crates' module docs warn about. And it is
+/// genuinely a *selection*: "only what I could hand off" narrows which
+/// items are eligible, it does not reorder eligible ones. Context is the
+/// one hard filter inside ranking because an unmarked item survives it;
+/// this filter is the opposite — unmarked means the human does it, so an
+/// unmarked item is precisely what [`Who::AgentOnly`] excludes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Who {
+    /// Everything that qualifies, marked or not. The default, and the
+    /// common case: a survey is normally "what should *I* do".
+    #[default]
+    Anyone,
+    /// Only items carrying `items.agent` — the 9pm case where the honest
+    /// answer is not a smaller task but *not one of mine*.
+    AgentOnly,
+}
+
 /// The selection rules, in order:
 ///
 /// - an archived item is gone, whatever its stage (ADR-0003: rows are
@@ -43,9 +64,15 @@ pub struct Selection {
 ///   is actionable whether or not it has been groomed;
 /// - `Blocked` is waiting on the world and `Done` is shut; neither ever
 ///   enters the candidates;
+/// - a declared [`Who::AgentOnly`] keeps only `agent`-marked items;
 /// - finally, an item with a live `blocked_by` edge whose blocker is not
 ///   itself shut is dropped and counted.
-pub fn select(sweep: &ChangesResponse, now: &Now) -> Selection {
+///
+/// The `agent` filter runs **before** the blocked partition, so
+/// `blocked_dropped` counts what was dropped from the list actually being
+/// offered: on an agent-only survey, "3 more blocked upstream" must mean
+/// three agent-doable chores, not three of the human's.
+pub fn select(sweep: &ChangesResponse, now: &Now, who: Who) -> Selection {
     let horizon = due_horizon(now);
 
     let staged: Vec<&Item> = sweep
@@ -56,6 +83,10 @@ pub fn select(sweep: &ChangesResponse, now: &Now) -> Selection {
             Stage::Ready | Stage::InProgress => true,
             Stage::Triage | Stage::Grilling => due_within(item, horizon.as_deref()),
             Stage::Blocked | Stage::Done => false,
+        })
+        .filter(|item| match who {
+            Who::Anyone => true,
+            Who::AgentOnly => item.agent,
         })
         .collect();
 
@@ -204,6 +235,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1_000,
             updated_at: 1_000,
             version: 1,
@@ -232,6 +264,14 @@ mod tests {
             .iter()
             .map(|item| item.id.as_str())
             .collect()
+    }
+
+    /// Most of these tests are about the stage and deadline rules, which
+    /// the delegation axis does not touch, so they read against the
+    /// default arm. The `agent` tests below call `super::select` directly
+    /// with the arm they are actually about.
+    fn select(sweep: &ChangesResponse, now: &Now) -> Selection {
+        super::select(sweep, now, Who::Anyone)
     }
 
     #[test]
@@ -413,6 +453,71 @@ mod tests {
             &unreadable,
         );
         assert_eq!(ids(&selection), ["ready"]);
+    }
+
+    // ------------------------------------------- #10's fourth axis
+
+    #[test]
+    fn the_default_arm_offers_marked_and_unmarked_alike() {
+        let mut marked = item("marked", Stage::Ready);
+        marked.agent = true;
+        let selection = select(
+            &sweep(vec![marked, item("mine", Stage::Ready)], vec![]),
+            &now(),
+        );
+        assert_eq!(
+            ids(&selection),
+            ["marked", "mine"],
+            "an ordinary survey is not narrowed by the axis at all",
+        );
+    }
+
+    #[test]
+    fn agent_only_keeps_marked_items_and_drops_the_human_s() {
+        let mut marked = item("marked", Stage::Ready);
+        marked.agent = true;
+        let selection = super::select(
+            &sweep(vec![marked, item("mine", Stage::Ready)], vec![]),
+            &now(),
+            Who::AgentOnly,
+        );
+        assert_eq!(
+            ids(&selection),
+            ["marked"],
+            "unmarked means the human does it, so unmarked is what this arm excludes",
+        );
+    }
+
+    /// The order the two filters run in is the assertion, not an
+    /// implementation detail: `blocked_dropped` is the footer's "N more
+    /// blocked upstream", and on an agent-only survey it has to count
+    /// agent-doable chores. Filtering after the partition would count the
+    /// human's blocked work into a hand-off footer.
+    #[test]
+    fn agent_only_counts_only_agent_doable_work_as_blocked_upstream() {
+        let mut marked = item("marked", Stage::Ready);
+        marked.agent = true;
+        let mut marked_blocked = item("marked-blocked", Stage::Ready);
+        marked_blocked.agent = true;
+        let mine_blocked = item("mine-blocked", Stage::Ready);
+        let blocker = item("blocker", Stage::Ready);
+
+        let selection = super::select(
+            &sweep(
+                vec![marked, marked_blocked, mine_blocked, blocker],
+                vec![
+                    edge("marked-blocked", "blocker"),
+                    edge("mine-blocked", "blocker"),
+                ],
+            ),
+            &now(),
+            Who::AgentOnly,
+        );
+        assert_eq!(ids(&selection), ["marked"]);
+        assert_eq!(
+            selection.blocked_dropped, 1,
+            "one agent-doable chore is blocked upstream; the human's is not this arm's business",
+        );
     }
 
     #[test]

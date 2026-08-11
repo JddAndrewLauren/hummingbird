@@ -808,6 +808,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1,
             updated_at: 1,
             version: 1,

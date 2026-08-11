@@ -52,6 +52,9 @@ pub struct CreateItem {
     pub source_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    /// #10's delegation axis. Defaults to false — the human does it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
 }
 
 /// Marks JSON presence: absent field deserializes to `None` (untouched),
@@ -99,6 +102,7 @@ non_null_shim!(non_null_conditions, Vec<Condition>, "conditions");
 non_null_shim!(non_null_severity, String, "severity");
 non_null_shim!(non_null_tier, Tier, "tier");
 non_null_shim!(non_null_enabled, bool, "enabled");
+non_null_shim!(non_null_agent, bool, "agent");
 
 /// `PATCH /api/items/:id` body: `expected_version` plus absolute-value
 /// sets. Every mutation states the entire new value of each field it
@@ -136,6 +140,11 @@ pub struct ItemPatch {
     pub scheduled_date: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Option<i64>>,
+    /// `NOT NULL`, so single-`Option` and uncleared: an explicit `null` is a
+    /// 400, exactly like `done` and `enabled`. Clearing the axis is
+    /// `"agent": false`, which is what #10's finish step sends.
+    #[serde(default, deserialize_with = "non_null_agent", skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
 }
 
 /// `POST /api/projects` body. Creating a project also creates its empty

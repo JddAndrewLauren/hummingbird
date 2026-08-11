@@ -412,6 +412,7 @@ mod tests {
             source_key: None,
             source_url: None,
             archived_at: None,
+            agent: false,
             created_at: 1_000,
             updated_at: 1_000,
             version: 1,
