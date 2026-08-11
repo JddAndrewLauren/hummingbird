@@ -1,7 +1,10 @@
 import type {
+  CalendarEventDTO,
   CalendarListEntryDTO,
+  CalendarReadDTO,
   CalendarWorkerRequest,
   CredentialEventDTO,
+  FreshnessDTO,
   PollOutcomeName,
   WorkerResponse,
 } from "../store/protocol";
@@ -25,6 +28,7 @@ export interface CalendarHostLike {
   onTimer(nowMs: number): Promise<string>;
   takeCredentialEvents(): string;
   listCalendars(): Promise<string>;
+  eventsInInterval(startMs: number, endMs: number, nowMs: number): Promise<string>;
 }
 
 interface RawCredentialEvent {
@@ -35,6 +39,84 @@ interface RawCredentialEvent {
 interface RawCalendarListResponse {
   kind: "ok" | "no_credential" | "failed" | "busy";
   calendars: CalendarListEntryDTO[];
+}
+
+// -- issue #267's calendar-events read — pinned to `CalendarEventsResponse`'s
+// serde output by `client/ffi-web/src/calendar_host.rs`'s own
+// `the_wire_shape_is_kind_events_freshness_never_a_flattened_shape` test.
+
+interface RawCalendarEventTime {
+  instant_ms: number;
+  time_zone: string;
+}
+
+interface RawCalendarEvent {
+  provider_event_id: string;
+  calendar_id: string;
+  title: string;
+  start: RawCalendarEventTime;
+  end: RawCalendarEventTime;
+  all_day: boolean;
+  recurrence_id: string | null;
+  location: string | null;
+  organizer: string | null;
+  status: "confirmed" | "tentative" | "cancelled";
+  provider_updated_at_ms: number;
+  html_link: string | null;
+}
+
+type RawFreshness =
+  | { state: "unknown" }
+  | { state: "age"; age_ms: number; declared_cadence_ms: number | null };
+
+interface RawCalendarEventsResponse {
+  kind: "not_read" | "read" | "busy";
+  events: RawCalendarEvent[];
+  freshness: RawFreshness | null;
+}
+
+function mapCalendarEventTime(raw: RawCalendarEventTime) {
+  return { instantMs: raw.instant_ms, timeZone: raw.time_zone };
+}
+
+function mapCalendarEvent(raw: RawCalendarEvent): CalendarEventDTO {
+  return {
+    providerEventId: raw.provider_event_id,
+    calendarId: raw.calendar_id,
+    title: raw.title,
+    start: mapCalendarEventTime(raw.start),
+    end: mapCalendarEventTime(raw.end),
+    allDay: raw.all_day,
+    recurrenceId: raw.recurrence_id,
+    location: raw.location,
+    organizer: raw.organizer,
+    status: raw.status,
+    providerUpdatedAtMs: raw.provider_updated_at_ms,
+    htmlLink: raw.html_link,
+  };
+}
+
+function mapFreshness(raw: RawFreshness): FreshnessDTO {
+  return raw.state === "unknown"
+    ? { kind: "unknown" }
+    : { kind: "age", ageMs: raw.age_ms, declaredCadenceMs: raw.declared_cadence_ms };
+}
+
+/** `raw.kind === "busy"` is never passed here — the caller drops it before
+ * mapping, same contract `getPaneRead` documents in `task-worker.ts`. */
+function mapCalendarRead(raw: RawCalendarEventsResponse): CalendarReadDTO {
+  if (raw.kind === "not_read") {
+    return { state: "not_read" };
+  }
+  return {
+    state: "read",
+    events: raw.events.map(mapCalendarEvent),
+    // `raw.kind === "read"` always carries a `freshness` — pinned by
+    // `calendar_host.rs`'s own `CalendarEventsResponse` construction — but
+    // the wire type is nullable, so this is a defensive fallback rather
+    // than a claim this branch is ever actually reached.
+    freshness: raw.freshness ? mapFreshness(raw.freshness) : { kind: "unknown" },
+  };
 }
 
 function mapCredentialEvents(raw: RawCredentialEvent[]): CredentialEventDTO[] {
@@ -98,6 +180,19 @@ export async function handleCalendarRequest(
         return;
       }
       post({ type: "calendarList", calendars: raw.calendars });
+      return;
+    }
+    case "getCalendarEvents": {
+      const raw = JSON.parse(
+        await host.eventsInInterval(request.startMs, request.endMs, request.nowMs),
+      ) as RawCalendarEventsResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty answer — an empty `events` read renders
+        // as "nothing scheduled", which a busy core has no standing to
+        // claim (`lib.rs`'s `BUSY_CALENDAR_EVENTS`).
+        return;
+      }
+      post({ type: "calendarEvents", key: request.key, read: mapCalendarRead(raw) });
       return;
     }
   }

@@ -68,7 +68,7 @@ describe("RankedRegion", () => {
   it("renders an answered, imminent pane expanded, from real-shaped inputs", () => {
     render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -85,7 +85,7 @@ describe("RankedRegion", () => {
     // no quiet card, and the pane ships no compact form of its own.
     render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -103,7 +103,7 @@ describe("RankedRegion", () => {
     // cursor — while the content it renders stays live.
     const view = render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -114,7 +114,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -128,7 +128,7 @@ describe("RankedRegion", () => {
   it("re-samples the order when a cycle completes", () => {
     const view = render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4) }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -138,7 +138,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={1}
         onScreen={() => {}}
@@ -155,7 +155,7 @@ describe("RankedRegion", () => {
     // it says so, rather than telling a configured reader to set it up.
     const view = render(
       <RankedRegion
-        inputs={{ bindings: null, paneReads: {} }}
+        inputs={{ bindings: null, paneReads: {}, calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -166,7 +166,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1) }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -179,7 +179,7 @@ describe("RankedRegion", () => {
   it("keeps a collapse override across a remount, through storage", () => {
     const storage = fakeStorage();
     const props = {
-      inputs: { bindings: bound(), paneReads: readAt(1) },
+      inputs: { bindings: bound(), paneReads: readAt(1), calendarReads: {} },
       nowMs: NOW,
       syncOutcomeSeq: 0,
       storage,
@@ -210,6 +210,7 @@ describe("RankedRegion", () => {
               ],
             }),
           },
+          calendarReads: {},
         }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -225,7 +226,7 @@ describe("RankedRegion", () => {
   it("tells an unread bindings table apart from an unset binding, on screen", () => {
     render(
       <RankedRegion
-        inputs={{ bindings: null, paneReads: {} }}
+        inputs={{ bindings: null, paneReads: {}, calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -246,6 +247,7 @@ describe("RankedRegion", () => {
         inputs={{
           bindings: [{ key: BINDING_KEY, known: true, pending: false, value: { state: "other", raw: "7" } }],
           paneReads: {},
+          calendarReads: {},
         }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -263,7 +265,7 @@ describe("RankedRegion", () => {
     const onScreen = vi.fn();
     render(
       <RankedRegion
-        inputs={{ bindings: [], paneReads: {} }}
+        inputs={{ bindings: [], paneReads: {}, calendarReads: {} }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={onScreen}

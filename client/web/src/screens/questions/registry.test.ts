@@ -15,7 +15,7 @@ import { QUESTIONS, panesFrom, rankPanes, requiredSources } from "./registry";
 // just the one-subject case the only shipped pane happens to be.
 
 function emptyInputs(): QuestionInputs {
-  return { bindings: [], paneReads: {}, nowMs: 1_000 };
+  return { bindings: [], paneReads: {}, calendarReads: {}, nowMs: 1_000 };
 }
 
 /** A registry of questions that do not exist in the shipped vocabulary —

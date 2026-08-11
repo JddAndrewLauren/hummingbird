@@ -12,6 +12,7 @@ import {
   pushTaskApiKey,
   pushTokenToWorker,
   reportViewVisibility,
+  requestCalendarEvents,
   requestCalendarList,
   requestPaneRead,
   requestDeadLetters,
@@ -36,6 +37,7 @@ const initialCalendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  eventReads: {},
 };
 
 const initialTask: TaskState = {
@@ -177,6 +179,47 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().calendar).toEqual({
       ...initialCalendar,
       availableCalendars: [{ id: "primary", summary: "john@twinion.net" }],
+    });
+  });
+
+  it("writes a calendarEvents message into eventReads, keyed by the request's own key", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "calendarEvents",
+        key: "weekend",
+        read: { state: "not_read" },
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().calendar).toEqual({
+      ...initialCalendar,
+      eventReads: { weekend: { state: "not_read" } },
+    });
+  });
+
+  it("keeps other request keys' reads intact when a new one lands", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "calendarEvents", key: "weekend", read: { state: "not_read" } },
+    } as MessageEvent);
+    worker.onmessage?.({
+      data: {
+        type: "calendarEvents",
+        key: "today",
+        read: { state: "read", events: [], freshness: { kind: "unknown" } },
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().calendar.eventReads).toEqual({
+      weekend: { state: "not_read" },
+      today: { state: "read", events: [], freshness: { kind: "unknown" } },
     });
   });
 
@@ -933,6 +976,18 @@ describe("the calendar send helpers", () => {
     const worker = fakeWorker();
     requestCalendarList(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "listCalendars" });
+  });
+
+  it("requestCalendarEvents posts the request's key, interval and clock", () => {
+    const worker = fakeWorker();
+    requestCalendarEvents(worker, "weekend", 1_000, 2_000, 1_500);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "getCalendarEvents",
+      key: "weekend",
+      startMs: 1_000,
+      endMs: 2_000,
+      nowMs: 1_500,
+    });
   });
 });
 

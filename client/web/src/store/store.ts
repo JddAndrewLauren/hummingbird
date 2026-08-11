@@ -7,6 +7,7 @@ import type {
   BindingDTO,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
+  CalendarReadDTO,
   DeadLetterEntryDTO,
   PaneReadDTO,
   PollOutcomeName,
@@ -33,6 +34,14 @@ export interface CalendarState {
    * from here is rendered as unavailable rather than silently dropped. */
   availableCalendars: CalendarListEntryDTO[];
   lastPollOutcome: PollOutcomeName | null;
+  /** Issue #267's calendar-events read, keyed by the caller-chosen request
+   * `key` (the `stepsByItem`/`paneReads` "only what was actually requested"
+   * shape). A missing entry means "not requested yet" — which also covers a
+   * `"busy"` read, dropped by the worker rather than delivered (see
+   * `protocol.ts`'s `calendarEvents` doc) — and is a different fact from a
+   * `CalendarReadDTO` of `{state: "not_read"}`, which is the core's own
+   * answer that this calendar has never been synced at all. */
+  eventReads: Record<string, CalendarReadDTO | undefined>;
 }
 
 /** The last `Core::run` cycle's outcome, as far as the shell needs it —
@@ -205,6 +214,7 @@ const initialCalendarState: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  eventReads: {},
 };
 
 const initialTaskState: TaskState = {
@@ -258,6 +268,12 @@ export function createCoreStore() {
     setState({ calendar: { ...state.calendar, ...patch } });
   }
 
+  // `eventReads` is itself a map, keyed by request key (issue #267) — same
+  // one-extra-level idiom `setTaskPaneRead` uses for `paneReads`.
+  function setCalendarEventRead(key: string, read: CalendarReadDTO): void {
+    setCalendarState({ eventReads: { ...state.calendar.eventReads, [key]: read } });
+  }
+
   // Same idea for the task slice (#105/S7).
   function setTaskState(patch: Partial<TaskState>): void {
     setState({ task: { ...state.task, ...patch } });
@@ -294,6 +310,7 @@ export function createCoreStore() {
     getSnapshot,
     setState,
     setCalendarState,
+    setCalendarEventRead,
     setTaskState,
     setTaskPending,
     setTaskSteps,

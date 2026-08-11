@@ -357,7 +357,14 @@ export function NowScreen({
             snapshot tiles — and it is the same component in both modes: only
             the inputs differ, so `?demo` photographs the real shell. */}
         <RankedRegion
-          inputs={demo ? demoQuestionInputs(nowMs) : { bindings: task.bindings, paneReads: task.paneReads }}
+          inputs={
+            demo
+              ? demoQuestionInputs(nowMs)
+              : // No registered question reads the calendar arm yet (#122 is
+                // its first caller) — an empty map is the correct steady
+                // state, same as `paneReads` before any `getPaneRead` lands.
+                { bindings: task.bindings, paneReads: task.paneReads, calendarReads: {} }
+          }
           nowMs={nowMs}
           syncOutcomeSeq={task.syncOutcomeSeq}
           storage={typeof localStorage === "undefined" ? undefined : localStorage}
