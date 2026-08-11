@@ -1,0 +1,68 @@
+# The Gmail evaluated-stream poller (#135, ADR-0011): advances a `historyId`
+# delta cursor, evaluates each new message in memory against the live rule
+# set, and upserts an alert for a match — never anything else. Non-matches
+# never touch storage.
+#
+# **A second Actions `schedule:`, and worth stating why that does not widen
+# the repo's own rule.** `city-waste.yml`'s header records the standing ban
+# (issue #8) and the one already-carved exception: hummingbird is public, so
+# the billing clauses (pooled minutes, whole-minute rounding, the $0 cap)
+# never applied here, and what survives is GitHub's 60-day auto-disable (this
+# `workflow_dispatch` covers a missed run or the first run after a token is
+# minted) plus "no second clock competing with a live one" (supercronic's
+# 15-minute sweeper tick, the DO's own `alarm()`). This lane has no such
+# competitor: ADR-0011 assigns Gmail's cadence to nothing else, and nothing
+# else polls Gmail. It is the poller establishing the scaffolding #136/#137
+# follow, and each of those adds its own workflow on the same reasoning.
+name: gmail-poll
+
+on:
+  # Every 15 minutes — `hummingbird_gmail_poll::cursor::POLLED_EVERY_MS` must
+  # match this interval; it is what the notification lane's own latency
+  # bound (and any future pane reading this poller's cadence) reads.
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# One poller at a time. Two overlapping runs would race on the same
+# `historyId` cursor row; the authority's snapshot lane already answers a
+# stale write with the current row rather than corrupting it, but there is
+# no reason to lean on that here either.
+concurrency:
+  group: gmail-poll
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # An OAuth refresh, a handful of Gmail reads and a couple of authority
+    # POSTs, behind a cached build. Anything slower than this is a hung
+    # fetch.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match root `rust-toolchain.toml`, as every other workflow
+      # here is.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Poll Gmail
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          # An `ingest`-scope token bound to `gmail/v1`, minted from the
+          # operator's terminal against `ADMIN_SECRET` — the deploy-time step
+          # the brief calls out, not an implementation step of this issue.
+          HB_INGEST_TOKEN: ${{ secrets.GMAIL_INGEST_TOKEN }}
+          # The existing sweeper refresh token (`gmail.modify`, Workspace
+          # Internal OAuth app) — ADR-0011: "no new consent and no re-mint is
+          # required." The client id/secret identify that same app.
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+        run: cargo run -q -p hummingbird-gmail-poll

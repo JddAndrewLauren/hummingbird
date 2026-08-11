@@ -20,7 +20,7 @@ fn unknown_route_404_and_wrong_method_405() {
         ("DELETE", "/api/steps/s-1"),
         ("GET", "/api/blocked_by"),
         ("DELETE", "/api/blocked_by/a/b"),
-        ("GET", "/api/rules"),
+        // GET /api/rules is no longer wrong here (#135-137) — see rules.rs.
         ("DELETE", "/api/rules/r-1"),
     ] {
         let resp = req(&sql, method, path, None, Some("{}"), 0);

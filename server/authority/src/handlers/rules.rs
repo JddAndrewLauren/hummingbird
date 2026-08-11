@@ -203,6 +203,22 @@ pub fn patch(
     Ok(json(200, &rule_from_row(&row)?))
 }
 
+/// `GET /api/rules` — every rule, enabled or not (#135-137). Ordinary
+/// device clients already get the full set through `GET /api/changes`'s
+/// `rules` field; this route exists for the evaluated-stream pollers, which
+/// hold an `ingest` token and cannot reach the delta-pull lane at all
+/// (`auth::permitted`'s device-only default). A poller evaluates every
+/// rule in memory itself (`hummingbird_rules_engine::evaluate_rules`
+/// already skips a disabled one), so disabled rules are included here too
+/// — filtering them here would just be a second, easy-to-drift copy of the
+/// engine's own `enabled` check.
+pub fn list(sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+    let rows = sql.exec("SELECT * FROM rules ORDER BY id", &[])?;
+    let rules: Vec<hummingbird_domain::Rule> =
+        rows.iter().filter_map(|row| rule_from_row(row).ok()).collect();
+    Ok(json(200, &rules))
+}
+
 fn select_rule(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(

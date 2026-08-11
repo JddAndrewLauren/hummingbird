@@ -125,6 +125,15 @@ pub const ITEM_THRESHOLD_V1: &str = "item-threshold/v1";
 /// rather than a source string that quietly keeps resolving.
 pub const CITY_WASTE_V2: &str = "city-waste/v2";
 
+/// `gmail/v1`'s frozen namespace, named for [`CITY_WASTE_V2`]'s reason: two
+/// consumers share one literal — the registry entry below and
+/// `server/gmail-poll` (#135), the out-of-process poller that mints alerts
+/// under it and also writes/reads its own delta cursor under it as a
+/// `context_snapshots` row (ADR-0011: "each stream keeps a per-source delta
+/// cursor") — so a future retirement to `/v2` is a compile error at the
+/// poller rather than a source string that quietly keeps resolving.
+pub const GMAIL_V1: &str = "gmail/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -132,7 +141,7 @@ pub const CITY_WASTE_V2: &str = "city-waste/v2";
 /// `tests::registry_matches_the_frozen_adr_0014_table`.
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
-        source: "gmail/v1",
+        source: GMAIL_V1,
         shape: Shape::Event,
         key_recipe: "the Gmail message id",
         expires_at: Expiry::Never,

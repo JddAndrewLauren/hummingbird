@@ -496,6 +496,46 @@ fn delta_pull_only_returns_rules_above_the_cursor() {
     assert_eq!(parsed.rules[0].id, "r-2");
 }
 
+// ---------------------------------------------------- list (GET, #135-137)
+
+/// The evaluated-stream pollers' own read: every rule, including a disabled
+/// one — the poller (via `hummingbird_rules_engine::evaluate_rules`) is the
+/// one deciding what fires, and a filtered list here would be a second,
+/// driftable copy of `evaluate_rule`'s own `enabled` check.
+#[test]
+fn list_returns_every_rule_enabled_or_not() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-1");
+    post_rule(
+        &sql,
+        r#"{"id": "r-2", "name": "n", "conditions": [], "severity": "s", "tier": "normal", "enabled": false}"#,
+        0,
+    );
+    let resp = get_rules_as(&sql, INGEST_TOKEN);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let rules: Vec<Rule> = body_as(&resp);
+    assert_eq!(rules.len(), 2);
+    assert!(rules.iter().any(|r| r.id == "r-1" && r.enabled));
+    assert!(rules.iter().any(|r| r.id == "r-2" && !r.enabled));
+}
+
+#[test]
+fn list_is_readable_by_device_and_ingest_but_not_sweeper() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-1");
+
+    assert_eq!(get_rules_as(&sql, DEVICE_TOKEN).status, 200);
+    assert_eq!(get_rules_as(&sql, INGEST_TOKEN).status, 200);
+
+    let sweeper = get_rules_as(&sql, SWEEPER_TOKEN);
+    assert_eq!(sweeper.status, 403, "{}", sweeper.body);
+    assert!(sweeper.body.is_empty(), "403 bodies are empty");
+
+    let anon = req_anon(&sql, "GET", "/api/rules", None, None);
+    assert_eq!(anon.status, 401);
+    assert!(anon.body.is_empty(), "401 bodies are empty");
+}
+
 // ------------------------------------------------- push_targets / deliveries
 
 /// `push_targets` gets no HTTP surface in #131 (that's #139); the
