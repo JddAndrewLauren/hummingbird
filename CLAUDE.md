@@ -289,13 +289,37 @@ in the local evening.
 `waste.ts`, and it exists because **nothing mechanical connects the two
 sides** — the body inside ADR-0015's envelope is opaque to the server by
 design, so a rename on either side compiles and passes on both. It asserts
-the literal snake_case keys against the TypeScript's own text. `page.rs` is
-the one unbuilt module, isolated behind a typed error with its fixture tests
-`#[ignore]`d: it is what a saved sample of the real page gates, and if that
-page turns out to state only the next date (no cadence), the cadence has to
-come from a second binding value — which widens `city-waste-page` from a URL
-to a JSON object and reaches into the client, and **must be escalated before
-it is built**.
+the literal snake_case keys against the TypeScript's own text.
+
+`page.rs` is the module written against a saved sample rather than a
+specification, and the sample settled the question that gated it: the
+council's page **states the standing collection day outright** ("Weekly /
+Monday / 08/10/2026", per stream), so the cadence is observed and
+`city-waste-page` stays a bare URL — the feared widening into a JSON object
+reaching into the client never happened. Three stream columns collapse into
+the domain's one collection: `collected_on` is the **earliest** date any
+column advertises and `streams` is the set sharing it (so the week the
+biweekly bin stays in answers with the smaller set — the which-cans question
+itself), `every_n_weeks` is the **shortest** period across columns, and the
+anchor is `collected_on` snapped to the nearest *stated* day, which is what
+keeps a holiday week off the lattice where `judge` can see it. **The one
+assumption still unconfirmed** is that the stated day is standing rather than
+per-cycle: if the page instead prints "Tuesday" on the week it slides, the
+anchor moves with it and the holiday reads as an ordinary week — a *quiet*
+failure, unfixable from the page alone (telling "moved this week" from "moved
+permanently" needs the previous snapshot, which `judge` deliberately never
+sees), so it is recorded in the module header to be checked against the first
+real holiday. There is deliberately **no HTML-parser dependency**: the fields
+hang off ids the page names itself (`trash-date` / `recycle-date` /
+`organics-date`), never the Visualforce-generated `j_id0:*` ones around them,
+and every absent marker is a named `PageError::Missing` so a redesigned page
+fails loudly on the first poll instead of writing something plausible. The
+fixtures under `tests/fixtures/` are **reduced and sanitised** — the `<main>`
+region verbatim, with the operator's home address replaced and ~95 KB of
+remoting bootstrap (per-request CSRF tokens, signed JWTs) dropped, since this
+repo is public; only the ordinary-week one is a real observation, the
+off-week and holiday ones move dates on that capture and say so in their own
+header comments.
 
 `.github/workflows/city-waste.yml` is the repo's **one Actions `schedule:`**,
 and it is a scoped exception rather than a drift. #8's overturn had four

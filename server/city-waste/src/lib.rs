@@ -17,8 +17,8 @@
 //!
 //! Not `authority` (no HTTP client, no clock, no environment, by
 //! construction), and not `domain` (`client/core` compiles that to wasm32,
-//! and an HTML parser has no business in that budget). It must never become
-//! a dependency of `hummingbird-authority-worker`.
+//! and neither an HTTP client nor a tzdb has any business in that budget).
+//! It must never become a dependency of `hummingbird-authority-worker`.
 //!
 //! # The split inside it
 //!
@@ -36,7 +36,9 @@
 //!   with `waste.ts`;
 //! * [`alert`] — what a deviation would post, returned rather than performed;
 //! * [`binding`] — reading the address's page URL out of `settings`;
-//! * [`page`] — the council's HTML, and the one module still unbuilt.
+//! * [`page`] — the council's HTML, read against a saved sample of the real
+//!   page. Its header records the one assumption a real holiday week will
+//!   settle.
 //!
 //! # Two orderings that matter
 //!
@@ -60,7 +62,9 @@ pub mod page;
 #[cfg(test)]
 mod tests {
     /// This crate holds an HTTP client and a tzdb, and the wasm32 build must
-    /// never see either. `hummingbird-authority-worker` is the only crate
+    /// never see either. (It holds no HTML parser — `page.rs` needed none —
+    /// but the argument would be the same one.)
+    /// `hummingbird-authority-worker` is the only crate
     /// that builds for wasm32, and the only structural protection is that it
     /// does not depend on this one — which is invisible from here, so the
     /// guard is written from the other side: assert the *worker's* manifest
@@ -70,8 +74,8 @@ mod tests {
         let worker = include_str!("../../worker/Cargo.toml");
         assert!(
             !worker.contains("city-waste"),
-            "server/worker builds for wasm32; this crate's HTTP client, tzdb and \
-             (eventually) HTML parser have no business in that build"
+            "server/worker builds for wasm32; this crate's HTTP client and tzdb \
+             have no business in that build"
         );
     }
 }

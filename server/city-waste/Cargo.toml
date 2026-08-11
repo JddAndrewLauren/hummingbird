@@ -9,8 +9,10 @@ edition.workspace = true
 # outside.
 #
 # It must NEVER become a dependency of `hummingbird-authority-worker`: that
-# crate builds for wasm32, and this one holds an HTTP client, a tzdb and
-# (eventually) an HTML parser. The split inside this crate is the same one
+# crate builds for wasm32, and this one holds an HTTP client and a tzdb.
+# (No HTML parser: `page.rs` reads three fields off two ids the council's page
+# names itself, which needs no tree builder — see its header.)
+# The split inside this crate is the same one
 # `authority/src/fcm.rs` and `worker/src/fcm.rs` already draw — everything
 # decidable lives in the lib and is natively tested; `main.rs` holds only
 # `std::env`, one GET and two POSTs.
