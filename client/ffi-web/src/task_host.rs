@@ -19,7 +19,10 @@ use hummingbird_core::{
     ActError, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction,
     TriageDestination, TriagePatch,
 };
-use hummingbird_domain::{is_valid_deadline, Alert, Energy, Item, Project, Size, Stage};
+use hummingbird_domain::{
+    core_field_type, is_valid_deadline, Alert, Condition, Energy, EventKindEntry, FieldType, Item,
+    Project, Rule, Size, Stage, Tier, CORE_FIELDS, EVENT_KINDS,
+};
 
 // The real, target-specific store `Core::init` resolves to internally is a
 // *private* type alias (`hummingbird_core::CoreStore`) — this crate cannot
@@ -499,6 +502,92 @@ pub struct SetBindingResponse {
     pub error: Option<String>,
 }
 
+// -- #140: rules --------------------------------------------------------
+
+/// The wrapper around [`TaskHostCore::rules`]'s answer. Same `"busy"`
+/// contract as [`ItemListResponse`]: no answer, never an empty one — a
+/// busy core answering `[]` would read as "no rules exist" rather than
+/// "not read yet."
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RuleListResponse {
+    pub kind: &'static str,
+    pub rules: Vec<Rule>,
+}
+
+/// What [`TaskHostCore::create_rule`] resolves to. `"failed"` is a
+/// durability failure enqueueing the create; a rejected-at-save condition
+/// (an unknown field, an illegal operator, a malformed duration — #133's
+/// `validate_rule`) is discovered later, at drain time, and surfaces
+/// through the ordinary dead-letter journal, since it is a 400 the
+/// authority returns from an async send this call has already returned
+/// from.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateRuleResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_rule`] resolves to (the enable/disable
+/// toggle and every other rule edit share this one entry point).
+/// `"failed"` is a durability failure enqueueing the write; a 409 is
+/// **handled, not swallowed** — [`Core::patch_rule`] enqueues it through
+/// the ordinary CAS path (`patch_with_rebase`), so it either auto-rebases
+/// or lands in the dead-letter journal like any other conflicted write,
+/// never silently lost.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchRuleResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// One field the kind registry declares, at the wire — [`FieldDescriptor`]
+/// plus a `name` the JSON export already carries as `"name"`, so this
+/// exists only to give the Event core's eight fields (which have no
+/// [`hummingbird_domain::FieldDescriptor`] of their own — they are a bare
+/// `&'static [&'static str]`) the identical shape, so #140's UI reads one
+/// list either way rather than special-casing the core.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CoreFieldDTO {
+    pub name: &'static str,
+    pub field_type: FieldType,
+}
+
+/// The kind registry export (#133/#140, ADR-0013): the exact
+/// [`EVENT_KINDS`] definition the rule engine evaluates against, serialized
+/// for the rules screen's cascading kind → field → operator → value
+/// editor. Adding a kind to [`EVENT_KINDS`] changes this response with no
+/// UI-side change — the whole reason ADR-0013 calls the registry "a
+/// `domain` artifact."
+///
+/// `alarm_interval_ms` is **duplicated** from
+/// `hummingbird_authority::sweep::ALARM_INTERVAL_MS` (#138) rather than
+/// imported: `server/authority` is a native-only crate (rusqlite, `std::fs`
+/// fixtures) with no business in this crate's `wasm32-unknown-unknown`
+/// dependency graph, the same reasoning that keeps `server/city-waste` out
+/// of the worker's build (see this repo's `CLAUDE.md`). If the DO alarm
+/// cadence ever changes, this constant must change with it — there is no
+/// mechanical guard against that drift today.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KindRegistryResponse {
+    pub kind: &'static str,
+    pub kinds: &'static [EventKindEntry],
+    pub core_fields: Vec<CoreFieldDTO>,
+    pub alarm_interval_ms: i64,
+    /// `hummingbird_domain::SEVERITIES`, verbatim and in its own order — the
+    /// exact vocabulary `severity_rank` (`server/domain/src/severity.rs`)
+    /// ranks against, so the rules screen's severity dropdown can never
+    /// disagree with the ADR-0014 ratchet. No import problem the
+    /// `alarm_interval_ms` doc above warns about: `hummingbird_domain` is
+    /// already this crate's dependency, unlike `hummingbird_authority`.
+    pub severities: &'static [&'static str],
+}
+
+/// Mirrors `hummingbird_authority::sweep::ALARM_INTERVAL_MS` — see
+/// [`KindRegistryResponse`]'s own doc for why this is a duplicate constant
+/// rather than a dependency.
+pub const ALARM_INTERVAL_MS: i64 = 15 * 60 * 1000;
+
 /// The wrapper around [`TaskHostCore::mirror_snapshot`]'s answer — S9's
 /// mirror download button.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -806,6 +895,152 @@ impl TaskHostCore {
         ProjectListResponse {
             kind: "ok",
             projects: self.core.projects(),
+        }
+    }
+
+    /// Every rule, per [`Core::rules`] (#140).
+    pub fn rules(&self) -> RuleListResponse {
+        RuleListResponse {
+            kind: "ok",
+            rules: self.core.rules(),
+        }
+    }
+
+    /// The kind registry export (#133/#140, ADR-0013) — the field/operator
+    /// catalogue the rules editor cascades through. An associated function,
+    /// not a method: it needs no `Core` state at all, only a read of
+    /// [`EVENT_KINDS`]/[`CORE_FIELDS`], so unlike every other answer here it
+    /// never answers `"busy"` and needs no checked-out host to call.
+    pub fn kind_registry() -> KindRegistryResponse {
+        KindRegistryResponse {
+            kind: "ok",
+            kinds: EVENT_KINDS,
+            core_fields: CORE_FIELDS
+                .iter()
+                .filter_map(|&name| {
+                    core_field_type(name).map(|field_type| CoreFieldDTO { name, field_type })
+                })
+                .collect(),
+            alarm_interval_ms: ALARM_INTERVAL_MS,
+            severities: &hummingbird_domain::SEVERITIES[..],
+        }
+    }
+
+    /// Creates a rule, per [`Core::create_rule`] (#140). `tier` is the
+    /// wire's snake_case name (`"urgent"`/`"normal"`), resolved through
+    /// [`Tier::parse`] before it can reach `Core` — the same "reject before
+    /// the seam" discipline every other wire vocabulary here follows.
+    /// `conditions` arrives as a JSON array string (`Vec<Condition>`'s own
+    /// serde shape) rather than individual scalar arguments, since a
+    /// condition list is open-ended and `wasm_bindgen` has no tuple-list
+    /// argument shape.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_rule(
+        &mut self,
+        seed: &str,
+        name: &str,
+        event_kind: Option<String>,
+        conditions_json: &str,
+        severity: &str,
+        tier: &str,
+        enabled: bool,
+        now_ms: i64,
+    ) -> CreateRuleResponse {
+        let Some(tier) = Tier::parse(tier) else {
+            return CreateRuleResponse {
+                kind: "failed",
+                id: None,
+                error: Some(format!("unrecognised tier {tier:?}")),
+            };
+        };
+        let conditions: Vec<Condition> = match serde_json::from_str(conditions_json) {
+            Ok(conditions) => conditions,
+            Err(error) => {
+                return CreateRuleResponse {
+                    kind: "failed",
+                    id: None,
+                    error: Some(format!("malformed conditions: {error}")),
+                }
+            }
+        };
+        match self
+            .core
+            .create_rule(seed, name, event_kind, conditions, severity, tier, enabled, now_ms)
+            .await
+        {
+            Ok(id) => CreateRuleResponse {
+                kind: "ok",
+                id: Some(id),
+                error: None,
+            },
+            Err(error) => CreateRuleResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Patches a rule, per [`Core::patch_rule`] (#140) — the enable/disable
+    /// toggle and every other rule edit. `current` is the caller's own
+    /// last-known copy of the row (from [`TaskHostCore::rules`]), so this
+    /// method never re-reads the mirror for it — the same "caller supplies
+    /// `base`" contract every other CAS write here follows.
+    /// `event_kind`/`conditions`/`severity`/`tier`/`enabled` are each
+    /// `None` to mean "leave this field alone." `tier`, when present, is
+    /// the wire's snake_case name, resolved through [`Tier::parse`] before
+    /// it can reach `Core`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_rule(
+        &mut self,
+        seed: &str,
+        current: &Rule,
+        name: Option<String>,
+        // `Some(None)` clears `event_kind` to "any kind"; `None` leaves it
+        // untouched — the same double-`Option` `RulePatch` itself carries.
+        event_kind_touched: bool,
+        event_kind: Option<String>,
+        conditions_json: Option<String>,
+        severity: Option<String>,
+        tier: Option<String>,
+        enabled: Option<bool>,
+        now_ms: i64,
+    ) -> PatchRuleResponse {
+        let tier = match tier {
+            Some(tier) => match Tier::parse(&tier) {
+                Some(tier) => Some(tier),
+                None => {
+                    return PatchRuleResponse {
+                        kind: "failed",
+                        error: Some(format!("unrecognised tier {tier:?}")),
+                    }
+                }
+            },
+            None => None,
+        };
+        let conditions: Option<Vec<Condition>> = match conditions_json {
+            Some(json) => match serde_json::from_str(&json) {
+                Ok(conditions) => Some(conditions),
+                Err(error) => {
+                    return PatchRuleResponse {
+                        kind: "failed",
+                        error: Some(format!("malformed conditions: {error}")),
+                    }
+                }
+            },
+            None => None,
+        };
+        let event_kind = event_kind_touched.then_some(event_kind);
+        match self
+            .core
+            .patch_rule(seed, current, name, event_kind, conditions, severity, tier, enabled, now_ms)
+            .await
+        {
+            Ok(()) => PatchRuleResponse { kind: "ok", error: None },
+            Err(error) => PatchRuleResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
         }
     }
 
@@ -2653,5 +2888,137 @@ mod binding_tests {
             }
         );
         assert!(trips.pending, "nothing has synced it yet");
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+
+    /// The kind registry export needs no `Core` state and never answers
+    /// `"busy"` — proof that it reads static domain data alone. Also pins
+    /// that every launch kind and the Event core survive the wire.
+    #[tokio::test]
+    async fn kind_registry_lists_every_launch_kind_and_the_core_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-kind-registry");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let _ = host; // the registry needs no host state at all
+        let response = TaskHostCore::kind_registry();
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.kinds.len(), hummingbird_domain::EVENT_KINDS.len());
+        assert!(response.kinds.iter().any(|k| k.key == "email"));
+        assert_eq!(response.core_fields.len(), hummingbird_domain::CORE_FIELDS.len());
+        assert!(response.core_fields.iter().any(|f| f.name == "source"));
+        assert_eq!(response.alarm_interval_ms, ALARM_INTERVAL_MS);
+        assert_eq!(response.severities, hummingbird_domain::SEVERITIES);
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains(r#""key":"email""#));
+        assert!(json.contains(r#""alarm_interval_ms":900000"#));
+        assert!(json.contains(r#""severities":["low","normal","high","urgent"]"#));
+    }
+
+    #[tokio::test]
+    async fn creating_a_rule_with_an_unrecognised_tier_never_reaches_core_create_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-rule-bad-tier");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host
+            .create_rule("seed-1", "trash slide", None, "[]", "high", "not-a-tier", true, 1_000)
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.id.is_none());
+        assert_eq!(host.rules().rules.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn creating_a_rule_enqueues_it_and_lists_it_in_the_queue_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-rule-ok");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host
+            .create_rule(
+                "seed-1",
+                "trash slide",
+                Some("snapshot_change".to_string()),
+                r#"[{"field":"key","op":"eq","value":"city-waste/v2","negate":false}]"#,
+                "high",
+                "urgent",
+                true,
+                1_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.id.is_some());
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    #[tokio::test]
+    async fn patching_a_rules_enabled_field_touches_only_that_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-rule");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let rule = hummingbird_domain::Rule {
+            id: "r-1".to_string(),
+            name: "trash slide".to_string(),
+            event_kind: None,
+            conditions: vec![],
+            severity: "high".to_string(),
+            tier: hummingbird_domain::Tier::Urgent,
+            enabled: true,
+            updated_at: 1,
+            version: 3,
+        };
+
+        let response = host
+            .patch_rule("seed-1", &rule, None, false, None, None, None, None, Some(false), 2_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    #[tokio::test]
+    async fn patching_a_rule_with_an_unrecognised_tier_never_reaches_core_patch_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-rule-bad-tier");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let rule = hummingbird_domain::Rule {
+            id: "r-1".to_string(),
+            name: "trash slide".to_string(),
+            event_kind: None,
+            conditions: vec![],
+            severity: "high".to_string(),
+            tier: hummingbird_domain::Tier::Urgent,
+            enabled: true,
+            updated_at: 1,
+            version: 3,
+        };
+
+        let response = host
+            .patch_rule(
+                "seed-1",
+                &rule,
+                None,
+                false,
+                None,
+                None,
+                None,
+                Some("not-a-tier".to_string()),
+                None,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
     }
 }

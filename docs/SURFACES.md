@@ -20,7 +20,7 @@ human gate.
 | | |
 | --- | --- |
 | **Code root** | `client/web/src/` |
-| **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Done, Ledger, Settings |
+| **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Done, Ledger, Settings |
 | **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/`, #122). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
 | **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx`, `shell/CapturePopover.tsx` (the capture box, over any screen), `screens/layout.tsx` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 16-component library |
@@ -30,7 +30,7 @@ human gate.
 
 ### Matrix
 
-Three widths × two themes × nine screen states, per run.
+Three widths × two themes × ten screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ Themes: `light` and `dark`, seeded into `localStorage` at `hb.theme` before
 first paint (the app resolves `light | dark | system` onto
 `[data-theme]` — `src/theme/`).
 
-Screen states: the seven screens under `?demo` (deterministic, populated
+Screen states: the eight screens under `?demo` (deterministic, populated
 fixtures — except **Done** and the **Ledger**, which have no demo fixtures
 and photograph their "not read yet" holding state; their populated rows are
 covered by `DoneScreen.test.tsx`/`LedgerScreen.test.tsx` and reviewed by hand
@@ -61,7 +61,12 @@ tomorrow at the address, so what is photographed is an answered, imminent
 pane); there is deliberately no demo-only rendering of the region, so the
 capture is the shipping component. The empty
 states matter on their own: they are what a new device actually shows, and
-no fixture screen exercises them.
+no fixture screen exercises them. **Rules is populated under `?demo` too**
+(#140): `demo-data.ts` carries its own `ruleDetails` / `ruleKindRegistry` /
+`ruleBacktestItems`, wired at `App.tsx`'s `screen === "rules"` branch
+alongside every other screen's `demo ? … : task.…` split, so its capture is
+a deterministic, populated rules screen — condition rows, toggles and a
+backtest count — the same as the other five.
 
 There are **no committed golden images and no pixel diff.** The project has
 no baseline history, and a pixel gate with nobody to arbitrate it produces

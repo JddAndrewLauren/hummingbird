@@ -125,6 +125,44 @@ pub const ITEM_THRESHOLD_V1: &str = "item-threshold/v1";
 /// rather than a source string that quietly keeps resolving.
 pub const CITY_WASTE_V2: &str = "city-waste/v2";
 
+/// `gmail/v1`'s frozen namespace, named for [`CITY_WASTE_V2`]'s reason: two
+/// consumers share one literal — the registry entry below and
+/// `server/gmail-poll` (#135), the out-of-process poller that mints alerts
+/// under it and also writes/reads its own delta cursor under it as a
+/// `context_snapshots` row (ADR-0011: "each stream keeps a per-source delta
+/// cursor") — so a future retirement to `/v2` is a compile error at the
+/// poller rather than a source string that quietly keeps resolving.
+pub const GMAIL_V1: &str = "gmail/v1";
+
+/// `m365-mail/v1`'s frozen namespace, named for [`GMAIL_V1`]'s reason: two
+/// consumers share one literal — the registry entry below and
+/// `server/graph-poll`'s `graph-mail-poll` binary (#137), the out-of-process
+/// poller that mints alerts under it and also writes/reads its own delta
+/// cursor under it as a `context_snapshots` row (ADR-0011: "each stream
+/// keeps a per-source delta cursor") — so a future retirement to `/v2` is a
+/// compile error at the poller rather than a source string that quietly
+/// keeps resolving.
+pub const M365_MAIL_V1: &str = "m365-mail/v1";
+
+/// `google-calendar/v1`'s frozen namespace, for [`GMAIL_V1`]'s own reason:
+/// two consumers share one literal — the registry entry above and
+/// `server/calendar-poll` (#136), the out-of-process poller that mints
+/// alerts under it and also writes/reads both its delta sync-token cursor
+/// and the `busy_now` snapshot as `context_snapshots` rows under it
+/// (ADR-0011's "per-source delta cursor", and this issue's "a source may of
+/// course be both" — an alert source and a snapshot source at once, exactly
+/// like `city-waste/v2`) — so a future retirement to `/v2` is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving.
+pub const GOOGLE_CALENDAR_V1: &str = "google-calendar/v1";
+
+/// `m365-calendar/v1`'s frozen namespace, named for [`M365_MAIL_V1`]'s
+/// reason: two consumers share one literal — the registry entry below and
+/// `server/graph-poll`'s `graph-calendar-poll` binary (#137), which mints
+/// alerts under it and writes/reads its own delta cursor under it as a
+/// `context_snapshots` row.
+pub const M365_CALENDAR_V1: &str = "m365-calendar/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -132,14 +170,14 @@ pub const CITY_WASTE_V2: &str = "city-waste/v2";
 /// `tests::registry_matches_the_frozen_adr_0014_table`.
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
-        source: "gmail/v1",
+        source: GMAIL_V1,
         shape: Shape::Event,
         key_recipe: "the Gmail message id",
         expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
-        source: "m365-mail/v1",
+        source: M365_MAIL_V1,
         shape: Shape::Event,
         key_recipe: "the mail's internetMessageId — never the Graph `id`, \
                       which changes on a folder move",
@@ -147,14 +185,14 @@ pub const REGISTRY: &[SourceEntry] = &[
         retired_as: None,
     },
     SourceEntry {
-        source: "google-calendar/v1",
+        source: GOOGLE_CALENDAR_V1,
         shape: Shape::Event,
         key_recipe: "<eventId or recurringEventId>:<originalStartTime>",
         expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
     },
     SourceEntry {
-        source: "m365-calendar/v1",
+        source: M365_CALENDAR_V1,
         shape: Shape::Event,
         key_recipe: "<seriesMasterId or id>:<originalStart>",
         expires_at: Expiry::Always("the instance's end time"),

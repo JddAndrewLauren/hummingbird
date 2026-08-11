@@ -42,7 +42,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use hummingbird_domain::{
-    Alert, BlockedBy, ChangesResponse, ContextSnapshot, Fog, Item, Project, Route, Setting, Step,
+    Alert, BlockedBy, ChangesResponse, ContextSnapshot, Fog, Item, Project, Route, Rule, Setting,
+    Step,
 };
 
 use crate::storage::{Persistable, PersistableSealed};
@@ -66,7 +67,15 @@ use crate::task::Presence;
 /// version is not this one is discarded and rebuilt by the next pull's
 /// full-sweep backstop. Bumping this constant without that check would be
 /// inert.
-pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 2;
+///
+/// Bumped to 3 for #140's `rules` table: a new field on this struct, same
+/// "the shape changed" reasoning as the bump to 2 — a v2 snapshot has no
+/// `rules` key, and while serde would happily default it to an empty map,
+/// that empty map would then look identical to "this device has synced and
+/// genuinely has no rules," which the Rules screen cannot tell apart from
+/// "this device hasn't re-swept since the field was added." Discarding and
+/// resweeping is the same safe answer #153's bump already established.
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 3;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.
@@ -103,6 +112,7 @@ pub struct SyncMirror {
     #[serde(with = "tuple_key_map")]
     context_snapshots: BTreeMap<(String, String), Slot<ContextSnapshot>>,
     settings: BTreeMap<String, Slot<Setting>>,
+    rules: BTreeMap<String, Slot<Rule>>,
 }
 
 impl PersistableSealed for SyncMirror {}
@@ -286,6 +296,18 @@ impl SyncMirror {
         self.settings.values().filter_map(live_slot)
     }
 
+    pub fn rule(&self, id: &str) -> Option<&Rule> {
+        live(self.rules.get(id))
+    }
+
+    /// Every live rule, id order — the read behind #140's rules screen.
+    /// `rules` carries no soft-delete flag of its own (ADR-0003's
+    /// retention still applies via a full sweep's absence-demotion, the
+    /// same as `routes`/`fog`/`projects`).
+    pub fn all_rules(&self) -> impl Iterator<Item = &Rule> {
+        self.rules.values().filter_map(live_slot)
+    }
+
     /// Live and not yet `Done` — the population ADR-0001's 250-issue
     /// watchline measures, ported to the owned schema (`crate::task::query`'s
     /// `active_count` is its S1/Linear-era twin).
@@ -399,6 +421,14 @@ impl SyncMirror {
             &mut self.settings,
             resp.settings,
             |s| s.key.clone(),
+            |_| None,
+            full,
+            now_ms,
+        );
+        apply_table(
+            &mut self.rules,
+            resp.rules,
+            |r| r.id.clone(),
             |_| None,
             full,
             now_ms,
@@ -923,6 +953,67 @@ mod tests {
         assert_eq!(
             mirror.all_settings().map(|s| s.key.as_str()).collect::<Vec<_>>(),
             vec!["race-series"]
+        );
+    }
+
+    /// #140 acceptance: rules ride the same delta-pull/full-sweep contract
+    /// every other table here does — no bespoke sync path, same as #118's
+    /// settings above.
+    #[test]
+    fn rules_rows_ride_the_ordinary_delta_pull_and_full_sweep() {
+        fn rule(id: &str, enabled: bool, version: i64) -> Rule {
+            Rule {
+                id: id.to_string(),
+                name: format!("rule {id}"),
+                event_kind: None,
+                conditions: vec![],
+                severity: "normal".to_string(),
+                tier: hummingbird_domain::Tier::Normal,
+                enabled,
+                updated_at: 1,
+                version,
+            }
+        }
+
+        let mut mirror = SyncMirror::new();
+        mirror.apply_delta(ChangesResponse {
+            version: 1,
+            rules: vec![rule("r-1", true, 1), rule("r-2", true, 1)],
+            ..ChangesResponse::empty(1)
+        });
+        assert_eq!(mirror.all_rules().count(), 2);
+
+        // A delta touching only items must not disturb them...
+        mirror.apply_delta(ChangesResponse {
+            version: 2,
+            items: vec![item("a-1")],
+            ..ChangesResponse::empty(2)
+        });
+        assert!(mirror.rule("r-1").unwrap().enabled);
+
+        // ...an updated row upserts in place, at its new version...
+        mirror.apply_delta(ChangesResponse {
+            version: 3,
+            rules: vec![rule("r-1", false, 2)],
+            ..ChangesResponse::empty(3)
+        });
+        let updated = mirror.rule("r-1").unwrap();
+        assert!(!updated.enabled);
+        assert_eq!(updated.version, 2);
+
+        // ...and only a sweep's completeness demotes one by absence.
+        mirror.apply_sweep(
+            ChangesResponse {
+                version: 4,
+                rules: vec![rule("r-1", false, 2)],
+                ..ChangesResponse::empty(4)
+            },
+            9_000,
+        );
+        assert!(mirror.rule("r-2").is_none());
+        assert_eq!(
+            mirror.all_rules().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["r-1"]
         );
     }
 

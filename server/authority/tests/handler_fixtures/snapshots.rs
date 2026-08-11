@@ -281,8 +281,109 @@ fn a_written_snapshot_appears_in_changes_and_sweep_byte_identically() {
 #[test]
 fn wrong_method_on_the_collection_is_405() {
     let sql = RusqliteSql::new();
-    for method in ["GET", "PATCH", "DELETE"] {
+    // GET is no longer wrong here (#135-137) — see `only_a_bound_ingest_token_may_read`
+    // and `a_device_token_reads_any_source` below.
+    for method in ["PATCH", "DELETE"] {
         let resp = req(&sql, method, "/api/snapshots", None, Some("{}"), 0);
         assert_eq!(resp.status, 405, "{method} /api/snapshots: {}", resp.body);
     }
+}
+
+// --------------------------------------------------------- GET (#135-137)
+
+/// The read half of the cursor's durable home: an evaluated-stream poller
+/// writes its cursor through the existing `POST /api/snapshots` (city-waste's
+/// own lane, generic since #120), then reads it back on the next run through
+/// this route. `Device | Ingest`, source-bound for `Ingest` exactly like the
+/// write side.
+#[test]
+fn a_written_snapshot_is_readable_back_by_its_bound_ingest_token() {
+    let sql = RusqliteSql::new();
+    ingest_snapshot(&sql, &poll("2026-08-17", "2026-08-17", 1000), 0);
+    // `ingest_snapshot` rebinds the rig's ingest token to `city-waste/v2`.
+    let resp = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "GET",
+        "/api/snapshots",
+        Some("source=city-waste/v2&key=collection"),
+        None,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let snapshot: ContextSnapshot = body_as(&resp);
+    assert_eq!(snapshot.source, "city-waste/v2");
+    assert_eq!(snapshot.key, "collection");
+}
+
+#[test]
+fn a_device_token_reads_any_source() {
+    let sql = RusqliteSql::new();
+    ingest_snapshot(&sql, &poll("2026-08-17", "2026-08-17", 1000), 0);
+    let resp = req(
+        &sql,
+        "GET",
+        "/api/snapshots",
+        Some("source=city-waste/v2&key=collection"),
+        None,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+}
+
+#[test]
+fn no_such_row_is_404_not_a_gap_with_a_body() {
+    let sql = RusqliteSql::new();
+    bind_ingest_token(&sql, "gmail/v1");
+    let resp = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "GET",
+        "/api/snapshots",
+        Some("source=gmail/v1&key=cursor"),
+        None,
+        0,
+    );
+    assert_eq!(resp.status, 404, "{}", resp.body);
+}
+
+#[test]
+fn missing_or_empty_query_params_are_400() {
+    let sql = RusqliteSql::new();
+    for query in [None, Some("source=gmail/v1"), Some("key=cursor"), Some("source=&key=cursor")] {
+        let resp = req(&sql, "GET", "/api/snapshots", query, None, 0);
+        assert_eq!(resp.status, 400, "{query:?}: {}", resp.body);
+    }
+}
+
+#[test]
+fn an_ingest_token_bound_to_another_source_is_403() {
+    let sql = RusqliteSql::new();
+    ingest_snapshot(&sql, &poll("2026-08-17", "2026-08-17", 1000), 0);
+    bind_ingest_token(&sql, "gmail/v1");
+    let resp = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "GET",
+        "/api/snapshots",
+        Some("source=city-waste/v2&key=collection"),
+        None,
+        0,
+    );
+    assert_eq!(resp.status, 403, "{}", resp.body);
+    assert!(resp.body.is_empty(), "403 bodies are empty");
+}
+
+#[test]
+fn an_unauthenticated_read_is_401() {
+    let sql = RusqliteSql::new();
+    let resp = req_anon(
+        &sql,
+        "GET",
+        "/api/snapshots",
+        Some("source=gmail/v1&key=cursor"),
+        None,
+    );
+    assert_eq!(resp.status, 401);
+    assert!(resp.body.is_empty());
 }

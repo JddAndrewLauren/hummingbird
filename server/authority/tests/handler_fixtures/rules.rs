@@ -496,6 +496,208 @@ fn delta_pull_only_returns_rules_above_the_cursor() {
     assert_eq!(parsed.rules[0].id, "r-2");
 }
 
+// ---------------------------------------------------- list (GET, #135-137)
+
+/// The evaluated-stream pollers' own read: every rule, including a disabled
+/// one — the poller (via `hummingbird_rules_engine::evaluate_rules`) is the
+/// one deciding what fires, and a filtered list here would be a second,
+/// driftable copy of `evaluate_rule`'s own `enabled` check. Both seeded
+/// rules carry no `event_kind` (the "any kind" state), so this holds
+/// regardless of the calling token's bound source — the source-binding
+/// filter below is a separate axis, exercised on its own.
+#[test]
+fn list_returns_every_rule_enabled_or_not() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-1");
+    post_rule(
+        &sql,
+        r#"{"id": "r-2", "name": "n", "conditions": [], "severity": "s", "tier": "normal", "enabled": false}"#,
+        0,
+    );
+    let resp = get_rules_as(&sql, INGEST_TOKEN);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let rules: Vec<Rule> = body_as(&resp);
+    assert_eq!(rules.len(), 2);
+    assert!(rules.iter().any(|r| r.id == "r-1" && r.enabled));
+    assert!(rules.iter().any(|r| r.id == "r-2" && !r.enabled));
+}
+
+#[test]
+fn list_is_readable_by_device_and_ingest_but_not_sweeper() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-1");
+
+    assert_eq!(get_rules_as(&sql, DEVICE_TOKEN).status, 200);
+    assert_eq!(get_rules_as(&sql, INGEST_TOKEN).status, 200);
+
+    let sweeper = get_rules_as(&sql, SWEEPER_TOKEN);
+    assert_eq!(sweeper.status, 403, "{}", sweeper.body);
+    assert!(sweeper.body.is_empty(), "403 bodies are empty");
+
+    let anon = req_anon(&sql, "GET", "/api/rules", None, None);
+    assert_eq!(anon.status, 401);
+    assert!(anon.body.is_empty(), "401 bodies are empty");
+}
+
+/// The item-2 review fix on #264: an `ingest` token bound to `gmail/v1` may
+/// read a rule with `event_kind: "email"` (its own kind) and a rule with no
+/// `event_kind` at all (matches any kind), but never a rule scoped to a
+/// kind that source cannot emit — the exact widening that made
+/// `CITY_WASTE_INGEST_TOKEN`'s "worst-case abuse is a wrong bin day"
+/// justification false before this fix.
+#[test]
+fn an_ingest_token_reads_only_its_own_sources_event_kind_plus_any_kind_rules() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-any"); // no event_kind: any kind
+    post_rule(
+        &sql,
+        r#"{"id": "r-email", "name": "n", "event_kind": "email", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    post_rule(
+        &sql,
+        r#"{"id": "r-calendar", "name": "n", "event_kind": "calendar_event", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+
+    let resp = get_rules_as_ingest_bound_to(&sql, hummingbird_domain::GMAIL_V1);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.contains(&"r-any".to_string()));
+    assert!(ids.contains(&"r-email".to_string()));
+    assert!(!ids.contains(&"r-calendar".to_string()), "not this source's kind");
+}
+
+/// #136's own mapping entry, exercised the same way as #135's: an `ingest`
+/// token bound to `google-calendar/v1` reads a `calendar_event`-kind rule
+/// (its own kind) and the any-kind rule, but never the `email`-kind one —
+/// the two mapping entries are independent, so this pins that adding one
+/// did not accidentally widen or narrow the other.
+#[test]
+fn a_calendar_ingest_token_reads_only_calendar_event_plus_any_kind_rules() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-any"); // no event_kind: any kind
+    post_rule(
+        &sql,
+        r#"{"id": "r-email", "name": "n", "event_kind": "email", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    post_rule(
+        &sql,
+        r#"{"id": "r-calendar", "name": "n", "event_kind": "calendar_event", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+
+    let resp = get_rules_as_ingest_bound_to(&sql, hummingbird_domain::GOOGLE_CALENDAR_V1);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.contains(&"r-any".to_string()));
+    assert!(ids.contains(&"r-calendar".to_string()));
+    assert!(!ids.contains(&"r-email".to_string()), "not this source's kind");
+}
+
+/// #137's own two mapping entries, exercised the same way as #135's/#136's:
+/// an `ingest` token bound to `m365-mail/v1` reads the `email`-kind rule
+/// (its own kind) and the any-kind rule, but never the `calendar_event`-kind
+/// one — independent of the other entries, so this pins that adding it did
+/// not accidentally widen or narrow anything else.
+#[test]
+fn an_m365_mail_ingest_token_reads_only_email_plus_any_kind_rules() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-any"); // no event_kind: any kind
+    post_rule(
+        &sql,
+        r#"{"id": "r-email", "name": "n", "event_kind": "email", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    post_rule(
+        &sql,
+        r#"{"id": "r-calendar", "name": "n", "event_kind": "calendar_event", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+
+    let resp = get_rules_as_ingest_bound_to(&sql, hummingbird_domain::M365_MAIL_V1);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.contains(&"r-any".to_string()));
+    assert!(ids.contains(&"r-email".to_string()));
+    assert!(!ids.contains(&"r-calendar".to_string()), "not this source's kind");
+}
+
+/// The M365 calendar leg's own twin: `m365-calendar/v1` reads
+/// `calendar_event` plus any-kind, never `email`.
+#[test]
+fn an_m365_calendar_ingest_token_reads_only_calendar_event_plus_any_kind_rules() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-any");
+    post_rule(
+        &sql,
+        r#"{"id": "r-email", "name": "n", "event_kind": "email", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    post_rule(
+        &sql,
+        r#"{"id": "r-calendar", "name": "n", "event_kind": "calendar_event", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+
+    let resp = get_rules_as_ingest_bound_to(&sql, hummingbird_domain::M365_CALENDAR_V1);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.contains(&"r-any".to_string()));
+    assert!(ids.contains(&"r-calendar".to_string()));
+    assert!(!ids.contains(&"r-email".to_string()), "not this source's kind");
+}
+
+/// An `ingest` token bound to a source this handler has no `event_kind`
+/// mapping for yet (or an unbound one — the rig's pre-#145 stand-in) reads
+/// only the any-kind rules: the safe default is nothing extra, never
+/// everything, so a future poller with no mapping entry cannot silently
+/// widen to the full rule set.
+#[test]
+fn an_ingest_token_with_no_mapped_source_reads_only_any_kind_rules() {
+    let sql = RusqliteSql::new();
+    seed_rule(&sql, "r-any");
+    post_rule(
+        &sql,
+        r#"{"id": "r-email", "name": "n", "event_kind": "email", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+
+    let resp = get_rules_as_ingest_bound_to(&sql, "city-waste/v2");
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, vec!["r-any".to_string()]);
+
+    let unbound = get_rules_as(&sql, INGEST_TOKEN);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&unbound).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, vec!["r-any".to_string()]);
+}
+
+/// A device token is unaffected by the source filter — it still reads
+/// every rule regardless of `event_kind`.
+#[test]
+fn a_device_token_reads_every_event_kind() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-email", "name": "n", "event_kind": "email", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    post_rule(
+        &sql,
+        r#"{"id": "r-calendar", "name": "n", "event_kind": "calendar_event", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+
+    let resp = get_rules_as(&sql, DEVICE_TOKEN);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), 2);
+}
+
 // ------------------------------------------------- push_targets / deliveries
 
 /// `push_targets` gets no HTTP surface in #131 (that's #139); the

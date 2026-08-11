@@ -5,9 +5,21 @@
 
 import type { Stage } from "../components/domain/StageBadge";
 import type { AlertTier } from "../components/domain/AlertCard";
-import type { BindingDTO } from "../store/protocol";
+import type { BindingDTO, KindRegistryDTO, RuleDTO, TaskItemDTO } from "../store/protocol";
 
 export type Urgency = "calm" | "soon" | "now" | "overdue";
+
+/** A deadline string `hoursFromNow` ahead of the moment this module loads —
+ * used only by `ruleBacktestItems` below, whose whole purpose is landing
+ * inside the demo passport rule's `within_next '3d'` condition regardless
+ * of what day the visual gate happens to run on. A frozen calendar date
+ * would drift out of that window and silently stop demonstrating the
+ * populated backtest state the capture exists to prove. */
+function deadlineHoursFromNow(hours: number): string {
+  const d = new Date(Date.now() + hours * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 export interface DemoItem {
   id: string;
@@ -81,6 +93,16 @@ export interface DemoData {
   calendars: DemoCalendar[];
   /** The header's sync readout. Demo-only: no outbound queue exists yet. */
   syncBadge: string;
+  /** The Rules screen's own fixtures (#140 review — `?demo` previously left
+   * that screen on "Loading rules…" forever, so its light/dark acceptance
+   * criterion was never actually exercised by the one gate that checks it).
+   * Reuses the real wire DTOs rather than a `DemoRule`-shaped twin —
+   * `DemoBinding`'s own precedent — since the whole point is exercising the
+   * real `RuleCard`/`RuleEditorForm`/`BacktestPanel` rendering path, not a
+   * parallel display-only shape. */
+  ruleDetails: RuleDTO[];
+  ruleKindRegistry: KindRegistryDTO;
+  ruleBacktestItems: TaskItemDTO[];
 }
 
 export const DEMO_DATA: DemoData = {
@@ -134,4 +156,158 @@ export const DEMO_DATA: DemoData = {
     { id: "twinion@…", summary: "twinion work" },
   ],
   syncBadge: "synced · 0 queued",
+  ruleDetails: [
+    {
+      // First on purpose: the one demo rule that targets `item_threshold`,
+      // so the visual gate's default "open the first card" capture lands
+      // on a backtest that actually has local material to check against —
+      // proving the populated match-count state, not just the "no local
+      // event history" one every other demo kind reports.
+      id: "rule-passport-renewal",
+      name: "Passport renewal due soon",
+      eventKind: "item_threshold",
+      conditions: [
+        { field: "deadline", op: "within_next", value: "3d", negate: false },
+        { field: "title", op: "contains", value: "passport", negate: false },
+      ],
+      severity: "high",
+      tier: "urgent",
+      enabled: false,
+      updatedAt: 1_755_000_000_000,
+      version: 2,
+    },
+    {
+      id: "rule-sweeper-fail",
+      name: "Sweeper run failed",
+      eventKind: "alert_raised",
+      conditions: [{ field: "source", op: "eq", value: "fly-worker", negate: false }],
+      severity: "urgent",
+      tier: "urgent",
+      enabled: true,
+      updatedAt: 1_755_000_000_000,
+      version: 4,
+    },
+    {
+      id: "rule-deploy-finished",
+      name: "Deploy finished",
+      eventKind: null,
+      conditions: [{ field: "source", op: "contains", value: "cloudflare", negate: false }],
+      severity: "normal",
+      tier: "normal",
+      enabled: true,
+      updatedAt: 1_755_000_000_000,
+      version: 1,
+    },
+  ],
+  ruleKindRegistry: {
+    coreFields: [
+      { name: "source", fieldType: "string" },
+      { name: "source_key", fieldType: "string" },
+      { name: "occurred_at", fieldType: "timestamp" },
+      { name: "title", fieldType: "string" },
+      { name: "body", fieldType: "string" },
+      { name: "url", fieldType: "string" },
+      { name: "severity", fieldType: "string" },
+      { name: "calendar_busy", fieldType: "bool" },
+    ],
+    kinds: [
+      {
+        key: "email",
+        mints: true,
+        fields: [
+          { name: "from", fieldType: "string" },
+          { name: "to", fieldType: "string_list" },
+          { name: "subject", fieldType: "string" },
+          { name: "received_at", fieldType: "timestamp" },
+          { name: "has_attachment", fieldType: "bool" },
+        ],
+      },
+      {
+        key: "calendar_event",
+        mints: true,
+        fields: [
+          { name: "calendar", fieldType: "string" },
+          { name: "starts_at", fieldType: "timestamp" },
+          { name: "ends_at", fieldType: "timestamp" },
+          { name: "is_all_day", fieldType: "bool" },
+        ],
+      },
+      {
+        key: "item_threshold",
+        mints: true,
+        fields: [
+          { name: "deadline", fieldType: "timestamp" },
+          { name: "scheduled_date", fieldType: "date" },
+          { name: "title", fieldType: "string" },
+          { name: "stage", fieldType: "string" },
+          { name: "size", fieldType: "string" },
+          { name: "energy", fieldType: "string" },
+          { name: "context", fieldType: "string" },
+          { name: "priority", fieldType: "number" },
+          { name: "project", fieldType: "string" },
+        ],
+      },
+      {
+        key: "snapshot_change",
+        mints: true,
+        fields: [
+          { name: "key", fieldType: "string" },
+          { name: "changed_at", fieldType: "timestamp" },
+          { name: "value", fieldType: "dynamic" },
+          { name: "previous", fieldType: "dynamic" },
+        ],
+      },
+      { key: "alert_raised", mints: false, fields: [] },
+    ],
+    alarmIntervalMs: 900_000,
+    severities: ["low", "normal", "high", "urgent"],
+  },
+  ruleBacktestItems: [
+    {
+      id: "ION-142",
+      seq: 142,
+      title: "renew passport before the trip",
+      description: null,
+      stage: "ready",
+      size: "quick",
+      energy: "low",
+      context: null,
+      priority: 1,
+      projectId: null,
+      projectPos: null,
+      deadline: deadlineHoursFromNow(36),
+      scheduledDate: null,
+      source: null,
+      sourceKey: null,
+      sourceUrl: null,
+      archivedAt: null,
+      createdAt: 1_755_000_000_000,
+      updatedAt: 1_755_000_000_000,
+      version: 1,
+      pending: false,
+    },
+    {
+      id: "ION-160",
+      seq: 160,
+      title: "book the annual boiler service",
+      description: null,
+      stage: "ready",
+      size: "quick",
+      energy: "low",
+      context: null,
+      priority: 0,
+      projectId: null,
+      projectPos: null,
+      deadline: null,
+      scheduledDate: "2026-08-24",
+      source: null,
+      sourceKey: null,
+      sourceUrl: null,
+      archivedAt: null,
+      createdAt: 1_755_000_000_000,
+      updatedAt: 1_755_000_000_000,
+      version: 1,
+      pending: false,
+    },
+  ],
 };

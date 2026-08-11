@@ -53,7 +53,10 @@ pub mod sync;
 pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
-use hummingbird_domain::{CreateItem, Energy, Item, Project, Setting, Size, Stage};
+use hummingbird_domain::{
+    Condition, CreateItem, CreateRule, Energy, Item, Project, Rule, RulePatch, Setting, Size,
+    Stage, Tier,
+};
 
 use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
 use sync::queue::{MutationIntent, QueueEntry};
@@ -1170,6 +1173,126 @@ where
             },
         );
 
+        Ok(())
+    }
+
+    /// Every rule (#140), id order — the read behind the rules screen. No
+    /// overlay: unlike `bindings`/`overlaid_items`, a locally-created or
+    /// -patched rule is not projected optimistically here — it becomes
+    /// visible once the next completed cycle pulls it back, the same "read
+    /// the mirror directly" contract [`Core::steps_for`]/[`Core::projects`]
+    /// already follow for entities no mutation entry point overlays. A 409
+    /// or a durability failure on the write still cannot be lost silently:
+    /// it lands in the ordinary dead-letter journal
+    /// ([`Core::dead_letters`]-equivalent host surface), the same generic
+    /// per-field-diff affordance every other CAS write already uses — #140
+    /// deliberately adds no bespoke conflict surface for rules.
+    pub fn rules(&self) -> Vec<Rule> {
+        self.cycle.mirror().all_rules().cloned().collect()
+    }
+
+    /// Creates a rule (#140): enqueues a `POST /api/rules` create, durably,
+    /// via [`sync::SyncCycle::enqueue`] — the same rule every other mutation
+    /// entry point here follows. `seed` mints the deterministic id
+    /// ([`sync::write::deterministic_id`]), caller-supplied for the same
+    /// no-clock/no-RNG reasoning as [`Core::capture`]. Returns the minted
+    /// id. No optimistic overlay — see [`Core::rules`]'s own doc for why.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_rule(
+        &mut self,
+        seed: &str,
+        name: impl Into<String>,
+        event_kind: Option<String>,
+        conditions: Vec<Condition>,
+        severity: impl Into<String>,
+        tier: Tier,
+        enabled: bool,
+        now_ms: i64,
+    ) -> Result<String, SnapshotError<QS::Error>> {
+        let id = sync::write::deterministic_id(seed);
+        let create = CreateRule {
+            id: id.clone(),
+            name: name.into(),
+            event_kind,
+            conditions,
+            severity: severity.into(),
+            tier,
+            enabled: Some(enabled),
+        };
+        let body = serde_json::to_value(&create).expect("CreateRule always serializes");
+        let entry = QueueEntry {
+            id: id.clone(),
+            intent: MutationIntent::Create {
+                path: sync::write::paths::rules(),
+                body,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(id)
+    }
+
+    /// Patches a rule (#140) — the enable/disable toggle, and the rest of
+    /// the editor's fields, share this one entry point: every `Some` field
+    /// is touched, absolute-set, exactly [`RulePatch`]'s own contract, and
+    /// `None` means "leave this field alone." `expected_version` is the
+    /// version this device last knew — the ordinary CAS contract, so a
+    /// stale write 409s and rebases or dead-letters like any other
+    /// (`patch_with_rebase`, `sync::write::adapter`); this entry point never
+    /// swallows that outcome, it only enqueues it durably. `base` is
+    /// `current` verbatim (the caller's own last-known copy of the row,
+    /// e.g. from [`Core::rules`]), for [`sync::write::rebase::decide`] to
+    /// diff a 409 against.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_rule(
+        &mut self,
+        seed: &str,
+        current: &Rule,
+        name: Option<String>,
+        event_kind: Option<Option<String>>,
+        conditions: Option<Vec<Condition>>,
+        severity: Option<String>,
+        tier: Option<Tier>,
+        enabled: Option<bool>,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("Rule always serializes");
+        let mut patch = RulePatch {
+            expected_version: current.version,
+            name: None,
+            event_kind: None,
+            conditions: None,
+            severity: None,
+            tier: None,
+            enabled: None,
+        };
+        patch.name = name;
+        patch.event_kind = event_kind;
+        patch.conditions = conditions;
+        patch.severity = severity;
+        patch.tier = tier;
+        patch.enabled = enabled;
+
+        let mut patch_fields = serde_json::to_value(&patch).expect("RulePatch always serializes");
+        // `expected_version` rides on the wire body but is not itself a
+        // "touched field" for rebase purposes — `drain` refills it from
+        // whatever version is live at send time (see `MutationIntent::Patch`
+        // field doc), so it must not appear in `patch_fields`.
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::rule(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
+                patch_fields,
+                rebase_fields: None,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
     }
 
@@ -4366,5 +4489,142 @@ mod tests {
         assert_eq!(race.value, BindingValue::Text { text: "motogp".to_string() });
         assert!(!race.pending, "confirmed by the pull — nothing is queued now");
         assert_eq!(core.queue_depth(), 0);
+    }
+
+    // -- #140: rules -------------------------------------------------------
+
+    fn fixture_rule(id: &str, enabled: bool, version: i64) -> Rule {
+        Rule {
+            id: id.to_string(),
+            name: format!("rule {id}"),
+            event_kind: Some("email".to_string()),
+            conditions: vec![Condition {
+                field: "subject".to_string(),
+                op: "contains".to_string(),
+                value: serde_json::json!("urgent"),
+                negate: false,
+            }],
+            severity: "high".to_string(),
+            tier: Tier::Urgent,
+            enabled,
+            updated_at: 1,
+            version,
+        }
+    }
+
+    /// Runs one full-sweep cycle seeding `rules` — [`core_with_settings`]'s
+    /// own shape, since a rule pulled from the authority must reach the
+    /// mirror the ordinary way or not at all.
+    async fn core_with_rules(rules: Vec<Rule>) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            rules,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    /// #140 acceptance: the rules screen reads whatever the mirror pulled,
+    /// no bespoke path.
+    #[tokio::test]
+    async fn rules_reads_every_synced_rule() {
+        let core = core_with_rules(vec![fixture_rule("r-1", true, 1), fixture_rule("r-2", false, 1)]).await;
+        let rules = core.rules();
+        assert_eq!(rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["r-1", "r-2"]);
+    }
+
+    /// #140 acceptance: creating a rule enqueues one `POST /api/rules`
+    /// create, idempotent by this device's own minted id — the same
+    /// contract [`Core::capture`] follows for items.
+    #[tokio::test]
+    async fn create_rule_enqueues_one_post_create() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        let id = core
+            .create_rule(
+                "seed-1",
+                "trash slide",
+                None,
+                vec![Condition {
+                    field: "source".to_string(),
+                    op: "eq".to_string(),
+                    value: serde_json::json!("city-waste/v2"),
+                    negate: false,
+                }],
+                "high",
+                Tier::Urgent,
+                true,
+                2_000,
+            )
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Create { path, body } = &entries[0].intent else {
+            panic!("a rule create is a POST create, not a patch");
+        };
+        assert_eq!(path, "/api/rules");
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some(id.as_str()));
+        assert_eq!(body.get("name").and_then(|v| v.as_str()), Some("trash slide"));
+        assert_eq!(body.get("event_kind"), None, "any kind is the absent field, not null");
+    }
+
+    /// #140 acceptance: "the enable/disable toggle is one CAS field,
+    /// following the authority's absolute-set + `expected_version`
+    /// contract." Only `enabled` is touched; every other field stays out of
+    /// `patch_fields` entirely, so a 409's rebase diff never has to reason
+    /// about fields this write never meant to change.
+    #[tokio::test]
+    async fn toggling_enabled_is_one_cas_patch_touching_only_that_field() {
+        let mut core = core_with_rules(vec![fixture_rule("r-1", true, 5)]).await;
+        let current = core.rules().into_iter().find(|r| r.id == "r-1").unwrap();
+
+        core.patch_rule(
+            "seed-1",
+            &current,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(false),
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch {
+            path,
+            method,
+            base,
+            patch_fields,
+            ..
+        } = &entries[0].intent
+        else {
+            panic!("a toggle is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/rules/r-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(base.get("version").and_then(serde_json::Value::as_i64), Some(5));
+        assert_eq!(patch_fields, &serde_json::json!({"enabled": false}));
+        assert!(
+            patch_fields.get("expected_version").is_none(),
+            "expected_version is not a touched field — drain fills it at send time"
+        );
     }
 }

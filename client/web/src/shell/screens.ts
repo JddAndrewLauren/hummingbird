@@ -1,8 +1,16 @@
 // The shell's surfaces (#107's decomposition). Switching is local state, not
-// a router: there are seven screens, no deep links yet, and no URL contract to
+// a router: there are eight screens, no deep links yet, and no URL contract to
 // honour — adding a router would be a dependency carrying no weight.
 
-export type Screen = "now" | "triage" | "routes" | "alerts" | "done" | "ledger" | "settings";
+export type Screen =
+  | "now"
+  | "triage"
+  | "routes"
+  | "alerts"
+  | "rules"
+  | "done"
+  | "ledger"
+  | "settings";
 
 /** Rail order, defined once. `NavRail` maps over this and looks its labels and
  * icons up by screen, so the order lives here and nowhere else. The working
@@ -13,6 +21,7 @@ export const SCREENS: readonly Screen[] = [
   "triage",
   "routes",
   "alerts",
+  "rules",
   "done",
   "ledger",
   "settings",
@@ -25,6 +34,7 @@ export const SCREEN_TITLES: Record<Screen, string> = {
   triage: "Triage",
   routes: "Routes",
   alerts: "Alerts",
+  rules: "Rules",
   done: "Done",
   ledger: "Ledger",
   settings: "Settings",

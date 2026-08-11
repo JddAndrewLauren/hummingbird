@@ -1,7 +1,10 @@
 //! The write vocabulary (#101): exactly ADR-0009's schema minus alerts —
-//! items, steps, blocked_by edges, projects, routes, fog, settings. Alert
-//! ingest (`POST /api/alerts`) is deliberately absent: it is `ingest`-scope
-//! only (`auth::permitted` on the authority), and this client surface is
+//! items, steps, blocked_by edges, projects, routes, fog, settings — plus
+//! #140's rules addition (ADR-0012/0013, `device`-scope like every entry
+//! here — `POST /api/rules`/`PATCH /api/rules/:id` carry no `ingest`
+//! restriction, unlike alert ingest below). Alert ingest (`POST
+//! /api/alerts`) is deliberately absent: it is `ingest`-scope only
+//! (`auth::permitted` on the authority), and this client surface is
 //! `device`-scope end to end, so there is no path constructor here that
 //! could ever target it.
 //!
@@ -56,6 +59,14 @@ pub fn setting(key: &str) -> String {
     format!("/api/settings/{key}")
 }
 
+pub fn rules() -> String {
+    "/api/rules".to_string()
+}
+
+pub fn rule(id: &str) -> String {
+    format!("/api/rules/{id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +89,8 @@ mod tests {
             fog(),
             fog_item("x"),
             setting("x"),
+            rules(),
+            rule("x"),
         ];
         for path in paths {
             assert!(path.starts_with("/api/"));
@@ -95,5 +108,6 @@ mod tests {
         assert_eq!(blocked_by_edge("a-1", "a-2"), "/api/blocked_by/a-1/a-2");
         assert_eq!(route("proj-1"), "/api/routes/proj-1");
         assert_eq!(setting("theme"), "/api/settings/theme");
+        assert_eq!(rule("r-1"), "/api/rules/r-1");
     }
 }

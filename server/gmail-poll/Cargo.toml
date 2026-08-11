@@ -1,0 +1,36 @@
+[package]
+name = "hummingbird-gmail-poll"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller for `gmail/v1` (#135) — the first of #135-137's
+# evaluated-stream pollers (ADR-0011), and the one that establishes the
+# scaffolding the other two follow. A workspace member, so CI's
+# `cargo clippy --workspace` / `cargo test --workspace` gate it, on the exact
+# split `server/city-waste` already uses: everything decidable lives in the
+# lib and is natively tested against saved Gmail API response fixtures;
+# `main.rs` holds only `std::env`, the OAuth token exchange and the HTTP
+# calls — the untestable edge, kept as small as `worker/src/fcm.rs` is for
+# the same reason.
+#
+# It must NEVER become a dependency of `hummingbird-authority-worker`: that
+# crate builds for wasm32 and has no business carrying an HTTP client.
+
+[dependencies]
+# The real `gmail_v1_key`, `Event`/`FieldValue`, and `now_as_deadline` —
+# never a hand-copied twin.
+hummingbird-domain = { path = "../domain" }
+# Fire-time evaluation (ADR-0011: "the rule engine evaluates each poll batch
+# in memory") — the exact crate #138's sweep and #140's backtest already
+# share.
+hummingbird-rules-engine = { path = "../rules-engine" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# `main.rs` only. Blocking by design: the poller is a one-shot process, so
+# an async runtime would be pure ceremony (the same reasoning `city-waste`
+# already gives).
+[dependencies.ureq]
+version = "3"
+default-features = false
+features = ["rustls", "json"]

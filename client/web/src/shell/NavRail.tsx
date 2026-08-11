@@ -19,6 +19,7 @@ const NAV: Record<Screen, { label: string; icon: IconName }> = {
   triage: { label: "Triage", icon: "inbox" },
   routes: { label: "Routes", icon: "route" },
   alerts: { label: "Alerts", icon: "bell" },
+  rules: { label: "Rules", icon: "siren" },
   done: { label: "Done", icon: "circle-check" },
   ledger: { label: "Ledger", icon: "scroll-text" },
   settings: { label: "Settings", icon: "settings" },
