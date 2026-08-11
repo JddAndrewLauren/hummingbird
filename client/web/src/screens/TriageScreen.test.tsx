@@ -39,7 +39,7 @@ function rowField(label: string): HTMLElement {
 function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
   const onSubmitCapture = vi.fn();
   const onTriage = vi.fn();
-  render(
+  const view = render(
     <TriageScreen
       demo={null}
       task={task}
@@ -48,7 +48,17 @@ function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
       focusRequestId={0}
     />,
   );
-  return { onSubmitCapture, onTriage };
+  const rerender = (nextTask: TaskState) =>
+    view.rerender(
+      <TriageScreen
+        demo={null}
+        task={nextTask}
+        onSubmitCapture={onSubmitCapture}
+        onTriage={options.withTriage === false ? undefined : onTriage}
+        focusRequestId={0}
+      />,
+    );
+  return { onSubmitCapture, onTriage, rerender };
 }
 
 describe("TriageScreen — the capture box", () => {
@@ -154,6 +164,28 @@ describe("TriageScreen — the capture box", () => {
     expect(energySlider.getAttribute("aria-valuenow")).toBe("-1");
     expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("");
   });
+
+  it("surfaces a failed capture near the capture box", () => {
+    renderTriage(
+      taskState({ lastCapture: { seed: "s1", kind: "failed", id: null, error: "Offline and full." } }),
+    );
+    expect(screen.getByText("Offline and full.")).toBeDefined();
+  });
+
+  it("says nothing after a capture that reads as ok", () => {
+    renderTriage(taskState({ lastCapture: { seed: "s1", kind: "ok", id: "item-9", error: null } }));
+    expect(screen.queryByText(/didn't go through/i)).toBeNull();
+  });
+
+  it("clears a stale capture failure once a later capture succeeds", () => {
+    const { rerender } = renderTriage(
+      taskState({ lastCapture: { seed: "s1", kind: "failed", id: null, error: "Nope." } }),
+    );
+    expect(screen.getByText("Nope.")).toBeDefined();
+
+    rerender(taskState({ lastCapture: { seed: "s2", kind: "ok", id: "item-9", error: null } }));
+    expect(screen.queryByText("Nope.")).toBeNull();
+  });
 });
 
 describe("TriageScreen — the inbox", () => {
@@ -208,15 +240,57 @@ describe("TriageScreen — the inbox", () => {
     });
   });
 
-  it("clears the draft once promoted, so a re-rendered row starts blank", () => {
-    const { onTriage } = renderTriage(
+  it("keeps the draft after promoting, until the result comes back ok", () => {
+    // Issue #222: the draft used to clear the instant Promote was clicked,
+    // optimistically — this is what makes a failed triage lose the reader's
+    // edits on top of saying nothing about the failure.
+    const { onTriage, rerender } = renderTriage(
       taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
     );
     const title = rowField("Title") as HTMLInputElement;
     fireEvent.change(title, { target: { value: "Order the worktop" } });
     fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
     expect(onTriage).toHaveBeenCalledTimes(1);
+    // Still in flight — no result has come back yet.
+    expect((rowField("Title") as HTMLInputElement).value).toBe("Order the worktop");
+
+    rerender(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i1", kind: "ok", error: null },
+      }),
+    );
     expect((rowField("Title") as HTMLInputElement).value).toBe("");
+  });
+
+  it("surfaces a failed triage and leaves the draft in place", () => {
+    const { onTriage, rerender } = renderTriage(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
+    );
+    const title = rowField("Title") as HTMLInputElement;
+    fireEvent.change(title, { target: { value: "Order the worktop" } });
+    fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
+    expect(onTriage).toHaveBeenCalledTimes(1);
+
+    rerender(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i1", kind: "failed", error: "Nope." },
+      }),
+    );
+    expect(screen.getByText("Nope.")).toBeDefined();
+    // The edits are still here to retry or amend.
+    expect((rowField("Title") as HTMLInputElement).value).toBe("Order the worktop");
+  });
+
+  it("does not wear a failure that belongs to a different item", () => {
+    renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i2", kind: "failed", error: "Nope." },
+      }),
+    );
+    expect(screen.queryByText("Nope.")).toBeNull();
   });
 
   it("renders no triage form at all without an onTriage handler", () => {

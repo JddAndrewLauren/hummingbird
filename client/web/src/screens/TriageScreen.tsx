@@ -88,16 +88,49 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
     }));
   }
 
+  // Reviewer finding on issue #222 (the capture/triage twin of PR #207's
+  // act-failure defect): a triage draft used to clear the instant Promote
+  // was clicked, optimistically, so a failed write lost the reader's edits
+  // AND said nothing about the failure. It now stays put — `promote` only
+  // ever sends the mutation; the draft is cleared below, once and only once
+  // `task.lastTriage` actually reports `"ok"` for this item.
   function promote(itemId: string, currentTitle: string, destination: TriageDestinationName): void {
     if (!onTriage) {
       return;
     }
     onTriage(itemId, destination, buildTriageEdits(triageDraftFor(itemId), currentTitle));
-    setTriageDrafts((current) => {
-      const next = { ...current };
-      delete next[itemId];
-      return next;
-    });
+  }
+
+  // The React-docs "adjusting state when a prop changes" pattern (same one
+  // `NowScreen.tsx`'s `RealFrontier` uses for its optimistic item) — guarded
+  // on the result's own `seed` so a broadcast already-observed is never
+  // reprocessed. A stale `lastTriage` from a previous item's success cannot
+  // wipe THIS item's still-in-flight draft, because it is keyed by the
+  // itemId the result actually carries, not by whichever row happens to be
+  // open.
+  const [processedTriageSeed, setProcessedTriageSeed] = useState<string | null>(null);
+  if (task.lastTriage && task.lastTriage.seed !== processedTriageSeed) {
+    setProcessedTriageSeed(task.lastTriage.seed);
+    if (task.lastTriage.kind === "ok") {
+      const okItemId = task.lastTriage.itemId;
+      setTriageDrafts((current) => {
+        if (!(okItemId in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[okItemId];
+        return next;
+      });
+    }
+  }
+
+  // Matched by item id, same broadcast-recognition contract
+  // `NowScreen.tsx`'s `actError` uses for `lastAct` — a failure belongs to
+  // whichever item it names, never to "whichever row is open".
+  function triageErrorFor(itemId: string): string | null {
+    return task.lastTriage && task.lastTriage.itemId === itemId && task.lastTriage.kind !== "ok"
+      ? (task.lastTriage.error ?? "That triage didn't apply.")
+      : null;
   }
 
   // Moves focus to the capture input whenever a focus request arrives
@@ -118,6 +151,20 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
   }, [focusRequestId]);
 
   const canSubmit = canSubmitCapture(draft);
+
+  // Reviewer finding on issue #222: `TaskState.lastCapture` was written on
+  // every `captureResult` and read by nothing, so a failed capture left the
+  // reader with no signal at all — the same defect class `actError` above
+  // already closed for a failed act. A capture has no pre-existing item to
+  // key the error against, so it renders near the capture box itself rather
+  // than matched by id; `!demo` keeps it out of the fixture-only demo view,
+  // which never issues a real capture and so must never wear a stale one
+  // from a previous real session. `kind !== "ok"` overwrites itself on the
+  // next capture result, so a stale failure never survives a later success.
+  const captureError =
+    !demo && task.lastCapture && task.lastCapture.kind !== "ok"
+      ? (task.lastCapture.error ?? "That capture didn't go through.")
+      : null;
 
   function submit() {
     if (!canSubmit) {
@@ -205,6 +252,9 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
             ? "optional — stage, dates and everything else are decided at mint time"
             : "optional — stage, dates and everything else are decided at mint time (not yet stored on a real capture)"}
         </span>
+        {captureError ? (
+          <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{captureError}</p>
+        ) : null}
       </Card>
 
       <div>
@@ -415,6 +465,11 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
                           Promote to ready
                         </Button>
                       </div>
+                      {triageErrorFor(item.id) ? (
+                        <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+                          {triageErrorFor(item.id)}
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
                 </Card>
