@@ -1252,7 +1252,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let rejected: Vec<(&str, TriageEdits)> = vec![
@@ -1325,7 +1325,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
         host.triage(
             "seed-triage-1",
@@ -1454,7 +1454,7 @@ mod ledger_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
 
         let response = host.ledger(2_000);
         assert_eq!(response.kind, "ok");
@@ -1490,7 +1490,7 @@ mod ledger_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         host.act("seed-act-1", &id, "complete", 2_000).await;

@@ -2092,7 +2092,7 @@ mod tests {
     async fn a_cleared_triage_field_is_sent_as_an_explicit_null_and_an_untouched_one_is_absent() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
             .await
             .unwrap();
         core.triage(
@@ -3469,7 +3469,7 @@ mod tests {
     #[tokio::test]
     async fn a_pending_capture_and_an_offline_complete_show_in_ledger_and_done() {
         let mut core = seeded_core(vec![fixture_item("a-1", Stage::InProgress)], vec![]).await;
-        core.capture("seed-1", "buy milk", Stage::Triage, 1_500)
+        core.capture("seed-1", "buy milk", Stage::Triage, 1_500, CaptureOptions::default())
             .await
             .unwrap();
         core.act("seed-2", "a-1", ItemAction::Complete, 1_600)
