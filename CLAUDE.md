@@ -49,14 +49,68 @@ rather than `req.destroy()`: destroying tears down the socket the 413 has
 to travel on, so the client reads `UND_ERR_SOCKET` instead of the
 rejection — and for the same reason the 413 carries no `connection: close`,
 which loses the identical race against a client still uploading (both
-measured, not reasoned). **v1 ships
-`parse-capture` only** (#256, 2026-08-10 decision): #42's own minimal
-`{title, notes}` schema, writing to nothing — the write-target question
-(Linear vs. the ADR-0008 owned server) is explicitly deferred, which is what
-lets this ship without taking that decision early. `next-up-personal` and
-`microtask` wait behind it. The image bakes in the Claude Code CLI and
-whichever skills v1 ships (today: `.claude/skills/parse-capture/` alone) —
-a skill change ships by `fly deploy`, the image *is* the skill version.
+measured, not reasoned). **Two ops ship, and both write to nothing**:
+`parse-capture` (#256, 2026-08-10 decision) — #42's own minimal
+`{title, notes}` schema, where the write-target question (Linear vs. the
+ADR-0008 owned server) is explicitly deferred, which is what let it ship
+without taking that decision early — and `next-up-hb` (#116), which is
+read-only by design rather than by deferral. The second op is **context-
+blind**, per #41: its `args` carry the `GET /api/sweep` payload from the
+calling device's mirror, so the runner holds no authority token and makes
+no HTTP call; the skill's *interactive* arm is the one that fetches, and
+`SKILL.md` branches on which input it was handed. It is also the first op
+whose **deterministic half runs before the model**: `skills/next-up-hb.js`
+declares a `prepare` hook (optional — `parse-capture` has none) that
+`server.js` runs after `validateArgs` and before `buildPrompt`, spawning
+the baked `next-up-rank` through `rank-bin.js` and putting the *ranked*
+answer in the prompt in place of the raw sweep. The alternative — telling
+the hosted model to run `scripts/next-up.sh` itself, as the interactive arm
+does — **cannot work and was written first**: `claude -p` is
+non-interactive, a tool call needing permission cannot be prompted for and
+is denied, and `claude-cli.js` passes no `--allowedTools`. Granting Bash
+was the other way out and is the worse one, widening the hosted model's
+reach from "answer in this schema" to "run anything in the image" to save a
+process the runner can spawn itself; this way a ranking failure is an
+envelope `error` in the ranker's own words before a single model token is
+spent. Relatedly, `run-skill.js` spawns `claude` with **`cwd` set to
+`repoRoot`**, because the CLI resolves a slash command against
+`<cwd>/.claude/skills` while the image's final `WORKDIR` is `/app/runner`
+and the skills are baked at `/app/.claude/skills` — and an unresolved slash
+command fails *softly*, passed through as prose and answered plausibly
+against the schema with none of `SKILL.md`'s rules applied. `microtask` still waits
+behind the write-target decision, and `next-up-personal` never becomes an
+op here — it targets Linear, which this image bakes nothing for. The image
+bakes in the Claude Code CLI and whichever skills the build ships (today
+`.claude/skills/parse-capture/` and `.claude/skills/next-up-hb/`) — a skill
+change ships by `fly deploy`, the image *is* the skill version. `next-up-hb`
+is the first op needing a **compiled** artifact too: a Rust builder stage
+emits `client/next-up`'s `next-up-rank` into the image as
+`HB_NEXT_UP_BIN`, which is also why the repo root grew a `.dockerignore`
+(the build context now reaches `client/` and `server/`). Two things about
+that stage are load-bearing and were each got wrong first, in the exact
+pattern the CLI contract above records — invisible to a suite whose
+`spawn` is a fake, and here invisible to one that never builds an image.
+`server/` is copied **whole**, not `server/domain` alone: that crate
+inherits `version`/`edition` with `.workspace = true`, so cargo must find
+the root that declares them, and copying `server/Cargo.toml` beside it is
+not enough either, since that manifest names eight `members` and cargo
+demands every one exist. And `client/next-up` takes `hummingbird-core`
+with **`default-features = false`**, which drops the new
+`reqwest-transport` feature: `reqwest`'s default TLS backend is
+`native-tls` → `openssl-sys`, which breaks the two stages *separately* —
+`rust:1.97.1-slim` carries no `pkg-config`/`libssl-dev` to build it, and
+`node:22-slim` carries no `libssl.so.3`/`libcrypto.so.3` to run the result
+(both measured). `rank()` is pure and this crate makes no request, so the
+feature is simply off; it stays **on by default** so `ffi-web`/`ffi-mobile`
+cannot silently lose their transports, every `reqwest`-backed transport
+sits behind a `#[cfg(feature = "reqwest-transport")]`, and a manifest-text
+test in `client/next-up` pins the opt-out — a plain `cargo build` succeeds
+on any dev machine with OpenSSL, so only the manifest can state the rule.
+The counterweight to all of it is `runner.yml`'s **`image` job**, which
+builds the real image and executes the baked ranker: the four blockers
+above passed the Node suite green, and the workflow's `paths:` now watch
+`client/**` and `server/domain/**` too, since the image bakes a compiled
+artifact from there and `client.yml` builds wasm, not this binary.
 **#256 is build-only**: `runner/`, its `Dockerfile`, and the deploy runbook
 are agent-built; provisioning (`fly launch`, secrets, minting the bearer
 token) is an operator gate, the same posture #237's server deploy used. Full
@@ -892,8 +946,40 @@ every `ReasonCode` that applied, in step order, so #116's skill layer can
 cite the actual decisive rule rather than a step index. The total order ends
 `created_at` then `id`, with nothing left to chance, and
 `the_same_snapshot_ranked_twice_is_byte_identical` is what pins that a
-repeat call is byte-identical. Nothing consumes it yet — it crosses no FFI
-seam; #116 is its caller.
+repeat call is byte-identical. **Its caller is `client/next-up`** (#116) —
+it still crosses no FFI seam and no wasm host reads it; the consumer is a
+fourth workspace member and a native binary instead.
+
+`client/next-up/` is that caller: the `/next-up-hb` skill's seam, and the
+fourth member of the `client/` workspace rather than a `[[bin]]` inside
+`client/core` (that crate is the binding-agnostic sync engine and its
+wasm32 build has no business carrying a CLI). It follows the pollers'
+split exactly — everything decidable is in the lib and natively tested,
+`main.rs` holds only stdin, stdout and serde, and **no clock read, no
+credential and no HTTP call appear anywhere in the crate**. `select.rs`
+holds the mechanical filters (archived out; `Ready`/`InProgress` always;
+`Triage`/`Grilling` only when overdue, due today or due within seven days;
+`Blocked` and `Done` never; then any item with a live `blocked_by` edge
+whose blocker is not itself shut — **counted**, because the footer says
+"4 more blocked upstream"), every deadline comparison going through
+`hummingbird_domain::deadline_sort_key`, never a second key. `health.rs`
+carries the footer's **facts and never its wording**: the Triage/Grilling
+counts, that blocked count, and each project whose actions are all shut
+while fog rows are still open — with every open `question` handed back
+**verbatim**, because whether a question names a real unknown is a reading
+("None — the unknowns are carried inside the two investigation actions"
+must not flag) and the reading stays in `SKILL.md`. What the owned schema
+changed is that fog arrives as structured rows, so that check no longer
+parses a markdown section. `envelope.rs` owns the stdin contract and the
+one place the wire's owned calendar block meets `rank`'s borrowing
+`CurrentOrNext`/`CalendarContext`; a `status`/`event` mismatch is a named
+`EnvelopeProblem`, never a quietly absent calendar. **v1 is read-only** —
+no artifact under `.claude/skills/next-up-hb/` or `client/next-up/` touches a
+write route — and **delegation is deliberately out**: the owned schema has
+no labels column, no labels table and no comments table, so all three legs
+of #10's protocol (the `agent` axis, the findings comment, the `unlabel`
+that stops the re-offer loop) are unexpressible; #291 tracks the
+owned-schema delegation marker that would let it come back. Zero Linear anywhere in this lane.
 
 `client/core/src/freshness.rs` is the third top-level module, and ADR-0015's
 Rust half of the Rust/TS carve-out: `Freshness` is **not a boolean** but
@@ -1451,6 +1537,41 @@ See `docs/agents/triage-labels.md`.
 `/next-up-personal` picks what to do right now from the Linear workspace — one ranked top
 pick plus a health footer — and `/next-up-personal <issue-id>` hands one `agent`-labelled
 issue to an agent. See `.claude/skills/next-up-personal/SKILL.md`.
+
+### next-up-hb
+
+**The `-hb` suffix is load-bearing**: the operator's profile already ships a
+`/next-up` (the cross-project "what should I work on next, in which repo"
+skill), and a repo-local skill of that name would make the slash command
+ambiguous in every session opened here. The runner op name, the SKILL.md
+`name:` and the directory all carry the suffix together — `runner/test/
+next-up-hb.test.js` pins that they agree.
+
+`/next-up-hb` (#116) is the owned-authority selector: one read-only
+`GET /api/sweep`, ranked by `client/core/src/rank.rs` through
+`client/next-up`'s `next-up-rank` binary, presented as one top pick, 3–5
+alternates and a one-line health footer. **Zero Linear**, no write of any
+kind, and no delegation branch (the owned schema cannot express #10's
+protocol — see the `client/next-up` paragraph above). It **must not**
+restate the six ranking steps: `rank.rs` is their single authority and a
+prose copy is exactly the drift this skill was built to delete. Two arms —
+`scripts/next-up.sh survey` (interactive, carries the operator's device
+token) and the context-blind runner op, where the runner has **already**
+run `next-up-rank` and the prompt carries `ranked`, so the hosted model
+needs no shell at all (see the skill-runner section above for why a `Bash`
+grant is neither available nor wanted). `scripts/next-up.sh rank` — the
+envelope-on-stdin verb — is what the runner's own `rank-bin.js` is the
+Node equivalent of, and stays the way to drive the ranker by hand.
+
+**The candidate set is the Frontier *plus* due-soon ungroomed work**, which
+is wider than `CONTEXT.md`'s Frontier (Ready/In Progress, unblocked) and
+deliberately so: `select.rs` also admits `Triage`/`Grilling` items that are
+overdue, due today or due within seven days, mirroring
+`/next-up-personal`'s own `DUE_SOON_DAYS = 7` — untriaged work that has run
+out of runway is actionable whether or not it has been groomed. Neither
+`SKILL.md` nor this file may call that set "the frontier"; the glossary
+term is narrower and the prose has been corrected accordingly.
+See `.claude/skills/next-up-hb/SKILL.md`.
 
 ### Domain docs
 

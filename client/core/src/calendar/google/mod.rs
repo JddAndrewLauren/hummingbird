@@ -12,6 +12,7 @@ mod calendar_list;
 mod map;
 mod provider_poller;
 mod raw;
+#[cfg(feature = "reqwest-transport")]
 mod reqwest_transport;
 mod transport;
 
@@ -19,5 +20,6 @@ pub use adapter::{fetch_calendar_snapshot, AdapterError};
 pub use calendar_list::{list_calendars, CalendarListEntry, CalendarListError};
 pub use map::MapError;
 pub use provider_poller::GoogleProviderPoller;
+#[cfg(feature = "reqwest-transport")]
 pub use reqwest_transport::ReqwestGoogleTransport;
 pub use transport::{CalendarListTransport, EventsTransport, TransportError};

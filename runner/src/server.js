@@ -25,6 +25,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000; // well under Fly's 60s idle-connection ki
  * @param {string} [opts.claudeBin]
  * @param {number} [opts.heartbeatIntervalMs]
  * @param {(path: string) => string} [opts.readSchema] how a skill's schema file is read (see `run-skill.js`)
+ * @param {(envelope: unknown) => Promise<{ok: true, ranked: unknown} | {ok: false, error: string}>} [opts.runRanker] the `next-up-rank` seam (see `rank-bin.js`); only skills declaring `prepare` use it
  */
 export function createServer({
   bearerToken,
@@ -33,6 +34,7 @@ export function createServer({
   claudeBin = "claude",
   heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS,
   readSchema,
+  runRanker,
 }) {
   return createHttpServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/run") {
@@ -47,7 +49,14 @@ export function createServer({
 
     readBody(req, MAX_BODY_BYTES)
       .then((rawBody) =>
-        handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema }),
+        handleRun(rawBody, res, {
+          repoRoot,
+          spawn,
+          claudeBin,
+          heartbeatIntervalMs,
+          readSchema,
+          runRanker,
+        }),
       )
       .catch((err) => {
         // Nothing has been written yet at this point -- readBody rejects
@@ -96,7 +105,7 @@ function readBody(req, maxBytes) {
   });
 }
 
-function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema }) {
+function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema, runRanker }) {
   const parsed = parseRunRequest(rawBody);
   if (!parsed.ok) {
     res.writeHead(400, { "content-type": "application/json" });
@@ -129,18 +138,34 @@ function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatInterval
     res.write(progressLine("still running"));
   }, heartbeatIntervalMs);
 
-  const prompt = skill.buildPrompt(parsed.args);
-  const schemaPath = `${repoRoot}/${skill.resultSchemaPath}`;
+  const onProgress = (message) => res.write(progressLine(message));
 
-  runSkill({
-    skillName: skill.name,
-    prompt,
-    schemaPath,
-    spawn,
-    claudeBin,
-    onProgress: (message) => res.write(progressLine(message)),
-    ...(readSchema ? { readSchema } : {}),
-  })
+  // A skill's optional deterministic half, run before the model (`next-up-hb`
+  // ranks here; `parse-capture` declares no `prepare` and skips straight
+  // through). It may rewrite the args the prompt is then built from, and a
+  // failure ends the stream with the ordinary envelope without ever
+  // spawning `claude` -- which is the point: the failure a caller reads is
+  // the ranker's own words, not a model's account of them.
+  const prepared = skill.prepare
+    ? skill.prepare(parsed.args, { runRanker, onProgress })
+    : Promise.resolve({ ok: true, args: parsed.args });
+
+  prepared
+    .catch((err) => ({ ok: false, error: err.message }))
+    .then((step) => {
+      if (!step.ok) return step;
+
+      return runSkill({
+        skillName: skill.name,
+        prompt: skill.buildPrompt(step.args),
+        schemaPath: `${repoRoot}/${skill.resultSchemaPath}`,
+        spawn,
+        claudeBin,
+        cwd: repoRoot,
+        onProgress,
+        ...(readSchema ? { readSchema } : {}),
+      });
+    })
     .catch((err) => ({ ok: false, error: err.message }))
     .then((outcome) => {
       clearInterval(heartbeat);

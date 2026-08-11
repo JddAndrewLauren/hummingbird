@@ -18,6 +18,7 @@ pub mod adapter;
 pub mod id;
 pub mod paths;
 pub mod rebase;
+#[cfg(feature = "reqwest-transport")]
 pub mod reqwest_transport;
 pub mod taxonomy;
 pub mod transport;
@@ -25,6 +26,7 @@ pub mod transport;
 pub use adapter::{create, patch_with_rebase, CreateOutcome};
 pub use id::deterministic_id;
 pub use rebase::RebaseDecision;
+#[cfg(feature = "reqwest-transport")]
 pub use reqwest_transport::ReqwestMutationTransport;
 pub use taxonomy::WriteError;
 pub use transport::{HttpMethod, MutationRequest, MutationTransport, RawResponse};

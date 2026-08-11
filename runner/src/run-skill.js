@@ -23,9 +23,21 @@ import { buildClaudeArgs } from "./claude-cli.js";
  * @param {string} opts.skillName
  * @param {string} opts.prompt
  * @param {string} opts.schemaPath
- * @param {(command: string, args: string[]) => import("node:events").EventEmitter} opts.spawn
+ * 3. The CLI discovers a repo's skills at `<cwd>/.claude/skills`, and the
+ *    prompt every op here builds is a slash command. The image's final
+ *    `WORKDIR` is `/app/runner` while the skills are baked at
+ *    `/app/.claude/skills`, so a spawn that inherited the runner's own cwd
+ *    would leave `/parse-capture` and `/next-up-hb` unresolved -- and
+ *    unresolved fails *softly*: the text is passed through as ordinary
+ *    prose and a compliant-looking answer comes back against the schema
+ *    with none of SKILL.md's rules applied. Hence the explicit `cwd`,
+ *    which `server.js` sets to the same `repoRoot` the schema path
+ *    resolves against.
+ *
+ * @param {(command: string, args: string[], options?: object) => import("node:events").EventEmitter} opts.spawn
  * @param {(message: string) => void} opts.onProgress
  * @param {string} [opts.claudeBin]
+ * @param {string} [opts.cwd] the directory whose `.claude/skills` the CLI reads
  * @param {(path: string) => string} [opts.readSchema]
  * @returns {Promise<{ok: true, result: unknown} | {ok: false, error: string}>}
  */
@@ -36,6 +48,7 @@ export function runSkill({
   spawn,
   onProgress,
   claudeBin = "claude",
+  cwd,
   readSchema = (path) => readFileSync(path, "utf8"),
 }) {
   return new Promise((resolve) => {
@@ -49,7 +62,7 @@ export function runSkill({
       return;
     }
 
-    const child = spawn(claudeBin, buildClaudeArgs(prompt, schemaText));
+    const child = spawn(claudeBin, buildClaudeArgs(prompt, schemaText), ...(cwd ? [{ cwd }] : []));
 
     let stdout = "";
     let stderr = "";

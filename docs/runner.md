@@ -22,15 +22,19 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 | `runner/src/server.js` | The `POST /run` HTTP handler: auth, request shape validation, skill dispatch, NDJSON streaming. |
 | `runner/src/auth.js` | Constant-time bearer-token check. |
 | `runner/src/request.js` | `{skill, args}` body parsing/shape validation. |
-| `runner/src/skills-registry.js` | The closed map of runnable skill names -- v1 holds `parse-capture` only. |
+| `runner/src/skills-registry.js` | The closed map of runnable skill names -- `parse-capture` (#256) and `next-up-hb` (#116). |
 | `runner/src/skills/parse-capture.js` | That skill's arg validation and prompt-building. |
+| `runner/src/skills/next-up-hb.js` | The same, for `/next-up-hb`: the sweep payload arrives in `args` (context-blind -- no authority token here, no HTTP call), plus the `prepare` hook that ranks before the model runs. |
+| `runner/src/rank-bin.js` | Spawns the baked `next-up-rank` over the envelope on stdin. The one child process here that is not `claude`. |
 | `runner/src/claude-cli.js` | Builds the `claude -p ... --output-format json --json-schema <path>` argv. |
-| `runner/src/run-skill.js` | Spawns `claude`, collects stdout/stderr, resolves ok/error. |
+| `runner/src/run-skill.js` | Spawns `claude` (with `cwd` = repo root, so its slash commands resolve), collects stdout/stderr, resolves ok/error. |
 | `runner/src/envelope.js` | NDJSON line builders (`progress`, final ok/error). |
 | `runner/src/main.js` | Reads env (`RUNNER_BEARER_TOKEN`, `PORT`, `CLAUDE_BIN`, `REPO_ROOT`), wires the real `child_process.spawn`, starts the server. |
 | `runner/Dockerfile` | `node:22-slim` + the Claude Code CLI installed globally + the skills this build ships + the runner server. Build context is the **repo root**, not `runner/` -- see Deploy runbook. |
 | `runner/fly.toml` | `hummingbird-runner`, `http_service` with `min_machines_running = 0` (scale-to-zero). |
 | `.claude/skills/parse-capture/` | The skill itself: `SKILL.md` + `schema.json` (the versioned per-skill result schema `run-skill.js` passes to `--json-schema`). |
+| `.claude/skills/next-up-hb/` | `SKILL.md` + `schema.json` + `scripts/next-up.sh` (two verbs: `survey` fetches with the operator's credential, `rank` reads a prebuilt envelope on stdin -- the by-hand equivalent of `rank-bin.js`). |
+| `client/next-up/` | The seam `/next-up-hb` is layered on: sweep payload in, `hummingbird_core::rank` candidates + health facts out. Its `next-up-rank` binary is built by the Dockerfile's Rust stage and baked in as `HB_NEXT_UP_BIN`. |
 | `runner/test/*.test.js` | `node --test`, run from `runner/`. Every module is unit-testable with an injected fake `spawn` -- no real `claude` binary or credentials needed. |
 
 ## The contract
@@ -53,11 +57,31 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
   line at HTTP 200** -- the failure is inside the contract, not a broken
   connection.
 
-v1 ships **`parse-capture` only** (#256, 2026-08-10 decision): `{title,
-notes}`, #42's own minimal schema. It writes to nothing -- no authority
-call anywhere in the runner or the skill. The write-target question (Linear
-vs. the ADR-0008 owned server) is explicitly deferred; `next-up-personal`
-and `microtask` wait behind that decision before they become runner ops.
+Two ops ship today, and **both write to nothing**:
+
+- **`parse-capture`** (#256, 2026-08-10 decision): `{title, notes}`, #42's
+  own minimal schema. The write-target question (Linear vs. the ADR-0008
+  owned server) is explicitly deferred, which is what let it ship without
+  taking that decision early.
+- **`next-up-hb`** (#116): pick what to do right now. `args` carry the
+  `GET /api/sweep` payload from the calling device's mirror, so the runner
+  stays **context-blind** -- it holds no authority token and makes no HTTP
+  call, and the interactive arm of the skill is the one that fetches. v1 of
+  the skill is read-only, so there is no write target to defer.
+
+  Its **deterministic half runs before the model**: `prepare` spawns the
+  baked `next-up-rank` and the prompt carries `ranked` instead of the raw
+  sweep. The runner arm cannot shell out -- `claude -p` is
+  non-interactive, so a tool call needing permission is denied outright and
+  `claude-cli.js` passes no `--allowedTools` -- and granting `Bash` to save
+  a process the runner can spawn itself would widen the hosted model's
+  reach from "answer in this schema" to "run anything in the image". A
+  ranking failure is therefore an envelope `error` in the ranker's own
+  words, before a single model token is spent.
+
+`microtask` still waits behind the write-target decision.
+`next-up-personal` never becomes a runner op: it targets Linear, which the
+image deliberately bakes nothing for.
 
 **Confirmed against a live run**, and the CLI contract is narrower than it
 first looked. Both halves were assumed wrong on the first pass, and both
@@ -97,8 +121,13 @@ believed the CLI does.
 Nothing below is run by the agent slice. It is recorded here so the
 operator can close the provisioning gate #256's issue thread leaves open.
 
-1. **Provision the Fly app**, from the **repo root** (the build needs both
-   `.claude/skills/parse-capture` and `runner/` in one build context):
+1. **Provision the Fly app**, from the **repo root** -- the build needs
+   `.claude/skills/*`, `runner/`, and (since #116's Rust builder stage)
+   `client/` plus **all of** `server/` in one build context -- the whole
+   server workspace, because `server/domain` inherits `version`/`edition`
+   from its root and cargo demands every declared member exist. The root
+   `.dockerignore` is what keeps that context from carrying every
+   `target/` and `node_modules/` in the repo:
 
    ```sh
    fly launch --config runner/fly.toml --dockerfile runner/Dockerfile --no-deploy
@@ -160,6 +189,16 @@ operator can close the provisioning gate #256's issue thread leaves open.
    ```
 
    Expect a stream of NDJSON lines ending in `{"ok":true,"skill":"parse-capture","result":{"title":"...","notes":"..."}}`.
+
+   `next-up-hb` is smoke-tested the same way, with the caller supplying the
+   sweep payload it already holds -- the runner has no way to fetch one:
+
+   ```sh
+   curl -sS https://hummingbird-runner.fly.dev/run \
+     -H "authorization: Bearer <token>" \
+     -H "content-type: application/json" \
+     -d "{\"skill\":\"next-up-hb\",\"args\":{\"sweep\":$(cat sweep.json),\"now\":{\"local\":\"2026-08-11T09:53\",\"epoch_ms\":1786553580000}}}"
+   ```
 
 6. **Rotate the token** later by repeating step 2-3 with a fresh value,
    then updating whatever client holds it.
