@@ -32,11 +32,11 @@ import {
 /** Both the snapshot's source and every alert's — ADR-0009's join constraint
  * is that these are one string. `/v2` because `city-waste/v1` is retired.
  *
- * NOTE: `city-waste/v2` is **not yet in the frozen source registry**
- * (`server/domain/src/sources.rs` still carries only the retired `v1`).
- * Nothing on this side checks the registry — ADR-0015 forbids checking a
- * snapshot's `schema` against it — so this pane is correct either way; the
- * registration is #135–137's and is still open. */
+ * `city-waste/v2` is now in the frozen source registry
+ * (`server/domain/src/sources.rs`, #120), so an ingest token can be bound to
+ * it and the poller can mint. Nothing on this side checks that registry —
+ * ADR-0015 forbids checking a snapshot's `schema` against it — so this
+ * constant is this file's own, and the two agree by review, not by import. */
 export const SOURCE = "city-waste/v2";
 
 /** The one `context_snapshots.key` this question reads, and its subject key. */
