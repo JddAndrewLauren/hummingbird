@@ -42,9 +42,17 @@
 # pattern matches against. `wrangler dev` ignores `routes` entirely, so
 # local dev and `server/scripts/smoke.sh` are unaffected.
 #
-# The production deploy itself is still a human step (#95's H3): creating
-# the Workers project and setting `ADMIN_SECRET`. Until then this block is
-# inert — nothing deploys this worker yet.
+# **Live since 2026-08-10** (#237/#238), and the arrangement above is
+# confirmed in production rather than merely reasoned: with no credential
+# `/api/sweep` answers an empty-bodied 401 and with a device token it
+# answers `200 application/json`, where a precedence failure would have
+# returned the shell's `200 text/html`. The flip below stays documented as
+# the response if that ever regresses; it was not needed.
+#
+# Note the route is inert until the shell's Custom Domain exists, since it
+# matches against the DNS record that binding creates — which is why the
+# authority-first deploy order still leaves `/api/*` unreachable until the
+# client deploys.
 routes = [
   { pattern = "hb.twinion.net/api/*", zone_name = "twinion.net" },
 ]

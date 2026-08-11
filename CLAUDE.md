@@ -150,9 +150,37 @@ typed `EnvelopeProblem` naming *what* was wrong, never a quietly empty
 answer. The panes, the client-side `Freshness` carve-out and the
 `city-waste/v2` + race source-registry entries are each their own slice.
 
-Still no production deploy
-(that is #95's human gate H3) — `wrangler dev` + `server/scripts/smoke.sh`
-locally, `.github/workflows/server.yml` in CI. **The test recipe is shared,
+**Deployed in production since 2026-08-10** (#237): `hummingbird-authority`
+on Cloudflare Workers, answering `hb.twinion.net/api/*`, with `ADMIN_SECRET`
+set from the operator's terminal and the first `device`-scope token minted.
+`#95`'s human gate H3 is closed, and so is the rest of #234's map — the
+`Authority` SQLite DO was created by the first deploy's `tag = "v1"`
+migration, verified against the API (`use_sqlite: true`, `migration_tag:
+v1`) because **the deploy output never mentions migrations at all**, and
+neither does `wrangler deployments list` or `versions view`. Local
+development is unchanged: `wrangler dev` + `server/scripts/smoke.sh`.
+`server/scripts/smoke-prod.sh` is its production counterpart (#239/#240) and
+is a **deploy-integrity verifier, not a second acceptance suite**: the shared
+test recipe below already proves handler logic, CAS, the scope matrix and
+sweep/delta agreement against a real SQLite DO before a deploy can land, so
+the prod script asserts only what CI structurally cannot see — that `/api/*`
+still beats the shell's SPA fallback (asserted on `content-type`, not just
+status, because the root genuinely answers `200 text/html`), that auth is on,
+that all ten sweep lanes are present so the live schema is the built one, and
+that the version cursor is live. It is **read-only, manual, and carries the
+operator's own reused `device` token**, each deliberately: there is no delete
+route anywhere in the API (ADR-0003), so a write could only ever have been
+tombstoned, not cleaned up; and `device` is the only read-capable scope, so a
+read-only script still holds a write-everything credential — which is exactly
+why it never goes into Actions, the same posture `ADMIN_SECRET` gets.
+Automating it requires minting a dedicated token *first*. The standing
+consequence: **nothing automated ever exercises a production write**, so a
+deploy that broke writes while leaving reads intact passes it green; the only
+write proof is #241's hand-run foreign-device round-trip, and #234 carries the
+unfired conditional that would close it. Unlike the local smoke it also races
+real traffic, so its byte-agreement and cursor assertions retry once and
+distinguish a concurrent capture (a higher `version`) from a genuine
+disagreement (a difference at the same one). **The test recipe is shared,
 not copied** (#229): `server-test.yml` is a `workflow_call`-only workflow
 holding clippy / native fixture tests / wasm32 build / `smoke.sh`, and both
 `server.yml` (pull requests only) and `deploy-server.yml` (`main`, `wrangler
@@ -162,8 +190,12 @@ exactly that reason — `main` is gated by the deploy workflow's own test job,
 and a second copy would run the same 30-minute job concurrently for no extra
 signal. `deploy-server.yml` carries no `schedule:` — the
 DO's own `alarm()` owns the cadence — and no `ADMIN_SECRET`/
-`FCM_SERVICE_ACCOUNT`; it is red-by-design until H3 creates the Workers
-project.
+`FCM_SERVICE_ACCOUNT`, which stay out of Actions deliberately: the first is
+the credential that mints every other token, the second carries an RSA
+private key. Both deploy workflows also carry a `workflow_dispatch` guarded
+with `if: github.ref == 'refs/heads/main'`, because a Cloudflare-side change
+(binding a domain, setting a secret) touches no file here and would
+otherwise have no trigger at all.
 
 ## The client sync engine
 
