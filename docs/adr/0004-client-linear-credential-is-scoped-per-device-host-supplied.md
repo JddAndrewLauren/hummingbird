@@ -6,6 +6,15 @@ now a per-writer bearer token for the owned API, scoped and individually
 revocable server-side. The shape, resting places, never-persisted rule,
 401-holds-the-queue rule and OAuth revisit trigger port unchanged; the
 Linear-specific analysis is historical.
+**Amended 2026-08-10** by the credential-legibility grilling
+([#249](https://github.com/JddAndrewLauren/hummingbird/issues/249),
+[#176](https://github.com/JddAndrewLauren/hummingbird/issues/176)): the host
+supplies the credential *after* init rather than at it, and must supply its
+**absence** as explicitly as its presence — see
+[Amendment: the credential is supplied after init, and the core owns its
+state](#amendment-the-credential-is-supplied-after-init-and-the-core-owns-its-state)
+below. The never-persisted rule, the per-device scoping, the resting places
+and the 401-holds-the-queue rule are unchanged.
 **Context:** the credentials grilling of 2026-08-07, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#49](https://github.com/JddAndrewLauren/hummingbird/issues/49). Amends
@@ -19,7 +28,9 @@ authenticates the direct-to-Linear path it established.
 Security & access settings, one per device, and revoked individually when a
 device is lost or retired.
 
-**The host supplies the credential at init; the core never persists it.** The
+**The host supplies the credential at init; the core never persists it.**
+(*Superseded 2026-08-10 as to timing only — the credential is now supplied
+after init; see the amendment below. The never-persisted rule stands.*) The
 core's entry point takes the key alongside the storage directory —
 `init(storage_dir, api_key)` — holds it in memory for the lifetime of the
 session, and puts it in the `Authorization` header of every call to
@@ -49,6 +60,77 @@ of credential — is what makes a non-expiring key in browser storage acceptable
 
 Nothing enforces this until `client/web` is scaffolded. It is recorded here so
 that whoever scaffolds it inherits the constraint.
+
+## Amendment: the credential is supplied after init, and the core owns its state
+
+*2026-08-10, from the credential-legibility grilling
+([#249](https://github.com/JddAndrewLauren/hummingbird/issues/249),
+[#176](https://github.com/JddAndrewLauren/hummingbird/issues/176)).*
+
+The original decision above has the host hand the credential to `init`. In
+practice the web host never has one at that moment — the stored token is read
+from IndexedDB afterwards — so it passed an empty string, and the core
+recorded `Some("")` as a credential. Two consequences followed, and both
+reached a real second device:
+
+- A device that had never been given a token reported `pull_failed` rather
+  than "no credential", because `""` counts as a pushed key. The one readout
+  that already knew how to say *"device token needed"* could not be reached
+  by the state it was written for.
+- Because the core could not answer "do you hold a credential?", each view
+  answered it locally instead — making the shell hold a copy of engine state,
+  which `CONTEXT.md`'s **View** term already forbids, and which went stale
+  between tabs.
+
+**The credential is supplied after init.** `init` takes the storage directory
+and no key. A host that already holds a stored token rehydrates it
+immediately afterwards; there is no value a host can pass that means "I have
+one" while it does not.
+
+**The host must supply the credential's absence as explicitly as its
+presence.** Reading storage and finding nothing is a *result*, and the core is
+told it. A host that stays silent leaves the core unable to distinguish "no
+token here" from "nobody has looked yet".
+
+**The core owns the credential's state, and it has four arms** — three about
+the credential, one about knowledge of it:
+
+| arm | meaning |
+| --- | --- |
+| `unknown` | no host has yet reported what its storage holds |
+| `unset` | storage was read; no credential is available to this device |
+| `resting` | a credential is held |
+| `reprompt` | a 401 was seen; every attempt holds until a fresh push |
+
+`unknown` is a *knowledge* state, not a credential state — the same
+distinction `Freshness` draws between "we do not know the age" and "the age is
+zero", and for the same reason: a device that is configured must not render as
+unconfigured for the round-trip between start-up and its first storage read.
+
+`unset` means *no credential is available to this device*, so a storage read
+that **fails** reports `unset` too. The core would behave identically either
+way, so a fifth arm would be a value it carries only to hand back. The host
+carries the reason, because the remedy differs: empty storage should offer the
+entry affordance, and unreadable storage must not — it is a browser-storage
+problem, and the entry it would offer is guaranteed to fail on write.
+
+**Every view renders the core's answer; none keeps its own.** Under
+[ADR-0010](0010-one-core-per-origin.md) the arm is per-origin, so it reaches
+every view over the existing broadcast rather than being re-derived per tab.
+Credential *metadata* the core has no use for — when the token was typed in —
+stays with the host's storage, re-read on any credential mutation. Note
+"mutation", not "arm change": replacing a token that is already `resting` —
+a proactive rotation, or a corrected one pasted before the old one is
+rejected — leaves the arm exactly where it was while the metadata moves, so
+a transition-only trigger would leave a second view displaying an entry time
+for a token the device no longer has. (Recovery from a rejection is *not*
+this case: `reprompt → resting` is a real transition, and a
+transition-only trigger would catch it.)
+
+**What this does not change.** The credential is still never persisted by the
+core, still per-device and individually revocable, still resting in each
+host's best secret store, and a 401 still leaves the core as an event while
+the outbound queue holds — that rule is now simply named `reprompt`.
 
 ## How this amends ADR-0003
 
