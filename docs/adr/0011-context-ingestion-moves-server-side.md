@@ -186,3 +186,39 @@ broader token instead (avoiding that one extra consent) remains available
 if the operator prefers it, but that is the operator's call to make
 explicitly, not something an implementer may decide silently by shipping
 it — see the issue-135 thread for the open question.
+
+## Amendment: #137's M365 credential is narrower in kind, but not yet narrower in blast radius
+
+*2026-08-11, from #137's implementation.*
+
+#135/#136 each resolved their own leg of the "Worker secret vs GitHub
+Actions secret" question above by narrowing the OAuth grant to the least
+the poller's calls need (`gmail.readonly`, then `calendar.readonly` on the
+same token). #137's credential is an app-only Graph certificate, and the
+same "narrower in kind" move applies cleanly: the brief's own named
+application permissions, `Mail.Read` and `Calendars.Read`, are both
+read-only, and neither `graph-mail-poll` nor `graph-calendar-poll` ever
+calls a Graph write endpoint.
+
+**What is different, and not yet resolved:** a Google OAuth grant like
+`gmail.readonly` is scoped to the operator's own mailbox by construction —
+the token is minted *for that account*. An app-only Graph permission has no
+such built-in scoping: `Mail.Read`/`Calendars.Read` on an application grant
+read access to **every** mailbox and calendar in the tenant, unless the
+operator separately applies an Exchange Online **Application Access
+Policy** binding the app registration to one mailbox. That policy is an
+operator-side Entra/Exchange administration step this implementation
+cannot perform, verify, or even detect the absence of from the poller's own
+running state — it is invisible to `server/graph-poll` either way.
+
+**Resolution, pending operator sign-off (tracked in issue #137,
+cross-referencing issue #135's still-open credential question — the same
+category of decision):** `GRAPH_CLIENT_PRIVATE_KEY` is written against
+GitHub Actions secrets, on #135/#136's own established precedent
+(out-of-process poller = Actions secrets, not the Worker secret this ADR's
+original table names). Whether that credential is additionally bounded by
+an Application Access Policy before it is minted is the operator's call,
+not something this implementation may decide or verify silently — until
+that policy exists, the certificate's actual worst-case abuse sits closer
+to `ADMIN_SECRET`'s side of CLAUDE.md's blast-radius line than to
+`CITY_WASTE_INGEST_TOKEN`'s.

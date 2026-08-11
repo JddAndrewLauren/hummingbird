@@ -5,6 +5,7 @@ members = [
     "authority",
     "city-waste",
     "gmail-poll",
+    "graph-poll",
     "rules-engine",
     "worker",
 ]
