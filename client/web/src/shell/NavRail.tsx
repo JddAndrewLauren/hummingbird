@@ -8,6 +8,7 @@ import markLight1x from "../design/brand/app-icon-light-26.png";
 import markLight2x from "../design/brand/app-icon-light-52.png";
 import markLight3x from "../design/brand/app-icon-light-78.png";
 import type { ResolvedTheme } from "../theme/theme";
+import { APP_VERSION } from "./build-version";
 import { SCREENS, type Screen } from "./screens";
 
 // Nav labels are the surface's own name; the header asks the question the
@@ -198,6 +199,11 @@ export function NavRail({
             {statusLabel}
           </span>
         )}
+        {/* The build version, deliberately its own span rather than folded
+            into `coreStatusLabel`: it is known even when the core failed or
+            is still starting, whereas that function's other two branches
+            say nothing at all. */}
+        {collapsed ? null : <span className="hb-meta">{`v${APP_VERSION}`}</span>}
         <IconButton
           icon={theme === "dark" ? "sun" : "moon"}
           label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}

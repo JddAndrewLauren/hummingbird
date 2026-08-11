@@ -1,4 +1,10 @@
 /// <reference types="vite/client" />
+/// <reference types="vite-plugin-pwa/client" />
+
+// `__APP_VERSION__` — `vite.config.ts`'s build-version `define` — is
+// deliberately NOT declared here: `shell/build-version.ts` is compiled by
+// the node project too (it feeds `build-version.node.ts`), which does not
+// include this file, so the declaration lives in that module instead.
 
 interface ImportMetaEnv {
   /** The Google OAuth client id GIS consent (issue #73) requests

@@ -28,6 +28,10 @@ on:
     branches: [main]
     paths:
       - "client/**"
+      # The build-version override: editing VERSION is the whole gesture
+      # (see CLAUDE.md), so it has to trigger a deploy of its own rather
+      # than sitting until the next client/** change.
+      - "VERSION"
       - "rust-toolchain.toml"
       - ".github/workflows/deploy-client.yml"
 
@@ -51,7 +55,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # Full history, not the default depth-1: this is the job that builds
+      # and uploads `dist/`, and the build version counts commits since
+      # `VERSION` was last touched. A shallow clone refuses to guess (it
+      # renders `+unknown`), so without this every deploy would ship one.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Pinned to match root `rust-toolchain.toml`: the deployed wasm artifact
       # should be built by the same compiler CI gated, not by whatever stable
       # happens to be on the day of the deploy.

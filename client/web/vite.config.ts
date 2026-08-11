@@ -5,18 +5,38 @@ import topLevelAwait from "vite-plugin-top-level-await";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
+import { readBuildVersion } from "./build-version.node";
+
 // client/web (#69): Vite + React + Tailwind + TS shell. The wasm core
 // (hummingbird-ffi-web, #67) loads in a Web Worker via vite-plugin-wasm +
 // vite-plugin-top-level-await (ADR-0003/ADR-0006). vite-plugin-pwa ships the
 // offline app-shell service worker; deploy config lives in wrangler.toml.
 export default defineConfig({
+  // A compile-time literal rather than a `VITE_*` env var, so no build step
+  // anywhere has to remember to set it — the `VITE_GOOGLE_CLIENT_ID`
+  // ordering trap in `deploy-client.yml` is the cautionary tale. It touches
+  // nothing in `core.worker.ts`'s static import graph, so the
+  // top-level-`await` invariant is unaffected.
+  define: { __APP_VERSION__: JSON.stringify(readBuildVersion()) },
   plugins: [
     react(),
     tailwindcss(),
     wasm(),
     topLevelAwait(),
     VitePWA({
-      registerType: "autoUpdate",
+      // `prompt`, not `autoUpdate`. `autoUpdate` skip-waits, so the new
+      // worker takes over immediately — but the page has already loaded the
+      // OLD precached `index.html` and nothing swaps it, which made the
+      // shell one deploy behind by construction (load N activates the new
+      // worker, load N+1 finally renders it) and let an installed PWA window
+      // that is never truly reloaded sit stale indefinitely. `prompt` leaves
+      // the new worker WAITING, which is what there is to prompt about:
+      // `shell/UpdateBanner.tsx` offers the reload and the reader takes it.
+      registerType: "prompt",
+      // `main.tsx` registers, via `virtual:pwa-register`. Left at the
+      // default `"auto"` this emits a `registerSW.js` that registers too —
+      // a second, silent registration path alongside ours.
+      injectRegister: null,
       // Defaults to true, which force-adds every manifest icon to the
       // precache regardless of the workbox globs below — that is what kept
       // dragging the 238 KB install icon in. Off, the globs decide, and the

@@ -19,6 +19,13 @@
   },
   "include": [
     "vite.config.ts",
+    "build-version.node.ts",
+    // The pure half `build-version.node.ts` feeds. It is `src/`-resident
+    // (the browser reads it too) but a composite project must list every
+    // file it compiles, so it appears in both projects rather than the
+    // node-only I/O half moving under `src/`, where `node:child_process`
+    // could be pulled into the browser bundle.
+    "src/shell/build-version.ts",
     "vitest.config.ts",
     "playwright.config.ts",
     "visual/**/*.ts",

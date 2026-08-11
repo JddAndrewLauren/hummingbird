@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
+import { appUpdateSignal } from "./shell/app-update";
 import { coreStore } from "./store/store";
 import { watchForReadyTimeout } from "./store/ready-timeout";
 import { attachWorkerClient } from "./store/worker-client";
@@ -9,6 +11,22 @@ import "./styles.css";
 
 // Before the first render, so nothing paints in the wrong theme.
 applyInitialTheme();
+
+// The ONLY file that touches `virtual:pwa-register` — the module
+// vite-plugin-pwa synthesises at build time, which vitest (running without
+// the plugin) could not resolve at all. `main.tsx` already plays exactly
+// this role for the `SharedWorker` above: the browser-only wiring lives
+// here and hands the rest of `src/` a plain module to read.
+//
+// `registerType: "prompt"` leaves a new worker waiting rather than
+// skip-waiting into a page still rendering the old precached shell, so
+// `onNeedRefresh` is where the reader gets told. `updateSW(true)` is what
+// swaps to the waiting worker and reloads.
+const updateSW = registerSW({
+  onNeedRefresh() {
+    appUpdateSignal.markReady(() => void updateSW(true));
+  },
+});
 
 // ADR-0010 (#126): one core per origin, in a `SharedWorker` — every tab and
 // the installed PWA window is a view that connects a `MessagePort` to it,

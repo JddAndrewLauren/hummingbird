@@ -1207,6 +1207,83 @@ and unclean teardown reads as a flaky assertion) and carries the
 about. Pure-module tests still cover the deciding logic; the component
 tests cover the wiring between them, and neither replaces the other.
 
+**A new deploy is announced, not applied behind your back**
+(`shell/UpdateBanner.tsx`). `vite.config.ts` used to set
+`registerType: "autoUpdate"` while nothing in `src/` imported
+`virtual:pwa-register`, so with `injectRegister` at its default the plugin
+served a bare `registerSW.js` that registered and did nothing else: the new
+worker skip-waited into a page already rendering the OLD precached
+`index.html`, which put the shell one deploy behind **by construction**
+(load N activates the new worker, load N+1 finally renders it) and let an
+installed PWA window that is never truly reloaded sit stale indefinitely.
+`registerType: "prompt"` is what leaves the new worker *waiting* — i.e.
+leaves a decision to offer — and `injectRegister: null` is what keeps a
+second, silent registration path from running alongside ours. A prompt
+rather than a silent auto-reload deliberately: an unannounced reload can
+yank the page out from under someone mid-capture. The strip is persistent
+(no dismiss — it stays until you reload), full-width under `Header` and
+above the one scroll container, and it is `role="status"`/`aria-live` but
+takes no focus, since `Header.tsx` already moves focus to the `<h1>` on a
+title change.
+
+**Applying it is origin-wide, and that is the safe behaviour rather than a
+gap in the above.** Reload sends `skipWaiting`; the spec's Activate
+algorithm then hands every client the old worker controlled to the new one
+and fires `controllerchange` in each, which the plugin's registration turns
+into a `location.reload()` in every open tab. There is no tab-local version
+of the gesture — a plain reload never releases control, so the worker would
+stay waiting and the shell stay one deploy behind, the exact bug prompt mode
+exists to fix — and suppressing the *other* tabs' reload (hand-rolling
+`workbox-window` instead of `registerSW`) would not prevent the takeover,
+only hide it, leaving those tabs running old JS under the new worker
+**indefinitely**. That state is worse than the reload: the SharedWorker
+script is content-hashed, so two live builds mean two SharedWorkers, each
+with its own `Core`, both draining and whole-snapshot-rewriting the same
+build-independent `hummingbird-task::queue` — ADR-0010's one-core-per-origin
+invariant broken, and a submitted mutation clobbered rather than a typed
+draft lost. `cleanupOutdatedCaches` plus `not_found_handling =
+"single-page-application"` make the skew quiet on top of that: a stale tab's
+missing hashed asset answers `200 text/html`, not a 404. So convergence is
+the point, and what the reader is owed is the **scope**, not a way out of
+it — every open tab is already showing this strip (the plugin prompts on
+`waiting` in each), so the fact they cannot otherwise know is that one click
+reaches all of them, which is why `UpdateBanner.tsx` says so in its own copy
+and a test pins the sentence. The flip condition is written down rather than
+implied: **if the queue and mirror ever move to a build-versioned IndexedDB
+namespace**, concurrent cores stop clobbering each other, indefinite skew
+becomes survivable, and suppressing the cross-tab reload becomes worth
+reopening. Losing an unsent draft in a background tab is the residual cost,
+and the fix for it is draft persistence (`screens/questions/collapse.ts`'s
+injectable-`storage` idiom over `sessionStorage`), never the service-worker
+lifecycle.
+
+`main.tsx` is the **only** file that imports `virtual:pwa-register`, the
+same role it already plays for the `SharedWorker`: that module is
+synthesised by the plugin at build time and vitest — which runs without it —
+could not resolve it at all, so the import stops at the shell's edge and the
+rest of `src/` reads `shell/app-update.ts`, a plain external store in
+`store/store.ts`'s listener-set idiom whose `getSnapshot` must stay
+reference-stable (`useSyncExternalStore` re-renders forever otherwise). It
+is deliberately not a `CoreState` field: that store pins `worker-client.ts`
+as its only writer and every field there is fed by a `protocol.ts` message,
+and a waiting service worker is a browser fact, not a core fact. Prompt mode
+also makes `workbox-window` a real dependency rather than a transitive one —
+`virtual:pwa-register` imports it, where the old generated `registerSW.js`
+imported nothing, and under pnpm's strict layout the build fails outright
+without it in `client/web/package.json`.
+
+`shell/update-check.ts` is the decidable half of "check hourly and on
+focus": `MIN_CHECK_GAP_MS` (5 minutes) is the one real rule, and it is
+**#190's interpretation applied to a second ambient signal** — a focus event
+says a window came forward, so alt-tabbing at any rate must not become a
+request rate. A request inside the gap is *dropped*, never queued: a
+deferred check would fire at a moment nobody asked for, and the next focus
+or the hourly tick comes round anyway. One consequence worth stating once:
+devices running the old worker will not see the strip for the *first* deploy
+after this ships — they are still executing the old `registerSW.js` — and
+pick the new worker up by the existing two-reload path. That is the nature
+of replacing a service worker, not a bug to fix.
+
 **The visual gate is Playwright, and it is local-only.** `pnpm visual` in
 `client/web` drives three real viewports (1440 / 1024 / 768 — the third is
 the wrap point of `screens/layout.tsx`'s `TwoColumn`, which uses no media
@@ -1219,6 +1296,38 @@ wasm core and is that workflow's slow step), and it needs a one-time
 `pnpm exec playwright install chromium`. Never `chrome --headless
 --screenshot` for this UI — the viewport renders wrong. The registry
 `/wrapup` reads is `docs/SURFACES.md`.
+
+**The build version is derived at build time, and `VERSION` at the repo root
+is its override.** The nav rail footer's api version (`API_VERSION`, the
+core's *contract*) never moves when the app changes, so a deployed shell
+could not say which build it was; `shell/build-version.ts` adds one beside
+it. The displayed value is the `VERSION` file's `major.minor.patch` with the
+count of commits since that file was last touched added to the patch
+(anchor: `git log -1 --format=%H -- VERSION`; count: `git rev-list --count
+<anchor>..HEAD`), so an ordinary merge to `main` is `+1` and **the override
+gesture is editing `VERSION` in the PR** — write `0.2.0` and that merge lands
+as exactly `0.2.0` (the count is 0 at the commit that touched it), the next
+as `0.2.1`. No bot commits back to `main`, no tags, no release workflow; this
+repo has never had CI write to itself. Two consequences are deliberate.
+**The count includes every commit on `main`, not just `client/**` ones** — so
+because `deploy-client.yml` is `paths:`-filtered, a run of server-only merges
+makes the *deployed* number jump (0.1.7 → 0.1.12) rather than step; the
+number identifies a build, it does not enumerate client releases. And **a
+shallow clone must never yield a plausible-but-wrong number**: `git rev-list
+--count` silently truncates on one, so the computation asks
+`--is-shallow-repository` first and renders `+unknown` — never a bare
+number — when shallow or when git/`VERSION` is unreadable, the same
+discipline `Freshness::Unknown` follows; a non-`main` build is `+dev` for the
+same reason, so a feature-branch screenshot cannot read as the deployed
+build. Both CI checkouts therefore carry `fetch-depth: 0`, and `VERSION` is
+in `deploy-client.yml`'s `paths:` so an override edit deploys on its own.
+The I/O lives in `client/web/build-version.node.ts` at the *package* root,
+never under `src/`, so `node:child_process` cannot be pulled into the browser
+bundle; `vite.config.ts` bakes the finished string in as a `define`
+(`__APP_VERSION__`) rather than a `VITE_*` env var, so no build step has to
+remember to set it — `VITE_GOOGLE_CLIENT_ID`'s ordering trap is the
+cautionary tale — and `APP_VERSION` reads that define tolerantly so vitest
+resolves without a second `define` of its own.
 
 ## The design system
 
