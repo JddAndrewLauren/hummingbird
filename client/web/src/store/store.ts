@@ -8,10 +8,12 @@ import type {
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   DeadLetterEntryDTO,
+  KindRegistryDTO,
   LedgerRowDTO,
   PaneReadDTO,
   PollOutcomeName,
   ProjectDTO,
+  RuleDTO,
   StepDTO,
   TaskActionName,
   TaskItemDTO,
@@ -90,6 +92,18 @@ export interface TaskBindingResult {
   error: string | null;
 }
 
+/** The result of the most recent rule create/patch request this view
+ * issued (#140), matched back by `seed` — same broadcast-recognition
+ * contract as [`TaskActResult`]. `ruleId` is `null` for a create whose
+ * `"failed"` outcome never reached `Core::create_rule` (no id was ever
+ * minted); a patch always carries the id it targeted. */
+export interface TaskRuleResult {
+  seed: string;
+  ruleId: string | null;
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -120,6 +134,18 @@ export interface TaskState {
    * `bindings` answer arrives: an empty array is a real answer ("the table
    * is empty"), and the editor must not render it before one exists. */
   bindings: BindingDTO[] | null;
+  /** The kind registry export (#133/#140, ADR-0013) — `null` until the
+   * first `getKindRegistry` answer arrives. Never answers `"busy"`
+   * core-side, but a view can still ask before the worker's port is ready,
+   * so `null` is a real "not read yet" state here too. */
+  kindRegistry: KindRegistryDTO | null;
+  /** Every rule (#140) — `null` until the first `rules` answer arrives,
+   * same "not read yet vs. genuinely empty" contract [`TaskState.bindings`]
+   * documents for its own field. */
+  rules: RuleDTO[] | null;
+  /** The result of the most recent rule create/patch request this view
+   * issued (#140) — `null` until the first one resolves. */
+  lastRuleWrite: TaskRuleResult | null;
   /** Every standing question's pane read (#245, ADR-0015), keyed by source —
    * the `stepsByItem` shape: starts `{}` and only ever grows the sources a
    * view actually asked about via `getPaneRead`, never a full mirror of
@@ -226,6 +252,9 @@ const initialTaskState: TaskState = {
   ledger: null,
   done: null,
   bindings: null,
+  kindRegistry: null,
+  rules: null,
+  lastRuleWrite: null,
   paneReads: {},
   pending: {},
   lastCapture: null,

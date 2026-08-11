@@ -1,0 +1,61 @@
+[package]
+name = "hummingbird-graph-poll"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller for `m365-mail/v1` and `m365-calendar/v1` (#137)
+# — the third of #135-137's evaluated-stream pollers (ADR-0011), built
+# directly onto #135/#136's scaffolding (`server/gmail-poll`,
+# `server/calendar-poll`). Two binaries (`graph-mail-poll`,
+# `graph-calendar-poll`), one shared lib. A workspace member, so CI's
+# `cargo clippy --workspace` / `cargo test --workspace` gate it, on the
+# exact split the other two pollers use: everything decidable lives in the
+# lib and is natively tested; each binary's `main.rs` holds only
+# `std::env`, the Graph OAuth HTTP call and the Graph/authority HTTP calls
+# — the untestable edge.
+#
+# It must NEVER become a dependency of `hummingbird-authority-worker`: that
+# crate builds for wasm32 and has no business carrying an HTTP client or an
+# RSA-signing dependency.
+
+[dependencies]
+# The real `m365_mail_v1_key`/`m365_calendar_v1_key`, `Event`/`FieldValue`,
+# and `now_as_deadline` — never a hand-copied twin.
+hummingbird-domain = { path = "../domain" }
+# Fire-time evaluation (ADR-0011: "the rule engine evaluates each poll batch
+# in memory") — the exact crate #138's sweep and #135/#136's pollers share.
+hummingbird-rules-engine = { path = "../rules-engine" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# RFC3339 `dateTime` parsing (Graph's own message/event timestamp shapes) —
+# the same crate `city-waste`/`calendar-poll` already carry for the same
+# reason (a tzdb, dependency-free arithmetic cannot supply one).
+jiff = "0.2"
+# The client-credentials-with-certificate JWT bearer assertion (RS256).
+# Unlike `authority/src/fcm.rs`'s worker/lib split (forced by
+# `hummingbird-authority-worker`'s wasm32 target, which has no WebCrypto
+# equivalent in a native Rust crate), this poller is a native process, so
+# the whole assertion — signature included — is pure and natively testable
+# here; nothing about the signing needs to live in `main.rs`.
+jsonwebtoken = "9"
+
+# `main.rs` only (both binaries). Blocking by design: the poller is a
+# one-shot process, so an async runtime would be pure ceremony — the same
+# reasoning `city-waste`/`gmail-poll`/`calendar-poll` already give.
+[dependencies.ureq]
+version = "3"
+default-features = false
+features = ["rustls", "json"]
+
+[dev-dependencies]
+# Test-only: decoding a signed JWT's header back out, to pin the `x5t`
+# claim (`auth.rs`'s own tests) — never used by non-test code.
+base64 = "0.22"
+
+[[bin]]
+name = "graph-mail-poll"
+path = "src/bin/graph_mail_poll.rs"
+
+[[bin]]
+name = "graph-calendar-poll"
+path = "src/bin/graph_calendar_poll.rs"

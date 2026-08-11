@@ -1,8 +1,12 @@
 # The which-cans poller (#120): reads the council's collection page for one
 # address once a day and writes the answer to the authority.
 #
-# **This is the one Actions `schedule:` in the repo, and it is a deliberate
-# exception, not a drift.** The ban recorded in deploy.yml and docs/sweeper.md
+# **This was the first Actions `schedule:` in the repo, and it is a
+# deliberate exception, not a drift.** Four more have since followed on the
+# same reasoning — `gmail-poll.yml` (#135), `calendar-poll.yml` (#136),
+# `graph-mail-poll.yml` and `graph-calendar-poll.yml` (both #137) — each an
+# evaluated-stream poller for one more source, so the repo now carries five
+# in total. The ban recorded in deploy.yml and docs/sweeper.md
 # comes from issue #8, and every clause of that overturn was about a *private*
 # repo: pooled Actions minutes, whole-minute rounding on a job that runs 96
 # times a day, and the $0 spending cap that would stop it dead. hummingbird is

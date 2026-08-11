@@ -5,6 +5,7 @@ import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
 import { NowScreen } from "./screens/NowScreen";
 import { RoutesScreen } from "./screens/RoutesScreen";
+import { RulesScreen } from "./screens/RulesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
@@ -27,6 +28,7 @@ import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useLedgerWiring } from "./shell/useLedgerWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { usePaneReadsWiring } from "./shell/usePaneReadsWiring";
+import { useRulesWiring } from "./shell/useRulesWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
 import { taskTokenUiState } from "./task/token-ui";
@@ -112,6 +114,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   } = useItemDetailWiring(worker, task.syncOutcomeSeq);
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
   const { setBinding: handleSetBinding } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
+  const { createRule: handleCreateRule, patchRule: handlePatchRule } = useRulesWiring(
+    worker,
+    status,
+    task.syncOutcomeSeq,
+  );
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
@@ -288,6 +295,17 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {screen === "routes" && <RoutesScreen demo={demo} />}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
+          {screen === "rules" && (
+            <RulesScreen
+              rules={demo ? demo.ruleDetails : task.rules}
+              kindRegistry={demo ? demo.ruleKindRegistry : task.kindRegistry}
+              frontier={demo ? demo.ruleBacktestItems : task.frontier}
+              lastRuleWrite={demo ? null : task.lastRuleWrite}
+              syncOutcomeSeq={task.syncOutcomeSeq}
+              onCreateRule={demo ? () => {} : handleCreateRule}
+              onPatchRule={demo ? () => {} : handlePatchRule}
+            />
+          )}
           {screen === "done" && <DoneScreen task={task} nowMs={syncNowMs} />}
           {screen === "ledger" && (
             <LedgerScreen

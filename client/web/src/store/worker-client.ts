@@ -2,10 +2,13 @@ import { isInformativeSyncOutcome } from "../shell/sync-status";
 import type { createCoreStore } from "./store";
 import type {
   CalendarWorkerRequest,
+  ConditionDTO,
+  RuleDTO,
   SyncCadenceRequest,
   TaskActionName,
   TaskStageName,
   TaskWorkerRequest,
+  TierName,
   TriageDestinationName,
   TriageEdits,
   WorkerResponse,
@@ -199,6 +202,32 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
         return;
       case "bindings":
         store.setTaskState({ bindings: message.bindings });
+        return;
+      case "kindRegistry":
+        store.setTaskState({ kindRegistry: message.registry });
+        return;
+      case "rules":
+        store.setTaskState({ rules: message.rules });
+        return;
+      case "createRuleResult":
+        store.setTaskState({
+          lastRuleWrite: { seed: message.seed, ruleId: message.id, kind: message.kind, error: message.error },
+        });
+        if (message.kind === "ok") {
+          requestRules(worker);
+        }
+        return;
+      case "patchRuleResult":
+        store.setTaskState({
+          lastRuleWrite: { seed: message.seed, ruleId: message.ruleId, kind: message.kind, error: message.error },
+        });
+        if (message.kind === "ok") {
+          // No overlay for rules (`Core::rules`'s own doc) — the change
+          // becomes visible once the next completed cycle pulls it back,
+          // so this re-request is the same best-effort read every other
+          // mutation result triggers, not an immediate-visibility guarantee.
+          requestRules(worker);
+        }
         return;
       case "paneRead":
         // Keyed by the source the read is *for*, which the worker echoes
@@ -457,6 +486,75 @@ export function setBinding(
 /** Every standing-question binding (#118). */
 export function requestBindings(worker: WorkerLike): void {
   worker.postMessage({ type: "getBindings" });
+}
+
+/** The kind registry export (#133/#140, ADR-0013). */
+export function requestKindRegistry(worker: WorkerLike): void {
+  worker.postMessage({ type: "getKindRegistry" });
+}
+
+/** Every rule (#140). */
+export function requestRules(worker: WorkerLike): void {
+  worker.postMessage({ type: "getRules" });
+}
+
+/** #140's rule create. `seed` mints `Core::create_rule`'s own queue-entry
+ * id — same caller-mints contract as `actOnTask`'s. */
+export function createRule(
+  worker: WorkerLike,
+  seed: string,
+  name: string,
+  eventKind: string | null,
+  conditions: ConditionDTO[],
+  severity: string,
+  tier: TierName,
+  enabled: boolean,
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "createRule",
+    seed,
+    name,
+    eventKind,
+    conditions,
+    severity,
+    tier,
+    enabled,
+    nowMs,
+  });
+}
+
+/** #140's rule patch — the enable/disable toggle and every other rule
+ * edit. `current` is the caller's own last-known copy of the row (the CAS
+ * `base` a 409 is diffed against); every other field is `null` to mean
+ * "leave this alone," except `enabled`, which the toggle sets directly. */
+export function patchRule(
+  worker: WorkerLike,
+  seed: string,
+  current: RuleDTO,
+  patch: {
+    name?: string | null;
+    eventKind?: string | null;
+    conditions?: ConditionDTO[] | null;
+    severity?: string | null;
+    tier?: TierName | null;
+    enabled?: boolean | null;
+  },
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "patchRule",
+    seed,
+    current,
+    name: patch.name ?? null,
+    eventKindTouched: "eventKind" in patch,
+    eventKind: patch.eventKind ?? null,
+    conditions: patch.conditions ?? null,
+    severity: patch.severity ?? null,
+    tier: patch.tier ?? null,
+    enabled: patch.enabled ?? null,
+    nowMs,
+  });
 }
 
 /** One source's pane read (#245). `nowMs` is the clock both the measured

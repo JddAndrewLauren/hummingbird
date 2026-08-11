@@ -1,0 +1,76 @@
+# The Google Calendar evaluated-stream poller (#136, ADR-0011): advances a
+# sync-token delta cursor, evaluates each changed event in memory against
+# the live rule set, and upserts an alert for a match — never anything
+# else. Non-matches never touch storage. Also writes the `busy_now` gauge
+# (this issue's own second job), a separate always-run query around "now".
+#
+# **A third Actions `schedule:` on the same reasoning `gmail-poll.yml`'s
+# header already recorded** — see that file for the full argument
+# (hummingbird is public, so only the 60-day auto-disable survives from
+# issue #8's ban, and this lane has no competing clock: ADR-0011 assigns
+# Google Calendar's cadence to nothing else, and nothing else polls it).
+name: calendar-poll
+
+on:
+  # Every 15 minutes — `hummingbird_calendar_poll::cursor::POLLED_EVERY_MS`
+  # must match this interval.
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# One poller at a time. Two overlapping runs would race on the same
+# `syncToken` cursor row and the `busy_now` snapshot; the authority's
+# snapshot lane already answers a stale write with the current row rather
+# than corrupting it, but there is no reason to lean on that here either.
+concurrency:
+  group: calendar-poll
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # An OAuth refresh, a couple of Calendar reads and a few authority
+    # POSTs, behind a cached build. Anything slower than this is a hung
+    # fetch.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match root `rust-toolchain.toml`, as every other workflow
+      # here is.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Poll Google Calendar
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          # An `ingest`-scope token bound to `google-calendar/v1`, minted
+          # from the operator's terminal against `ADMIN_SECRET` — the
+          # deploy-time step the brief calls out, not an implementation
+          # step of this issue.
+          HB_INGEST_TOKEN: ${{ secrets.CALENDAR_INGEST_TOKEN }}
+          # THE SAME refresh token `gmail-poll.yml` already uses — ADR-0011's
+          # original table names "same OAuth app, scope re-mint" for the
+          # calendar leg, and the brief's own operator step is exactly that:
+          # "the refresh token must be re-minted adding `calendar.readonly`,
+          # per the scope-re-mint runbook." This is a narrower ask than
+          # #135's own resolution (a second, wholly separate credential)
+          # would have been: one dedicated readonly token, now carrying BOTH
+          # `gmail.readonly` and `calendar.readonly`, rather than either
+          # scope living on the sweeper's broader `gmail.modify` credential.
+          # Every Calendar call this poller makes (`events.list`, read-only)
+          # stays inside `calendar.readonly` — nothing here ever writes to
+          # the operator's calendar. See ADR-0011's amendment for the
+          # blast-radius reasoning this restates, and issue #135's thread
+          # for the still-open question of whether the operator prefers the
+          # broader `gmail.modify`-and-full-`calendar`-scope token instead —
+          # this workflow does not decide that silently.
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+        run: cargo run -q -p hummingbird-calendar-poll

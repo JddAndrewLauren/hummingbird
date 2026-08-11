@@ -321,26 +321,250 @@ repo is public; only the ordinary-week one is a real observation, the
 off-week and holiday ones move dates on that capture and say so in their own
 header comments.
 
-`.github/workflows/city-waste.yml` is the repo's **one Actions `schedule:`**,
-and it is a scoped exception rather than a drift. #8's overturn had four
-clauses and three were about a *private* repo's Actions billing (pooled
-minutes, whole-minute rounding, the $0 cap); hummingbird is public, so only
-the 60-day auto-disable survives in general — and this lane is
-self-monitoring, since the pane bands its own answer stale at 26h and then
-refuses to answer, so a stalled poller is loud within a day. The ban still
-holds absolutely where it was really about *competing clocks*: supercronic
-owns the sweeper's cadence and the DO's `alarm()` owns the sweep tick, and a
-second cron for either would compete with a live one. This poller has no
-competing clock at all. `CITY_WASTE_INGEST_TOKEN` goes in Actions secrets on
-the blast-radius reasoning that keeps `ADMIN_SECRET` out: that one mints
-every other token, this one reaches three routes for one source and its
-worst-case abuse is a wrong bin day. `polled_every_ms` in `body.rs` must
-match the cron.
+`.github/workflows/city-waste.yml` was the repo's first Actions
+`schedule:`, and it is a scoped exception rather than a drift. #8's
+overturn had four clauses and three were about a *private* repo's Actions
+billing (pooled minutes, whole-minute rounding, the $0 cap); hummingbird is
+public, so only the 60-day auto-disable survives in general — and this lane
+is self-monitoring, since the pane bands its own answer stale at 26h and
+then refuses to answer, so a stalled poller is loud within a day. The ban
+still holds absolutely where it was really about *competing clocks*:
+supercronic owns the sweeper's cadence and the DO's `alarm()` owns the
+sweep tick, and a second cron for either would compete with a live one.
+This poller has no competing clock at all. `CITY_WASTE_INGEST_TOKEN` goes in
+Actions secrets on the blast-radius reasoning that keeps `ADMIN_SECRET`
+out: that one mints every other token, this one reaches three routes for
+one source and its worst-case abuse is a wrong bin day. `polled_every_ms`
+in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
+(#135, below) is the second Actions `schedule:` on the same reasoning,
+`.github/workflows/calendar-poll.yml` (#136, below) is the third, and
+`.github/workflows/graph-mail-poll.yml`/`graph-calendar-poll.yml` (#137,
+below) are the fourth and fifth — see any of their headers for why a
+repeated scoped exception does not reopen the general ban.
 
 **Not covered, and not this slice's to fix:** `POST /api/alerts` does not
 trigger delivery. `deliver` runs only from `sweep_tick`, which evaluates
 `item-threshold/v1` — so "the notification lane still delivers it" is
 aspirational today for **every** webhook source, not just this one.
+
+## The Gmail evaluated-stream poller
+
+`server/gmail-poll/` (#135, ADR-0011) is the first of the evaluated-stream
+pollers #136/#137 follow: once every 15 minutes it advances a `historyId`
+delta cursor, evaluates each new message **in memory** against the live
+rule set, and upserts an alert only for a match — non-matches never touch
+storage, ADR-0011's own persistence principle. A workspace member (CI
+gates it); it must **never** become a dependency of
+`hummingbird-authority-worker` for the same reason `server/city-waste`
+isn't one — that build is wasm32 and has no business carrying an HTTP
+client or an OAuth token exchange. It follows `server/city-waste`'s exact
+split: everything decidable is in the lib and natively tested against
+saved Gmail API fixtures (`cursor.rs`, `history.rs`, `message.rs`,
+`event.rs`, `evaluate.rs`, `alert.rs`, plus `resume.rs` and `batch.rs`
+below); `main.rs` holds only `std::env`, the OAuth token exchange, and the
+Gmail/authority HTTP calls.
+
+**The cursor-loss decision is `resume.rs`, not `main.rs`.** `resume(stored,
+HistoryOutcome)` is a pure fold over the previously stored `historyId` and
+the outcome of one `history.list` attempt (`Page` or `Expired`, Gmail's own
+404 once a `historyId` has aged out — main.rs's only job is reading that
+real HTTP status); `main.rs` shrinks to that one status→outcome mapping.
+This is what makes AC6's cursor-loss fixture case (first-run, expired,
+normal-advance, and the no-`historyId`-in-response case — the cursor holds
+and the next poll's batch replays rather than rewinding) natively testable
+rather than stuck in the untestable edge. `batch.rs`'s `fold_messages` is
+its sibling for the per-message fetch loop: a transient fetch failure
+(transport error, a 5xx) aborts the **whole batch** — `Err`, before
+`main.rs` ever calls `post_cursor` — so a dropped message's id stays inside
+the *next* poll's window rather than being lost the instant the cursor
+advances past it; a permanently unparseable message (fetched fine, will
+never parse) is skipped loudly but non-fatally, since one bad message must
+not wedge the poller forever. The two failure modes deliberately do not
+share a branch.
+
+**Two authority routes exist only for the evaluated-stream pollers.**
+Neither was in #135's brief; both were added because an `ingest` token had
+no way to read its own state back. `GET /api/snapshots?source=&key=`
+(`snapshots::get`) is the cursor's read-back half — query params, not path
+segments, because `handlers/mod.rs` splits the path on `/` and every
+source string contains a slash — `Device | Ingest`, and source-bound for
+`Ingest` exactly like the write side (a mismatched source is a 403).
+`GET /api/rules` (`rules::list`) is the live rule set a poller evaluates
+in memory against; for a device token it is every rule, enabled or not
+(the poller decides `enabled` itself, via `hummingbird_rules_engine`, so
+filtering here would be a second, driftable copy of that check). **For an
+`ingest` token it is source-bound too**, but differently: `rules::list`
+filters the *response* to only the rules whose `event_kind` the calling
+token's bound source can actually emit
+(`rules::event_kinds_readable_by`), plus every rule with `event_kind: None`
+(the "any kind" state, which applies to every source's events). This is
+what keeps `GET /api/rules` from silently widening every ingest token's
+reach to the operator's whole rule catalogue — including
+`CITY_WASTE_INGEST_TOKEN`, which sits in GitHub Actions under the
+recorded justification that its worst-case abuse is a wrong bin day; an
+unmapped or unbound source reads only the any-kind rules, never
+everything, by default.
+
+**The credential does not follow ADR-0011's original "Worker secret" table**
+— `.github/workflows/gmail-poll.yml` is a GitHub Actions `schedule:`, a
+different trust boundary, and it is written against a **dedicated
+`gmail.readonly`-scope refresh token**, deliberately narrower than the
+sweeper's existing `gmail.modify` one: every Gmail call this poller makes
+is a read. See [ADR-0011's amendment](docs/adr/0011-context-ingestion-moves-server-side.md#amendment-the-poller-runs-out-of-process-and-its-credential-is-narrowed-accordingly)
+for the full reasoning and the operator question this still leaves open
+(reuse the broader token instead, or mint the narrower one) — tracked on
+issue #135.
+
+## The Google Calendar evaluated-stream poller
+
+`server/calendar-poll/` (#136, ADR-0011) is the second of the
+evaluated-stream pollers, built directly onto #135's scaffolding: the same
+lib/`main.rs` split, the same `resume.rs` cursor-loss pattern (here over a
+`syncToken` rather than a `historyId`), the same evaluate-in-poll
+persistence principle. **Two jobs in one poll**, not one: the evaluated
+stream (a `google-calendar/v1` alert per matching `calendar_event`, via the
+exact `POST /api/alerts` lane every other source uses) and the
+`busy_now` snapshot this issue adds on top — `server/gmail-poll` had no
+second job, so this is genuinely new ground, not a re-tread.
+
+**`events.list` already returns full event bodies**, unlike Gmail's
+`history.list` (ids only, needing a separate `messages.get` per id) — so
+there is no `batch.rs` analogue here for a per-item fetch failure; the only
+network call in the evaluated-stream leg is the one `events.list` page
+fetch itself, and `main.rs` aborts with `?` before ever calling
+`post_cursor` if that fails, the same discipline `gmail_poll::batch`
+enforces through an extra module. What stays decidable and lives in the
+lib is `stream.rs`'s pure fold of each already-fetched item into either an
+evaluation candidate or a named, non-fatal skip — a **cancelled** event
+(Google's own deletion marker inside an incremental sync page, expected and
+permanent) and an **unparseable** one (a malformed 200 body, also
+permanent) are two different skip reasons that must not share a branch,
+`gmail_poll`'s own lesson carried over.
+
+**The occurrence key follows #158's `google_calendar_v1_key` convention**
+(`<eventId or recurringEventId>:<originalStartTime>`) exactly, which is
+what makes a recurring event's *instances* distinct occurrences rather than
+one alert overwritten on every recurrence, while a reschedule (Google can
+issue a new `id` on some reschedules, but `originalStartTime` is stable)
+still lands on the row minted for its original slot. `google-calendar/v1`
+is registered with `Expiry::Always("the instance's end time")` — unlike
+`gmail/v1`, which never expires — so `evaluate::Candidate`/`evaluate::Match`
+carry `ends_at_ms` through to `alert::plan`, which is the one place this
+poller's `Match` shape diverges from `gmail_poll`'s.
+
+**The `busy_now` snapshot stores window boundaries, never a boolean**
+(`busy.rs`) — the part of the brief most likely to be got wrong. The engine
+reads this row and compares `now` against the stored boundaries **at its
+own evaluation time**, not the poll's, so a poll-old snapshot still answers
+correctly between polls; a boolean captured at poll time would go stale the
+instant the meeting it described ended. Busy means a timed event in
+progress (`start_ms <= now_ms < end_ms`); three exclusions never mark
+busy — transparent/free, declined (read off the attendee entry carrying
+`"self": true`; its absence is "organizer, not invited as self", never
+read as declined), and all-day — each preventing over-suppression of a
+notification the brief cares about ringing anyway. This job rides **no
+cursor at all**: it is a fresh, always-run `events.list` query bounded
+around "now" (`timeMin`/`timeMax`, `main.rs`'s own job), independent of the
+sync-token cursor, which only ever answers "what changed" — busy needs
+"what's true right now," including for an event the evaluated-stream leg
+already saw and evaluated on an earlier poll. The cursor and the busy gauge
+share one bound source (`google-calendar/v1`) under two different
+`context_snapshots.key`s (`cursor`, `busy_now`) — `sources.rs`'s "a source
+may of course be both," extended here to a source being three things at
+once: an alert source and two independent snapshot rows.
+
+**The credential needed no fresh resolution.** ADR-0011's original
+decision table already named "same OAuth app, scope re-mint... adding
+`calendar.readonly`" for this leg — i.e. the SAME dedicated readonly token
+`gmail-poll.yml` introduced (`GOOGLE_REFRESH_TOKEN`), re-minted to also
+carry `calendar.readonly`, rather than a second separate credential. See
+[ADR-0011's addendum](docs/adr/0011-context-ingestion-moves-server-side.md#addendum-136-follows-the-same-scaffolding-and-the-credential-table-above-was-already-right)
+for the full reasoning; the still-open operator question on issue #135
+(reuse the broader existing token instead) covers this leg too.
+
+`authority/src/handlers/rules.rs`'s `event_kinds_readable_by` gained a
+second mapping entry alongside `gmail/v1`'s: an `ingest` token bound to
+`google-calendar/v1` reads `calendar_event`-kind rules (and every any-kind
+rule) through `GET /api/rules`, never `email`-kind ones — the two mapping
+entries are independent and fixture-tested as such.
+
+## The M365 evaluated-stream pollers
+
+`server/graph-poll/` (#137, ADR-0011) is the third of #135-137 (built after
+#135's Gmail leg and #136's Google Calendar leg above), and the
+first built against app-only Microsoft Graph rather than Google's OAuth
+grants: one crate, two binaries (`graph-mail-poll` for `m365-mail/v1`,
+`graph-calendar-poll` for `m365-calendar/v1`), sharing the auth leg
+(`auth.rs`) and the whole delta-cursor shape (`delta.rs`, `resume.rs`) —
+Microsoft Graph uses one envelope (`value`/`@odata.nextLink`/
+`@odata.deltaLink`) for every delta-query resource collection, so unlike
+the two Google pollers (whose delta shapes genuinely differ) there is
+nothing lane-specific to write twice. Each binary follows
+`gmail_poll`/`calendar_poll`'s exact split: everything decidable lives in
+the lib and is natively tested; `main.rs` holds only `std::env`, the OAuth
+HTTP call, and the Graph/authority HTTP calls.
+
+**The client-assertion signature itself is decidable here, unlike
+`authority/src/fcm.rs`.** `authority/src/fcm.rs`/`worker/src/fcm.rs` split
+the OAuth assertion's bytes (lib, tested) from its RS256 signature (worker,
+untested by construction) only because `hummingbird-authority-worker` is
+wasm32 and has no WebCrypto equivalent in a native Rust crate. This crate
+is an ordinary out-of-process binary with no such constraint, so `auth.rs`
+builds AND signs the whole client-credentials-with-certificate JWT bearer
+assertion natively, tested end-to-end against a fixture keypair generated
+for this crate's tests alone.
+
+**Both delta cursors survive restart and recover by bounded re-sync on
+Graph's HTTP 410 Gone** (`resume.rs`, shared, `gmail_poll::resume`'s
+pattern generalized over one delta-page shape) — but the two lanes' bounded
+resyncs differ, because Graph's mail-delta endpoint does not accept
+`$filter`/`$orderby` the way its ordinary listing does (documented Graph
+behaviour, unconfirmed against a live tenant): `graph-mail-poll`'s resync
+is two calls (an ordinary `$filter`-bounded messages listing for the
+catch-up items, then `$deltatoken=latest` for a fresh cursor anchored at
+"now"), while `graph-calendar-poll`'s resync is one (`calendarView/delta`
+accepts `startDateTime`/`endDateTime` directly on its initial request, the
+standard documented shape, closer to `calendar_poll`'s own Google
+resync). Every calendar request carries `Prefer: outlook.timezone="UTC"` —
+without it, Graph's default `start`/`end` shape carries a Windows time-zone
+name rather than an IANA one, which this crate has no tzdb for.
+
+**The recurring-occurrence key's second half has no Graph-native source.**
+#158's `m365_calendar_v1_key(id, series_master_id, original_start)` mirrors
+Google's `<eventId or recurringEventId>:<originalStartTime>` shape, but
+Microsoft Graph's `event` resource carries no `originalStartTime`-equivalent
+field at all. `calendar_item.rs` populates `original_start` from the
+occurrence's own Graph `id` instead — Microsoft documents that id as stable
+across a reschedule of that occurrence, which is the one invariant the key
+recipe actually needs, so this uses the fact Graph guarantees rather than
+inventing one it doesn't provide. Recorded, not silently assumed: this is
+the exact "case most likely to produce duplicate alerts if invented
+locally" the issue's own brief calls out, unconfirmed against a live
+tenant's first real reschedule (`server/city-waste/src/page.rs`'s own
+"still open" precedent) — see the issue #137 thread.
+
+`authority/src/handlers/rules.rs`'s `event_kinds_readable_by` gains two
+more independent mapping entries: `m365-mail/v1 → email`,
+`m365-calendar/v1 → calendar_event`, fixture-tested the same way as
+`gmail/v1`'s and `google-calendar/v1`'s.
+
+**Credential posture — narrower in kind, not yet narrower in blast
+radius.** `Mail.Read`/`Calendars.Read` (application permissions, admin
+consent) are the brief's own named grants and both are read-only, the same
+"every call this poller makes is a read" reasoning that justified
+`gmail.readonly`/`calendar.readonly` for #135/#136. But an app-only Graph
+permission is tenant-wide by default (every mailbox/calendar in the
+tenant, not just the operator's own) unless the operator additionally
+applies an Exchange Online Application Access Policy — an operator-side
+step this crate cannot perform or verify, and one that moves the
+credential's actual worst-case abuse away from
+`CITY_WASTE_INGEST_TOKEN`'s "a wrong bin day" side of CLAUDE.md's
+blast-radius line. `GRAPH_CLIENT_PRIVATE_KEY` is written against GitHub
+Actions secrets on #135/#136's own established precedent (out-of-process
+poller = Actions secrets, not the Worker secret ADR-0011's original table
+names), and the tenant-wide-vs-scoped question is posted as an explicit
+operator question on issue #137 rather than decided here — cross-referencing
+issue #135's still-open credential question, the same category of decision.
 
 ## The client sync engine
 
@@ -381,26 +605,31 @@ still has material, because the alternative is a `Conflict` with an empty
 field list masquerading as a real one, showing the reader nothing to act on.
 
 `Core` (`client/core/src/lib.rs`) is the one door onto all of that, and it
-has exactly **four mutation entry points**: `Core::capture` (a create,
+has exactly **six mutation entry points**: `Core::capture` (a create,
 whose `title` goes through `capture::parse_seam` — #110/#42's named no-op —
 and reaches the mutation verbatim regardless), `Core::act` (S11's closed
 `ItemAction` vocabulary: start / complete / block / cancel, where cancel
 sets `archived_at` and never a stage, because the owned schema has no
-"canceled"), and `Core::triage` (S13's `TriageDestination` + `TriagePatch`:
+"canceled"), `Core::triage` (S13's `TriageDestination` + `TriagePatch`:
 a multi-field triage is exactly ONE queued CAS `PATCH`, never one per
-field, so a 409 rebases or dead-letters the whole edit together), and
+field, so a 409 rebases or dead-letters the whole edit together),
 `Core::set_binding` (#118's standing-question bindings — one `settings` row,
-written as an ordinary absolute-value CAS `PUT`). **All four enqueue through
-`SyncCycle::enqueue` and none of them may reach `OutboundQueue::enqueue`** —
-the durability rule above is not per-caller advice, it is what makes an
-offline capture, act, triage or binding survive at all. All four take a
-caller-minted `seed` (deterministic id, same no-clock/no-RNG
-reasoning). The reads are `frontier` / `triage_inbox` / `blocked` /
-`steps_for` / `projects` / `bindings`; the three item queries are each a
-filter over one shared `overlaid_items` view, while `steps_for` and
-`projects` (over `SyncMirror::all_projects`) read the mirror directly — no
-mutation entry point mints a Step or a Project, so there is nothing
-optimistic to overlay there.
+written as an ordinary absolute-value CAS `PUT`), and `Core::create_rule` /
+`Core::patch_rule` (#140's rules editor — a `POST`/`PATCH` against
+`rules`, the same closed CAS shape as every entry above). **All six enqueue
+through `SyncCycle::enqueue` and none of them may reach
+`OutboundQueue::enqueue`** — the durability rule above is not per-caller
+advice, it is what makes an offline capture, act, triage, binding or rule
+edit survive at all. All six take a caller-minted `seed` (deterministic id,
+same no-clock/no-RNG reasoning). The reads are `frontier` / `triage_inbox` /
+`blocked` / `steps_for` / `projects` / `bindings` / `rules`; the three item
+queries are each a filter over one shared `overlaid_items` view, while
+`steps_for` and `projects` (over `SyncMirror::all_projects`) and `rules`
+(over `SyncMirror::all_rules`) read the mirror directly — no mutation entry
+point mints a Step, a Project or (unlike every other entry point here) an
+optimistic `Rule` overlay, so there is nothing optimistic to overlay for
+any of them; see the rules section below for why `Core::rules` in
+particular reads the mirror bare.
 
 **Bindings are `settings` rows and nothing more** (#118, ADR-0015).
 `bindings.rs` holds the closed, kebab-case, **unversioned** key vocabulary —
@@ -443,6 +672,49 @@ overlay-blind would tell a reader nothing is pending while something still
 is. It is keyed one entry per item id in FIFO order (last enqueued wins),
 which leaves the narrow `entry_id` gap `Core::act`'s own doc records —
 flagged there, not fixed.
+
+**The rules UI is #140's, and it is built on the same shape as bindings —
+an ordinary CAS-synced table, no bespoke plumbing.** `rules` is a table in
+the client mirror exactly like `settings`, `routes` or `fog`: it rides the
+ordinary delta pull and full sweep with no soft-delete flag of its own
+(`SyncMirror::all_rules`, ADR-0003's absence-demotion is what retires a
+row), and `Core::create_rule` / `Core::patch_rule` are the two mutation
+entry points above, `POST`/`PATCH` against `rules` through the same
+`SyncCycle::enqueue` durability rule and the same generic rebase-or-dead-
+letter conflict handling every other CAS write here already has — #140
+deliberately adds no bespoke conflict surface for rules. The one deviation
+from that symmetry is deliberate: unlike `bindings` (and unlike `capture`/
+`act`/`triage`), `Core::rules` carries **no optimistic overlay** — a
+locally-created or -patched rule becomes visible once the next completed
+cycle pulls it back, the same "read the mirror directly" contract
+`Core::steps_for`/`Core::projects` already follow for entities no mutation
+entry point overlays.
+
+`client/web/src/screens/rules/` is the pure-module half, the same split
+every other screen keeps: `registry.ts` reads the kind cascade (kind, then
+field, then operator, then value widget) straight off the exported kind
+registry (#133, `hummingbird_domain::kind_registry_json`) rather than
+hand-maintaining a second copy, so a kind added upstream surfaces with no
+UI change; `condition-editor.ts`, `operators.ts`, `duration.ts` and
+`deadline-picker.ts` hold the condition-row editing rules and value
+parsing; `validity.ts` decides whether a draft rule is save-worthy; and
+`RulesScreen.tsx` only threads React state through them. `backtest.ts` is
+the one that carries a documented, deliberate gap rather than a silent
+one: ADR-0011 asks for "re-fetch recent history and show which events a
+draft rule would have promoted," and this backtest answers it as a pure,
+client-side port of ADR-0013's evaluation semantics (never a call into
+`hummingbird-rules-engine`, a native-only crate this wasm build has no path
+to), restricted to `item_threshold` — the one kind this client holds raw
+material for; every other kind (`email`, `calendar_event`,
+`snapshot_change`, `alert_raised`) reports `"unavailable"` rather than a
+silent zero. Its corpus is deliberately narrow: `sweep_tick` evaluates
+every non-archived item (`load_live_items`), but this backtest only ever
+sees whatever `items` its caller passes — today `task.frontier`,
+`Ready`/`InProgress`, unarchived, *and* unblocked (`Core::frontier`), so
+triage-stage and blocked items never enter the count. That gap is not
+hidden behind a bare match count: the on-screen copy names the corpus
+explicitly, so a reader can't mistake this backtest's answer for the
+sweep's own.
 
 `client/core/src/rank.rs` is the other top-level module beside `Core`, and
 it is no part of the sync engine: `rank()` (#162) is
