@@ -173,6 +173,12 @@ route anywhere in the API (ADR-0003), so a write could only ever have been
 tombstoned, not cleaned up; and `device` is the only read-capable scope, so a
 read-only script still holds a write-everything credential — which is exactly
 why it never goes into Actions, the same posture `ADMIN_SECRET` gets.
+**"Read-only" means zero writes to synced data, not zero writes**, and the
+distinction is worth holding: `auth::authenticate` ends every successful
+authentication with `UPDATE tokens SET last_seen`, so each run stamps its own
+token row four times. That is outside the delta contract by construction —
+`tokens` never syncs to any client, and the update takes no meta bump on
+purpose, since bumping there would make every authed read dirty the cursor.
 Automating it requires minting a dedicated token *first*. The standing
 consequence: **nothing automated ever exercises a production write**, so a
 deploy that broke writes while leaving reads intact passes it green; the only
