@@ -19,6 +19,7 @@ import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
 import { syncStatusLabel } from "./shell/sync-status";
 import { useCalendarEventsWiring } from "./shell/useCalendarEventsWiring";
+import { tripsCalendarId } from "./calendar/selection";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
@@ -102,7 +103,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     handleConnectClick,
     handleCalendarSelectionChange,
     handleRefreshClick,
-  } = useCalendarWiring(worker, status, calendar);
+  } = useCalendarWiring(worker, status, calendar, tripsCalendarId(task.bindings));
   const {
     hasToken: hasTaskToken,
     enteredAtMs: taskTokenEnteredAtMs,

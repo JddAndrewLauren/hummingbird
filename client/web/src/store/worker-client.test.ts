@@ -24,7 +24,7 @@ import {
   requestQueueDepth,
   requestSteps,
   requestTriageInbox,
-  setCalendarIdsOnWorker,
+  setCalendarSelectionsOnWorker,
   setMirrorSnapshotHandler,
   triageItem,
   triggerSyncFocus,
@@ -975,12 +975,18 @@ describe("the calendar send helpers", () => {
     });
   });
 
-  it("setCalendarIdsOnWorker posts a setCalendarIds request", () => {
+  it("setCalendarSelectionsOnWorker posts a setCalendarSelections request", () => {
     const worker = fakeWorker();
-    setCalendarIdsOnWorker(worker, ["a", "b"]);
+    setCalendarSelectionsOnWorker(worker, [
+      { id: "a", horizon: "standard" },
+      { id: "b", horizon: "long" },
+    ]);
     expect(worker.postMessage).toHaveBeenCalledWith({
-      type: "setCalendarIds",
-      calendarIds: ["a", "b"],
+      type: "setCalendarSelections",
+      selections: [
+        { id: "a", horizon: "standard" },
+        { id: "b", horizon: "long" },
+      ],
     });
   });
 

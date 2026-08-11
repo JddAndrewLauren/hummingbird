@@ -89,13 +89,18 @@ export function Section({
   title,
   meta,
   children,
+  id,
 }: {
   title: string;
   meta?: string;
   children: ReactNode;
+  /** An in-page anchor target, so one part of a screen can route the reader
+   * to another (#121: the calendar picker's locked row points at the
+   * bindings editor further down Settings). */
+  id?: string;
 }) {
   return (
-    <div>
+    <div id={id}>
       <div
         style={{
           display: "flex",

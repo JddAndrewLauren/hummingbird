@@ -44,14 +44,27 @@ mod wasm_bindings {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::future_to_promise;
 
+    use hummingbird_core::calendar::CalendarSelection;
+
     use super::calendar_host::{outcome_name, CalendarHostCore};
+
+    /// Parses the host's selection JSON — `[{"id": "...", "horizon":
+    /// "standard"|"long"}]` (#121). Unparseable text is an **empty**
+    /// selection rather than a panic: a wasm panic poisons the whole module,
+    /// and the host's own protocol test is what pins the shape. An empty
+    /// selection is already a legitimate steady state here (nothing picked
+    /// yet), and the poller keeps whatever it last held until the next
+    /// trigger.
+    fn parse_selections(json: &str) -> Vec<CalendarSelection> {
+        serde_json::from_str(json).unwrap_or_default()
+    }
 
     /// Everything a synchronous setter has to defer while the core is
     /// checked out for a poll. Applied, in this order, at check-in.
     #[derive(Default)]
     struct Pending {
         token: Option<String>,
-        calendar_ids: Option<Vec<String>>,
+        selections: Option<Vec<CalendarSelection>>,
     }
 
     /// The core plus its check-out slot. `Option` is doing load-bearing
@@ -88,8 +101,8 @@ mod wasm_bindings {
             if let Some(token) = pending.token {
                 core.push_token(token);
             }
-            if let Some(calendar_ids) = pending.calendar_ids {
-                core.set_calendar_ids(calendar_ids);
+            if let Some(selections) = pending.selections {
+                core.set_calendar_selections(selections);
             }
             *self.core.borrow_mut() = Some(core);
         }
@@ -101,10 +114,10 @@ mod wasm_bindings {
             }
         }
 
-        fn set_calendar_ids(&self, calendar_ids: Vec<String>) {
+        fn set_calendar_selections(&self, selections: Vec<CalendarSelection>) {
             match self.core.borrow().as_ref() {
-                Some(core) => core.set_calendar_ids(calendar_ids),
-                None => self.pending.borrow_mut().calendar_ids = Some(calendar_ids),
+                Some(core) => core.set_calendar_selections(selections),
+                None => self.pending.borrow_mut().selections = Some(selections),
             }
         }
 
@@ -189,13 +202,22 @@ mod wasm_bindings {
     impl CalendarHost {
         /// `namespace` becomes the IndexedDB database name (ADR-0003: the
         /// host contributes exactly one thing at init — a storage
-        /// path/namespace). `calendar_ids` is the picker's initial
-        /// selection; empty is a valid steady state (never-opted-in /
-        /// nothing picked yet).
+        /// path/namespace). `selections_json` is the picker's initial
+        /// selection as JSON text (`[{"id","horizon"}]`, #121); `"[]"` is a
+        /// valid steady state (never-opted-in / nothing picked yet).
+        ///
+        /// JSON text rather than a `Vec<String>`: a selection now carries a
+        /// per-entry horizon, which no positional `wasm_bindgen` argument
+        /// shape can express without a second, separately-lengthed array —
+        /// the same reasoning `TriageEdits` records for its own one-string
+        /// seam.
         #[wasm_bindgen(constructor)]
-        pub fn new(namespace: String, calendar_ids: Vec<String>) -> CalendarHost {
+        pub fn new(namespace: String, selections_json: String) -> CalendarHost {
             CalendarHost {
-                inner: Rc::new(Shared::new(CalendarHostCore::new(namespace, calendar_ids))),
+                inner: Rc::new(Shared::new(CalendarHostCore::new(
+                    namespace,
+                    parse_selections(&selections_json),
+                ))),
             }
         }
 
@@ -206,11 +228,12 @@ mod wasm_bindings {
             self.inner.push_token(token);
         }
 
-        /// The calendar picker's current selection; takes effect on the
-        /// next poll trigger.
-        #[wasm_bindgen(js_name = setCalendarIds)]
-        pub fn set_calendar_ids(&self, calendar_ids: Vec<String>) {
-            self.inner.set_calendar_ids(calendar_ids);
+        /// The calendar picker's current selection, as JSON text (see the
+        /// constructor); takes effect on the next poll trigger.
+        #[wasm_bindgen(js_name = setCalendarSelections)]
+        pub fn set_calendar_selections(&self, selections_json: String) {
+            self.inner
+                .set_calendar_selections(parse_selections(&selections_json));
         }
 
         /// Core-start trigger. Resolves to one of `"no_credential"`,

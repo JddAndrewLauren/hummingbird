@@ -22,13 +22,6 @@ import { RankedRegion } from "./questions/RankedRegion";
 // Shape settled (context panel); delete these two mounts with
 // `prototype-race-pane/`.
 import { RacePane, RacePaneSwitcher } from "./prototype-race-pane/RacePanePrototype";
-// PROTOTYPE (#121) — throwaway, dev-only, renders nothing without
-// `?vacationpane`. Shape decided (A, context panel); delete these two mounts
-// with `prototype-vacation-pane/` once it is folded into the real pane.
-import {
-  VacationPane,
-  VacationPaneSwitcher,
-} from "./prototype-vacation-pane/VacationPanePrototype";
 import { computeUrgency } from "./urgency";
 
 export interface NowScreenProps {
@@ -318,7 +311,6 @@ export function NowScreen({
   return (
     <TwoColumn>
       <RacePaneSwitcher />
-      <VacationPaneSwitcher />
       <Column>
         {demo && top ? (
           <>
@@ -416,12 +408,12 @@ export function NowScreen({
           onScreen={onScreen}
           onSetScheduledDate={demo ? undefined : onSetScheduledDate}
         />
-        {/* The surviving prototypes (#119/#121), still dev-only and
-            param-gated, sit beside the region until each is folded into a
-            real question of its own — #122's own weekend pane is folded in
-            already, registered in the shell above. */}
+        {/* The one surviving prototype (#119), still dev-only and
+            param-gated, sits beside the region until it is folded into a
+            real question of its own — #122's weekend pane and #121's
+            vacation pane are both folded in already, registered in the
+            shell above. */}
         <RacePane />
-        <VacationPane />
       </Aside>
     </TwoColumn>
   );

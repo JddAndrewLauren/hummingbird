@@ -27,37 +27,35 @@ use std::sync::RwLock;
 
 use crate::context::{PollFailure, ProviderPoller};
 
-use super::adapter::fetch_calendar_snapshot;
+use super::adapter::{fetch_calendar_snapshot, CalendarSelection};
 use super::calendar_list::{list_calendars, CalendarListEntry, CalendarListError};
 use super::transport::{CalendarListTransport, EventsTransport};
 use crate::calendar::CalendarSnapshot;
 
 /// Wraps an [`EventsTransport`] with the host-supplied, host-mutable list of
-/// selected calendar ids the picker (#73) drives.
+/// [`CalendarSelection`]s the picker (#73) drives — an id **and its poll
+/// horizon** since #121, never a bare id.
 pub struct GoogleProviderPoller<T: EventsTransport> {
     transport: T,
-    calendar_ids: RwLock<Vec<String>>,
+    selections: RwLock<Vec<CalendarSelection>>,
 }
 
 impl<T: EventsTransport> GoogleProviderPoller<T> {
-    pub fn new(transport: T, calendar_ids: Vec<String>) -> Self {
+    pub fn new(transport: T, selections: Vec<CalendarSelection>) -> Self {
         Self {
             transport,
-            calendar_ids: RwLock::new(calendar_ids),
+            selections: RwLock::new(selections),
         }
     }
 
-    /// Replaces the selected calendar ids. Takes effect on the next poll
-    /// attempt; a poll already in flight keeps the ids it started with.
-    pub fn set_calendar_ids(&self, calendar_ids: Vec<String>) {
-        *self.calendar_ids.write().expect("calendar_ids lock poisoned") = calendar_ids;
+    /// Replaces the selection. Takes effect on the next poll attempt; a poll
+    /// already in flight keeps the selection it started with.
+    pub fn set_calendar_selections(&self, selections: Vec<CalendarSelection>) {
+        *self.selections.write().expect("selections lock poisoned") = selections;
     }
 
-    pub fn calendar_ids(&self) -> Vec<String> {
-        self.calendar_ids
-            .read()
-            .expect("calendar_ids lock poisoned")
-            .clone()
+    pub fn calendar_selections(&self) -> Vec<CalendarSelection> {
+        self.selections.read().expect("selections lock poisoned").clone()
     }
 }
 
@@ -86,8 +84,8 @@ impl<T: EventsTransport + Send + Sync> ProviderPoller for GoogleProviderPoller<T
     type Snapshot = CalendarSnapshot;
 
     async fn poll(&self, access_token: &str, now_ms: i64) -> Result<CalendarSnapshot, PollFailure> {
-        let calendar_ids = self.calendar_ids();
-        fetch_calendar_snapshot(&self.transport, access_token, &calendar_ids, now_ms)
+        let selections = self.calendar_selections();
+        fetch_calendar_snapshot(&self.transport, access_token, &selections, now_ms)
             .await
             .map_err(|source| {
                 if source.is_unauthorized() {
@@ -169,7 +167,7 @@ mod tests {
         pages.insert("cal-a".to_string(), empty_page());
         pages.insert("cal-b".to_string(), empty_page());
         let transport = ScriptedTransport::new(pages);
-        let poller = GoogleProviderPoller::new(transport, vec!["cal-a".to_string()]);
+        let poller = GoogleProviderPoller::new(transport, vec![CalendarSelection::standard("cal-a")]);
 
         let result = poller.poll("token", 1_000).await;
 
@@ -181,14 +179,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_calendar_ids_changes_what_the_next_poll_queries() {
+    async fn set_calendar_selections_changes_what_the_next_poll_queries() {
         let mut pages = HashMap::new();
         pages.insert("cal-a".to_string(), empty_page());
         pages.insert("cal-b".to_string(), empty_page());
         let transport = ScriptedTransport::new(pages);
-        let poller = GoogleProviderPoller::new(transport, vec!["cal-a".to_string()]);
+        let poller = GoogleProviderPoller::new(transport, vec![CalendarSelection::standard("cal-a")]);
 
-        poller.set_calendar_ids(vec!["cal-b".to_string()]);
+        poller.set_calendar_selections(vec![CalendarSelection::standard("cal-b")]);
         let result = poller.poll("token", 1_000).await;
 
         assert!(result.is_ok());
@@ -203,7 +201,7 @@ mod tests {
         // No scripted page for "cal-missing": the transport returns a
         // TransportError, which the adapter wraps as AdapterError::Transport.
         let transport = ScriptedTransport::new(HashMap::new());
-        let poller = GoogleProviderPoller::new(transport, vec!["cal-missing".to_string()]);
+        let poller = GoogleProviderPoller::new(transport, vec![CalendarSelection::standard("cal-missing")]);
 
         let result = poller.poll("token", 1_000).await;
 
@@ -214,7 +212,7 @@ mod tests {
     async fn a_401_maps_to_unauthorized_so_polling_holds() {
         let transport =
             ScriptedTransport::failing(TransportError::http(401, "Google returned HTTP 401"));
-        let poller = GoogleProviderPoller::new(transport, vec!["cal-a".to_string()]);
+        let poller = GoogleProviderPoller::new(transport, vec![CalendarSelection::standard("cal-a")]);
 
         let result = poller.poll("expired-token", 1_000).await;
 
@@ -228,7 +226,7 @@ mod tests {
         // button that cannot fix anything.
         let transport =
             ScriptedTransport::failing(TransportError::http(500, "Google returned HTTP 500"));
-        let poller = GoogleProviderPoller::new(transport, vec!["cal-a".to_string()]);
+        let poller = GoogleProviderPoller::new(transport, vec![CalendarSelection::standard("cal-a")]);
 
         let result = poller.poll("token", 1_000).await;
 
