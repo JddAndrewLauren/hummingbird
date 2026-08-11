@@ -45,7 +45,33 @@ bound to one alert source — a source mismatch, all empty-bodied), the
 `POST /api/alerts` ingest upsert, and `POST`/`DELETE /api/push_targets`
 (idempotent registration — a replay adopts a rotated `fcm_token` and
 revives a revoked target, since neither event mints a new device id — and
-individual, idempotent revocation). The notification lane's delivery leg
+individual, idempotent revocation). `POST /api/snapshots` (#120) is the
+server-polled lane's write side: `ingest` scope, version-blind upsert on
+`(source, key)`, identity in the body because `handlers/mod.rs` splits the
+path on `/` and every source string contains a slash. Its one subtle rule is
+that **`fetched_at` is part of the value** — the no-write applies to *exact*
+replays only (payload and stamp both identical), and `fetched_at` is
+required rather than defaulted precisely so replay identity is decidable;
+skipping the write when only the stamp moved would freeze what
+`Freshness::of_snapshot` reads and make "poller fine, nothing changed"
+indistinguishable from "poller dead", which is the discrimination this lane
+exists to make. An older `fetched_at` never overwrites a newer one, and the
+envelope is validated at the write (a stored row no pane can parse is a
+source silently answering nothing) without ever resolving `schema` against
+`REGISTRY` — ADR-0015 forbids that — and without requiring `schema ==
+source`. `AlertIngest::restamp_on_change` (default false) is the same
+slice's polled-source rule: a daily re-poll of an unchanged occurrence must
+not restamp `raised_at`, since `is_live` compares it against `dismissed_at`,
+while a correction must ring over that dismissal — and the poller cannot
+decide which is which, because an ingest token cannot read the alert back,
+so the handler restamps only on the raises that actually change a
+source-owned field, with its own **write clock**. `GET /api/settings/:key`
+is the one read a non-device scope reaches (`Device | Ingest`): a poller
+needs the binding that says *what* to poll, and the alternative — the same
+URL duplicated into an Actions secret — makes the binding editor decorative.
+The widening is real (an ingest token can read any setting by name) and
+bounded by `settings` being a small closed vocabulary of binding facts that
+holds no credential, on a read-only route. The notification lane's delivery leg
 (#139) is `hummingbird_authority::deliver`: a **sync** function, not an
 HTTP route — the real FCM send is necessarily async (the `workers-rs`
 shim's `fetch`, on wasm32, where a sync trait cannot block on a future), so
@@ -202,6 +228,74 @@ private key. Both deploy workflows also carry a `workflow_dispatch` guarded
 with `if: github.ref == 'refs/heads/main'`, because a Cloudflare-side change
 (binding a domain, setting a secret) touches no file here and would
 otherwise have no trigger at all.
+
+## The which-cans poller
+
+`server/city-waste/` is the out-of-process adapter behind #120's standing
+question: once a day it reads the council's collection page for one address,
+writes a `context_snapshots` row, and — only on a week where the collection
+moved — raises one alert. It is a workspace member, so CI gates it; it must
+**never** become a dependency of `hummingbird-authority-worker`, whose build
+is wasm32 and has no business carrying an HTTP client, a tzdb or an HTML
+parser. Not in the DO's `alarm()` for the reason that split
+`authority/src/fcm.rs` from `worker/src/fcm.rs`: `server/worker` has no test
+harness, so anything expressed there is untested by construction. The same
+split runs one level out here — everything decidable is in the lib and
+natively tested, and `main.rs` holds only `std::env`, one GET and two POSTs.
+
+**Materiality is deviation from cadence, never a diff against the previous
+poll.** `judge` never sees the last snapshot, and that one choice is what
+makes the lane behave: the ordinary roll-forward is silent (the morning after
+a pickup the page jumps a whole week — a *large* diff and a *zero* deviation),
+the poller is correct on its first run and again after a wiped snapshot, and
+it needs no state of its own, which is what lets it be a one-shot cron
+process. The price is that the body must carry the cadence: without it there
+is nothing to deviate *from*. `scheduled` is **derived**
+(`cadence.latest_on_or_before(collected_on)`) and `collected_on` is
+**observed**, which is what makes `collected_on !== scheduled` a derivable
+holiday reading rather than something the council has to say out loud; there
+is deliberately no `deviation` field, because a judgement duplicated into a
+payload is a fact that can disagree with itself. `Deviation::SkippedCycle`
+survives even though the corrected domain has no cancelled week — if it fires
+it is a real cancellation or a parse failure, and both deserve to be loud —
+and the backward-slide guard the prototype flagged is `MAX_SLIDE_DAYS` plus
+nearest-cadence-date resolution. `date.rs` is dependency-free integer
+arithmetic on day numbers except for one delegated question: when a
+collection day ends *at the address*, which needs a tzdb (`jiff`) and cannot
+be derived from a day number; an unknown zone is `None`, never a silent UTC.
+
+`tests/contract.rs` is the only guard against the body drifting from
+`waste.ts`, and it exists because **nothing mechanical connects the two
+sides** — the body inside ADR-0015's envelope is opaque to the server by
+design, so a rename on either side compiles and passes on both. It asserts
+the literal snake_case keys against the TypeScript's own text. `page.rs` is
+the one unbuilt module, isolated behind a typed error with its fixture tests
+`#[ignore]`d: it is what a saved sample of the real page gates, and if that
+page turns out to state only the next date (no cadence), the cadence has to
+come from a second binding value — which widens `city-waste-page` from a URL
+to a JSON object and reaches into the client, and **must be escalated before
+it is built**.
+
+`.github/workflows/city-waste.yml` is the repo's **one Actions `schedule:`**,
+and it is a scoped exception rather than a drift. #8's overturn had four
+clauses and three were about a *private* repo's Actions billing (pooled
+minutes, whole-minute rounding, the $0 cap); hummingbird is public, so only
+the 60-day auto-disable survives in general — and this lane is
+self-monitoring, since the pane bands its own answer stale at 26h and then
+refuses to answer, so a stalled poller is loud within a day. The ban still
+holds absolutely where it was really about *competing clocks*: supercronic
+owns the sweeper's cadence and the DO's `alarm()` owns the sweep tick, and a
+second cron for either would compete with a live one. This poller has no
+competing clock at all. `CITY_WASTE_INGEST_TOKEN` goes in Actions secrets on
+the blast-radius reasoning that keeps `ADMIN_SECRET` out: that one mints
+every other token, this one reaches three routes for one source and its
+worst-case abuse is a wrong bin day. `polled_every_ms` in `body.rs` must
+match the cron.
+
+**Not covered, and not this slice's to fix:** `POST /api/alerts` does not
+trigger delivery. `deliver` runs only from `sweep_tick`, which evaluates
+`item-threshold/v1` — so "the notification lane still delivers it" is
+aspirational today for **every** webhook source, not just this one.
 
 ## The client sync engine
 

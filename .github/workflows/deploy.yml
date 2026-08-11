@@ -2,6 +2,15 @@
 # the sweep on GitHub Actions was overturned in issue #8 (pooled minutes,
 # whole-minute billing, the $0 spending cap, and 60-day auto-disable).
 # supercronic inside the Fly container owns the cadence.
+#
+# Qualified 2026-08-10 (#120), which added the repo's one Actions `schedule:`
+# in city-waste.yml: three of #8's four clauses were about a *private* repo's
+# billing and hummingbird is public, so they no longer bite in general. They
+# do not need to for the sweeper — **the reason the ban holds here is that
+# supercronic is a live clock and a second one would compete with it**, which
+# is a correctness argument rather than a billing one. Same for the
+# authority's `alarm()` (see deploy-server.yml). The daily poller has no
+# competing clock at all, which is what made it the exception.
 name: deploy
 
 on:
