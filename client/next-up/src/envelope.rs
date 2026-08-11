@@ -178,16 +178,14 @@ impl WireCalendar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hummingbird_core::calendar::{EventStatus, EventTime};
+    use hummingbird_core::calendar::{EventStatus, EventWhen};
 
     fn event(id: &str, start_ms: i64) -> EventRecord {
         EventRecord {
             provider_event_id: id.to_string(),
             calendar_id: "primary".to_string(),
             title: format!("event {id}"),
-            start: EventTime::timed(start_ms, "America/Los_Angeles"),
-            end: EventTime::timed(start_ms + 3_600_000, "America/Los_Angeles"),
-            all_day: false,
+            when: EventWhen::timed(start_ms, start_ms + 3_600_000),
             recurrence_id: None,
             location: None,
             organizer: None,
@@ -232,7 +230,9 @@ mod tests {
         };
         let context = calendar.to_calendar_context().expect("adapts");
         match context.current_or_next {
-            CurrentOrNext::Upcoming(e) => assert_eq!(e.start.instant_ms, 5_000),
+            CurrentOrNext::Upcoming(e) => {
+                assert_eq!(e.when, EventWhen::timed(5_000, 5_000 + 3_600_000))
+            }
             other => panic!("expected Upcoming, got {other:?}"),
         }
         assert_eq!(context.today.len(), 1);

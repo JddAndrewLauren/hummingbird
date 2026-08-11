@@ -56,7 +56,15 @@ export function useCalendarEventsWiring(
     }
     const nowMs = Date.now();
     for (const request of requiredCalendarRequests(nowMs)) {
-      requestCalendarEvents(worker, request.key, request.startMs, request.endMs, nowMs);
+      requestCalendarEvents(
+        worker,
+        request.key,
+        request.startMs,
+        request.endMs,
+        request.startDate,
+        request.endDate,
+        nowMs,
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, syncOutcomeSeq]);

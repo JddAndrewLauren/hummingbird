@@ -3,9 +3,9 @@ import { tripsCalendarId } from "../../calendar/selection";
 import type { Band, PaneAnswer, QuestionInputs } from "../questions/contract";
 import {
   addCivilDays,
-  civilDateInZone,
   civilDaysBetween,
   deviceCivilToday,
+  isCivilDate,
   type CivilDate,
 } from "../waste-pane/zoned-day";
 
@@ -18,16 +18,16 @@ import {
 //
 // **Civil dates only, never a subtraction of instants.** A trip is a range of
 // *days* at a place, not a span of milliseconds. Every count below is
-// `civilDaysBetween` over two `YYYY-MM-DD` values, the trip's dates resolve in
-// **the event's own carried `EventTime.timeZone`**, and "today" resolves in
-// the **device's** zone (`zoned-day.ts`). `endMs - DAY` appears nowhere: an
-// all-day event's end is the provider's exclusive end — local midnight
-// *after* the last day — so the last day is that civil date minus one **day
-// on the calendar**. Getting this wrong is the "India in 394 days" defect
-// ADR-0015 records here, and the same arithmetic corrupts `returns_today`.
-// The exclusive-end rule is the **all-day** rule and only that: a timed
-// event's `end` is its real end instant, so `tripFromEvent` branches on
-// `allDay` (see its own doc for what applying it unconditionally cost).
+// `civilDaysBetween` over two `YYYY-MM-DD` values. An all-day event already
+// carries the provider's civil dates directly; a timed event's instants are
+// read in the device's zone, the same zone that decides "today". `endMs -
+// DAY` appears nowhere: an all-day event's end is the provider's exclusive
+// end — the day *after* the last day — so the last day is that civil date
+// minus one **day on the calendar**. Getting this wrong is the "India in 394
+// days" defect ADR-0015 records here, and the same arithmetic corrupts
+// `returns_today`. The exclusive-end rule is the **all-day** rule and only
+// that: a timed event's `endMs` is its real end instant (see
+// `tripFromEvent` for what applying the rule unconditionally cost).
 //
 // **Any booked trip keeps the pane out of `dormant`, however far away.**
 // `collapse.ts` collapses a dormant pane by default, and this pane sits
@@ -86,13 +86,14 @@ export interface Trip {
    * rewritten. */
   name: string;
   location: string | null;
-  /** First day, in the event's own zone. */
+  /** First day: provider civil date for all-day, device civil date for timed. */
   startDate: CivilDate;
   /** Last day — for an all-day event the exclusive end's civil date minus one
    * **civil day**; for a timed one the end instant's own civil date. */
   lastDate: CivilDate;
-  /** The event's own boundaries, carried through for `withinBand` alone
-   * (an instant is what the shell sorts on) — never for a day count. */
+  /** Boundaries used for `withinBand` alone (an instant is what the shell
+   * sorts on) — never for a day count. All-day dates are resolved at device
+   * midnight here, which is the reader-side resolution `EventWhen` requires. */
   startMs: number;
   endMs: number;
   phase: TripPhase;
@@ -121,6 +122,8 @@ function classify(
   today: CivilDate,
   startDate: CivilDate,
   lastDate: CivilDate,
+  startMs: number,
+  endMs: number,
 ): Trip | null {
   const daysUntil = civilDaysBetween(today, startDate);
   const daysToLast = civilDaysBetween(today, lastDate);
@@ -142,8 +145,8 @@ function classify(
     location: event.location,
     startDate,
     lastDate,
-    startMs: event.start.instantMs,
-    endMs: event.end.instantMs,
+    startMs,
+    endMs,
     phase,
     daysUntil,
     lengthDays: lengthDays + 1,
@@ -151,40 +154,60 @@ function classify(
   };
 }
 
-/** One calendar event read as a trip, or `null` if it cannot be read as one.
- *
- * `null` covers exactly one thing the reader should not be told about: an
- * **unusable zone**. `""` is a real value on the wire (`protocol.ts`) and
- * `Intl.DateTimeFormat` throws a `RangeError` on it — so the event is dropped
- * rather than resolved against a guessed zone, which would move the whole
- * trip by up to a day. `zoned-day.ts`'s own rule.
+/** One calendar event read as a trip, or `null` if its dates are malformed.
  *
  * **The exclusive-end rule is the ALL-DAY rule, and applying it to a timed
  * event is a defect of its own** — the mirror image of the `endMs - DAY` one
- * above. `allDay` is a real field on the wire (`worker/calendar-worker.ts`
- * reads the provider's own `all_day`), and for a timed event `end` is the
- * genuine end *instant*: subtracting a civil day from its date ends a
+ * above. `when.kind` makes the two provider shapes explicit. For a timed
+ * event `endMs` is the genuine end *instant*: subtracting a civil day ends a
  * multi-day trip one day early (a short `lengthDays`, `returns_today` a day
  * early) and puts a same-day event's `lastDate` BEFORE its `startDate`,
  * which reads as `past` and drops it out of `tripQueue` entirely — exactly
  * the "some events on the Trips calendar are not trips" filter §4 forbids.
- * So the end's own civil date is the last day, clamped to never precede the
- * first (a timed event ending at local midnight is still that day's trip). */
+ * So the end instant's device civil date is the last day, clamped to never
+ * precede the first (a timed event ending at local midnight is still that
+ * day's trip).
+ *
+ * All-day events cross the seam as provider civil dates with no instant or
+ * source zone. Their sort instants are therefore resolved at midnight in the
+ * reader's device zone — exactly the responsibility ADR-0015 assigns the
+ * reader, and never used for the countdown's civil-day arithmetic. */
 export function tripFromEvent(event: CalendarEventDTO, nowMs: number): Trip | null {
   const today = deviceCivilToday(nowMs);
-  const startDate = civilDateInZone(event.start.instantMs, event.start.timeZone);
-  const endDate = civilDateInZone(event.end.instantMs, event.end.timeZone);
-  if (today === null || startDate === null || endDate === null) {
+  if (today === null) {
     return null;
   }
-  // An all-day provider end is EXCLUSIVE — local midnight after the last day —
-  // so the last day is the day before it, ON THE CALENDAR. A timed end is the
-  // real end instant, so its own civil date is the last day.
-  const lastDate = event.allDay ? addCivilDays(endDate, -1) : endDate;
-  if (lastDate === null) {
+
+  if (event.when.kind === "allDay") {
+    const { startDate, endDate } = event.when;
+    const lastDate = addCivilDays(endDate, -1);
+    const startMs = deviceMidnightMs(startDate);
+    const endMs = deviceMidnightMs(endDate);
+    if (!isCivilDate(startDate) || lastDate === null || startMs === null || endMs === null) {
+      return null;
+    }
+    return classify(event, today, startDate, lastDate, startMs, endMs);
+  }
+
+  const startDate = deviceCivilToday(event.when.startMs);
+  const endDate = deviceCivilToday(event.when.endMs);
+  if (startDate === null || endDate === null) {
     return null;
   }
-  return classify(event, today, startDate, lastDate < startDate ? startDate : lastDate);
+  return classify(
+    event,
+    today,
+    startDate,
+    endDate < startDate ? startDate : endDate,
+    event.when.startMs,
+    event.when.endMs,
+  );
+}
+
+function deviceMidnightMs(date: CivilDate): number | null {
+  if (!isCivilDate(date)) return null;
+  const instant = new Date(`${date}T00:00:00`).getTime();
+  return Number.isNaN(instant) ? null : instant;
 }
 
 /** Every trip still ahead of (or under) today, soonest first.
@@ -371,10 +394,19 @@ export function vacationAnswer(inputs: QuestionInputs): PaneAnswer {
 /** The pane's own calendar-arm request (#267): the long horizon, exactly the
  * window `CalendarHorizon::Long` polls, so the read never asks for an
  * interval the mirror was never filled for. */
-export function vacationCalendarInterval(nowMs: number): { startMs: number; endMs: number } {
+export function vacationCalendarInterval(nowMs: number): {
+  startMs: number;
+  endMs: number;
+  startDate: string;
+  endDate: string;
+} {
+  const startMs = nowMs - HORIZON_BEFORE_DAYS * DAY_MS;
+  const endMs = nowMs + HORIZON_AHEAD_DAYS * DAY_MS;
   return {
-    startMs: nowMs - HORIZON_BEFORE_DAYS * DAY_MS,
-    endMs: nowMs + HORIZON_AHEAD_DAYS * DAY_MS,
+    startMs,
+    endMs,
+    startDate: deviceCivilToday(startMs) ?? new Date(startMs).toISOString().slice(0, 10),
+    endDate: deviceCivilToday(endMs) ?? new Date(endMs).toISOString().slice(0, 10),
   };
 }
 

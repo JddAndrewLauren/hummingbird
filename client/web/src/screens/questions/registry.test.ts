@@ -68,6 +68,9 @@ describe("requiredCalendarRequests", () => {
     expect(requests.map((request) => request.key)).toEqual(["weekend", "vacation"]);
     for (const request of requests) {
       expect(request.endMs).toBeGreaterThan(request.startMs);
+      expect(request.startDate).toEqual(expect.any(String));
+      expect(request.endDate).toEqual(expect.any(String));
+      expect(request.endDate > request.startDate).toBe(true);
     }
   });
 

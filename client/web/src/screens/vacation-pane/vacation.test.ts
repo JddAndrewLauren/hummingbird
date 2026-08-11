@@ -14,29 +14,22 @@ import {
   vacationView,
 } from "./vacation";
 
-// Every date below is written as a civil date in a named zone, never as an
-// epoch number computed by hand — the pane's whole contract is that it reads
-// civil dates and never subtracts instants.
+// Every all-day date below is the provider's civil date directly — the pane's
+// whole contract is that it never flattens one to an instant for day counts.
 
-/** An all-day event, the provider's own shape: `start` at local midnight of
- * the first day and `end` at local midnight **after** the last day, both
- * anchored in `zone`. */
+/** An all-day event, the provider's own civil dates. `endDate` is exclusive. */
 function allDay(
   id: string,
   title: string,
   startDate: string,
   endExclusiveDate: string,
-  zone = "Europe/Lisbon",
   calendarId = "trips@g",
 ): CalendarEventDTO {
-  const at = (date: string) => new Date(`${date}T00:00:00${offsetOf(date, zone)}`).getTime();
   return {
     providerEventId: id,
     calendarId,
     title,
-    start: { instantMs: at(startDate), timeZone: zone },
-    end: { instantMs: at(endExclusiveDate), timeZone: zone },
-    allDay: true,
+    when: { kind: "allDay", startDate, endDate: endExclusiveDate },
     recurrenceId: null,
     location: null,
     organizer: null,
@@ -46,38 +39,20 @@ function allDay(
   };
 }
 
-/** A timed event, boundaries given as local wall-clock stamps in `zone`
- * (`YYYY-MM-DDTHH:MM`). Its `end` is the REAL end instant — no exclusive-end
- * convention — which is the whole difference from `allDay` above. */
+/** A timed event, boundaries given as device-local wall-clock stamps
+ * (`YYYY-MM-DDTHH:MM`). Its `endMs` is the real end instant. */
 function timed(
   id: string,
   title: string,
   startAt: string,
   endAt: string,
-  zone = "Europe/Lisbon",
   calendarId = "trips@g",
 ): CalendarEventDTO {
-  const at = (stamp: string) => new Date(`${stamp}:00${offsetOf(stamp.slice(0, 10), zone)}`).getTime();
+  const at = (stamp: string) => new Date(`${stamp}:00`).getTime();
   return {
-    ...allDay(id, title, "2026-01-01", "2026-01-02", zone, calendarId),
-    start: { instantMs: at(startAt), timeZone: zone },
-    end: { instantMs: at(endAt), timeZone: zone },
-    allDay: false,
+    ...allDay(id, title, "2026-01-01", "2026-01-02", calendarId),
+    when: { kind: "timed", startMs: at(startAt), endMs: at(endAt) },
   };
-}
-
-/** The UTC offset `zone` was on at local midnight of `date`, as `+HH:MM` —
- * derived from `Intl` rather than hardcoded, so a DST case in the tests is a
- * real one. */
-function offsetOf(date: string, zone: string): string {
-  const guess = Date.parse(`${date}T12:00:00Z`);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: zone,
-    timeZoneName: "longOffset",
-  }).formatToParts(new Date(guess));
-  const name = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT";
-  const match = /GMT([+-]\d{2}:\d{2})/.exec(name);
-  return match ? match[1] : "+00:00";
 }
 
 /** "Now" as an instant, given a civil date and a wall-clock time in the
@@ -159,27 +134,23 @@ describe("tripQueue — phases from civil dates", () => {
     expect(next.lengthDays).toBe(5);
   });
 
-  it("resolves the return-day boundary in the event's zone, not the device's", () => {
-    // A trip ending at local midnight in Kolkata: the reader's own day is
-    // what decides "today", and the trip's last civil date is what the
-    // event's zone says it is.
-    const india = allDay("t3", "Trip: India", "2027-01-05", "2027-01-20", "Asia/Kolkata");
+  it("keeps the provider's all-day dates without resolving them through a zone", () => {
+    // The provider already said which civil days India occupies. Flattening
+    // these to instants and reading them back in the device zone caused the
+    // original "India in 394 days" defect.
+    const india = allDay("t3", "Trip: India", "2027-01-05", "2027-01-20");
     const [next] = tripQueue([india], "trips@g", nowAt("2027-01-19"));
     expect(next.phase).toBe("returns_today");
     expect(next.lengthDays).toBe(15);
   });
 
-  it("drops an event whose zone this runtime cannot read", () => {
-    // `""` is a real value on the calendar wire (`protocol.ts`), and
-    // `Intl.DateTimeFormat` throws on it. Guessing a zone would move the
-    // whole trip; dropping it is `zoned-day.ts`'s rule.
-    const broken = allDay("t4", "Trip: Nowhere", "2026-03-10", "2026-03-12", "Europe/Lisbon");
-    broken.start = { ...broken.start, timeZone: "" };
+  it("drops an event whose provider civil dates are malformed", () => {
+    const broken = allDay("t4", "Trip: Nowhere", "not-a-date", "2026-03-12");
     expect(tripQueue([broken], "trips@g", nowAt("2026-03-01"))).toEqual([]);
   });
 
   it("reads only the bound calendar, and never a cancelled instance", () => {
-    const other = allDay("t5", "Standup", "2026-03-02", "2026-03-03", "Europe/Lisbon", "work@g");
+    const other = allDay("t5", "Standup", "2026-03-02", "2026-03-03", "work@g");
     const cancelled = allDay("t6", "Trip: Oslo", "2026-03-04", "2026-03-06");
     cancelled.status = "cancelled";
     expect(tripQueue([other, cancelled, trip], "trips@g", nowAt("2026-03-01")).map((t) => t.id)).toEqual([
@@ -339,7 +310,7 @@ describe("vacationAnswer", () => {
     const upcoming = vacationAnswer(
       inputs({ calendarReads: { [CALENDAR_REQUEST_KEY]: readOf([trip]) } }),
     );
-    expect(upcoming.withinBand).toBe(trip.start.instantMs);
+    expect(upcoming.withinBand).toBe(new Date("2026-03-10T00:00:00").getTime());
 
     const live = vacationAnswer(
       inputs({
@@ -347,7 +318,7 @@ describe("vacationAnswer", () => {
         calendarReads: { [CALENDAR_REQUEST_KEY]: readOf([trip]) },
       }),
     );
-    expect(live.withinBand).toBe(trip.end.instantMs);
+    expect(live.withinBand).toBe(new Date("2026-03-16T00:00:00").getTime());
   });
 
   it("carries no glyphs — one subject, and the answer is already a sentence", () => {

@@ -36,7 +36,13 @@ function requestedKeys(worker: ReturnType<typeof fakeWorker>): string[] {
     .map((message) => message.key ?? "");
 }
 
-const WEEKEND = { key: "weekend", startMs: 1_000, endMs: 2_000 };
+const WEEKEND = {
+  key: "weekend",
+  startMs: 1_000,
+  endMs: 2_000,
+  startDate: "2026-08-14",
+  endDate: "2026-08-17",
+};
 
 describe("useCalendarEventsWiring", () => {
   it("asks nothing while the core is still loading", () => {
@@ -53,6 +59,22 @@ describe("useCalendarEventsWiring", () => {
     const worker = fakeWorker();
     render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
     expect(requestedKeys(worker)).toEqual(["weekend", "vacation"]);
+  });
+
+  it("carries the civil bounds alongside the millisecond ones", () => {
+    // The all-day arm can only be asked about in dates (ADR-0015's
+    // 2026-08-10 amendment), so a request that dropped them would answer
+    // every all-day question with silence — and the request would still
+    // look right in every other respect.
+    const worker = fakeWorker();
+    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
+    const request = worker.postMessage.mock.calls
+      .map(([message]) => message as Record<string, unknown>)
+      .find((message) => message.type === "getCalendarEvents");
+    expect(request?.startDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(request?.endDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Exclusive end, three days wide: Friday through the Monday after.
+    expect(String(request?.startDate) < String(request?.endDate)).toBe(true);
   });
 
   it("requests every interval the registry declares once the core is ready", () => {
@@ -76,7 +98,13 @@ describe("useCalendarEventsWiring", () => {
     // A brand-new array with an equal value — the common case for a
     // registry deriving the list fresh each call.
     vi.spyOn(registry, "requiredCalendarRequests").mockImplementation(() => [
-      { key: "weekend", startMs: 1_000, endMs: 2_000 },
+      {
+        key: "weekend",
+        startMs: 1_000,
+        endMs: 2_000,
+        startDate: "2026-08-14",
+        endDate: "2026-08-17",
+      },
     ]);
     const worker = fakeWorker();
     const view = render(<Probe worker={worker} status="ready" syncOutcomeSeq={3} />);

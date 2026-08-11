@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use hummingbird_core::calendar::google::{
     fetch_calendar_snapshot, CalendarSelection, EventsTransport, TransportError,
 };
-use hummingbird_core::calendar::{EventStatus, EventTime};
+use hummingbird_core::calendar::{EventStatus, EventWhen};
 
 /// Any instant works for these tests — the adapter's window policy itself
 /// is covered separately; these tests only check mapping and pagination.
@@ -23,6 +23,9 @@ fn fixture(name: &str) -> String {
         }
         "cancelled_instance" => include_str!("fixtures/google/cancelled_instance.json").to_string(),
         "all_day_boundaries" => include_str!("fixtures/google/all_day_boundaries.json").to_string(),
+        "all_day_east_of_utc" => {
+            include_str!("fixtures/google/all_day_east_of_utc.json").to_string()
+        }
         "dst_transition" => include_str!("fixtures/google/dst_transition.json").to_string(),
         "pagination_page_1" => include_str!("fixtures/google/pagination_page_1.json").to_string(),
         "pagination_page_2" => include_str!("fixtures/google/pagination_page_2.json").to_string(),
@@ -156,8 +159,19 @@ async fn cancelled_instance_in_a_series_is_mapped_not_dropped() {
         Some("series-2@2024-01-15T09:00:00-08:00")
     );
     // No start/end came from Google for a cancelled instance: the adapter
-    // falls back to originalStartTime for both boundaries.
-    assert_eq!(cancelled.start, cancelled.end);
+    // falls back to originalStartTime for both boundaries, which makes the
+    // span zero-length whichever arm it lands on.
+    assert_eq!(
+        cancelled.when,
+        EventWhen::Timed {
+            start_ms: chrono::DateTime::parse_from_rfc3339("2024-01-15T09:00:00-08:00")
+                .unwrap()
+                .timestamp_millis(),
+            end_ms: chrono::DateTime::parse_from_rfc3339("2024-01-15T09:00:00-08:00")
+                .unwrap()
+                .timestamp_millis(),
+        }
+    );
     assert_eq!(cancelled.title, "");
 
     let confirmed_neighbors = snapshot
@@ -169,7 +183,7 @@ async fn cancelled_instance_in_a_series_is_mapped_not_dropped() {
 }
 
 #[tokio::test]
-async fn all_day_boundaries_map_to_calendar_local_midnight_with_exclusive_multi_day_end() {
+async fn all_day_boundaries_keep_the_providers_own_dates_and_exclusive_end() {
     let transport = FixtureTransport::single_calendar(
         "cal-primary",
         vec![(None, Some(fixture("all_day_boundaries")))],
@@ -182,26 +196,62 @@ async fn all_day_boundaries_map_to_calendar_local_midnight_with_exclusive_multi_
 
     assert_eq!(snapshot.events.len(), 2);
 
+    // ADR-0015's 2026-08-10 amendment: an all-day event carries civil
+    // dates, never instants, and the page's `timeZone` (here
+    // America/Los_Angeles) plays no part at all — this used to assert the
+    // flattening to 08:00Z that the amendment forbids.
     let holiday = &snapshot.events[0];
-    assert!(holiday.all_day);
-    // The page's `timeZone` — the calendar's, reported once per response —
-    // is what an all-day boundary is anchored in. New Year's Day on a
-    // Los Angeles calendar begins at 08:00Z, not 00:00Z (which is 16:00 on
-    // New Year's Eve, locally).
-    assert_eq!(holiday.start.time_zone, "America/Los_Angeles");
-    assert_eq!(holiday.end.time_zone, "America/Los_Angeles");
+    assert_eq!(holiday.when, EventWhen::all_day("2024-01-01", "2024-01-02"));
+
+    // Exclusive end, the provider's own: the offsite runs Mar 1-3 and
+    // Google states the end as Mar 4. Nothing normalises it here.
+    let conference = &snapshot.events[1];
     assert_eq!(
-        holiday.start.instant_ms,
-        chrono::DateTime::parse_from_rfc3339("2024-01-01T08:00:00Z")
-            .unwrap()
-            .timestamp_millis()
+        conference.when,
+        EventWhen::all_day("2024-03-01", "2024-03-04")
+    );
+}
+
+#[tokio::test]
+async fn an_all_day_event_on_a_calendar_east_of_utc_is_byte_identical_to_the_fixture() {
+    // The case ADR-0015's amendment is named after: a week in India
+    // (2026-09-09 -> 2026-09-16, exclusive) on an Asia/Kolkata calendar.
+    // Flattened to zone-resolved midnight instants and read back anywhere
+    // west, this event starts a calendar day early — "India in 394 days".
+    // The dates that come out are the dates that went in, and there is no
+    // zone anywhere in the mapped record to read them against.
+    let transport = FixtureTransport::single_calendar(
+        "cal-primary",
+        vec![(None, Some(fixture("all_day_east_of_utc")))],
     );
 
-    let conference = &snapshot.events[1];
-    assert!(conference.all_day);
-    // Exclusive end: the offsite runs Mar 1-3, end date is Mar 4.
-    let span_ms = conference.end.instant_ms - conference.start.instant_ms;
-    assert_eq!(span_ms, 3 * 24 * 60 * 60 * 1000);
+    let snapshot = fetch_calendar_snapshot(
+        &transport,
+        "token",
+        &[CalendarSelection::standard("cal-primary")],
+        NOW_MS,
+    )
+    .await
+    .expect("complete snapshot");
+
+    assert_eq!(snapshot.events.len(), 1);
+    let trip = &snapshot.events[0];
+    assert_eq!(
+        trip.when,
+        EventWhen::AllDay {
+            start_date: "2026-09-09".to_string(),
+            end_date: "2026-09-16".to_string(),
+        }
+    );
+
+    // And the serialized record carries no zone and no instant either —
+    // the mirror this writes into is what every reader sees.
+    let json = serde_json::to_string(trip).unwrap();
+    assert!(!json.contains("Kolkata"), "no source zone survives: {json}");
+    assert!(
+        json.contains(r#""kind":"all_day""#),
+        "the all-day arm is what was stored: {json}"
+    );
 }
 
 #[tokio::test]
@@ -222,18 +272,29 @@ async fn dst_transition_day_produces_real_elapsed_instants_not_wall_clock_offset
 
     // 01:45-08:00 -> 09:45Z; 03:30-07:00 -> 10:30Z: 45 real minutes apart,
     // even though the wall-clock gap reads as 1h45m across the spring
-    // forward.
-    let gap_ms = post_jump.start.instant_ms - early.end.instant_ms;
-    assert_eq!(gap_ms, 45 * 60 * 1000);
-    assert_eq!(early.start.time_zone, "America/Los_Angeles");
-
-    let expected_early_start = EventTime::timed(
+    // forward. The offset Google sends is all the instant ever needed —
+    // no zone database, and none stored.
+    let EventWhen::Timed {
+        start_ms: post_jump_start,
+        ..
+    } = post_jump.when
+    else {
+        panic!("a dateTime boundary maps to the timed arm");
+    };
+    let EventWhen::Timed {
+        start_ms: early_start,
+        end_ms: early_end,
+    } = early.when
+    else {
+        panic!("a dateTime boundary maps to the timed arm");
+    };
+    assert_eq!(post_jump_start - early_end, 45 * 60 * 1000);
+    assert_eq!(
+        early_start,
         chrono::DateTime::parse_from_rfc3339("2024-03-10T09:30:00Z")
             .unwrap()
-            .timestamp_millis(),
-        "America/Los_Angeles",
+            .timestamp_millis()
     );
-    assert_eq!(early.start, expected_early_start);
 }
 
 #[tokio::test]

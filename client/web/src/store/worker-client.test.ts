@@ -1029,14 +1029,16 @@ describe("the calendar send helpers", () => {
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "listCalendars" });
   });
 
-  it("requestCalendarEvents posts the request's key, interval and clock", () => {
+  it("requestCalendarEvents posts the request's key, both interval shapes and the clock", () => {
     const worker = fakeWorker();
-    requestCalendarEvents(worker, "weekend", 1_000, 2_000, 1_500);
+    requestCalendarEvents(worker, "weekend", 1_000, 2_000, "2026-08-14", "2026-08-17", 1_500);
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: "getCalendarEvents",
       key: "weekend",
       startMs: 1_000,
       endMs: 2_000,
+      startDate: "2026-08-14",
+      endDate: "2026-08-17",
       nowMs: 1_500,
     });
   });

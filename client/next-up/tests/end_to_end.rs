@@ -82,15 +82,13 @@ fn an_in_progress_event_still_lets_the_quick_nudge_fire_off_today() {
     let calendar = r#","calendar":{
         "current_or_next":{"status":"in_progress","event":{
             "provider_event_id":"standup","calendar_id":"primary","title":"Standup",
-            "start":{"instant_ms":1786551000000,"time_zone":"America/Los_Angeles"},
-            "end":{"instant_ms":1786554600000,"time_zone":"America/Los_Angeles"},
-            "all_day":false,"recurrence_id":null,"location":null,"organizer":null,
+            "when":{"kind":"timed","start_ms":1786551000000,"end_ms":1786554600000},
+            "recurrence_id":null,"location":null,"organizer":null,
             "status":"confirmed","provider_updated_at_ms":0,"html_link":null}},
         "today":[{
             "provider_event_id":"review","calendar_id":"primary","title":"Review",
-            "start":{"instant_ms":1786554600000,"time_zone":"America/Los_Angeles"},
-            "end":{"instant_ms":1786558200000,"time_zone":"America/Los_Angeles"},
-            "all_day":false,"recurrence_id":null,"location":null,"organizer":null,
+            "when":{"kind":"timed","start_ms":1786554600000,"end_ms":1786558200000},
+            "recurrence_id":null,"location":null,"organizer":null,
             "status":"confirmed","provider_updated_at_ms":0,"html_link":null}]}"#;
     let output = run(&envelope("{}", calendar)).expect("runs");
     let quick: Vec<&str> = output
@@ -109,4 +107,24 @@ fn a_repeat_run_of_the_same_envelope_is_byte_identical() {
     let second =
         serde_json::to_string(&run(&envelope("{}", "")).expect("runs")).expect("serializes");
     assert_eq!(first, second);
+}
+
+/// The other half of the same wire contract: an all-day event on the
+/// calendar block. It rides the `all_day` arm — civil dates, no instants,
+/// no zone — and it can never fire the nudge, because there is no moment to
+/// be thirty minutes before (ADR-0015's 2026-08-10 amendment).
+#[test]
+fn an_all_day_event_on_the_wire_parses_and_fires_no_nudge() {
+    let calendar = r#","calendar":{
+        "current_or_next":{"status":"in_progress","event":{
+            "provider_event_id":"conference","calendar_id":"primary","title":"Conference",
+            "when":{"kind":"all_day","start_date":"2026-08-11","end_date":"2026-08-13"},
+            "recurrence_id":null,"location":null,"organizer":null,
+            "status":"confirmed","provider_updated_at_ms":0,"html_link":null}},
+        "today":[]}"#;
+    let output = run(&envelope("{}", calendar)).expect("runs");
+    assert!(!output
+        .candidates
+        .iter()
+        .any(|c| c.reasons.contains(&ReasonCode::QuickBeforeNextStart)));
 }

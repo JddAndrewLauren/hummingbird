@@ -295,15 +295,34 @@ mod wasm_bindings {
         /// `&self` read on [`CalendarHostCore`], but the underlying snapshot
         /// store load still awaits, so a poll already in flight must not
         /// see a second borrow.
+        ///
+        /// `start_date`/`end_date` are the same window as `start_ms`/
+        /// `end_ms`, in the reader's own civil dates (`YYYY-MM-DD`,
+        /// exclusive end) — the arm all-day events are asked about. Both
+        /// halves are the caller's: the core owns no tzdb and cannot
+        /// derive either from the other.
         #[wasm_bindgen(js_name = eventsInInterval)]
-        pub fn events_in_interval(&self, start_ms: f64, end_ms: f64, now_ms: f64) -> js_sys::Promise {
+        pub fn events_in_interval(
+            &self,
+            start_ms: f64,
+            end_ms: f64,
+            start_date: String,
+            end_date: String,
+            now_ms: f64,
+        ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
                 let Some(core) = inner.check_out() else {
                     return Ok(JsValue::from_str(BUSY_CALENDAR_EVENTS));
                 };
                 let response = core
-                    .events_in_interval(start_ms as i64, end_ms as i64, now_ms as i64)
+                    .events_in_interval(
+                        start_ms as i64,
+                        end_ms as i64,
+                        start_date,
+                        end_date,
+                        now_ms as i64,
+                    )
                     .await;
                 inner.check_in(core);
                 Ok(JsValue::from_str(

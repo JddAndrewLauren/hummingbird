@@ -19,7 +19,7 @@ export const vacationQuestion: QuestionDef = {
   answer: (_subjectKey, inputs) => vacationAnswer(inputs),
   calendarRequests: (nowMs) => {
     const interval = vacationCalendarInterval(nowMs);
-    return [{ key: CALENDAR_REQUEST_KEY, startMs: interval.startMs, endMs: interval.endMs }];
+    return [{ key: CALENDAR_REQUEST_KEY, ...interval }];
   },
   Expanded: VacationPaneExpanded,
 };

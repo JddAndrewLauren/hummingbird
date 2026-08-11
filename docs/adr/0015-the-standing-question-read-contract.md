@@ -342,6 +342,19 @@ flag both prototype shapes already have:
   exclusive end preserved
 - **timed** → `startMs` / `endMs` as UTC instants
 
+*Clarification (not an amendment), added after #46 shipped:* the names above
+are the **DTO's**, in the vocabulary of the two TypeScript prototypes this
+passage is comparing — and `store/protocol.ts`'s `CalendarEventWhenDTO` carries
+them exactly (`kind: "allDay" | "timed"`, `startDate`/`endDate`,
+`startMs`/`endMs`). The client core's own wire is snake_case, per the
+convention every tagged enum crossing that seam already follows
+(`freshness.rs`, `rank.rs`, `bindings.rs`, `pane.rs`): `EventWhen` serializes
+`{"kind":"all_day","start_date","end_date"}`, and `calendar-worker.ts`'s
+`mapCalendarEventWhen` is the single rename point, exactly as `mapFreshness`
+renames that type's tag key from `state` to `kind`. The decision here — two
+arms, civil dates against instants, no stored zone — is what this ADR fixes;
+the casing at each layer is not.
+
 No source zone is stored on either. For a timed event the reader always
 wants their own local day — "my plans this weekend" means *my* Saturday, and
 a 23:00 Berlin dinner belongs on the reader's Friday if that is where they
