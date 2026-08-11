@@ -258,7 +258,7 @@ describe("SettingsScreen — the bindings editor", () => {
 
 // #172: ADR-0010's probe ships as a permanent diagnostic in the "Local
 // core" card, because a standalone PWA window has no URL bar and cannot
-// reach a throwaway page. This is the gate CLAUDE.md names: `coreId` and
+// reach a throwaway page. This is the gate `src/test/component.tsx` names: `coreId` and
 // `viewOrdinal` could be threaded all the way from the handshake and never
 // rendered, and typecheck would see nothing wrong.
 describe("SettingsScreen — the core-instance diagnostic", () => {

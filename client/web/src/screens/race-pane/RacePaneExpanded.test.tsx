@@ -7,7 +7,7 @@ import type { QuestionInputs } from "../questions/contract";
 import { RankedRegion } from "../questions/RankedRegion";
 import { BINDING_KEY, SOURCE } from "./race";
 
-// The pane shell's "component tests are the gate" rule (CLAUDE.md): a pure
+// The pane shell's "component tests are the gate" rule (`src/test/component.tsx`): a pure
 // module with no caller compiles and passes and does nothing, so this mounts
 // the REAL `RacePaneExpanded` through `RankedRegion` — the path `NowScreen`
 // wires in production — and reads what actually lands on screen.

@@ -25,6 +25,21 @@ import { Icon } from "../components/core/Icon";
 // exists; what they could not otherwise know is that the click reaches all
 // of them. Saying so is what keeps the reload announced rather than merely
 // consented to in one window.
+//
+// Suppressing the other tabs' reload (hand-rolling `workbox-window` instead
+// of `registerSW`) would not prevent the takeover, only hide it — leaving
+// those tabs running old JS under the new worker indefinitely, which is the
+// broken-invariant state above rather than an escape from it. And the skew
+// is quiet on top of that: `wrangler.toml`'s
+// `not_found_handling = "single-page-application"` answers a stale tab's
+// missing hashed asset with `200 text/html`, not a 404. The flip condition,
+// written down rather than implied: **if the queue and mirror ever move to a
+// build-versioned IndexedDB namespace**, concurrent cores stop clobbering
+// each other, indefinite skew becomes survivable, and suppressing the
+// cross-tab reload becomes worth reopening. The residual cost until then is
+// an unsent draft lost in a background tab; the fix for that is draft
+// persistence (`screens/questions/collapse.ts`'s injectable-`storage` idiom
+// over `sessionStorage`), never the service-worker lifecycle.
 
 export interface UpdateBannerProps {
   onReload: () => void;

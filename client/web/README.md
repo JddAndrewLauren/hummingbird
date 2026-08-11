@@ -18,10 +18,9 @@ The API is same-origin with the shell by decision (ADR-0006/0008), so
 `self.location.origin` at runtime and `VITE_API_BASE_URL` is an unset
 override, not a setting: under `vite dev` the dev-server proxy forwards
 `/api` to `wrangler dev` on 127.0.0.1:8787, and in production a path-scoped
-Worker route puts `hb.twinion.net/api/*` on the authority worker. Nothing is
-deployed yet — until #95's H3 human gate there is no `hb.twinion.net`
-authority to reach, and with no local `wrangler dev` running a cycle fails
-its connection as `pull_failed`.
+Worker route puts `hb.twinion.net/api/*` on the authority worker. Both halves
+are deployed as of 2026-08-10 (#237, #95's H3 gate closed); locally, with no
+`wrangler dev` running, a cycle fails its connection as `pull_failed`.
 
 ## Local development
 
@@ -92,13 +91,23 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   timer of their own) and the one-line send wrappers `useItemActions` /
   `useTriageWiring`, plus the pure readouts `sync-cadence.ts`,
   `sync-status.ts` and `capture-hotkey.ts` (DOM-free: the caller extracts
-  the facts from the real `KeyboardEvent`).
+  the facts from the real `KeyboardEvent`). Also the app-update lane —
+  `UpdateBanner.tsx` / `useAppUpdate.ts` / `app-update.ts` / `update-check.ts`,
+  where a new deploy is announced rather than applied behind your back and
+  `main.tsx` is the only importer of `virtual:pwa-register` — and
+  `build-version.ts`, the displayed build number's whole decision (its I/O
+  half is `build-version.node.ts` at the package root).
 - `src/screens/` — the five surfaces. They switch on local state: there are
   no deep links to honour yet, so no router is installed. Everything
   decidable is a sibling pure module the `.tsx` only threads state through
   — `frontier-order.ts`, `frontier-groups.ts`, `priority.ts`, `urgency.ts`,
   `blocked-reason.ts`, `capture-validation.ts`, `triage-order.ts`,
-  `item-actions.ts`, `triage-form.ts`.
+  `item-actions.ts`, `triage-form.ts`, `bindings.ts`. Three sub-trees keep
+  the same split at more depth: `questions/` is ADR-0015's pane shell — read
+  `questions/contract.ts` first, it is what a standing question owes the
+  shell — with one pane directory per question (`waste-pane/`,
+  `weekend-pane/`, `vacation-pane/`, `race-pane/`, each with its own header);
+  and `rules/` is #140's rule editor over the exported kind registry.
 - `src/theme/` — the `light | dark | system` preference, persisted at
   `hb.theme` and resolved onto `[data-theme]`. "Follow system" is resolved in
   JS because the stylesheet only knows `[data-theme="dark"]`.
@@ -115,8 +124,9 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   `calendar-worker.ts`, `serial-queue.ts`, `visibility-tracker.ts`,
   `announce.ts`.
   **No top-level `await` may enter `core.worker.ts`'s static import graph** —
-  see the invariant in the repo `CLAUDE.md`, and `core.worker.ts`'s own
-  header for the full account.
+  see that file's own header for the full account, and
+  `worker/sync-timer-ownership.test.ts` for what is pinned from the source
+  text.
 - `csp-worker/` — the Cloudflare Worker `main` script wrangler.toml points
   at: adds the strict CSP header to every asset response so it ships as a
   served header (ADR-0004), not a meta tag.
