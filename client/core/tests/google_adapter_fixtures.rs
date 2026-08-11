@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use hummingbird_core::calendar::google::{
-    fetch_calendar_snapshot, EventsTransport, TransportError,
+    fetch_calendar_snapshot, CalendarSelection, EventsTransport, TransportError,
 };
 use hummingbird_core::calendar::{EventStatus, EventWhen};
 
@@ -94,7 +94,7 @@ async fn recurrence_expansion_yields_one_instance_per_series_occurrence() {
     );
 
     let snapshot =
-        fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
+        fetch_calendar_snapshot(&transport, "token", &[CalendarSelection::standard("cal-primary")], NOW_MS)
             .await
             .expect("complete snapshot");
 
@@ -142,7 +142,7 @@ async fn cancelled_instance_in_a_series_is_mapped_not_dropped() {
     );
 
     let snapshot =
-        fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
+        fetch_calendar_snapshot(&transport, "token", &[CalendarSelection::standard("cal-primary")], NOW_MS)
             .await
             .expect("complete snapshot");
 
@@ -190,7 +190,7 @@ async fn all_day_boundaries_keep_the_providers_own_dates_and_exclusive_end() {
     );
 
     let snapshot =
-        fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
+        fetch_calendar_snapshot(&transport, "token", &[CalendarSelection::standard("cal-primary")], NOW_MS)
             .await
             .expect("complete snapshot");
 
@@ -225,10 +225,14 @@ async fn an_all_day_event_on_a_calendar_east_of_utc_is_byte_identical_to_the_fix
         vec![(None, Some(fixture("all_day_east_of_utc")))],
     );
 
-    let snapshot =
-        fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
-            .await
-            .expect("complete snapshot");
+    let snapshot = fetch_calendar_snapshot(
+        &transport,
+        "token",
+        &[CalendarSelection::standard("cal-primary")],
+        NOW_MS,
+    )
+    .await
+    .expect("complete snapshot");
 
     assert_eq!(snapshot.events.len(), 1);
     let trip = &snapshot.events[0];
@@ -258,7 +262,7 @@ async fn dst_transition_day_produces_real_elapsed_instants_not_wall_clock_offset
     );
 
     let snapshot =
-        fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
+        fetch_calendar_snapshot(&transport, "token", &[CalendarSelection::standard("cal-primary")], NOW_MS)
             .await
             .expect("complete snapshot");
 
@@ -307,7 +311,7 @@ async fn multi_page_pagination_assembles_every_page_of_every_calendar() {
     );
 
     let snapshot =
-        fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS)
+        fetch_calendar_snapshot(&transport, "token", &[CalendarSelection::standard("cal-primary")], NOW_MS)
             .await
             .expect("complete snapshot");
 
@@ -331,7 +335,7 @@ async fn mid_pagination_failure_yields_no_snapshot_at_all() {
     );
 
     let result =
-        fetch_calendar_snapshot(&transport, "token", &["cal-primary".to_string()], NOW_MS).await;
+        fetch_calendar_snapshot(&transport, "token", &[CalendarSelection::standard("cal-primary")], NOW_MS).await;
 
     assert!(
         result.is_err(),

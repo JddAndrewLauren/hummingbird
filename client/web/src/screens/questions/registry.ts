@@ -1,4 +1,6 @@
+import { raceQuestion } from "../race-pane/question";
 import { wasteQuestion } from "../waste-pane/question";
+import { vacationQuestion } from "../vacation-pane/question";
 import { weekendQuestion } from "../weekend-pane/question";
 import {
   QUESTION_ORDER,
@@ -23,6 +25,8 @@ import { orderPanes } from "./sort";
 export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
   waste: wasteQuestion,
   weekend: weekendQuestion,
+  vacation: vacationQuestion,
+  race: raceQuestion,
 };
 
 /** Every `context_snapshots` source the wiring must request a pane read for

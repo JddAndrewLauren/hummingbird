@@ -23,7 +23,10 @@ import { createSerialQueue } from "./serial-queue";
  * one place. */
 export interface CalendarHostLike {
   pushToken(token: string): void;
-  setCalendarIds(calendarIds: string[]): void;
+  /** #121: JSON text, not an id array — a selection carries a per-entry
+   * horizon, which no positional `wasm_bindgen` argument shape can express.
+   * See `client/ffi-web/src/lib.rs`'s constructor doc. */
+  setCalendarSelections(selectionsJson: string): void;
   start(nowMs: number): Promise<string>;
   refresh(nowMs: number): Promise<string>;
   onTimer(nowMs: number): Promise<string>;
@@ -159,8 +162,8 @@ export async function handleCalendarRequest(
     case "pushToken":
       host.pushToken(request.token);
       return;
-    case "setCalendarIds":
-      host.setCalendarIds(request.calendarIds);
+    case "setCalendarSelections":
+      host.setCalendarSelections(JSON.stringify(request.selections));
       return;
     case "pollStart":
       await runPollTrigger((ms) => host.start(ms), request.nowMs, host, post);
@@ -223,7 +226,7 @@ export const CALENDAR_REQUEST_TIMEOUT_MS = 10_000;
  * host mid-poll would hit a `RefCell` borrow panic, and a wasm panic poisons
  * the whole module, not just the one call. `onmessage` alone gives no such
  * guarantee — it fires a fresh, unsequenced handler per message, and the
- * main thread genuinely does send bursts (the picker posts `setCalendarIds`,
+ * main thread genuinely does send bursts (the picker posts `setCalendarSelections`,
  * `pollRefresh` and `listCalendars` back to back). Queueing here is what
  * makes "one call at a time" true rather than merely intended.
  *

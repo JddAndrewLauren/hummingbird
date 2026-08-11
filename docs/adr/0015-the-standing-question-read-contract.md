@@ -452,10 +452,19 @@ source bump does not orphan a binding in a table that has no DELETE.
   optional field on the ingest DTO, the frozen-DDL text in
   `handler_fixtures/schema.rs`, and envelope parsing for
   `context_snapshots`.
-- **The source registry** — `city-waste/v2` is not registered (`v1` is
-  retired), and the race payload shape is explicitly a prototype guess with
-  no feed chosen yet. Both need registering before their panes are real;
-  the envelope's `schema` field has no legal value for either until then.
+- **The source registry** — both lanes this ADR named are now registered.
+  `city-waste/v2` enrolled at #254 (`Writes::Both`), and the race lane at
+  #266 as `race-schedule/v1` (`Shape::Event`, `Writes::Both`,
+  `Expiry::Always("the race's start time")`), which is also where the
+  payload stopped being a prototype guess: the feed is Jolpica
+  (`api.jolpi.ca/ergast/f1/current.json`, the maintained Ergast successor)
+  and the body is `{events: [{name, locality, starts_at_ms, sessions: [{kind,
+  label, starts_at_ms}]}]}` — epoch ms and no `zone`, because a race start
+  is an instant rather than a civil date, and the whole season unfiltered,
+  because "next" is a read-time answer. `server/race-poll`'s
+  `tests/fixtures/golden-body.json` is that body's committed contract, which
+  #119's pane parser is written against. The envelope's `schema` now has a
+  legal value for both.
 - **#46** — the two-arm event shape above, and it now blocks two panes.
 - **#217** — unchanged and still open, but worth naming here: the
   `item-threshold/v1` resolution pass has no bearing on panes, because
@@ -464,5 +473,57 @@ source bump does not orphan a binding in a table that has no DELETE.
   promoting it — every prototype was built under prototype rules, and each
   carries open questions its verdict did not close (the weekend window's
   Friday edge and its degenerate Sunday-night case; the vacation +90d
-  horizon, landing day, and what the pane reads mid-trip; the race schedule
-  source itself).
+  horizon, landing day, and what the pane reads mid-trip — **all three of the
+  vacation ones closed by #121, see the amendment below**; the race schedule
+  source itself, closed at #266 on Jolpica before #119's pane starts).
+
+## Amendment (2026-08-11, #121): the vacation pane's three open questions, answered
+
+`screens/vacation-pane/` shipped, and it closes every question this document
+left open for it. The prototype is deleted, not promoted.
+
+**The +90d horizon → a per-calendar window, host-selected.** The flagship
+example above ("India in 395 days") was outside the mirror entirely, and
+nothing in the winning verdict noticed. ADR-0005's amendment of the same date
+is the fix: `CalendarSelection { id, horizon }` replaces the bare id list
+through the adapter, the poller and the worker protocol, and
+`CalendarHorizon::Long` polls −7d/+730d where `Standard` keeps −7d/+90d. So
+the empty answer names its own horizon — *"Nothing booked in the next 2
+years"* — because the pane still cannot tell "genuinely nothing" from "beyond
+what this device polls", and a bare "Nothing booked" would make an `answered`
+state a lie.
+
+**Landing day → the return day is still the trip.** The issue's "the day you
+land home it is already counting to the next one" was loose phrasing, not a
+decision: an all-day event's end is the provider's *exclusive* end (local
+midnight after the last day), so the trip is live until then. Five phases —
+`upcoming` / `departs_today` / `under_way` / `returns_today` / `past` — and
+`returns_today` reads *"Home today from Lisbon"*.
+
+**Mid-trip → the trip you are in leads.** *"In Lisbon · day 3 of 6"*, with the
+queue below unchanged so the next trip is still one line down.
+`collapsedHeadline` is free prose, so a pane that is a countdown ~94% of the
+time and a status line the rest costs nothing structurally.
+
+**And the `EventWhen` rule the "India in 394 days" section above now
+enforces.** #46's two-arm shape carries an all-day trip as the provider's own
+`start_date`/exclusive `end_date` strings, with **no instant and no source
+zone**, while a timed trip carries only `start_ms`/`end_ms` instants. The pane
+therefore reads all-day dates directly and resolves timed instants in the
+**device's** zone — the same zone that decides **"today"** — then counts every
+distance with `civilDaysBetween` over two `YYYY-MM-DD` values. Only the
+all-day arm derives its last day as the exclusive end minus one **civil day**;
+the timed arm keeps the real end instant's device civil date. `endMs - DAY`
+appears nowhere. This makes the old failure mode unrepresentable: there is no
+zone-resolved all-day midnight for a reader west of Kolkata to turn into the
+previous day, and no carried zone to guess or reject.
+
+**"Dormant is not a synonym for far away" is now load-bearing code.** Any
+booked trip keeps this pane out of `dormant`, at 31 days or 731; dormant here
+means *there is nothing to count to*. Rejected: `distant` decaying to
+`dormant` past ~180 days, which would ship the flagship 395-day case collapsed
+by default, inverting this document.
+
+**Still true, and worth restating: the pane raises no alerts by construction**
+— there is no material change to report, the number goes down by one a day on
+cadence, and `subject_key` is unused.

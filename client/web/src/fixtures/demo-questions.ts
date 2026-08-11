@@ -1,10 +1,16 @@
 import type { QuestionInputs } from "../screens/questions/contract";
+import {
+  BINDING_KEY as RACE_BINDING_KEY,
+  SOURCE as RACE_SOURCE,
+} from "../screens/race-pane/race";
 import { BINDING_KEY, SNAPSHOT_KEY, SOURCE } from "../screens/waste-pane/waste";
 import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 
 // The ranked region's demo world (#245) — a bound waste question whose
 // collection is *tomorrow at the address*, so `?demo` photographs an
-// answered, imminent "Trash Tonight" pane.
+// answered, imminent "Trash Tonight" pane, and (#119) a bound `f1` race
+// question twelve days out, the `distant` state that pane holds for most of
+// the year.
 //
 // **The region is identical in both modes.** `NowScreen` swaps only these
 // inputs for the store's; there is no demo-only rendering of the region, and
@@ -65,14 +71,63 @@ function wasteRead(nowMs: number): PaneReadDTO {
   };
 }
 
+const boundRaceBinding: BindingDTO = {
+  key: RACE_BINDING_KEY,
+  known: true,
+  pending: false,
+  value: { state: "text", text: "f1" },
+};
+
+/** One followed series with a race twelve days out and its ladder ahead of
+ * it — the `distant` state, which is what the pane looks like for most of the
+ * year and therefore the honest thing to photograph. Anchored to `nowMs`
+ * rather than to fixed instants so the capture never quietly goes off-season.
+ */
+function raceRead(nowMs: number): PaneReadDTO {
+  // Snapped to the top of the hour: a fixture's own rendering should read
+  // like a race time, not like whatever minute the capture ran at.
+  const raceAtMs = Math.floor((nowMs + 12 * 86_400_000) / 3_600_000) * 3_600_000;
+  return {
+    source: RACE_SOURCE,
+    snapshots: [
+      {
+        key: "f1",
+        fetchedAtMs: nowMs - 40 * 60_000,
+        envelope: {
+          kind: "ok",
+          schema: RACE_SOURCE,
+          polledEveryMs: 6 * 60 * 60 * 1000,
+          body: JSON.stringify({
+            events: [
+              {
+                name: "Monaco Grand Prix",
+                locality: "Monte Carlo",
+                starts_at_ms: raceAtMs,
+                sessions: [
+                  { kind: "practice", label: "Practice 1", starts_at_ms: raceAtMs - 2 * 86_400_000 },
+                  { kind: "qualifying", label: "Qualifying", starts_at_ms: raceAtMs - 86_400_000 },
+                ],
+              },
+            ],
+          }),
+        },
+        freshness: { kind: "age", ageMs: 40 * 60_000, declaredCadenceMs: 6 * 60 * 60 * 1000 },
+      },
+    ],
+    // No live race-start alert: the loud state is one poll every fortnight,
+    // and a fixture that showed it permanently would misrepresent the pane.
+    liveAlerts: [],
+  };
+}
+
 /** The demo world's answer to `QuestionInputs`, minus the clock the region
  * supplies itself. */
 export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs"> {
   return {
-    bindings: [boundBinding],
-    paneReads: { [SOURCE]: wasteRead(nowMs) },
+    bindings: [boundBinding, boundRaceBinding],
+    paneReads: { [SOURCE]: wasteRead(nowMs), [RACE_SOURCE]: raceRead(nowMs) },
     // The demo world mounts no calendar credential and no items — `?demo`
-    // photographs the waste pane; the weekend pane's own demo state (a
+    // photographs the snapshot-lane panes; the weekend pane's own demo state (a
     // `not_read` calendar, since nothing here ever pushes a token) is the
     // honest "unbound" reading rather than a hand-authored merge.
     calendarReads: {},

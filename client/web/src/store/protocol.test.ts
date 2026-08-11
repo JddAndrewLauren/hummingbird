@@ -125,7 +125,7 @@ describe("protocol round-trips", () => {
   it("no CalendarWorkerRequest and TaskWorkerRequest type name collides", () => {
     const calendarTypes: CalendarWorkerRequest["type"][] = [
       "pushToken",
-      "setCalendarIds",
+      "setCalendarSelections",
       "pollStart",
       "pollRefresh",
       "pollTimer",

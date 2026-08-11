@@ -508,8 +508,10 @@ in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
 (#135, below) is the second Actions `schedule:` on the same reasoning,
 `.github/workflows/calendar-poll.yml` (#136, below) is the third, and
 `.github/workflows/graph-mail-poll.yml`/`graph-calendar-poll.yml` (#137,
-below) are the fourth and fifth — see any of their headers for why a
-repeated scoped exception does not reopen the general ban.
+below) are the fourth and fifth, and
+`.github/workflows/race-schedule-poll.yml`/`race-alert-poll.yml` (#266,
+below) the sixth and seventh — see any of their headers for why a repeated
+scoped exception does not reopen the general ban.
 
 **The holiday-week alert this lane raises actually rings** (#255, ADR-0013's
 2026-08-11 amendment). `POST /api/alerts` triggers delivery inline: the
@@ -739,6 +741,111 @@ poller = Actions secrets, not the Worker secret ADR-0011's original table
 names), and the tenant-wide-vs-scoped question is posted as an explicit
 operator question on issue #137 rather than decided here — cross-referencing
 issue #135's still-open credential question, the same category of decision.
+
+## The race-schedule poller
+
+`server/race-poll/` (#266) is the lane behind the next-race standing
+question, and the first here to ship **two binaries with two crons for one
+lane**: `race-schedule-poll` (`0 */6 * * *`) fetches the season and writes
+one `context_snapshots` row per adapted series; `race-alert-poll`
+(`*/15 * * * *`) reads that row back through `GET /api/snapshots` and raises
+the race-start alert, fetching nothing upstream and writing no snapshot. A
+workspace member so CI gates it, never a dependency of
+`hummingbird-authority-worker` (wasm32, and this crate holds an HTTP
+client), and the same split every poller here keeps — everything decidable
+in the lib and natively tested, each `main.rs` holding only `std::env`, the
+fetches and the writes.
+
+**The split is not a competing clock, and it deletes a special case rather
+than adding one.** ADR-0009 said "the same cron that refreshes the snapshot
+is what may later machine-raise"; the lane has two jobs and only one needs
+the network, since "is a race starting inside the lead time" is a pure
+function of (stored schedule, now). What the split buys, in order:
+`polled_every_ms` stays **6h**, so ADR-0015's `2 × cadence` staleness rule
+works unchanged at 12h — a single `*/15` cron for both would have needed a
+15-minute declared cadence whose `2 ×` is a 30-minute threshold that GitHub
+Actions' own cron jitter trips routinely, forcing an ADR-0015 amendment to
+carve this lane out. It also drops Jolpica traffic from 96 to 4 requests a
+day and keeps alert precision at ±15 minutes, the first cadence at which a
+90-minute lead means what it says. CLAUDE.md's competing-clock ban is about
+two clocks owning **one cadence**; here two clocks own two different jobs,
+as `graph-poll` already ships two binaries. ADR-0009 carries the one-line
+note, not a reversal. The rejected alternative — `*/15` with a conditional
+fetch when the stored snapshot has aged — fails for its own reason: the
+workflow's cron and `polled_every_ms` would then disagree and the header
+could no longer state the cadence. (#120's "`fetched_at` is part of the
+value" constrains the *server handler*, not how often a poller fetches
+upstream; that misreading is tempting and was made first.)
+
+**The feed is [Jolpica](https://github.com/jolpica/jolpica-f1)** — the
+maintained Ergast successor — `GET /ergast/f1/current.json`, the whole
+season in one 14 KB call, `current` deliberately over a hardcoded year and
+over `current/next.json` (storing "the next race" would be storing an
+answer, ADR-0002). Two facts live in the adapter headers because a later
+tidy-up deletes them: **a custom `User-Agent` is load-bearing, not
+politeness** (an unset or default UA is answered 403, measured), and Jolpica
+is volunteer-run with no SLA and rate limits it says may tighten. It is the
+first upstream here needing **no credential at all**. **IndyCar is
+deferred** and the deferral is the honest answer: no free JSON API of
+comparable standing and no authoritative ICS, and the per-event scrape is
+materially worse than the council page `city-waste` reads (N+1 fetches, no
+year on the date, a broadcast time zone). `indycar` stays legal in the
+`race-series` binding, has no adapter, is skipped-and-logged, and renders as
+ADR-0015's `bound-but-unacquired` gap. The recorded cost: `race-schedule`
+reaches production with exactly **one** subject, so the
+`(source, subject_key)` ↔ `(source, key)` join ADR-0015 added a column for —
+citing this lane as its forcing case — has never had two subjects in it.
+
+**The occurrence key is the start instant, not `season:round`** —
+`race_schedule_v1_key(series, starts_at_ms)` → `"f1:1772942400000"`.
+`season:round` is tidier and is what the feed hands over, and it **fails to
+ring on a postponement**: the row already exists, the title is clock-free by
+design so nothing source-owned changes, `restamp_on_change` therefore does
+not restamp, and a race moved by a month is silent. Keying on the instant
+makes a rescheduled race a new occurrence, and self-cleans, since
+`expires_at = starts_at_ms` retires the abandoned one at its own past start.
+It is also what lets `season`/`round` stay out of the body. `alert::plan`
+**takes no clock**, for `city-waste`'s reason with more force — a race pane
+whose whole subject is a countdown is the most tempting possible place to
+write "in 42 minutes", and that phrase would restamp `raised_at` on every
+one of the ~6 re-posts inside one 90-minute window and undo the reader's
+dismissal.
+`re_posting_the_same_race_alert_is_byte_identical_at_every_lead_offset` is
+the only thing that catches it, and it compares the whole serialized
+payload. `LEAD_MS` (90 min) is a named `const` in the lib like
+`ALARM_INTERVAL_MS` — "configured" means named and documented, not
+user-tunable. The binary is stateless and re-posts on every run inside the
+window, which is safe because `deliver`'s dedupe is transitions-only and its
+row commits before any send.
+
+**Four outcomes, and only two are failures.** A dead feed or a shape the
+parser does not recognise exits non-zero and writes nothing (`fetched_at`
+freezes, the pane bands stale at 12h, Actions emails the run) — but an
+**off-season** (fetch fine, every race in the past) writes the snapshot
+normally, and an **unset or non-text binding** writes nothing and exits 0.
+Not configured is not broken, and neither is a winter; routing either
+through the failure path would have the pane say "stale, cannot answer" when
+the true answer is "nothing is scheduled". `tests/fixtures/golden-body.json`
+is how the body contract is guarded: the exact envelope this poller emits
+from the committed Jolpica response, byte-compared by `tests/golden.rs` —
+and since #119 it has both its consumers, `race.ts`'s parser (whose own
+vitest reads that very file off disk) and `tests/contract.rs`, which asserts
+the key spellings and the shared constants against the TypeScript's text — the same move as `runner/test/parse-capture.test.js` reading the
+real shipped schema off disk. The Jolpica fixture ships **verbatim**, which
+is the opposite of `city-waste`'s reduced-and-sanitised policy and for a
+reason recorded in `tests/fixtures/README.md`: those carried the operator's
+address and CSRF tokens, this is public sports data. `RACE_INGEST_TOKEN`
+goes in Actions secrets on `CITY_WASTE_INGEST_TOKEN`'s blast-radius
+reasoning (worst-case abuse is a wrong race time); minting it is an
+**operator gate**, agent-built and operator-provisioned, #256's posture.
+`.github/workflows/race-schedule-poll.yml` and `race-alert-poll.yml` are the
+sixth and seventh Actions `schedule:` — see either header for why a repeated
+scoped exception does not reopen issue #8's ban, and note that the alert
+workflow's cron is deliberately **not** a declared cadence, since it writes
+no snapshot. Both accept that Actions `schedule:` is best-effort, so a
+race-start alert may fire late or occasionally not at all; routing it
+through the DO's `alarm()` would drag a schedule-body parser into the wasm32
+worker build.
 
 ## The client sync engine
 
@@ -1319,7 +1426,9 @@ moment, never a duration and never a unit each pane picks for itself**, so
 the sort reads no clock and a captured value cannot age between renders — a
 one-line `collapsedHeadline` and up to
 `MAX_GLYPHS` labelled glyphs — plus its whole expanded rendering and
-nothing else; `registry.ts`'s `Record<StandingQuestion, QuestionDef>` is
+nothing else; `StandingQuestion` is the closed vocabulary
+(`waste | weekend | vacation | race`) and `registry.ts`'s
+`Record<StandingQuestion, QuestionDef>` is
 compile-time exhaustive, so a question added to the vocabulary and not
 registered is a type error rather than a pane that silently never appears,
 and `requiredSources()` is what `shell/usePaneReadsWiring.ts` requests, so
@@ -1356,8 +1465,10 @@ day, or any day of a holiday week) with a real `withinBand` even while
 dormant, `STALE_AFTER_MS = 26h` **beside the band function** (the cost of a
 wrong answer, not `2 × cadence`), the bin colours (a documented exception to
 "colour encodes status": here it encodes object identity, and every glyph
-still carries a label), and `isStaleFreshness`, where `unknown` is never
-fresh. **A collection already in the past is refused outright**, not
+still carries a label), and (until #119) `isStaleFreshness`, where `unknown` is never
+fresh — now `screens/questions/freshness.ts`, shared with the race pane at
+its own threshold, since the threshold is per-pane by ADR-0015 but the
+`unknown`-is-never-fresh reading must not be copied. **A collection already in the past is refused outright**, not
 described: the poll is daily, so between the address's midnight and that
 day's fetch the snapshot still names yesterday — well inside 26h, so
 freshness says nothing — and a `daysAway <= 0` reading rendered that as
@@ -1386,7 +1497,8 @@ enrollment's readers are elsewhere — #145's mint gate, and the per-table
 `Writes` check on each of the two ingest write handlers.)
 
 `screens/weekend-pane/` is the shell's second pane (#122), and the first
-question to read no snapshot lane at all: the merge is entirely at read
+question to read no snapshot lane at all (the vacation pane below is the
+second, and `calendarRequests` is now declared by both): the merge is entirely at read
 time, over `QuestionInputs.calendarReads` (#267's calendar-events arm —
 never a second calendar read, `requiredCalendarRequests()` unions this
 question's own `calendarRequests(nowMs)` alongside `requiredSources()`) and
@@ -1422,6 +1534,117 @@ above — a pure field edit, never a promotion — threaded from
 `WeekendPaneExpanded`'s `PlanChips` through `QuestionDef.Expanded`'s
 `onSetScheduledDate` prop, the one write affordance a pane carries in the
 shell contract.
+
+`screens/vacation-pane/` is the shell's calendar-lane vacation pane (#121,
+ADR-0015's
+2026-08-11 amendment), the second calendar-lane question, and the one that
+**changed the calendar lane itself to become answerable**. It is a countdown
+~94% of the time and a status line the rest: *"Lisbon in 16 days"* → *"Lisbon
+tomorrow"* → *"Lisbon today"* → *"In Lisbon · day 3 of 6"* → *"Home today from
+Lisbon"*, with the whole trip queue listed under it and **never truncated**.
+Three rules carry the whole design.
+
+**Civil dates only — no instant is ever subtracted.** `EventWhen` keeps the
+provider's `YYYY-MM-DD` strings directly for an all-day trip, with no instant
+or source zone to recover them from; a timed trip carries only UTC instants,
+whose civil dates resolve in the **device's** zone — the same zone that
+decides **"today"**. Every count is `civilDaysBetween` over the resulting
+dates. Only an all-day trip has the provider's *exclusive* end, whose last day
+is minus one **civil day**; a timed trip's real end instant stays on its own
+device civil date. `endMs - DAY` appears nowhere, because flattening an
+all-day date to an instant is the *"India in 394 days"* defect ADR-0015
+records here and the same arithmetic fires `returns_today` a day early.
+
+**Any booked trip keeps the pane out of `dormant`, at 31 days or 731** —
+`collapse.ts` collapses dormant by default, and ADR-0015 names this pane as
+the reason *dormant is not a synonym for far away*. Dormant here means there
+is nothing to count to, which is also the only state with a `null`
+`withinBand`; otherwise it is the next trip's start while upcoming and the
+current trip's end while live. The empty answer **names its own horizon**
+("Nothing booked in the next 2 years"): nothing-in-horizon is `answered`, and
+the pane cannot tell that from "booked beyond what this device polls", so a
+bare "Nothing booked" would make the answer a lie. `STALE_AFTER_MS = 24h`
+sits **beside the band function**, and unlike the waste pane **stale never
+suppresses the answer** — the countdown still renders with its age stated
+beneath it, because a trip 45 days out does not rot. **No glyphs**: one
+subject, and the answer is already a sentence. **It raises no alerts by
+construction** — deliberately, unlike every sibling pane in #117: there is no
+material change to report, the number goes down by one a day on cadence, and
+`subject_key` is unused.
+
+**Every non-cancelled event on the bound calendar is a trip** — all-day or
+timed, no filter and no merging. The calendar is the authority (#117); a pane
+that decided some events on the Trips calendar are not trips would have
+started keeping a vacation record of its own, and the flight-plus-trip
+duplicate-row case is operator discipline (one event per trip) rather than an
+invisible heuristic that hides a trip the first time it guesses wrong. The
+only rewriting is the prototype's title strip — a leading `Trip:`/`Holiday:`
+goes, nothing else.
+
+**Designating a Trips calendar opts this device into polling it, and that is
+what made ADR-0005 narrow.** The binding is a **synced** `settings` row while
+`selectedCalendarIds` is per-device and `localStorage`-owned, so the polled
+set is **derived** at every push seam — `calendar/selection.ts`'s
+`effectiveSelection(storedIds, tripsCalendarId)` = the ticked calendars ∪ the
+bound one — and **never written back into `localStorage`**, since deriving is
+what makes a re-binding re-compute cleanly rather than leaving the old
+calendar polled forever with nothing that knows why. The Settings picker
+renders that row **checked and locked**, with the reason in words and a link
+to the bindings editor, and `handleCalendarSelectionChange`
+(`acceptSelectionChange`) **refuses** to untick it rather than accepting and
+silently re-adding it: a calendar fetched with no on-screen reason is the
+consent surprise ADR-0005 guarded against, and a control that springs back is
+the same surprise with a worse explanation.
+
+**The window is per calendar, and the core owns the numbers.**
+`fetch_calendar_snapshot` takes `&[CalendarSelection]` (`{ id, horizon }`) and
+computes its bounds **per calendar**: −7d for every horizon, `+90d`
+(`WINDOW_AFTER_DAYS`) or `+730d` (`WINDOW_AFTER_DAYS_LONG`, `Long`). The
+trailing edge is unchanged for both — nothing wants more history, and widening
+it would change what the weekend pane sees. The host says *which* calendar is
+long, never *how* long: a raw `horizonDays` on the wire would give the window
+constant a second home in TypeScript. That selection crosses the wasm seam as
+**JSON text** (`setCalendarSelections`, `CalendarHost`'s constructor), for the
+reason `TriageEdits` records for its own one-string seam — a positional
+`Vec<String>` cannot carry a per-entry horizon without a second,
+separately-lengthed array. Rejected: widening the global constant (the
+snapshot is a full atomic replace, so the primary calendar would re-fetch two
+years every 15 minutes) and a per-calendar *role* (`primary | trips`), which
+smuggles a standing question's vocabulary into a lane that knows nothing about
+questions.
+`screens/race-pane/` is the shell's race-schedule pane (#119, over #266's lane), and
+the first question that emits **one pane per subject**: `subjects()` is the
+`race-series` binding's own comma-separated list, read exactly as
+`server/race-poll/src/binding.rs` reads it (trimmed, lowercased, blanks and
+repeats dropped, order kept), so following another series is an edit in
+Settings and no code change here — and a series with no adapter upstream
+(today `indycar`) still gets a pane, as a `bound-but-unacquired` gap, which
+is what keeps #266's deferral visible instead of silent. `race.ts` pins the
+`race-schedule/v1` body, and its counterweight is the producer's own
+committed artifact: `race.test.ts` parses
+`server/race-poll/tests/fixtures/golden-body.json` off disk, and
+`server/race-poll/tests/contract.rs` asserts these key spellings, `SOURCE`,
+`BINDING_KEY` and the 12h (`2 ×` cadence) stale line back against this
+file's text. **The alert join is the point of this pane**: ADR-0015 added
+`alerts.subject_key` naming it as the forcing case, and `liveAlertFor` is
+the one place `(source, subjectKey)` ↔ `(source, key)` is spelled — one
+source carries every series, so joining on `source` alone would light every
+pane at once. The `live` band *is* that join (never a second time
+threshold), so the pane and the 90-minute notification cannot disagree about
+one race; `countdown` keeps minutes to 120 for the same reason. **Two of the
+prototype's settled verdicts are deliberately reversed**, both by decisions
+taken after it: the hardcoded `America/Los_Angeles` and its "PT" suffix are
+gone (ADR-0015 is device-local, and a race appearing to move when you travel
+is the accepted cost), and the "Practice 3 under way" headline is **dropped
+with its verdict** rather than silently lost — saying it needs a session end
+time, the feed publishes none, #266 refused to invent one, and computing it
+at read time from a start alone only moves the invention across the seam. So
+the **race start is the horizon** (`nextRaceAt`), which is the reading the
+lane already takes, since `race-schedule/v1` is registered with
+`Expiry::Always("the race's start time")`; the recorded cost is that for the
+couple of hours a race is actually running the pane names the *following*
+race. Off-season is an answer (`dormant`, "no races scheduled"), never a
+gap — `body.rs` says so from the other side.
 
 The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
 re-requests its queries once the core is ready and again on every

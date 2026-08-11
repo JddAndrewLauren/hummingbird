@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  addCivilDays,
   civilDaysBetween,
   civilTodayInZone,
+  deviceCivilToday,
   isCivilDate,
   isKnownZone,
   weekdayInZone,
@@ -83,5 +85,36 @@ describe("the guards", () => {
     expect(isCivilDate(20260810)).toBe(false);
     expect(isKnownZone("Europe/London")).toBe(true);
     expect(isKnownZone("Nowhere/Nothing")).toBe(false);
+  });
+});
+
+describe("addCivilDays", () => {
+  it("walks the calendar, so an exclusive end minus one day is the last day", () => {
+    // #121's own use: a provider's all-day end is local midnight AFTER the
+    // last day, and the last day is that civil date minus one CIVIL day —
+    // never `endMs - 86_400_000`, which lands a day out whenever the
+    // boundary is not midnight in the zone doing the subtraction.
+    expect(addCivilDays("2026-03-16", -1)).toBe("2026-03-15");
+    expect(addCivilDays("2026-01-01", -1)).toBe("2025-12-31");
+    expect(addCivilDays("2024-02-28", 1)).toBe("2024-02-29");
+  });
+
+  it("refuses anything that is not a civil date", () => {
+    expect(addCivilDays("2026-3-1", 1)).toBeNull();
+  });
+});
+
+describe("deviceCivilToday", () => {
+  it("answers the device's own civil day, which is a different question from the address's", () => {
+    // Deliberately asserted against the runtime's own formatter rather than
+    // a fixed string: the point is that this reads the DEVICE zone, whatever
+    // it is, where `civilTodayInZone` reads a named one.
+    const nowMs = Date.parse("2026-03-01T12:00:00Z");
+    const expected = new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(nowMs));
+    expect(deviceCivilToday(nowMs)).toBe(expected);
   });
 });

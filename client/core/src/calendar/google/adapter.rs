@@ -1,8 +1,9 @@
 //! [`fetch_calendar_snapshot`]: the Google Calendar adapter (issue #71).
 //!
-//! Given a bearer token and the host-supplied selected calendar ids, fetches
-//! every page of `calendars/{id}/events` (`singleEvents=true`) across the
-//! rolling −7d/+90d window for every calendar, maps each item to #70's
+//! Given a bearer token and the host-supplied [`CalendarSelection`]s, fetches
+//! every page of `calendars/{id}/events` (`singleEvents=true`) across each
+//! calendar's own rolling window — −7d for all, +90d or (#121's
+//! [`CalendarHorizon::Long`]) +730d ahead — maps each item to #70's
 //! [`EventRecord`], and assembles one [`CalendarSnapshot`] in memory.
 //! Complete-or-nothing: any failed page fetch or any event this module
 //! cannot map aborts the whole call — the caller never receives a partial
@@ -18,10 +19,73 @@ use super::map::{map_event, MapError};
 use super::raw::RawEventsPage;
 use super::transport::{EventsTransport, TransportError};
 
-/// The rolling window's trailing edge: 7 days before `now`.
+/// The rolling window's trailing edge: 7 days before `now`. **The same for
+/// every horizon** (#121): nothing in this app wants more calendar history,
+/// and widening it would silently change what #122's weekend pane sees.
 const WINDOW_BEFORE_DAYS: i64 = 7;
-/// The rolling window's leading edge: 90 days after `now`.
+/// The rolling window's leading edge for an ordinary calendar: 90 days after
+/// `now` (ADR-0005's original single window).
 const WINDOW_AFTER_DAYS: i64 = 90;
+/// The leading edge for a [`CalendarHorizon::Long`] calendar: two years
+/// (#121). The vacation countdown's flagship case — a trip 395 days out — is
+/// outside the 90-day window entirely, so a calendar answering "how long to
+/// the next vacation" has to be polled further ahead than one answering
+/// "what is on today".
+const WINDOW_AFTER_DAYS_LONG: i64 = 730;
+
+/// How far ahead one calendar is polled — a **policy about poll cost and
+/// mirror size**, so the numbers live here in the core and the host only ever
+/// says *which* calendar is which (#121, ADR-0005's amendment). A raw
+/// `horizon_days` crossing the seam would give this constant a second home in
+/// TypeScript, which is exactly the drift ADR-0005 puts window policy in the
+/// core to avoid.
+///
+/// Rejected: widening [`WINDOW_AFTER_DAYS`] globally — the snapshot is a full
+/// atomic replace, so the primary calendar would re-fetch two years every 15
+/// minutes; and a per-calendar *role* (`primary | trips`), which smuggles a
+/// standing question's vocabulary into a lane that knows nothing about
+/// questions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalendarHorizon {
+    #[default]
+    Standard,
+    Long,
+}
+
+impl CalendarHorizon {
+    fn after_days(self) -> i64 {
+        match self {
+            CalendarHorizon::Standard => WINDOW_AFTER_DAYS,
+            CalendarHorizon::Long => WINDOW_AFTER_DAYS_LONG,
+        }
+    }
+}
+
+/// One calendar the host has selected, and how far ahead to poll it (#121).
+/// Replaces the bare id list every layer from the picker down used to carry.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct CalendarSelection {
+    pub id: String,
+    #[serde(default)]
+    pub horizon: CalendarHorizon,
+}
+
+impl CalendarSelection {
+    pub fn standard(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            horizon: CalendarHorizon::Standard,
+        }
+    }
+
+    pub fn long(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            horizon: CalendarHorizon::Long,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum AdapterError {
@@ -74,11 +138,15 @@ impl AdapterError {
 impl std::error::Error for AdapterError {}
 
 /// Compute the `[time_min, time_max)` RFC 3339 window bounds around `now_ms`
-/// per the rolling −7d/+90d policy.
-pub(super) fn window_bounds(now_ms: i64) -> (String, String) {
+/// for one calendar's horizon: −7d for both, +90d or +730d ahead.
+///
+/// Computed **per calendar** rather than once per call (#121): the whole
+/// point of a per-calendar horizon is that the trips calendar reaches two
+/// years ahead while every other calendar keeps the cheap 90-day window.
+pub(super) fn window_bounds(now_ms: i64, horizon: CalendarHorizon) -> (String, String) {
     let now = DateTime::<Utc>::from_timestamp_millis(now_ms).expect("now_ms is a valid instant");
     let time_min = now - Duration::days(WINDOW_BEFORE_DAYS);
-    let time_max = now + Duration::days(WINDOW_AFTER_DAYS);
+    let time_max = now + Duration::days(horizon.after_days());
     (
         time_min.to_rfc3339_opts(SecondsFormat::Secs, true),
         time_max.to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -90,13 +158,14 @@ pub(super) fn window_bounds(now_ms: i64) -> (String, String) {
 pub async fn fetch_calendar_snapshot(
     transport: &impl EventsTransport,
     access_token: &str,
-    calendar_ids: &[String],
+    selections: &[CalendarSelection],
     now_ms: i64,
 ) -> Result<CalendarSnapshot, AdapterError> {
-    let (time_min, time_max) = window_bounds(now_ms);
     let mut events = Vec::new();
 
-    for calendar_id in calendar_ids {
+    for selection in selections {
+        let calendar_id = &selection.id;
+        let (time_min, time_max) = window_bounds(now_ms, selection.horizon);
         let mut page_token: Option<String> = None;
         let mut seen_page_tokens = std::collections::HashSet::new();
 
@@ -179,12 +248,18 @@ mod tests {
     /// silently passing.
     struct ScriptedTransport {
         pages: Mutex<HashMap<String, Vec<ScriptedPage>>>,
+        /// `(calendar_id, time_min, time_max)` per request, so a test can
+        /// assert the window each calendar was actually asked for — the only
+        /// way to see that the horizon is resolved per calendar rather than
+        /// once per call.
+        seen_windows: Mutex<Vec<(String, String, String)>>,
     }
 
     impl ScriptedTransport {
         fn new(pages: HashMap<String, Vec<ScriptedPage>>) -> Self {
             Self {
                 pages: Mutex::new(pages),
+                seen_windows: Mutex::new(Vec::new()),
             }
         }
     }
@@ -196,10 +271,15 @@ mod tests {
             &self,
             calendar_id: &str,
             _access_token: &str,
-            _time_min: &str,
-            _time_max: &str,
+            time_min: &str,
+            time_max: &str,
             page_token: Option<&str>,
         ) -> Result<String, TransportError> {
+            self.seen_windows.lock().unwrap().push((
+                calendar_id.to_string(),
+                time_min.to_string(),
+                time_max.to_string(),
+            ));
             let mut pages = self.pages.lock().unwrap();
             let queue = pages
                 .get_mut(calendar_id)
@@ -233,15 +313,77 @@ mod tests {
         )
     }
 
+    fn at(year: i32, month: u32, day: u32) -> i64 {
+        Utc.with_ymd_and_hms(year, month, day, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis()
+    }
+
     #[test]
     fn window_bounds_spans_seven_days_before_and_ninety_days_after_now() {
-        let now_ms = Utc
-            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
-            .unwrap()
-            .timestamp_millis();
-        let (time_min, time_max) = window_bounds(now_ms);
+        let (time_min, time_max) = window_bounds(at(2024, 6, 15), CalendarHorizon::Standard);
         assert_eq!(time_min, "2024-06-08T12:00:00Z");
         assert_eq!(time_max, "2024-09-13T12:00:00Z");
+    }
+
+    #[test]
+    fn a_long_horizon_reaches_two_years_ahead_and_still_only_seven_days_back() {
+        // #121: the trailing edge is deliberately unchanged — nothing wants
+        // more history, and widening it would change what the weekend pane
+        // sees.
+        let (time_min, time_max) = window_bounds(at(2024, 6, 15), CalendarHorizon::Long);
+        assert_eq!(time_min, "2024-06-08T12:00:00Z");
+        assert_eq!(time_max, "2026-06-15T12:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn each_calendar_is_queried_for_its_own_horizon_not_one_shared_window() {
+        let mut pages = HashMap::new();
+        pages.insert("cal-primary".to_string(), vec![(None, Ok(page_json("", None)))]);
+        pages.insert("cal-trips".to_string(), vec![(None, Ok(page_json("", None)))]);
+        let transport = ScriptedTransport::new(pages);
+
+        fetch_calendar_snapshot(
+            &transport,
+            "token",
+            &[
+                CalendarSelection::standard("cal-primary"),
+                CalendarSelection::long("cal-trips"),
+            ],
+            at(2024, 6, 15),
+        )
+        .await
+        .unwrap();
+
+        let seen = transport.seen_windows.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    "cal-primary".to_string(),
+                    "2024-06-08T12:00:00Z".to_string(),
+                    "2024-09-13T12:00:00Z".to_string()
+                ),
+                (
+                    "cal-trips".to_string(),
+                    "2024-06-08T12:00:00Z".to_string(),
+                    "2026-06-15T12:00:00Z".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_selection_deserializes_from_the_hosts_json_and_defaults_to_the_standard_horizon() {
+        // The wasm seam carries these as JSON text (`ffi-web`'s
+        // `setCalendarSelections`), so the wire spelling is part of the
+        // contract: snake_case horizons, and an absent one is standard.
+        let parsed: Vec<CalendarSelection> =
+            serde_json::from_str(r#"[{"id":"a","horizon":"long"},{"id":"b"}]"#).unwrap();
+        assert_eq!(
+            parsed,
+            vec![CalendarSelection::long("a"), CalendarSelection::standard("b")]
+        );
     }
 
     #[tokio::test]
@@ -265,7 +407,7 @@ mod tests {
         let snapshot = fetch_calendar_snapshot(
             &transport,
             "token",
-            &["cal-primary".to_string()],
+            &[CalendarSelection::standard("cal-primary")],
             1_700_000_000_000,
         )
         .await
@@ -297,7 +439,7 @@ mod tests {
         let result = fetch_calendar_snapshot(
             &transport,
             "token",
-            &["cal-primary".to_string()],
+            &[CalendarSelection::standard("cal-primary")],
             1_700_000_000_000,
         )
         .await;
@@ -321,7 +463,10 @@ mod tests {
         let result = fetch_calendar_snapshot(
             &transport,
             "token",
-            &["cal-a".to_string(), "cal-b".to_string()],
+            &[
+                CalendarSelection::standard("cal-a"),
+                CalendarSelection::standard("cal-b"),
+            ],
             1_700_000_000_000,
         )
         .await;
@@ -356,7 +501,7 @@ mod tests {
         let result = fetch_calendar_snapshot(
             &transport,
             "token",
-            &["cal-primary".to_string()],
+            &[CalendarSelection::standard("cal-primary")],
             1_700_000_000_000,
         )
         .await;

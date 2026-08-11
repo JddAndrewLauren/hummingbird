@@ -1,6 +1,7 @@
 import { isInformativeSyncOutcome } from "../shell/sync-status";
 import type { createCoreStore } from "./store";
 import type {
+  CalendarSelectionDTO,
   CalendarWorkerRequest,
   ConditionDTO,
   RuleDTO,
@@ -374,8 +375,11 @@ export function pushTokenToWorker(worker: WorkerLike, token: string): void {
   worker.postMessage({ type: "pushToken", token });
 }
 
-export function setCalendarIdsOnWorker(worker: WorkerLike, calendarIds: string[]): void {
-  worker.postMessage({ type: "setCalendarIds", calendarIds });
+export function setCalendarSelectionsOnWorker(
+  worker: WorkerLike,
+  selections: CalendarSelectionDTO[],
+): void {
+  worker.postMessage({ type: "setCalendarSelections", selections });
 }
 
 export function pollStart(worker: WorkerLike, nowMs: number): void {

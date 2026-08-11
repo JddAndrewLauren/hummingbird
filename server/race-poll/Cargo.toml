@@ -1,0 +1,60 @@
+[package]
+name = "hummingbird-race-poll"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller behind the next-race standing question (#266,
+# ADR-0009/ADR-0015). One crate, two binaries — `server/graph-poll`'s shape:
+#
+#   race-schedule-poll   0 */6 * * *   fetches Jolpica, writes the snapshot
+#   race-alert-poll      */15 * * * *  reads the snapshot back, raises the
+#                                      race-start alert and nothing else
+#
+# The split is not a competing clock: refreshing the season needs the
+# network and changes a few times a year, while "is a race starting inside
+# the lead time" is a pure function of (stored schedule, now). Keeping them
+# apart is what lets `polled_every_ms` stay 6h, so ADR-0015's `2 × cadence`
+# staleness rule works unchanged — the single-cron alternative would have
+# needed a 15-minute declared cadence whose `2 ×` GitHub Actions' own cron
+# jitter trips routinely. See `.github/workflows/race-*.yml` and the issue
+# #266 decision record.
+#
+# A workspace member, so CI's `cargo clippy --workspace` /
+# `cargo test --workspace` gate it. It must NEVER become a dependency of
+# `hummingbird-authority-worker`: that crate builds for wasm32 and has no
+# business carrying an HTTP client (asserted from the other side in
+# `lib.rs`'s tests, as `city-waste` does).
+#
+# The same split every poller here keeps: everything decidable lives in the
+# lib and is natively tested; each `main.rs` holds only `std::env`, the
+# fetches and the writes.
+
+[dependencies]
+# The real `race_schedule_v1_key` and the real `RACE_SCHEDULE_V1`, never a
+# hand-copied twin: the frozen key vector in `sources.rs` is only a tripwire
+# if the one adapter that mints under this source goes through it.
+hummingbird-domain = { path = "../domain" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# `main.rs` only (both binaries). Blocking by design: each poller is a
+# one-shot process, so an async runtime would be pure ceremony — the same
+# reasoning `city-waste`/`gmail-poll`/`calendar-poll`/`graph-poll` give.
+[dependencies.ureq]
+version = "3"
+default-features = false
+features = ["rustls", "json"]
+
+# **No `jiff`.** The one place this lane is genuinely simpler than
+# `city-waste`: a race start is an *instant*, so the body carries epoch ms
+# and the occurrence key is built from one, and no question here is a civil
+# date that needs a tzdb to resolve. `schedule.rs`'s UTC parse is
+# dependency-free integer arithmetic.
+
+[[bin]]
+name = "race-schedule-poll"
+path = "src/bin/race_schedule_poll.rs"
+
+[[bin]]
+name = "race-alert-poll"
+path = "src/bin/race_alert_poll.rs"

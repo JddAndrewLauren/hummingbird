@@ -53,12 +53,12 @@ describe("useCalendarEventsWiring", () => {
     vi.restoreAllMocks();
   });
 
-  it("asks for the weekend-plans pane's own interval — today's real, registered steady state (#122)", () => {
+  it("asks for every registered pane's own interval — today's real, registered steady state (#122, #121)", () => {
     // No mock: exercises the actual `requiredCalendarRequests()`, which
-    // now answers the weekend-plans pane's own interval.
+    // answers both calendar-lane panes' intervals.
     const worker = fakeWorker();
     render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
-    expect(requestedKeys(worker)).toEqual(["weekend"]);
+    expect(requestedKeys(worker)).toEqual(["weekend", "vacation"]);
   });
 
   it("carries the civil bounds alongside the millisecond ones", () => {

@@ -49,6 +49,22 @@ export interface CalendarListEntryDTO {
   summary: string;
 }
 
+/** How far ahead one calendar is polled (#121) —
+ * `hummingbird_core::calendar::CalendarHorizon`'s own snake_case wire
+ * spelling. A closed two-word vocabulary rather than a day count: the host
+ * says *which* calendar is long, the core says how long. */
+export type CalendarHorizonName = "standard" | "long";
+
+/** One selected calendar and its horizon —
+ * `hummingbird_core::calendar::CalendarSelection`, camelCased. This replaced
+ * the bare `string[]` the picker used to push (#121), because the trips
+ * calendar has to be polled two years ahead while every other calendar keeps
+ * the cheap 90-day window. */
+export interface CalendarSelectionDTO {
+  id: string;
+  horizon: CalendarHorizonName;
+}
+
 /** *When* an event happens — a discriminated union on `kind`, mirroring
  * `hummingbird_core::calendar::EventWhen` (ADR-0015's 2026-08-10
  * amendment) arm for arm.
@@ -107,7 +123,11 @@ export type CalendarReadDTO =
 
 export type CalendarWorkerRequest =
   | { type: "pushToken"; token: string }
-  | { type: "setCalendarIds"; calendarIds: string[] }
+  /** #121: the picker's selection, each entry carrying **which** horizon to
+   * poll it on — never how many days. The numbers are the core's
+   * (`WINDOW_AFTER_DAYS`/`WINDOW_AFTER_DAYS_LONG`, ADR-0005's amendment),
+   * and a `horizonDays` on this wire would give them a second home here. */
+  | { type: "setCalendarSelections"; selections: CalendarSelectionDTO[] }
   | { type: "pollStart"; nowMs: number }
   | { type: "pollRefresh"; nowMs: number }
   | { type: "pollTimer"; nowMs: number }

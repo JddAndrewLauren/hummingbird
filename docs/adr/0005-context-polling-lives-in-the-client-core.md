@@ -115,3 +115,47 @@ credential and never queries a calendar API.
   three native targets, for machinery the platform SDKs already provide; and
   Google's web model issues SPAs no refresh token at all, so the core could
   not own the web leg even in principle.
+
+## Amendment (2026-08-11, #121): a synced binding contributes to the polled set, and the window is per calendar
+
+Two clauses above narrow, and both narrow in the same direction — the *what*
+of context polling is no longer purely a per-device choice, while the *whether*
+still is.
+
+**"Context is per-device opt-in, host-owned selection" now means: the host
+chooses, and one synced fact is added to what it chose.** ADR-0015's
+`trips-calendar` binding is a `settings` row — a workspace fact that reaches
+every device on its next sync (#118) — and designating a calendar there is
+what makes "how long to the next vacation" answerable at all. So the polled
+set is **derived** at every push seam:
+`effectiveSelection(storedIds, tripsCalendarId)` = the device's own
+`localStorage` selection ∪ the bound calendar
+(`client/web/src/calendar/selection.ts`). Three things bound the widening:
+
+- The union is **never written back into `localStorage`**. Deriving is what
+  makes a re-binding re-compute cleanly; persisting it would leave the old
+  calendar polled forever with nothing that knows why.
+- The picker renders that row **checked and locked**, with the reason in
+  words and a route to the binding editor, and the selection handler
+  **refuses** to untick it rather than accepting and silently re-adding it. A
+  calendar fetched with no on-screen reason is exactly the consent surprise
+  this ADR guarded against; a control that springs back is the same surprise
+  with a worse explanation.
+- The device-level opt-in is untouched. A device that has connected no
+  calendar credential polls nothing, binding or no binding.
+
+**The poll window is no longer one global constant.**
+`fetch_calendar_snapshot` takes `&[CalendarSelection]` — an id *and* a
+`CalendarHorizon` — and computes its bounds per calendar: −7d for every
+horizon, +90d (`Standard`) or +730d (`Long`). The trailing edge is deliberately
+unchanged, since nothing wants more history and widening it would change what
+#122's weekend pane sees. **The core still owns the numbers**: the host says
+*which* calendar is long, never *how* long, because a horizon is a policy about
+poll cost and mirror size and that class of decision belongs here. A raw
+`horizonDays` on the wire would give the window constant a second home in
+TypeScript.
+
+Rejected: widening the global constant (the snapshot is a full atomic replace,
+so the primary calendar would re-fetch two years every 15 minutes), and a
+per-calendar *role* (`primary | trips`), which smuggles a standing question's
+vocabulary into a lane that knows nothing about questions.

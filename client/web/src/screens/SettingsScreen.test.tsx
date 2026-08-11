@@ -13,6 +13,13 @@
 // typecheck cannot see a missing caller.
 
 import { describe, expect, it, vi } from "vitest";
+
+// The calendar section is gated on a build-time env var
+// (`VITE_GOOGLE_CLIENT_ID`), which vitest runs without — so without this the
+// picker never renders and #121's locked-row tests below would pass on an
+// absent control. The only thing stubbed is that constant.
+vi.mock("../shell/useCalendarWiring", () => ({ GOOGLE_CLIENT_ID: "test-client-id" }));
+
 import { SettingsScreen } from "./SettingsScreen";
 import { bindingDTO, fireEvent, render, screen, taskState } from "../test/component";
 import type { BindingDTO } from "../store/protocol";
@@ -29,6 +36,9 @@ const calendar: CalendarState = {
 
 interface SettingsOptions {
   bindings?: BindingDTO[] | null;
+  /** #121: the picker only renders at all once a listing has landed, so a
+   * test about the locked Trips row has to supply one. */
+  calendar?: Partial<CalendarState>;
   status?: CoreStatus;
   withSetBinding?: boolean;
   task?: Partial<TaskState>;
@@ -40,6 +50,7 @@ interface SettingsOptions {
 
 function renderSettings(options: SettingsOptions = {}) {
   const onSetBinding = vi.fn();
+  const onSelectionChange = vi.fn();
   const tree = (current: SettingsOptions) => (
     <SettingsScreen
       demo={null}
@@ -48,11 +59,11 @@ function renderSettings(options: SettingsOptions = {}) {
       coreId={current.coreId ?? null}
       viewOrdinal={current.viewOrdinal ?? null}
       error={null}
-      calendar={calendar}
+      calendar={{ ...calendar, ...current.calendar }}
       themePreference="system"
       onThemePreference={vi.fn()}
       onConnect={vi.fn()}
-      onSelectionChange={vi.fn()}
+      onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
       taskTokenState="resting"
       taskTokenEnteredAtMs={null}
@@ -68,7 +79,11 @@ function renderSettings(options: SettingsOptions = {}) {
   const { rerender } = render(tree(options));
   // A pull arriving is a re-render with new props, not a remount — which is
   // the whole point of the stale-draft test below.
-  return { onSetBinding, pull: (next: SettingsOptions) => rerender(tree(next)) };
+  return {
+    onSetBinding,
+    onSelectionChange,
+    pull: (next: SettingsOptions) => rerender(tree(next)),
+  };
 }
 
 function saveButton(name: RegExp | string = /save/i): HTMLElement {
@@ -266,5 +281,65 @@ describe("SettingsScreen — the core-instance diagnostic", () => {
     renderSettings({ status: "loading", coreId: "aa11bb22", viewOrdinal: 1 });
 
     expect(screen.getByText("Core instance aa11bb22 · this view #1.")).toBeDefined();
+  });
+});
+
+describe("SettingsScreen — the calendar picker's locked Trips row (#121)", () => {
+  const listed = [
+    { id: "primary", summary: "john@twinion.net" },
+    { id: "trips@g", summary: "Trips" },
+  ];
+  const boundTrips: BindingDTO[] = [
+    bindingDTO({ key: "trips-calendar", value: { state: "text", text: "trips@g" } }),
+  ];
+
+  it("renders the bound Trips calendar checked, locked, and with the reason said out loud", () => {
+    renderSettings({
+      bindings: boundTrips,
+      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+    });
+
+    const trips = screen.getByRole("checkbox", { name: /Trips/ }) as HTMLInputElement;
+    expect(trips.checked).toBe(true);
+    // Locked, not merely re-ticked: a control that springs back would be a
+    // control that lied about what it does.
+    expect(trips.disabled).toBe(true);
+    expect(screen.getByText(/Polled because it answers/)).toBeDefined();
+    // And a route to where the decision actually lives.
+    expect(screen.getByRole("link", { name: "Standing questions" })).toBeDefined();
+  });
+
+  it("refuses to untick it — the click never reaches the selection handler", () => {
+    const { onSelectionChange } = renderSettings({
+      bindings: boundTrips,
+      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+    });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Trips/ }));
+    expect(onSelectionChange).not.toHaveBeenCalled();
+  });
+
+  it("still toggles every other calendar, over the polled set the binding contributes to", () => {
+    const { onSelectionChange } = renderSettings({
+      bindings: boundTrips,
+      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+    });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /john@twinion.net/ }));
+    // The derived id rides along in the request; `acceptSelectionChange`
+    // strips it before anything is persisted.
+    expect(onSelectionChange).toHaveBeenCalledWith(["trips@g"]);
+  });
+
+  it("locks nothing while no Trips calendar is designated", () => {
+    renderSettings({
+      bindings: [bindingDTO({ key: "trips-calendar", value: { state: "unset" } })],
+      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+    });
+
+    expect((screen.getByRole("checkbox", { name: /Trips/ }) as HTMLInputElement).disabled).toBe(
+      false,
+    );
+    expect(screen.queryByText(/Polled because it answers/)).toBeNull();
   });
 });

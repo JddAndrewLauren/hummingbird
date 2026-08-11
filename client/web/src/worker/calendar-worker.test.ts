@@ -9,7 +9,7 @@ import {
 function fakeHost(overrides: Partial<CalendarHostLike> = {}): CalendarHostLike {
   return {
     pushToken: vi.fn(),
-    setCalendarIds: vi.fn(),
+    setCalendarSelections: vi.fn(),
     start: vi.fn().mockResolvedValue("no_credential"),
     refresh: vi.fn().mockResolvedValue("no_credential"),
     onTimer: vi.fn().mockResolvedValue("no_credential"),
@@ -38,14 +38,24 @@ describe("handleCalendarRequest", () => {
     expect(posted).toEqual([]);
   });
 
-  it("setCalendarIds forwards the selection and posts nothing", async () => {
+  it("setCalendarSelections forwards the selection as JSON and posts nothing", async () => {
     const host = fakeHost();
     const posted = await run(
-      { type: "setCalendarIds", calendarIds: ["a", "b"] },
+      {
+        type: "setCalendarSelections",
+        selections: [
+          { id: "a", horizon: "standard" },
+          { id: "b", horizon: "long" },
+        ],
+      },
       host,
     );
 
-    expect(host.setCalendarIds).toHaveBeenCalledWith(["a", "b"]);
+    // JSON text, because the wasm seam cannot carry a per-entry horizon
+    // through a positional `Vec<String>` (`client/ffi-web/src/lib.rs`).
+    expect(host.setCalendarSelections).toHaveBeenCalledWith(
+      '[{"id":"a","horizon":"standard"},{"id":"b","horizon":"long"}]',
+    );
     expect(posted).toEqual([]);
   });
 
@@ -303,7 +313,7 @@ describe("createRequestQueue", () => {
     // The property the wasm host depends on: `CalendarHost` holds a
     // `RefCell` borrow across a poll's network await, so a request that
     // reached it mid-poll would panic the whole wasm module. Bursts are
-    // routine -- a picker change posts setCalendarIds, pollRefresh and
+    // routine -- a picker change posts setCalendarSelections, pollRefresh and
     // listCalendars back to back -- so nothing but a queue makes
     // "one at a time" true.
     const inFlight = deferred<string>();
