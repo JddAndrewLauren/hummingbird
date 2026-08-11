@@ -3,6 +3,7 @@ import type {
   BindingValueDTO,
   BlockedFrontierEntryDTO,
   DeadLetterEntryDTO,
+  LedgerRowDTO,
   PaneEnvelopeDTO,
   PaneReadDTO,
   ProjectDTO,
@@ -47,26 +48,20 @@ export interface TaskHostLike {
   ): Promise<string>;
   act(seed: string, itemId: string, action: string, nowMs: number): Promise<string>;
   /** S13/#111's triage mutation. Mirrors `hummingbird-ffi-web`'s
-   * `TaskHost::triage` exactly (`client/ffi-web/src/lib.rs`) — five
-   * `undefined`-or-`string` edit fields plus `destination`, resolved to
-   * JSON: `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
-   * `destination` is `null` (#122) to leave `stage` untouched.
-   * `scheduledDate`/`clearScheduledDate` together carry the three-state
-   * do-date edit `Option<Option<String>>` cannot cross this boundary as a
-   * single value: `clearScheduledDate = true` clears regardless of
-   * `scheduledDate`; otherwise a non-null `scheduledDate` sets it and `null`
-   * leaves it alone. */
+   * `TaskHost::triage` exactly (`client/ffi-web/src/lib.rs`): `destination`
+   * plus the edits as one JSON object — NOT a positional field list, because
+   * only an object can carry the difference between a key being absent
+   * ("leave this field alone") and `null` ("clear it"). Resolved to JSON:
+   * `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`, where
+   * an unreadable `edits` payload is one of the `"failed"` answers.
+   * `destination` is `null` (#122) to leave `stage` untouched entirely — the
+   * weekend-plans pane's do-date chip triages an item that may already be
+   * `InProgress`, which the destination vocabulary cannot name. */
   triage(
     seed: string,
     itemId: string,
     destination: string | null,
-    title: string | null,
-    projectId: string | null,
-    size: string | null,
-    energy: string | null,
-    context: string | null,
-    scheduledDate: string | null,
-    clearScheduledDate: boolean,
+    edits: string,
     nowMs: number,
   ): Promise<string>;
   /** #118's binding write. Mirrors `hummingbird-ffi-web`'s
@@ -80,6 +75,12 @@ export interface TaskHostLike {
   paneRead(source: string, nowMs: number): string;
   frontier(): string;
   triageInbox(): string;
+  /** The complete retained roster — see `RawLedgerListResponse`. `nowMs`
+   * resolves the alert badge's liveness core-side. */
+  ledger(nowMs: number): string;
+  /** Every live `Done` item; same `RawItemListResponse` shape as
+   * `frontier`. */
+  done(): string;
   blocked(): string;
   steps(itemId: string): string;
   projects(): string;
@@ -198,6 +199,20 @@ interface RawProjectListResponse {
 interface RawItemListResponse {
   kind: "ok" | "busy";
   items: RawItem[];
+}
+
+/** One ledger row: the item's own fields flat at the top level exactly like
+ * `RawItem` (`ffi-web`'s `LedgerRowDTO` flattens the same way
+ * `FrontierItemDTO` does), plus the row's derivable facts. */
+interface RawLedgerRow extends RawItem {
+  absent_since_ms: number | null;
+  dead_lettered: boolean;
+  has_live_alert: boolean;
+}
+
+interface RawLedgerListResponse {
+  kind: "ok" | "busy";
+  rows: RawLedgerRow[];
 }
 
 interface RawBlockedEntry {
@@ -319,6 +334,15 @@ function mapItem(raw: RawItem): TaskItemDTO {
     updatedAt: raw.updated_at,
     version: raw.version,
     pending: raw.pending,
+  };
+}
+
+function mapLedgerRow(raw: RawLedgerRow): LedgerRowDTO {
+  return {
+    ...mapItem(raw),
+    absentSinceMs: raw.absent_since_ms,
+    deadLettered: raw.dead_lettered,
+    hasLiveAlert: raw.has_live_alert,
   };
 }
 
@@ -508,19 +532,15 @@ export async function handleTaskRequest(
       return;
     }
     case "triage": {
-      const scheduledDateEdit = request.scheduledDate;
       const raw = JSON.parse(
         await host.triage(
           request.seed,
           request.itemId,
           request.destination,
-          request.title,
-          request.projectId,
-          request.size,
-          request.energy,
-          request.context,
-          scheduledDateEdit && !scheduledDateEdit.clear ? scheduledDateEdit.value : null,
-          scheduledDateEdit?.clear === true,
+          // `JSON.stringify` is what makes "absent" real across the seam: a
+          // key the form never touched is either missing or `undefined`, and
+          // both are dropped here, while a deliberate `null` survives.
+          JSON.stringify(request.edits),
           request.nowMs,
         ),
       ) as RawTriageResponse;
@@ -584,6 +604,24 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "triageInbox", items: raw.items.map(mapItem) });
+      return;
+    }
+    case "getLedger": {
+      const raw = JSON.parse(host.ledger(request.nowMs)) as RawLedgerListResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty answer — an empty ledger reads as
+        // "nothing has ever been tracked" (`lib.rs`'s `BUSY_LEDGER_LIST`).
+        return;
+      }
+      post({ type: "ledger", rows: raw.rows.map(mapLedgerRow) });
+      return;
+    }
+    case "getDone": {
+      const raw = JSON.parse(host.done()) as RawItemListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "done", items: raw.items.map(mapItem) });
       return;
     }
     case "getBlocked": {

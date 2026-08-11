@@ -14,7 +14,7 @@ import type { TaskState } from "../store/store";
 import { blockedReasonLabel } from "./blocked-reason";
 import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
-import { applyItemAction, resolveFallbackPending } from "./item-actions";
+import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
@@ -240,6 +240,9 @@ function RealFrontier({
                 priority={item.priority}
                 pending={item.pending}
                 onClick={() => onOpenItem(item.id)}
+                onComplete={
+                  canMarkDone(item) ? () => onAct(item.id, "complete") : undefined
+                }
               />
             ))}
           </Card>
@@ -266,6 +269,11 @@ function RealFrontier({
                   size={entry.item.size ?? undefined}
                   priority={entry.item.priority}
                   pending={entry.item.pending}
+                  onComplete={
+                    canMarkDone(entry.item)
+                      ? () => onAct(entry.item.id, "complete")
+                      : undefined
+                  }
                 />
                 <span
                   className="hb-meta"
@@ -370,6 +378,10 @@ export function NowScreen({
                     steps={item.steps}
                     blockedBy={item.blockedBy}
                     onClick={() => onScreen("routes")}
+                    // Inert in demo mode, like Resume and Later today above —
+                    // present so `?demo` photographs the real shell's
+                    // mark-done affordance.
+                    onComplete={() => {}}
                   />
                 ))}
               </Card>

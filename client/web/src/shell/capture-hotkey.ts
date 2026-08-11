@@ -10,9 +10,12 @@
 // use, and never while a control that already accepts typed input has
 // focus — a hotkey that steals "c" out of a text field the person is
 // already typing into would be worse than no hotkey at all.
-/** The DOM id `TriageScreen`'s capture `Input` renders with — shared here
- * (rather than duplicated at both call sites) so `App.tsx`'s hotkey handler
- * and the screen that owns the actual `<input>` can never drift apart. */
+/** The DOM id `CaptureBox`'s capture `Input` renders with — shared here
+ * (rather than duplicated at both call sites) so the shell's hotkey and the
+ * component that owns the actual `<input>` can never drift apart. Exactly one
+ * box exists at a time (it lives in `shell/CapturePopover.tsx`), which is what
+ * keeps a document-wide id honest. The value still reads `triage-` for the
+ * stage a capture is born into by default; renaming it would only churn. */
 export const CAPTURE_INPUT_ID = "triage-capture-input";
 
 export interface CaptureHotkeyInput {

@@ -227,7 +227,9 @@ describe("NowScreen — the frontier list", () => {
     const { onOpenItem } = renderNow(
       taskState({ frontier: [itemDTO({ id: "i1", title: "Renew the passport" })] }),
     );
-    fireEvent.click(screen.getByRole("button", { name: /Renew the passport/ }));
+    // Two buttons carry this title now — the row and its mark-done
+    // checkmark — so the row is the one whose name does NOT start "Mark".
+    fireEvent.click(screen.getByRole("button", { name: /^(?!Mark ).*Renew the passport/ }));
     expect(onOpenItem).toHaveBeenCalledWith("i1");
   });
 
@@ -352,5 +354,39 @@ describe("NowScreen — the calendar-reads arm (#267/#122)", () => {
     );
 
     expect(screen.getByText("Standup")).toBeTruthy();
+  });
+});
+
+// The row checkmark (mark done from any live stage): what only a mount can
+// prove is that the button inside the activatable row completes WITHOUT also
+// opening item detail — the row's own click is a selection, and the two
+// gestures share one surface.
+describe("NowScreen — the mark-done checkmark", () => {
+  it("completes a frontier item in one click, without opening its detail", () => {
+    const item = itemDTO({ id: "i1", title: "Water the ferns", stage: "ready" });
+    const { onAct, onOpenItem } = renderNow(taskState({ frontier: [item] }));
+
+    fireEvent.click(screen.getByRole("button", { name: 'Mark "Water the ferns" done' }));
+    expect(onAct).toHaveBeenCalledWith("i1", "complete");
+    expect(onOpenItem).not.toHaveBeenCalled();
+  });
+
+  it("offers it on a blocked row too — the wait ended because the item was finished", () => {
+    const entry = blockedEntryDTO(
+      itemDTO({ id: "b1", title: "Fence quote", stage: "blocked" }),
+      [itemDTO({ id: "b2", title: "The contractor's callback" })],
+    );
+    const { onAct } = renderNow(taskState({ blocked: [entry] }));
+
+    fireEvent.click(screen.getByRole("button", { name: 'Mark "Fence quote" done' }));
+    expect(onAct).toHaveBeenCalledWith("b1", "complete");
+  });
+
+  it("disables the checkmark while the item is pending", () => {
+    const item = itemDTO({ id: "i1", title: "Queued thing", stage: "ready", pending: true });
+    renderNow(taskState({ frontier: [item] }));
+    expect(
+      screen.getByRole("button", { name: 'Mark "Queued thing" done' }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 });

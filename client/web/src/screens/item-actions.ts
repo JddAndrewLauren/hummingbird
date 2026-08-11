@@ -16,21 +16,38 @@ import type { TaskActionName, TaskItemDTO, TaskStageName } from "../store/protoc
 const ACTIONS_BY_STAGE: Record<TaskStageName, readonly TaskActionName[]> = {
   triage: [],
   grilling: [],
-  ready: ["start", "block", "cancel"],
+  // `"complete"` from Ready (and Blocked below) is the amendment the row
+  // checkmark made: finishing is one click from any live stage, because
+  // "I did it" is a fact about the world, not about whether the app was
+  // told the item had been started first. `Core::act` never gated on the
+  // current stage anyway — this vocabulary was the only gate.
+  ready: ["start", "complete", "block", "cancel"],
   // Resuming a stalled `in_progress` item back into `in_progress` is a
   // no-op the UI never offers; only forward (`complete`) or sideways
   // (`block`, `cancel`) actions apply.
   in_progress: ["complete", "block", "cancel"],
-  // `Blocked` means an external wait ended (`CONTEXT.md`) — the only way
+  // `Blocked` means an external wait ended (`CONTEXT.md`) — the way
   // back onto the frontier is `"start"`, exactly as if the item were
-  // freshly Ready. `"block"` is deliberately absent: an already-blocked
-  // item offers no "block it again" affordance.
-  blocked: ["start", "cancel"],
+  // freshly Ready, and `"complete"` covers the wait that ended because
+  // the item turned out finished. `"block"` is deliberately absent: an
+  // already-blocked item offers no "block it again" affordance.
+  blocked: ["start", "complete", "cancel"],
   done: [],
 };
 
 export function availableActions(stage: TaskStageName): readonly TaskActionName[] {
   return ACTIONS_BY_STAGE[stage] ?? [];
+}
+
+/** Whether a row offers the one-click "mark done" checkmark: any live,
+ * unarchived stage but Done itself. Deliberately WIDER than
+ * `availableActions` — Triage and Grilling stay pre-action in the detail
+ * panel's vocabulary (no start/block there), but a capture that turned out
+ * already finished is still one click, which is the amendment the checkmark
+ * decision made to "pre-action by definition". The one deciding function for
+ * every screen's row, so the affordance cannot drift between them. */
+export function canMarkDone(item: Pick<TaskItemDTO, "stage" | "archivedAt">): boolean {
+  return item.stage !== "done" && item.archivedAt === null;
 }
 
 /** Mirrors `hummingbird_core::ItemAction::stage`'s mapping — the same

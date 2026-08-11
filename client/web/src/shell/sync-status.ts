@@ -74,7 +74,11 @@ function classOf(outcome: { kind: TaskRunOutcomeKind } | null): SyncOutcomeClass
   return outcome === null ? null : syncOutcomeClass(outcome.kind);
 }
 
-function formatAge(ageMs: number): string {
+/** A short relative age in the product's own register — `just now`, `12m ago`,
+ * `3h ago`, `2d ago` (the design system's "Numbers and time" rule). Exported
+ * because the triage inbox's collapsed rows state a capture's age the same way,
+ * and two formatters would drift into two vocabularies. */
+export function relativeAge(ageMs: number): string {
   const minutes = Math.floor(ageMs / 60_000);
   if (minutes < 1) {
     return "just now";
@@ -126,7 +130,7 @@ export function syncStatusLabel(input: SyncStatusInput): string {
   if (input.lastSyncAtMs === null) {
     return `Not yet synced${queuedSuffix(input.queueDepth)}`;
   }
-  const age = formatAge(Math.max(0, input.nowMs - input.lastSyncAtMs));
+  const age = relativeAge(Math.max(0, input.nowMs - input.lastSyncAtMs));
   const state = outcome === "failed" || outcome === "not-run" ? "Stale" : "Synced";
   return `${state} — as of ${age}${queuedSuffix(input.queueDepth)}`;
 }

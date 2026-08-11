@@ -170,6 +170,39 @@ export type TaskActionName = "start" | "complete" | "block" | "cancel";
  * the server cannot express. */
 export type TriageDestinationName = "grilling" | "ready";
 
+/** Every field of an item a triage may edit, and the vocabulary of the three
+ * instructions each one can carry: **an absent key leaves the field alone, an
+ * explicit `null` clears it, and a value sets it.** That is
+ * `hummingbird_domain::ItemPatch`'s own wire contract, kept intact all the way
+ * out to the form, because an editor showing an item's real values needs to be
+ * able to remove one — a single "unset means unchanged" sentinel can only ever
+ * add.
+ *
+ * `title` and `priority` are `NOT NULL` columns and so take no `null`: the
+ * seam (`ffi-web`'s `TriageEdits`) refuses one rather than reading it as
+ * "leave alone", which would swallow the edit.
+ *
+ * `source`/`sourceKey`/`sourceUrl` are deliberately absent — provenance
+ * belongs to whatever captured the item. So are `stage` (that IS
+ * `destination`), `archivedAt` (cancelling is an act), `projectPos` (a Route's
+ * ordering) and every server-stamped field. */
+export interface TriageEdits {
+  title?: string;
+  description?: string | null;
+  projectId?: string | null;
+  size?: "quick" | "short" | "deep" | null;
+  energy?: "low" | "medium" | "high" | null;
+  context?: string | null;
+  /** 0..=4, in `items.priority`'s own encoding (`screens/priority.ts` owns
+   * every reading of that number — nothing renders or ranks it raw). */
+  priority?: number;
+  /** `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`, minute precision, no timezone
+   * (`hummingbird_domain::is_valid_deadline`). */
+  deadline?: string | null;
+  /** A whole civil day, `YYYY-MM-DD` — a do-date has no minute. */
+  scheduledDate?: string | null;
+}
+
 /** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
  * checklist (issue #96, S10) — read-only from this binding; ticking one is
@@ -221,6 +254,19 @@ export interface TaskItemDTO {
    * every item this DTO shape carries (frontier, triage inbox, blocked and
    * its blockers), not left to a separate `isPending` request per row. */
   pending: boolean;
+}
+
+/** One Ledger row — an item plus its derivable facts (`ffi-web`'s
+ * `LedgerRowDTO`). The Ledger derives, it does not record: no transition
+ * history exists anywhere, so a row is only ever the item's *current* facts.
+ * `absentSinceMs` is the mirror's retention stamp — the Ledger is the one
+ * read that shows a row every other screen hides, labelled rather than
+ * hidden. `deadLettered` is honestly device-local (the journal never syncs);
+ * `hasLiveAlert` syncs like every alert and agrees between devices. */
+export interface LedgerRowDTO extends TaskItemDTO {
+  absentSinceMs: number | null;
+  deadLettered: boolean;
+  hasLiveAlert: boolean;
 }
 
 /** What one binding is currently set to (#118, ADR-0015) — the wire shape of
@@ -434,36 +480,21 @@ export type TaskWorkerRequest =
    * `"capture"` documents above — `Core::act`'s own queue-entry id derives
    * from it. */
   | { type: "act"; seed: string; itemId: string; action: TaskActionName; nowMs: number }
-  /** S13/#111's triage mutation: edits whatever `title`/`projectId`/`size`/
-   * `energy`/`context` set (each `null` meaning "leave this field alone",
-   * never "clear it" — `TriagePatch`'s own contract) and promotes to
-   * `destination`, as one CAS `PATCH` — never four separate mutations for
-   * four separate fields. `size`/`energy` are the wire's snake_case
-   * vocabulary names, resolved by name through
-   * `hummingbird_domain::Size`/`Energy::parse` on the way in, never a raw
-   * index. Same caller-mints-`seed` contract as `"act"`.
+  /** S13/#111's triage mutation: edits whatever `edits` sets and promotes to
+   * `destination`, as ONE CAS `PATCH` — never one mutation per field. Same
+   * caller-mints-`seed` contract as `"act"`.
    *
    * `destination` is `null` (#122) to leave `stage` untouched entirely —
    * the weekend-plans pane's do-date chip triages items that may already be
    * `InProgress`, which `TriageDestinationName`'s two-value vocabulary
-   * cannot name, so a caller that wants only `scheduledDate` applied sends
-   * no destination rather than one that would demote the item.
-   * `scheduledDate` is the one field here that CAN be cleared: an omitted
-   * key leaves it alone, `{ clear: true }` clears it, `{ clear: false,
-   * value }` sets it — a distinct shape from `title`/`projectId`/etc.
-   * because `TriagePatch::scheduled_date` is the only double-`Option` field
-   * `Core::triage` carries. */
+   * cannot name, so a caller that wants only `edits.scheduledDate` applied
+   * sends no destination rather than one that would demote the item. */
   | {
       type: "triage";
       seed: string;
       itemId: string;
       destination: TriageDestinationName | null;
-      title: string | null;
-      projectId: string | null;
-      size: "quick" | "short" | "deep" | null;
-      energy: "low" | "medium" | "high" | null;
-      context: string | null;
-      scheduledDate?: { clear: true } | { clear: false; value: string };
+      edits: TriageEdits;
       nowMs: number;
     }
   /** #118's binding write: one absolute-value CAS `PUT /api/settings/:key`,
@@ -482,6 +513,13 @@ export type TaskWorkerRequest =
   | { type: "getPaneRead"; source: string; nowMs: number }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
+  /** The complete retained roster — every item the mirror has ever known,
+   * archived rows included and labelled. `nowMs` is the request's own clock,
+   * resolving the alert badge's liveness core-side, same contract as
+   * `getPaneRead`. */
+  | { type: "getLedger"; nowMs: number }
+  /** Every live `Done` item — the Done screen's read. */
+  | { type: "getDone" }
   /** Relation-blocked items with the reason visible — S10 (issue #108). */
   | { type: "getBlocked" }
   /** One item's Steps — item detail (issue #96, S10). */
@@ -608,6 +646,14 @@ export type TaskWorkerResponse =
   | { type: "paneRead"; read: PaneReadDTO }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
+  /** Answers `getLedger`. Never posted for a `"busy"` read — an empty
+   * ledger renders as "nothing has ever been tracked", a claim a core that
+   * has not loaded may not make (same contract as `paneRead`). Not replayed
+   * to a late-connecting port: the alert badge was resolved against the
+   * request's own `nowMs`, and a replay would state it as current. */
+  | { type: "ledger"; rows: LedgerRowDTO[] }
+  /** Answers `getDone`. Same drop-on-busy contract as `frontier`. */
+  | { type: "done"; items: TaskItemDTO[] }
   | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }
   | { type: "steps"; itemId: string; steps: StepDTO[] }
   | { type: "projects"; projects: ProjectDTO[] }

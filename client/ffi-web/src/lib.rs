@@ -291,7 +291,7 @@ mod wasm_bindings {
 
     // ------------------------------------------------------------ TaskHost
 
-    use super::task_host::{TaskHostCore, TriageEdits};
+    use super::task_host::{TaskHostCore, TriageEdits, TriageResponse};
 
     /// Whatever a synchronous setter had to defer because [`TaskShared`]'s
     /// host was checked out. NOT simple last-wins: `Push` and `Clear` always
@@ -413,6 +413,10 @@ mod wasm_bindings {
     const BUSY_ITEM_LIST: &str = r#"{"kind":"busy","items":[]}"#;
     const BUSY_BLOCKED_LIST: &str = r#"{"kind":"busy","entries":[]}"#;
     const BUSY_STEP_LIST: &str = r#"{"kind":"busy","steps":[]}"#;
+    // Dropped by the host rather than stored, like the pane read: an empty
+    // ledger renders as "nothing has ever been tracked" — a claim a core
+    // that has not loaded may not make.
+    const BUSY_LEDGER_LIST: &str = r#"{"kind":"busy","rows":[]}"#;
     const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     // #118: an empty binding list would read as "nothing is bound", which
@@ -555,6 +559,34 @@ mod wasm_bindings {
                     serde_json::to_string(&host.projects()).expect("ProjectListResponse serializes")
                 }
                 None => BUSY_PROJECT_LIST.to_string(),
+            }
+        }
+
+        /// The complete retained roster (the Ledger screen's read), as JSON:
+        /// `{"kind": "ok"|"busy", "rows": [Item & {"pending": bool,
+        /// "absent_since_ms": number|null, "dead_lettered": bool,
+        /// "has_live_alert": bool}]}` — every item this device's mirror has
+        /// ever known, archived rows included and labelled. `busy` carries an
+        /// empty list because the shape demands one, and the host drops the
+        /// whole answer on it rather than storing it (see
+        /// `BUSY_LEDGER_LIST`). `now_ms` is host-supplied and resolves alert
+        /// liveness.
+        pub fn ledger(&self, now_ms: f64) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.ledger(now_ms as i64))
+                    .expect("LedgerListResponse serializes"),
+                None => BUSY_LEDGER_LIST.to_string(),
+            }
+        }
+
+        /// Every live `Done` item (the Done screen's read), as JSON: same
+        /// shape as [`TaskHost::frontier`].
+        pub fn done(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.done()).expect("ItemListResponse serializes")
+                }
+                None => BUSY_ITEM_LIST.to_string(),
             }
         }
 
@@ -707,53 +739,47 @@ mod wasm_bindings {
             })
         }
 
-        /// Triages an already-captured item (S13/#111: edit title/project/
-        /// size/energy/context/scheduled_date and optionally promote to
-        /// Grilling or Ready), as one CAS `PATCH`. Resolves to JSON:
+        /// Triages an already-captured item (S13/#111: edit every field of it
+        /// but the source, and optionally promote to Grilling or Ready), as
+        /// one CAS `PATCH`. Resolves to JSON:
         /// `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
-        /// `size`/`energy` are the wire's snake_case vocabulary names
-        /// (`"quick"`/`"short"`/`"deep"`, `"low"`/`"medium"`/`"high"`),
-        /// resolved by name — never a raw id — on the way in. `destination`
-        /// is `undefined`/`null` (#122) to leave `stage` untouched — see
-        /// [`TaskHostCore::triage`]'s doc. `scheduled_date`/
-        /// `clear_scheduled_date` together carry the three-state do-date edit
-        /// a bare `Option<String>` cannot express across this boundary
-        /// (`undefined` and `null` both marshal to `None`): `clear_scheduled_date
-        /// = true` clears regardless of `scheduled_date`; otherwise a present
-        /// `scheduled_date` sets it and `None` leaves it alone.
-        #[allow(clippy::too_many_arguments)]
+        ///
+        /// `edits` is a JSON object, not a positional list: it carries nine
+        /// optional fields, and — more importantly — the difference between a
+        /// key being absent ("leave this field alone") and explicitly `null`
+        /// ("clear it"), which positional `Option<String>` arguments cannot
+        /// express (see [`TriageEdits`]). Malformed JSON, an unknown key, or a
+        /// `null` on a `NOT NULL` field is a `"failed"` answer carrying the
+        /// parse error, never a partially applied edit. `destination` is
+        /// `undefined`/`null` (#122) to leave `stage` untouched entirely —
+        /// see [`TaskHostCore::triage`]'s doc.
         pub fn triage(
             &self,
             seed: String,
             item_id: String,
             destination: Option<String>,
-            title: Option<String>,
-            project_id: Option<String>,
-            size: Option<String>,
-            energy: Option<String>,
-            context: Option<String>,
-            scheduled_date: Option<String>,
-            clear_scheduled_date: bool,
+            edits: String,
             now_ms: f64,
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
+                let edits: TriageEdits = match serde_json::from_str(&edits) {
+                    Ok(edits) => edits,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(
+                            &serde_json::to_string(&TriageResponse {
+                                kind: "failed",
+                                error: Some(format!("unreadable triage edits: {error}")),
+                            })
+                            .expect("TriageResponse serializes"),
+                        ));
+                    }
+                };
                 let Some(mut host) = inner.check_out() else {
                     return Ok(JsValue::from_str(BUSY_TRIAGE));
                 };
-                let scheduled_date = if clear_scheduled_date {
-                    Some(None)
-                } else {
-                    scheduled_date.map(Some)
-                };
                 let response = host
-                    .triage(
-                        &seed,
-                        &item_id,
-                        destination.as_deref(),
-                        TriageEdits { title, project_id, size, energy, context, scheduled_date },
-                        now_ms as i64,
-                    )
+                    .triage(&seed, &item_id, destination.as_deref(), edits, now_ms as i64)
                     .await;
                 inner.check_in(host);
                 Ok(JsValue::from_str(

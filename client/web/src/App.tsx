@@ -1,13 +1,18 @@
 import { useEffect, useState } from "react";
 import { demoData } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
+import { DoneScreen } from "./screens/DoneScreen";
+import { LedgerScreen } from "./screens/LedgerScreen";
 import { NowScreen } from "./screens/NowScreen";
 import { RoutesScreen } from "./screens/RoutesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TriageScreen } from "./screens/TriageScreen";
+import type { CaptureDestination } from "./screens/capture-destination";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
+import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
 import { NavRail } from "./shell/NavRail";
+import { readRailCollapsed, writeRailCollapsed } from "./shell/rail-collapse";
 import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
@@ -20,13 +25,14 @@ import { useItemActions } from "./shell/useItemActions";
 import { useTriageWiring } from "./shell/useTriageWiring";
 import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
+import { useLedgerWiring } from "./shell/useLedgerWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { usePaneReadsWiring } from "./shell/usePaneReadsWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
 import { taskTokenUiState } from "./task/token-ui";
 import { useStore } from "./store/useStore";
-import type { WorkerLike } from "./store/worker-client";
+import type { CaptureFields, WorkerLike } from "./store/worker-client";
 import { toggledPreference } from "./theme/theme";
 import { useTheme } from "./theme/useTheme";
 
@@ -73,6 +79,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const [demo] = useState(demoData);
 
   const [screen, setScreen] = useState<Screen>("now");
+  // Device-local view preference, same storage guard `NowScreen`'s ranked
+  // region uses — absent storage means the preference lasts the session.
+  const [railCollapsed, setRailCollapsed] = useState(() =>
+    readRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage),
+  );
+  const handleToggleRailCollapsed = () => {
+    const next = !railCollapsed;
+    setRailCollapsed(next);
+    writeRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
+  };
   const { preference, theme, setPreference } = useTheme();
   const {
     handleConnectClick,
@@ -101,23 +117,55 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
   // #267: the calendar arm's exact twin — every interval the registered
-  // standing questions need from the calendar mirror. Empty today (no
-  // shipped question reads it yet; #122's job), but a real caller, which is
-  // what makes `getCalendarEvents` reachable at all rather than an exported,
-  // unit-tested, never-wired hook.
+  // standing questions need from the calendar mirror. #122's the first real
+  // caller, which is what makes `getCalendarEvents` reachable at all rather
+  // than an exported, unit-tested, never-wired hook.
   useCalendarEventsWiring(worker, status, task.syncOutcomeSeq);
+  // The Ledger/Done reads, refreshed per cycle AND per mutation result — the
+  // hook's own doc says why the mutation-result refresh lives there rather
+  // than in worker-client.ts.
+  useLedgerWiring(worker, status, task.syncOutcomeSeq, task.lastCapture, task.lastAct, task.lastTriage);
 
   // #110/S12's "always-present ... plus a global hotkey that focuses it"
-  // (#98, restated on #110): a counter, not a boolean — `TriageScreen`'s own
-  // effect keys off it changing, so a second hotkey press while already on
-  // Triage re-focuses the input instead of being a no-op. Bumped by both the
-  // hotkey below and the header's Capture button, since both are "take me to
-  // the capture box" gestures.
+  // (#98, restated on #110), now over a popover instead of a screen switch:
+  // capture opens `CapturePopover` over whatever is showing, so asking for
+  // the box no longer costs the person the screen they were reading.
+  //
+  // The counter beside the flag is not redundant. `CaptureBox` focuses its
+  // field on every bump, so a second gesture while the popover is ALREADY
+  // open re-focuses the field rather than being a no-op — the same reason the
+  // Triage-screen version was a counter and not a boolean.
+  const [captureOpen, setCaptureOpen] = useState(false);
   const [captureFocusRequestId, setCaptureFocusRequestId] = useState(0);
-  const requestCaptureFocus = () => {
-    setScreen("triage");
+  const requestCapture = () => {
+    setCaptureOpen(true);
     setCaptureFocusRequestId((id) => id + 1);
   };
+
+  // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the
+  // capture box is in the shell now: a fixture capture typed in the popover
+  // has to land in the list the Triage screen renders. Dev-only either way —
+  // `demoData()` is null in production.
+  const [demoCaptures, setDemoCaptures] = useState(() => demo?.triage ?? []);
+
+  function handleCapture(title: string, destination: CaptureDestination, fields: CaptureFields) {
+    if (demo) {
+      // Fixtures, so `destination` is not honoured — and neither is `fields`:
+      // the demo frontier is a hand-authored world, and a minted fixture
+      // appearing on it would be a second, divergent source of truth for what
+      // the demo shows.
+      setDemoCaptures((current) => [
+        { id: `CAP-${current.length + 8}`, title, source: "Typed here", age: "just now" },
+        ...current,
+      ]);
+      return;
+    }
+    submitCapture(title, destination, Date.now(), fields);
+  }
+
+  function dropDemoCapture(id: string) {
+    setDemoCaptures((current) => current.filter((capture) => capture.id !== id));
+  }
 
   // The global focus hotkey (#107's decision: shell level, not a leaf
   // component — `src/App.tsx` is that level). One `keydown` listener for the
@@ -143,7 +191,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         })
       ) {
         event.preventDefault();
-        requestCaptureFocus();
+        requestCapture();
       }
     }
     document.addEventListener("keydown", onKeyDown);
@@ -157,9 +205,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // own hook: it is one more call shape of the wiring already threaded
   // through this component, not a second mutation entry point.
   function handleSetScheduledDate(itemId: string, date: string | null): void {
-    handleTriage(itemId, null, {
-      scheduledDate: date === null ? { clear: true } : { clear: false, value: date },
-    });
+    handleTriage(itemId, null, { scheduledDate: date });
   }
   const syncLabel = syncStatusLabel({
     online,
@@ -206,6 +252,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         statusLabel={coreStatusLabel(status, apiVersion)}
         theme={theme}
         onToggleTheme={() => setPreference(toggledPreference(theme))}
+        collapsed={railCollapsed}
+        onToggleCollapsed={handleToggleRailCollapsed}
       />
 
       <main style={{ display: "flex", flex: 1, minWidth: 0, flexDirection: "column" }}>
@@ -216,7 +264,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // `sync-status.ts`.
           syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
-          onCapture={requestCaptureFocus}
+          onCapture={requestCapture}
         />
 
         {/* The one scroll container: the design README fixes the rail and
@@ -248,13 +296,23 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
             <TriageScreen
               demo={demo}
               task={task}
-              onSubmitCapture={submitCapture}
+              demoCaptures={demo ? demoCaptures : undefined}
+              onDropDemoCapture={demo ? dropDemoCapture : undefined}
               onTriage={demo ? undefined : handleTriage}
-              focusRequestId={captureFocusRequestId}
+              onComplete={demo ? undefined : (itemId) => handleAct(itemId, "complete")}
+              nowMs={syncNowMs}
             />
           )}
           {screen === "routes" && <RoutesScreen demo={demo} />}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
+          {screen === "done" && <DoneScreen task={task} nowMs={syncNowMs} />}
+          {screen === "ledger" && (
+            <LedgerScreen
+              task={task}
+              nowMs={syncNowMs}
+              onComplete={(itemId) => handleAct(itemId, "complete")}
+            />
+          )}
           {screen === "settings" && (
             <SettingsScreen
               demo={demo}
@@ -280,6 +338,18 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
         </div>
       </main>
+
+      {/* The shell's capture box (#107): over the current screen, never
+          instead of it. Rendered outside `<main>` — it is `position: fixed`
+          chrome for the whole window, not content in the scroll column. */}
+      <CapturePopover
+        open={captureOpen}
+        focusRequestId={captureFocusRequestId}
+        onClose={() => setCaptureOpen(false)}
+        onSubmit={handleCapture}
+        demo={demo !== null}
+        lastCapture={demo ? null : task.lastCapture}
+      />
     </div>
   );
 }
