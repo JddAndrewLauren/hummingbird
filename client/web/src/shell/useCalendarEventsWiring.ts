@@ -15,10 +15,11 @@ import { requestCalendarEvents, type WorkerLike } from "../store/worker-client";
 // itself rather than taking a `requests` prop: a caller-supplied list would
 // re-open the drift `requiredSources()` closes for the snapshot arm — #122
 // could register a calendar-lane question and have it silently never
-// requested, because nothing forces this hook's caller to also update. It
-// returns empty today, since no shipped question reads the calendar arm yet
-// (that is #122's job); mounted here with today's empty list, this hook
-// still has a real caller, which is the point.
+// requested, because nothing forces this hook's caller to also update. #122
+// registered the weekend-plans pane as the first (and, today, only)
+// calendar-lane question, so `requiredCalendarRequests()` now returns its
+// one rolling window rather than the empty list this hook used to be
+// mounted against.
 //
 // Thin glue and **no clock of its own**: `Date.now()` below is the
 // request's own `nowMs`, the instant `freshness` is measured against,

@@ -240,6 +240,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onCloseItemDetail={handleCloseItemDetail}
               onAct={handleAct}
               calendarReads={calendar.eventReads}
+              calendarConnected={calendar.connected}
               onSetScheduledDate={demo ? undefined : handleSetScheduledDate}
             />
           )}

@@ -132,6 +132,16 @@ export interface QuestionInputs {
    * the further, core-answered distinction "requested, but this device has
    * never synced its calendar at all". */
   calendarReads: Record<string, CalendarReadDTO | undefined>;
+  /** Issue #122 review fix: whether this device has ever connected a
+   * calendar at all (`CalendarState.connected`, `store/store.ts`) —
+   * distinct from whether a *snapshot* has landed. A calendar-lane
+   * question's `not_read` read state is the core's "no snapshot at all",
+   * which also covers a connected-but-unpolled device, an offline one, or
+   * one sitting on `needsReconnect` — none of those are "never set up".
+   * Only `!calendarConnected` may render the setup prompt; `not_read` while
+   * connected is `bound-but-unacquired`, the same "the table hasn't
+   * answered yet" reading `waste.ts`'s unread pane read gives. */
+  calendarConnected: boolean;
   /** Every actionable item this device currently knows about — `task.frontier`
    * and `task.blocked`'s items, unioned (#122). The weekend-plans pane is
    * the first question to read items directly rather than through a

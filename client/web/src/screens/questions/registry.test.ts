@@ -15,7 +15,14 @@ import { QUESTIONS, panesFrom, rankPanes, requiredCalendarRequests, requiredSour
 // just the one-subject case the only shipped pane happens to be.
 
 function emptyInputs(): QuestionInputs {
-  return { bindings: [], paneReads: {}, calendarReads: {}, items: [], nowMs: 1_000 };
+  return {
+    bindings: [],
+    paneReads: {},
+    calendarReads: {},
+    calendarConnected: false,
+    items: [],
+    nowMs: 1_000,
+  };
 }
 
 /** A registry of questions that do not exist in the shipped vocabulary —

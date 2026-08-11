@@ -156,8 +156,22 @@ export interface WindowEntry {
   deadlineOutsideWindow?: string;
 }
 
+/** Day-membership test for an item's due/do-date, deliberately NOT
+ * `[window.startMs, window.endMs]` — #122 review fix. `window.startMs` is
+ * Friday **17:00** (the band's own "has the weekend started" instant), but
+ * `window.days[0]` (Friday) spans the whole day from local midnight, and a
+ * scheduled or due date anchors to the *start* of its day
+ * (`scheduledToMs`/`deadlineToMs`'s day-only case). Testing against
+ * `window.startMs` made every Friday do-date or day-only Friday deadline
+ * fail `inWindow` even though `PlanChips` offers a `FRI` chip for it: the
+ * write landed, the row either disappeared from the merge entirely or the
+ * chip never filled, and there was no way to tell from the pane that
+ * anything had happened. The lower bound here is the first day's own
+ * `startMs` (Friday local midnight); the upper bound is unchanged, since
+ * `window.days[2].endMs === window.endMs` already. */
 function inWindow(ms: number, window: WeekendWindow): boolean {
-  return ms >= window.startMs && ms <= window.endMs;
+  const lowerMs = window.days[0]?.startMs ?? window.startMs;
+  return ms >= lowerMs && ms <= window.endMs;
 }
 
 /** Parses a naive-local `YYYY-MM-DD[THH:MM]` deadline to an instant,
@@ -388,31 +402,40 @@ export function weekendGlyphs(window: WeekendWindow): PaneGlyph[] {
 
 /** This question's answer for the shell (#245/#122).
  *
- * Answer state reads the calendar arm alone: a missing entry (never
- * requested / a busy core the worker dropped) is `bound-but-unacquired` —
- * the same "the table hasn't answered yet" reading `waste.ts`'s `"unread"`
- * gives, never `unbound` — `"not_read"` (this device has never synced a
- * calendar at all) is the genuine `unbound`, and a real `"read"` answer is
+ * Answer state reads `calendarConnected` first — #122 review fix. The
+ * criterion the brief draws is "no calendar → `unbound`" vs. "no snapshot →
+ * `bound-but-unacquired`", and those are two different facts:
+ * `CalendarState.connected` (`store/store.ts`) is "has this device ever
+ * connected a calendar", while the calendar arm's `"not_read"` state is the
+ * core's "no snapshot at all" — which is ALSO true of a connected device
+ * that has not polled yet, is offline, or is sitting on `needsReconnect`.
+ * Collapsing `"not_read"` straight to `unbound` told an already-configured
+ * reader to go set the pane up. So: `!calendarConnected` is the only path to
+ * `unbound`; a missing calendar-arm entry (never requested / a busy core the
+ * worker dropped) or a connected-but-unacquired `"not_read"` read are both
+ * `bound-but-unacquired` — the same "the table hasn't answered yet" reading
+ * `waste.ts`'s `"unread"` pane read gives — and a real `"read"` answer is
  * always `answered`, including a genuinely empty weekend: a question that
  * answered nothing has not failed, and must not sort with the failures. */
 export function weekendAnswer(inputs: QuestionInputs): PaneAnswer {
-  const read = weekendCalendarRead(inputs);
-  if (read === undefined) {
-    return {
-      answerState: "bound-but-unacquired",
-      band: "dormant",
-      withinBand: null,
-      collapsedHeadline: "Checking calendar",
-      icon: [{ kind: "icon", name: "cloud-fog", label: "checking calendar" }],
-    };
-  }
-  if (read.state === "not_read") {
+  if (!inputs.calendarConnected) {
     return {
       answerState: "unbound",
       band: "dormant",
       withinBand: null,
       collapsedHeadline: "Not set up",
       icon: [{ kind: "icon", name: "help-circle", label: "not set up" }],
+    };
+  }
+
+  const read = weekendCalendarRead(inputs);
+  if (read === undefined || read.state === "not_read") {
+    return {
+      answerState: "bound-but-unacquired",
+      band: "dormant",
+      withinBand: null,
+      collapsedHeadline: "Checking calendar",
+      icon: [{ kind: "icon", name: "cloud-fog", label: "checking calendar" }],
     };
   }
 
@@ -428,8 +451,10 @@ export function weekendAnswer(inputs: QuestionInputs): PaneAnswer {
 }
 
 /** The merged window an answered pane's expanded rendering draws — `null`
- * for every gap state, mirroring `waste.ts`'s `wasteView`. */
+ * for every gap state (including `!calendarConnected`, #122 review fix),
+ * mirroring `waste.ts`'s `wasteView`. */
 export function weekendView(inputs: QuestionInputs): WeekendWindow | null {
+  if (!inputs.calendarConnected) return null;
   const read = weekendCalendarRead(inputs);
   if (read === undefined || read.state === "not_read") {
     return null;

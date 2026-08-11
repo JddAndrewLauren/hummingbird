@@ -76,6 +76,10 @@ export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs">
     // `not_read` calendar, since nothing here ever pushes a token) is the
     // honest "unbound" reading rather than a hand-authored merge.
     calendarReads: {},
+    // No calendar credential is ever mounted in the demo world, so
+    // `calendarConnected: false` is the honest fact — the weekend pane's own
+    // demo state is "unbound", never a stale-looking "checking" spinner.
+    calendarConnected: false,
     items: [],
   };
 }

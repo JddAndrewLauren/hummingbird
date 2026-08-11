@@ -271,27 +271,13 @@ export function WeekendPaneExpanded({
   onSetupNavigate?: () => void;
   onSetScheduledDate?: (itemId: string, date: string | null) => void;
 }) {
-  const read = weekendCalendarRead(inputs);
-
-  if (read === undefined) {
-    // The calendar arm hasn't answered yet — not the setup prompt: this
-    // device does not yet know whether a calendar was ever connected, and
-    // telling an already-connected reader to set one up is a wrong answer,
-    // not a slow one (`waste.ts`'s own "unread" reasoning).
-    return (
-      <Card padding="var(--space-3)">
-        <EmptyState
-          compact
-          icon="cloud-fog"
-          headingLevel={3}
-          title="Checking your calendar"
-          body="Reading this device's calendar connection."
-        />
-      </Card>
-    );
-  }
-
-  if (read.state === "not_read") {
+  // #122 review fix: `!calendarConnected` is the ONLY path to the setup
+  // prompt. A missing calendar-arm entry or a connected `"not_read"` read
+  // (never polled yet, offline, `needsReconnect`) are both "the table
+  // hasn't answered yet", not "never set up" — telling an already-connected
+  // reader to go set the pane up is a wrong answer, not a slow one
+  // (`waste.ts`'s own "unread" reasoning).
+  if (!inputs.calendarConnected) {
     return (
       <Card padding="var(--space-3)">
         <EmptyState
@@ -307,6 +293,22 @@ export function WeekendPaneExpanded({
               </Button>
             ) : undefined
           }
+        />
+      </Card>
+    );
+  }
+
+  const read = weekendCalendarRead(inputs);
+
+  if (read === undefined || read.state === "not_read") {
+    return (
+      <Card padding="var(--space-3)">
+        <EmptyState
+          compact
+          icon="cloud-fog"
+          headingLevel={3}
+          title="Checking your calendar"
+          body="Waiting on this device's calendar sync."
         />
       </Card>
     );

@@ -55,6 +55,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
       onCloseItemDetail={onCloseItemDetail}
       onAct={onAct}
       calendarReads={{}}
+      calendarConnected={false}
     />,
   );
   const rerender = (next: TaskState, nextSelected: string | null = selectedItemId) =>
@@ -69,6 +70,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
         onCloseItemDetail={onCloseItemDetail}
         onAct={onAct}
         calendarReads={{}}
+        calendarConnected={false}
       />,
     );
   return { onAct, onOpenItem, onCloseItemDetail, rerender };
@@ -289,6 +291,7 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
         onCloseItemDetail={() => {}}
         onAct={() => {}}
         calendarReads={{}}
+        calendarConnected={false}
       />,
     );
 
@@ -344,6 +347,7 @@ describe("NowScreen — the calendar-reads arm (#267/#122)", () => {
         onCloseItemDetail={() => {}}
         onAct={() => {}}
         calendarReads={calendarReads}
+        calendarConnected
       />,
     );
 

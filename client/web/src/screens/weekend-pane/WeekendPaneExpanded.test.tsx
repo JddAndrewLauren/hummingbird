@@ -50,6 +50,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
         inputs={{
           bindings: [],
           paneReads: {},
+          calendarConnected: true,
           calendarReads: {
             [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
           },
@@ -78,6 +79,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
         inputs={{
           bindings: [],
           paneReads: {},
+          calendarConnected: true,
           calendarReads: {
             [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
           },
@@ -102,6 +104,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
         inputs={{
           bindings: [],
           paneReads: {},
+          calendarConnected: true,
           calendarReads: {
             [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
           },
@@ -126,6 +129,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
         inputs={{
           bindings: [],
           paneReads: {},
+          calendarConnected: true,
           calendarReads: {
             [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
           },
@@ -149,6 +153,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
         inputs={{
           bindings: [],
           paneReads: {},
+          calendarConnected: true,
           calendarReads: {
             [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
           },
@@ -170,6 +175,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
         inputs={{
           bindings: [],
           paneReads: {},
+          calendarConnected: false,
           calendarReads: { [CALENDAR_REQUEST_KEY]: { state: "not_read" } },
           items: [],
         }}
@@ -183,5 +189,29 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
     expect(screen.getByText("What are my plans this weekend?")).toBeTruthy();
     fireEvent.click(screen.getByText("Open Settings"));
     expect(onScreen).toHaveBeenCalledWith("settings");
+  });
+
+  // #122 review fix: a connected device with no snapshot yet (never polled,
+  // offline, needsReconnect) must NOT get the setup prompt — only
+  // `!calendarConnected` may.
+  it("shows 'Checking your calendar', never the setup prompt, when connected but not yet acquired", () => {
+    render(
+      <RankedRegion
+        inputs={{
+          bindings: [],
+          paneReads: {},
+          calendarConnected: true,
+          calendarReads: { [CALENDAR_REQUEST_KEY]: { state: "not_read" } },
+          items: [],
+        }}
+        nowMs={LIVE_NOW_MS}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /this weekend/i, expanded: false }));
+    expect(screen.getByText("Checking your calendar")).toBeTruthy();
+    expect(screen.queryByText("What are my plans this weekend?")).toBeNull();
   });
 });

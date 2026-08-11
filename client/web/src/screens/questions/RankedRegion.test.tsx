@@ -68,7 +68,7 @@ describe("RankedRegion", () => {
   it("renders an answered, imminent pane expanded, from real-shaped inputs", () => {
     render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, items: [] }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -85,7 +85,7 @@ describe("RankedRegion", () => {
     // no quiet card, and the pane ships no compact form of its own.
     render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, items: [] }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -106,7 +106,7 @@ describe("RankedRegion", () => {
     // cursor — while the content it renders stays live.
     const view = render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, items: [] }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -117,7 +117,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, items: [] }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -131,7 +131,7 @@ describe("RankedRegion", () => {
   it("re-samples the order when a cycle completes", () => {
     const view = render(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, items: [] }}
+        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -141,7 +141,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, items: [] }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={1}
         onScreen={() => {}}
@@ -156,9 +156,13 @@ describe("RankedRegion", () => {
     // A fresh mount whose bindings land a moment later must not sit in the
     // wrong answer state for a whole minute — and while the table is unread
     // it says so, rather than telling a configured reader to set it up.
+    // `calendarConnected: true` throughout — this test is about the waste
+    // question's own unread-bindings state, and a weekend-pane "Not set up"
+    // row (unbound only via `!calendarConnected`, #122 review fix) would
+    // make the `queryByText("Not set up")` assertion ambiguous.
     const view = render(
       <RankedRegion
-        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, items: [] }}
+        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -169,7 +173,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, items: [] }}
+        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -182,7 +186,7 @@ describe("RankedRegion", () => {
   it("keeps a collapse override across a remount, through storage", () => {
     const storage = fakeStorage();
     const props = {
-      inputs: { bindings: bound(), paneReads: readAt(1), calendarReads: {}, items: [] },
+      inputs: { bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] },
       nowMs: NOW,
       syncOutcomeSeq: 0,
       storage,
@@ -213,7 +217,7 @@ describe("RankedRegion", () => {
               ],
             }),
           },
-          calendarReads: {}, items: [],
+          calendarReads: {}, calendarConnected: false, items: [],
         }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -229,7 +233,7 @@ describe("RankedRegion", () => {
   it("tells an unread bindings table apart from an unset binding, on screen", () => {
     render(
       <RankedRegion
-        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, items: [] }}
+        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -250,7 +254,7 @@ describe("RankedRegion", () => {
         inputs={{
           bindings: [{ key: BINDING_KEY, known: true, pending: false, value: { state: "other", raw: "7" } }],
           paneReads: {},
-          calendarReads: {}, items: [],
+          calendarReads: {}, calendarConnected: false, items: [],
         }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -268,7 +272,12 @@ describe("RankedRegion", () => {
     const onScreen = vi.fn();
     render(
       <RankedRegion
-        inputs={{ bindings: [], paneReads: {}, calendarReads: {}, items: [] }}
+        // `calendarConnected: true` keeps the weekend pane out of its own
+        // `unbound` state here — this test is about the waste question's
+        // unset binding, and a second "Not set up" row from the weekend
+        // pane (unbound only via `!calendarConnected`, #122 review fix)
+        // would make "the" unbound row ambiguous.
+        inputs={{ bindings: [], paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={onScreen}

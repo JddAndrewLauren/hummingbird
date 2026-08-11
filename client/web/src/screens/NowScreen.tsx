@@ -55,6 +55,10 @@ export interface NowScreenProps {
    * question #122 goes on to register renders as though nothing was ever
    * requested. */
   calendarReads: Record<string, CalendarReadDTO | undefined>;
+  /** #122 review fix: `CalendarState.connected` (`store/store.ts`), threaded
+   * straight through — the fact that separates "never set up" from "no
+   * snapshot yet" for every calendar-lane question's `QuestionInputs`. */
+  calendarConnected: boolean;
   /** #122's do-date write affordance — forwarded straight to `RankedRegion`,
    * `undefined` in demo mode like every other real-write callback here. */
   onSetScheduledDate?: (itemId: string, date: string | null) => void;
@@ -73,11 +77,13 @@ export interface NowScreenProps {
 export function realQuestionInputs(
   task: TaskState,
   calendarReads: Record<string, CalendarReadDTO | undefined>,
+  calendarConnected: boolean,
 ): Omit<QuestionInputs, "nowMs"> {
   return {
     bindings: task.bindings,
     paneReads: task.paneReads,
     calendarReads,
+    calendarConnected,
     items: [...task.frontier, ...task.blocked.map((entry) => entry.item)],
   };
 }
@@ -290,6 +296,7 @@ export function NowScreen({
   onCloseItemDetail,
   onAct,
   calendarReads,
+  calendarConnected,
   onSetScheduledDate,
 }: NowScreenProps) {
   // Ranking is not implemented, so the hero picks by the one property that
@@ -386,7 +393,11 @@ export function NowScreen({
             snapshot tiles — and it is the same component in both modes: only
             the inputs differ, so `?demo` photographs the real shell. */}
         <RankedRegion
-          inputs={demo ? demoQuestionInputs(nowMs) : realQuestionInputs(task, calendarReads)}
+          inputs={
+            demo
+              ? demoQuestionInputs(nowMs)
+              : realQuestionInputs(task, calendarReads, calendarConnected)
+          }
           nowMs={nowMs}
           syncOutcomeSeq={task.syncOutcomeSeq}
           storage={typeof localStorage === "undefined" ? undefined : localStorage}

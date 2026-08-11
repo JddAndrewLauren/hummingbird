@@ -81,6 +81,11 @@ function inputsWith(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
     bindings: [],
     paneReads: {},
     calendarReads: {},
+    // Every existing case here reads through a calendar arm that has
+    // already answered `{ state: "read", ... }` or `not_read`, so defaulting
+    // `calendarConnected: true` keeps them exercising the calendar-arm logic
+    // (`weekendAnswer`'s new connected-first check gets its own tests below).
+    calendarConnected: true,
     items: [],
     nowMs: at(2026, 8, 10, 9, 0),
     ...overrides,
@@ -244,6 +249,42 @@ describe("mergeWindow", () => {
     const merged = mergeWindow(window, [], [item({ id: "irrelevant" })]);
     expect(countKinds(merged).due + countKinds(merged).scheduled).toBe(0);
   });
+
+  // #122 review fix: the window's `startMs` is Friday 17:00 (the band's own
+  // "has it started" instant), but a scheduled/due date anchors to the
+  // START of its day. Before the fix, `inWindow` tested against
+  // `window.startMs` directly, so every Friday do-date and every day-only
+  // Friday deadline vanished from the merge with no trace.
+  it("keeps an item scheduled on Friday in the window — the trap the Friday 17:00 start used to spring", () => {
+    const fridayKey = dayKeyOf(at(2026, 8, 14));
+    const merged = mergeWindow(window, [], [item({ id: "fri-plan", scheduledDate: fridayKey })]);
+    const friday = merged.days.find((day) => day.key === fridayKey);
+    expect(friday?.entries.map((entry) => entry.id)).toEqual(["fri-plan"]);
+    expect(countKinds(merged).scheduled).toBe(1);
+  });
+
+  it("keeps an item due on Friday (day-only deadline) in the window", () => {
+    const fridayKey = dayKeyOf(at(2026, 8, 14));
+    const merged = mergeWindow(window, [], [item({ id: "fri-due", deadline: fridayKey })]);
+    const friday = merged.days.find((day) => day.key === fridayKey);
+    expect(friday?.entries.map((entry) => entry.id)).toEqual(["fri-due"]);
+    expect(countKinds(merged).due).toBe(1);
+  });
+
+  it("fills alsoScheduledOn for an item due Sunday but scheduled Friday — the chip the trap left empty", () => {
+    const fridayKey = dayKeyOf(at(2026, 8, 14));
+    const sundayKey = dayKeyOf(at(2026, 8, 16));
+    const merged = mergeWindow(
+      window,
+      [],
+      [item({ id: "due-sun-sched-fri", deadline: sundayKey, scheduledDate: fridayKey })],
+    );
+    const all = merged.days.flatMap((day) => day.entries);
+    expect(all).toHaveLength(1);
+    expect(all[0].kind).toBe("due");
+    expect(all[0].dayKey).toBe(sundayKey);
+    expect(all[0].alsoScheduledOn).toBe(fridayKey);
+  });
 });
 
 // -- entryUrgency: never reads scheduled_date ----------------------------
@@ -333,15 +374,44 @@ describe("weekendWithinBand", () => {
 // -- the shell's answer ---------------------------------------------------
 
 describe("weekendAnswer", () => {
-  it("is unbound when this device has never synced a calendar at all", () => {
-    const answer = weekendAnswer(
-      inputsWith({ calendarReads: { [CALENDAR_REQUEST_KEY]: { state: "not_read" } } }),
+  // #122 review fix: `calendarConnected` (`CalendarState.connected`) is the
+  // only fact that may produce `unbound` — never the calendar arm's own
+  // `"not_read"` state, which also covers a connected-but-unpolled,
+  // offline, or `needsReconnect` device.
+  it("is unbound when this device has never connected a calendar at all — regardless of the read", () => {
+    const neverConnected = weekendAnswer(
+      inputsWith({
+        calendarConnected: false,
+        calendarReads: { [CALENDAR_REQUEST_KEY]: { state: "not_read" } },
+      }),
     );
-    expect(answer.answerState).toBe("unbound");
+    expect(neverConnected.answerState).toBe("unbound");
+
+    // Even a fully-answered read is `unbound` while `calendarConnected` is
+    // false — `calendarConnected` gates before the arm is ever consulted.
+    const answeredButDisconnected = weekendAnswer(
+      inputsWith({
+        calendarConnected: false,
+        calendarReads: {
+          [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
+        },
+      }),
+    );
+    expect(answeredButDisconnected.answerState).toBe("unbound");
   });
 
-  it("is bound-but-unacquired when the calendar read hasn't landed yet", () => {
-    const answer = weekendAnswer(inputsWith({ calendarReads: {} }));
+  it("is bound-but-unacquired when connected but the calendar read hasn't landed yet", () => {
+    const answer = weekendAnswer(inputsWith({ calendarConnected: true, calendarReads: {} }));
+    expect(answer.answerState).toBe("bound-but-unacquired");
+  });
+
+  it("is bound-but-unacquired when connected but no snapshot exists yet (never polled, offline, needsReconnect)", () => {
+    const answer = weekendAnswer(
+      inputsWith({
+        calendarConnected: true,
+        calendarReads: { [CALENDAR_REQUEST_KEY]: { state: "not_read" } },
+      }),
+    );
     expect(answer.answerState).toBe("bound-but-unacquired");
   });
 
@@ -389,6 +459,16 @@ describe("weekendView", () => {
     expect(weekendView(inputsWith({ calendarReads: {} }))).toBeNull();
     expect(
       weekendView(inputsWith({ calendarReads: { [CALENDAR_REQUEST_KEY]: { state: "not_read" } } })),
+    ).toBeNull();
+    expect(
+      weekendView(
+        inputsWith({
+          calendarConnected: false,
+          calendarReads: {
+            [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
+          },
+        }),
+      ),
     ).toBeNull();
     const view = weekendView(
       inputsWith({

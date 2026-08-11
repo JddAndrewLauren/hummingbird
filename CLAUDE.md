@@ -386,10 +386,27 @@ whose `title` goes through `capture::parse_seam` — #110/#42's named no-op —
 and reaches the mutation verbatim regardless), `Core::act` (S11's closed
 `ItemAction` vocabulary: start / complete / block / cancel, where cancel
 sets `archived_at` and never a stage, because the owned schema has no
-"canceled"), and `Core::triage` (S13's `TriageDestination` + `TriagePatch`:
-a multi-field triage is exactly ONE queued CAS `PATCH`, never one per
-field, so a 409 rebases or dead-letters the whole edit together), and
-`Core::set_binding` (#118's standing-question bindings — one `settings` row,
+"canceled"), and `Core::triage` (S13's `Option<TriageDestination>` +
+`TriagePatch`: a multi-field triage is exactly ONE queued CAS `PATCH`,
+never one per field, so a 409 rebases or dead-letters the whole edit
+together). `destination` widened to `Option` at #122: the same entry point
+now also carries a pure field edit — the weekend-plans pane's do-date
+chip — on an item that is not going through the triage promotion at all,
+since `TriageDestination`'s two-value vocabulary (`Grilling`/`Ready`) has
+no way to name `InProgress` and a call that always promoted would demote an
+in-progress item back to `Ready` the moment its do-date changed; `None`
+leaves `stage` off the patch entirely (the authority's `ItemPatch.stage` is
+already `Option`, so an absent field there is genuinely untouched) and the
+optimistic overlay keeps the item's current stage. `TriagePatch.scheduled_date`
+is `Option<Option<String>>`, the same double-Option convention
+`hummingbird_domain::api::ItemPatch` already uses: outer `None` leaves the
+do-date untouched, `Some(None)` clears it, `Some(Some(date))` sets it — a
+cleared date sent as an absent field would silently do nothing, and `null`
+spelled as an empty string would be an edit nobody asked for. The wasm
+boundary (`ffi-web/src/task_host.rs`'s `TriageEdits`) carries the identical
+shape for `scheduled_date`, and `scheduledDate`/`clearScheduledDate` is the
+JS-side pair that keeps set/clear/untouched distinguishable across the
+worker protocol too. `Core::set_binding` (#118's standing-question bindings — one `settings` row,
 written as an ordinary absolute-value CAS `PUT`). **All four enqueue through
 `SyncCycle::enqueue` and none of them may reach `OutboundQueue::enqueue`** —
 the durability rule above is not per-caller advice, it is what makes an
@@ -726,6 +743,44 @@ payload, never a crash. (Still open, and *not* discharged by this slice:
 `v1` is. Harmless here, since the read side never checks the registry and
 ADR-0015 forbids checking `schema` against it; the registration is
 #135–137's.)
+
+`screens/weekend-pane/` is the shell's second pane (#122), and the first
+question to read no snapshot lane at all: the merge is entirely at read
+time, over `QuestionInputs.calendarReads` (#267's calendar-events arm —
+never a second calendar read, `requiredCalendarRequests()` unions this
+question's own `calendarRequests(nowMs)` alongside `requiredSources()`) and
+`QuestionInputs.items` (`task.frontier` ∪ `task.blocked`'s items unioned,
+never filtered or re-derived). `weekend.ts`'s `weekendWindow` is Friday
+17:00 through Sunday 23:59:59.999 **local**, always exactly three days even
+once some are in the past ("what are my plans", not "what is left"),
+rolling forward to the next weekend at Sunday 20:00. `mergeWindow`'s dedupe
+rule is the pane's own acceptance criterion: an item both due and scheduled
+inside the window renders once, as due, with the do-date kept as
+`alsoScheduledOn` (a deadline is a consequence, a do-date a preference, and
+the one with consequences is what the day owes) — and the inverse, an item
+scheduled in the window but due outside it still shows its deadline via
+`deadlineOutsideWindow`. **Day membership for an item is deliberately not
+`[window.startMs, window.endMs]`**: `window.startMs` is Friday 17:00 (the
+band's own "has the weekend started" instant), but a scheduled or day-only
+due date anchors to the *start* of its day, so `inWindow`'s lower bound is
+`window.days[0].startMs` (Friday local midnight) instead — the first
+revision tested against `window.startMs` directly and every Friday do-date
+silently dropped out of the merge, or left its chip unfilled, with no
+visible trace. `entryUrgency` reads only `item.deadline`, never
+`scheduled_date`, so setting or clearing a do-date can never move the
+urgency dot. **Answer state reads `QuestionInputs.calendarConnected`
+(`CalendarState.connected`) first, before the calendar arm's own read**: the
+brief's "no calendar → `unbound`" vs. "no snapshot → `bound-but-unacquired`"
+are two different facts, and the calendar arm's `"not_read"` state is the
+core's "no snapshot at all", which is also true of a connected device that
+has not polled yet, is offline, or is sitting on `needsReconnect` — so only
+`!calendarConnected` may render the setup prompt, and a missing calendar-arm
+entry or a connected `"not_read"` read are both `bound-but-unacquired`. The
+do-date write goes through `Core::triage(id, None, TriagePatch { scheduled_date: Some(date), .. })`
+above — a pure field edit, never a promotion — threaded from
+`WeekendPaneExpanded`'s `PlanChips` through `QuestionDef.Expanded`'s
+`onSetScheduledDate` prop, the one write affordance a pane carries in the
+shell contract.
 
 The `shell/use*Wiring` hooks are thin glue and **own no clock**: each
 re-requests its queries once the core is ready and again on every
