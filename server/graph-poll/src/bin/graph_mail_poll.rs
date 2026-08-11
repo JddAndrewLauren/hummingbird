@@ -20,11 +20,13 @@
 //! behavviour, unconfirmed against a live tenant by this crate, since no
 //! live check was possible per the brief), so a bounded catch-up requires
 //! the **ordinary** (non-delta) messages listing, which does support
-//! `$filter`: `bounded_resync` fetches recent messages via an ordinary
-//! `$filter=receivedDateTime ge …` query, then separately mints a fresh
-//! `deltaLink` via Graph's own `$deltatoken=latest` (an initial delta
-//! request that returns no items, only an immediate `@odata.deltaLink`
-//! anchored at "now"). Any overlap between the two (a message the bounded
+//! `$filter`: `bounded_resync` first mints a fresh `deltaLink` via Graph's
+//! own `$deltatoken=latest` (an initial delta request that returns no
+//! items, only an immediate `@odata.deltaLink` anchored at "now"), then
+//! fetches recent messages via an ordinary `$filter=receivedDateTime ge …`
+//! query — in that order, for the reason `bounded_resync`'s own doc gives:
+//! it is what makes the boundary between the two calls an overlap rather
+//! than a hole. Any overlap between the two (a message the bounded
 //! listing already evaluated also appearing once the delta cursor starts
 //! advancing) is harmless: `alert::plan`'s never-sent `raised_at` plus the
 //! ingest upsert's no-op-on-identical-payload rule make a re-evaluation
@@ -122,7 +124,25 @@ fn run() -> Result<Summary, String> {
 /// The bounded catch-up (this file's own module doc): an ordinary
 /// `$filter`-bounded messages listing for the items, and a separate
 /// `$deltatoken=latest` call for the fresh cursor.
+///
+/// **The `$deltatoken=latest` anchor is minted first, and that ordering is
+/// load-bearing** — `gmail_poll::bounded_resync`'s own reasoning, and the
+/// reason the module doc's "any overlap is harmless" tolerance is worth
+/// anything here. Listing first leaves a *hole*: mail arriving after the
+/// bounded listing but before the anchor is absent from this run's batch
+/// and already behind the cursor this run stores, so no later delta page
+/// ever carries it. Anchoring first turns the same gap into the overlap
+/// the module doc already accounts for — the message misses this batch and
+/// arrives on the next poll's delta page instead.
 fn bounded_resync(access_token: &str, upn: &str) -> Result<(Vec<String>, String), String> {
+    let latest_url = format!("{GRAPH_API}/users/{upn}/mailFolders/inbox/messages/delta");
+    let body =
+        graph_get(access_token, &latest_url, &[("$deltatoken".to_string(), "latest".to_string())], &[]).map_err(|e| e.to_string())?;
+    let page = parse_delta_page(&body).map_err(|e| e.to_string())?;
+    let delta_link = page
+        .delta_link
+        .ok_or_else(|| "graph mail: $deltatoken=latest returned no @odata.deltaLink".to_string())?;
+
     let cutoff = rfc3339_ms(now_ms()? - RESYNC_LOOKBACK_MS)?;
     let filter = format!("receivedDateTime ge {cutoff}");
     let max_results = RESYNC_MAX_RESULTS.to_string();
@@ -142,14 +162,6 @@ fn bounded_resync(access_token: &str, upn: &str) -> Result<(Vec<String>, String)
             None => break,
         }
     }
-
-    let latest_url = format!("{GRAPH_API}/users/{upn}/mailFolders/inbox/messages/delta");
-    let body =
-        graph_get(access_token, &latest_url, &[("$deltatoken".to_string(), "latest".to_string())], &[]).map_err(|e| e.to_string())?;
-    let page = parse_delta_page(&body).map_err(|e| e.to_string())?;
-    let delta_link = page
-        .delta_link
-        .ok_or_else(|| "graph mail: $deltatoken=latest returned no @odata.deltaLink".to_string())?;
 
     Ok((raw_items, delta_link))
 }

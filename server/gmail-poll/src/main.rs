@@ -7,7 +7,7 @@
 //! POST https://oauth2.googleapis.com/token   → an access token
 //! GET  /api/rules                            → the live rule set
 //! GET  /api/snapshots?source=gmail/v1&key=cursor → the stored historyId, if any
-//! GET  gmail history.list (or, on a lost cursor, messages.list + getProfile)
+//! GET  gmail history.list (or, on a lost cursor, getProfile + messages.list)
 //! GET  gmail messages.get, once per new message id
 //! POST /api/alerts                           → once per matching event
 //! POST /api/snapshots                        → the advanced cursor, last
@@ -128,9 +128,24 @@ fn run() -> Result<Summary, String> {
     })
 }
 
+/// The bounded catch-up for a lost or first-ever cursor.
+///
+/// **The anchor is read first, and that ordering is load-bearing.** Both
+/// calls are needed — the ids to evaluate now, the `historyId` to resume
+/// from next poll — and whichever runs second decides which way the gap
+/// between them falls. Listing first leaves a *hole*: a message arriving
+/// after the listing but before `getProfile` is absent from this run's
+/// batch and already behind the cursor this run stores, so no later
+/// `history.list` window ever reaches it and it is never evaluated.
+/// Reading the anchor first turns the same gap into an *overlap* — the
+/// message misses this batch but sits after the stored `historyId`, so the
+/// next poll picks it up — and an overlap costs nothing, because a
+/// re-evaluated message lands on the same `source_key` through the ingest
+/// upsert's no-op-on-identical-payload rule (the module doc's own
+/// safe-re-fetch reasoning, applied across the resync boundary).
 fn bounded_resync(access_token: &str) -> Result<(Vec<String>, String), String> {
-    let ids = gmail_messages_list(access_token, RESYNC_QUERY, RESYNC_MAX_RESULTS)?;
     let history_id = gmail_profile(access_token)?;
+    let ids = gmail_messages_list(access_token, RESYNC_QUERY, RESYNC_MAX_RESULTS)?;
     Ok((ids, history_id))
 }
 
