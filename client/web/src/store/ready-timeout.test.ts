@@ -41,6 +41,8 @@ describe("watchForReadyTimeout", () => {
     expect(store.getSnapshot()).toEqual({
       status: "ready",
       apiVersion: 1,
+      coreId: null,
+      viewOrdinal: null,
       error: null,
       calendar: store.getSnapshot().calendar,
       task: store.getSnapshot().task,

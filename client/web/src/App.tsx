@@ -69,6 +69,10 @@ interface AppProps {
 export function App({ worker: injectedWorker }: AppProps = {}) {
   const status = useStore((state) => state.status);
   const apiVersion = useStore((state) => state.apiVersion);
+  // #172's ADR-0010 diagnostic, read straight off the handshake and rendered
+  // in Settings' "Local core" card.
+  const coreId = useStore((state) => state.coreId);
+  const viewOrdinal = useStore((state) => state.viewOrdinal);
   const error = useStore((state) => state.error);
   const calendar = useStore((state) => state.calendar);
   const task = useStore((state) => state.task);
@@ -345,6 +349,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               demo={demo}
               status={status}
               apiVersion={apiVersion}
+              coreId={coreId}
+              viewOrdinal={viewOrdinal}
               error={error}
               calendar={calendar}
               themePreference={preference}

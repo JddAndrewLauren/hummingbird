@@ -237,6 +237,13 @@ export interface TaskState {
 export interface CoreState {
   status: CoreStatus;
   apiVersion: number | null;
+  /** Issue #172's ADR-0010 diagnostic, from the `ready` handshake: which
+   * core instance this view is talking to, and which connect this view was.
+   * `null` means no handshake has arrived yet — distinct from any real
+   * value, `Freshness::Unknown`'s own discipline — and the Settings readout
+   * renders nothing rather than half a sentence while either is `null`. */
+  coreId: string | null;
+  viewOrdinal: number | null;
   error: string | null;
   calendar: CalendarState;
   task: TaskState;
@@ -283,6 +290,8 @@ const initialTaskState: TaskState = {
 const initialState: CoreState = {
   status: "loading",
   apiVersion: null,
+  coreId: null,
+  viewOrdinal: null,
   error: null,
   calendar: initialCalendarState,
   task: initialTaskState,

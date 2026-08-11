@@ -1112,7 +1112,7 @@ describe("runSync's cycle-tail push scales with view count in messages, not in w
     "reads the queue depth and dead letters exactly once per cycle for N=%i connected views",
     async (n) => {
       const host = fakeHost();
-      const registry = new PortRegistry();
+      const registry = new PortRegistry("test-core");
       registry.activate(async () => {}, () => 1);
       const ports = Array.from({ length: n }, () => countingPort());
       for (const port of ports) {
@@ -1199,7 +1199,7 @@ describe("runSync's cycle-tail push keeps every connected view's reading fresh a
           }),
         ),
     });
-    const registry = new PortRegistry();
+    const registry = new PortRegistry("test-core");
     registry.activate(async () => {}, () => 1);
     // N=3, including one view connecting AFTER the first cycle already
     // ran — the on-ready request (not this push) is what catches such a

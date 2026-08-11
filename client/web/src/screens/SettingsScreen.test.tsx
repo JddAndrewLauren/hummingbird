@@ -32,6 +32,10 @@ interface SettingsOptions {
   status?: CoreStatus;
   withSetBinding?: boolean;
   task?: Partial<TaskState>;
+  /** #172's ADR-0010 diagnostic. `undefined` here means "no handshake yet",
+   * which is the pre-handshake `null` the store starts at. */
+  coreId?: string | null;
+  viewOrdinal?: number | null;
 }
 
 function renderSettings(options: SettingsOptions = {}) {
@@ -41,6 +45,8 @@ function renderSettings(options: SettingsOptions = {}) {
       demo={null}
       status={current.status ?? "ready"}
       apiVersion={1}
+      coreId={current.coreId ?? null}
+      viewOrdinal={current.viewOrdinal ?? null}
       error={null}
       calendar={calendar}
       themePreference="system"
@@ -232,5 +238,33 @@ describe("SettingsScreen — the bindings editor", () => {
     // A Save that silently does nothing is worse than one that says it
     // cannot — it stays disabled rather than pretending.
     expect(saveButton().hasAttribute("disabled")).toBe(true);
+  });
+});
+
+// #172: ADR-0010's probe ships as a permanent diagnostic in the "Local
+// core" card, because a standalone PWA window has no URL bar and cannot
+// reach a throwaway page. This is the gate CLAUDE.md names: `coreId` and
+// `viewOrdinal` could be threaded all the way from the handshake and never
+// rendered, and typecheck would see nothing wrong.
+describe("SettingsScreen — the core-instance diagnostic", () => {
+  it("renders the instance id and this view's ordinal once the handshake has landed", () => {
+    renderSettings({ coreId: "3f2a1b8c", viewOrdinal: 2 });
+
+    expect(screen.getByText("Core instance 3f2a1b8c · this view #2.")).toBeDefined();
+  });
+
+  it("renders no line at all before the handshake", () => {
+    renderSettings();
+
+    expect(screen.queryByText(/core instance/i)).toBeNull();
+  });
+
+  it("still renders while the core is loading, if a previous handshake supplied it", () => {
+    // The line sits outside the card's status ternary deliberately: the
+    // build version beside it is known in every state, and so is this once
+    // it has arrived at all.
+    renderSettings({ status: "loading", coreId: "aa11bb22", viewOrdinal: 1 });
+
+    expect(screen.getByText("Core instance aa11bb22 · this view #1.")).toBeDefined();
   });
 });

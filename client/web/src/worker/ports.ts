@@ -115,6 +115,18 @@ type State =
  * a view that never issued that capture has no seed to match it against and
  * gains nothing from receiving it.
  *
+ * **Issue #172: the registry is also ADR-0010's own probe.** The ADR rests
+ * on the assumption that an installed PWA standalone window shares the
+ * origin's single `SharedWorker` with an ordinary tab; if it does not, the
+ * installed window is a second, independent core and #102's
+ * single-writer-per-origin guarantee has to be re-examined. The honest
+ * signal is NOT `ports.size` — that set is never pruned (see the field), so
+ * a "2" can just mean one tab opened twice — but the pair of a per-core
+ * instance id and a per-connect ordinal, both riding the handshake. Same
+ * `coreId` in two windows confirms the ADR; two different ones refute it.
+ * It ships as a permanent Settings diagnostic rather than a throwaway page,
+ * because a standalone window has no URL bar to reach one with.
+ *
  * Getting this classification wrong in either direction is the real risk
  * #195's triage called out — a one-shot event or a freely re-askable answer
  * cached here replays a stale moment as a live one; a durable, unrepeatable
@@ -166,7 +178,15 @@ export class PortRegistry {
   // per-cycle fan-out — unconditionally, not just in the on-demand case
   // this used to hedge against.
   private readonly ports = new Set<PortLike>();
-  private readonly pending: PortLike[] = [];
+  // A queued port carries the ordinal `connect()` already minted for it, so
+  // a port that arrives before the wasm core resolves keeps its arrival
+  // order rather than being renumbered by `activate`'s drain. Not a
+  // `Map<PortLike, number>`: that would be a second never-pruned structure
+  // beside `ports`, for a number nothing reads after the handshake.
+  private readonly pending: Array<{ port: PortLike; viewOrdinal: number }> = [];
+  // Issue #172: which connect this is, counted for the core's whole
+  // lifetime. Minted in `connect()` (not `wire`) for the reason above.
+  private viewCount = 0;
   private state: State = { kind: "pending" };
   // Issue #195: the last broadcast of each "latest-state" message type (see
   // the class doc), replayed to every newly wired port right after its
@@ -176,14 +196,23 @@ export class PortRegistry {
   // for free.
   private readonly lastByType = new Map<WorkerResponse["type"], WorkerResponse>();
 
+  /** `coreId` identifies this core instance for the whole life of the
+   * `SharedWorker` global scope — `core.worker.ts` constructs the registry
+   * exactly once at module scope, so the registry IS the instance. Injected
+   * rather than minted here, the repo's caller-injected-randomness idiom
+   * (`client/core` takes `seed`/`Now` for the same reason), which is also
+   * what lets `ports.test.ts` assert on a fixed string. */
+  constructor(private readonly coreId: string) {}
+
   /** Wires a newly connecting port. While the core is still initializing,
    * the port is queued instead — never dropped, never wired twice. */
   connect(port: PortLike): void {
+    const viewOrdinal = ++this.viewCount;
     if (this.state.kind === "pending") {
-      this.pending.push(port);
+      this.pending.push({ port, viewOrdinal });
       return;
     }
-    this.wire(port, this.state);
+    this.wire(port, this.state, viewOrdinal);
   }
 
   /** The core finished initializing: every port already queued, and every
@@ -191,8 +220,8 @@ export class PortRegistry {
   activate(enqueue: Enqueue, coreApiVersion: () => number): void {
     const state: State = { kind: "ready", enqueue, coreApiVersion };
     this.state = state;
-    for (const port of this.pending.splice(0)) {
-      this.wire(port, state);
+    for (const { port, viewOrdinal } of this.pending.splice(0)) {
+      this.wire(port, state, viewOrdinal);
     }
   }
 
@@ -201,7 +230,7 @@ export class PortRegistry {
    * handshake that will never come. */
   activateError(message: string): void {
     this.state = { kind: "failed", message };
-    for (const port of this.pending.splice(0)) {
+    for (const { port } of this.pending.splice(0)) {
       port.postMessage({ type: "error", message });
     }
   }
@@ -219,7 +248,11 @@ export class PortRegistry {
     }
   }
 
-  private wire(port: PortLike, state: Exclude<State, { kind: "pending" }>): void {
+  private wire(
+    port: PortLike,
+    state: Exclude<State, { kind: "pending" }>,
+    viewOrdinal: number,
+  ): void {
     if (state.kind === "failed") {
       port.postMessage({ type: "error", message: state.message });
       return;
@@ -230,7 +263,10 @@ export class PortRegistry {
     };
     port.start();
     this.ports.add(port);
-    announceReady((response) => port.postMessage(response), coreApiVersion);
+    announceReady((response) => port.postMessage(response), coreApiVersion, {
+      coreId: this.coreId,
+      viewOrdinal,
+    });
     // Issue #195: replay whatever latest-state has already happened this
     // session, right after the handshake — a port that connects before
     // anything has broadcast gets nothing here, which is what keeps a core

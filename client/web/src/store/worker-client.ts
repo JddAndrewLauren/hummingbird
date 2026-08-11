@@ -100,6 +100,8 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
         store.setState({
           status: "ready",
           apiVersion: message.apiVersion,
+          coreId: message.coreId,
+          viewOrdinal: message.viewOrdinal,
           error: null,
         });
         return;
