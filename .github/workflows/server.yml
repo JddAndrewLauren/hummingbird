@@ -17,6 +17,14 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/server.yml"
       - ".github/workflows/server-test.yml"
+      # Two `tests/contract.rs` files assert the cross-language body contract
+      # against the TEXT of the pane that consumes it (`city-waste`'s since
+      # #120, `race-poll`'s since #119). Nothing mechanical connects the two
+      # sides, so a rename made on the pane side alone is exactly the drift
+      # those tests exist to catch — and it would never run them without
+      # these paths.
+      - "client/web/src/screens/waste-pane/**"
+      - "client/web/src/screens/race-pane/**"
 
 # Superseded PR pushes cancel their stale runs.
 concurrency:

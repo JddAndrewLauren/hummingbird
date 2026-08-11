@@ -12,11 +12,16 @@ on:
       - "client/**"
       - "rust-toolchain.toml"
       - ".github/workflows/client.yml"
+      # The race pane's vitest reads the poller's own committed golden body
+      # off disk (#119, `screens/race-pane/race.test.ts`), so a change to
+      # that fixture alone is a change this suite has to see.
+      - "server/race-poll/tests/fixtures/**"
   pull_request:
     paths:
       - "client/**"
       - "rust-toolchain.toml"
       - ".github/workflows/client.yml"
+      - "server/race-poll/tests/fixtures/**"
 
 jobs:
   test:
