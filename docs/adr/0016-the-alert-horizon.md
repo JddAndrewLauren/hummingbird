@@ -8,7 +8,9 @@ by name ("Pruning acked alert rows (#155)… needs its own decision —
 predicate, tombstone-versus-delete, and who runs it — and explicitly not a
 TTL"). Amends [ADR-0007](0007-sync-is-one-cycle-drain-then-full-sweep.md)
 and [ADR-0008](0008-the-authority-is-an-app-owned-server.md), both of which
-call the sweep *complete*. Upholds
+call the sweep *complete*, and narrows
+[ADR-0001](0001-linear-is-the-authority-behind-a-clean-seam.md)/[ADR-0003](0003-one-rust-sync-core-embedded-per-device.md)'s
+"the mirror is the export" for a cold device only. Upholds
 [ADR-0012](0012-the-notification-lane.md) unchanged. New glossary term
 **Horizon** lands in `CONTEXT.md`.
 
@@ -103,11 +105,24 @@ construction. `pull()` itself is untouched — it stays the uniform
 ten-table function.
 
 **Applying it to the delta too is free, not a compromise.** A settled alert
-only appears in a delta if its `version` exceeds the cursor, meaning it was
-written recently, meaning its settling stamp is recent, meaning it passes
-the horizon. The filter is inert on the hot path; the only rows it ever
-removes are ones a far-behind device is pulling, where removing them is the
-point.
+only appears in a delta if its `version` exceeds the cursor, and every
+writer today stamps the settling field from its own clock at the moment of
+the write — `sweep_tick`'s resolution pass from the tick's clock,
+`dismissed_at` from the dismissing device's — so in practice the stamp is
+as recent as the write and the row passes the horizon. The filter is inert
+on the hot path; the rows it removes are the ones a far-behind device is
+pulling, where removing them is the point.
+
+That inertness is a fact about the writers, **not a structural guarantee**,
+and the distinction is worth holding because the version cursor measures
+write order, never wall-clock age. A settling stamp is an absolute value
+the writer supplies: a device with a skewed clock, a dismissal queued
+offline for longer than the horizon, or a re-raise that moves an already-
+live alert's `expires_at` more than 90 days into the past would each write
+a row whose `version` is above the cursor and whose settling stamp is
+already behind the horizon. `the_horizon_applies_to_the_delta_and_the_sweep_alike`
+is that case, seeded deliberately. See "The accepted gap" for what it costs
+when it happens.
 
 ## What this amends
 
@@ -118,6 +133,18 @@ appears partially. `apply_sweep`'s absence-demotion
 (`client/core/src/sync/mirror.rs`) stays sound: an alert the horizon excludes
 is settled by definition, so it renders nowhere — and the client mirror
 *retains* the record it demotes rather than dropping it.
+
+**ADR-0001 and ADR-0003's "the mirror is the export" is narrowed too**, and
+only for a *cold* device. Both state it as "every device's reconciled
+replica is a full copy," in service of a durability claim — losing the
+authority is an inconvenience, not data loss — and that claim survives
+intact: nothing is deleted, the Durable Object keeps every row, and a device
+that has been syncing all along still holds the settled alerts it pulled
+before they aged out (demoted by a later sweep, retained in the mirror). What
+no longer holds is the literal reading: a replica built from scratch today
+carries no alert that settled more than 90 days ago, so a fresh device and a
+long-lived one no longer agree on the contents of one table. Named here so
+the amendment list is the whole list.
 
 **ADR-0012 is upheld unchanged.** Settled-and-old is what makes this not the
 blanket TTL that ADR rejected: an unacked alert rides the wire forever.
@@ -141,6 +168,36 @@ nothing.
 **The binding obligation:** whoever builds a real alerts-history screen adds
 `alerts_horizon_ms` to `ChangesResponse` **in that same PR**, so the screen
 can say where its history starts rather than implying it starts nowhere.
+
+## The second gap: an omitted settlement transition
+
+The delta is additive — `SyncMirror::apply_delta` leaves a row absent from
+the response exactly as it was — while the response's `version` advances
+past every row the horizon removed. So in the writer cases named above, a
+settlement whose stamp is already behind the horizon is *omitted from the
+very delta that would have carried it*, and a device that held the alert
+live keeps rendering it live, with its cursor moved past the change.
+
+**The recovery is the sweep, and it is automatic.** The same row is absent
+from `GET /api/sweep` too, and `apply_sweep`'s absence-demotion retires it
+(the mirror retains the record, per ADR-0003). ADR-0007 fires a sweep on
+every app open plus daily, so the stale-live window is bounded by that
+cadence rather than being indefinite — the horizon cannot strand a device
+on a phantom live alert.
+
+Accepted rather than fixed, because no writer produces the input today:
+`resolved_at` is stamped by the tick's own clock and `dismissed_at` by the
+dismissing device's, so the transition and the stamp are the same instant.
+The residual is clock skew, a dismissal queued offline for longer than the
+horizon, or a re-raise dragging `expires_at` more than 90 days backwards.
+The alternative — preserving the transition, or shipping an explicit
+demotion signal on the delta — is a second wire concept for a case bounded
+by the next app open, and it would put a row on the wire that the horizon
+exists to keep off it. **The flip condition:** if a writer is ever
+introduced that stamps a settlement with a historical time (a backfill, an
+import, a source whose settling stamp is source-derived rather than
+clock-derived), this stops being residual and the delta needs the explicit
+demotion signal.
 
 ## Rejected alternatives
 

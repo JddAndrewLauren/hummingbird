@@ -63,11 +63,14 @@ fn changes_since(since: i64, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, 
         blocked_by: pull(sql, since, "blocked_by", "item_id, blocker_id", super::blocked_by::edge_from_row)?,
         // The horizon is applied here, inside the one code path the sweep
         // and the delta share, so their byte-for-byte agreement holds by
-        // construction. On the delta it is inert: a settled alert only
-        // clears the cursor if it was written recently, which means its
-        // settling stamp is recent, which means it passes. The only rows
-        // it ever removes are the ones a far-behind device is pulling —
-        // which is the point.
+        // construction. On the delta it is inert *in practice*: every
+        // writer stamps the settling field from its own clock at the
+        // moment of the write, so a row above the cursor carries a recent
+        // stamp and passes. That is a fact about the writers, not a
+        // guarantee — the cursor measures write order, never wall-clock
+        // age — so a settlement stamped with a historical time is omitted
+        // from the delta that would have carried it, and the device's next
+        // sweep is what retires it. ADR-0016, "The second gap".
         alerts: pull(sql, since, "alerts", "id", super::alerts::alert_from_row)?
             .into_iter()
             .filter(|alert| {
