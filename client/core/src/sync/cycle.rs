@@ -76,7 +76,9 @@
 //! [`Backoff`] — a restart re-enters with no record of the last sweep, which
 //! this module treats as "due", the safe direction to fall on.
 
-use crate::storage::{load_snapshot, save_snapshot, SnapshotError, SnapshotStore};
+use crate::storage::{
+    load_snapshot, load_snapshot_at_version, save_snapshot, SnapshotError, SnapshotStore,
+};
 
 use super::adapter::{fetch_delta, fetch_sweep};
 use super::mirror::{SyncMirror, SYNC_MIRROR_SCHEMA_VERSION};
@@ -296,6 +298,18 @@ where
     /// needed because the dangerous shape changes are exactly the ones
     /// serde cannot see: #153's `due_date` → `deadline` rename leaves old
     /// bytes deserialising cleanly, with every deadline quietly `None`.
+    ///
+    /// **The mirror's version is read before its payload is parsed**
+    /// ([`crate::storage::load_snapshot_at_version`]), and that ordering is
+    /// what makes the check work at all. The other half of a schema bump —
+    /// #140's added `rules` field — is the shape change serde *does* see: a
+    /// pre-#140 snapshot has no `rules` key, so parsing it as the current
+    /// [`SyncMirror`] is a hard `Deserialize` error. Checking the version on
+    /// an already-parsed envelope therefore never got the chance to discard
+    /// it; the load failed first, `Core::init` failed with it, and the device
+    /// reported "the task core did not start" on every reload until its
+    /// storage was cleared by hand. A discard-on-mismatch rule has to decide
+    /// on the version *first* or it only covers the changes serde tolerates.
     pub async fn load(queue_store: QS, mirror_store: MS) -> Result<Self, LoadError<QS::Error, MS::Error>> {
         let queue = match load_snapshot::<OutboundQueue, _>(&queue_store).await {
             // Deliberately version-blind: old bytes are loaded anyway.
@@ -303,14 +317,17 @@ where
             Ok(None) => OutboundQueue::new(),
             Err(error) => return Err(LoadError::Queue(error)),
         };
-        let mirror = match load_snapshot::<SyncMirror, _>(&mirror_store).await {
-            Ok(Some(envelope)) if envelope.schema_version == SYNC_MIRROR_SCHEMA_VERSION => {
-                envelope.payload
-            }
-            Ok(Some(_)) => SyncMirror::new(),
-            Ok(None) => SyncMirror::new(),
-            Err(error) => return Err(LoadError::Mirror(error)),
-        };
+        let mirror =
+            match load_snapshot_at_version::<SyncMirror, _>(&mirror_store, SYNC_MIRROR_SCHEMA_VERSION)
+                .await
+            {
+                // `Ok(None)` is both "nothing stored" and "stored at another
+                // schema version" — the same answer either way, and the
+                // version is decided before the payload is parsed at all.
+                Ok(Some(envelope)) => envelope.payload,
+                Ok(None) => SyncMirror::new(),
+                Err(error) => return Err(LoadError::Mirror(error)),
+            };
         Ok(Self {
             queue,
             mirror,
@@ -1580,6 +1597,67 @@ mod tests {
             cycle.queue().len(),
             1,
             "the queue keeps its entries across a version mismatch — the deliberate asymmetry"
+        );
+    }
+
+    /// The regression the live site hit: a mirror at a stale schema version
+    /// whose payload *cannot* be parsed as the current [`SyncMirror`] at all
+    /// must still be discarded, not surface as a boot failure.
+    ///
+    /// #140 added the `rules` field, so every pre-#140 snapshot is missing a
+    /// key `serde` requires — `Deserialize(missing field \`rules\`)`. While
+    /// [`SyncCycle::load`] parsed the payload before consulting the version,
+    /// that error escaped as `LoadError::Mirror` and `Core::init` failed with
+    /// it, so the app reported "the task core did not start" on every reload
+    /// until the device's storage was cleared by hand — the exact upgrade the
+    /// version bump was supposed to make silent. The sibling test above
+    /// covers the changes serde tolerates; this one covers the changes it
+    /// does not, and only the version-first ordering satisfies both.
+    ///
+    /// Simulated the same way the queue's shape-mismatch test is: a
+    /// differently-shaped `Persistable` saved under the mirror's own store.
+    #[tokio::test]
+    async fn load_discards_a_stale_mirror_whose_payload_no_longer_parses() {
+        let mirror_store = MemorySnapshotStore::default();
+        save_snapshot(
+            &mirror_store,
+            SYNC_MIRROR_SCHEMA_VERSION - 1,
+            0,
+            crate::task::Mirror::new(),
+        )
+        .await
+        .unwrap();
+        // Sanity: unlike the sibling test's bytes, these really are
+        // unparseable as the current mirror — the version is the only thing
+        // that can be read off them safely.
+        assert!(
+            matches!(
+                load_snapshot::<SyncMirror, _>(&mirror_store).await,
+                Err(SnapshotError::Deserialize(_))
+            ),
+            "the stale payload must genuinely fail to parse — that is what this test is about"
+        );
+
+        let queue_store = MemorySnapshotStore::default();
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(create_entry("m-1", "a-1"));
+        save_snapshot(&queue_store, QUEUE_SCHEMA_VERSION, 0, queue)
+            .await
+            .unwrap();
+
+        let cycle = SyncCycle::load(queue_store, mirror_store)
+            .await
+            .expect("a stale mirror is discarded, however its shape moved — never a boot failure");
+
+        assert_eq!(
+            cycle.mirror(),
+            &SyncMirror::new(),
+            "the unparseable stale mirror is rebuilt by the next pull's full sweep"
+        );
+        assert_eq!(
+            cycle.queue().len(),
+            1,
+            "and the queue's offline captures survive it, as always"
         );
     }
 
