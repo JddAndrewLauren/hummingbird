@@ -35,7 +35,13 @@ export function useCalendarEventsWiring(
   syncOutcomeSeq: number,
 ): void {
   const ready = status === "ready";
-  const requests = requiredCalendarRequests();
+  // The registry's own clock reasoning (`registry.ts`'s `requiredCalendarRequests`
+  // doc): a declared interval — #122's rolling weekend window — can itself
+  // be a function of "now", so this render's own instant decides which
+  // interval is asked for. The effect below still reads its own fresh
+  // `Date.now()` for the request's `nowMs` (the freshness clock), exactly
+  // as before; this one only decides WHICH interval.
+  const requests = requiredCalendarRequests(Date.now());
   // Requests are compared by value, not by the array's own identity: the
   // registry recomputing an equivalent array on every call must not re-fire
   // the effect every render just because the reference changed underneath

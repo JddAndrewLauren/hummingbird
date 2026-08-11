@@ -708,23 +708,32 @@ mod wasm_bindings {
         }
 
         /// Triages an already-captured item (S13/#111: edit title/project/
-        /// size/energy/context and promote to Grilling or Ready), as one
-        /// CAS `PATCH`. Resolves to JSON:
+        /// size/energy/context/scheduled_date and optionally promote to
+        /// Grilling or Ready), as one CAS `PATCH`. Resolves to JSON:
         /// `{"kind": "ok"|"not_found"|"failed"|"busy", "error": string|null}`.
         /// `size`/`energy` are the wire's snake_case vocabulary names
         /// (`"quick"`/`"short"`/`"deep"`, `"low"`/`"medium"`/`"high"`),
-        /// resolved by name — never a raw id — on the way in.
+        /// resolved by name — never a raw id — on the way in. `destination`
+        /// is `undefined`/`null` (#122) to leave `stage` untouched — see
+        /// [`TaskHostCore::triage`]'s doc. `scheduled_date`/
+        /// `clear_scheduled_date` together carry the three-state do-date edit
+        /// a bare `Option<String>` cannot express across this boundary
+        /// (`undefined` and `null` both marshal to `None`): `clear_scheduled_date
+        /// = true` clears regardless of `scheduled_date`; otherwise a present
+        /// `scheduled_date` sets it and `None` leaves it alone.
         #[allow(clippy::too_many_arguments)]
         pub fn triage(
             &self,
             seed: String,
             item_id: String,
-            destination: String,
+            destination: Option<String>,
             title: Option<String>,
             project_id: Option<String>,
             size: Option<String>,
             energy: Option<String>,
             context: Option<String>,
+            scheduled_date: Option<String>,
+            clear_scheduled_date: bool,
             now_ms: f64,
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
@@ -732,12 +741,17 @@ mod wasm_bindings {
                 let Some(mut host) = inner.check_out() else {
                     return Ok(JsValue::from_str(BUSY_TRIAGE));
                 };
+                let scheduled_date = if clear_scheduled_date {
+                    Some(None)
+                } else {
+                    scheduled_date.map(Some)
+                };
                 let response = host
                     .triage(
                         &seed,
                         &item_id,
-                        &destination,
-                        TriageEdits { title, project_id, size, energy, context },
+                        destination.as_deref(),
+                        TriageEdits { title, project_id, size, energy, context, scheduled_date },
                         now_ms as i64,
                     )
                     .await;

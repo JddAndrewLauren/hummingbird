@@ -1,7 +1,9 @@
 import { wasteQuestion } from "../waste-pane/question";
+import { weekendQuestion } from "../weekend-pane/question";
 import {
   QUESTION_ORDER,
   paneKey,
+  type CalendarEventsRequest,
   type QuestionDef,
   type QuestionInputs,
   type RankedPane,
@@ -20,6 +22,7 @@ import { orderPanes } from "./sort";
 
 export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
   waste: wasteQuestion,
+  weekend: weekendQuestion,
 };
 
 /** Every `context_snapshots` source the wiring must request a pane read for
@@ -38,28 +41,24 @@ export function requiredSources(): string[] {
   return sources;
 }
 
-/** One `getCalendarEvents` request `useCalendarEventsWiring.ts` posts —
- * defined here, not in that hook, for the same reason `requiredSources`'s
- * return type lives here: the registry is the one place a question's
- * requirements are declared, and the wiring only ever reads them. */
-export interface CalendarEventsRequest {
-  /** The caller's own identity for this request — becomes the
-   * `QuestionInputs.calendarReads` map key. */
-  key: string;
-  startMs: number;
-  endMs: number;
-}
-
 /** Every calendar-arm interval the registered standing questions need —
  * `requiredSources`'s exact twin for the calendar lane, unioned over every
- * registered question in declared order. No shipped `QuestionDef` declares
- * one yet (#122's job — the calendar-lane questions, #117/#121/#122, are
- * still prototypes), so this returns empty today; a question that starts
- * asking for one is what `useCalendarEventsWiring.ts` must pick up without
- * itself changing, which is what stops the wiring and the registry
- * drifting the way a caller-supplied `requests` prop would let them. */
-export function requiredCalendarRequests(): CalendarEventsRequest[] {
-  return [];
+ * registered question's own `calendarRequests` in declared order (a
+ * question that declares none, like `wasteQuestion`, contributes nothing).
+ * Takes the clock because a declared interval can itself be a function of
+ * it (#122's rolling weekend window) — `useCalendarEventsWiring.ts` is the
+ * one caller, and passes its own `nowMs` straight through, which is what
+ * stops the wiring and the registry drifting the way a caller-supplied
+ * `requests` prop would let them. */
+export function requiredCalendarRequests(nowMs: number): CalendarEventsRequest[] {
+  const requests: CalendarEventsRequest[] = [];
+  for (const question of QUESTION_ORDER) {
+    const definition = QUESTIONS[question];
+    if (definition.calendarRequests) {
+      requests.push(...definition.calendarRequests(nowMs));
+    }
+  }
+  return requests;
 }
 
 /** The 0..N expansion itself: every question in `order`, every subject it

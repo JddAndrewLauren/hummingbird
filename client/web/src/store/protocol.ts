@@ -441,17 +441,29 @@ export type TaskWorkerRequest =
    * four separate fields. `size`/`energy` are the wire's snake_case
    * vocabulary names, resolved by name through
    * `hummingbird_domain::Size`/`Energy::parse` on the way in, never a raw
-   * index. Same caller-mints-`seed` contract as `"act"`. */
+   * index. Same caller-mints-`seed` contract as `"act"`.
+   *
+   * `destination` is `null` (#122) to leave `stage` untouched entirely —
+   * the weekend-plans pane's do-date chip triages items that may already be
+   * `InProgress`, which `TriageDestinationName`'s two-value vocabulary
+   * cannot name, so a caller that wants only `scheduledDate` applied sends
+   * no destination rather than one that would demote the item.
+   * `scheduledDate` is the one field here that CAN be cleared: an omitted
+   * key leaves it alone, `{ clear: true }` clears it, `{ clear: false,
+   * value }` sets it — a distinct shape from `title`/`projectId`/etc.
+   * because `TriagePatch::scheduled_date` is the only double-`Option` field
+   * `Core::triage` carries. */
   | {
       type: "triage";
       seed: string;
       itemId: string;
-      destination: TriageDestinationName;
+      destination: TriageDestinationName | null;
       title: string | null;
       projectId: string | null;
       size: "quick" | "short" | "deep" | null;
       energy: "low" | "medium" | "high" | null;
       context: string | null;
+      scheduledDate?: { clear: true } | { clear: false; value: string };
       nowMs: number;
     }
   /** #118's binding write: one absolute-value CAS `PUT /api/settings/:key`,

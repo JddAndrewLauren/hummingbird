@@ -477,6 +477,15 @@ impl TriageDestination {
 /// alongside the destination stage, each `None` meaning "leave this field
 /// alone" rather than "clear it". `None` on every field is a legal call: a
 /// bare promotion with no other edit is still exactly one mutation.
+///
+/// `scheduled_date` (#122) is the one field here that can be **cleared**,
+/// not just set — the do-date affordance has to be able to take a plan back
+/// — so it is double-`Option`, exactly the shape `hummingbird_domain::api::ItemPatch`
+/// already gives the authority's own nullable columns: outer `None` means
+/// untouched, `Some(None)` clears it, `Some(Some(date))` sets it. A cleared
+/// date sent as an absent field would silently do nothing, and a `null`
+/// spelled as an empty string would be an edit nobody asked for — the same
+/// fidelity every other CAS write in this crate already holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TriagePatch {
     pub title: Option<String>,
@@ -484,6 +493,7 @@ pub struct TriagePatch {
     pub size: Option<Size>,
     pub energy: Option<Energy>,
     pub context: Option<String>,
+    pub scheduled_date: Option<Option<String>>,
 }
 
 /// [`Core::act`] failed before ever reaching the outbound queue, or while
@@ -1218,6 +1228,19 @@ where
     /// instant this returns, through the same overlay every other read here
     /// goes through, never a separate local bookkeeping list.
     ///
+    /// `destination` is `Option` (#122) so this same entry point can carry a
+    /// pure field edit — the weekend-plans pane's do-date chip — on an item
+    /// that is not going through the triage promotion at all: `Core::frontier`
+    /// only ever holds `Ready`/`InProgress` items, and `TriageDestination`'s
+    /// two-value vocabulary has no way to *name* `InProgress`, so a call
+    /// that always promoted would demote an in-progress item back to Ready
+    /// the moment its do-date changed. `None` leaves `stage` off the patch
+    /// entirely — the authority's `ItemPatch.stage` is already `Option`, so
+    /// an absent field there is genuinely untouched, not defaulted — and the
+    /// optimistic overlay keeps the item's current stage. This is still the
+    /// one triage mutation entry point, never a second one: every caller
+    /// still enqueues through this same CAS `PATCH`.
+    ///
     /// `seed` mints this mutation's own queue-entry id
     /// ([`sync::write::deterministic_id`]) — caller-supplied, same reasoning
     /// as [`Core::act`]'s `seed`.
@@ -1225,7 +1248,7 @@ where
         &mut self,
         seed: &str,
         item_id: &str,
-        destination: TriageDestination,
+        destination: Option<TriageDestination>,
         patch: TriagePatch,
         now_ms: i64,
     ) -> Result<(), ActError<QS::Error>> {
@@ -1238,11 +1261,13 @@ where
         let mut optimistic = current.clone();
         let mut patch_fields = serde_json::Map::new();
 
-        optimistic.stage = destination.stage();
-        patch_fields.insert(
-            "stage".to_string(),
-            serde_json::to_value(destination.stage()).expect("Stage always serializes"),
-        );
+        if let Some(destination) = destination {
+            optimistic.stage = destination.stage();
+            patch_fields.insert(
+                "stage".to_string(),
+                serde_json::to_value(destination.stage()).expect("Stage always serializes"),
+            );
+        }
 
         if let Some(title) = &patch.title {
             optimistic.title = title.clone();
@@ -1269,6 +1294,20 @@ where
         if let Some(context) = &patch.context {
             optimistic.context = Some(context.clone());
             patch_fields.insert("context".to_string(), serde_json::json!(context));
+        }
+        // Three-state (#122): outer `None` is skipped entirely (untouched);
+        // `Some(None)` clears — a real `null` on the wire, never an absent
+        // key that would silently do nothing; `Some(Some(date))` sets it.
+        match &patch.scheduled_date {
+            None => {}
+            Some(None) => {
+                optimistic.scheduled_date = None;
+                patch_fields.insert("scheduled_date".to_string(), serde_json::Value::Null);
+            }
+            Some(Some(date)) => {
+                optimistic.scheduled_date = Some(date.clone());
+                patch_fields.insert("scheduled_date".to_string(), serde_json::json!(date));
+            }
         }
         optimistic.updated_at = now_ms;
 
@@ -1797,7 +1836,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            TriageDestination::Ready,
+            Some(TriageDestination::Ready),
             TriagePatch::default(),
             2_000,
         )
@@ -1823,7 +1862,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            TriageDestination::Grilling,
+            Some(TriageDestination::Grilling),
             TriagePatch::default(),
             2_000,
         )
@@ -1849,13 +1888,14 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            TriageDestination::Ready,
+            Some(TriageDestination::Ready),
             TriagePatch {
                 title: Some("buy milk".to_string()),
                 project_id: Some("project-1".to_string()),
                 size: Some(Size::Quick),
                 energy: Some(Energy::Low),
                 context: Some("@errands".to_string()),
+                ..TriagePatch::default()
             },
             2_000,
         )
@@ -1889,7 +1929,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            TriageDestination::Grilling,
+            Some(TriageDestination::Grilling),
             TriagePatch {
                 context: Some("@computer".to_string()),
                 ..TriagePatch::default()
@@ -1902,7 +1942,7 @@ mod tests {
         core.triage(
             "seed-triage-2",
             &id,
-            TriageDestination::Ready,
+            Some(TriageDestination::Ready),
             TriagePatch::default(),
             3_000,
         )
@@ -1925,7 +1965,7 @@ mod tests {
             .triage(
                 "seed-triage-1",
                 "no-such-item",
-                TriageDestination::Ready,
+                Some(TriageDestination::Ready),
                 TriagePatch::default(),
                 1_000,
             )
@@ -1950,7 +1990,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            TriageDestination::Ready,
+            Some(TriageDestination::Ready),
             TriagePatch {
                 title: Some("buy milk".to_string()),
                 ..TriagePatch::default()
@@ -1962,6 +2002,90 @@ mod tests {
 
         assert!(core.is_pending(&id));
         assert_eq!(core.frontier()[0].title, "buy milk");
+    }
+
+    /// #122: a `None` destination is a pure field edit — it must never
+    /// touch `stage`, which is what lets the weekend-plans pane's do-date
+    /// chip triage an `InProgress` item without demoting it back to `Ready`.
+    #[tokio::test]
+    async fn a_none_destination_edits_fields_without_touching_stage() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Ready, 1_000, CaptureOptions::default())
+            .await
+            .unwrap();
+        core.act("seed-act-1", &id, ItemAction::Start, 1_500).await.unwrap();
+        assert_eq!(core.frontier()[0].stage, Stage::InProgress);
+
+        core.triage(
+            "seed-triage-1",
+            &id,
+            None,
+            TriagePatch {
+                scheduled_date: Some(Some("2026-08-15".to_string())),
+                ..TriagePatch::default()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        let item = &core.frontier()[0];
+        assert_eq!(item.stage, Stage::InProgress, "a None destination must never change stage");
+        assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-15"));
+    }
+
+    /// #122's three-state `scheduled_date`: `Some(None)` clears an
+    /// already-set do-date, distinguishable from the untouched `None` case
+    /// pinned above.
+    #[tokio::test]
+    async fn clearing_scheduled_date_is_distinct_from_leaving_it_alone() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Ready, 1_000, CaptureOptions::default())
+            .await
+            .unwrap();
+        core.triage(
+            "seed-triage-1",
+            &id,
+            None,
+            TriagePatch {
+                scheduled_date: Some(Some("2026-08-15".to_string())),
+                ..TriagePatch::default()
+            },
+            1_500,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.frontier()[0].scheduled_date.as_deref(), Some("2026-08-15"));
+
+        // Leaving it alone: an unrelated edit must not disturb the do-date.
+        core.triage(
+            "seed-triage-2",
+            &id,
+            None,
+            TriagePatch { title: Some("buy milk".to_string()), ..TriagePatch::default() },
+            1_600,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            core.frontier()[0].scheduled_date.as_deref(),
+            Some("2026-08-15"),
+            "an untouched scheduled_date field must survive an unrelated edit"
+        );
+
+        // Clearing it: `Some(None)` is a real null, not a no-op.
+        core.triage(
+            "seed-triage-3",
+            &id,
+            None,
+            TriagePatch { scheduled_date: Some(None), ..TriagePatch::default() },
+            1_700,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.frontier()[0].scheduled_date, None);
     }
 
     /// Reviewer finding on PR #207: a queued act must survive the
@@ -2026,7 +2150,7 @@ mod tests {
             .triage(
                 "seed-triage-1",
                 &id,
-                TriageDestination::Ready,
+                Some(TriageDestination::Ready),
                 TriagePatch {
                     title: Some("buy milk".to_string()),
                     ..TriagePatch::default()

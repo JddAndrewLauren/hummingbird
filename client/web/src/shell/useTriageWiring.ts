@@ -11,7 +11,9 @@ import { triageItem, type TriageEdits, type WorkerLike } from "../store/worker-c
 // `worker-client.ts`'s `triageResult` handler re-requests the triage inbox
 // and frontier itself the moment a successful result broadcasts.
 export interface TriageWiring {
-  triage: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  /** `destination` is `null` (#122) for a pure field edit that leaves
+   * `stage` untouched — see `worker-client.ts`'s `triageItem` doc. */
+  triage: (itemId: string, destination: TriageDestinationName | null, edits: TriageEdits) => void;
 }
 
 /** Mints this triage's seed. Deterministic — `client/core/src/sync/mod.rs`'s
@@ -24,14 +26,14 @@ export interface TriageWiring {
  * `mintSeed` split. */
 export function mintTriageSeed(
   itemId: string,
-  destination: TriageDestinationName,
+  destination: TriageDestinationName | null,
   nowMs: number,
 ): string {
-  return `${itemId}:triage:${destination}:${nowMs}`;
+  return `${itemId}:triage:${destination ?? "none"}:${nowMs}`;
 }
 
 export function useTriageWiring(worker: WorkerLike): TriageWiring {
-  function triage(itemId: string, destination: TriageDestinationName, edits: TriageEdits): void {
+  function triage(itemId: string, destination: TriageDestinationName | null, edits: TriageEdits): void {
     const nowMs = Date.now();
     const seed = mintTriageSeed(itemId, destination, nowMs);
     triageItem(worker, seed, itemId, destination, edits, nowMs);

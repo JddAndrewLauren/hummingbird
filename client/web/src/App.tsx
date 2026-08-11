@@ -151,6 +151,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   }, []);
   const { act: handleAct } = useItemActions(worker);
   const { triage: handleTriage } = useTriageWiring(worker);
+  // #122's do-date write: the same triage mutation entry point every other
+  // triage edit uses, with `destination: null` (leave `stage` untouched —
+  // `useTriageWiring.ts`'s own doc) and only `scheduledDate` set. Not its
+  // own hook: it is one more call shape of the wiring already threaded
+  // through this component, not a second mutation entry point.
+  function handleSetScheduledDate(itemId: string, date: string | null): void {
+    handleTriage(itemId, null, {
+      scheduledDate: date === null ? { clear: true } : { clear: false, value: date },
+    });
+  }
   const syncLabel = syncStatusLabel({
     online,
     lastSyncOutcome: task.lastSyncOutcome,
@@ -230,6 +240,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onCloseItemDetail={handleCloseItemDetail}
               onAct={handleAct}
               calendarReads={calendar.eventReads}
+              onSetScheduledDate={demo ? undefined : handleSetScheduledDate}
             />
           )}
           {screen === "triage" && (

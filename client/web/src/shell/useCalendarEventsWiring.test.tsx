@@ -12,8 +12,9 @@ import { useCalendarEventsWiring } from "./useCalendarEventsWiring";
 // component tests exist to catch (same rationale `usePaneReadsWiring.test.tsx`
 // documents for its own hook). Requests are read from the registry, not a
 // prop — `requiredCalendarRequests` is stubbed per test so the general
-// request/re-request behaviour stays exercised even though the real
-// registry answers empty today (#122's job).
+// request/re-request behaviour stays exercised independent of exactly which
+// questions are registered; one test below (deliberately unmocked) pins the
+// real, registered steady state (#122's weekend-plans pane).
 
 function fakeWorker(): WorkerLike & { postMessage: ReturnType<typeof vi.fn> } {
   return { onmessage: null, postMessage: vi.fn() };
@@ -46,12 +47,12 @@ describe("useCalendarEventsWiring", () => {
     vi.restoreAllMocks();
   });
 
-  it("asks nothing when the registry has no requests to make — today's real, empty steady state", () => {
+  it("asks for the weekend-plans pane's own interval — today's real, registered steady state (#122)", () => {
     // No mock: exercises the actual `requiredCalendarRequests()`, which
-    // returns `[]` until #122 registers a calendar-lane question.
+    // now answers the weekend-plans pane's own interval.
     const worker = fakeWorker();
     render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
-    expect(worker.postMessage).not.toHaveBeenCalled();
+    expect(requestedKeys(worker)).toEqual(["weekend"]);
   });
 
   it("requests every interval the registry declares once the core is ready", () => {

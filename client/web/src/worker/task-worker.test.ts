@@ -267,11 +267,81 @@ describe("handleTaskRequest", () => {
       "quick",
       "low",
       "@errands",
+      null,
+      false,
       2_000,
     );
     expect(posted).toEqual([
       { type: "triageResult", seed: "seed-triage-1", itemId: "item-1", kind: "ok", error: null },
     ]);
+  });
+
+  it("triage forwards a scheduledDate edit as the two-arg set/clear pair the host expects", async () => {
+    const host = fakeHost();
+    await run(
+      {
+        type: "triage",
+        seed: "seed-triage-2",
+        itemId: "item-1",
+        destination: null,
+        title: null,
+        projectId: null,
+        size: null,
+        energy: null,
+        context: null,
+        scheduledDate: { clear: false, value: "2026-08-15" },
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(host.triage).toHaveBeenCalledWith(
+      "seed-triage-2",
+      "item-1",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "2026-08-15",
+      false,
+      2_000,
+    );
+  });
+
+  it("triage forwards a clear as clearScheduledDate=true, never as a literal string", async () => {
+    const host = fakeHost();
+    await run(
+      {
+        type: "triage",
+        seed: "seed-triage-3",
+        itemId: "item-1",
+        destination: null,
+        title: null,
+        projectId: null,
+        size: null,
+        energy: null,
+        context: null,
+        scheduledDate: { clear: true },
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(host.triage).toHaveBeenCalledWith(
+      "seed-triage-3",
+      "item-1",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      true,
+      2_000,
+    );
   });
 
   it("triage posts a failed result with its error message", async () => {

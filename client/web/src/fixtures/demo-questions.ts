@@ -71,7 +71,11 @@ export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs">
   return {
     bindings: [boundBinding],
     paneReads: { [SOURCE]: wasteRead(nowMs) },
-    // No demo question reads the calendar arm yet — see #122.
+    // The demo world mounts no calendar credential and no items — `?demo`
+    // photographs the waste pane; the weekend pane's own demo state (a
+    // `not_read` calendar, since nothing here ever pushes a token) is the
+    // honest "unbound" reading rather than a hand-authored merge.
     calendarReads: {},
+    items: [],
   };
 }
