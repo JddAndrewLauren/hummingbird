@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
+import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import type { DemoCapture, DemoData } from "../fixtures/demo";
@@ -30,6 +31,9 @@ export interface TriageScreenProps {
    * one call. Optional so a demo-only render (no worker behind it) never
    * has to pass a real one. */
   onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  /** The row checkmark's `Core::act` complete — see `TriageRow`'s own prop
+   * doc. Optional for the same demo-only reason as `onTriage`. */
+  onComplete?: (itemId: string) => void;
   /** "Now", for the age each collapsed row states. Passed in rather than read
    * here: `useSyncWiring`'s tick is the one clock this origin gets (ADR-0007),
    * and a screen that read `Date.now()` per render would be a second one. */
@@ -47,6 +51,7 @@ export function TriageScreen({
   demoCaptures,
   onDropDemoCapture,
   onTriage,
+  onComplete,
   nowMs,
 }: TriageScreenProps) {
   const queue = demoCaptures ?? [];
@@ -135,6 +140,13 @@ export function TriageScreen({
                     <Button size="sm" variant="ghost" iconLeft="x" onClick={() => onDropDemoCapture?.(capture.id)}>
                       Drop
                     </Button>
+                    {/* Demo's mark-done checkmark drops the capture, the same
+                        demo-local resolution every other button on this row
+                        uses — so `?demo` photographs the real shell. */}
+                    <MarkDoneButton
+                      title={capture.title}
+                      onClick={() => onDropDemoCapture?.(capture.id)}
+                    />
                   </div>
                 </Card>
               ))}
@@ -160,6 +172,7 @@ export function TriageScreen({
                 onToggle={() => setSelectedId(selectedId === item.id ? null : item.id)}
                 nowMs={nowMs}
                 onTriage={onTriage}
+                onComplete={onComplete}
               />
             ))}
           </div>

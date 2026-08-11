@@ -134,6 +134,10 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
           // "Completing offline shows Done immediately").
           requestFrontier(worker);
           requestBlocked(worker);
+          // The row checkmark completes from ANY live stage — Triage rows
+          // included — so an act can now remove an item from the triage
+          // inbox, the same immediate re-read `triageResult` does.
+          requestTriageInbox(worker);
           // The Ledger/Done refresh an act also warrants is NOT here:
           // `getLedger` carries a `nowMs` this module deliberately never
           // samples (see this function's doc), so `useLedgerWiring.ts` keys

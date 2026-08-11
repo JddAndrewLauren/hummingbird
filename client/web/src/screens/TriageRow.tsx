@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
+import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
@@ -9,6 +10,7 @@ import { Textarea } from "../components/forms/Textarea";
 import { relativeAge } from "../shell/sync-status";
 import type { ProjectDTO, TaskItemDTO, TriageDestinationName } from "../store/protocol";
 import type { TriageEdits } from "../store/worker-client";
+import { canMarkDone } from "./item-actions";
 import { PRIORITY_OPTIONS } from "./priority";
 import {
   buildTriageEdits,
@@ -48,6 +50,13 @@ export interface TriageRowProps {
    * (demo mode), in which case the row is readable and never expands into an
    * editor that could not send anything. */
   onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  /** The one-click "mark done" checkmark — `Core::act`'s `complete`, NOT a
+   * triage: a capture that turned out already finished skips the editor
+   * entirely. Absent in demo mode, same as `onTriage`. This is the recorded
+   * amendment to "Triage is pre-action by definition" (CONTEXT.md): the
+   * detail-panel act vocabulary still offers nothing here, but finishing is
+   * one click on every screen (`item-actions.ts`'s `canMarkDone`). */
+  onComplete?: (itemId: string) => void;
 }
 
 /** One triage-inbox row: a single line by default, the full editor when
@@ -71,6 +80,7 @@ export function TriageRow({
   onToggle,
   nowMs,
   onTriage,
+  onComplete,
 }: TriageRowProps) {
   // Only what the person has typed is state — see `effectiveDraft`'s doc for
   // why the rest is derived per render rather than seeded once.
@@ -97,81 +107,94 @@ export function TriageRow({
 
   return (
     <Card padding="0" style={{ display: "flex", flexDirection: "column" }}>
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-controls={expanded ? editorId : undefined}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "var(--space-5)",
-          flexWrap: "wrap",
-          width: "100%",
-          padding: "var(--space-5)",
-          background: "transparent",
-          border: "none",
-          borderRadius: "var(--radius-card)",
-          textAlign: "left",
-          font: "inherit",
-          color: "inherit",
-          cursor: "pointer",
-        }}
-      >
-        <StageBadge stage="triage" />
-        {/* Wrap-then-ellipsis, the same contract `ItemRow` and the demo rows
-            use: the `220px` basis is a floor, so the meta wraps onto its own
-            line before the title is starved. */}
-        <span
+      {/* The checkmark is a SIBLING of the toggle button, never a child — a
+          button nested in a button is invalid HTML, so the collapsed row is
+          this flex pair. */}
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={expanded ? editorId : undefined}
           style={{
-            flex: "1 1 220px",
-            minWidth: 0,
-            font: "var(--type-body)",
-            color: "var(--text-primary)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-5)",
+            flexWrap: "wrap",
+            width: "100%",
+            padding: "var(--space-5)",
+            background: "transparent",
+            border: "none",
+            borderRadius: "var(--radius-card)",
+            textAlign: "left",
+            font: "inherit",
+            color: "inherit",
+            cursor: "pointer",
           }}
         >
-          {draft.title}
-        </span>
-        <span className="hb-meta" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>
-          {/* Provenance, then age. `source` is null on anything typed here
-              rather than swept in, and "typed here" is the honest reading of
-              that — never a fabricated source name. */}
-          {item.source ?? "typed here"} · {relativeAge(Math.max(0, nowMs - item.createdAt))}
-        </span>
-        {item.pending ? (
+          <StageBadge stage="triage" />
+          {/* Wrap-then-ellipsis, the same contract `ItemRow` and the demo rows
+              use: the `220px` basis is a floor, so the meta wraps onto its own
+              line before the title is starved. */}
           <span
-            title="Not yet confirmed by the server"
-            className="hb-meta"
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "var(--space-2)",
-              flex: "0 0 auto",
+              flex: "1 1 220px",
+              minWidth: 0,
+              font: "var(--type-body)",
+              color: "var(--text-primary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
               whiteSpace: "nowrap",
             }}
           >
-            <Icon name="loader-circle" size={13} />
-            Pending
+            {draft.title}
           </span>
+          <span className="hb-meta" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>
+            {/* Provenance, then age. `source` is null on anything typed here
+                rather than swept in, and "typed here" is the honest reading of
+                that — never a fabricated source name. */}
+            {item.source ?? "typed here"} · {relativeAge(Math.max(0, nowMs - item.createdAt))}
+          </span>
+          {item.pending ? (
+            <span
+              title="Not yet confirmed by the server"
+              className="hb-meta"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "var(--space-2)",
+                flex: "0 0 auto",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Icon name="loader-circle" size={13} />
+              Pending
+            </span>
+          ) : null}
+          {/* One chevron, rotated — `Icon`'s vocabulary carries `chevron-down`
+              and adding an "up" twin for a state change would be a second glyph
+              saying the same thing. The rotation is a token-timed flit, so the
+              row's state change is animated rather than a jump. */}
+          <span
+            style={{
+              display: "inline-flex",
+              flex: "0 0 auto",
+              transform: expanded ? "rotate(180deg)" : "none",
+              transition: "transform var(--dur-base) var(--ease-flit)",
+            }}
+          >
+            <Icon name="chevron-down" size={16} color="var(--text-muted)" />
+          </span>
+        </button>
+        {onComplete && canMarkDone(item) ? (
+          <MarkDoneButton
+            title={item.title}
+            disabled={item.pending}
+            style={{ marginRight: "var(--space-4)" }}
+            onClick={() => onComplete(item.id)}
+          />
         ) : null}
-        {/* One chevron, rotated — `Icon`'s vocabulary carries `chevron-down`
-            and adding an "up" twin for a state change would be a second glyph
-            saying the same thing. The rotation is a token-timed flit, so the
-            row's state change is animated rather than a jump. */}
-        <span
-          style={{
-            display: "inline-flex",
-            flex: "0 0 auto",
-            transform: expanded ? "rotate(180deg)" : "none",
-            transition: "transform var(--dur-base) var(--ease-flit)",
-          }}
-        >
-          <Icon name="chevron-down" size={16} color="var(--text-muted)" />
-        </span>
-      </button>
+      </div>
 
       {expanded && onTriage ? (
         <div

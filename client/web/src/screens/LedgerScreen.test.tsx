@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
-import { ledgerRowDTO, render, screen, taskState } from "../test/component";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, ledgerRowDTO, render, screen, taskState } from "../test/component";
 import { LedgerScreen } from "./LedgerScreen";
 
 const MINUTE = 60_000;
@@ -59,5 +59,39 @@ describe("LedgerScreen", () => {
     expect(screen.getAllByText("Pending")).toHaveLength(1);
     expect(screen.getAllByText("edit didn't apply")).toHaveLength(1);
     expect(screen.getAllByText("alert")).toHaveLength(1);
+  });
+});
+
+// The mark-done checkmark, the one gesture that amended this screen's
+// read-only decision: live rows offer it, settled ones (Done, archived,
+// absent) never do — an act on an absent row would be `ItemNotFound`.
+describe("LedgerScreen — the mark-done checkmark", () => {
+  it("offers it on live rows only, and completes in one click", () => {
+    const onComplete = vi.fn();
+    const task = taskState({
+      ledger: [
+        ledgerRowDTO({ id: "a-1", title: "still open" }),
+        ledgerRowDTO({ id: "a-2", title: "finished thing", stage: "done" }),
+        ledgerRowDTO({ id: "a-3", title: "cancelled thing", archivedAt: 6 * MINUTE }),
+        ledgerRowDTO({ id: "a-4", title: "absent thing", absentSinceMs: 6 * MINUTE }),
+      ],
+    });
+    render(<LedgerScreen task={task} nowMs={10 * MINUTE} onComplete={onComplete} />);
+
+    const checkmarks = screen.getAllByRole("button", { name: /^Mark ".*" done$/ });
+    expect(checkmarks).toHaveLength(1);
+    expect(checkmarks[0]!.getAttribute("aria-label")).toBe('Mark "still open" done');
+    fireEvent.click(checkmarks[0]!);
+    expect(onComplete).toHaveBeenCalledWith("a-1");
+  });
+
+  it("offers no checkmark without an onComplete handler", () => {
+    render(
+      <LedgerScreen
+        task={taskState({ ledger: [ledgerRowDTO({ id: "a-1", title: "still open" })] })}
+        nowMs={10 * MINUTE}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /mark .* done/i })).toBeNull();
   });
 });

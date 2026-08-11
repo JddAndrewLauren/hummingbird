@@ -230,6 +230,10 @@ describe("attachWorkerClient", () => {
     // cycle (this issue's "Completing offline shows Done immediately").
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
+    // The row checkmark completes from any live stage — Triage included —
+    // so an ok act also re-reads the triage inbox, the same way an ok
+    // triage does.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getTriageInbox" });
     // PR #207 round-2 fix: the acted-on item's `pending` must come from a
     // LIVE source (`task.pending`), so an ok act immediately asks the core
     // `isPending` — the task worker's serial queue guarantees the act was

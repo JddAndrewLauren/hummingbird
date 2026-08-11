@@ -264,3 +264,43 @@ describe("TriageScreen — the editor", () => {
     ).toBe(true);
   });
 });
+
+// The row checkmark: `Core::act`'s complete offered straight off the
+// collapsed line — the recorded amendment to "Triage is pre-action by
+// definition". What only a mount can prove is the sibling structure: the
+// checkmark must fire WITHOUT toggling the editor open, and must not exist
+// at all when no handler is wired (demo mode).
+describe("TriageScreen — the mark-done checkmark", () => {
+  function renderWithComplete(task: TaskState) {
+    const onComplete = vi.fn();
+    render(
+      <TriageScreen demo={null} task={task} onTriage={vi.fn()} onComplete={onComplete} nowMs={NOW} />,
+    );
+    return { onComplete };
+  }
+
+  it("completes the capture in one click, without expanding the editor", () => {
+    const { onComplete } = renderWithComplete(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "already did this" })] }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: 'Mark "already did this" done' }));
+    expect(onComplete).toHaveBeenCalledWith("i1");
+    // The editor stayed shut: completing is not a selection.
+    expect(screen.queryByRole("button", { name: /promote to ready/i })).toBeNull();
+  });
+
+  it("disables the checkmark while the row is pending", () => {
+    renderWithComplete(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "queued thing", pending: true })] }),
+    );
+    expect(
+      screen.getByRole("button", { name: 'Mark "queued thing" done' }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("offers no checkmark without an onComplete handler", () => {
+    renderTriage(taskState({ triageInbox: [itemDTO({ id: "i1", title: "demo-ish row" })] }));
+    expect(screen.queryByRole("button", { name: /mark .* done/i })).toBeNull();
+  });
+});

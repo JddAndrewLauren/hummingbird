@@ -268,13 +268,20 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               demoCaptures={demo ? demoCaptures : undefined}
               onDropDemoCapture={demo ? dropDemoCapture : undefined}
               onTriage={demo ? undefined : handleTriage}
+              onComplete={demo ? undefined : (itemId) => handleAct(itemId, "complete")}
               nowMs={syncNowMs}
             />
           )}
           {screen === "routes" && <RoutesScreen demo={demo} />}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
           {screen === "done" && <DoneScreen task={task} nowMs={syncNowMs} />}
-          {screen === "ledger" && <LedgerScreen task={task} nowMs={syncNowMs} />}
+          {screen === "ledger" && (
+            <LedgerScreen
+              task={task}
+              nowMs={syncNowMs}
+              onComplete={(itemId) => handleAct(itemId, "complete")}
+            />
+          )}
           {screen === "settings" && (
             <SettingsScreen
               demo={demo}
