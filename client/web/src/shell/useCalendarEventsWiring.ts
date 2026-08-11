@@ -21,11 +21,24 @@ import { requestCalendarEvents, type WorkerLike } from "../store/worker-client";
 // one rolling window rather than the empty list this hook used to be
 // mounted against.
 //
-// Thin glue and **no clock of its own**: `Date.now()` below is the
-// request's own `nowMs`, the instant `freshness` is measured against,
-// core-side — not a timer. No `setInterval`/`setTimeout` is added here or
-// anywhere this hook touches: ADR-0007's single 60-second SharedWorker
-// interval is still the only clock the origin gets.
+// Thin glue and **no clock of its own**: `Date.now()` is the request's own
+// `nowMs`, the instant both "which interval" (a declared window like #122's
+// rolling weekend one can itself be a function of "now") and `freshness`
+// are measured against, core-side — not a timer. No `setInterval`/
+// `setTimeout` is added here or anywhere this hook touches: ADR-0007's
+// single 60-second SharedWorker interval is still the only clock the
+// origin gets.
+//
+// `Date.now()` is read **inside** the effect, never during render
+// (react-hooks/purity — a render is allowed to run more than once, or be
+// thrown away, for reasons that have nothing to do with this hook, and a
+// clock read there would silently let a re-render decide which interval
+// gets requested). Because `requiredCalendarRequests()` is now called only
+// once per actual effect run, there is no longer a render-computed array
+// whose identity needs guarding against — the old `JSON.stringify`
+// by-value key existed solely to keep that render-time array out of the
+// effect's own dependency list without disabling `exhaustive-deps`, and
+// that problem disappears once nothing but the effect ever calls it.
 
 export function useCalendarEventsWiring(
   worker: WorkerLike,
@@ -36,27 +49,15 @@ export function useCalendarEventsWiring(
   syncOutcomeSeq: number,
 ): void {
   const ready = status === "ready";
-  // The registry's own clock reasoning (`registry.ts`'s `requiredCalendarRequests`
-  // doc): a declared interval — #122's rolling weekend window — can itself
-  // be a function of "now", so this render's own instant decides which
-  // interval is asked for. The effect below still reads its own fresh
-  // `Date.now()` for the request's `nowMs` (the freshness clock), exactly
-  // as before; this one only decides WHICH interval.
-  const requests = requiredCalendarRequests(Date.now());
-  // Requests are compared by value, not by the array's own identity: the
-  // registry recomputing an equivalent array on every call must not re-fire
-  // the effect every render just because the reference changed underneath
-  // an unchanged value.
-  const requestsKey = JSON.stringify(requests);
 
   useEffect(() => {
     if (!ready) {
       return;
     }
     const nowMs = Date.now();
-    for (const request of requests) {
+    for (const request of requiredCalendarRequests(nowMs)) {
       requestCalendarEvents(worker, request.key, request.startMs, request.endMs, nowMs);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, syncOutcomeSeq, requestsKey]);
+  }, [ready, syncOutcomeSeq]);
 }
