@@ -203,19 +203,60 @@ pub fn patch(
     Ok(json(200, &rule_from_row(&row)?))
 }
 
-/// `GET /api/rules` — every rule, enabled or not (#135-137). Ordinary
-/// device clients already get the full set through `GET /api/changes`'s
-/// `rules` field; this route exists for the evaluated-stream pollers, which
-/// hold an `ingest` token and cannot reach the delta-pull lane at all
-/// (`auth::permitted`'s device-only default). A poller evaluates every
-/// rule in memory itself (`hummingbird_rules_engine::evaluate_rules`
-/// already skips a disabled one), so disabled rules are included here too
-/// — filtering them here would just be a second, easy-to-drift copy of the
-/// engine's own `enabled` check.
-pub fn list(sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
+/// Which `event_kind`(s) an evaluated-stream poller's `ingest` token may
+/// read back through [`list`], keyed by its bound source (#135-137,
+/// following the reviewer's item 2 on #264). A rule with `event_kind: None`
+/// evaluates against events of **any** kind (`Rule`'s own "any kind"
+/// meaning) and so is always included regardless of this table — a poller
+/// must see it too, since it applies to its own events exactly as much as
+/// anyone else's.
+///
+/// This is what keeps `GET /api/rules` from silently widening every
+/// existing ingest token's reach to the operator's entire rule catalogue —
+/// including `CITY_WASTE_INGEST_TOKEN`, which sits in GitHub Actions under
+/// the recorded justification that its worst-case abuse is a wrong bin
+/// day. An unrecognised or unbound source reads only the any-kind rules:
+/// the safe default is nothing extra, never everything.
+fn event_kinds_readable_by(source: &str) -> &'static [&'static str] {
+    match source {
+        hummingbird_domain::GMAIL_V1 => &["email"],
+        _ => &[],
+    }
+}
+
+/// `GET /api/rules` — every rule, enabled or not, for a device token; for
+/// an `ingest` token, only the rules its bound source is entitled to see
+/// (#135-137, [`event_kinds_readable_by`]). Ordinary device clients already
+/// get the full set through `GET /api/changes`'s `rules` field; this route
+/// exists for the evaluated-stream pollers, which hold an `ingest` token
+/// and cannot reach the delta-pull lane at all (`auth::permitted`'s
+/// device-only default). A poller evaluates every rule in memory itself
+/// (`hummingbird_rules_engine::evaluate_rules` already skips a disabled
+/// one), so disabled rules are included here too — filtering them here
+/// would just be a second, easy-to-drift copy of the engine's own
+/// `enabled` check.
+///
+/// A row this handler cannot parse propagates as a `SqlError`, exactly as
+/// `changes.rs`'s `pull` does for the same table — silently dropping it
+/// would be a rule that quietly stops existing, in the one consumer whose
+/// entire job is firing rules.
+pub fn list(token_source: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
     let rows = sql.exec("SELECT * FROM rules ORDER BY id", &[])?;
     let rules: Vec<hummingbird_domain::Rule> =
-        rows.iter().filter_map(|row| rule_from_row(row).ok()).collect();
+        rows.iter().map(rule_from_row).collect::<Result<_, _>>()?;
+    let rules = match token_source {
+        // `None` is a device token (unrestricted) or, in principle, an
+        // unbound ingest token — which cannot exist outside a raw seam
+        // that bypassed the mint handler (`auth::Principal`'s own doc).
+        None => rules,
+        Some(source) => {
+            let allowed = event_kinds_readable_by(source);
+            rules
+                .into_iter()
+                .filter(|r| r.event_kind.as_deref().is_none_or(|k| allowed.contains(&k)))
+                .collect()
+        }
+    };
     Ok(json(200, &rules))
 }
 

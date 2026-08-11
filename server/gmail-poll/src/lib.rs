@@ -47,15 +47,40 @@
 //! dedupe key absorbs" — `alert::plan`'s never-sent `raised_at` and the
 //! upsert's own no-op-on-identical-payload rule are what make that
 //! re-fetch safe rather than merely tolerated.
+//!
+//! **The cursor-loss decision itself is `resume.rs`, not `main.rs`**
+//! (#264 review item 5): `resume(stored, HistoryOutcome)` is a pure fold
+//! over the stored cursor and the outcome of one `history.list` attempt —
+//! `main.rs`'s only job is the `Ok`/`Status(404)` → `Page`/`Expired`
+//! mapping, which needs the real HTTP status and so cannot move. AC6's
+//! cursor-loss fixture case lives here, natively, rather than being
+//! unreachable inside the untestable edge. `batch.rs`'s `fold_messages`
+//! is its sibling for the per-message fetch loop (review item 4): a
+//! transient fetch failure aborts the whole batch (`Err`, before
+//! `main.rs` ever calls `post_cursor`), while a permanently unparseable
+//! message is skipped loudly but non-fatally — two different failure
+//! modes that must not share one branch, since only the first may be
+//! allowed to block the cursor from advancing.
+
+//! **`occurred_at` and the evaluation clock are both `now_as_deadline(...)`,
+//! i.e. UTC** — `event.rs` stamps a message's `occurred_at` from Gmail's own
+//! `internalDate` through it, and `main.rs` reads "now" through it too, so
+//! a rule's time predicates compare like-for-like within this poller. This
+//! does not generalize to a source that resolves day-shaped questions in a
+//! local zone (`server/city-waste`'s own `zoned-day.ts` carve-out) — it is
+//! noted here only because that reasoning does not transfer.
 
 mod alert;
+mod batch;
 mod cursor;
 mod event;
 mod evaluate;
 mod history;
 mod message;
+mod resume;
 
 pub use alert::plan as plan_alert;
+pub use batch::{fold_messages, Batch};
 pub use cursor::{envelope as cursor_envelope, parse_cursor, CursorError, CURSOR_KEY, CURSOR_SCHEMA, SOURCE};
 pub use event::message_to_event;
 pub use evaluate::{evaluate_events, Match};
@@ -63,3 +88,4 @@ pub use history::{
     parse_history_list, parse_messages_list, parse_profile, HistoryError, HistoryPage,
 };
 pub use message::{parse_message, GmailMessage, MessageError};
+pub use resume::{resume, HistoryOutcome, Plan};

@@ -20,14 +20,14 @@
 //! no-op-on-identical-payload rule make a safe re-fetch, never a duplicate
 //! alert.
 
-use std::collections::BTreeSet;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hummingbird_domain::{now_as_deadline, Rule};
 use hummingbird_gmail_poll::{
-    cursor_envelope, evaluate_events, message_to_event, parse_cursor, parse_history_list,
-    parse_message, parse_messages_list, parse_profile, plan_alert, CURSOR_KEY, SOURCE,
+    cursor_envelope, evaluate_events, fold_messages, parse_cursor, parse_history_list,
+    parse_messages_list, parse_profile, plan_alert, resume, HistoryOutcome, Plan, CURSOR_KEY,
+    SOURCE,
 };
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -77,34 +77,40 @@ fn run() -> Result<Summary, String> {
     let rules = get_rules(base_url, &hb_token)?;
     let stored_cursor = get_cursor(base_url, &hb_token)?;
 
-    let (message_ids, new_history_id) = match stored_cursor {
-        Some(history_id) => match gmail_history_list(&access_token, &history_id) {
-            Ok(page) => (page.message_ids, page.history_id.unwrap_or(history_id)),
-            // Gmail's own signal that the cursor has aged out (its retention
-            // window is roughly a week) — `main.rs`'s job to notice, since
-            // only the HTTP status carries it.
-            Err(GmailError::Status(404)) => bounded_resync(&access_token)?,
+    // `main.rs`'s one job in the cursor-loss decision: read the real HTTP
+    // status and map it onto `HistoryOutcome` — everything downstream of
+    // that mapping is `resume`'s pure decision (`hummingbird_gmail_poll`'s
+    // module doc; #264 review item 5). A transport error or a non-404
+    // status is not a cursor-loss case at all and aborts the run here,
+    // before anything is fetched or written.
+    let plan = match &stored_cursor {
+        // No cursor ever written — the same bounded start a lost cursor
+        // gets (`resume`'s own doc); there is no `history.list` call to
+        // make at all, since there is no `historyId` to start it from.
+        None => Plan::Resync,
+        Some(history_id) => match gmail_history_list(&access_token, history_id) {
+            Ok(page) => resume(Some(history_id), HistoryOutcome::Page(page)),
+            Err(GmailError::Status(404)) => resume(Some(history_id), HistoryOutcome::Expired),
             Err(e) => return Err(e.to_string()),
         },
-        // No cursor ever written — the same bounded start a lost cursor
-        // gets, since neither has an earlier point to resume from.
-        None => bounded_resync(&access_token)?,
     };
 
-    let mut seen = BTreeSet::new();
-    let mut events = Vec::new();
-    for id in message_ids {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        match gmail_get_message(&access_token, &id) {
-            Ok(json) => match parse_message(&json) {
-                Ok(msg) => events.push(message_to_event(&msg)),
-                Err(e) => eprintln!("gmail-poll: skipping {id}, unparseable: {e}"),
-            },
-            Err(e) => eprintln!("gmail-poll: skipping {id}, fetch failed: {e}"),
-        }
+    let (message_ids, new_history_id) = match plan {
+        Plan::Advance { message_ids, new_history_id } => (message_ids, new_history_id),
+        Plan::Resync => bounded_resync(&access_token)?,
+    };
+
+    // The per-message fetch/parse fold (#264 review item 4): a transient
+    // fetch failure aborts the whole run via `?`, before `post_cursor` is
+    // ever reached, so that message's id stays inside the *next* poll's
+    // `history.list` window rather than being lost the moment the cursor
+    // advances past it. A permanently unparseable message is skipped
+    // loudly (logged below) but does not abort the batch.
+    let batch = fold_messages(&message_ids, |id| gmail_get_message(&access_token, id))?;
+    for (id, reason) in &batch.unparseable {
+        eprintln!("gmail-poll: skipping {id}, unparseable: {reason}");
     }
+    let events = batch.events;
 
     let now = now_as_deadline(now_ms()?);
     let matches = evaluate_events(&rules, &events, &now);

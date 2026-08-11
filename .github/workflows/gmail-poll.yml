@@ -59,9 +59,20 @@ jobs:
           # operator's terminal against `ADMIN_SECRET` — the deploy-time step
           # the brief calls out, not an implementation step of this issue.
           HB_INGEST_TOKEN: ${{ secrets.GMAIL_INGEST_TOKEN }}
-          # The existing sweeper refresh token (`gmail.modify`, Workspace
-          # Internal OAuth app) — ADR-0011: "no new consent and no re-mint is
-          # required." The client id/secret identify that same app.
+          # A DEDICATED `gmail.readonly`-scope refresh token — deliberately
+          # NOT the sweeper's existing `gmail.modify` one (ADR-0011's
+          # amendment: "the poller runs out-of-process, and its credential is
+          # narrowed accordingly"). Every Gmail call this poller makes
+          # (`history.list`, `messages.get`, `messages.list`, `getProfile`)
+          # is a read; `gmail.modify` — read *and modify* the whole
+          # mailbox — is on the `ADMIN_SECRET` side of CLAUDE.md's Actions
+          # blast-radius rule, not the `CITY_WASTE_INGEST_TOKEN` side, and a
+          # GitHub Actions secret is a different trust boundary than the
+          # Worker secrets ADR-0011's credential table names. Minting this
+          # is a one-time, deploy-time operator step (a fresh consent for the
+          # narrower scope, distinct from the sweeper's) — see issue #135 for
+          # the open question of whether the operator instead prefers to
+          # reuse the broader token here.
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}

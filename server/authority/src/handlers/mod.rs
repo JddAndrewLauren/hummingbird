@@ -148,7 +148,7 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
             push_targets::revoke(id, now_ms, sql)
         }
         ("GET", ["settings", key]) if !key.is_empty() => settings::get(key, sql),
-        ("GET", ["rules"]) => rules::list(sql),
+        ("GET", ["rules"]) => rules::list(principal.source.as_deref(), sql),
         ("GET", ["snapshots"]) => {
             snapshots::get(req.query, principal.source.as_deref(), sql)
         }

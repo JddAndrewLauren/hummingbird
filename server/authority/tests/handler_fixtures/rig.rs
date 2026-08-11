@@ -321,6 +321,16 @@ pub fn get_rules_as(sql: &dyn Sql, token: &str) -> ApiResponse {
     req_as(sql, token, "GET", "/api/rules", None, None, 0)
 }
 
+/// `GET /api/rules`, with `rig-ingest` first rebound to `source` (the
+/// `list` source-binding review fix on #264) — the same rebind-then-call
+/// shape as [`ingest_alert`]/[`ingest_snapshot`], since `list`'s filtering
+/// depends on the calling token's bound source. Use [`get_rules_as`] with
+/// `INGEST_TOKEN` directly to exercise the unbound-token case.
+pub fn get_rules_as_ingest_bound_to(sql: &dyn Sql, source: &str) -> ApiResponse {
+    bind_ingest_token(sql, source);
+    get_rules_as(sql, INGEST_TOKEN)
+}
+
 pub fn post_rule(sql: &dyn Sql, body: &str, now_ms: i64) -> ApiResponse {
     post_to(sql, "/api/rules", body, now_ms)
 }
