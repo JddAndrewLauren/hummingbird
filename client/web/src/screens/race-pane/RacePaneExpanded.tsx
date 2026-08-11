@@ -3,6 +3,7 @@ import { Button } from "../../components/core/Button";
 import { Card } from "../../components/core/Card";
 import { Icon } from "../../components/core/Icon";
 import { EmptyState } from "../../components/feedback/EmptyState";
+import { FitText } from "../questions/FitText";
 import type { QuestionInputs } from "../questions/contract";
 import {
   clock,
@@ -112,15 +113,20 @@ export function RacePaneExpanded({
         {view.label}
       </span>
 
-      <p
+      {/* One line always, shrunk to fit — the event name is the feed's, not
+          ours, and it lands in a 320px aside. */}
+      <FitText
+        basePx={24}
         style={{
-          font: "var(--weight-bold) 24px/1.1 var(--font-display)",
+          fontFamily: "var(--font-display)",
+          fontWeight: "var(--weight-bold)",
+          lineHeight: 1.1,
           letterSpacing: "var(--tracking-heading)",
           color: "var(--text-primary)",
         }}
       >
         {raceHeadline(view, inputs.nowMs)}
-      </p>
+      </FitText>
 
       {view.event !== null && view.nextStart !== null ? (
         <>

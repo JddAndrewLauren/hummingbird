@@ -3,6 +3,7 @@ import { Badge } from "../../components/core/Badge";
 import { Button } from "../../components/core/Button";
 import { Card } from "../../components/core/Card";
 import { EmptyState } from "../../components/feedback/EmptyState";
+import { FitText } from "../questions/FitText";
 import type { QuestionInputs } from "../questions/contract";
 import {
   HORIZON_LABEL,
@@ -31,17 +32,30 @@ const META: CSSProperties = {
   textTransform: "uppercase",
 };
 
+/** The base the fitted headline starts from, and shrinks below only when the
+ * trip's name makes it. */
+const HEADLINE_PX = 34;
+
 /** The two things the headline says — the place and the count — set
- * identically, so neither reads as a caption on the other. */
+ * identically, so neither reads as a caption on the other.
+ *
+ * Sized in `em` rather than px because the line is fitted to one line
+ * (`FitText`): the ratio between the answer and the grammar has to survive
+ * the shrink, or a long trip name would end with the joining words *larger*
+ * than the count they join. */
 const HEADLINE: CSSProperties = {
-  font: "var(--weight-bold) 34px/1 var(--font-display)",
-  letterSpacing: "var(--tracking-display)",
+  fontSize: "1em",
+  lineHeight: 1,
   color: "var(--text-primary)",
 };
 
-/** The words between them, which are grammar rather than answer. */
+/** The words between them, which are grammar rather than answer — the body
+ * step held as its ratio to the base above. */
 const JOIN: CSSProperties = {
-  font: "var(--type-body)",
+  fontSize: `${15 / HEADLINE_PX}em`,
+  fontFamily: "var(--font-sans)",
+  fontWeight: "var(--weight-regular)",
+  letterSpacing: "var(--tracking-body)",
   color: "var(--text-secondary)",
 };
 
@@ -51,26 +65,36 @@ function Countdown({ trip }: { trip: Trip }) {
     // facts with a hinge between them — "In Lisbon · day 3 of 6" has no
     // number to set apart.
     return (
-      <p
+      <FitText
+        basePx={20}
         style={{
-          font: "var(--weight-bold) 20px/1.15 var(--font-display)",
+          fontFamily: "var(--font-display)",
+          fontWeight: "var(--weight-bold)",
+          lineHeight: 1.15,
           letterSpacing: "var(--tracking-heading)",
           color: "var(--text-primary)",
         }}
       >
         {vacationHeadline(trip)}
-      </p>
+      </FitText>
     );
   }
   return (
-    <p
-      style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "var(--space-3)" }}
+    <FitText
+      basePx={HEADLINE_PX}
+      style={{
+        fontFamily: "var(--font-display)",
+        fontWeight: "var(--weight-bold)",
+        letterSpacing: "var(--tracking-display)",
+      }}
     >
-      <span style={HEADLINE}>{trip.name}</span>
-      <span style={JOIN}>in</span>
-      <span style={{ ...HEADLINE, fontVariantNumeric: "tabular-nums" }}>{trip.daysUntil}</span>
-      <span style={JOIN}>days</span>
-    </p>
+      <span style={{ display: "inline-flex", alignItems: "baseline", gap: "var(--space-3)" }}>
+        <span style={HEADLINE}>{trip.name}</span>
+        <span style={JOIN}>in</span>
+        <span style={{ ...HEADLINE, fontVariantNumeric: "tabular-nums" }}>{trip.daysUntil}</span>
+        <span style={JOIN}>days</span>
+      </span>
+    </FitText>
   );
 }
 

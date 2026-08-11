@@ -3,7 +3,7 @@ import { coreInstanceLabel, coreStatusLabel } from "./status-label";
 
 describe("coreStatusLabel", () => {
   it("reports a ready core with its api version", () => {
-    expect(coreStatusLabel("ready", 1)).toBe("core ready · api v1");
+    expect(coreStatusLabel("ready", 1)).toBe("api v1 · core ready");
   });
 
   it("omits the version when a ready core reported none", () => {
@@ -11,7 +11,7 @@ describe("coreStatusLabel", () => {
   });
 
   it("still shows api v0, so a falsy check can never be mistaken for no version", () => {
-    expect(coreStatusLabel("ready", 0)).toBe("core ready · api v0");
+    expect(coreStatusLabel("ready", 0)).toBe("api v0 · core ready");
   });
 
   it("reports loading", () => {

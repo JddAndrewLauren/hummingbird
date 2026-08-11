@@ -168,7 +168,6 @@ function WeekendCard({
 
   return (
     <Card
-      accent
       padding="var(--space-5)"
       style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
     >

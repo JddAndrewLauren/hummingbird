@@ -251,6 +251,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     }
   }
 
+  // The rail's mark is the way home: Now, refreshed. A page reload would be
+  // the other reading of "refresh", but it would tear down the core and the
+  // SharedWorker for data the same press already re-fetches (ADR-0010).
+  function handleHome() {
+    setScreen("now");
+    if (refreshEnabled) {
+      handleRefresh();
+    }
+  }
+
   return (
     <div
       style={{
@@ -269,6 +279,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onToggleTheme={() => setPreference(toggledPreference(theme))}
         collapsed={railCollapsed}
         onToggleCollapsed={handleToggleRailCollapsed}
+        onHome={handleHome}
       />
 
       <main style={{ display: "flex", flex: 1, minWidth: 0, flexDirection: "column" }}>
