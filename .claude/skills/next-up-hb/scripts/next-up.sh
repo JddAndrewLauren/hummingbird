@@ -40,14 +40,13 @@
 #
 # 1. **Every read is the whole sweep.** There is no `GET /api/items/:id`,
 #    so `get` fetches the sweep and filters it in jq. Simpler than the
-#    GraphQL it replaces, and why the old REFERENCE.md's complexity-cap
-#    findings are not merely obsolete but meaningless.
+#    GraphQL it replaces, with one bounded payload to filter locally.
 # 2. **`HB-<seq>` is a client-side affordance.** No route accepts or
 #    resolves it; `seq` is server-minted and appears only in `Item.seq`.
 # 3. **A write is CAS, retried exactly once** -- read `version`, `PATCH`
-#    with `expected_version`, and on a 409 re-read `.current.version` from
-#    the conflict body and reissue. Bounded at one, the same shape and
-#    reasoning as `write/adapter.rs`'s `MAX_ATTEMPTS`.
+#    with `expected_version`, and on a 409 compare touched fields with the
+#    original row. Disjoint changes are resent against `.current.version`;
+#    same-field changes stop rather than overwriting them.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,11 +83,23 @@ token() {
 # One request. Leaves the body in $BODY and the status in $STATUS and
 # asserts neither — a 409 is an outcome for the CAS verbs, not a failure.
 request() { # method path [json-body]
-  local method=$1 path=$2 data=${3:-} raw
+  local method=$1 path=$2 data=${3:-} raw auth_token auth_file curl_status
+  auth_token=$(token)
+  [[ -n "$auth_token" ]] || die "empty authority token at $TOKEN_PATH — mint a device-scope token against $API_BASE (POST /api/admin/tokens, ADMIN_SECRET) and save it to that path"
+  auth_file=$(mktemp)
+  chmod 600 "$auth_file"
+  printf 'Authorization: Bearer %s\n' "$auth_token" >"$auth_file"
   local args=(-sS -w '\n%{http_code}' --connect-timeout 10 --max-time 30
-              -X "$method" -H "Authorization: Bearer $(token)" "$API_BASE$path")
+              -X "$method" -H "@$auth_file" "$API_BASE$path")
   [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-  raw=$(curl "${args[@]}")
+  if raw=$(curl "${args[@]}"); then
+    :
+  else
+    curl_status=$?
+    rm -f "$auth_file"
+    return "$curl_status"
+  fi
+  rm -f "$auth_file"
   # Split on the last newline (BSD head rejects `head -n -1`).
   BODY=${raw%$'\n'*}
   STATUS=${raw##*$'\n'}
@@ -150,17 +161,37 @@ item_row() { # uuid -> the item row
     || die "no item $1 in the sweep"
 }
 
-# A CAS patch with exactly one bounded retry.
-cas_patch() { # path fields-json expected-version
-  local path=$1 fields=$2 version=$3 attempt
+# A CAS patch with exactly one bounded retry. `$3` is the complete row read
+# before the first attempt, so a conflict can distinguish disjoint changes
+# from a concurrent edit to one of the fields this operation touches.
+cas_patch() { # path fields-json base-row
+  local path=$1 fields=$2 base=$3 attempt version current conflicts
+  version=$(jq -er '.version' <<<"$base") \
+    || die "PATCH $path cannot read the original row version: $base"
   for attempt in 1 2; do
     request PATCH "$path" "$(jq -c --argjson v "$version" '. + {expected_version: $v}' <<<"$fields")"
     case "$STATUS" in
       200) printf '%s\n' "$BODY"; return 0 ;;
       409)
         [[ "$attempt" == 1 ]] || die "PATCH $path still conflicting after one retry — another writer is moving the same row; report where the protocol stopped rather than grinding: $BODY"
-        version=$(jq -er '.current.version' <<<"$BODY") \
+        current=$(jq -er '.current' <<<"$BODY") \
           || die "PATCH $path answered 409 without a current entity: $BODY"
+        conflicts=$(jq -r --argjson base "$base" --argjson current "$current" '
+          [to_entries[]
+           | select($current[.key] != $base[.key])
+           | select($current[.key] != .value)
+           | .key]
+          | join(", ")
+        ' <<<"$fields") \
+          || die "PATCH $path could not compare the conflicting entity: $BODY"
+        [[ -z "$conflicts" ]] || die "PATCH $path has a same-field conflict on $conflicts — the current value changed; re-read and decide: $BODY"
+        if jq -e --argjson current "$current" \
+          'all(to_entries[]; $current[.key] == .value)' <<<"$fields" >/dev/null; then
+          printf '%s\n' "$current"
+          return 0
+        fi
+        version=$(jq -er '.version' <<<"$current") \
+          || die "PATCH $path answered 409 without a current entity version: $BODY"
         ;;
       *) die "PATCH $path answered $STATUS: $BODY" ;;
     esac
@@ -267,8 +298,7 @@ case "$cmd" in
       printf '%s\n' "$row"
       exit 0
     fi
-    cas_patch "/api/items/$uuid" "$(jq -n --arg s "$stage" '{stage: $s}')" \
-      "$(jq -r '.version' <<<"$row")"
+    cas_patch "/api/items/$uuid" "$(jq -n --arg s "$stage" '{stage: $s}')" "$row"
     ;;
 
   note)
@@ -305,8 +335,7 @@ case "$cmd" in
           else $desc + "\n\n" + $section
           end')
 
-    cas_patch "/api/items/$uuid" "$(jq -n --arg d "$updated" '{description: $d}')" \
-      "$(jq -r '.version' <<<"$row")"
+    cas_patch "/api/items/$uuid" "$(jq -n --arg d "$updated" '{description: $d}')" "$row"
     ;;
 
   unflag-agent)
@@ -322,7 +351,7 @@ case "$cmd" in
       printf '%s\n' "$row"
       exit 0
     fi
-    cas_patch "/api/items/$uuid" '{"agent": false}' "$(jq -r '.version' <<<"$row")"
+    cas_patch "/api/items/$uuid" '{"agent": false}' "$row"
     ;;
 
   *)

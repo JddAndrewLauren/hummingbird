@@ -20,8 +20,7 @@
 # 1. **Every read is the whole sweep.** There is no `GET /api/items/:id` and
 #    no `GET /api/steps` — `GET /api/sweep` is the only read of domain data,
 #    so each read verb below fetches once and then filters in jq. Simpler
-#    than the GraphQL it replaces, and it is why the old REFERENCE.md's
-#    complexity-cap findings are not merely obsolete but meaningless.
+#    than the GraphQL it replaces, with one bounded payload to filter locally.
 #
 # 2. **`HB-<seq>` is a client-side affordance.** No route accepts or
 #    resolves it: `seq` is server-minted at create and appears only in
@@ -29,11 +28,9 @@
 #    has already fetched, and passes a uuid through untouched.
 #
 # 3. **A write is CAS, and a 409 is retried exactly once.** Read `version`,
-#    `PATCH` with `expected_version`, and on a conflict re-read
-#    `.current.version` from the 409's own body and reissue. Once, bounded —
-#    the same shape and the same reasoning as `write/adapter.rs`'s
-#    `MAX_ATTEMPTS`: a second disjoint conflict is repeated churn, not a
-#    collision to keep grinding against.
+#    `PATCH` with `expected_version`, and on a conflict compare touched
+#    fields with the original row. Disjoint changes are resent against the
+#    carried current version; same-field changes stop rather than overwrite.
 #
 # The Linear-era `<!-- microtask:start -->` markers, the read-modify-write
 # merge around a human's edits, and the `- [x]`/`- [X]` normalisation are all
@@ -74,11 +71,23 @@ token() {
 # NOT assert either — every caller here has its own idea of which statuses
 # are success (a 409 is an outcome, not a failure).
 request() { # method path [json-body]
-  local method=$1 path=$2 data=${3:-} raw
+  local method=$1 path=$2 data=${3:-} raw auth_token auth_file curl_status
+  auth_token=$(token)
+  [[ -n "$auth_token" ]] || die "empty authority token at $TOKEN_PATH — mint a device-scope token against $API_BASE (POST /api/admin/tokens, ADMIN_SECRET) and save it to that path"
+  auth_file=$(mktemp)
+  chmod 600 "$auth_file"
+  printf 'Authorization: Bearer %s\n' "$auth_token" >"$auth_file"
   local args=(-sS -w '\n%{http_code}' --connect-timeout 10 --max-time 30
-              -X "$method" -H "Authorization: Bearer $(token)" "$API_BASE$path")
+              -X "$method" -H "@$auth_file" "$API_BASE$path")
   [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-  raw=$(curl "${args[@]}")
+  if raw=$(curl "${args[@]}"); then
+    :
+  else
+    curl_status=$?
+    rm -f "$auth_file"
+    return "$curl_status"
+  fi
+  rm -f "$auth_file"
   # Split on the last newline (BSD head rejects `head -n -1`).
   BODY=${raw%$'\n'*}
   STATUS=${raw##*$'\n'}
@@ -141,18 +150,36 @@ resolve_ref() { # HB-42 | uuid -> uuid
 }
 
 # A CAS patch with exactly one bounded retry. `$1` is the path, `$2` a jq
-# object of the fields to set (without `expected_version`), `$3` the version
-# to try first.
-cas_patch() { # path fields-json expected-version
-  local path=$1 fields=$2 version=$3 attempt
+# object of the fields to set (without `expected_version`), and `$3` is the
+# complete row read before the first attempt.
+cas_patch() { # path fields-json base-row
+  local path=$1 fields=$2 base=$3 attempt version current conflicts
+  version=$(jq -er '.version' <<<"$base") \
+    || die "PATCH $path cannot read the original row version: $base"
   for attempt in 1 2; do
     request PATCH "$path" "$(jq -c --argjson v "$version" '. + {expected_version: $v}' <<<"$fields")"
     case "$STATUS" in
       200) printf '%s\n' "$BODY"; return 0 ;;
       409)
         [[ "$attempt" == 1 ]] || die "PATCH $path still conflicting after one retry — another writer is moving the same row; re-read and decide rather than grinding: $BODY"
-        version=$(jq -er '.current.version' <<<"$BODY") \
+        current=$(jq -er '.current' <<<"$BODY") \
           || die "PATCH $path answered 409 without a current entity: $BODY"
+        conflicts=$(jq -r --argjson base "$base" --argjson current "$current" '
+          [to_entries[]
+           | select($current[.key] != $base[.key])
+           | select($current[.key] != .value)
+           | .key]
+          | join(", ")
+        ' <<<"$fields") \
+          || die "PATCH $path could not compare the conflicting entity: $BODY"
+        [[ -z "$conflicts" ]] || die "PATCH $path has a same-field conflict on $conflicts — the current value changed; re-read and decide: $BODY"
+        if jq -e --argjson current "$current" \
+          'all(to_entries[]; $current[.key] == .value)' <<<"$fields" >/dev/null; then
+          printf '%s\n' "$current"
+          return 0
+        fi
+        version=$(jq -er '.version' <<<"$current") \
+          || die "PATCH $path answered 409 without a current entity version: $BODY"
         ;;
       *) die "PATCH $path answered $STATUS: $BODY" ;;
     esac
@@ -217,21 +244,26 @@ case "$cmd" in
     # a batch numbers itself contiguously rather than re-reading a sweep
     # this run has already cached.
     next=$(live_steps "$uuid" | jq '(map(.position) | max // 0) + 1')
+    prepared=()
     for body in "${bodies[@]}"; do
-      # The seed carries the item and the body but NOT the position, so
-      # re-running a checklist whose steps shifted down by one does not
-      # mint a second copy of every step.
+      # Settle every id and payload before the first write. The seed carries
+      # the item and body but NOT the position, so re-running a checklist
+      # whose steps shifted down by one does not mint a second copy.
       id=$(deterministic_id "$uuid/$body")
-      request POST /api/steps "$(jq -n --arg id "$id" --arg item "$uuid" \
+      prepared+=("$(jq -n --arg id "$id" --arg item "$uuid" \
         --arg body "$body" --argjson pos "$next" \
-        '{id: $id, item_id: $item, body: $body, position: $pos}')"
+        '{id: $id, item_id: $item, body: $body, position: $pos}')")
+      next=$(( next + 1 ))
+    done
+
+    for entry in "${prepared[@]}"; do
+      request POST /api/steps "$entry"
       case "$STATUS" in
         201) printf '%s\n' "$BODY" ;;
         # Idempotent by client id: a replay is success, not a duplicate.
         200) printf '%s\n' "$BODY" ;;
-        *) die "POST /api/steps answered $STATUS: $BODY" ;;
+        *) die "POST /api/steps answered $STATUS for $(jq -r '.body' <<<"$entry"): $BODY" ;;
       esac
-      next=$(( next + 1 ))
     done
     ;;
 
@@ -244,7 +276,7 @@ case "$cmd" in
       printf '%s\n' "$row"
       exit 0
     fi
-    cas_patch "/api/steps/$id" '{"done": true}' "$(jq -r '.version' <<<"$row")"
+    cas_patch "/api/steps/$id" '{"done": true}' "$row"
     ;;
 
   drop-step)
@@ -254,8 +286,7 @@ case "$cmd" in
       printf '%s\n' "$row"
       exit 0
     fi
-    cas_patch "/api/steps/$id" "$(jq -n --argjson t "$(now_ms)" '{deleted_at: $t}')" \
-      "$(jq -r '.version' <<<"$row")"
+    cas_patch "/api/steps/$id" "$(jq -n --argjson t "$(now_ms)" '{deleted_at: $t}')" "$row"
     ;;
 
   *)

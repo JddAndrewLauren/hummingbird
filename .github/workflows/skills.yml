@@ -67,7 +67,8 @@ jobs:
       - run: python3 -m unittest tests.test_hb_helper -v
 
       # AC4 of #115: no skill file or reference doc still names Linear's
-      # endpoint, its key path, or a team-ION issue handle. Asserted in CI
+      # endpoint, its key path, or a team-ION issue handle. Obsolete query
+      # complexity language is guarded here too. Asserted in CI
       # rather than checked once by hand, because the thing that would
       # reintroduce one is someone copying an old recipe back in.
       #
@@ -79,10 +80,10 @@ jobs:
       # make this gate fight the design sync rather than guard the skills.
       - name: No Linear targeting survives in the skills
         run: |
-          if grep -rn "api\.linear\.app\|config/linear/api-key\|ION-[0-9]" \
+          if grep -rni "api\.linear\.app\|config/linear/api-key\|ION-[0-9]\|complexity[- ]cap" \
                --exclude-dir=hummingbird-design \
                .claude/skills docs/agents; then
-            echo "::error::a Linear endpoint, key path or ION handle is back" >&2
+            echo "::error::an obsolete Linear or query-complexity reference is back" >&2
             exit 1
           fi
           echo "clean"

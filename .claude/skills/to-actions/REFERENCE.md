@@ -97,6 +97,7 @@ hb.sh route-set <project-ref> [--destination <file>] [--notes <file>]
                               [--clear-destination] [--clear-notes]
 hb.sh fog-add <project-ref> "<question>"
 hb.sh fog-resolve <fog-id>
+hb.sh archive <ref>
 ```
 
 An **absent** flag leaves the field untouched, `--clear-*` nulls it, and a file
@@ -136,6 +137,9 @@ of it.
 
 Server-stamped fields (`seq`, `created_at`, `updated_at`, `version`) cannot be
 supplied — the authority answers `400`, not a silent no-op, and so does a typo.
+Every minted action is normalized to `stage: ready`; an explicit non-ready
+stage or any `agent` field is rejected because delegation belongs to
+`/next-up-hb`.
 
 ## Sequencing: `blocked_by` edges
 
@@ -157,7 +161,14 @@ an external wait (a callback, a part in the mail) and nothing else.
 
 ## Cancel-and-remint
 
-The owned schema has no Canceled stage, so cancelling is `archived_at`:
+The owned schema has no Canceled stage, so cancelling is `archived_at`. Use the
+helper seam rather than hand-writing the request:
+
+```
+hb.sh archive <ref>
+```
+
+The underlying request is:
 
 ```
 PATCH /api/items/<uuid> {"expected_version": N, "archived_at": <ms epoch>}
@@ -173,10 +184,10 @@ write, you live with.
 ## Writes are CAS
 
 Read `version` from the sweep, `PATCH` with `expected_version`, and on a `409`
-re-read `.current.version` from the conflict body and reissue **once**. `hb.sh`
-does this for you, bounded at one retry — the same shape and reasoning as
-`write/adapter.rs`'s `MAX_ATTEMPTS`: a second disjoint conflict is repeated
-churn, not a collision worth grinding against.
+compare every touched field with the original row. `hb.sh` retries once only
+when the changes are disjoint, accepts a current row whose touched values
+already equal the request, and stops on a divergent touched field. A second
+conflict is still bounded failure.
 
 A patch whose submitted values already match the stored ones is a no-op: `200`,
 no version bump, so no peer is made to re-pull an unchanged row.

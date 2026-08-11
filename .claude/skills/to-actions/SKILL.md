@@ -20,6 +20,7 @@ All reads and writes go through `scripts/hb.sh` (in this skill's directory):
 - `hb.sh fog-add <project-ref> <question>` / `hb.sh fog-resolve <fog-id>`
 - `hb.sh mint <manifest-file>` — the one confirmed batch
 - `hb.sh block <ref> <blocker-ref>` — *ref* is blocked by *blocker-ref*
+- `hb.sh archive <ref>` — cancel an action by setting `archived_at`
 
 ## Preflight
 
@@ -89,7 +90,8 @@ real sequencing.
 - **`stage: blocked` is never written for an inter-action dependency** — it stays reserved
   for genuinely external waits (a callback, a part in the mail).
 - Route changes later → **cancel-and-remint** the affected actions. Never rewire edges in
-  place. Cancel is `archived_at`; the owned schema has no Canceled stage.
+  place. Run `hb.sh archive <ref>` for each affected action. Cancel is `archived_at`; the
+  owned schema has no Canceled stage.
 
 **A failed batch is re-run, not repaired.** Every id is settled before the first write, so
 re-running the same manifest replays identically: the already-minted half answers with its
@@ -114,8 +116,9 @@ End by offering `/microtask` on a stall-prone first action — an offer, not a m
 - **A non-200 from the authority** — the script says which status and which action it was
   posting. Report it and stop; do not retry the batch blindly, `mint` again is the
   supported move and it is safe.
-- **A 409 the script could not settle** — it retried once and the row moved again. Say
-  which row, and stop.
+- **A 409 the script could not settle** — disjoint touched fields are retried once, an
+  already-applied value is accepted, and a divergent touched field stops with its name.
+  Say which row, and stop.
 - **A 400 on a mint** — a closed vocabulary was violated (a `size` of `medium`, a
   `priority` outside `0..=4`, a `deadline` that is not `YYYY-MM-DD`/`YYYY-MM-DDTHH:MM`),
   or a server-stamped field was supplied. The message names it. Fix the manifest and

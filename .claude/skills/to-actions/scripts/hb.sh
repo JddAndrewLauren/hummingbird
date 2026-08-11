@@ -10,6 +10,7 @@
 #        hb.sh fog-resolve <fog-id>
 #        hb.sh mint <manifest-file>                    # the one confirmed batch
 #        hb.sh block <ref> <blocker-ref>               # <ref> is blocked by <blocker-ref>
+#        hb.sh archive <ref>                            # cancel by soft archive
 #
 # ---------------------------------------------------------------------------
 # What the owned schema changed, and what that deletes from the old recipe.
@@ -43,9 +44,9 @@
 #    `resolve_ref` maps it onto a uuid off the sweep already fetched.
 #
 # 3. **A write is CAS, retried exactly once.** Read `version`, `PATCH` with
-#    `expected_version`, and on a 409 re-read `.current.version` from the
-#    conflict body and reissue. Bounded at one, the same shape and reasoning
-#    as `write/adapter.rs`'s `MAX_ATTEMPTS`.
+#    `expected_version`, and on a 409 compare touched fields with the
+#    original row. Disjoint changes are resent against the carried current
+#    version; same-field changes stop rather than overwrite.
 #
 # **Batch mints are replay-safe by construction.** Creates are idempotent by
 # client-supplied id, and `mint` derives every id it does not find in the
@@ -84,11 +85,23 @@ token() {
 # One request. Leaves the body in $BODY and the status in $STATUS, and
 # asserts neither — a 409 is an outcome here, not a failure.
 request() { # method path [json-body]
-  local method=$1 path=$2 data=${3:-} raw
+  local method=$1 path=$2 data=${3:-} raw auth_token auth_file curl_status
+  auth_token=$(token)
+  [[ -n "$auth_token" ]] || die "empty authority token at $TOKEN_PATH — mint a device-scope token against $API_BASE (POST /api/admin/tokens, ADMIN_SECRET) and save it to that path"
+  auth_file=$(mktemp)
+  chmod 600 "$auth_file"
+  printf 'Authorization: Bearer %s\n' "$auth_token" >"$auth_file"
   local args=(-sS -w '\n%{http_code}' --connect-timeout 10 --max-time 30
-              -X "$method" -H "Authorization: Bearer $(token)" "$API_BASE$path")
+              -X "$method" -H "@$auth_file" "$API_BASE$path")
   [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-  raw=$(curl "${args[@]}")
+  if raw=$(curl "${args[@]}"); then
+    :
+  else
+    curl_status=$?
+    rm -f "$auth_file"
+    return "$curl_status"
+  fi
+  rm -f "$auth_file"
   BODY=${raw%$'\n'*}
   STATUS=${raw##*$'\n'}
 }
@@ -153,16 +166,34 @@ resolve_project() { # uuid | exact name -> project uuid
     || die "no project matching '$ref' — create it with project-create first"
 }
 
-cas_patch() { # path fields-json expected-version
-  local path=$1 fields=$2 version=$3 attempt
+cas_patch() { # path fields-json base-row
+  local path=$1 fields=$2 base=$3 attempt version current conflicts
+  version=$(jq -er '.version' <<<"$base") \
+    || die "PATCH $path cannot read the original row version: $base"
   for attempt in 1 2; do
     request PATCH "$path" "$(jq -c --argjson v "$version" '. + {expected_version: $v}' <<<"$fields")"
     case "$STATUS" in
       200) printf '%s\n' "$BODY"; return 0 ;;
       409)
         [[ "$attempt" == 1 ]] || die "PATCH $path still conflicting after one retry — another writer is moving the same row; re-read and decide rather than grinding: $BODY"
-        version=$(jq -er '.current.version' <<<"$BODY") \
+        current=$(jq -er '.current' <<<"$BODY") \
           || die "PATCH $path answered 409 without a current entity: $BODY"
+        conflicts=$(jq -r --argjson base "$base" --argjson current "$current" '
+          [to_entries[]
+           | select($current[.key] != $base[.key])
+           | select($current[.key] != .value)
+           | .key]
+          | join(", ")
+        ' <<<"$fields") \
+          || die "PATCH $path could not compare the conflicting entity: $BODY"
+        [[ -z "$conflicts" ]] || die "PATCH $path has a same-field conflict on $conflicts — the current value changed; re-read and decide: $BODY"
+        if jq -e --argjson current "$current" \
+          'all(to_entries[]; $current[.key] == .value)' <<<"$fields" >/dev/null; then
+          printf '%s\n' "$current"
+          return 0
+        fi
+        version=$(jq -er '.version' <<<"$current") \
+          || die "PATCH $path answered 409 without a current entity version: $BODY"
         ;;
       *) die "PATCH $path answered $STATUS: $BODY" ;;
     esac
@@ -263,10 +294,10 @@ case "$cmd" in
     fi
     [[ "$fields" != "{}" ]] || die "route-set was given nothing to set"
 
-    version=$(sweep | jq -er --arg p "$pid" \
-      'first(.routes[] | select(.project_id == $p) | .version) // empty') \
+    route=$(sweep | jq -er --arg p "$pid" \
+      'first(.routes[] | select(.project_id == $p)) // empty') \
       || die "project $pid has no route row — creating a project creates one, so this is a bug, not a missing step"
-    cas_patch "/api/routes/$pid" "$fields" "$version"
+    cas_patch "/api/routes/$pid" "$fields" "$route"
     ;;
 
   fog-add)
@@ -293,8 +324,7 @@ case "$cmd" in
       printf '%s\n' "$row"
       exit 0
     fi
-    cas_patch "/api/fog/$id" "$(jq -n --argjson t "$(now_ms)" '{resolved_at: $t}')" \
-      "$(jq -r '.version' <<<"$row")"
+    cas_patch "/api/fog/$id" "$(jq -n --argjson t "$(now_ms)" '{resolved_at: $t}')" "$row"
     ;;
 
   mint)
@@ -308,14 +338,28 @@ case "$cmd" in
     # ids and the second run is all 200s. An `id` supplied in the manifest
     # wins, so a caller that wants to pin one can.
     prepared=$(jq -c '.[]' "$manifest" | while IFS= read -r entry; do
-      title=$(jq -r '.title // empty' <<<"$entry")
-      [[ -n "$title" ]] || die "every manifest entry needs a title: $entry"
-      project=$(jq -r '.project_id // ""' <<<"$entry")
-      existing=$(jq -r '.id // ""' <<<"$entry")
+      normalized=$(jq -c '
+        if type != "object" then
+          error("every manifest entry must be an object")
+        elif (.title? | type) != "string" then
+          error("every manifest entry needs a title")
+        elif (.title | length) == 0 then
+          error("every manifest entry needs a non-empty title")
+        elif has("agent") then
+          error("agent is owned by /next-up-hb and is forbidden here")
+        elif has("stage") and .stage != "ready" then
+          error("stage must be ready")
+        else
+          . + {stage: "ready"}
+        end
+      ' <<<"$entry") || die "$manifest contains an invalid entry: $entry"
+      title=$(jq -r '.title' <<<"$normalized")
+      project=$(jq -r '.project_id // ""' <<<"$normalized")
+      existing=$(jq -r '.id // ""' <<<"$normalized")
       if [[ -z "$existing" ]]; then
-        entry=$(jq -c --arg id "$(deterministic_id "item/$project/$title")" '. + {id: $id}' <<<"$entry")
+        normalized=$(jq -c --arg id "$(deterministic_id "item/$project/$title")" '. + {id: $id}' <<<"$normalized")
       fi
-      printf '%s\n' "$entry"
+      printf '%s\n' "$normalized"
     done)
 
     printf '%s\n' "$prepared" | while IFS= read -r entry; do
@@ -326,6 +370,18 @@ case "$cmd" in
         *) die "POST /api/items answered $STATUS for $(jq -r '.title' <<<"$entry"): $BODY" ;;
       esac
     done | jq -s '.'
+    ;;
+
+  archive)
+    ref="${1:?usage: hb.sh archive <ref>}"
+    uuid=$(resolve_ref "$ref")
+    row=$(sweep | jq -er --arg id "$uuid" 'first(.items[] | select(.id == $id)) // empty') \
+      || die "no item $uuid in the sweep"
+    if [[ "$(jq -r '.archived_at' <<<"$row")" != "null" ]]; then
+      printf '%s\n' "$row"
+      exit 0
+    fi
+    cas_patch "/api/items/$uuid" "$(jq -n --argjson t "$(now_ms)" '{archived_at: $t}')" "$row"
     ;;
 
   block)
@@ -355,6 +411,7 @@ usage: hb.sh project-find <name>
        hb.sh fog-resolve <fog-id>
        hb.sh mint <manifest-file>
        hb.sh block <ref> <blocker-ref>
+       hb.sh archive <ref>
 USAGE
     exit 2
     ;;

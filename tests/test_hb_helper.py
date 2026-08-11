@@ -11,11 +11,14 @@ plumbing's own decisions:
 - ``HB-<seq>`` resolution, which no route performs;
 - the one-sweep-per-run cache, which is a file rather than a variable for a
   reason a variable version would silently violate;
-- CAS with exactly one bounded retry, including what a second conflict does;
+- CAS with one safe bounded retry, including disjoint, already-applied and
+  same-field conflicts;
 - idempotence on writes whose value already holds;
 - the ``blocked_by`` argument order, the one thing that used to be
   invertible;
-- and the refusals: an unknown ref, and ``move <ref> done``.
+- deterministic batch preparation, protected credentials and the archive
+  seam;
+- and the refusals: an unknown ref, invalid manifests, and ``move <ref> done``.
 
 Everything network-shaped goes through a fake ``curl`` on ``PATH`` that
 serves a fixture sweep and records every request, so no test needs a token,
@@ -90,7 +93,9 @@ def sweep(items=None, steps=None, **over):
 
 
 # A fake `curl` matching the flag shape all three scripts use: `-sS -w
-# '\n%{http_code}' -X METHOD [-H ...] [-d DATA] URL`. Every request is
+# '\n%{http_code}' -X METHOD [-H ...] [-d DATA] URL`. Header files passed as
+# `-H @file` are read here so tests can assert the actual header without
+# putting the secret in curl's argv. Every request is
 # appended to $HB_FAKE_LOG as one JSON line; the response comes from
 # $HB_FAKE_PLAN, a list of {match, status, body} consumed in order for
 # writes, with GET /api/sweep always answering the fixture.
@@ -107,7 +112,10 @@ while i < len(argv):
     elif a == "-d":
         data = argv[i + 1]; i += 2
     elif a == "-H":
-        headers.append(argv[i + 1]); i += 2
+        header = argv[i + 1]
+        if header.startswith("@"):
+            header = open(header[1:]).read().rstrip("\n")
+        headers.append(header); i += 2
     elif a in ("-o", "-w", "--connect-timeout", "--max-time"):
         i += 2
     elif a.startswith("-"):
@@ -141,14 +149,31 @@ print(str(resp["status"]))
 '''
 
 
+FAKE_SHA256SUM = r'''#!/usr/bin/env python3
+import hashlib
+import os
+import sys
+
+state_path = os.environ["HB_FAKE_STATE"]
+if os.environ.get("HB_ASSERT_HASH_BEFORE_WRITES") and os.path.exists(state_path):
+    print("hashing after the first write", file=sys.stderr)
+    sys.exit(1)
+digest = hashlib.sha256(sys.stdin.buffer.read()).hexdigest()
+print(digest + "  -")
+'''
+
+
 class HelperTestCase(unittest.TestCase):
     """Runs a helper script with a fake `curl` and a fixture sweep."""
 
-    def run_script(self, script, args, *, sweep_payload=None, responses=(), check=True):
+    def run_script(self, script, args, *, sweep_payload=None, responses=(),
+                   check=True, token_text="hb_fake-token\n",
+                   assert_batch_prepared=False):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             token = tmp_path / "api-token"
-            token.write_text("hb_fake-token\n")
+            if token_text is not None:
+                token.write_text(token_text)
 
             plan = tmp_path / "plan.json"
             plan.write_text(json.dumps({
@@ -160,6 +185,11 @@ class HelperTestCase(unittest.TestCase):
             fake.write_text(FAKE_CURL)
             fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
 
+            if assert_batch_prepared:
+                fake_hash = tmp_path / "sha256sum"
+                fake_hash.write_text(FAKE_SHA256SUM)
+                fake_hash.chmod(fake_hash.stat().st_mode | stat.S_IXUSR)
+
             log = tmp_path / "requests.log"
             log.write_text("")
 
@@ -170,6 +200,7 @@ class HelperTestCase(unittest.TestCase):
                 "HB_FAKE_PLAN": str(plan),
                 "HB_FAKE_LOG": str(log),
                 "HB_FAKE_STATE": str(tmp_path / "state.json"),
+                "HB_ASSERT_HASH_BEFORE_WRITES": "1" if assert_batch_prepared else "",
             }
             result = subprocess.run(
                 [str(script), *args], cwd=ROOT, env=env,
@@ -216,12 +247,33 @@ class SweepCacheTest(HelperTestCase):
         self.assertEqual(1, len(sweeps), f"fetched the sweep {len(sweeps)} times")
 
     def test_the_token_never_reaches_a_command_line_argument(self):
-        _, requests = self.run_script(MICROTASK, ["get", "HB-1"])
-        self.assertTrue(requests)
-        for request in requests:
-            self.assertNotIn("hb_fake-token", " ".join(request["argv"]).replace(
-                "Authorization: Bearer hb_fake-token", ""))
-            self.assertIn("Authorization: Bearer hb_fake-token", request["headers"])
+        cases = [
+            (MICROTASK, ["get", "HB-1"]),
+            (TO_ACTIONS, ["project-find", "chore"]),
+            (NEXT_UP, ["get", "HB-1"]),
+        ]
+        for script, args in cases:
+            _, requests = self.run_script(script, args)
+            self.assertTrue(requests)
+            for request in requests:
+                self.assertNotIn("hb_fake-token", " ".join(request["argv"]))
+                self.assertIn("Authorization: Bearer hb_fake-token", request["headers"])
+
+
+class CredentialPreflightTest(HelperTestCase):
+    def test_missing_or_empty_credentials_stop_before_curl(self):
+        cases = [
+            (MICROTASK, ["get", "HB-1"]),
+            (TO_ACTIONS, ["project-find", "chore"]),
+            (NEXT_UP, ["get", "HB-1"]),
+        ]
+        for token_text in (None, "\n"):
+            for script, args in cases:
+                result, requests = self.run_script(
+                    script, args, token_text=token_text, check=False)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("authority token", result.stderr)
+                self.assertEqual([], requests, f"{script} made a request without credentials")
 
 
 class StepReadTest(HelperTestCase):
@@ -231,14 +283,33 @@ class StepReadTest(HelperTestCase):
         self.assertEqual(["first", "second"], [r["body"] for r in rows])
         self.assertEqual([1, 2], [r["position"] for r in rows])
 
+    def test_add_steps_settles_the_entire_batch_before_the_first_post(self):
+        created = [
+            {"status": 201, "body": step(STEP_1, ITEM_A, "third", 3)},
+            {"status": 201, "body": step(STEP_2, ITEM_A, "fourth", 4)},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            step_file = Path(tmp) / "steps.txt"
+            step_file.write_text("third\nfourth\n")
+            result, requests = self.run_script(
+                MICROTASK, ["add-steps", "HB-1", str(step_file)],
+                responses=created, assert_batch_prepared=True)
+
+        self.assertEqual(0, result.returncode)
+        posts = [r for r in requests if r["method"] == "POST"]
+        self.assertEqual(2, len(posts))
+        self.assertEqual([3, 4], [json.loads(r["data"])["position"] for r in posts])
+
 
 class CasTest(HelperTestCase):
-    def test_a_409_is_retried_once_against_the_carried_current_version(self):
+    def test_a_disjoint_409_is_retried_once_against_the_carried_current_version(self):
         conflict = {"status": 409, "body": {
             "error": "version_conflict",
-            "current": step(STEP_1, ITEM_A, "first", 1, version=9),
+            # Another writer changed the body, not the done field this
+            # operation touches, so the absolute tick may be rebased.
+            "current": step(STEP_1, ITEM_A, "edited by human", 1, version=9),
         }}
-        applied = {"status": 200, "body": step(STEP_1, ITEM_A, "first", 1, done=True, version=10)}
+        applied = {"status": 200, "body": step(STEP_1, ITEM_A, "edited by human", 1, done=True, version=10)}
         result, requests = self.run_script(
             MICROTASK, ["tick", STEP_1], responses=[conflict, applied])
 
@@ -249,6 +320,30 @@ class CasTest(HelperTestCase):
         self.assertEqual(3, json.loads(patches[0]["data"])["expected_version"])
         self.assertEqual(9, json.loads(patches[1]["data"])["expected_version"])
         self.assertTrue(json.loads(result.stdout)["done"])
+
+    def test_a_conflict_that_already_has_the_requested_value_is_success(self):
+        conflict = {"status": 409, "body": {
+            "error": "version_conflict",
+            "current": step(STEP_1, ITEM_A, "first", 1, done=True, version=9),
+        }}
+        result, requests = self.run_script(
+            MICROTASK, ["tick", STEP_1], responses=[conflict])
+
+        patches = [r for r in requests if r["method"] == "PATCH"]
+        self.assertEqual(1, len(patches), "an already-applied absolute set needs no retry")
+        self.assertTrue(json.loads(result.stdout)["done"])
+
+    def test_a_same_field_conflict_stops_without_a_retry(self):
+        conflict = {"status": 409, "body": {
+            "error": "version_conflict",
+            "current": step(STEP_1, ITEM_A, "first", 1, deleted_at=9000, version=9),
+        }}
+        result, requests = self.run_script(
+            MICROTASK, ["drop-step", STEP_1], responses=[conflict], check=False)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(1, len([r for r in requests if r["method"] == "PATCH"]))
+        self.assertIn("same-field conflict", result.stderr)
 
     def test_a_second_conflict_stops_rather_than_grinding(self):
         conflict = {"status": 409, "body": {
@@ -262,6 +357,52 @@ class CasTest(HelperTestCase):
         self.assertEqual(2, len([r for r in requests if r["method"] == "PATCH"]),
                          "bounded at one retry, like write/adapter.rs's MAX_ATTEMPTS")
         self.assertIn("after one retry", result.stderr)
+
+    def test_next_up_stops_when_a_findings_field_changed(self):
+        conflict = {"status": 409, "body": {
+            "error": "version_conflict",
+            "current": item(ITEM_A, 1, "the marked chore",
+                             description="human description", version=9),
+        }}
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = Path(tmp) / "findings.md"
+            findings.write_text("new findings")
+            result, requests = self.run_script(
+                NEXT_UP, ["note", "HB-1", str(findings)],
+                responses=[conflict], check=False)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(1, len([r for r in requests if r["method"] == "PATCH"]))
+        self.assertIn("same-field conflict", result.stderr)
+
+    def test_to_actions_rebases_a_route_write_when_another_field_changed(self):
+        route = {
+            "project_id": "project-1", "destination": None, "notes": "old notes",
+            "updated_at": 1, "version": 7,
+        }
+        payload = sweep(
+            projects=[{"id": "project-1", "name": "Project", "archived_at": None}],
+            routes=[route],
+        )
+        conflict_route = dict(route, notes="human notes", version=9)
+        applied_route = dict(conflict_route, destination="new destination", version=10)
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "destination.md"
+            destination.write_text("new destination\n")
+            result, requests = self.run_script(
+                TO_ACTIONS,
+                ["route-set", "project-1", "--destination", str(destination)],
+                sweep_payload=payload,
+                responses=[
+                    {"status": 409, "body": {"error": "version_conflict", "current": conflict_route}},
+                    {"status": 200, "body": applied_route},
+                ])
+
+        self.assertEqual(0, result.returncode)
+        patches = [r for r in requests if r["method"] == "PATCH"]
+        self.assertEqual(2, len(patches))
+        self.assertEqual(7, json.loads(patches[0]["data"])["expected_version"])
+        self.assertEqual(9, json.loads(patches[1]["data"])["expected_version"])
 
 
 class IdempotenceTest(HelperTestCase):
@@ -385,6 +526,33 @@ class MintTest(HelperTestCase):
         self.assertEqual(pinned, json.loads(
             [r for r in requests if r["method"] == "POST"][0]["data"])["id"])
 
+    def test_an_omitted_stage_is_normalized_to_ready(self):
+        ok = [{"status": 201, "body": {"id": "x", "stage": "ready"}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(tmp, [{"title": "ready action"}])
+            _, requests = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)], responses=ok)
+        body = json.loads([r for r in requests if r["method"] == "POST"][0]["data"])
+        self.assertEqual("ready", body["stage"])
+
+    def test_a_non_ready_stage_is_refused_before_any_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(tmp, [{"title": "wrong stage", "stage": "triage"}])
+            result, requests = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)], check=False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("stage must be ready", result.stderr)
+        self.assertEqual([], [r for r in requests if r["method"] == "POST"])
+
+    def test_agent_is_refused_before_any_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(tmp, [{"title": "delegated action", "agent": True}])
+            result, requests = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)], check=False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("agent", result.stderr)
+        self.assertEqual([], [r for r in requests if r["method"] == "POST"])
+
     def test_a_manifest_entry_with_no_title_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             manifest = self._manifest(tmp, [{"project_pos": 1}])
@@ -392,6 +560,25 @@ class MintTest(HelperTestCase):
                 TO_ACTIONS, ["mint", str(manifest)], check=False)
         self.assertNotEqual(0, result.returncode)
         self.assertEqual([], [r for r in requests if r["method"] == "POST"])
+
+
+class ArchiveTest(HelperTestCase):
+    def test_archive_sets_archived_at_under_cas(self):
+        archived = item(ITEM_A, 1, "the marked chore", archived_at=9000, version=8)
+        _, requests = self.run_script(
+            TO_ACTIONS, ["archive", "HB-1"], responses=[{"status": 200, "body": archived}])
+
+        patches = [r for r in requests if r["method"] == "PATCH"]
+        self.assertEqual(1, len(patches))
+        body = json.loads(patches[0]["data"])
+        self.assertEqual(7, body["expected_version"])
+        self.assertIsInstance(body["archived_at"], int)
+
+    def test_archiving_an_already_archived_item_makes_no_write(self):
+        payload = sweep(items=[item(ITEM_A, 1, "the marked chore", archived_at=9000)])
+        _, requests = self.run_script(
+            TO_ACTIONS, ["archive", "HB-1"], sweep_payload=payload)
+        self.assertEqual([], [r for r in requests if r["method"] == "PATCH"])
 
 
 def code_of(script):
@@ -421,7 +608,7 @@ class ScopeGuardTest(unittest.TestCase):
     def test_to_actions_never_writes_the_delegation_axis_or_a_step(self):
         code = code_of(TO_ACTIONS)
         self.assertNotIn("/api/steps", code)
-        self.assertNotIn('"agent"', code)
+        self.assertNotIn('"agent":', code)
 
     def test_only_the_selector_writes_the_delegation_axis(self):
         # The axis has exactly one writer, and it is the skill whose
@@ -429,7 +616,7 @@ class ScopeGuardTest(unittest.TestCase):
         # clear-on-finish rule could be forgotten.
         self.assertIn('{"agent": false}', code_of(NEXT_UP))
         for other in (MICROTASK, TO_ACTIONS):
-            self.assertNotIn("agent", code_of(other),
+            self.assertNotIn('"agent":', code_of(other),
                              f"{other.parent.parent.name} must not touch the axis")
 
     def test_every_helper_resolves_the_token_from_the_same_canonical_path(self):

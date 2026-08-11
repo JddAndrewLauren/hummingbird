@@ -254,10 +254,10 @@ the item down here.
   actually there: the Triage/Grilling counts, the blocked-upstream count, or `/to-actions`
   if a project's route has run out. On an `--agent` survey, "nothing to hand off" is a
   perfectly good answer and the whole list is one line.
-- **A 409 the script could not settle** — it retried once and the row moved again, so
-  another writer is on it. Report *where in the protocol it stopped* and stop; do not
-  re-run the whole protocol from the top, which would re-claim an item someone else is
-  now moving.
+- **A 409 the script could not settle** — disjoint touched fields are retried once, an
+  already-applied value is accepted, and a divergent touched field stops with its name.
+  Report *where in the protocol it stopped* and stop; do not re-run the whole protocol
+  from the top, which would re-claim an item someone else is now moving.
 - **`move <ref> done`** — refused by the script, with the reason. That is the protocol
   working, not an error to route around.
 - **A malformed calendar block** — the binary names what was wrong (a status claiming an

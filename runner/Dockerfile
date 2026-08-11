@@ -52,10 +52,10 @@ RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
-# The skills this build ships (#41 decision 5). `next-up-personal` and
-# `microtask` (and `scripts/linear.sh` with them) are still deliberately NOT
-# baked in -- they target Linear, which nothing here talks to any more.
-# Widening this COPY is the whole change needed to add the next op.
+# The skills this build ships (#41 decision 5). `next-up-personal` is retired;
+# `microtask` and `to-actions` use the app-owned helpers interactively but are
+# not hosted runner operations. Widening this COPY is the whole change needed
+# to add the next registered op.
 COPY .claude/skills/parse-capture ./.claude/skills/parse-capture
 COPY .claude/skills/next-up-hb ./.claude/skills/next-up-hb
 

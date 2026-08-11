@@ -112,8 +112,9 @@ That agreement between the two surfaces is the point of Steps being records.
   that line and stop. No stack trace, no retry, no offer to mint one.
 - **A non-200 from the authority** — the script says which status came back. Report it and
   stop.
-- **A 409 the script could not settle** — it retried once and the row moved again, so
-  another writer is on it. Say which step, and stop.
+- **A 409 the script could not settle** — disjoint touched fields are retried once, an
+  already-applied value is accepted, and a divergent touched field stops with its name.
+  Say which step, and stop.
 - **An unknown ref** — `HB-99` that is not in the sweep is a named failure, not an empty
   answer. Do not fall back to writing steps against something else.
 - **Scope guard** — write only `steps` rows. This skill's `hb.sh` has no verb that touches

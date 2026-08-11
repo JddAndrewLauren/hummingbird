@@ -1581,8 +1581,9 @@ Three shapes fall out of the API and each script states them once:
 - **`HB-<seq>` is a client-side affordance.** No route accepts or resolves
   it; `seq` is server-minted and appears only in `Item.seq`, so each script
   maps it onto a uuid off the sweep it already holds.
-- **A write is CAS with exactly one bounded retry** — the same shape and
-  reasoning as `write/adapter.rs`'s `MAX_ATTEMPTS`.
+- **A write is CAS with exactly one bounded retry** — disjoint touched fields
+  are resent against the carried current version, an already-applied value is
+  accepted, and a divergent touched field stops rather than being overwritten.
 
 Two bash traps are load-bearing and both were got wrong first, so neither is
 reasoning to redo. **The sweep cache is a file, not a variable**: the ref
