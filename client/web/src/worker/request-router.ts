@@ -35,6 +35,8 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getPaneRead: true,
   getFrontier: true,
   getTriageInbox: true,
+  getLedger: true,
+  getDone: true,
   getBlocked: true,
   getSteps: true,
   getProjects: true,

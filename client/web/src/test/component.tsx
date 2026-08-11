@@ -25,6 +25,7 @@ import { afterEach } from "vitest";
 import type {
   BindingDTO,
   BlockedFrontierEntryDTO,
+  LedgerRowDTO,
   PaneReadDTO,
   PaneSnapshotDTO,
   ProjectDTO,
@@ -130,6 +131,18 @@ export function wasteBody(
   });
 }
 
+/** A complete `LedgerRowDTO` — `itemDTO`'s defaults plus the row facts at
+ * their boring values (live, no badges). Spelled out for the same reason. */
+export function ledgerRowDTO(overrides: Partial<LedgerRowDTO> = {}): LedgerRowDTO {
+  return {
+    ...itemDTO(),
+    absentSinceMs: null,
+    deadLettered: false,
+    hasLiveAlert: false,
+    ...overrides,
+  };
+}
+
 export function projectDTO(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   return {
     id: "project-1",
@@ -161,6 +174,8 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     blocked: [],
     stepsByItem: {},
     projects: [],
+    ledger: null,
+    done: null,
     bindings: null,
     kindRegistry: null,
     rules: null,

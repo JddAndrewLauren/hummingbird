@@ -175,6 +175,18 @@ impl SyncMirror {
         self.items.values().filter_map(live_slot)
     }
 
+    /// Every stored item regardless of presence, id order, each paired with
+    /// its [`Presence`] — [`SyncMirror::item_including_absent`]'s all-rows
+    /// sibling, and the first realized caller of the retained history the
+    /// module docs promised "a debug view" could have. The Ledger screen's
+    /// roster read ([`crate::Core::ledger`]) starts here: an archived item is
+    /// a row it *shows*, labelled, never one it hides.
+    pub fn all_items_including_absent(&self) -> impl Iterator<Item = (&Item, &Presence)> {
+        self.items
+            .values()
+            .map(|slot| (&slot.record, &slot.presence))
+    }
+
     pub fn project(&self, id: &str) -> Option<&Project> {
         live(self.projects.get(id))
     }
@@ -259,6 +271,16 @@ impl SyncMirror {
             .values()
             .filter_map(live_slot)
             .filter(move |alert| alert.source == source)
+    }
+
+    /// Every live alert, id order — the whole-table read behind the Ledger's
+    /// per-item alert badge, which joins on the alert's `source_key` across
+    /// *every* source rather than one (unlike
+    /// [`SyncMirror::alerts_for_source`], the per-source pane read). Live
+    /// here is ADR-0003's presence only, as with `alerts_for_source`;
+    /// ADR-0014's clocked `is_live` is the caller's to apply.
+    pub fn all_alerts(&self) -> impl Iterator<Item = &Alert> {
+        self.alerts.values().filter_map(live_slot)
     }
 
     pub fn setting(&self, key: &str) -> Option<&Setting> {

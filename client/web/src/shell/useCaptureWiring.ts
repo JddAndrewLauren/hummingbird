@@ -1,7 +1,9 @@
 import { useEffect } from "react";
+import type { CaptureDestination } from "../screens/capture-destination";
 import type { CoreStatus } from "../store/store";
 import {
   captureTask,
+  requestFrontier,
   requestTriageInbox,
   type CaptureFields,
   type WorkerLike,
@@ -24,7 +26,12 @@ import {
 // screen BEFORE this is ever reached — this hook trusts its caller and
 // enqueues whatever it is handed.
 export interface CaptureWiring {
-  submitCapture: (title: string, nowMs: number, fields?: CaptureFields) => void;
+  submitCapture: (
+    title: string,
+    destination: CaptureDestination,
+    nowMs: number,
+    fields?: CaptureFields,
+  ) => void;
 }
 
 /** Mints a fresh, non-deterministic seed for one capture. Non-deterministic
@@ -72,12 +79,25 @@ export function mintSeed(): string {
 export function submitCaptureRequest(
   worker: WorkerLike,
   title: string,
+  /** The stage this capture is born into — `"triage"` normally, `"ready"` for
+   * the box's skip-triage mint (`screens/capture-destination.ts`). One
+   * `Core::capture` at that stage, never a capture plus a triage: the stage is
+   * already part of the create, so a skipped triage is still exactly one
+   * queued mutation. */
+  destination: CaptureDestination,
   nowMs: number,
   fields: CaptureFields = {},
   seed: string = mintSeed(),
 ): void {
-  captureTask(worker, seed, title, "triage", nowMs, fields);
+  captureTask(worker, seed, title, destination, nowMs, fields);
   requestTriageInbox(worker);
+  if (destination === "ready") {
+    // A minted capture is born past triage, so it lands on the FRONTIER and
+    // never in the inbox — and the same argument that makes the inbox re-read
+    // load-bearing applies there: without this, the item nobody can see until
+    // the next 60s cycle is the one the person just typed.
+    requestFrontier(worker);
+  }
 }
 
 export function useCaptureWiring(
@@ -99,8 +119,13 @@ export function useCaptureWiring(
   }, [ready, syncOutcomeSeq]);
 
   return {
-    submitCapture: (title: string, nowMs: number, fields: CaptureFields = {}) => {
-      submitCaptureRequest(worker, title, nowMs, fields);
+    submitCapture: (
+      title: string,
+      destination: CaptureDestination,
+      nowMs: number,
+      fields: CaptureFields = {},
+    ) => {
+      submitCaptureRequest(worker, title, destination, nowMs, fields);
     },
   };
 }

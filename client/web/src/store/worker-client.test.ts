@@ -44,6 +44,8 @@ const initialTask: TaskState = {
   blocked: [],
   stepsByItem: {},
   projects: [],
+  ledger: null,
+  done: null,
   bindings: null,
   kindRegistry: null,
   rules: null,
@@ -231,6 +233,10 @@ describe("attachWorkerClient", () => {
     // cycle (this issue's "Completing offline shows Done immediately").
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getBlocked" });
+    // The row checkmark completes from any live stage — Triage included —
+    // so an ok act also re-reads the triage inbox, the same way an ok
+    // triage does.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getTriageInbox" });
     // PR #207 round-2 fix: the acted-on item's `pending` must come from a
     // LIVE source (`task.pending`), so an ok act immediately asks the core
     // `isPending` — the task worker's serial queue guarantees the act was
@@ -447,6 +453,30 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.frontier).toEqual([item]);
     // Untouched sibling field.
     expect(store.getSnapshot().task.triageInbox).toEqual([]);
+  });
+
+  it("writes the ledger on a ledger message — null until then, an empty answer is a claim", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+    expect(store.getSnapshot().task.ledger).toBeNull();
+
+    worker.onmessage?.({ data: { type: "ledger", rows: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.ledger).toEqual([]);
+    // Untouched sibling field.
+    expect(store.getSnapshot().task.done).toBeNull();
+  });
+
+  it("writes the done list on a done message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+    expect(store.getSnapshot().task.done).toBeNull();
+
+    worker.onmessage?.({ data: { type: "done", items: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.done).toEqual([]);
   });
 
   it("writes the triage inbox on a triageInbox message", () => {

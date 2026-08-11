@@ -9,6 +9,7 @@ import type {
   CalendarListEntryDTO,
   DeadLetterEntryDTO,
   KindRegistryDTO,
+  LedgerRowDTO,
   PaneReadDTO,
   PollOutcomeName,
   ProjectDTO,
@@ -119,6 +120,15 @@ export interface TaskState {
   /** Every live project — resolves the frontier's "grouped by project"
    * display to real names (issue #108, PR #200 review). */
   projects: ProjectDTO[];
+  /** The complete retained roster — every item the mirror has ever known,
+   * archived rows included and labelled (`getLedger`). `null` until the
+   * first `ledger` answer arrives, for `bindings`'s own reason: an empty
+   * array is a real answer ("nothing has ever been tracked"), and the
+   * screen must not render that claim before one exists. */
+  ledger: LedgerRowDTO[] | null;
+  /** Every live `Done` item (`getDone`). `null` until the first answer, for
+   * the same reason as `ledger`: "nothing completed yet" is a claim. */
+  done: TaskItemDTO[] | null;
   /** Every standing-question binding (#118) — every known key, set or not,
    * plus any `settings` row this build cannot write. `null` until the first
    * `bindings` answer arrives: an empty array is a real answer ("the table
@@ -239,6 +249,8 @@ const initialTaskState: TaskState = {
   blocked: [],
   stepsByItem: {},
   projects: [],
+  ledger: null,
+  done: null,
   bindings: null,
   kindRegistry: null,
   rules: null,

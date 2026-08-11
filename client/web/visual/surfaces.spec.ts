@@ -27,6 +27,12 @@ const SCREENS = [
   { name: "routes", nav: "Routes" },
   { name: "alerts", nav: "Alerts" },
   { name: "rules", nav: "Rules" },
+  // Done and the Ledger have no demo fixtures, so under `?demo` these two
+  // photograph their "not read yet" holding state — a real state (the
+  // round-trip between mount and the first answer) rather than a fixture
+  // gap, and the populated rows are covered by their component tests.
+  { name: "done", nav: "Done" },
+  { name: "ledger", nav: "Ledger" },
   { name: "settings", nav: "Settings" },
 ] as const;
 
@@ -90,6 +96,22 @@ for (const theme of THEMES) {
         });
       });
     }
+
+    test("the capture popover captures", async ({ page }, testInfo) => {
+      // Its own state, not a screen: `shell/CapturePopover.tsx` renders over
+      // whatever is showing, so no per-screen capture ever contains it. Opened
+      // over Now, the widest thing behind it — a scrim that fails to cover, or
+      // a card that overflows the 768 width, shows up here and nowhere else.
+      await openApp(page, theme, true);
+      await show(page, "Now");
+      await page.getByRole("button", { name: "New" }).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/capture-popover-${testInfo.project.name}-${theme}.png`,
+        fullPage: true,
+      });
+    });
 
     test("empty states capture", async ({ page }, testInfo) => {
       // No `?demo`: the honest empty states, which are what a new device

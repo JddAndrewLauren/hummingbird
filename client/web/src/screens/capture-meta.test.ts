@@ -5,7 +5,7 @@ import {
   EMPTY_CAPTURE_META,
   resolveCaptureFields,
 } from "./capture-meta";
-import { CAPTURE_ENERGY_STOPS, CAPTURE_SIZE_STOPS } from "./TriageScreen";
+import { CAPTURE_ENERGY_STOPS, CAPTURE_SIZE_STOPS } from "./CaptureBox";
 
 describe("resolveCaptureFields", () => {
   it("leaves all three absent when the meta is at its resting state", () => {
@@ -67,7 +67,7 @@ describe("resolveCaptureFields", () => {
 
 // The missing mechanism between the two hand-aligned sides: `capture-meta.ts`
 // indexes `CAPTURE_SIZE_NAMES`/`CAPTURE_ENERGY_NAMES` by the raw index the
-// `Slider` in `TriageScreen.tsx` produces, and the compiler cannot see that
+// `Slider` in `CaptureBox.tsx` produces, and the compiler cannot see that
 // the arrays are supposed to correspond. A fourth stop added to one side and
 // not the other used to be a silently dropped selection (the test above);
 // now it is a red test.

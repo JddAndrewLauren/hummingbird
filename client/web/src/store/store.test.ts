@@ -15,6 +15,8 @@ const initialTask: TaskState = {
   blocked: [],
   stepsByItem: {},
   projects: [],
+  ledger: null,
+  done: null,
   bindings: null,
   kindRegistry: null,
   rules: null,
