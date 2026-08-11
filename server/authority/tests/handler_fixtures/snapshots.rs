@@ -229,6 +229,41 @@ fn empty_identity_and_a_non_positive_fetched_at_are_400s() {
     assert_eq!(resp.status, 400, "an absent fetched_at: {}", resp.body);
 }
 
+/// ADR-0014's 2026-08-11 amendment (#254): a source the registry knows and
+/// does not declare for `context_snapshots` is rejected here even when the
+/// token is correctly bound to it (mismatch alone is not the whole story
+/// any more) — `item-threshold/v1` is the one live registry entry that is
+/// `Writes::Alerts` and nothing else, so this exercises the real
+/// declaration, not a locally-built fixture.
+#[test]
+fn a_source_not_declared_for_snapshots_is_rejected_even_when_correctly_bound() {
+    let sql = RusqliteSql::new();
+    let resp = ingest_snapshot(
+        &sql,
+        r#"{"source": "item-threshold/v1", "key": "item:a-1", "fetched_at": 1,
+            "payload": {"schema": "item-threshold/v1", "body": {}}}"#,
+        0,
+    );
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    assert!(
+        resp.body.contains("not declared for snapshots"),
+        "{}",
+        resp.body
+    );
+    let rows = sql.exec("SELECT source FROM context_snapshots", &[]).unwrap();
+    assert!(rows.is_empty(), "nothing was written");
+}
+
+/// The mirror positive case: a source declared `Writes::Both` may write
+/// both tables under the one string — already proven for alerts by the
+/// `city-waste/v2` restamp suite in `alerts.rs`; this is its snapshot half.
+#[test]
+fn a_source_declared_for_both_tables_may_write_snapshots() {
+    let sql = RusqliteSql::new();
+    let resp = ingest_snapshot(&sql, &poll("2026-08-17", "2026-08-17", 1000), 0);
+    assert_eq!(resp.status, 201, "{}", resp.body);
+}
+
 /// The scope matrix and the source binding, on the new route. A device
 /// token is 403 — which is also why `smoke-prod.sh` cannot cover this lane.
 #[test]

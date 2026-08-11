@@ -103,10 +103,14 @@ DEVICE=$(jq -r '.token' <<<"$BODY")
 case "$DEVICE" in hb_*) ;; *) fail "device token shape: $BODY";; esac
 request 201 POST /api/admin/tokens '{"id":"t-sweeper","name":"smoke sweeper","scope":"sweeper"}' "$ADMIN_SECRET"
 SWEEPER=$(jq -r '.token' <<<"$BODY")
-# An ingest token is bound to exactly one source (#145); every alert this
-# script raises below uses source "healthchecks/v1", so the smoke ingest
-# token is minted bound to it.
-request 201 POST /api/admin/tokens '{"id":"t-ingest","name":"smoke ingest","scope":"ingest","source":"healthchecks/v1"}' "$ADMIN_SECRET"
+# An ingest token is bound to exactly one source (#145); every alert AND
+# every snapshot this script raises below uses source "city-waste/v2", so
+# the smoke ingest token is minted bound to it. It has to be a `Writes::Both`
+# source (ADR-0014's 2026-08-11 amendment, #254) precisely because this one
+# token exercises both `POST /api/alerts` and `POST /api/snapshots` below —
+# an alerts-only source like "healthchecks/v1" would now 400 on the
+# snapshot half with "not declared for snapshots".
+request 201 POST /api/admin/tokens '{"id":"t-ingest","name":"smoke ingest","scope":"ingest","source":"city-waste/v2"}' "$ADMIN_SECRET"
 INGEST=$(jq -r '.token' <<<"$BODY")
 
 # Minting an ingest token without a source, or a non-ingest token with one,
@@ -164,7 +168,7 @@ request 200 GET "/api/changes?since=$V1" '' "$DEVICE"
 
 # Device cannot ingest; ingest cannot touch items or read; sweeper creates
 # items and nothing else. Every rejection is an empty-bodied 403.
-request 403 POST /api/alerts '{"source":"healthchecks/v1","source_key":"k","title":"t"}' "$DEVICE"
+request 403 POST /api/alerts '{"source":"city-waste/v2","source_key":"k","title":"t"}' "$DEVICE"
 [ -z "$BODY" ] || fail "403 leaked a body: $BODY"
 request 403 POST /api/items '{"id":"x","title":"t"}' "$INGEST"
 request 403 GET "/api/changes?since=0" '' "$INGEST"
@@ -174,10 +178,10 @@ request 403 GET "/api/changes?since=0" '' "$SWEEPER"
 # ------------------------------------------------------------- alerts
 
 # First raise -> 201; identical re-raise -> 200 with the same version.
-request 201 POST /api/alerts '{"source":"healthchecks/v1","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
+request 201 POST /api/alerts '{"source":"city-waste/v2","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
 AV=$(jq -r '.version' <<<"$BODY")
 ALERT_ID=$(jq -r '.id' <<<"$BODY")
-request 200 POST /api/alerts '{"source":"healthchecks/v1","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
+request 200 POST /api/alerts '{"source":"city-waste/v2","source_key":"k","title":"sweeper down","severity":"high"}' "$INGEST"
 [ "$(jq -r '.version' <<<"$BODY")" = "$AV" ] || fail "identical re-raise bumped: $BODY"
 request 200 GET "/api/changes?since=0" '' "$DEVICE"
 [ "$(jq -r '.alerts | length' <<<"$BODY")" = "1" ] || fail "alert count in delta: $BODY"
@@ -190,10 +194,11 @@ request 200 PATCH "/api/alerts/$ALERT_ID" "{\"expected_version\":$AV,\"dismissed
 
 # The server-polled lane (#120), through the real DO rather than rusqlite:
 # first write 201, byte-identical replay no-op, a fresh stamp on an unchanged
-# payload still writing. The ingest token above is bound to
-# "healthchecks/v1", which is also the source used here — the route does not
-# care what the source *means*, only that the token is bound to it.
-SNAP='{"source":"healthchecks/v1","key":"collection","fetched_at":1000,"payload":{"schema":"healthchecks/v1","polled_every_ms":86400000,"body":{"n":1}}}'
+# payload still writing. The ingest token above is bound to "city-waste/v2",
+# which is also the source used here — and, since #254, that binding must
+# actually be declared `Writes::Both` in the registry for this to work at
+# all, not merely a token-source match.
+SNAP='{"source":"city-waste/v2","key":"collection","fetched_at":1000,"payload":{"schema":"city-waste/v2","polled_every_ms":86400000,"body":{"n":1}}}'
 request 201 POST /api/snapshots "$SNAP" "$INGEST"
 SV=$(jq -r '.version' <<<"$BODY")
 request 200 POST /api/snapshots "$SNAP" "$INGEST"
@@ -208,26 +213,37 @@ request 200 POST /api/snapshots "$FRESH" "$INGEST"
 
 # A broken envelope is refused at the write, naming what was wrong; a device
 # may not write here at all.
-request 400 POST /api/snapshots '{"source":"healthchecks/v1","key":"k","fetched_at":1,"payload":{"body":{}}}' "$INGEST"
+request 400 POST /api/snapshots '{"source":"city-waste/v2","key":"k","fetched_at":1,"payload":{"body":{}}}' "$INGEST"
 request 403 POST /api/snapshots "$SNAP" "$DEVICE"
 [ -z "$BODY" ] || fail "snapshot 403 leaked a body: $BODY"
+
+# ADR-0014's 2026-08-11 amendment (#254): a correctly-bound token whose
+# source the registry does not declare for `context_snapshots` is a 400
+# naming the gap, not a write. "healthchecks/v1" is a real, live registry
+# entry that is `Writes::Alerts` and nothing else — minting a token bound to
+# it succeeds (mint checks enrollment + retirement only, not per-table
+# declaration), but the snapshot write itself is refused.
+request 201 POST /api/admin/tokens '{"id":"t-ingest-hc","name":"smoke ingest hc","scope":"ingest","source":"healthchecks/v1"}' "$ADMIN_SECRET"
+INGEST_HC=$(jq -r '.token' <<<"$BODY")
+request 400 POST /api/snapshots '{"source":"healthchecks/v1","key":"k","fetched_at":1,"payload":{"schema":"healthchecks/v1","body":{}}}' "$INGEST_HC"
+[ "$(jq -r '.message' <<<"$BODY")" = '`healthchecks/v1` is not declared for snapshots' ] || fail "not-declared-for-snapshots message: $BODY"
 
 # GET /api/snapshots (#135-137): the cursor read-back an evaluated-stream
 # poller needs. Source-bound for an ingest token exactly like the write
 # side; a device token reads any source.
-request 200 GET "/api/snapshots?source=healthchecks/v1&key=collection" '' "$INGEST"
-[ "$(jq -r '.source' <<<"$BODY")" = "healthchecks/v1" ] || fail "snapshot read-back: $BODY"
-request 200 GET "/api/snapshots?source=healthchecks/v1&key=collection" '' "$DEVICE"
+request 200 GET "/api/snapshots?source=city-waste/v2&key=collection" '' "$INGEST"
+[ "$(jq -r '.source' <<<"$BODY")" = "city-waste/v2" ] || fail "snapshot read-back: $BODY"
+request 200 GET "/api/snapshots?source=city-waste/v2&key=collection" '' "$DEVICE"
 request 403 GET "/api/snapshots?source=home-assistant/v1&key=x" '' "$INGEST"
 [ -z "$BODY" ] || fail "snapshot read 403 leaked a body: $BODY"
-request 404 GET "/api/snapshots?source=healthchecks/v1&key=no-such-key" '' "$INGEST"
+request 404 GET "/api/snapshots?source=city-waste/v2&key=no-such-key" '' "$INGEST"
 
 # GET /api/rules (#135-137): every non-device scope reaches three routes
 # now, not one — this is the poller's own read of the live rule set it
 # evaluates in memory. A device token reads every rule; an ingest token's
 # read is filtered to the rules its bound source's event_kind may see
 # (`rules::event_kinds_readable_by`) plus every any-kind rule. The smoke
-# ingest token above is bound to "healthchecks/v1", which
+# ingest token above is bound to "city-waste/v2", which
 # `event_kinds_readable_by` has no mapping for, so it reads only rules with
 # no `event_kind` at all — this asserts the response shape and the
 # device/ingest/sweeper matrix, not the per-kind filter itself (covered by

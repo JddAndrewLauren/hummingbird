@@ -45,31 +45,26 @@ pub fn mint(
             "only an ingest token may carry a source",
         ));
     }
-    // ADR-0014's registry is the only source of truth for what an alert
-    // source is (#189): an ingest token bound to a string the registry
-    // has never heard of would 403 on every alert it ever posts, silently
-    // and indistinguishably from a genuinely wrong-source push; one bound
-    // to a **retired** source is the same drift the registry exists to
-    // make loud ("nothing new should be minted under it").
-    //
-    // **Known gap, flagged not fixed (#120).** An ingest token now reaches
-    // `POST /api/snapshots` as well, but this gate consults a registry
-    // whose own module doc scopes it to *alert* sources. `city-waste/v2`
-    // passes because it is genuinely both — it writes a snapshot every poll
-    // and mints an alert on a holiday week. A future **snapshot-only**
-    // source (`anthropic-usage/v1`, `github-hummingbird/v1`) will not: it
-    // has no business being enrolled in an alert registry, and it will 400
-    // here with "not a registered alert source", which is technically true
-    // and useless as guidance. The fix is a decision this slice does not
-    // need to take (a second registry, a shape flag, or dropping the gate
-    // for a snapshot-only binding), so it stays a comment, not a guess.
+    // ADR-0014's registry (widened by #254 to cover both `alerts` and
+    // `context_snapshots`) is the only source of truth for what a source
+    // is: an ingest token bound to a string the registry has never heard
+    // of would 403 on every write it ever attempts, silently and
+    // indistinguishably from a genuinely wrong-source push; one bound to a
+    // **retired** source is the same drift the registry exists to make
+    // loud ("nothing new should be minted under it"). This gate checks
+    // only enrollment + retirement — it does not care which table(s) the
+    // source declares, since an ingest token is not itself table-scoped;
+    // that distinction is enforced per-table at write time
+    // (`handlers/alerts.rs::ingest`, `handlers/snapshots.rs::ingest`),
+    // each rejecting a source this registry does not declare for *their*
+    // table.
     if let Some(source) = &mint.source {
         match find_source(source) {
             None => {
                 return Ok(error(
                     400,
                     "validation",
-                    &format!("`{source}` is not a registered alert source"),
+                    &format!("`{source}` is not enrolled — add a registry entry"),
                 ));
             }
             Some(entry) => {

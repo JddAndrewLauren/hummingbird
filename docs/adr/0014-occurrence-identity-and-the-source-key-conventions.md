@@ -430,6 +430,99 @@ until acked. That is the contract, not a leak.
   both drift symptoms are quiet.
 - **A blanket TTL on alerts.** Unacked urgents vanish on a timer.
 
+## Amendment (2026-08-11): the registry becomes the source registry, not the alert registry
+
+[#254](https://github.com/JddAndrewLauren/hummingbird/issues/254) found the
+crack the "registry, and why it is a tripwire" section above left open:
+`domain::sources::REGISTRY` was scoped, by its own module doc, to sources
+that mint an **alert** `source_key` — but `#145`'s mint gate
+(`handlers/admin_tokens.rs::mint`) checks every `ingest`-scope token's
+`source` against it regardless of which table that token is destined to
+write, and `#120` gave the ingest scope a second table
+(`POST /api/snapshots`) the registry had no opinion about at all.
+`city-waste/v2` passed the gate by accident of being genuinely both an
+alert and a snapshot source under one string — the first **snapshot-only**
+source (ADR-0009 names three: `anthropic-usage/v1`, `github-hummingbird/v1`,
+the races lane) would have 400d at mint with "not a registered alert
+source," which is true and useless: the operator's correct next step is not
+"register it as an alert source."
+
+Three options were on the table (issue #254's grilling session,
+2026-08-10): a second, parallel snapshot registry with its own
+frozen-namespace discipline and its own retirement story; a shape flag on
+[`SourceEntry`](../../server/domain/src/sources.rs) naming which tables a
+source may write, read by the mint gate; or dropping the registry gate
+entirely for a token whose intended use is snapshot-only.
+
+**Decided: the shape-flag option, and it goes further than the mint gate
+alone.** `SourceEntry` gains `writes: Writes` — `Alerts | Snapshots | Both`
+— and `REGISTRY` stops being an alert-only registry and becomes *the*
+source registry, covering every source string that can appear on either
+`alerts.source` or `context_snapshots.source` (ADR-0009 rule 4's shared
+frozen-namespace convention already said these are one naming convention
+across three tables; this amendment is that rule's registry catching up to
+the rule's own claim). `key_recipe` narrows from a required field to
+`Option<&'static str>`, present exactly where `writes.writes_alerts()` is
+true — a snapshot-only source mints no `source_key` and so has no recipe to
+document, and the frozen-recipe tripwire loses nothing from this: it keys
+off each recipe *function's* own frozen test vector, never off this field.
+
+Rejected, and why:
+
+- **The second registry** is the most faithful reading of "the registry
+  exists because a snapshot source mints no `source_key`," but it is also
+  the most machinery: a second frozen-namespace discipline, a second
+  retirement story (`retired_as` duplicated onto a second type), and the
+  mint gate consulting two lists forever, for a distinction (which
+  table(s) one string may write) that is a single field on the entry the
+  registry already has.
+- **Dropping the gate for a snapshot-only binding** needs its own way to
+  say "this token is snapshot-only" at mint time — which is the shape flag
+  again, just moved from the entry onto the mint request, and now
+  unenforceable against a token minted for the wrong intent (nothing
+  would catch a snapshot-only token later posting alerts under a source
+  no rule engine or alert reader was ever told to expect).
+
+**The declaration has two readers now, not one, or it is decoration.**
+`handlers/admin_tokens.rs::mint` keeps checking only enrollment (`find`
+resolves) and retirement (`retired_as.is_none()`) — an ingest token is not
+itself table-scoped, so the mint gate has no business asking which table a
+source declares; its 400 for an unenrolled source is corrected to name the
+actual remedy, `"is not enrolled — add a registry entry"`, in place of the
+old "is not a registered alert source." The real per-table check moves to
+the write side: `handlers/alerts.rs::ingest` rejects a source the registry
+finds but does not declare `writes_alerts()` for, and
+`handlers/snapshots.rs::ingest` its `writes_snapshots()` mirror — each a
+400 naming the source and the table, both **after** the existing
+structural (400) validations and **before** the token-source mismatch
+(403) check, so a malformed payload or a wrong-source token still reports
+its own problem first. A source the registry has never heard of is left
+alone at both write sites: enrollment itself stays the mint gate's sole
+job, and every legitimately-minted ingest token has already passed it —
+this is defense in depth for a *declared-but-wrong-table* source, not a
+second enrollment gate.
+
+**Enrollment is at wiring time, not speculative.** This amendment does not
+enroll `anthropic-usage/v1`, `github-hummingbird/v1`, or the races lane —
+each enrolls when its own lane is actually built, exactly as every alert
+source above did. What it does enroll for real is `city-waste/v2`'s
+`writes: Writes::Both` declaration, absorbing #245's open note that the
+snapshot half of that source had never been registered at all (the read
+side never checked the registry, so the gap was silent rather than
+broken) — and, retroactively, the observation that every evaluated-stream
+poller's source (`gmail/v1`, `m365-mail/v1`, `google-calendar/v1`,
+`m365-calendar/v1`) is `Writes::Both` too: each mints alerts on a rule
+match **and** writes its own delta cursor (`google-calendar/v1` also the
+`busy_now` gauge) as a `context_snapshots` row under the same string. Only
+the webhook sources that write no cursor of their own
+(`item-threshold/v1`, `healthchecks/v1`, `home-assistant/v1`, `github/v1`,
+`photo-site/v1`, `gmail-alert/v1`, and the retired `city-waste/v1`, which
+predates the poller entirely) stay `Writes::Alerts`. No shipped source is
+`Writes::Snapshots` alone yet — the fixture proving that direction of the
+mechanism is a locally-built `SourceEntry` in `sources.rs`'s own tests,
+the same pattern `a_retired_source_is_representable_and_distinct_from_unknown`
+already used for retirement before `city-waste/v1` gave it a real one.
+
 ## Deferred, not rejected
 
 - **Pruning acked alert rows** (#155). Nothing ever deletes an alert, so the
