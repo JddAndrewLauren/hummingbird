@@ -34,7 +34,19 @@ export interface NavRailProps {
   statusLabel: string;
   theme: ResolvedTheme;
   onToggleTheme: () => void;
+  /** Collapsed shows icons and counts only — labels, wordmark and status
+   * line all go, and every button keeps its name via `aria-label`/`title`.
+   * The state is the caller's (`App.tsx` persists it device-locally via
+   * `rail-collapse.ts`). */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }
+
+/** Collapsed width: one 36px control row centred inside the same
+ * `--space-5` horizontal padding the expanded rail uses. Local by design —
+ * `--rail-width` (236px) is the design system's constant; this is the
+ * shell's own compact form of it. */
+const COLLAPSED_WIDTH = 68;
 
 export function NavRail({
   screen,
@@ -43,6 +55,8 @@ export function NavRail({
   statusLabel,
   theme,
   onToggleTheme,
+  collapsed,
+  onToggleCollapsed,
 }: NavRailProps) {
   return (
     <nav
@@ -52,10 +66,12 @@ export function NavRail({
         flexDirection: "column",
         gap: "var(--space-6)",
         flex: "0 0 auto",
-        width: "var(--rail-width)",
+        width: collapsed ? COLLAPSED_WIDTH : "var(--rail-width)",
         padding: "var(--space-6) var(--space-5)",
         background: "var(--surface-quiet)",
         borderRight: "1px solid var(--border-subtle)",
+        transition: "width var(--dur-base) var(--ease-flit)",
+        overflow: "hidden",
       }}
     >
       {/* Mark + wordmark, as the design system's own NavRail draws it: the app
@@ -64,7 +80,15 @@ export function NavRail({
           is decorative — the wordmark beside it already names the app, so
           alt="" keeps screen readers from announcing the brand twice.
           See design/brand/README.md for where the artwork comes from. */}
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)", padding: "0 var(--space-3)" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-4)",
+          padding: collapsed ? 0 : "0 var(--space-3)",
+          justifyContent: collapsed ? "center" : "flex-start",
+        }}
+      >
         <img
           src={theme === "dark" ? markDark1x : markLight1x}
           // Raster art, so hidpi needs real pixels rather than an upscale.
@@ -82,15 +106,17 @@ export function NavRail({
             borderRadius: "var(--radius-icon-app)",
           }}
         />
-        <span
-          style={{
-            font: "var(--weight-bold) 18px/1 var(--font-display)",
-            letterSpacing: "-0.03em",
-            color: "var(--text-primary)",
-          }}
-        >
-          hummingbird
-        </span>
+        {collapsed ? null : (
+          <span
+            style={{
+              font: "var(--weight-bold) 18px/1 var(--font-display)",
+              letterSpacing: "-0.03em",
+              color: "var(--text-primary)",
+            }}
+          >
+            hummingbird
+          </span>
+        )}
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
@@ -104,12 +130,19 @@ export function NavRail({
               type="button"
               onClick={() => onScreen(item)}
               aria-current={active ? "page" : undefined}
+              // Always named, so the collapsed (label-less) button reads the
+              // same to a screen reader; `title` is the hover tooltip the
+              // collapsed form needs.
+              aria-label={label}
+              title={collapsed ? label : undefined}
               style={{
                 display: "flex",
                 alignItems: "center",
+                justifyContent: collapsed ? "center" : "flex-start",
                 gap: "var(--space-4)",
                 height: 36,
-                padding: "0 var(--space-3)",
+                padding: collapsed ? 0 : "0 var(--space-3)",
+                position: "relative",
                 background: active ? "var(--accent-quiet)" : "transparent",
                 color: active ? "var(--text-brand)" : "var(--text-secondary)",
                 border: "1px solid transparent",
@@ -121,9 +154,26 @@ export function NavRail({
               }}
             >
               <Icon name={icon} size={17} />
-              <span style={{ flex: 1 }}>{label}</span>
+              {collapsed ? null : <span style={{ flex: 1 }}>{label}</span>}
               {count ? (
-                <Badge tone={item === "alerts" ? "danger" : "neutral"} mono>
+                <Badge
+                  tone={item === "alerts" ? "danger" : "neutral"}
+                  mono
+                  // Collapsed keeps the count — the whole point of the badge
+                  // — as a compact pill pinned to the icon's corner.
+                  style={
+                    collapsed
+                      ? {
+                          position: "absolute",
+                          top: 1,
+                          right: 3,
+                          height: 15,
+                          padding: "0 var(--space-2)",
+                          fontSize: 10,
+                        }
+                      : undefined
+                  }
+                >
                   {count}
                 </Badge>
               ) : null}
@@ -136,20 +186,38 @@ export function NavRail({
         style={{
           marginTop: "auto",
           display: "flex",
+          flexDirection: collapsed ? "column" : "row",
           alignItems: "center",
           gap: "var(--space-4)",
-          padding: "0 var(--space-3)",
+          padding: collapsed ? 0 : "0 var(--space-3)",
         }}
       >
-        <span className="hb-meta" style={{ flex: 1 }}>
-          {statusLabel}
-        </span>
+        {collapsed ? null : (
+          <span className="hb-meta" style={{ flex: 1 }}>
+            {statusLabel}
+          </span>
+        )}
         <IconButton
           icon={theme === "dark" ? "sun" : "moon"}
           label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           size="sm"
           onClick={onToggleTheme}
           style={{ width: 30, height: 30 }}
+        />
+        {/* One chevron, rotated — `TriageRow`'s own idiom: pointing away
+            from the content to collapse, toward it to expand, and the label
+            says it in words. */}
+        <IconButton
+          icon="chevron-down"
+          label={collapsed ? "Expand the sidebar" : "Collapse the sidebar"}
+          size="sm"
+          onClick={onToggleCollapsed}
+          style={{
+            width: 30,
+            height: 30,
+            transform: collapsed ? "rotate(-90deg)" : "rotate(90deg)",
+            transition: "transform var(--dur-base) var(--ease-flit)",
+          }}
         />
       </div>
     </nav>

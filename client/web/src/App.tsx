@@ -12,6 +12,7 @@ import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
 import { NavRail } from "./shell/NavRail";
+import { readRailCollapsed, writeRailCollapsed } from "./shell/rail-collapse";
 import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
 import { coreStatusLabel } from "./shell/status-label";
@@ -77,6 +78,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const [demo] = useState(demoData);
 
   const [screen, setScreen] = useState<Screen>("now");
+  // Device-local view preference, same storage guard `NowScreen`'s ranked
+  // region uses — absent storage means the preference lasts the session.
+  const [railCollapsed, setRailCollapsed] = useState(() =>
+    readRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage),
+  );
+  const handleToggleRailCollapsed = () => {
+    const next = !railCollapsed;
+    setRailCollapsed(next);
+    writeRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
+  };
   const { preference, theme, setPreference } = useTheme();
   const {
     handleConnectClick,
@@ -226,6 +237,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         statusLabel={coreStatusLabel(status, apiVersion)}
         theme={theme}
         onToggleTheme={() => setPreference(toggledPreference(theme))}
+        collapsed={railCollapsed}
+        onToggleCollapsed={handleToggleRailCollapsed}
       />
 
       <main style={{ display: "flex", flex: 1, minWidth: 0, flexDirection: "column" }}>
