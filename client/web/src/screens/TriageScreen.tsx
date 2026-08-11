@@ -1,215 +1,64 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
-import { Input } from "../components/forms/Input";
-import { Select } from "../components/forms/Select";
-import { Slider } from "../components/forms/Slider";
 import type { DemoCapture, DemoData } from "../fixtures/demo";
-import { CAPTURE_INPUT_ID } from "../shell/capture-hotkey";
 import type { TriageDestinationName } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
-import { canSubmitCapture } from "./capture-validation";
-import { buildTriageEdits, EMPTY_TRIAGE_DRAFT, type TriageDraft } from "./triage-form";
+import { TriageRow } from "./TriageRow";
 import { orderTriage } from "./triage-order";
 import { SingleColumn } from "./layout";
-
-const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiting"];
-
-interface CaptureMeta {
-  energy: number | null;
-  size: number | null;
-  context: string;
-}
-
-const EMPTY_META: CaptureMeta = { energy: null, size: null, context: "" };
-
-/** S13/#111's triage promotion form: `hummingbird_domain::Size`/`Energy`'s
- * own vocabulary names, exactly (`quick`/`short`/`deep`,
- * `low`/`medium`/`high`) — never the capture box's own looser display
- * labels above, so what a triage sends is resolved by the same name the
- * server parses, never a positional index. */
-const TRIAGE_SIZES: Array<{ value: TriageDraft["size"]; label: string }> = [
-  { value: "", label: "Not set" },
-  { value: "quick", label: "Quick" },
-  { value: "short", label: "Short" },
-  { value: "deep", label: "Deep" },
-];
-const TRIAGE_ENERGIES: Array<{ value: TriageDraft["energy"]; label: string }> = [
-  { value: "", label: "Not set" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
 
 export interface TriageScreenProps {
   demo: DemoData | null;
   /** S12's real triage inbox (issue #110), rendered whenever `demo` is
    * null. */
   task: TaskState;
-  /** Enqueues a real capture — `shell/useCaptureWiring.ts`'s `submitCapture`.
-   * Never called with an empty/whitespace-only draft: `canSubmitCapture`
-   * gates the button this component renders before this is ever reached
-   * (#110's "an empty capture is refused client-side"). */
-  onSubmitCapture: (title: string, nowMs: number) => void;
+  /** Demo mode's own unsorted list, and the drop that removes one from it.
+   * Held by `App.tsx` rather than here since the capture box moved into the
+   * shell's popover: a capture typed there has to land in the same list this
+   * screen renders, and there is no path from a popover in the shell to state
+   * private to a screen. Both absent outside demo mode, where the real
+   * inbox (`task.triageInbox`) is what renders. */
+  demoCaptures?: DemoCapture[];
+  onDropDemoCapture?: (id: string) => void;
   /** S13/#111's triage mutation — `shell/useTriageWiring.ts`'s `triage`.
    * Edits whatever `edits` sets and promotes the item to `destination`, as
    * one call. Optional so a demo-only render (no worker behind it) never
    * has to pass a real one. */
   onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
-  /** Bumped by `App.tsx`'s global capture hotkey (and its header Capture
-   * button) to request focus on the capture input from anywhere in the
-   * app — #110's "a global hotkey that focuses it". `0` (the initial
-   * value) never focuses; only a later, distinct value does, so mounting
-   * this screen by navigating a screen at a time never steals focus on its
-   * own. */
-  focusRequestId: number;
+  /** "Now", for the age each collapsed row states. Passed in rather than read
+   * here: `useSyncWiring`'s tick is the one clock this origin gets (ADR-0007),
+   * and a screen that read `Date.now()` per render would be a second one. */
+  nowMs: number;
 }
 
-export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusRequestId }: TriageScreenProps) {
-  const [queue, setQueue] = useState<DemoCapture[]>(demo?.triage ?? []);
-  const [draft, setDraft] = useState("");
-  const [meta, setMeta] = useState<CaptureMeta>(EMPTY_META);
-  const [triageDrafts, setTriageDrafts] = useState<Record<string, TriageDraft>>({});
-  const mounted = useRef(false);
-
-  function triageDraftFor(itemId: string): TriageDraft {
-    return triageDrafts[itemId] ?? EMPTY_TRIAGE_DRAFT;
-  }
-
-  function setTriageDraftField(
-    itemId: string,
-    field: keyof TriageDraft,
-    value: string,
-  ): void {
-    setTriageDrafts((current) => ({
-      ...current,
-      [itemId]: { ...triageDraftFor(itemId), [field]: value },
-    }));
-  }
-
-  function promote(itemId: string, currentTitle: string, destination: TriageDestinationName): void {
-    if (!onTriage) {
-      return;
-    }
-    onTriage(itemId, destination, buildTriageEdits(triageDraftFor(itemId), currentTitle));
-    setTriageDrafts((current) => {
-      const next = { ...current };
-      delete next[itemId];
-      return next;
-    });
-  }
-
-  // Moves focus to the capture input whenever a focus request arrives
-  // (including the one that arrives on first mount if this screen was
-  // navigated to BY the hotkey/header button itself — `App.tsx` bumps the
-  // id and switches screens in the same gesture, and this screen mounts
-  // fresh in that case, so the effect below still fires). `mounted` skips
-  // only the truly first render (screen already open, id still its initial
-  // 0), the same guard `Header.tsx`'s own focus-on-navigate effect uses.
-  useEffect(() => {
-    if (!mounted.current) {
-      mounted.current = true;
-      if (focusRequestId === 0) {
-        return;
-      }
-    }
-    document.getElementById(CAPTURE_INPUT_ID)?.focus();
-  }, [focusRequestId]);
-
-  const canSubmit = canSubmitCapture(draft);
-
-  function submit() {
-    if (!canSubmit) {
-      return;
-    }
-    if (demo) {
-      setQueue((current) => [
-        { id: `CAP-${current.length + 8}`, title: draft, source: "Typed here", age: "just now" },
-        ...current,
-      ]);
-    } else {
-      onSubmitCapture(draft, Date.now());
-    }
-    setDraft("");
-    setMeta(EMPTY_META);
-  }
-
-  function drop(id: string) {
-    setQueue((current) => current.filter((capture) => capture.id !== id));
-  }
+// The Triage screen: the unsorted inbox, one line per capture, expanding into
+// the full editor for whichever row is selected. The capture box itself is NOT
+// here — it lives in the shell's `CapturePopover`, opened by the header's New
+// button or the global hotkey from any screen, so this screen is where captures
+// are *sorted*, never where they are typed.
+export function TriageScreen({
+  demo,
+  task,
+  demoCaptures,
+  onDropDemoCapture,
+  onTriage,
+  nowMs,
+}: TriageScreenProps) {
+  const queue = demoCaptures ?? [];
+  // One row open at a time: expanding is a *selection*, and two open editors
+  // would put two sets of unsent drafts on screen with nothing to say which is
+  // being worked. `null` is the resting state — an inbox is for reading first.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const realTriage = demo ? [] : orderTriage(task.triageInbox);
 
   return (
     <SingleColumn>
-      <Card
-        padding="var(--space-6)"
-        style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}
-      >
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-5)", flexWrap: "wrap" }}>
-          <Input
-            id={CAPTURE_INPUT_ID}
-            style={{ flex: 1, minWidth: 260 }}
-            label="Capture"
-            icon="feather"
-            placeholder="What's on your mind?"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              // `isComposing` guards an IME composition commit (e.g. an
-              // Enter that confirms a candidate while typing Japanese/
-              // Chinese/Korean) from being read as "submit" — that Enter
-              // belongs to the composition, not to this form.
-              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                submit();
-              }
-            }}
-          />
-          <Button size="md" iconLeft="plus" disabled={!canSubmit} onClick={submit}>
-            Add to Triage
-          </Button>
-        </div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: "var(--space-7)",
-            alignItems: "start",
-          }}
-        >
-          <Slider
-            label="Energy"
-            options={["low", "medium", "high"]}
-            value={meta.energy}
-            onChange={(energy) => setMeta({ ...meta, energy })}
-          />
-          <Slider
-            label="Size"
-            options={["quick", "normal", "deep"]}
-            value={meta.size}
-            onChange={(size) => setMeta({ ...meta, size })}
-          />
-          <Select
-            label="Context"
-            value={meta.context}
-            onChange={(event) => setMeta({ ...meta, context: event.target.value })}
-            options={[
-              { value: "", label: "Not set" },
-              ...CONTEXTS.map((context) => ({ value: context, label: context })),
-            ]}
-          />
-        </div>
-        <span className="hb-meta">
-          {demo
-            ? "optional — stage, dates and everything else are decided at mint time"
-            : "optional — stage, dates and everything else are decided at mint time (not yet stored on a real capture)"}
-        </span>
-      </Card>
-
       <div>
         <div
           style={{
@@ -272,18 +121,18 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
                       justifyContent: "flex-end",
                     }}
                   >
-                    <Button size="sm" variant="quiet" iconLeft="sparkles" onClick={() => drop(capture.id)}>
+                    <Button size="sm" variant="quiet" iconLeft="sparkles" onClick={() => onDropDemoCapture?.(capture.id)}>
                       Mint action
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       iconLeft="help-circle"
-                      onClick={() => drop(capture.id)}
+                      onClick={() => onDropDemoCapture?.(capture.id)}
                     >
                       Grill
                     </Button>
-                    <Button size="sm" variant="ghost" iconLeft="x" onClick={() => drop(capture.id)}>
+                    <Button size="sm" variant="ghost" iconLeft="x" onClick={() => onDropDemoCapture?.(capture.id)}>
                       Drop
                     </Button>
                   </div>
@@ -302,127 +151,17 @@ export function TriageScreen({ demo, task, onSubmitCapture, onTriage, focusReque
           </Card>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-            {realTriage.map((item) => {
-              const triageDraft = triageDraftFor(item.id);
-              return (
-                <Card
-                  key={item.id}
-                  padding="var(--space-5)"
-                  style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-5)", flexWrap: "wrap" }}>
-                    <StageBadge stage="triage" />
-                    {/* Same wrap-then-ellipsis contract as the demo row above
-                        — a real capture's title is whatever someone typed, so
-                        it is at least as likely to be long as a fixture's. */}
-                    <span
-                      style={{ flex: "1 1 220px", minWidth: 0, font: "var(--type-body)", color: "var(--text-primary)",
-                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                    >
-                      {item.title}
-                    </span>
-                    {item.pending ? (
-                      <span
-                        title="Not yet confirmed by the server"
-                        className="hb-meta"
-                        style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", flex: "0 0 auto", whiteSpace: "nowrap" }}
-                      >
-                        <Icon name="loader-circle" size={13} />
-                        Pending
-                      </span>
-                    ) : null}
-                  </div>
-
-                  {onTriage ? (
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "var(--space-4)",
-                        paddingTop: "var(--space-4)",
-                        borderTop: "1px solid var(--border-subtle)",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "repeat(4, 1fr)",
-                          gap: "var(--space-4)",
-                          alignItems: "end",
-                        }}
-                      >
-                        <Input
-                          label="Title"
-                          size="sm"
-                          value={triageDraft.title}
-                          placeholder={item.title}
-                          onChange={(event) => setTriageDraftField(item.id, "title", event.target.value)}
-                        />
-                        <Select
-                          label="Project"
-                          size="sm"
-                          value={triageDraft.projectId}
-                          onChange={(event) => setTriageDraftField(item.id, "projectId", event.target.value)}
-                          options={[
-                            { value: "", label: "No project" },
-                            ...task.projects.map((project) => ({ value: project.id, label: project.name })),
-                          ]}
-                        />
-                        <Select
-                          label="Size"
-                          size="sm"
-                          value={triageDraft.size}
-                          onChange={(event) =>
-                            setTriageDraftField(item.id, "size", event.target.value as TriageDraft["size"])
-                          }
-                          options={TRIAGE_SIZES}
-                        />
-                        <Select
-                          label="Energy"
-                          size="sm"
-                          value={triageDraft.energy}
-                          onChange={(event) =>
-                            setTriageDraftField(item.id, "energy", event.target.value as TriageDraft["energy"])
-                          }
-                          options={TRIAGE_ENERGIES}
-                        />
-                      </div>
-                      <Select
-                        label="Context"
-                        size="sm"
-                        style={{ maxWidth: 220 }}
-                        value={triageDraft.context}
-                        onChange={(event) => setTriageDraftField(item.id, "context", event.target.value)}
-                        options={[
-                          { value: "", label: "Not set" },
-                          ...CONTEXTS.map((context) => ({ value: context, label: context })),
-                        ]}
-                      />
-                      <div style={{ display: "flex", gap: "var(--space-4)", justifyContent: "flex-end" }}>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          iconLeft="help-circle"
-                          disabled={item.pending}
-                          onClick={() => promote(item.id, item.title, "grilling")}
-                        >
-                          Send to grilling
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="primary"
-                          iconLeft="check"
-                          disabled={item.pending}
-                          onClick={() => promote(item.id, item.title, "ready")}
-                        >
-                          Promote to ready
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-                </Card>
-              );
-            })}
+            {realTriage.map((item) => (
+              <TriageRow
+                key={item.id}
+                item={item}
+                projects={task.projects}
+                expanded={selectedId === item.id}
+                onToggle={() => setSelectedId(selectedId === item.id ? null : item.id)}
+                nowMs={nowMs}
+                onTriage={onTriage}
+              />
+            ))}
           </div>
         )}
       </div>

@@ -40,7 +40,15 @@ export function Input({ label, hint, error, icon, size = "md", trailing, id, sty
         <input id={inputId} aria-describedby={describedBy} aria-invalid={error ? true : undefined} {...rest}
           onFocus={(event) => { setFocus(true); rest.onFocus?.(event); }}
           onBlur={(event) => { setFocus(false); rest.onBlur?.(event); }}
-          style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent",
+          // `boxShadow: none` suppresses the global `:focus-visible` ring
+          // (`design/tokens/base.css`) on the inner element: the focus ring
+          // for this control belongs to the bordered wrapper above, and
+          // letting both draw gave a focused field two concentric rings —
+          // one hugging the text at `--radius-sm`, one around the box.
+          // `outline: none` alone does not stop it; the token rule paints
+          // with a box-shadow.
+          style={{ flex: 1, minWidth: 0, border: "none", outline: "none", boxShadow: "none",
+            background: "transparent",
             font: "var(--type-body)", color: "var(--text-primary)", padding: 0 }} />
         {trailing}
       </div>

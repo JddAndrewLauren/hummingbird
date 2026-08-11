@@ -19,6 +19,49 @@ export function deadlineSortKey(deadline: string): string {
   return deadline.length === 10 ? `${deadline}T23:59` : deadline;
 }
 
+/** The TS twin of `hummingbird_domain::is_valid_deadline`
+ * (`server/domain/src/deadline.rs`) — `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` and
+ * nothing else: no seconds, no `Z`/offset, no bare time, and no calendar date
+ * that does not exist (`2026-02-30` is refused, and leap years are real).
+ *
+ * A twin rather than a second opinion: the seam
+ * (`client/ffi-web/src/task_host.rs`) checks the same rule with the domain
+ * function itself and refuses a bad value there, so this exists only so a form
+ * can say *which field* is wrong while someone is still typing, instead of the
+ * edit failing after the fact. `Date` does the calendar arithmetic, which is
+ * how leap years stay correct here without restating the rule. */
+export function isValidDeadline(deadline: string): boolean {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(deadline);
+  const dateTime = DEADLINE_PATTERN.exec(deadline);
+  const match = dateOnly ?? dateTime;
+  if (!match) {
+    return false;
+  }
+  const [, year, month, day] = match;
+  const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+  // Round-tripping is the existence check: `new Date(2026, 1, 30)` silently
+  // rolls over to March 2nd, so a date that does not exist comes back with a
+  // different month or day than it went in with.
+  if (
+    parsed.getFullYear() !== Number(year) ||
+    parsed.getMonth() !== Number(month) - 1 ||
+    parsed.getDate() !== Number(day)
+  ) {
+    return false;
+  }
+  if (dateTime) {
+    const [, , , , hour, minute] = dateTime;
+    return Number(hour) <= 23 && Number(minute) <= 59;
+  }
+  return true;
+}
+
+/** A scheduled date is a whole civil day — a do-date has no minute — so the
+ * date-time form `isValidDeadline` also accepts is refused here. */
+export function isValidScheduledDate(scheduledDate: string): boolean {
+  return scheduledDate.length === 10 && isValidDeadline(scheduledDate);
+}
+
 const DEADLINE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 
 /** Parses a resolved deadline key as local wall-clock time. `null` for

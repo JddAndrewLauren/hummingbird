@@ -1,6 +1,12 @@
 import { useEffect } from "react";
+import type { CaptureDestination } from "../screens/capture-destination";
 import type { CoreStatus } from "../store/store";
-import { captureTask, requestTriageInbox, type WorkerLike } from "../store/worker-client";
+import {
+  captureTask,
+  requestFrontier,
+  requestTriageInbox,
+  type WorkerLike,
+} from "../store/worker-client";
 
 // Issue #110/S12's capture wiring: requests the triage inbox once the core
 // is ready, and again after every sync cycle — the same "refresh once
@@ -19,7 +25,7 @@ import { captureTask, requestTriageInbox, type WorkerLike } from "../store/worke
 // screen BEFORE this is ever reached — this hook trusts its caller and
 // enqueues whatever it is handed.
 export interface CaptureWiring {
-  submitCapture: (title: string, nowMs: number) => void;
+  submitCapture: (title: string, destination: CaptureDestination, nowMs: number) => void;
 }
 
 /** Mints a fresh, non-deterministic seed for one capture. Only the seed's
@@ -59,11 +65,24 @@ function mintSeed(): string {
 export function submitCaptureRequest(
   worker: WorkerLike,
   title: string,
+  /** The stage this capture is born into — `"triage"` normally, `"ready"` for
+   * the box's skip-triage mint (`screens/capture-destination.ts`). One
+   * `Core::capture` at that stage, never a capture plus a triage: the stage is
+   * already part of the create, so a skipped triage is still exactly one
+   * queued mutation. */
+  destination: CaptureDestination,
   nowMs: number,
   seed: string = mintSeed(),
 ): void {
-  captureTask(worker, seed, title, "triage", nowMs);
+  captureTask(worker, seed, title, destination, nowMs);
   requestTriageInbox(worker);
+  if (destination === "ready") {
+    // A minted capture is born past triage, so it lands on the FRONTIER and
+    // never in the inbox — and the same argument that makes the inbox re-read
+    // load-bearing applies there: without this, the item nobody can see until
+    // the next 60s cycle is the one the person just typed.
+    requestFrontier(worker);
+  }
 }
 
 export function useCaptureWiring(
@@ -85,8 +104,8 @@ export function useCaptureWiring(
   }, [ready, syncOutcomeSeq]);
 
   return {
-    submitCapture: (title: string, nowMs: number) => {
-      submitCaptureRequest(worker, title, nowMs);
+    submitCapture: (title: string, destination: CaptureDestination, nowMs: number) => {
+      submitCaptureRequest(worker, title, destination, nowMs);
     },
   };
 }

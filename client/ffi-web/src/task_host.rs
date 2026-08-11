@@ -19,7 +19,7 @@ use hummingbird_core::{
     ActError, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction, TriageDestination,
     TriagePatch,
 };
-use hummingbird_domain::{Alert, Energy, Item, Project, Size, Stage};
+use hummingbird_domain::{is_valid_deadline, Alert, Energy, Item, Project, Size, Stage};
 
 // The real, target-specific store `Core::init` resolves to internally is a
 // *private* type alias (`hummingbird_core::CoreStore`) — this crate cannot
@@ -84,23 +84,115 @@ pub struct TriageResponse {
     pub error: Option<String>,
 }
 
-/// The wire-string fields a triage request carries beyond `destination` —
-/// [`TaskHostCore::triage`]'s own parameter list already reads long, so
-/// grouping the optional edit fields here keeps that signature to one
-/// struct plus the four "which item, which mutation" scalars every other
-/// method here takes individually (`seed`, `item_id`, `now_ms`).
+/// Every field of an item a triage request may edit beyond `destination`,
+/// as the JS side sends them — one JSON object, camelCased, deserialized
+/// here rather than spread across a positional argument list that would now
+/// run to thirteen scalars.
+///
+/// **Absent, null and a value are three different instructions**, and the
+/// double-`Option` on each nullable field is what keeps them apart:
+/// a key the JS object never set is `None` ("leave this field alone"), an
+/// explicit `null` is `Some(None)` ("clear it"), and a value is
+/// `Some(Some(v))`. That is [`hummingbird_domain::ItemPatch`]'s own wire
+/// contract, mirrored here so an editor can remove a value it can set.
+/// `title` and `priority` are `NOT NULL` columns: single-`Option`, so a
+/// `null` on either is a deserialization error, not a silent clear.
+///
+/// `deny_unknown_fields` on purpose: a misspelled key that deserialized to
+/// "leave that field alone" would silently drop an edit the person made.
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TriageEdits {
+    #[serde(default, deserialize_with = "non_null_title")]
     pub title: Option<String>,
-    pub project_id: Option<String>,
+    #[serde(default, deserialize_with = "touched")]
+    pub description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched")]
+    pub project_id: Option<Option<String>>,
     /// The wire's snake_case size name (`hummingbird_domain::Size::parse`);
     /// resolved by name through the vocabulary, never a raw index or a
     /// hardcoded id.
-    pub size: Option<String>,
+    #[serde(default, deserialize_with = "touched")]
+    pub size: Option<Option<String>>,
     /// Same "resolved by name" contract as `size`
     /// (`hummingbird_domain::Energy::parse`).
-    pub energy: Option<String>,
-    pub context: Option<String>,
+    #[serde(default, deserialize_with = "touched")]
+    pub energy: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched")]
+    pub context: Option<Option<String>>,
+    #[serde(default, deserialize_with = "non_null_priority")]
+    pub priority: Option<i64>,
+    /// `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`, checked with
+    /// `hummingbird_domain::is_valid_deadline` before the seam — the same
+    /// function the authority validates with, so the two cannot disagree.
+    #[serde(default, deserialize_with = "touched")]
+    pub deadline: Option<Option<String>>,
+    /// A whole civil day (`YYYY-MM-DD`) and never a date-time: a scheduled
+    /// date is the do-date a human chose, which has no minute.
+    #[serde(default, deserialize_with = "touched")]
+    pub scheduled_date: Option<Option<String>>,
+}
+
+/// Distinguishes "key absent" from "key present, value null" for a
+/// double-`Option` field. Without it serde folds both onto `None` and a
+/// clear becomes a no-op; the same shim the authority's own patch bodies use
+/// (`hummingbird_domain::api`).
+fn touched<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
+/// `NOT NULL` columns cannot be cleared: an explicit JSON `null` on one is a
+/// deserialize error, not a silent skip — read as "leave this field alone" it
+/// would swallow an edit whose intent was impossible. Named shims because
+/// `deserialize_with` needs a path; the same pair the authority's own patch
+/// bodies carry (`hummingbird_domain::api`).
+fn non_null_title<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    non_null(d, "title")
+}
+
+fn non_null_priority<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    non_null(d, "priority")
+}
+
+fn non_null<'de, T, D>(deserializer: D, field: &'static str) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    match <Option<T> as serde::Deserialize>::deserialize(deserializer)? {
+        Some(value) => Ok(Some(value)),
+        None => Err(serde::de::Error::custom(format!("{field} may not be null"))),
+    }
+}
+
+/// One edit field rejected before it could reach [`Core::triage`] — the
+/// message is what the host shows, so it names the field and what was wrong
+/// with it rather than just failing.
+fn reject(message: String) -> TriageResponse {
+    TriageResponse { kind: "failed", error: Some(message) }
+}
+
+/// Resolves a touched size/energy field by name: `None` stays untouched,
+/// `Some(None)` stays a clear, and a value is looked up in the vocabulary —
+/// an unrecognised name is an `Err` the caller turns into a rejection,
+/// never a silent clear.
+fn parse_named<T>(
+    field: &str,
+    raw: Option<Option<String>>,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<Option<T>>, String> {
+    match raw {
+        None => Ok(None),
+        Some(None) => Ok(Some(None)),
+        Some(Some(value)) => match parse(&value) {
+            Some(parsed) => Ok(Some(Some(parsed))),
+            None => Err(format!("unrecognised {field} {value:?}")),
+        },
+    }
 }
 
 /// Maps S11/#109's wire action name to [`ItemAction`] — the one place a
@@ -194,6 +286,38 @@ pub struct StepListResponse {
 pub struct ProjectListResponse {
     pub kind: &'static str,
     pub projects: Vec<Project>,
+}
+
+/// One Ledger row (`Core::ledger`): the item's fields flat at the top level
+/// exactly like [`FrontierItemDTO`] (same `#[serde(flatten)]` reasoning),
+/// plus the row's derivable facts — `pending` stamped through the same
+/// single site as every other item read ([`TaskHostCore::with_pending`]),
+/// the mirror's retention stamp, and the two badges. Never a history
+/// record: the ledger derives, it does not record.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LedgerRowDTO {
+    #[serde(flatten)]
+    pub item: Item,
+    pub pending: bool,
+    /// `Some` when the mirror retains this row as absent (archived, or
+    /// missing from a complete sweep) — the label the Ledger shows instead
+    /// of hiding the row.
+    pub absent_since_ms: Option<i64>,
+    /// A dead-lettered edit targets this item (device-local — the journal
+    /// never syncs).
+    pub dead_lettered: bool,
+    /// A live alert names this item (`source_key == "item:<id>"`).
+    pub has_live_alert: bool,
+}
+
+/// The wrapper around [`TaskHostCore::ledger`]'s answer. Same `"busy"`
+/// contract as [`ItemListResponse`], and load-bearing for the same reason as
+/// the pane read: an empty ledger renders as "nothing has ever been
+/// tracked", a claim a core that has not loaded may not make.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LedgerListResponse {
+    pub kind: &'static str,
+    pub rows: Vec<LedgerRowDTO>,
 }
 
 /// The wrapper around [`TaskHostCore::is_pending`]'s answer.
@@ -557,6 +681,47 @@ impl TaskHostCore {
         }
     }
 
+    /// The complete retained roster, per [`Core::ledger`] — every item this
+    /// device's mirror has ever known, live, Done and archived alike, with
+    /// each row's derivable facts. `now_ms` is host-supplied, like every
+    /// other clock read crossing this seam, and resolves only alert
+    /// liveness. Same per-item `pending` stamp as [`TaskHostCore::frontier`].
+    pub fn ledger(&self, now_ms: i64) -> LedgerListResponse {
+        LedgerListResponse {
+            kind: "ok",
+            rows: self
+                .core
+                .ledger(now_ms)
+                .into_iter()
+                .map(|entry| {
+                    let pending = self.core.is_pending(&entry.item.id);
+                    LedgerRowDTO {
+                        pending,
+                        absent_since_ms: entry.absent_since_ms,
+                        dead_lettered: entry.dead_lettered,
+                        has_live_alert: entry.has_live_alert,
+                        item: entry.item,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Every live `Done` item, per [`Core::done`] — the Done screen's read.
+    /// Same per-item `pending` stamp as [`TaskHostCore::frontier`], through
+    /// the same single site.
+    pub fn done(&self) -> ItemListResponse {
+        ItemListResponse {
+            kind: "ok",
+            items: self
+                .core
+                .done()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
+        }
+    }
+
     /// How old this device's answer to one standing question is, per
     /// [`Core::snapshot_freshness`] (ADR-0015). `now_ms` is host-supplied,
     /// like every other clock read that crosses this seam.
@@ -706,14 +871,19 @@ impl TaskHostCore {
 
     /// Triages an already-captured item (S13/#111): edits whatever
     /// `edits` sets and promotes it to `destination`, as one CAS `PATCH`
-    /// (never four separate mutations — [`Core::triage`]'s own doc).
-    /// `destination` is the wire's snake_case destination name
-    /// ([`parse_destination`]); `edits.size`/`edits.energy` are each
-    /// resolved by name through `hummingbird_domain`'s own vocabulary
-    /// (`Size::parse`/`Energy::parse`). Any unrecognised name fails without
-    /// ever touching [`Core::triage`], the same "reject before the seam"
-    /// discipline [`TaskHostCore::capture`]/[`TaskHostCore::act`] use for
-    /// their own inputs.
+    /// (never one mutation per field — [`Core::triage`]'s own doc).
+    ///
+    /// Everything a wire value could get wrong is rejected HERE, before
+    /// [`Core::triage`] is ever called, the same "reject before the seam"
+    /// discipline [`TaskHostCore::capture`]/[`TaskHostCore::act`] use:
+    /// `destination` and `edits.size`/`edits.energy` are resolved by name
+    /// through the shared vocabulary ([`parse_destination`], `Size::parse`,
+    /// `Energy::parse`), `edits.priority` must be 0..=4, `edits.deadline`
+    /// must satisfy `hummingbird_domain::is_valid_deadline`, and
+    /// `edits.scheduled_date` must be a whole civil day. Each of those is a
+    /// rule the authority also enforces with a 400 — checking here is what
+    /// turns a rejected write into a message on the form instead of a
+    /// dead-lettered mutation the person cannot see.
     pub async fn triage(
         &mut self,
         seed: &str,
@@ -723,41 +893,53 @@ impl TaskHostCore {
         now_ms: i64,
     ) -> TriageResponse {
         let Some(destination) = parse_destination(destination) else {
-            return TriageResponse {
-                kind: "failed",
-                error: Some(format!("unrecognised triage destination {destination:?}")),
-            };
+            return reject(format!("unrecognised triage destination {destination:?}"));
         };
-        let size = match edits.size {
-            Some(raw) => match Size::parse(&raw) {
-                Some(size) => Some(size),
-                None => {
-                    return TriageResponse {
-                        kind: "failed",
-                        error: Some(format!("unrecognised size {raw:?}")),
-                    };
-                }
-            },
-            None => None,
+        if edits.title.as_deref() == Some("") {
+            // The authority answers 400 on an empty title; a `NOT NULL`
+            // column has no "cleared" state to fall back to.
+            return reject("title must be non-empty".to_string());
+        }
+        let size = match parse_named("size", edits.size, Size::parse) {
+            Ok(size) => size,
+            Err(message) => return reject(message),
         };
-        let energy = match edits.energy {
-            Some(raw) => match Energy::parse(&raw) {
-                Some(energy) => Some(energy),
-                None => {
-                    return TriageResponse {
-                        kind: "failed",
-                        error: Some(format!("unrecognised energy {raw:?}")),
-                    };
-                }
-            },
-            None => None,
+        let energy = match parse_named("energy", edits.energy, Energy::parse) {
+            Ok(energy) => energy,
+            Err(message) => return reject(message),
         };
+        if let Some(priority) = edits.priority {
+            if !(0..=4).contains(&priority) {
+                return reject("priority must be between 0 and 4".to_string());
+            }
+        }
+        if let Some(Some(deadline)) = &edits.deadline {
+            if !is_valid_deadline(deadline) {
+                return reject(
+                    "deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM".to_string(),
+                );
+            }
+        }
+        if let Some(Some(scheduled_date)) = &edits.scheduled_date {
+            // A whole day, so `is_valid_deadline`'s date-time form is not
+            // enough on its own — the length check is what rules out
+            // `YYYY-MM-DDTHH:MM` while still borrowing the shared calendar
+            // validation (leap years, month lengths) rather than re-deriving
+            // it here.
+            if scheduled_date.len() != 10 || !is_valid_deadline(scheduled_date) {
+                return reject("scheduled date must be YYYY-MM-DD".to_string());
+            }
+        }
         let patch = TriagePatch {
             title: edits.title,
-            project_id: edits.project_id,
+            description: edits.description,
             size,
             energy,
             context: edits.context,
+            priority: edits.priority,
+            project_id: edits.project_id,
+            deadline: edits.deadline,
+            scheduled_date: edits.scheduled_date,
         };
         match self.core.triage(seed, item_id, destination, patch, now_ms).await {
             Ok(()) => TriageResponse { kind: "ok", error: None },
@@ -980,7 +1162,7 @@ mod triage_tests {
                 "seed-triage-1",
                 &id,
                 "ready",
-                TriageEdits { size: Some("giant".to_string()), ..TriageEdits::default() },
+                TriageEdits { size: Some(Some("giant".to_string())), ..TriageEdits::default() },
                 2_000,
             )
             .await;
@@ -988,6 +1170,155 @@ mod triage_tests {
         assert_eq!(response.kind, "failed");
         assert!(response.error.is_some());
         assert_eq!(host.triage_inbox().items.len(), 1, "the item is untouched");
+    }
+
+    /// The wire contract `store/worker-client.ts` writes against: camelCase
+    /// keys, an absent key meaning "leave this field alone", an explicit
+    /// `null` meaning "clear it", and an unknown key refused outright rather
+    /// than silently dropping the edit someone made.
+    #[test]
+    fn triage_edits_read_absent_null_and_a_value_as_three_different_instructions() {
+        let edits: TriageEdits = serde_json::from_str(
+            r#"{"projectId":"p1","deadline":null,"scheduledDate":"2026-08-12"}"#,
+        )
+        .unwrap();
+        assert_eq!(edits.project_id, Some(Some("p1".to_string())), "a value sets");
+        assert_eq!(edits.deadline, Some(None), "an explicit null clears");
+        assert_eq!(edits.scheduled_date, Some(Some("2026-08-12".to_string())));
+        assert_eq!(edits.context, None, "an absent key leaves the field alone");
+        assert_eq!(edits.title, None);
+        assert_eq!(edits.priority, None);
+
+        assert!(
+            serde_json::from_str::<TriageEdits>(r#"{"project_id":"p1"}"#).is_err(),
+            "snake_case is not this wire's spelling, and a dropped edit is worse than an error"
+        );
+        assert!(
+            serde_json::from_str::<TriageEdits>(r#"{"titel":"typo"}"#).is_err(),
+            "an unknown key is refused, not read as `leave every field alone`"
+        );
+        assert!(
+            serde_json::from_str::<TriageEdits>(r#"{"title":null}"#).is_err(),
+            "title is NOT NULL — there is no cleared state to fall back to"
+        );
+    }
+
+    /// Every value rule the authority answers 400 on is checked before
+    /// `Core::triage` is reached, so the person sees a message on the form
+    /// rather than a mutation that dead-letters later.
+    #[tokio::test]
+    async fn triaging_rejects_every_invalid_field_value_before_reaching_core_triage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-validation");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+
+        let rejected: Vec<(&str, TriageEdits)> = vec![
+            ("empty title", TriageEdits { title: Some(String::new()), ..Default::default() }),
+            (
+                "unrecognised energy",
+                TriageEdits { energy: Some(Some("plenty".to_string())), ..Default::default() },
+            ),
+            ("priority above the range", TriageEdits { priority: Some(5), ..Default::default() }),
+            ("negative priority", TriageEdits { priority: Some(-1), ..Default::default() }),
+            (
+                "a deadline with seconds",
+                TriageEdits {
+                    deadline: Some(Some("2026-08-14T09:30:00".to_string())),
+                    ..Default::default()
+                },
+            ),
+            (
+                "a calendar date that does not exist",
+                TriageEdits {
+                    deadline: Some(Some("2026-02-30".to_string())),
+                    ..Default::default()
+                },
+            ),
+            (
+                "a scheduled date carrying a time",
+                TriageEdits {
+                    scheduled_date: Some(Some("2026-08-12T09:30".to_string())),
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        for (what, edits) in rejected {
+            let response = host.triage("seed-triage-1", &id, "ready", edits, 2_000).await;
+            assert_eq!(response.kind, "failed", "{what} must be refused");
+            assert!(response.error.is_some(), "{what} must say what was wrong");
+            assert_eq!(
+                host.triage_inbox().items.len(),
+                1,
+                "{what} must leave the item exactly where it was"
+            );
+        }
+
+        // The boundaries themselves are legal: 0 and 4 are real priorities,
+        // and both deadline shapes are the documented ones.
+        let response = host
+            .triage(
+                "seed-triage-ok",
+                &id,
+                "ready",
+                TriageEdits {
+                    priority: Some(4),
+                    deadline: Some(Some("2026-08-14T09:30".to_string())),
+                    scheduled_date: Some(Some("2026-08-12".to_string())),
+                    ..Default::default()
+                },
+                3_000,
+            )
+            .await;
+        assert_eq!(response.kind, "ok");
+    }
+
+    /// A triage may REMOVE a value, not only add one — the editor's own
+    /// "Not set" option on a field that already holds something.
+    #[tokio::test]
+    async fn a_triage_clears_the_fields_it_nulls_and_leaves_the_rest_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-triage-clear");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "someday maybe", "triage", 1_000).await;
+        let id = host.triage_inbox().items[0].item.id.clone();
+        host.triage(
+            "seed-triage-1",
+            &id,
+            "grilling",
+            TriageEdits {
+                context: Some(Some("@computer".to_string())),
+                size: Some(Some("deep".to_string())),
+                ..Default::default()
+            },
+            2_000,
+        )
+        .await;
+
+        let response = host
+            .triage(
+                "seed-triage-2",
+                &id,
+                "ready",
+                TriageEdits { size: Some(None), ..Default::default() },
+                3_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        let item = &host.frontier().items[0].item;
+        assert_eq!(item.size, None, "the nulled field is cleared");
+        assert_eq!(
+            item.context.as_deref(),
+            Some("@computer"),
+            "a field the edit never mentioned is untouched by the clear"
+        );
     }
 
     #[tokio::test]
@@ -1026,10 +1357,11 @@ mod triage_tests {
                 "ready",
                 TriageEdits {
                     title: Some("buy milk".to_string()),
-                    project_id: Some("project-1".to_string()),
-                    size: Some("quick".to_string()),
-                    energy: Some("low".to_string()),
-                    context: Some("@errands".to_string()),
+                    project_id: Some(Some("project-1".to_string())),
+                    size: Some(Some("quick".to_string())),
+                    energy: Some(Some("low".to_string())),
+                    context: Some(Some("@errands".to_string())),
+                    ..TriageEdits::default()
                 },
                 2_000,
             )
@@ -1065,6 +1397,76 @@ mod triage_tests {
         assert_eq!(response.kind, "ok");
         assert_eq!(host.triage_inbox().items.len(), 0);
         assert_eq!(host.frontier().items.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    /// The wire contract `task-worker.ts` parses: the item's own snake_case
+    /// fields flat at the top level (exactly `FrontierItemDTO`'s shape) plus
+    /// the four row facts — pinned on the keys, since a renamed key on this
+    /// seam fails silently as an always-absent badge.
+    #[tokio::test]
+    async fn a_ledger_row_serializes_item_fields_flat_beside_the_row_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-ledger-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+
+        let response = host.ledger(2_000);
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.rows.len(), 1);
+        let json: serde_json::Value =
+            serde_json::to_value(&response.rows[0]).unwrap();
+        for key in [
+            "id",
+            "title",
+            "stage",
+            "archived_at",
+            "updated_at",
+            "pending",
+            "absent_since_ms",
+            "dead_lettered",
+            "has_live_alert",
+        ] {
+            assert!(json.get(key).is_some(), "ledger row must carry {key:?} at the top level");
+        }
+        assert_eq!(json["pending"], serde_json::Value::Bool(true));
+        assert_eq!(json["absent_since_ms"], serde_json::Value::Null);
+        assert_eq!(json["dead_lettered"], serde_json::Value::Bool(false));
+        assert_eq!(json["has_live_alert"], serde_json::Value::Bool(false));
+    }
+
+    /// The two reads compose with the act path exactly like frontier does:
+    /// an offline complete is on Done immediately, and the ledger never
+    /// loses the row whatever stage it reaches.
+    #[tokio::test]
+    async fn completing_an_item_moves_it_onto_done_and_keeps_it_in_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-ledger-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy milk", "ready", 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+
+        host.act("seed-act-1", &id, "complete", 2_000).await;
+
+        let done = host.done();
+        assert_eq!(done.kind, "ok");
+        assert_eq!(done.items.len(), 1);
+        assert_eq!(done.items[0].item.id, id);
+        assert!(done.items[0].pending);
+        assert_eq!(host.ledger(3_000).rows.len(), 1);
+
+        // A cancel drops it off Done but never out of the ledger.
+        host.act("seed-act-2", &id, "cancel", 4_000).await;
+        assert_eq!(host.done().items.len(), 0);
+        assert_eq!(host.ledger(5_000).rows.len(), 1);
     }
 }
 

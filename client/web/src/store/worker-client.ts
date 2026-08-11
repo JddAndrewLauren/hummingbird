@@ -7,20 +7,15 @@ import type {
   TaskStageName,
   TaskWorkerRequest,
   TriageDestinationName,
+  TriageEdits,
   WorkerResponse,
 } from "./protocol";
 
-/** The optional edit fields a triage mutation may carry (S13/#111) — a
- * caller-facing convenience shape over the wire message's individually
- * nullable fields (`TaskWorkerRequest`'s `"triage"` variant): an omitted key
- * here means "leave this field alone", same as an explicit `null`. */
-export interface TriageEdits {
-  title?: string | null;
-  projectId?: string | null;
-  size?: "quick" | "short" | "deep" | null;
-  energy?: "low" | "medium" | "high" | null;
-  context?: string | null;
-}
+/** Re-exported so a screen importing the triage mutation gets its edit shape
+ * from the same module (the type itself lives with the rest of the wire
+ * contract, `store/protocol.ts` — an absent key leaves a field alone, a `null`
+ * clears it, a value sets it). */
+export type { TriageEdits } from "./protocol";
 
 // The narrow slice of the DOM `MessagePort` interface a view needs — narrow
 // enough that tests can pass a plain object instead of a real port. Under
@@ -139,6 +134,10 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
           // "Completing offline shows Done immediately").
           requestFrontier(worker);
           requestBlocked(worker);
+          // The Ledger/Done refresh an act also warrants is NOT here:
+          // `getLedger` carries a `nowMs` this module deliberately never
+          // samples (see this function's doc), so `useLedgerWiring.ts` keys
+          // on `lastAct` and re-reads both with its own clock.
           // PR #207 round-2 fix: the acted-on item's `pending` must render
           // from a LIVE source. The task worker's serial queue guarantees
           // the act was applied before this reads, so `TaskState.pending`
@@ -197,6 +196,12 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
         return;
       case "triageInbox":
         store.setTaskState({ triageInbox: message.items });
+        return;
+      case "ledger":
+        store.setTaskState({ ledger: message.rows });
+        return;
+      case "done":
+        store.setTaskState({ done: message.items });
         return;
       case "blocked":
         store.setTaskState({ blocked: message.entries });
@@ -398,18 +403,11 @@ export function triageItem(
   edits: TriageEdits,
   nowMs: number,
 ): void {
-  worker.postMessage({
-    type: "triage",
-    seed,
-    itemId,
-    destination,
-    title: edits.title ?? null,
-    projectId: edits.projectId ?? null,
-    size: edits.size ?? null,
-    energy: edits.energy ?? null,
-    context: edits.context ?? null,
-    nowMs,
-  });
+  // `edits` is forwarded as it stands, NOT normalised field by field: which
+  // keys are present is the instruction (`TriageEdits`), and a `?? null` per
+  // field — what this used to do — would turn every untouched field into an
+  // explicit clear now that `null` means something.
+  worker.postMessage({ type: "triage", seed, itemId, destination, edits, nowMs });
 }
 
 /** #118's binding write: one absolute-value CAS `PUT`, enqueued durably.
@@ -445,6 +443,19 @@ export function requestFrontier(worker: WorkerLike): void {
 
 export function requestTriageInbox(worker: WorkerLike): void {
   worker.postMessage({ type: "getTriageInbox" });
+}
+
+/** The complete retained roster — the Ledger screen's read. `nowMs` is the
+ * clock the alert badge's liveness is resolved against, core-side — a
+ * parameter for `requestPaneRead`'s own reason: the caller's tick is what
+ * makes a re-request mean anything. */
+export function requestLedger(worker: WorkerLike, nowMs: number): void {
+  worker.postMessage({ type: "getLedger", nowMs });
+}
+
+/** Every live `Done` item — the Done screen's read. */
+export function requestDone(worker: WorkerLike): void {
+  worker.postMessage({ type: "getDone" });
 }
 
 /** Relation-blocked items with the reason visible — S10 (issue #108). */

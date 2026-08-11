@@ -27,6 +27,16 @@ const RANKS: Record<number, number> = {
   0: 4, // No priority — sorts last, never first
 };
 
+/** Every priority a form may set, in the order a reader expects to see them —
+ * most urgent first, "No priority" last, i.e. `priorityRank` order and not the
+ * raw ascending 0..4 the column stores. Values are strings because that is
+ * what a `<select>` carries; the encoding itself stays here, so no screen has
+ * to know that `1` is Urgent or that `0` sorts last. */
+export const PRIORITY_OPTIONS: Array<{ value: string; label: string }> = Object.keys(RANKS)
+  .map(Number)
+  .sort((a, b) => priorityRank(a) - priorityRank(b))
+  .map((raw) => ({ value: String(raw), label: priorityLabel(raw) }));
+
 /** Rank for display ordering: most urgent first, "no priority" last. This
  * is the ordering the raw wire value does not give you — an unrecognised
  * value degrades to the same rank as "no priority" rather than throwing or

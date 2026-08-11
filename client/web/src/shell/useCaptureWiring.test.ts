@@ -20,7 +20,7 @@ describe("submitCaptureRequest", () => {
   it("posts a getTriageInbox request immediately after the capture — this must fail without the fix", () => {
     const worker = fakeWorker();
 
-    submitCaptureRequest(worker, "buy milk", 1_000, "seed-1");
+    submitCaptureRequest(worker, "buy milk", "triage", 1_000, "seed-1");
 
     const types = worker.postMessage.mock.calls.map(([message]) => message.type);
     expect(types).toEqual(["capture", "getTriageInbox"]);
@@ -29,7 +29,7 @@ describe("submitCaptureRequest", () => {
   it("the capture message itself carries the raw title and stage unmodified", () => {
     const worker = fakeWorker();
 
-    submitCaptureRequest(worker, "  Buy   OAT milk  ", 5_000, "seed-2");
+    submitCaptureRequest(worker, "  Buy   OAT milk  ", "triage", 5_000, "seed-2");
 
     expect(worker.postMessage).toHaveBeenNthCalledWith(1, {
       type: "capture",
@@ -40,11 +40,31 @@ describe("submitCaptureRequest", () => {
     });
   });
 
+  it("a minted capture carries stage `ready` and re-reads the frontier, not just the inbox", () => {
+    // The skip-triage button (`screens/capture-destination.ts`). The item is
+    // born past triage, so the inbox re-read alone would leave the thing just
+    // typed invisible until the next 60s cycle — the same gap the inbox
+    // re-read above exists to close, one query over.
+    const worker = fakeWorker();
+
+    submitCaptureRequest(worker, "Order the worktop", "ready", 7_000, "seed-3");
+
+    expect(worker.postMessage.mock.calls[0][0]).toEqual({
+      type: "capture",
+      seed: "seed-3",
+      title: "Order the worktop",
+      stage: "ready",
+      nowMs: 7_000,
+    });
+    const types = worker.postMessage.mock.calls.map(([message]) => message.type);
+    expect(types).toEqual(["capture", "getTriageInbox", "getFrontier"]);
+  });
+
   it("mints a distinct seed per call when none is supplied", () => {
     const worker = fakeWorker();
 
-    submitCaptureRequest(worker, "first", 1_000);
-    submitCaptureRequest(worker, "second", 2_000);
+    submitCaptureRequest(worker, "first", "triage", 1_000);
+    submitCaptureRequest(worker, "second", "triage", 2_000);
 
     const seeds = worker.postMessage.mock.calls
       .map(([message]) => message)

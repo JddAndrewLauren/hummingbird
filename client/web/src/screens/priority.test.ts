@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasPriority, priorityLabel, priorityRank } from "./priority";
+import { hasPriority, priorityLabel, priorityRank, PRIORITY_OPTIONS } from "./priority";
 
 // The wire encoding (`items.priority`, ADR-0009) is Linear's own: 0 means
 // "no priority" and 1..4 are Urgent..Low — inverted (1 is most urgent, not
@@ -40,6 +40,21 @@ describe("priorityLabel", () => {
 
   it("labels an unrecognised value as 'No priority', never the raw number", () => {
     expect(priorityLabel(9)).toBe("No priority");
+  });
+});
+
+describe("PRIORITY_OPTIONS", () => {
+  it("offers all five values, most urgent first and No priority last", () => {
+    // Not the raw ascending 0..4 the column stores: that encoding is inverted
+    // and holed, so a form rendering it in numeric order would put
+    // "No priority" above "Urgent".
+    expect(PRIORITY_OPTIONS).toEqual([
+      { value: "1", label: "Urgent" },
+      { value: "2", label: "High" },
+      { value: "3", label: "Medium" },
+      { value: "4", label: "Low" },
+      { value: "0", label: "No priority" },
+    ]);
   });
 });
 

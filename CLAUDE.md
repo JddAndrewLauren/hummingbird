@@ -483,8 +483,27 @@ before `self.onconnect =`).
 
 `client/web/src/screens/` and `client/web/src/shell/` are the read-and-act
 surface S10–S13 built over that protocol — Now renders the frontier, its
-project groups and item detail; Triage renders the capture box and the
-inbox. **Everything decidable is a pure `screens/*.ts` module a vitest
+project groups and item detail; Triage renders the inbox as **one collapsed
+line per capture** (badge, title, provenance, age — `screens/TriageRow.tsx`),
+expanding the one row that is *selected* into the full editor. One row open at
+a time, because expanding is a selection and two open editors would put two
+sets of unsent drafts on screen with nothing to say which is being worked. **Capture is shell chrome, not a screen**: `screens/CaptureBox.tsx`
+lives inside `shell/CapturePopover.tsx`, opened over whatever is showing by
+the header's **New** button (labelled for what the person is doing; capture
+stays the verb everywhere internal — the field's label, the `feather` glyph,
+the wire message, `Core::capture`) or the same global "c" hotkey, which no
+longer navigates to Triage. Exactly one box exists at a time, which is what
+keeps `CAPTURE_INPUT_ID` honest as a document-wide id. It offers the two
+stages a capture may be *born* into (`screens/capture-destination.ts`):
+**Add to Triage**, still the default and what Enter sends, and **Mint
+action** — CONTEXT.md's Mint, landing in Ready — which is one ordinary
+`Core::capture` at that stage, never a capture followed by a triage, so
+skipping triage is still one queued mutation with nothing to rebase between
+two halves of one gesture; `submitCaptureRequest` re-reads the frontier as
+well as the inbox for it, since that is where a minted item actually lands.
+The popover does not close on submit (capturing several things in one sitting
+is the normal case) and reports what each submit did, because it covers the
+screen that would otherwise have shown the item arriving. **Everything decidable is a pure `screens/*.ts` module a vitest
 (node) test can execute, and the `.tsx` components only thread React state
 through them**, the same split `worker/*` already uses: `frontier-order.ts`
 (priority rank, then deadline, then id) over `priority.ts` (Linear's
@@ -501,9 +520,7 @@ opinion of its own and would enqueue it), `triage-order.ts` (capture order,
 by `createdAt`, which reads the same before and after the overlay clears),
 `item-actions.ts` (which actions a stage offers, the optimistic
 `applyItemAction` projection, and `resolveFallbackPending` for an item that
-has left every live query) `triage-form.ts` (which drafted fields are
-actually changes — `null` means "leave this field alone", never an empty
-string sent as an edit) and `bindings.ts` (#118's editor: the human copy per
+has left every live query) `triage-form.ts` and `bindings.ts` (#118's editor: the human copy per
 binding, the three value states read apart, which drafts are worth
 sending — an empty one, a no-op one and any key this build cannot write are
 all refused here, because `Core::set_binding` has no opinion of its own and
@@ -513,6 +530,37 @@ moves, so a pull carrying another device's edit can never leave a stale
 draft sitting over it with Save enabled to push it back, and
 `bindingWriteError`, so a failed write is words on that row rather than a
 `lastBindingWrite` nothing reads).
+
+**The triage editor edits every field of an item but its source**, and the
+thing that made that possible is that its draft is **seeded from the item**
+rather than blank (`screens/triage-form.ts`). The old form's `""` meant
+"unchanged", which can only ever *add* a value; a draft showing what the row
+actually holds turns every field into a diff, so `buildTriageEdits` can send
+the three instructions `TriageEdits` (`store/protocol.ts`) carries all the way
+down to `hummingbird_domain::ItemPatch`: **an absent key leaves a field alone,
+an explicit `null` clears it, a value sets it**. `TriagePatch` (client core)
+and `TriageEdits` (`ffi-web`) are double-`Option`/nullable for exactly that,
+and the wasm seam takes the edits as **one JSON string** rather than positional
+`Option<String>` arguments, which cannot express absent-vs-null at all. Only
+what someone has typed is React state (`effectiveDraft`): every other field is
+derived per render, which makes the stale-draft hazard `bindings.ts`'s
+`sameBindingValue` patches *structurally* absent here — a pull that moves a
+field nobody is editing shows through, because it was never captured to go
+stale. `title` and `priority` are `NOT NULL`, so they have no clear: a blanked
+title is a `triageDraftProblems` message, not an edit, and "No priority" is the
+real value `0`. Every rule the authority answers 400 on (empty title, priority
+range, `is_valid_deadline`, a day-only scheduled date) is checked in three
+places on purpose — `triageDraftProblems` so the message lands on the field
+while someone types (`urgency.ts`'s `isValidDeadline` is the TS twin of the
+domain function, beside `deadlineSortKey`, its existing sibling), the `ffi-web`
+seam so nothing invalid can reach `Core::triage` whatever the caller, and the
+authority itself. What triage still cannot do is **save without promoting**:
+both buttons set a destination stage, and an item not ready to promote simply
+stays in Triage (CONTEXT.md), so editing one and leaving it there would need a
+mutation path that does not exist yet. `components/forms/Textarea.tsx` is a
+local **addition** to the 16-component library (the design project has no
+textarea; `description` is the schema's only free-prose field) — worth raising
+upstream rather than quietly keeping.
 
 **The pane shell is `screens/questions/`** (#245, ADR-0015), and it took
 over Now's Context aside: `RankedRegion.tsx` renders every standing

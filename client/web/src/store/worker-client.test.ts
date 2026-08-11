@@ -44,6 +44,8 @@ const initialTask: TaskState = {
   blocked: [],
   stepsByItem: {},
   projects: [],
+  ledger: null,
+  done: null,
   bindings: null,
   paneReads: {},
   pending: {},
@@ -444,6 +446,30 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.frontier).toEqual([item]);
     // Untouched sibling field.
     expect(store.getSnapshot().task.triageInbox).toEqual([]);
+  });
+
+  it("writes the ledger on a ledger message — null until then, an empty answer is a claim", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+    expect(store.getSnapshot().task.ledger).toBeNull();
+
+    worker.onmessage?.({ data: { type: "ledger", rows: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.ledger).toEqual([]);
+    // Untouched sibling field.
+    expect(store.getSnapshot().task.done).toBeNull();
+  });
+
+  it("writes the done list on a done message", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+    expect(store.getSnapshot().task.done).toBeNull();
+
+    worker.onmessage?.({ data: { type: "done", items: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.done).toEqual([]);
   });
 
   it("writes the triage inbox on a triageInbox message", () => {

@@ -267,6 +267,42 @@ fn apply_item_patch(base: &serde_json::Value, patch_fields: &serde_json::Value) 
 /// [`Core::act`]'s own `base` (read from [`Core::overlaid_items`], the
 /// overlay-if-present view) already applies when a fresh mutation is
 /// enqueued mid-session.
+/// One [`Core::ledger`] row: an item's current, derivable facts. Not a
+/// history record — see the read's own doc for what "derive, don't record"
+/// keeps out of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerEntry {
+    pub item: Item,
+    /// The mirror's retention stamp: `Some` when the row has gone absent
+    /// (archived, or missing from a complete sweep) — [`task::Presence`]'s
+    /// "first, not latest" `since_ms`, `None` for a live row.
+    pub absent_since_ms: Option<i64>,
+    /// A dead-lettered edit targets this item. Device-local by nature: the
+    /// journal never syncs.
+    pub dead_lettered: bool,
+    /// A live alert's `source_key` names this item (`item:<id>`).
+    pub has_live_alert: bool,
+}
+
+/// The item an intent targets, if it is an item mutation at all — the
+/// dead-letter half of [`Core::ledger`]'s badge derivation, reading the same
+/// two shapes [`overlay_from_queue`] projects (an items create's body id, an
+/// items patch's path id) without insisting the body still deserialises:
+/// a dead letter is already terminal, so a badge is owed on whatever id is
+/// still legible, never an init-blocking `Err`.
+fn item_id_of_intent(intent: &MutationIntent) -> Option<String> {
+    match intent {
+        MutationIntent::Create { path, body } if *path == sync::write::paths::items() => body
+            .get("id")
+            .and_then(|id| id.as_str())
+            .map(str::to_string),
+        MutationIntent::Patch { path, .. } => path
+            .strip_prefix("/api/items/")
+            .map(str::to_string),
+        MutationIntent::Create { .. } => None,
+    }
+}
+
 fn overlay_from_queue(
     queue: &sync::queue::OutboundQueue,
 ) -> Result<BTreeMap<String, OverlayEntry>, CoreInitError> {
@@ -460,17 +496,35 @@ impl TriageDestination {
     }
 }
 
-/// S13/#111's multi-field triage edit — every field the triage form may set
-/// alongside the destination stage, each `None` meaning "leave this field
-/// alone" rather than "clear it". `None` on every field is a legal call: a
-/// bare promotion with no other edit is still exactly one mutation.
+/// S13/#111's multi-field triage edit — every field of an item the triage
+/// form may set alongside the destination stage. `None` on every field is a
+/// legal call: a bare promotion with no other edit is still exactly one
+/// mutation.
+///
+/// The nullable columns are double-`Option`, exactly as
+/// [`hummingbird_domain::ItemPatch`] carries them on the wire: outer `None`
+/// means "leave this field alone", `Some(None)` means "clear it", and
+/// `Some(Some(v))` means "set it to `v`". That distinction is not decoration —
+/// an editor that shows an item's real values needs a way to say "this
+/// deadline is now gone", and a single `Option` can only ever add.
+/// `NOT NULL` columns (`title`, `priority`) are single-`Option` and cannot be
+/// cleared, the same asymmetry the authority enforces with a 400.
+///
+/// What is deliberately absent: `source`/`source_key`/`source_url` (owned by
+/// whatever captured the item, never edited here), `stage` (that IS the
+/// destination), `archived_at` (cancelling is [`Core::act`]'s), `project_pos`
+/// (a Route's ordering, owned by the Route), and every server-stamped field.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TriagePatch {
     pub title: Option<String>,
-    pub project_id: Option<String>,
-    pub size: Option<Size>,
-    pub energy: Option<Energy>,
-    pub context: Option<String>,
+    pub description: Option<Option<String>>,
+    pub size: Option<Option<Size>>,
+    pub energy: Option<Option<Energy>>,
+    pub context: Option<Option<String>>,
+    pub priority: Option<i64>,
+    pub project_id: Option<Option<String>>,
+    pub deadline: Option<Option<String>>,
+    pub scheduled_date: Option<Option<String>>,
 }
 
 /// [`Core::act`] failed before ever reaching the outbound queue, or while
@@ -794,6 +848,87 @@ where
         let mut projects: Vec<Project> = self.cycle.mirror().all_projects().cloned().collect();
         projects.sort_by(|a, b| a.id.cmp(&b.id));
         projects
+    }
+
+    /// The complete retained roster — every item this mirror has ever
+    /// known, live, `Done` and archived alike, overlaid with any
+    /// not-yet-confirmed mutation (the Ledger screen's read). Derive, don't
+    /// record: nothing here is a stored history — no transition is
+    /// reconstructible, only each item's current facts — so a row carries
+    /// exactly what is derivable right now:
+    ///
+    /// - the item itself (overlay wins, as everywhere);
+    /// - the mirror's retention stamp, for a row that has gone absent
+    ///   ([`sync::SyncMirror::all_items_including_absent`] — this is the
+    ///   first read to surface the retained history ADR-0007 keeps);
+    /// - whether a dead-lettered edit targets it (honestly device-local:
+    ///   the journal never syncs, so another device's Ledger won't show it);
+    /// - whether a live alert names it (`source_key == "item:<id>"`,
+    ///   ADR-0014's item-threshold convention, joined across every source —
+    ///   alerts *do* sync, so this badge agrees between devices).
+    ///
+    /// `now_ms` is caller-injected as everywhere in this crate, and resolves
+    /// only alert liveness ([`hummingbird_domain::Alert::is_live`]). Id
+    /// order; display order (last-touched) is the caller's, the same split
+    /// [`Core::frontier`] leaves ranking to its consumers.
+    pub fn ledger(&self, now_ms: i64) -> Vec<LedgerEntry> {
+        let mirror = self.cycle.mirror();
+        let mut rows: BTreeMap<String, (Item, Option<i64>)> = mirror
+            .all_items_including_absent()
+            .map(|(item, presence)| {
+                let absent_since_ms = match presence {
+                    task::Presence::Live => None,
+                    task::Presence::Absent { since_ms } => Some(*since_ms),
+                };
+                (item.id.clone(), (item.clone(), absent_since_ms))
+            })
+            .collect();
+        // Overlay content wins; the retention stamp is the mirror's own
+        // fact and survives (a pending edit on an absent row does not make
+        // the row less absent until a pull says so).
+        for overlay in self.overlay.values() {
+            let absent_since_ms = rows
+                .get(&overlay.item.id)
+                .and_then(|(_, absent)| *absent);
+            rows.insert(
+                overlay.item.id.clone(),
+                (overlay.item.clone(), absent_since_ms),
+            );
+        }
+        let dead_lettered: BTreeSet<String> = self
+            .dead_letters()
+            .iter()
+            .filter_map(|entry| item_id_of_intent(&entry.entry.intent))
+            .collect();
+        let live_alert_keys: BTreeSet<String> = mirror
+            .all_alerts()
+            .filter(|alert| alert.is_live(now_ms))
+            .map(|alert| alert.source_key.clone())
+            .collect();
+        rows.into_values()
+            .map(|(item, absent_since_ms)| LedgerEntry {
+                dead_lettered: dead_lettered.contains(&item.id),
+                has_live_alert: live_alert_keys.contains(&format!("item:{}", item.id)),
+                item,
+                absent_since_ms,
+            })
+            .collect()
+    }
+
+    /// Every live `Done` item — the Done screen's read, and the first query
+    /// to surface completed work at all. Membership is the same
+    /// live-presence rule every other screen uses (`archived_at` unset), so
+    /// an item completed and *later* cancelled drops off here and remains
+    /// visible only in [`Core::ledger`], labelled archived. Overlaid like
+    /// [`Core::frontier`], so a `Complete` taken offline shows immediately.
+    /// Id order; the caller orders by `updated_at` (with the documented
+    /// caveat that any later edit re-sorts — the schema has no `done_at`).
+    pub fn done(&self) -> Vec<Item> {
+        self.overlaid_items()
+            .into_values()
+            .filter(|item| item.archived_at.is_none())
+            .filter(|item| item.stage == Stage::Done)
+            .collect()
     }
 
     /// How old this device's answer to one standing question is (ADR-0015).
@@ -1224,31 +1359,52 @@ where
             serde_json::to_value(destination.stage()).expect("Stage always serializes"),
         );
 
+        // Absolute-value sets, one per TOUCHED field — the outer `Option` is
+        // the only thing that decides whether a field appears in
+        // `patch_fields` at all, and a cleared field appears as a JSON `null`
+        // rather than being left out. Leaving a clear out would send "leave
+        // this alone", which is the opposite instruction.
         if let Some(title) = &patch.title {
             optimistic.title = title.clone();
             patch_fields.insert("title".to_string(), serde_json::json!(title));
         }
-        if let Some(project_id) = &patch.project_id {
-            optimistic.project_id = Some(project_id.clone());
-            patch_fields.insert("project_id".to_string(), serde_json::json!(project_id));
+        if let Some(description) = &patch.description {
+            optimistic.description = description.clone();
+            patch_fields.insert("description".to_string(), serde_json::json!(description));
         }
         if let Some(size) = patch.size {
-            optimistic.size = Some(size);
+            optimistic.size = size;
             patch_fields.insert(
                 "size".to_string(),
                 serde_json::to_value(size).expect("Size always serializes"),
             );
         }
         if let Some(energy) = patch.energy {
-            optimistic.energy = Some(energy);
+            optimistic.energy = energy;
             patch_fields.insert(
                 "energy".to_string(),
                 serde_json::to_value(energy).expect("Energy always serializes"),
             );
         }
         if let Some(context) = &patch.context {
-            optimistic.context = Some(context.clone());
+            optimistic.context = context.clone();
             patch_fields.insert("context".to_string(), serde_json::json!(context));
+        }
+        if let Some(priority) = patch.priority {
+            optimistic.priority = priority;
+            patch_fields.insert("priority".to_string(), serde_json::json!(priority));
+        }
+        if let Some(project_id) = &patch.project_id {
+            optimistic.project_id = project_id.clone();
+            patch_fields.insert("project_id".to_string(), serde_json::json!(project_id));
+        }
+        if let Some(deadline) = &patch.deadline {
+            optimistic.deadline = deadline.clone();
+            patch_fields.insert("deadline".to_string(), serde_json::json!(deadline));
+        }
+        if let Some(scheduled_date) = &patch.scheduled_date {
+            optimistic.scheduled_date = scheduled_date.clone();
+            patch_fields.insert("scheduled_date".to_string(), serde_json::json!(scheduled_date));
         }
         optimistic.updated_at = now_ms;
 
@@ -1756,10 +1912,14 @@ mod tests {
             TriageDestination::Ready,
             TriagePatch {
                 title: Some("buy milk".to_string()),
-                project_id: Some("project-1".to_string()),
-                size: Some(Size::Quick),
-                energy: Some(Energy::Low),
-                context: Some("@errands".to_string()),
+                description: Some(Some("oat, not dairy".to_string())),
+                project_id: Some(Some("project-1".to_string())),
+                size: Some(Some(Size::Quick)),
+                energy: Some(Some(Energy::Low)),
+                context: Some(Some("@errands".to_string())),
+                priority: Some(2),
+                deadline: Some(Some("2026-08-14".to_string())),
+                scheduled_date: Some(Some("2026-08-12".to_string())),
             },
             2_000,
         )
@@ -1775,10 +1935,14 @@ mod tests {
         assert_eq!(frontier.len(), 1);
         let item = &frontier[0];
         assert_eq!(item.title, "buy milk");
+        assert_eq!(item.description.as_deref(), Some("oat, not dairy"));
         assert_eq!(item.project_id.as_deref(), Some("project-1"));
         assert_eq!(item.size, Some(Size::Quick));
         assert_eq!(item.energy, Some(Energy::Low));
         assert_eq!(item.context.as_deref(), Some("@errands"));
+        assert_eq!(item.priority, 2);
+        assert_eq!(item.deadline.as_deref(), Some("2026-08-14"));
+        assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-12"));
     }
 
     /// A field `TriagePatch` leaves `None` is untouched — triage never
@@ -1795,7 +1959,7 @@ mod tests {
             &id,
             TriageDestination::Grilling,
             TriagePatch {
-                context: Some("@computer".to_string()),
+                context: Some(Some("@computer".to_string())),
                 ..TriagePatch::default()
             },
             2_000,
@@ -1818,6 +1982,72 @@ mod tests {
             frontier[0].context.as_deref(),
             Some("@computer"),
             "the second triage call set no context field, so the first call's value survives"
+        );
+    }
+
+    /// The other half of that: a field the patch touches with `Some(None)` is
+    /// CLEARED, and the difference between the two is visible in the enqueued
+    /// mutation itself — untouched means absent from `patch_fields`, cleared
+    /// means present as a JSON `null`. The authority reads absent as "leave
+    /// alone" and null as "set to null" (`hummingbird_domain::ItemPatch`), so
+    /// collapsing the two here would make an editor unable to remove a value
+    /// it can set.
+    #[tokio::test]
+    async fn a_cleared_triage_field_is_sent_as_an_explicit_null_and_an_untouched_one_is_absent() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000)
+            .await
+            .unwrap();
+        core.triage(
+            "seed-triage-1",
+            &id,
+            TriageDestination::Grilling,
+            TriagePatch {
+                context: Some(Some("@computer".to_string())),
+                deadline: Some(Some("2026-08-14".to_string())),
+                ..TriagePatch::default()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.triage_inbox().len(), 0);
+
+        core.triage(
+            "seed-triage-2",
+            &id,
+            TriageDestination::Ready,
+            TriagePatch {
+                deadline: Some(None),
+                ..TriagePatch::default()
+            },
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let item = &core.frontier()[0];
+        assert_eq!(item.deadline, None, "the cleared field is gone optimistically");
+        assert_eq!(
+            item.context.as_deref(),
+            Some("@computer"),
+            "the untouched field is not collateral damage of the clear"
+        );
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[2].intent else {
+            panic!("a triage is a CAS patch, not a create");
+        };
+        let fields = patch_fields.as_object().expect("patch fields are an object");
+        assert_eq!(
+            fields.get("deadline"),
+            Some(&serde_json::Value::Null),
+            "a cleared field must be sent, as null — leaving it out would say `leave it alone`"
+        );
+        assert!(
+            !fields.contains_key("context"),
+            "an untouched field must not appear at all"
         );
     }
 
@@ -3074,6 +3304,142 @@ mod tests {
             core.blocked().is_empty(),
             "an absent blocker no longer explains anything as blocked"
         );
+    }
+
+    // ------------------------------------------------- ledger + done
+
+    /// The Ledger's membership rule: *everything* — live, Done, archived —
+    /// where every other read filters. An archived row is shown labelled
+    /// (its retention stamp), never hidden; "complete" is the point.
+    #[tokio::test]
+    async fn the_ledger_shows_live_done_and_archived_items_each_labelled() {
+        let mut archived = fixture_item("a-3", Stage::Ready);
+        archived.archived_at = Some(500);
+        let core = seeded_core(
+            vec![
+                fixture_item("a-1", Stage::Ready),
+                fixture_item("a-2", Stage::Done),
+                archived,
+            ],
+            vec![],
+        )
+        .await;
+
+        let ledger = core.ledger(2_000);
+        assert_eq!(
+            ledger.iter().map(|row| row.item.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1", "a-2", "a-3"],
+            "every item the mirror has ever known is a ledger row"
+        );
+        assert_eq!(ledger[0].absent_since_ms, None);
+        assert_eq!(ledger[1].absent_since_ms, None);
+        assert_eq!(
+            ledger[2].absent_since_ms,
+            Some(500),
+            "an archived row carries its own archived_at as the retention stamp"
+        );
+    }
+
+    /// Done's membership is the same live-presence rule as every other
+    /// screen: an item completed and later cancelled drops off Done and
+    /// stays visible only in the ledger.
+    #[tokio::test]
+    async fn done_lists_live_done_items_and_excludes_a_done_then_archived_one() {
+        let mut done_then_archived = fixture_item("a-2", Stage::Done);
+        done_then_archived.archived_at = Some(900);
+        let core = seeded_core(
+            vec![
+                fixture_item("a-1", Stage::Done),
+                done_then_archived,
+                fixture_item("a-3", Stage::Ready),
+            ],
+            vec![],
+        )
+        .await;
+
+        assert_eq!(
+            core.done().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"],
+            "only live Done items belong on the Done screen"
+        );
+        assert!(
+            core.ledger(2_000).iter().any(|row| row.item.id == "a-2"),
+            "the done-then-archived item is still a ledger row"
+        );
+    }
+
+    /// The ledger is overlaid like every other item read: a mutation taken
+    /// offline shows immediately, and a complete shows on `done()` too.
+    #[tokio::test]
+    async fn a_pending_capture_and_an_offline_complete_show_in_ledger_and_done() {
+        let mut core = seeded_core(vec![fixture_item("a-1", Stage::InProgress)], vec![]).await;
+        core.capture("seed-1", "buy milk", Stage::Triage, 1_500)
+            .await
+            .unwrap();
+        core.act("seed-2", "a-1", ItemAction::Complete, 1_600)
+            .await
+            .unwrap();
+
+        let ledger = core.ledger(2_000);
+        assert_eq!(ledger.len(), 2, "the capture is a ledger row before any cycle ran");
+        assert!(ledger.iter().any(|row| row.item.title == "buy milk"));
+        assert_eq!(
+            core.done().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"],
+            "an offline complete is on Done immediately"
+        );
+    }
+
+    /// The dead-letter badge: a permanently-rejected edit marks its item's
+    /// row — device-local by nature, and derived from the journal entry's
+    /// own intent, so it needs no extra bookkeeping anywhere.
+    #[tokio::test]
+    async fn a_dead_lettered_edit_badges_its_items_ledger_row() {
+        let mut core = seeded_core(vec![fixture_item("a-1", Stage::Ready)], vec![]).await;
+        core.act("seed-1", "a-1", ItemAction::Start, 1_500)
+            .await
+            .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(2))]);
+        let write = ScriptedWrite::new(vec![ok(400, r#"{"error":"validation"}"#)]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+        assert_eq!(core.dead_letters().len(), 1);
+
+        let ledger = core.ledger(3_000);
+        let row = ledger.iter().find(|row| row.item.id == "a-1").unwrap();
+        assert!(row.dead_lettered, "the rejected edit's item carries the badge");
+    }
+
+    /// The alert badge joins on ADR-0014's `item:<id>` convention across
+    /// every source, and only while the alert is live *now* — a resolved
+    /// alert badges nothing.
+    #[tokio::test]
+    async fn a_live_alert_naming_an_item_badges_its_row_and_a_resolved_one_does_not() {
+        let mut live_alert = fixture_alert("al-1", "item-threshold/v1", None, 1_000);
+        live_alert.source_key = "item:a-1".to_string();
+        let mut resolved_alert = fixture_alert("al-2", "item-threshold/v1", None, 1_000);
+        resolved_alert.source_key = "item:a-2".to_string();
+        resolved_alert.resolved_at = Some(1_500);
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![
+                fixture_item("a-1", Stage::Ready),
+                fixture_item("a-2", Stage::Ready),
+            ],
+            alerts: vec![live_alert, resolved_alert],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        core.run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+
+        let ledger = core.ledger(2_000);
+        let by_id = |id: &str| ledger.iter().find(|row| row.item.id == id).unwrap();
+        assert!(by_id("a-1").has_live_alert);
+        assert!(!by_id("a-2").has_live_alert);
     }
 
     // ------------------------------------------------- steps_for (S10, #96)
