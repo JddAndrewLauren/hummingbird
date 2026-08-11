@@ -187,7 +187,14 @@ case "$cmd" in
 
   steps)
     ref="${1:?usage: hb.sh steps <ref>}"
-    live_steps "$(resolve_ref "$ref")"
+    # Assigned first, then used — never `live_steps "$(resolve_ref "$ref")"`.
+    # A `die` inside `$(…)` exits only that subshell, and `set -e` ignores a
+    # failed substitution sitting in an *argument* position: the inline form
+    # calls `live_steps ""` and prints a cheerful `[]` for an item that does
+    # not exist. An assignment's status is the substitution's, so `set -e`
+    # sees it. (Caught by `tests/test_hb_helper.py`, not by reading.)
+    uuid=$(resolve_ref "$ref")
+    live_steps "$uuid"
     ;;
 
   add-step|add-steps)

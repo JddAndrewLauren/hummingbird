@@ -1,0 +1,88 @@
+# The three personal skills' authority helper scripts (#115).
+#
+# **Why this exists as its own workflow rather than a job in deploy.yml.**
+# `tests/test_hb_helper.py` is a stdlib-only unittest module, so it *runs*
+# under `deploy.yml`'s existing `python3 -m unittest discover -s tests` — but
+# that workflow is `push: branches: [main]` only, with a `paths:` filter of
+# sweeper files. Two consequences, both bad, and both the exact trap of a
+# path-filtered workflow silently covering nothing:
+#
+#   1. a pull request touching a skill script runs **zero** checks and still
+#      looks green;
+#   2. adding `.claude/skills/**` to deploy.yml's filter would fix that by
+#      firing a *sweeper deploy to Fly* on a skill edit — a worse bug than
+#      the one it closes.
+#
+# So the helper tests get a workflow whose triggers match what they actually
+# guard. `deploy.yml` keeps discovering them on `main` for free, which is
+# harmless duplication of a three-second job.
+#
+# There is deliberately no `schedule:` here and nothing is deployed: skills
+# are files in the repo, read in place by a session. The one place a skill
+# ships as a built artifact is `runner/Dockerfile`, which bakes skill
+# directories in individually — that is `runner.yml`'s job, and its own
+# `paths:` filter already watches `.claude/skills/parse-capture/**` for
+# exactly that reason.
+name: skills
+
+on:
+  pull_request:
+    paths:
+      - ".claude/skills/**"
+      - "tests/test_hb_helper.py"
+      - ".github/workflows/skills.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".claude/skills/**"
+      - "tests/test_hb_helper.py"
+      - ".github/workflows/skills.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Every helper is bash + jq + curl and nothing else. `bash -n` is the
+      # cheap half of the gate: a syntax error in a script no CI job executed
+      # would otherwise surface only when a session tried to use it.
+      - name: Parse every helper script
+        run: |
+          for script in .claude/skills/*/scripts/*.sh; do
+            bash -n "$script" || exit 1
+            [ -x "$script" ] || { echo "$script is not executable" >&2; exit 1; }
+          done
+
+      # The scripts assert against `jq -e` behaviour, so the runner needs it.
+      # ubuntu-latest ships it; fail loudly rather than silently skipping.
+      - name: Check the helpers' dependencies exist
+        run: command -v jq && command -v curl
+
+      # No token, no network: the tests stub `curl` on PATH and serve a
+      # fixture sweep.
+      - run: python3 -m unittest tests.test_hb_helper -v
+
+      # AC4 of #115: no skill file or reference doc still names Linear's
+      # endpoint, its key path, or a team-ION issue handle. Asserted in CI
+      # rather than checked once by hand, because the thing that would
+      # reintroduce one is someone copying an old recipe back in.
+      #
+      # `hummingbird-design` is excluded, and it is the one real exception:
+      # it is a mirror of the claude.ai design project, and its `ui_kits`
+      # carry mock rows with `ION-142`-style ids as *sample display text*.
+      # Those are not targeting anything — they are what a card looks like
+      # — and they get refreshed from upstream, so failing on them would
+      # make this gate fight the design sync rather than guard the skills.
+      - name: No Linear targeting survives in the skills
+        run: |
+          if grep -rn "api\.linear\.app\|config/linear/api-key\|ION-[0-9]" \
+               --exclude-dir=hummingbird-design \
+               .claude/skills docs/agents; then
+            echo "::error::a Linear endpoint, key path or ION handle is back" >&2
+            exit 1
+          fi
+          echo "clean"
