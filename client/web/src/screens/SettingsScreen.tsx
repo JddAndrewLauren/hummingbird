@@ -18,6 +18,7 @@ import {
   sameBindingValue,
 } from "./bindings";
 import type { DemoData } from "../fixtures/demo";
+import { APP_VERSION } from "../shell/build-version";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import {
   deadLetterHeading,
@@ -477,6 +478,12 @@ export function SettingsScreen({
               : status === "error"
                 ? (error ?? "The core failed to load.")
                 : "Loading the worker and wasm core."}
+          </p>
+          {/* The build version, in the one place there is room for the
+              unabbreviated form — and outside the status ternary above,
+              since it is known in every one of those three states. */}
+          <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            {`Build v${APP_VERSION}.`}
           </p>
         </Card>
 

@@ -22,7 +22,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # Full history so a PR build exercises the real build-version
+      # computation rather than only its shallow `+unknown` fallback.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Pinned to match root `rust-toolchain.toml` — `@stable` here would
       # install a different toolchain than every cargo invocation below
       # then resolves to, and the point of the pin is that a new stable's

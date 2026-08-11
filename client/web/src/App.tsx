@@ -28,6 +28,8 @@ import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useLedgerWiring } from "./shell/useLedgerWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
+import { UpdateBanner } from "./shell/UpdateBanner";
+import { useAppUpdate } from "./shell/useAppUpdate";
 import { usePaneReadsWiring } from "./shell/usePaneReadsWiring";
 import { useRulesWiring } from "./shell/useRulesWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
@@ -106,6 +108,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
 
   const online = useOnlineStatus();
+  const { ready: updateReady, onReload: handleReload } = useAppUpdate();
   const { nowMs: syncNowMs, handleDownloadMirror, handleManualSync } = useSyncWiring(worker, status);
   useFrontierWiring(worker, status, task.syncOutcomeSeq);
   const {
@@ -273,6 +276,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           onRefresh={refreshEnabled ? handleRefresh : undefined}
           onCapture={requestCapture}
         />
+
+        {/* A waiting service worker, said out loud. `<main>` is a column
+            whose header is `flex: 0 0 auto` and whose scroll container is
+            `flex: 1; minHeight: 0`, so a `0 0 auto` sibling here is always
+            visible, never scrolls and never overlaps. */}
+        {updateReady ? <UpdateBanner onReload={handleReload} /> : null}
 
         {/* The one scroll container: the design README fixes the rail and
             the context panel, and lets only the centre column move. */}

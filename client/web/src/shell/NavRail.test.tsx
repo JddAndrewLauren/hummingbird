@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "../test/component";
+import { APP_VERSION } from "./build-version";
 import { NavRail } from "./NavRail";
 
 function renderRail(collapsed: boolean) {
@@ -35,6 +36,7 @@ describe("NavRail — collapsed", () => {
     expect(screen.queryByText("Triage")).toBeNull();
     expect(screen.queryByText("hummingbird")).toBeNull();
     expect(screen.queryByText("core ready · api v1")).toBeNull();
+    expect(screen.queryByText(`v${APP_VERSION}`)).toBeNull();
 
     // Named via aria-label, still navigating.
     const triage = screen.getByRole("button", { name: "Triage" });
@@ -52,6 +54,9 @@ describe("NavRail — collapsed", () => {
     expect(screen.getByText("Triage")).toBeDefined();
     expect(screen.getByText("hummingbird")).toBeDefined();
     expect(screen.getByText("core ready · api v1")).toBeDefined();
+    // The build version is a module constant, not a prop — this is the only
+    // gate that it actually reaches the footer.
+    expect(screen.getByText(`v${APP_VERSION}`)).toBeDefined();
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse the sidebar" }));
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
