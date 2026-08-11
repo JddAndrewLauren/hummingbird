@@ -129,8 +129,25 @@ describe("handleCalendarRequest", () => {
 
   it("passes the interval and clock straight through to the host", async () => {
     const host = fakeHost();
-    await run({ type: "getCalendarEvents", key: "weekend", startMs: 1_000, endMs: 2_000, nowMs: 1_500 }, host);
-    expect(host.eventsInInterval).toHaveBeenCalledWith(1_000, 2_000, 1_500);
+    await run(
+      {
+        type: "getCalendarEvents",
+        key: "weekend",
+        startMs: 1_000,
+        endMs: 2_000,
+        startDate: "2026-08-14",
+        endDate: "2026-08-17",
+        nowMs: 1_500,
+      },
+      host,
+    );
+    expect(host.eventsInInterval).toHaveBeenCalledWith(
+      1_000,
+      2_000,
+      "2026-08-14",
+      "2026-08-17",
+      1_500,
+    );
   });
 
   it('posts "not_read" as-is when the host has never synced this calendar', async () => {
@@ -141,7 +158,15 @@ describe("handleCalendarRequest", () => {
     });
 
     const posted = await run(
-      { type: "getCalendarEvents", key: "weekend", startMs: 1_000, endMs: 2_000, nowMs: 1_500 },
+      {
+        type: "getCalendarEvents",
+        key: "weekend",
+        startMs: 1_000,
+        endMs: 2_000,
+        startDate: "2026-08-14",
+        endDate: "2026-08-17",
+        nowMs: 1_500,
+      },
       host,
     );
 
@@ -150,7 +175,7 @@ describe("handleCalendarRequest", () => {
     ]);
   });
 
-  it("maps a real read's events and freshness, camelCasing every field", async () => {
+  it("maps both event arms and the freshness, camelCasing every field", async () => {
     const host = fakeHost({
       eventsInInterval: vi.fn().mockResolvedValue(
         JSON.stringify({
@@ -160,9 +185,19 @@ describe("handleCalendarRequest", () => {
               provider_event_id: "evt-1",
               calendar_id: "cal-primary",
               title: "Standup",
-              start: { instant_ms: 1_000, time_zone: "America/Los_Angeles" },
-              end: { instant_ms: 2_000, time_zone: "America/Los_Angeles" },
-              all_day: false,
+              when: { kind: "timed", start_ms: 1_000, end_ms: 2_000 },
+              recurrence_id: null,
+              location: null,
+              organizer: null,
+              status: "confirmed",
+              provider_updated_at_ms: 900,
+              html_link: null,
+            },
+            {
+              provider_event_id: "evt-2",
+              calendar_id: "cal-primary",
+              title: "India",
+              when: { kind: "all_day", start_date: "2026-09-09", end_date: "2026-09-16" },
               recurrence_id: null,
               location: null,
               organizer: null,
@@ -177,7 +212,15 @@ describe("handleCalendarRequest", () => {
     });
 
     const posted = await run(
-      { type: "getCalendarEvents", key: "weekend", startMs: 0, endMs: 5_000, nowMs: 61_000 },
+      {
+        type: "getCalendarEvents",
+        key: "weekend",
+        startMs: 0,
+        endMs: 5_000,
+        startDate: "2026-08-14",
+        endDate: "2026-08-17",
+        nowMs: 61_000,
+      },
       host,
     );
 
@@ -192,9 +235,22 @@ describe("handleCalendarRequest", () => {
               providerEventId: "evt-1",
               calendarId: "cal-primary",
               title: "Standup",
-              start: { instantMs: 1_000, timeZone: "America/Los_Angeles" },
-              end: { instantMs: 2_000, timeZone: "America/Los_Angeles" },
-              allDay: false,
+              when: { kind: "timed", startMs: 1_000, endMs: 2_000 },
+              recurrenceId: null,
+              location: null,
+              organizer: null,
+              status: "confirmed",
+              providerUpdatedAtMs: 900,
+              htmlLink: null,
+            },
+            {
+              providerEventId: "evt-2",
+              calendarId: "cal-primary",
+              title: "India",
+              // Byte-identical to the wire: the all-day arm's dates are
+              // never re-derived, re-formatted or resolved to an instant
+              // on this side (ADR-0015's 2026-08-10 amendment).
+              when: { kind: "allDay", startDate: "2026-09-09", endDate: "2026-09-16" },
               recurrenceId: null,
               location: null,
               organizer: null,
@@ -218,7 +274,15 @@ describe("handleCalendarRequest", () => {
 
     expect(
       await run(
-        { type: "getCalendarEvents", key: "weekend", startMs: 0, endMs: 1_000, nowMs: 500 },
+        {
+          type: "getCalendarEvents",
+          key: "weekend",
+          startMs: 0,
+          endMs: 1_000,
+          startDate: "2026-08-14",
+          endDate: "2026-08-17",
+          nowMs: 500,
+        },
         host,
       ),
     ).toEqual([]);

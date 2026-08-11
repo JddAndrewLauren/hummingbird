@@ -49,23 +49,25 @@ export interface CalendarListEntryDTO {
   summary: string;
 }
 
-/** One event boundary — an instant plus the IANA zone the provider
- * associated with it (`hummingbird_core::calendar::EventTime`). **Both
- * fields must cross together**: an all-day boundary's `instantMs` is local
- * midnight *in `timeZone`*, and resolving it against any other zone (the
- * device's own, say) shifts the whole event — the exact "India in 394 days"
- * defect ADR-0015 records on #121. A consumer recovers the civil date with
- * `Intl.DateTimeFormat` in `timeZone`, never by flattening to a device-local
- * day here — **except `timeZone` can be `""`** (`EventTime`'s own doc: a
- * timed boundary whose provider reported no zone at all, at the calendar or
- * the event), and `Intl.DateTimeFormat` throws a `RangeError` on an empty
- * string rather than answering "unknown". Treat `""` as a malformed
- * boundary, the way `waste-pane/zoned-day.ts` treats an unusable zone,
- * never pass it to `Intl.DateTimeFormat` directly. */
-export interface CalendarEventTimeDTO {
-  instantMs: number;
-  timeZone: string;
-}
+/** *When* an event happens — a discriminated union on `kind`, mirroring
+ * `hummingbird_core::calendar::EventWhen` (ADR-0015's 2026-08-10
+ * amendment) arm for arm.
+ *
+ * **An all-day event carries civil dates and no instant; a timed event
+ * carries instants and no zone.** The old shape flattened an all-day
+ * boundary to local midnight resolved in the calendar's zone and shipped
+ * the zone alongside it, which meant every consumer had to remember to
+ * recover the civil date with `Intl.DateTimeFormat` in *that* zone — and
+ * one that read it against the device's zone instead landed a calendar day
+ * out ("India in 394 days", the defect ADR-0015 records on #121). There is
+ * no zone here to get wrong: an all-day arm is answered by comparing
+ * `YYYY-MM-DD` strings, and a timed arm by plain `Date` arithmetic in the
+ * reader's own device zone (`new Date(startMs)` with no zone argument),
+ * which is the only zone that ever crosses this seam — implicitly, and by
+ * being the reader's. */
+export type CalendarEventWhenDTO =
+  | { kind: "allDay"; startDate: string; endDate: string }
+  | { kind: "timed"; startMs: number; endMs: number };
 
 /** One calendar event instance (`hummingbird_core::calendar::EventRecord`),
  * carried through the seam unchanged — issue #46's full field list. Never
@@ -77,9 +79,7 @@ export interface CalendarEventDTO {
   providerEventId: string;
   calendarId: string;
   title: string;
-  start: CalendarEventTimeDTO;
-  end: CalendarEventTimeDTO;
-  allDay: boolean;
+  when: CalendarEventWhenDTO;
   recurrenceId: string | null;
   location: string | null;
   organizer: string | null;
@@ -122,8 +122,22 @@ export type CalendarWorkerRequest =
    * `QuestionInputs.paneReads` already uses, generalised past a fixed
    * source list). `nowMs` is the request's own clock, exactly as
    * `getPaneRead` carries — it decides the returned `freshness`,
-   * core-side, so nothing on this side re-derives it. */
-  | { type: "getCalendarEvents"; key: string; startMs: number; endMs: number; nowMs: number };
+   * core-side, so nothing on this side re-derives it.
+   *
+   * `startDate`/`endDate` are the SAME window as `startMs`/`endMs`, in the
+   * requester's own civil dates (`YYYY-MM-DD`, exclusive end): the arm
+   * all-day events are asked about, since they carry no instant to test.
+   * Both halves are computed on this side, in the device's zone, because
+   * the core owns no tzdb and can derive neither from the other. */
+  | {
+      type: "getCalendarEvents";
+      key: string;
+      startMs: number;
+      endMs: number;
+      startDate: string;
+      endDate: string;
+      nowMs: number;
+    };
 
 // -- task binding (#105/S7) -------------------------------------------------
 //

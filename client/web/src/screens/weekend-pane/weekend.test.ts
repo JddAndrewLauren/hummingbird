@@ -8,6 +8,7 @@ import {
   entryUrgency,
   mergeWindow,
   SUBJECT_KEY,
+  timeLabel,
   weekendAnswer,
   weekendBand,
   weekendCollapsedHeadline,
@@ -57,22 +58,41 @@ function event(overrides: {
   title?: string;
   startMs: number;
   endMs: number;
-  allDay?: boolean;
   status?: "confirmed" | "tentative" | "cancelled";
 }): CalendarEventDTO {
   return {
     providerEventId: overrides.id,
     calendarId: "cal-primary",
     title: overrides.title ?? overrides.id,
-    start: { instantMs: overrides.startMs, timeZone: "America/Los_Angeles" },
-    end: { instantMs: overrides.endMs, timeZone: "America/Los_Angeles" },
-    allDay: overrides.allDay ?? false,
+    when: { kind: "timed", startMs: overrides.startMs, endMs: overrides.endMs },
     recurrenceId: null,
     location: null,
     organizer: null,
     status: overrides.status ?? "confirmed",
     providerUpdatedAtMs: overrides.startMs,
     htmlLink: null,
+  };
+}
+
+/** An all-day event: civil dates, exclusive end, and no instant anywhere —
+ * `endDate` is the day AFTER the last day, the provider's own convention
+ * carried through untouched. */
+function allDayEvent(overrides: {
+  id: string;
+  title?: string;
+  startDate: string;
+  endDate: string;
+  status?: "confirmed" | "tentative" | "cancelled";
+}): CalendarEventDTO {
+  return {
+    ...event({
+      id: overrides.id,
+      title: overrides.title,
+      startMs: 0,
+      endMs: 0,
+      status: overrides.status,
+    }),
+    when: { kind: "allDay", startDate: overrides.startDate, endDate: overrides.endDate },
   };
 }
 
@@ -170,16 +190,71 @@ describe("mergeWindow", () => {
     const merged = mergeWindow(
       window,
       [
-        event({
+        allDayEvent({
           id: "trip",
-          startMs: at(2026, 8, 15, 0, 0),
-          endMs: at(2026, 8, 17, 0, 0),
-          allDay: true,
+          startDate: dayKeyOf(at(2026, 8, 15)),
+          endDate: dayKeyOf(at(2026, 8, 17)),
         }),
       ],
       [],
     );
     expect(countKinds(merged).events).toBe(2); // Saturday and Sunday, clipped to the window
+  });
+
+  it("puts an all-day event on its own day keys whatever the device zone", () => {
+    // ADR-0015's 2026-08-10 amendment: day membership is a string compare
+    // against the day's `YYYY-MM-DD` key, so no instant is resolved
+    // anywhere and there is nothing for a zone to shift. Under the old
+    // flattened shape this event carried a local-midnight instant in the
+    // CALENDAR's zone, and a device east of it read the day before.
+    const saturday = dayKeyOf(at(2026, 8, 15));
+    const sunday = dayKeyOf(at(2026, 8, 16));
+    const merged = mergeWindow(
+      window,
+      [allDayEvent({ id: "trip", startDate: saturday, endDate: sunday })],
+      [],
+    );
+
+    const days = merged.days.filter((day) => day.entries.some((e) => e.id.startsWith("trip@")));
+    expect(days.map((day) => day.key)).toEqual([saturday]);
+    const entry = merged.days.find((day) => day.key === saturday)?.entries[0];
+    expect(entry?.anchor).toBe("day");
+    expect(entry?.atMs).toBe(merged.days.find((day) => day.key === saturday)?.startMs);
+  });
+
+  it("excludes an all-day event whose exclusive end date abuts the window", () => {
+    // Thursday only: `endDate` is Friday, so nothing in Fri-Sun matches.
+    const merged = mergeWindow(
+      window,
+      [
+        allDayEvent({
+          id: "thursday-only",
+          startDate: dayKeyOf(at(2026, 8, 13)),
+          endDate: dayKeyOf(at(2026, 8, 14)),
+        }),
+      ],
+      [],
+    );
+    expect(countKinds(merged).events).toBe(0);
+  });
+
+  it("labels an all-day entry 'all day' and a timed one with its clock times", () => {
+    const merged = mergeWindow(
+      window,
+      [
+        allDayEvent({
+          id: "trip",
+          startDate: dayKeyOf(at(2026, 8, 15)),
+          endDate: dayKeyOf(at(2026, 8, 16)),
+        }),
+        event({ id: "brunch", startMs: at(2026, 8, 15, 11, 0), endMs: at(2026, 8, 15, 12, 0) }),
+      ],
+      [],
+    );
+    const saturday = merged.days.find((day) => day.key === dayKeyOf(at(2026, 8, 15)));
+    const labels = (saturday?.entries ?? []).map((entry) => timeLabel(entry));
+    expect(labels[0]).toBe("all day");
+    expect(labels[1]).toMatch(/–/);
   });
 
   it("shows a due item on its deadline day, distinct in kind from an event", () => {

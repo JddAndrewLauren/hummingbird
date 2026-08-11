@@ -140,7 +140,9 @@ export interface WindowEntry {
   /** Where this sorts inside its day. */
   atMs: number;
   /** `"time"` — the entry names a moment. `"day"` — it only names a day (a
-   * scheduled item, a day-only deadline, an all-day event). */
+   * scheduled item, a day-only deadline, an all-day event). An all-day
+   * event is always `"day"`, structurally: its `when` carries no instant
+   * to anchor a time to. */
   anchor: "time" | "day";
   dayKey: string;
   event?: CalendarEventDTO;
@@ -219,13 +221,39 @@ export function mergeWindow(
 
   for (const event of events) {
     if (event.status === "cancelled") continue; // defence in depth — the core already filters these.
-    const overlapStart = Math.max(event.start.instantMs, window.startMs);
-    const overlapEnd = Math.min(event.end.instantMs, window.endMs);
+
+    // The two arms are asked in their own terms and never converted into
+    // one another (ADR-0015's 2026-08-10 amendment). An all-day event's
+    // day membership is a pure string compare against the day's own
+    // `YYYY-MM-DD` key — no zone, no instant, and so no way for a device
+    // east or west of the calendar to land it on the wrong day. A timed
+    // event overlaps in milliseconds, rendered with plain `Date` in the
+    // reader's device zone, which is the only zone anywhere in this pane.
+    //
+    // Either way, an event spanning more than one day of the window
+    // belongs to each of them — a fact about each day, so showing it once
+    // would leave the other day reading as free.
+    if (event.when.kind === "allDay") {
+      const { startDate, endDate } = event.when;
+      for (const day of days) {
+        if (!(startDate <= day.key && day.key < endDate)) continue; // exclusive end date.
+        day.entries.push({
+          id: `${event.providerEventId}@${day.key}`,
+          kind: "event",
+          title: event.title,
+          atMs: day.startMs,
+          anchor: "day",
+          dayKey: day.key,
+          event,
+        });
+      }
+      continue;
+    }
+
+    const overlapStart = Math.max(event.when.startMs, window.startMs);
+    const overlapEnd = Math.min(event.when.endMs, window.endMs);
     if (overlapStart > overlapEnd) continue;
 
-    // An all-day (or otherwise multi-day) event spanning more than one day
-    // of the window belongs to each of them — a fact about each day, so
-    // showing it once would leave the other day reading as free.
     for (const day of days) {
       const dayOverlapStart = Math.max(overlapStart, day.startMs);
       const dayOverlapEnd = Math.min(overlapEnd, day.endMs);
@@ -234,8 +262,8 @@ export function mergeWindow(
         id: `${event.providerEventId}@${day.key}`,
         kind: "event",
         title: event.title,
-        atMs: event.allDay ? day.startMs : dayOverlapStart,
-        anchor: event.allDay ? "day" : "time",
+        atMs: dayOverlapStart,
+        anchor: "time",
         dayKey: day.key,
         event,
       });
@@ -306,12 +334,12 @@ export function timeLabel(entry: WindowEntry): string {
       : `by ${new Date(entry.atMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   }
   const event = entry.event;
-  if (!event || event.allDay) return "all day";
-  const from = new Date(event.start.instantMs).toLocaleTimeString([], {
+  if (!event || event.when.kind === "allDay") return "all day";
+  const from = new Date(event.when.startMs).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
   });
-  const to = new Date(event.end.instantMs).toLocaleTimeString([], {
+  const to = new Date(event.when.endMs).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
   });

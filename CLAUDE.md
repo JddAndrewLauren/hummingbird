@@ -958,6 +958,45 @@ hidden behind a bare match count: the on-screen copy names the corpus
 explicitly, so a reader can't mistake this backtest's answer for the
 sweep's own.
 
+**The calendar mirror's event shape is two-armed, and the arms are what
+make all-day-ness unrepresentable-if-wrong** (#46, ADR-0015's 2026-08-10
+amendment). `client/core/src/calendar/`'s `EventRecord` carries one `when:
+EventWhen` — `AllDay { start_date, end_date }` (the provider's own civil
+`YYYY-MM-DD` strings, byte-identical, exclusive end) or `Timed { start_ms,
+end_ms }` (UTC instants) — in place of the `start`/`end`/`all_day` trio it
+replaced, and **no source time zone is stored on either**. The old shape
+flattened an all-day boundary to local midnight resolved in the calendar's
+zone; read one zone east that lands a calendar day early ("India in **394**
+days"), and every consumer had to remember to recover the civil date in
+*that* zone rather than the device's. The consequences run the length of the
+lane. `google/map.rs` resolves nothing and takes no page `timeZone` any
+more — a `dateTime` carries its own offset — so **`chrono-tz` left
+`client/core` entirely** (525 KB → 1.41 MB of release wasm, recovered), and
+`raw.rs` transcribes no `timeZone` field at all; a boundary pair that is
+half `date` and half `dateTime` is a loud `MapError::MixedBoundaries`, since
+Google never mixes them and `EventWhen` cannot say it. `query.rs`'s
+`Interval` is two-armed for the same reason — instants *and* civil dates,
+both computed by the caller in the reader's zone, neither derived from the
+other here (the bare-wasm core owns no tzdb, `rank::Now`'s own idiom applied
+to intervals) — and `current_or_next_event` takes the reader's `today`:
+in progress ranks an all-day event covering today over a timed one, upcoming
+prefers the soonest timed one, because a date and an instant have no common
+ordering. `rank`'s 30-minute nudge therefore **never fires on an all-day
+event**, structurally rather than by a rule: there is no instant to be
+thirty minutes before. The seam carries the same union
+(`CalendarEventWhenDTO`, `kind: "allDay" | "timed"`; `getCalendarEvents`
+gained `startDate`/`endDate` beside its `startMs`/`endMs`), and
+`weekend-pane/weekend.ts` decides an all-day event's day membership with a
+string compare against the day's own key — the only zone anywhere in that
+pane is the device's, implicitly, via plain `Date` on the timed arm. The
+migration is **version-discard**: `calendar_host.rs`'s `SCHEMA_VERSION` went
+1 → 2 and `ContextPoller::current_snapshot` now loads through
+`load_snapshot_at_version`, so a v1 mirror reads as "nothing polled yet" and
+costs one poll interval of `not_read` per device. That is safe *because a
+context mirror is disposable* — it holds nothing the device authored — and
+it is the generalisable rule for every context lane: a schema bump here is a
+discard, never a parse.
+
 `client/core/src/rank.rs` is the other top-level module beside `Core`, and
 it is no part of the sync engine: `rank()` (#162) is
 `/next-up-personal`'s six ranking steps made pure, so a device can pick

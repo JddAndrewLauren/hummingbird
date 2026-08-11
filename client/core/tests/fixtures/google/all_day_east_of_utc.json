@@ -1,0 +1,16 @@
+{
+  "kind": "calendar#events",
+  "timeZone": "Asia/Kolkata",
+  "items": [
+    {
+      "id": "india-1",
+      "status": "confirmed",
+      "summary": "India",
+      "location": "Bengaluru",
+      "start": { "date": "2026-09-09" },
+      "end": { "date": "2026-09-16" },
+      "updated": "2026-08-01T00:00:00.000Z",
+      "htmlLink": "https://calendar.google.com/event?eid=india-1"
+    }
+  ]
+}

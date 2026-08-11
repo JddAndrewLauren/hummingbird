@@ -167,6 +167,12 @@ export interface CalendarEventsRequest {
   key: string;
   startMs: number;
   endMs: number;
+  /** The same window in civil dates (`YYYY-MM-DD`, exclusive end),
+   * resolved in the device's own zone — the arm all-day events are asked
+   * about, since they carry no instant. A question computes both halves
+   * itself: the core owns no tzdb and derives neither from the other. */
+  startDate: string;
+  endDate: string;
 }
 
 /** One question's whole implementation, as the shell sees it. */
