@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
 import type { IconName } from "../../components/core/Icon";
-import type { BindingDTO, PaneReadDTO } from "../../store/protocol";
+import type { BindingDTO, CalendarReadDTO, PaneReadDTO } from "../../store/protocol";
 
 // ADR-0015's **pane shell contract** (#245): the one thing every standing
 // question answers, and the one shape the shell knows how to rank, collapse
@@ -122,6 +122,16 @@ export interface QuestionInputs {
   /** Keyed by source, only what was actually requested (the `stepsByItem`
    * shape). A missing entry is "not read yet", never "no rows". */
   paneReads: Record<string, PaneReadDTO | undefined>;
+  /** Issue #267's calendar-reads arm — the core-to-view seam #122's
+   * weekend-plans pane (and any future calendar-lane question) reads
+   * through, never a second read of its own (the Agent Brief's "do not
+   * build a second read"). Keyed by the caller-chosen request `key` (never
+   * a source — the calendar mirror has no source vocabulary), same "only
+   * what was actually requested" shape as `paneReads`: a missing entry is
+   * "not requested yet", and `CalendarReadDTO`'s own `"not_read"` state is
+   * the further, core-answered distinction "requested, but this device has
+   * never synced its calendar at all". */
+  calendarReads: Record<string, CalendarReadDTO | undefined>;
   nowMs: number;
 }
 

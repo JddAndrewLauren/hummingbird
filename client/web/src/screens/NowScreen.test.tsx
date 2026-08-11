@@ -18,7 +18,8 @@
 // way `worker-client.ts` really walks it, and assert the row comes back.
 
 import { describe, expect, it, vi } from "vitest";
-import { NowScreen } from "./NowScreen";
+import { NowScreen, realQuestionInputs } from "./NowScreen";
+import { CalendarReadProbe } from "./questions/CalendarReadProbe";
 import {
   blockedEntryDTO,
   bindingDTO,
@@ -34,6 +35,7 @@ import {
 } from "../test/component";
 import { DEMO_DATA } from "../fixtures/demo-data";
 import { BINDING_KEY, SOURCE } from "./waste-pane/waste";
+import type { CalendarReadDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 
 const NOW_MS = 1_700_000_000_000;
@@ -52,6 +54,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
       onOpenItem={onOpenItem}
       onCloseItemDetail={onCloseItemDetail}
       onAct={onAct}
+      calendarReads={{}}
     />,
   );
   const rerender = (next: TaskState, nextSelected: string | null = selectedItemId) =>
@@ -65,6 +68,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
         onOpenItem={onOpenItem}
         onCloseItemDetail={onCloseItemDetail}
         onAct={onAct}
+        calendarReads={{}}
       />,
     );
   return { onAct, onOpenItem, onCloseItemDetail, rerender };
@@ -284,9 +288,66 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
         onOpenItem={() => {}}
         onCloseItemDetail={() => {}}
         onAct={() => {}}
+        calendarReads={{}}
       />,
     );
 
     expect(screen.getByText("Trash Tonight")).toBeTruthy();
+  });
+});
+
+describe("NowScreen — the calendar-reads arm (#267)", () => {
+  it("threads a delivered calendar read into a mounted consumer's render, not just the store snapshot", () => {
+    // The defect this pins: `calendarReads: {}` was hardcoded at the call
+    // site, so `CalendarState.eventReads` had zero production readers even
+    // though the store leg was real. `realQuestionInputs` is the exact
+    // function `NowScreen` itself uses to build the region's inputs — this
+    // renders a real consumer (`CalendarReadProbe`) from that same function,
+    // fed the same `calendarReads` prop `NowScreen` was given, proving the
+    // value actually reaches a render rather than only a store field.
+    const task = taskState();
+    const read: CalendarReadDTO = {
+      state: "read",
+      events: [
+        {
+          providerEventId: "evt-1",
+          calendarId: "cal-primary",
+          title: "Standup",
+          start: { instantMs: 1_000, timeZone: "America/Los_Angeles" },
+          end: { instantMs: 2_000, timeZone: "America/Los_Angeles" },
+          allDay: false,
+          recurrenceId: null,
+          location: null,
+          organizer: null,
+          status: "confirmed",
+          providerUpdatedAtMs: 900,
+          htmlLink: null,
+        },
+      ],
+      freshness: { kind: "unknown" },
+    };
+    const calendarReads = { weekend: read };
+
+    render(
+      <>
+        <NowScreen
+          demo={null}
+          onScreen={() => {}}
+          task={task}
+          nowMs={NOW_MS}
+          selectedItemId={null}
+          onOpenItem={() => {}}
+          onCloseItemDetail={() => {}}
+          onAct={() => {}}
+          calendarReads={calendarReads}
+        />
+        <CalendarReadProbe
+          requestKey="weekend"
+          inputs={{ ...realQuestionInputs(task, calendarReads), nowMs: NOW_MS }}
+        />
+      </>,
+    );
+
+    expect(screen.getByTestId("calendar-read-probe").textContent).toBe("Standup");
   });
 });

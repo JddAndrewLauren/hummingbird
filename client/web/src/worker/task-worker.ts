@@ -3,7 +3,6 @@ import type {
   BindingValueDTO,
   BlockedFrontierEntryDTO,
   DeadLetterEntryDTO,
-  FreshnessDTO,
   PaneEnvelopeDTO,
   PaneReadDTO,
   ProjectDTO,
@@ -14,6 +13,7 @@ import type {
   TaskWorkerRequest,
   TaskWorkerResponse,
 } from "../store/protocol";
+import { mapFreshness, type RawFreshness } from "./freshness-wire";
 import { createSerialQueue } from "./serial-queue";
 
 // The worker's half of #105/S7's task binding, kept free of the wasm import
@@ -139,10 +139,6 @@ interface RawSetBindingResponse {
 // -- the pane read (#245) — pinned to `PaneReadResponse`'s serde output by
 // `client/ffi-web/src/task_host.rs`'s
 // `pane_read_response_serializes_with_the_exact_keys_the_pane_shell_ts_parses`.
-
-type RawFreshness =
-  | { state: "unknown" }
-  | { state: "age"; age_ms: number; declared_cadence_ms: number | null };
 
 type RawPaneEnvelope =
   | { state: "parsed"; schema: string; polled_every_ms: number | null; body: string }
@@ -325,12 +321,6 @@ function mapBinding(raw: RawBinding): BindingDTO {
     pending: raw.pending,
     value: raw.value,
   };
-}
-
-function mapFreshness(raw: RawFreshness): FreshnessDTO {
-  return raw.state === "unknown"
-    ? { kind: "unknown" }
-    : { kind: "age", ageMs: raw.age_ms, declaredCadenceMs: raw.declared_cadence_ms };
 }
 
 function mapEnvelope(raw: RawPaneEnvelope): PaneEnvelopeDTO {

@@ -49,6 +49,60 @@ export interface CalendarListEntryDTO {
   summary: string;
 }
 
+/** One event boundary — an instant plus the IANA zone the provider
+ * associated with it (`hummingbird_core::calendar::EventTime`). **Both
+ * fields must cross together**: an all-day boundary's `instantMs` is local
+ * midnight *in `timeZone`*, and resolving it against any other zone (the
+ * device's own, say) shifts the whole event — the exact "India in 394 days"
+ * defect ADR-0015 records on #121. A consumer recovers the civil date with
+ * `Intl.DateTimeFormat` in `timeZone`, never by flattening to a device-local
+ * day here — **except `timeZone` can be `""`** (`EventTime`'s own doc: a
+ * timed boundary whose provider reported no zone at all, at the calendar or
+ * the event), and `Intl.DateTimeFormat` throws a `RangeError` on an empty
+ * string rather than answering "unknown". Treat `""` as a malformed
+ * boundary, the way `waste-pane/zoned-day.ts` treats an unusable zone,
+ * never pass it to `Intl.DateTimeFormat` directly. */
+export interface CalendarEventTimeDTO {
+  instantMs: number;
+  timeZone: string;
+}
+
+/** One calendar event instance (`hummingbird_core::calendar::EventRecord`),
+ * carried through the seam unchanged — issue #46's full field list. Never
+ * re-sorted or re-filtered on this side: the core's own
+ * `events_overlapping_interval` already excludes cancelled instances and
+ * returns its own deterministic order, both reused rather than
+ * re-implemented at this seam (issue #267). */
+export interface CalendarEventDTO {
+  providerEventId: string;
+  calendarId: string;
+  title: string;
+  start: CalendarEventTimeDTO;
+  end: CalendarEventTimeDTO;
+  allDay: boolean;
+  recurrenceId: string | null;
+  location: string | null;
+  organizer: string | null;
+  status: "confirmed" | "tentative" | "cancelled";
+  providerUpdatedAtMs: number;
+  htmlLink: string | null;
+}
+
+/** The answer to one `getCalendarEvents` request (issue #267) — three
+ * states, the same "a gap is not an absence" discipline `AnswerState`
+ * documents. `"not_read"` is a device that has never synced this calendar at
+ * all; `"read"` with an empty `events` is a device that has synced and
+ * genuinely has nothing in the interval — collapsing the two would render a
+ * never-connected device's calendar arm as "nothing on", which is a claim
+ * this device has no standing to make. There is deliberately no `"busy"`
+ * arm here: same contract as `paneRead` — a busy core's answer is dropped by
+ * the worker (`calendar-worker.ts`) rather than delivered, so a missing
+ * entry in `QuestionInputs.calendarReads` already carries "no answer yet"
+ * for both "never requested" and "busy". */
+export type CalendarReadDTO =
+  | { state: "not_read" }
+  | { state: "read"; events: CalendarEventDTO[]; freshness: FreshnessDTO };
+
 // -- main -> worker ---------------------------------------------------------
 
 export type CalendarWorkerRequest =
@@ -59,7 +113,17 @@ export type CalendarWorkerRequest =
   | { type: "pollTimer"; nowMs: number }
   /** Carries no token: the core lists with the credential it was already
    * pushed, so the picker's lookup costs the host nothing extra. */
-  | { type: "listCalendars" };
+  | { type: "listCalendars" }
+  /** Issue #267: the non-cancelled events overlapping `[startMs, endMs)`.
+   * `key` is caller-chosen and echoed back on the response — the calendar
+   * mirror has no source vocabulary of its own to key on the way
+   * `getPaneRead` keys on `source`, so the requester names its own request
+   * instead (the same "keyed by what was actually asked for" shape
+   * `QuestionInputs.paneReads` already uses, generalised past a fixed
+   * source list). `nowMs` is the request's own clock, exactly as
+   * `getPaneRead` carries — it decides the returned `freshness`,
+   * core-side, so nothing on this side re-derives it. */
+  | { type: "getCalendarEvents"; key: string; startMs: number; endMs: number; nowMs: number };
 
 // -- task binding (#105/S7) -------------------------------------------------
 //
@@ -616,4 +680,12 @@ export type WorkerResponse =
    * worker drops them rather than emptying a picker that is showing real
    * options. */
   | { type: "calendarList"; calendars: CalendarListEntryDTO[] }
+  /** Answers `getCalendarEvents` (issue #267). `key` is echoed back exactly
+   * as requested — the map key `store.ts`'s `CalendarState.eventReads`
+   * writes into, never keyed on which request happened to be outstanding.
+   * Never posted for a `"busy"` read: same "no answer, not an empty one"
+   * contract `paneRead` documents above, and it matters here for the same
+   * reason — an empty `events` read renders as "nothing scheduled", which a
+   * core that has not attempted the read has no standing to claim. */
+  | { type: "calendarEvents"; key: string; read: CalendarReadDTO }
   | TaskWorkerResponse;

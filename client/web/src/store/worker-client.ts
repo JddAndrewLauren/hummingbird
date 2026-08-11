@@ -68,6 +68,7 @@ type Store = Pick<
   ReturnType<typeof createCoreStore>,
   | "setState"
   | "setCalendarState"
+  | "setCalendarEventRead"
   | "setTaskState"
   | "setTaskPending"
   | "setTaskSteps"
@@ -119,6 +120,13 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
         return;
       case "calendarList":
         store.setCalendarState({ availableCalendars: message.calendars });
+        return;
+      case "calendarEvents":
+        // Keyed by the request's own `key`, echoed back on the message —
+        // never by which request happened to be outstanding here, since
+        // this is a broadcast to every port (same discipline `paneRead`
+        // documents for `source`).
+        store.setCalendarEventRead(message.key, message.read);
         return;
       // -- task binding (#105/S7) — broadcasts fanned out to every port,
       // never a reply targeted at just the requesting view (protocol.ts).
@@ -339,6 +347,20 @@ export function pollTimer(worker: WorkerLike, nowMs: number): void {
 // credential this listing goes out with.
 export function requestCalendarList(worker: WorkerLike): void {
   worker.postMessage({ type: "listCalendars" });
+}
+
+/** Issue #267: the non-cancelled events overlapping `[startMs, endMs)`.
+ * `key` is caller-chosen and comes back unchanged on the `calendarEvents`
+ * broadcast — see `protocol.ts`'s `getCalendarEvents` doc for why the
+ * calendar lane keys by request rather than by source. */
+export function requestCalendarEvents(
+  worker: WorkerLike,
+  key: string,
+  startMs: number,
+  endMs: number,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "getCalendarEvents", key, startMs, endMs, nowMs });
 }
 
 // -- the task binding's send helpers (#105/S7) — same "only after ready,

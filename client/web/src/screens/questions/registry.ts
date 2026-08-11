@@ -38,6 +38,30 @@ export function requiredSources(): string[] {
   return sources;
 }
 
+/** One `getCalendarEvents` request `useCalendarEventsWiring.ts` posts —
+ * defined here, not in that hook, for the same reason `requiredSources`'s
+ * return type lives here: the registry is the one place a question's
+ * requirements are declared, and the wiring only ever reads them. */
+export interface CalendarEventsRequest {
+  /** The caller's own identity for this request — becomes the
+   * `QuestionInputs.calendarReads` map key. */
+  key: string;
+  startMs: number;
+  endMs: number;
+}
+
+/** Every calendar-arm interval the registered standing questions need —
+ * `requiredSources`'s exact twin for the calendar lane, unioned over every
+ * registered question in declared order. No shipped `QuestionDef` declares
+ * one yet (#122's job — the calendar-lane questions, #117/#121/#122, are
+ * still prototypes), so this returns empty today; a question that starts
+ * asking for one is what `useCalendarEventsWiring.ts` must pick up without
+ * itself changing, which is what stops the wiring and the registry
+ * drifting the way a caller-supplied `requests` prop would let them. */
+export function requiredCalendarRequests(): CalendarEventsRequest[] {
+  return [];
+}
+
 /** The 0..N expansion itself: every question in `order`, every subject it
  * currently has, each with its answer — ranked.
  *

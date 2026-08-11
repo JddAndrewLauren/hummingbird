@@ -9,13 +9,14 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import type { DemoData } from "../fixtures/demo";
 import { demoQuestionInputs } from "../fixtures/demo-questions";
 import type { Screen } from "../shell/screens";
-import type { TaskActionName, TaskItemDTO } from "../store/protocol";
+import type { CalendarReadDTO, TaskActionName, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { blockedReasonLabel } from "./blocked-reason";
 import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
 import { applyItemAction, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 // PROTOTYPE (#119) — throwaway, dev-only, renders nothing without `?racepane`.
 // Shape settled (context panel); delete these two mounts with
@@ -51,6 +52,23 @@ export interface NowScreenProps {
   /** S11/#109's act affordances (start/complete/block/cancel), forwarded to
    * whichever item is currently open in detail. */
   onAct: (itemId: string, action: TaskActionName) => void;
+  /** Issue #267's calendar-events arm — `CalendarState.eventReads`, threaded
+   * through exactly as `task.paneReads` is: the region's `QuestionInputs`
+   * needs a real value here, not a literal `{}`, or every calendar-lane
+   * question #122 goes on to register renders as though nothing was ever
+   * requested. */
+  calendarReads: Record<string, CalendarReadDTO | undefined>;
+}
+
+/** The real-data half of `QuestionInputs` (never demo's) — exported so a
+ * component test can drive the exact object this screen threads to
+ * `RankedRegion` through a genuinely mounted consumer, proving delivery
+ * rather than merely inspecting the store snapshot (#267's review point). */
+export function realQuestionInputs(
+  task: TaskState,
+  calendarReads: Record<string, CalendarReadDTO | undefined>,
+): Omit<QuestionInputs, "nowMs"> {
+  return { bindings: task.bindings, paneReads: task.paneReads, calendarReads };
 }
 
 /** Real-data frontier/blocked rendering (issue #108) — kept out of the
@@ -260,6 +278,7 @@ export function NowScreen({
   onOpenItem,
   onCloseItemDetail,
   onAct,
+  calendarReads,
 }: NowScreenProps) {
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
@@ -357,7 +376,7 @@ export function NowScreen({
             snapshot tiles — and it is the same component in both modes: only
             the inputs differ, so `?demo` photographs the real shell. */}
         <RankedRegion
-          inputs={demo ? demoQuestionInputs(nowMs) : { bindings: task.bindings, paneReads: task.paneReads }}
+          inputs={demo ? demoQuestionInputs(nowMs) : realQuestionInputs(task, calendarReads)}
           nowMs={nowMs}
           syncOutcomeSeq={task.syncOutcomeSeq}
           storage={typeof localStorage === "undefined" ? undefined : localStorage}

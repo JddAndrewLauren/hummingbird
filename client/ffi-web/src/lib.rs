@@ -15,7 +15,9 @@
 mod calendar_host;
 mod task_host;
 
-pub use calendar_host::{CalendarHostCore, CalendarListResponse};
+pub use calendar_host::{
+    CalendarEventsResponse, CalendarHostCore, CalendarListResponse, CALENDAR_POLL_INTERVAL_MS,
+};
 pub use task_host::{
     ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, DeadLetterEntryDTO,
     DeadLetterFieldDTO, DeadLettersResponse, FreshnessResponse, FrontierItemDTO, IsPendingResponse,
@@ -151,6 +153,13 @@ mod wasm_bindings {
     /// leaves the picker's existing options alone rather than emptying it.
     const BUSY_CALENDAR_LIST: &str = r#"{"kind":"busy","calendars":[]}"#;
 
+    /// The "nothing was attempted" answer for `eventsInInterval` (issue
+    /// #267) — the third state alongside `CalendarEventsResponse`'s own
+    /// `"not_read"`/`"read"`, added here because only the wasm wrapper can
+    /// ever find the core checked out. Never `[]` events read as a real
+    /// answer: a busy core has no standing to say "nothing scheduled".
+    const BUSY_CALENDAR_EVENTS: &str = r#"{"kind":"busy","events":[],"freshness":null}"#;
+
     /// Which `ContextPoller` trigger a `poll` call stands for. The three
     /// exported triggers differ only in this, so they share one body rather
     /// than three copies of the check-out/await/check-in dance.
@@ -255,6 +264,29 @@ mod wasm_bindings {
             self.inner.take_credential_events()
         }
 
+        /// Issue #267: every non-cancelled event overlapping `[start_ms,
+        /// end_ms)`, as JSON: `{"kind": "not_read"|"read"|"busy",
+        /// "events": [...], "freshness": null|{"state":...}}`. Same
+        /// check-out/check-in dance as the poll triggers — this is a plain
+        /// `&self` read on [`CalendarHostCore`], but the underlying snapshot
+        /// store load still awaits, so a poll already in flight must not
+        /// see a second borrow.
+        #[wasm_bindgen(js_name = eventsInInterval)]
+        pub fn events_in_interval(&self, start_ms: f64, end_ms: f64, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(core) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CALENDAR_EVENTS));
+                };
+                let response = core
+                    .events_in_interval(start_ms as i64, end_ms as i64, now_ms as i64)
+                    .await;
+                inner.check_in(core);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CalendarEventsResponse serializes"),
+                ))
+            })
+        }
     }
 
     // ------------------------------------------------------------ TaskHost

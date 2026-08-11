@@ -71,5 +71,7 @@ export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs">
   return {
     bindings: [boundBinding],
     paneReads: { [SOURCE]: wasteRead(nowMs) },
+    // No demo question reads the calendar arm yet — see #122.
+    calendarReads: {},
   };
 }

@@ -60,6 +60,7 @@ function inputs(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
   return {
     bindings: [boundBinding()],
     paneReads: { [SOURCE]: read() },
+    calendarReads: {},
     nowMs: NOW,
     ...overrides,
   };
