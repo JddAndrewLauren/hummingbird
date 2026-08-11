@@ -407,9 +407,19 @@ export function requestCalendarEvents(
   key: string,
   startMs: number,
   endMs: number,
+  startDate: string,
+  endDate: string,
   nowMs: number,
 ): void {
-  worker.postMessage({ type: "getCalendarEvents", key, startMs, endMs, nowMs });
+  worker.postMessage({
+    type: "getCalendarEvents",
+    key,
+    startMs,
+    endMs,
+    startDate,
+    endDate,
+    nowMs,
+  });
 }
 
 // -- the task binding's send helpers (#105/S7) — same "only after ready,

@@ -6,7 +6,9 @@
 use hummingbird_core::calendar::google::{
     CalendarListEntry, GoogleProviderPoller, ReqwestGoogleTransport,
 };
-use hummingbird_core::calendar::{events_overlapping_interval, CalendarSnapshot, EventRecord, Interval};
+use hummingbird_core::calendar::{
+    events_overlapping_interval, CalendarSnapshot, EventRecord, Interval,
+};
 use hummingbird_core::context::{ContextPoller, CredentialEvent, PollOutcome};
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::storage::Envelope;
@@ -33,7 +35,15 @@ fn new_store(namespace: &str) -> StoreImpl {
 
 type GooglePoller = ContextPoller<GoogleProviderPoller<ReqwestGoogleTransport>, StoreImpl>;
 
-const SCHEMA_VERSION: u32 = 1;
+/// Bumped 1 -> 2 by #46's two-arm event shape (ADR-0015's 2026-08-10
+/// amendment): a v1 snapshot's events carry `start`/`end`/`all_day` and
+/// cannot parse as [`EventRecord`] any more. The migration is
+/// **version-discard** — `ContextPoller::current_snapshot` loads at this
+/// version and treats anything else as nothing polled yet — which costs one
+/// `not_read` window of at most `CALENDAR_POLL_INTERVAL_MS` per device
+/// while it repolls, and is right because a context mirror is disposable
+/// by construction: it holds nothing this device authored.
+const SCHEMA_VERSION: u32 = 2;
 const PROVIDER: &str = "google_calendar";
 
 /// The calendar lane's declared poll cadence (#46/ADR-0005's 15-minute
@@ -164,14 +174,26 @@ impl CalendarHostCore {
     /// this returns [`CalendarEventsResponse`] rather than a bare
     /// `Vec<EventRecord>`: a device that has never synced has nothing to
     /// say, which is a different fact from "synced, and empty".
+    /// `start_date`/`end_date` are the same window in the **reader's own
+    /// civil dates** (`YYYY-MM-DD`, exclusive end), which all-day events
+    /// are asked about instead of the instants — see [`Interval`]. The
+    /// caller computes both halves in its own zone; neither is derived
+    /// from the other here, because deriving one would need the tzdb this
+    /// crate deliberately does not carry.
     pub async fn events_in_interval(
         &self,
         start_ms: i64,
         end_ms: i64,
+        start_date: String,
+        end_date: String,
         now_ms: i64,
     ) -> CalendarEventsResponse {
         let snapshot = self.poller.current_snapshot().await;
-        build_events_response(snapshot, start_ms, end_ms, now_ms)
+        build_events_response(
+            snapshot,
+            Interval::new(start_ms, end_ms, start_date, end_date),
+            now_ms,
+        )
     }
 }
 
@@ -184,8 +206,7 @@ impl CalendarHostCore {
 /// only the I/O that produces this function's input.
 fn build_events_response(
     snapshot: Option<Envelope<CalendarSnapshot>>,
-    start_ms: i64,
-    end_ms: i64,
+    interval: Interval,
     now_ms: i64,
 ) -> CalendarEventsResponse {
     let Some(envelope) = snapshot else {
@@ -195,7 +216,7 @@ fn build_events_response(
             freshness: None,
         };
     };
-    let events = events_overlapping_interval(&envelope.payload, Interval::new(start_ms, end_ms))
+    let events = events_overlapping_interval(&envelope.payload, &interval)
         .into_iter()
         .cloned()
         .collect();
@@ -227,16 +248,14 @@ pub fn outcome_name(outcome: PollOutcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hummingbird_core::calendar::{EventStatus, EventTime};
+    use hummingbird_core::calendar::{EventStatus, EventWhen};
 
     fn timed_event(id: &str, start_ms: i64, end_ms: i64) -> EventRecord {
         EventRecord {
             provider_event_id: id.to_string(),
             calendar_id: "cal-primary".to_string(),
             title: id.to_string(),
-            start: EventTime::timed(start_ms, "America/Los_Angeles"),
-            end: EventTime::timed(end_ms, "America/Los_Angeles"),
-            all_day: false,
+            when: EventWhen::timed(start_ms, end_ms),
             recurrence_id: None,
             location: None,
             organizer: None,
@@ -244,6 +263,23 @@ mod tests {
             provider_updated_at_ms: start_ms,
             html_link: None,
         }
+    }
+
+    fn all_day_event(id: &str, start_date: &str, end_date: &str) -> EventRecord {
+        EventRecord {
+            when: EventWhen::all_day(start_date, end_date),
+            ..timed_event(id, 0, 0)
+        }
+    }
+
+    /// A window in both shapes, as every real caller supplies it.
+    fn window(start_ms: i64, end_ms: i64, start_date: &str, end_date: &str) -> Interval {
+        Interval::new(start_ms, end_ms, start_date, end_date)
+    }
+
+    /// A window whose civil arm matches nothing, for the timed-only tests.
+    fn timed_window(start_ms: i64, end_ms: i64) -> Interval {
+        Interval::new(start_ms, end_ms, "1970-01-01", "1970-01-01")
     }
 
     fn cancelled_event(id: &str, start_ms: i64) -> EventRecord {
@@ -257,10 +293,14 @@ mod tests {
 
     #[test]
     fn no_snapshot_at_all_is_not_read_not_an_empty_read() {
-        let response = build_events_response(None, 0, 10_000, 5_000);
+        let response = build_events_response(None, timed_window(0, 10_000), 5_000);
         assert_eq!(
             response,
-            CalendarEventsResponse { kind: "not_read", events: Vec::new(), freshness: None }
+            CalendarEventsResponse {
+                kind: "not_read",
+                events: Vec::new(),
+                freshness: None
+            }
         );
     }
 
@@ -269,7 +309,7 @@ mod tests {
         let snapshot = CalendarSnapshot::new(vec![timed_event("far-away", 100_000, 101_000)]);
         let envelope = Envelope::new(1, 1_000, snapshot);
 
-        let response = build_events_response(Some(envelope), 0, 10_000, 1_000);
+        let response = build_events_response(Some(envelope), timed_window(0, 10_000), 1_000);
 
         assert_eq!(response.kind, "read");
         assert_eq!(response.events, Vec::new());
@@ -285,7 +325,7 @@ mod tests {
         ]);
         let envelope = Envelope::new(1, 1_000, snapshot);
 
-        let response = build_events_response(Some(envelope), 0, 5_000, 1_000);
+        let response = build_events_response(Some(envelope), timed_window(0, 5_000), 1_000);
 
         let ids: Vec<&str> = response
             .events
@@ -300,37 +340,70 @@ mod tests {
         let snapshot = CalendarSnapshot::new(vec![]);
         let envelope = Envelope::new(1, 1_000, snapshot);
 
-        let response = build_events_response(Some(envelope), 0, 1, 61_000);
+        let response = build_events_response(Some(envelope), timed_window(0, 1), 61_000);
 
         assert_eq!(
             response.freshness,
-            Some(Freshness::Age { age_ms: 60_000, declared_cadence_ms: Some(CALENDAR_POLL_INTERVAL_MS) })
+            Some(Freshness::Age {
+                age_ms: 60_000,
+                declared_cadence_ms: Some(CALENDAR_POLL_INTERVAL_MS)
+            })
         );
     }
 
     #[test]
-    fn an_all_day_events_instant_and_zone_both_cross_the_seam_untouched() {
-        // Issue #267's acceptance: a consumer must be able to recover the
-        // civil date from the DTO alone, which needs BOTH the instant and
-        // the zone it was resolved in — never a device-local flattening.
-        let day_ms = 24 * 60 * 60 * 1000;
-        let aug_10_start = 19_579 * day_ms;
-        let event = EventRecord {
-            all_day: true,
-            start: EventTime::all_day(aug_10_start, "Pacific/Auckland"),
-            end: EventTime::all_day(aug_10_start + day_ms, "Pacific/Auckland"),
-            ..timed_event("holiday", aug_10_start, aug_10_start + day_ms)
-        };
+    fn an_all_day_events_dates_cross_the_seam_untouched_and_carry_no_zone() {
+        // ADR-0015's 2026-08-10 amendment, at the seam: an all-day event
+        // is answered in civil dates, and the consumer reads the day
+        // straight off them. It used to cross as a local-midnight instant
+        // plus the zone it was resolved in — recoverable only by
+        // `Intl.DateTimeFormat` on the far side, and a calendar day out
+        // the moment anything read it in another zone.
+        let event = all_day_event("holiday", "2026-08-10", "2026-08-11");
         let snapshot = CalendarSnapshot::new(vec![event]);
         let envelope = Envelope::new(1, 1_000, snapshot);
 
-        let response =
-            build_events_response(Some(envelope), aug_10_start, aug_10_start + day_ms, 1_000);
+        let response = build_events_response(
+            Some(envelope),
+            window(0, 1, "2026-08-10", "2026-08-11"),
+            1_000,
+        );
 
         assert_eq!(response.events.len(), 1);
-        let start = &response.events[0].start;
-        assert_eq!(start.instant_ms, aug_10_start);
-        assert_eq!(start.time_zone, "Pacific/Auckland");
+        assert_eq!(
+            response.events[0].when,
+            EventWhen::all_day("2026-08-10", "2026-08-11")
+        );
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            !json.contains("time_zone"),
+            "no zone crosses the seam: {json}"
+        );
+    }
+
+    #[test]
+    fn an_all_day_event_is_matched_on_the_civil_arm_not_the_instants() {
+        // The instants requested here are nowhere near the dates: only the
+        // civil arm can answer this, which is the point of carrying both.
+        let event = all_day_event("holiday", "2026-08-10", "2026-08-11");
+        let snapshot = CalendarSnapshot::new(vec![event]);
+        let envelope = Envelope::new(1, 1_000, snapshot);
+
+        let matched = build_events_response(
+            Some(envelope.clone()),
+            window(0, 1, "2026-08-10", "2026-08-11"),
+            1_000,
+        );
+        assert_eq!(matched.events.len(), 1);
+
+        // The day after: the exclusive end date abuts, so nothing matches
+        // even though the millisecond window is identical.
+        let missed = build_events_response(
+            Some(envelope),
+            window(0, 1, "2026-08-11", "2026-08-12"),
+            1_000,
+        );
+        assert_eq!(missed.events, Vec::new());
     }
 
     #[test]
@@ -354,12 +427,7 @@ mod tests {
         // the TypeScript's own text, for a `"read"` carrying one timed and
         // one all-day event (the `"not_read"` case is already pinned above).
         let timed = timed_event("morning", 1_000, 2_000);
-        let all_day = EventRecord {
-            all_day: true,
-            start: EventTime::all_day(86_400_000, "Pacific/Auckland"),
-            end: EventTime::all_day(172_800_000, "Pacific/Auckland"),
-            ..timed_event("holiday", 86_400_000, 172_800_000)
-        };
+        let all_day = all_day_event("holiday", "2026-08-10", "2026-08-11");
         let response = CalendarEventsResponse {
             kind: "read",
             events: vec![timed, all_day],
@@ -376,9 +444,7 @@ mod tests {
                 "provider_event_id",
                 "calendar_id",
                 "title",
-                "start",
-                "end",
-                "all_day",
+                "when",
                 "recurrence_id",
                 "location",
                 "organizer",
@@ -386,15 +452,31 @@ mod tests {
                 "provider_updated_at_ms",
                 "html_link",
             ] {
-                assert!(event.get(key).is_some(), "event missing key {key:?}: {event}");
+                assert!(
+                    event.get(key).is_some(),
+                    "event missing key {key:?}: {event}"
+                );
             }
-            for boundary in [&event["start"], &event["end"]] {
-                for key in ["instant_ms", "time_zone"] {
-                    assert!(
-                        boundary.get(key).is_some(),
-                        "boundary missing key {key:?}: {boundary}"
-                    );
+            // `when` is internally tagged on `kind`, and each arm carries
+            // its own two keys and no others — `calendar-worker.ts`'s
+            // `RawCalendarEventWhen` is a discriminated union on exactly
+            // this, and there is no `all_day` boolean any more.
+            let when = &event["when"];
+            match when["kind"].as_str().expect("when carries a kind tag") {
+                "timed" => {
+                    for key in ["start_ms", "end_ms"] {
+                        assert!(when.get(key).is_some(), "timed arm missing {key:?}: {when}");
+                    }
                 }
+                "all_day" => {
+                    for key in ["start_date", "end_date"] {
+                        assert!(
+                            when.get(key).is_some(),
+                            "all-day arm missing {key:?}: {when}"
+                        );
+                    }
+                }
+                other => panic!("unknown when kind {other:?}"),
             }
         }
 
@@ -424,11 +506,23 @@ mod tests {
         // `build_events_response` above.
         let host = CalendarHostCore::new("test-ns".to_string(), vec!["primary".to_string()]);
 
-        let response = host.events_in_interval(0, 1_000, 1_000).await;
+        let response = host
+            .events_in_interval(
+                0,
+                1_000,
+                "2026-08-11".to_string(),
+                "2026-08-12".to_string(),
+                1_000,
+            )
+            .await;
 
         assert_eq!(
             response,
-            CalendarEventsResponse { kind: "not_read", events: Vec::new(), freshness: None }
+            CalendarEventsResponse {
+                kind: "not_read",
+                events: Vec::new(),
+                freshness: None
+            }
         );
     }
 
