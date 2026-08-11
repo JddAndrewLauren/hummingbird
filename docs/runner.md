@@ -59,12 +59,26 @@ call anywhere in the runner or the skill. The write-target question (Linear
 vs. the ADR-0008 owned server) is explicitly deferred; `next-up-personal`
 and `microtask` wait behind that decision before they become runner ops.
 
-**Unconfirmed against a live run**, recorded rather than silently assumed
-(`runner/src/run-skill.js`'s own header): `claude -p --output-format json
---json-schema <schema>`'s stdout is read as the schema-constrained result
-object directly. If a live run instead wraps it in a `{type, result,
-...}` envelope the way plain `--output-format json` does, `run-skill.js`'s
-JSON.parse step is the one place to adjust.
+**Confirmed against a live run**, and the CLI contract is narrower than it
+first looked. Both halves were assumed wrong on the first pass, and both
+failed every real invocation while the unit tests stayed green -- which is
+the standing lesson here: a fake `spawn` can only ever pin what its author
+believed the CLI does.
+
+- **`--json-schema` takes the schema's TEXT, not a path.** A path is
+  rejected before anything runs (`--json-schema is not valid JSON: JSON
+  Parse error: Unrecognized token '/'`). `run-skill.js` reads the versioned
+  per-skill file and passes its contents.
+- **A schema file may not carry a `$schema` key.** The CLI rejects the
+  usual draft ref outright (`no schema with key or ref
+  "https://json-schema.org/draft/2020-12/schema"`), so a `$schema` line in
+  a shipped schema is a deploy-time outage, not a style nit. Pinned by
+  `runner/test/parse-capture.test.js`.
+- **`--output-format json` wraps everything in the CLI's own metadata
+  envelope** (`{is_error, usage, total_cost_usd, result,
+  structured_output, ...}`). The schema-constrained object is
+  `structured_output`; `result` is the same object as a *string*. Reading
+  raw stdout as the result handed callers the metadata.
 
 ## Operational posture (#256, 2026-08-10 decision)
 
@@ -101,16 +115,34 @@ operator can close the provisioning gate #256's issue thread leaves open.
 
 3. **Set secrets**:
 
+   For first-party Anthropic:
+
    ```sh
    fly secrets set --config runner/fly.toml \
      RUNNER_BEARER_TOKEN=<the token from step 2> \
      ANTHROPIC_API_KEY=<a metered Anthropic API key>
    ```
 
-   Optional provider overrides (`ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) go
-   in the same command if a non-default provider is wanted (#41 decision
-   2). Set a spend cap on the Anthropic key in the provider console at the
-   same time -- the cost-ceiling posture above.
+   For a **non-default provider** (#41 decision 2's Kimi/GLM posture --
+   both speak the Anthropic API natively), all three of decision 2's
+   variables are needed, and the credential goes in `ANTHROPIC_AUTH_TOKEN`,
+   **not** `ANTHROPIC_API_KEY`: the two are different headers
+   (`Authorization: Bearer` vs. `x-api-key`), and a third-party endpoint
+   wants the former. Set no `ANTHROPIC_API_KEY` at all in this case.
+
+   ```sh
+   fly secrets set --config runner/fly.toml \
+     RUNNER_BEARER_TOKEN=<the token from step 2> \
+     ANTHROPIC_BASE_URL=<the provider's Anthropic-compatible endpoint> \
+     ANTHROPIC_AUTH_TOKEN=<that provider's key> \
+     ANTHROPIC_MODEL=<that provider's model id>
+   ```
+
+   Switching providers later is `fly secrets set` alone, no deploy
+   (decision 2) -- but eyeball a few runs after any swap: the per-skill
+   schema catches shape failures, never judgment failures. Set a spend cap
+   in whichever provider's console holds the key, at the same time -- the
+   cost-ceiling posture above.
 
 4. **Deploy**:
 

@@ -145,6 +145,15 @@ fn alert_raised_event(alert: &Alert) -> Event {
         body: alert.body.clone(),
         url: alert.url.clone(),
         severity: alert.severity.clone(),
+        // `None` matches `sweep_tick`'s own event exactly, and is what
+        // ADR-0013 §3 specifies for missing busy state: it resolves to
+        // `false` (not busy) rather than falsifying its condition, because
+        // "failing toward 'not busy' costs extra rings, never missed
+        // ones". Worth being explicit that this is not yet the wired
+        // suppressor — nothing anywhere reads `google-calendar/v1`'s
+        // `busy_now` snapshot into an `Event`, so a calendar-conditioned
+        // rule is fail-open on BOTH callers, not just this one. Wiring it
+        // is its own slice.
         calendar_busy: None,
         event_kind: Some("alert_raised".to_string()),
         extras: BTreeMap::new(),

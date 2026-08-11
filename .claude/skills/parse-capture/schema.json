@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "parse-capture result",
   "description": "v1's minimal shape (#42): find the actionable line as the title, keep the rest as notes. No inferred fields (due date, context, energy, size) -- the sweeper drops those deliberately (docs/sweeper.md) and this skill follows the same posture.",
   "type": "object",

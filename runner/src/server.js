@@ -24,6 +24,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000; // well under Fly's 60s idle-connection ki
  * @param {(command: string, args: string[]) => import("node:events").EventEmitter} opts.spawn
  * @param {string} [opts.claudeBin]
  * @param {number} [opts.heartbeatIntervalMs]
+ * @param {(path: string) => string} [opts.readSchema] how a skill's schema file is read (see `run-skill.js`)
  */
 export function createServer({
   bearerToken,
@@ -31,6 +32,7 @@ export function createServer({
   spawn,
   claudeBin = "claude",
   heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS,
+  readSchema,
 }) {
   return createHttpServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/run") {
@@ -44,12 +46,21 @@ export function createServer({
     }
 
     readBody(req, MAX_BODY_BYTES)
-      .then((rawBody) => handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs }))
+      .then((rawBody) =>
+        handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema }),
+      )
       .catch((err) => {
         // Nothing has been written yet at this point -- readBody rejects
         // before any response headers are sent -- so a plain JSON error is
-        // still accurate, not a truncated stream.
+        // still accurate, not a truncated stream. It only actually reaches
+        // the client because readBody drains rather than destroys; see
+        // there.
         if (!res.headersSent) {
+          // Deliberately NOT `connection: close`: the client is typically
+          // still writing when this is sent, and closing underneath it
+          // resets the socket before it can read -- the same failure
+          // `req.destroy()` had, measured. The drain in `readBody` is what
+          // leaves the connection in a state worth keeping.
           res.writeHead(413, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: false, skill: null, error: err.message }));
         } else {
@@ -63,11 +74,19 @@ function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     let body = "";
     let bytes = 0;
+    let overflowed = false;
     req.on("data", (chunk) => {
+      if (overflowed) return;
       bytes += chunk.length;
       if (bytes > maxBytes) {
+        overflowed = true;
+        // Drain and discard the rest -- never `req.destroy()`, which tears
+        // down the very socket the 413 has to travel on, so the client
+        // sees a bare connection reset (UND_ERR_SOCKET) instead of the
+        // rejection this line intends. Nothing further accumulates: the
+        // `overflowed` guard above discards every remaining chunk.
+        req.resume();
         reject(new Error("request body too large"));
-        req.destroy();
         return;
       }
       body += chunk;
@@ -77,7 +96,7 @@ function readBody(req, maxBytes) {
   });
 }
 
-function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs }) {
+function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema }) {
   const parsed = parseRunRequest(rawBody);
   if (!parsed.ok) {
     res.writeHead(400, { "content-type": "application/json" });
@@ -120,6 +139,7 @@ function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatInterval
     spawn,
     claudeBin,
     onProgress: (message) => res.write(progressLine(message)),
+    ...(readSchema ? { readSchema } : {}),
   })
     .catch((err) => ({ ok: false, error: err.message }))
     .then((outcome) => {

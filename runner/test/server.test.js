@@ -17,11 +17,25 @@ function fakeSpawnEmitting({ stdout = "", stderr = "", code = 0 } = {}) {
   };
 }
 
+/** One live-shaped `--output-format json` envelope, trimmed to what this runner reads. */
+function cliEnvelope(structuredOutput) {
+  return JSON.stringify({
+    is_error: false,
+    subtype: "success",
+    result: JSON.stringify(structuredOutput),
+    structured_output: structuredOutput,
+    type: "result",
+  });
+}
+
 async function withServer(opts, run) {
   const server = createServer({
     bearerToken: "test-token",
     repoRoot: "/app",
     spawn: fakeSpawnEmitting(opts),
+    // `repoRoot` is fictional here, so the schema read is faked too --
+    // this suite is about the HTTP contract, not the filesystem.
+    readSchema: () => '{"type":"object"}',
     heartbeatIntervalMs: 10_000,
   });
   await new Promise((resolve) => server.listen(0, resolve));
@@ -29,6 +43,10 @@ async function withServer(opts, run) {
   try {
     await run(`http://127.0.0.1:${port}`);
   } finally {
+    // `closeAllConnections` first: `close` alone waits out the keep-alive
+    // timeout on any socket the client left open, which is seconds of dead
+    // time per test, not a signal about the server.
+    server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
 }
@@ -106,7 +124,7 @@ test("400s invalid args for a known skill", async () => {
 });
 
 test("200s a valid request and streams NDJSON ending in the ok envelope", async () => {
-  await withServer({ stdout: '{"title":"buy milk","notes":""}', code: 0 }, async (base) => {
+  await withServer({ stdout: cliEnvelope({ title: "buy milk", notes: "" }), code: 0 }, async (base) => {
     const res = await fetch(`${base}/run`, {
       method: "POST",
       headers: { authorization: "Bearer test-token" },
@@ -126,6 +144,24 @@ test("200s a valid request and streams NDJSON ending in the ok envelope", async 
     // at least one progress line preceded it
     assert.ok(lines.length >= 2);
     assert.equal(lines[0].type, "progress");
+  });
+});
+
+test("413s an oversized body -- the client reads the rejection, never a socket reset", async () => {
+  await withServer({}, async (base) => {
+    const res = await fetch(`${base}/run`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token" },
+      body: JSON.stringify({ skill: "parse-capture", args: { text: "x".repeat(2_000_000) } }),
+    });
+    // The assertion that matters is that this line is reached at all:
+    // `req.destroy()` here tore down the socket under the response and
+    // `fetch` threw UND_ERR_SOCKET before any status existed.
+    assert.equal(res.status, 413);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.skill, null);
+    assert.match(body.error, /too large/);
   });
 });
 

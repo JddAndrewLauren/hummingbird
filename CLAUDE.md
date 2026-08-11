@@ -29,8 +29,27 @@ me" degrades. Node stdlib-only server code (`node:http`, `node:child_process`,
 no framework), unit-tested with an injected fake `spawn` so no test needs a
 real `claude` binary. The response is an SSE/NDJSON progress stream ending in
 `{ok, skill, result, error?}` — streaming defeats Fly's 60s idle-connection
-kill — built from `claude -p --output-format json --json-schema <path>`,
-where the schema is versioned per-skill beside its `SKILL.md`. **v1 ships
+kill — built from `claude -p --output-format json --json-schema <schema>`,
+where the schema is versioned per-skill beside its `SKILL.md`. **Three
+things about that CLI contract are load-bearing and were each got wrong
+first**, every one of them invisible to a suite whose `spawn` is a fake:
+`--json-schema` takes the schema's **text**, never a path (a path is
+rejected as invalid JSON before the skill runs); a shipped schema file may
+carry **no `$schema` key** (the draft-2020-12 ref is rejected outright);
+and `--output-format json` answers with the CLI's **metadata envelope**, so
+the schema-constrained object is `structured_output`, not stdout parsed
+whole (`result` holds the same object as a string). `readOutcome` is that
+unwrap, split out of the spawn plumbing so each shape is one direct test.
+The counterweight to a fake `spawn` is `runner/test/parse-capture.test.js`,
+which reads the real shipped schema file off disk — which is also why the
+workflow's `paths:` filter watches `.claude/skills/parse-capture/**`
+alongside `runner/**`, since the image bakes that directory in from outside
+`runner/`. Relatedly, `readBody`'s oversize path **drains and discards**
+rather than `req.destroy()`: destroying tears down the socket the 413 has
+to travel on, so the client reads `UND_ERR_SOCKET` instead of the
+rejection — and for the same reason the 413 carries no `connection: close`,
+which loses the identical race against a client still uploading (both
+measured, not reasoned). **v1 ships
 `parse-capture` only** (#256, 2026-08-10 decision): #42's own minimal
 `{title, notes}` schema, writing to nothing — the write-target question
 (Linear vs. the ADR-0008 owned server) is explicitly deferred, which is what
@@ -387,12 +406,15 @@ in `body.rs` must match the cron. `.github/workflows/gmail-poll.yml`
 below) are the fourth and fifth — see any of their headers for why a
 repeated scoped exception does not reopen the general ban.
 
-**No longer true, closed by #255:** this section originally recorded that
-`POST /api/alerts` did not trigger delivery — `deliver` ran only from
-`sweep_tick`, so "the notification lane still delivers it" was
-aspirational for every webhook source, not just this one. See "The
-authority server" section above, `deliver`'s second caller, and
-ADR-0013's 2026-08-11 amendment for the fix.
+**The holiday-week alert this lane raises actually rings** (#255, ADR-0013's
+2026-08-11 amendment). `POST /api/alerts` triggers delivery inline: the
+ingest handler evaluates the live rule set against the alert it just
+upserted, presented as an `alert_raised` event, and calls the same
+`deliver` `sweep_tick` does. So a slide reaches a device as a push, not
+only through the delta pull — and that is true for every webhook source,
+not just this one. See `deliver`'s second caller in "The authority server"
+above for the shape of the hook and why it sits in the `ingest` handler
+rather than in the shared `upsert`.
 
 ## The Gmail evaluated-stream poller
 
@@ -1106,11 +1128,14 @@ one thing the prototype left open: the payload carries an IANA `zone` and
 every day-shaped question is resolved in it via `Intl.DateTimeFormat`, so
 "tonight" flips at the address's midnight and not the device's — a per-pane
 exception documented at its point of use. An unusable zone is a malformed
-payload, never a crash. (Still open, and *not* discharged by this slice:
-`city-waste/v2` is not in `server/domain/src/sources.rs` — only the retired
-`v1` is. Harmless here, since the read side never checks the registry and
-ADR-0015 forbids checking `schema` against it; the registration is
-#135–137's.)
+payload, never a crash. (#245 left one thing open here and #254 closed it:
+`city-waste/v2` is now enrolled in `server/domain/src/sources.rs` as
+`Writes::Both` — the daily poll body and the holiday-week alert under one
+string — where before only the retired `v1` had an entry at all. Nothing
+about this pane changes: the read side still never checks the registry, and
+ADR-0015 still forbids resolving a snapshot's `schema` against it. The
+enrollment's readers are elsewhere — #145's mint gate, and the per-table
+`Writes` check on each of the two ingest write handlers.)
 
 `screens/weekend-pane/` is the shell's second pane (#122), and the first
 question to read no snapshot lane at all: the merge is entirely at read
