@@ -3,6 +3,8 @@ import { Card } from "../components/core/Card";
 import { IconButton } from "../components/core/IconButton";
 import { CaptureBox } from "../screens/CaptureBox";
 import type { CaptureDestination } from "../screens/capture-destination";
+import type { TaskCaptureResult } from "../store/store";
+import type { CaptureFields } from "../store/worker-client";
 
 /** The DOM id the header's New button carries, so this popover can measure
  * what it hangs from. An id rather than a ref threaded through `Header`:
@@ -23,8 +25,12 @@ export interface CapturePopoverProps {
    * instead of being a no-op. */
   focusRequestId: number;
   onClose: () => void;
-  onSubmit: (title: string, destination: CaptureDestination) => void;
+  onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
   demo: boolean;
+  /** `TaskState.lastCapture`, threaded through to `CaptureBox` — the box
+   * clears only once a result actually reports `"ok"` (#222), and a failed
+   * one is words beside the field. */
+  lastCapture: TaskCaptureResult | null;
 }
 
 /** The shell's capture popover — the capture box under the header's New
@@ -45,7 +51,14 @@ export interface CapturePopoverProps {
  * `capture-validation.ts`, the destinations are `capture-destination.ts`, and
  * where a capture goes is `App.tsx`'s wiring. This component is the overlay
  * and its keyboard contract, nothing more. */
-export function CapturePopover({ open, focusRequestId, onClose, onSubmit, demo }: CapturePopoverProps) {
+export function CapturePopover({
+  open,
+  focusRequestId,
+  onClose,
+  onSubmit,
+  demo,
+  lastCapture,
+}: CapturePopoverProps) {
   const restoreTo = useRef<Element | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -173,7 +186,12 @@ export function CapturePopover({ open, focusRequestId, onClose, onSubmit, demo }
             </h2>
             <IconButton icon="x" label="Close" onClick={onClose} />
           </div>
-          <CaptureBox onSubmit={onSubmit} demo={demo} focusRequestId={focusRequestId} />
+          <CaptureBox
+            onSubmit={onSubmit}
+            demo={demo}
+            focusRequestId={focusRequestId}
+            lastCapture={lastCapture}
+          />
         </Card>
       </div>
     </div>

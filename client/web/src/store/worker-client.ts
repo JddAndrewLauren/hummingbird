@@ -17,6 +17,17 @@ import type {
  * clears it, a value sets it). */
 export type { TriageEdits } from "./protocol";
 
+/** The capture box's optional Energy/Size/Context selections (#208) — the
+ * caller-facing convenience shape over `TaskWorkerRequest`'s `"capture"`
+ * variant, same "omitted means unset" contract `TriageEdits` documents for
+ * its own fields. `screens/capture-meta.ts`'s `resolveCaptureFields` is
+ * what turns the capture box's live controls into this shape. */
+export interface CaptureFields {
+  size?: "quick" | "short" | "deep" | null;
+  energy?: "low" | "medium" | "high" | null;
+  context?: string | null;
+}
+
 // The narrow slice of the DOM `MessagePort` interface a view needs — narrow
 // enough that tests can pass a plain object instead of a real port. Under
 // ADR-0010 (#126) the core lives in a `SharedWorker`; each view talks to it
@@ -372,15 +383,30 @@ export function clearTaskApiKey(worker: WorkerLike): void {
 
 /** `seed` mints the deterministic id `Core::capture` derives from it; the
  * caller keeps its own seed to match the eventual `captureResult` broadcast
- * back to this specific call (see `TaskCaptureResult`, store.ts). */
+ * back to this specific call (see `TaskCaptureResult`, store.ts).
+ *
+ * `fields` (#208) carries the capture box's Energy/Size/Context selections
+ * onto the same wire message — an omitted key or an explicit `null` both
+ * mean "not set", so the "leaving all three at rest still absent" contract
+ * survives whether a caller passes `{}` or nothing at all. */
 export function captureTask(
   worker: WorkerLike,
   seed: string,
   title: string,
   stage: TaskStageName,
   nowMs: number,
+  fields: CaptureFields = {},
 ): void {
-  worker.postMessage({ type: "capture", seed, title, stage, nowMs });
+  worker.postMessage({
+    type: "capture",
+    seed,
+    title,
+    stage,
+    size: fields.size ?? null,
+    energy: fields.energy ?? null,
+    context: fields.context ?? null,
+    nowMs,
+  });
 }
 
 /** S11/#109's act mutation: start, complete, block, cancel. `seed` mints

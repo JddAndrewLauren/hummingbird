@@ -1,0 +1,102 @@
+<!doctype html>
+<!--
+  A REDUCED, SANITISED capture of the council's collection page.
+
+  Reduced: the live page is ~100 KB of Visualforce chrome, most of it a
+  remoting bootstrap carrying per-request CSRF tokens and signed JWTs. None of
+  it is anything `page::parse` reads, and none of it belongs in a public repo,
+  so what is committed is the `<main>` region verbatim — every element, id,
+  class and stray whitespace the parser anchors on, untouched.
+
+  Sanitised: the real capture names the operator's home address. It is
+  replaced here with an example one. The parser never reads it.
+
+  Captured 2026-08-10. All three streams collect on Monday 2026-08-10:
+  an ordinary week, and the only fixture here that is a real observation.
+-->
+<html lang="en"><head><title>Trash Collection Schedule</title></head><body>
+<main role="main">
+            
+            <div id="screen_1_collectionSchedule">
+                <div class="l-constrained l-padding-mobile-hd background-white">
+                    <div class="l-container breadcrumbs l-padding-ad l-padding-bn background-white" id="breadcrumbs">
+                        <a class="breadcrumbs__link" href="/apex/CollectionMapLookup">Collection Schedule Lookup</a>
+                        <span class="breadcrumbs__divider">&gt;</span>
+                        <span class="breadcrumbs__current">Collection Schedule Detail</span>
+                        <h1 id="start">Schedule Detail</h1>
+
+                    </div>
+
+                    <div class="row l-constrained background-white l-padding-mobile-hd">
+                        <div class="ten columns">
+                            <p class="subheading">
+                                    123 EXAMPLE ST, San Diego, CA 92101
+                            </p>
+                        </div>
+                        <div class="row schedule">
+                            <div class="four columns">
+                                <h3>Trash</h3>
+                                <p>Weekly</p>
+                                <div id="trash-date">
+                                    <p class="day"> Monday
+                                    </p>
+                                    <p class="date"> 08/10/2026                                                                                
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="four columns">                        
+                                <h3>Recyclables</h3>
+                                <p><span id="j_id0:j_id71">
+                                        Biweekly</span>
+                                </p>
+                                <div id="recycle-date">
+                                <p class="day"><span id="j_id0:j_id74"> Monday</span>
+                                </p>
+                                <p class="date"><span id="j_id0:j_id78"> 08/10/2026</span>                                                       
+                                </p>
+                                </div>
+                            </div><span id="j_id0:j_id97">
+                            <div class="four columns">
+                                <h3>Organics</h3>
+
+                                <p>
+                                    Weekly
+                                </p>
+                                <div id="organics-date">
+                                <p class="day"> Monday
+                                </p>
+                                <p class="date"> 08/10/2026  
+                                </p>
+                                </div>
+                            </div></span>
+ 
+                        </div>
+                        <div class="row" style="padding-top: 20px;">
+                            <div class="ten columns"><span id="j_id0:j_id106"><span id="j_id0:j_id107">
+                                        
+                                        <p>
+                                            <a href="https://www.sandiego.gov/sites/default/files/2025-12/curbsider-cl1.pdf" target="_tab">View your Recycling Collection Calendar</a>
+                                        </p></span></span>
+
+                                <p>
+                                    <a href="https://www.sandiego.gov/environmental-services/collection-status">Check your Trash/Recycling Collection Status</a> for delays or <a href="https://getitdone.sandiego.gov/TSWNewReport?type=Missed%20Trash">report a Missed Collection</a>.
+                                </p>
+
+                            </div>
+                        </div>                         
+                        <div class="row" style="padding-top: 20px;">
+                            <div class="ten columns">
+                                <div style="font-size: .8em;">
+                                    <p><strong>Note:</strong> Please call us at 858-694-7000 to report any errors with this data.</p>
+                                    <p><strong>Tip:</strong> Bookmark this page for quick access in the future.</p>
+                                </div>
+                            </div>
+                        </div>                         
+                    </div>
+                    <br />
+                </div> 
+            </div>        
+                
+            
+        </main>
+</body></html>

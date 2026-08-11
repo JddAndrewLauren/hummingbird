@@ -27,7 +27,7 @@ pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, ChangesResponse, ConflictResponse,
     CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreatePushTarget, CreateRule,
     CreateStep, FogPatch, ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch, RulePatch,
-    StepPatch, VERSION_CONFLICT,
+    SnapshotIngest, StepPatch, VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
 pub use deadline::{
@@ -43,10 +43,10 @@ pub use project::{Fog, Project, Route};
 pub use rule::{Condition, Delivery, Platform, PushTarget, Rule, Tier};
 pub use severity::{higher_severity, severity_rank, SEVERITIES};
 pub use sources::{
-    city_waste_v1_key, find as find_source, github_v1_key, gmail_alert_v1_key, gmail_v1_key,
-    google_calendar_v1_key, healthchecks_v1_key, home_assistant_v1_key, item_threshold_v1_key,
-    m365_calendar_v1_key, m365_mail_v1_key, photo_site_v1_key, Expiry, Shape, SourceEntry,
-    ITEM_THRESHOLD_V1, REGISTRY,
+    city_waste_v1_key, city_waste_v2_key, find as find_source, github_v1_key, gmail_alert_v1_key,
+    gmail_v1_key, google_calendar_v1_key, healthchecks_v1_key, home_assistant_v1_key,
+    item_threshold_v1_key, m365_calendar_v1_key, m365_mail_v1_key, photo_site_v1_key, Expiry,
+    Shape, SourceEntry, CITY_WASTE_V2, ITEM_THRESHOLD_V1, REGISTRY,
 };
 pub use step::{BlockedBy, Step};
 pub use token::{MintedToken, Scope, TokenInfo};

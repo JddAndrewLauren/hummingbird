@@ -365,5 +365,14 @@ All five verified live on 2026-08-07; the record is on map
 - **Never add a `schedule:` trigger** to `.github/workflows/deploy.yml`.
   Scheduling on Actions was overturned in #8 (pooled minutes, whole-minute
   billing, the $0 spending cap, 60-day auto-disable). supercronic owns cadence.
+  Qualified 2026-08-10 (#120): three of those four clauses were about a
+  *private* repo's Actions billing, and hummingbird is public, so the ban
+  that survives in general is only the 60-day auto-disable. **For the sweeper
+  it still holds absolutely** — supercronic is a live clock inside the Fly
+  container and an Actions cron would compete with it, which is a
+  correctness argument, not a billing one. `.github/workflows/city-waste.yml`
+  is the deliberate exception: a daily poll with no competing clock anywhere,
+  and self-monitoring (its pane bands its own answer stale at 26h and then
+  refuses to answer), so a stalled run is visible within a day.
 - **Never add `[http_service]` or `[[services]]`** to `fly.toml` — either would
   let Fly's autostop machinery suspend the worker between sweeps.

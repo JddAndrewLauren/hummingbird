@@ -1,0 +1,81 @@
+# The which-cans poller (#120): reads the council's collection page for one
+# address once a day and writes the answer to the authority.
+#
+# **This is the one Actions `schedule:` in the repo, and it is a deliberate
+# exception, not a drift.** The ban recorded in deploy.yml and docs/sweeper.md
+# comes from issue #8, and every clause of that overturn was about a *private*
+# repo: pooled Actions minutes, whole-minute rounding on a job that runs 96
+# times a day, and the $0 spending cap that would stop it dead. hummingbird is
+# public, so scheduled runs are free and none of those clauses apply. What
+# survives is GitHub's 60-day auto-disable for inactive repos — and this
+# particular lane is self-monitoring: the pane bands its own answer stale at
+# 26h and then refuses to answer at all, so a stalled poller is visible within
+# a day without anyone watching this workflow.
+#
+# The ban stays scoped to what it was about. The sweeper's 15-minute cadence
+# belongs to supercronic in the Fly container, and the authority's sweep tick
+# belongs to the Durable Object's own `alarm()`; a second clock for either
+# would compete with a live one. This poller has no live clock to compete
+# with — it is the only thing that ever polls this page.
+#
+# **The credential** is `CITY_WASTE_INGEST_TOKEN`, an `ingest`-scope token
+# bound to `city-waste/v2`, minted from the operator's terminal against
+# `ADMIN_SECRET`. It goes in Actions secrets on exactly the blast-radius
+# reasoning that keeps `ADMIN_SECRET` and `FCM_SERVICE_ACCOUNT` out: that one
+# mints every other token and this one carries an RSA private key, whereas
+# this token reaches three routes for one source, and its worst-case abuse is
+# a wrong bin day.
+name: city-waste
+
+on:
+  # 13:40 UTC ≈ 06:40 PDT / 05:40 PST — the address's early morning, and the
+  # cron time is what bounds the pane's one known gap: between the address's
+  # midnight and that day's fetch on the morning after a collection, the
+  # snapshot still names yesterday, and the pane refuses to answer rather
+  # than reading it as "trash today". Off the hour because GitHub documents
+  # dropped runs at peak.
+  #
+  # `polled_every_ms` in server/city-waste/src/body.rs must match this
+  # interval — it is what `Freshness` reads as the declared cadence.
+  schedule:
+    - cron: "40 13 * * *"
+  # A missed or dropped run, and the first run after the token is minted,
+  # otherwise have no trigger at all.
+  workflow_dispatch:
+
+# One poller at a time. Two overlapping runs would race on the same
+# `(source, key)` row; the authority's own "an older `fetched_at` never
+# overwrites" rule makes that safe rather than corrupting, but there is no
+# reason to lean on it.
+concurrency:
+  group: city-waste-poll
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # A GET, a page fetch and two POSTs, behind a cached build. Anything
+    # slower than this is a hung fetch.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match root `rust-toolchain.toml`, as every other workflow
+      # here is.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      # The same cache the server workflows keep. A cached build of this
+      # crate is ~1-2 minutes; if that ever grates, the refinement is to
+      # publish the binary as an artifact on `main` and have this job
+      # download it (~10s per run) rather than to drop the cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Poll the collection page
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          HB_INGEST_TOKEN: ${{ secrets.CITY_WASTE_INGEST_TOKEN }}
+        run: cargo run -q -p hummingbird-city-waste

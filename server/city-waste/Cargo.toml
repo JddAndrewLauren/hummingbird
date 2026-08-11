@@ -1,0 +1,38 @@
+[package]
+name = "hummingbird-city-waste"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller for `city-waste/v2` (#120). A workspace member,
+# so CI's `cargo clippy --workspace` / `cargo test --workspace` gate it —
+# unlike the `waste-cadence` prototype it replaces, which deliberately sat
+# outside.
+#
+# It must NEVER become a dependency of `hummingbird-authority-worker`: that
+# crate builds for wasm32, and this one holds an HTTP client and a tzdb.
+# (No HTML parser: `page.rs` reads three fields off two ids the council's page
+# names itself, which needs no tree builder — see its header.)
+# The split inside this crate is the same one
+# `authority/src/fcm.rs` and `worker/src/fcm.rs` already draw — everything
+# decidable lives in the lib and is natively tested; `main.rs` holds only
+# `std::env`, one GET and two POSTs.
+
+[dependencies]
+# The real `city_waste_v2_key` and the real `CITY_WASTE_V2`, never a
+# hand-copied twin: the frozen key vector in `sources.rs` is only a tripwire
+# if the one adapter that mints under this source goes through it.
+hummingbird-domain = { path = "../domain" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# IIANA time zones, for the ONE thing integer civil-date arithmetic cannot
+# do honestly: turning "end of the collection day" into an instant at the
+# address's midnight rather than the runner's. `date.rs` is otherwise
+# dependency-free.
+jiff = "0.2"
+
+# `main.rs` only. Blocking by design: the poller is a one-shot process, so
+# an async runtime would be pure ceremony.
+[dependencies.ureq]
+version = "3"
+default-features = false
+features = ["rustls", "json"]

@@ -33,7 +33,19 @@ export interface TaskHostLike {
    * `protocol.ts`'s `initTaskApiKey` doc for the full contract. */
   rehydrateApiKey(apiKey: string): void;
   clearApiKey(): void;
-  capture(seed: string, title: string, stage: string, nowMs: number): Promise<string>;
+  /** #208's `size`/`energy`/`context` are each `string | null` — the wire's
+   * snake_case vocabulary names, resolved by name through
+   * `hummingbird_domain::Size`/`Energy::parse` on the way in (never a raw
+   * index), and `context` carried straight through. `null` is "not set". */
+  capture(
+    seed: string,
+    title: string,
+    stage: string,
+    size: string | null,
+    energy: string | null,
+    context: string | null,
+    nowMs: number,
+  ): Promise<string>;
   act(seed: string, itemId: string, action: string, nowMs: number): Promise<string>;
   /** S13/#111's triage mutation. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::triage` exactly (`client/ffi-web/src/lib.rs`): `destination`
@@ -498,7 +510,15 @@ export async function handleTaskRequest(
       return;
     case "capture": {
       const raw = JSON.parse(
-        await host.capture(request.seed, request.title, request.stage, request.nowMs),
+        await host.capture(
+          request.seed,
+          request.title,
+          request.stage,
+          request.size,
+          request.energy,
+          request.context,
+          request.nowMs,
+        ),
       ) as RawCaptureResponse;
       post({ type: "captureResult", seed: request.seed, kind: raw.kind, id: raw.id, error: raw.error });
       postTaskEvents(host, post);

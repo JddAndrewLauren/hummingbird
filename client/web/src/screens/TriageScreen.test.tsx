@@ -22,7 +22,7 @@ const NOW = 10 * 60 * 60 * 1000;
 
 function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
   const onTriage = vi.fn();
-  render(
+  const view = render(
     <TriageScreen
       demo={null}
       task={task}
@@ -30,7 +30,16 @@ function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
       nowMs={NOW}
     />,
   );
-  return { onTriage };
+  const rerender = (nextTask: TaskState) =>
+    view.rerender(
+      <TriageScreen
+        demo={null}
+        task={nextTask}
+        onTriage={options.withTriage === false ? undefined : onTriage}
+        nowMs={NOW}
+      />,
+    );
+  return { onTriage, rerender };
 }
 
 /** The collapsed row IS the button that expands it, and its accessible name is
@@ -127,6 +136,71 @@ describe("TriageScreen — the collapsed inbox", () => {
     });
     fireEvent.click(row("vague thing"));
     expect(screen.queryByRole("button", { name: /promote to ready/i })).toBeNull();
+  });
+
+  it("keeps the draft after promoting, until the result comes back ok", () => {
+    // Issue #222: the draft used to clear the instant Promote was clicked,
+    // optimistically — this is what makes a failed triage lose the reader's
+    // edits on top of saying nothing about the failure.
+    const { onTriage, rerender } = renderTriage(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
+    );
+    fireEvent.click(row("vague thing"));
+    fireEvent.change(field("Title"), { target: { value: "Order the worktop" } });
+    fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
+    expect(onTriage).toHaveBeenCalledTimes(1);
+    // Still in flight — no result has come back yet.
+    expect((field("Title") as HTMLInputElement).value).toBe("Order the worktop");
+
+    rerender(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i1", kind: "ok", error: null },
+      }),
+    );
+    // The typing cleared: the field shows the item's own value again —
+    // `effectiveDraft` seeds from the item, never from blank.
+    expect((field("Title") as HTMLInputElement).value).toBe("vague thing");
+  });
+
+  it("surfaces a failed triage and leaves the draft in place", () => {
+    const { onTriage, rerender } = renderTriage(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
+    );
+    fireEvent.click(row("vague thing"));
+    fireEvent.change(field("Title"), { target: { value: "Order the worktop" } });
+    fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
+    expect(onTriage).toHaveBeenCalledTimes(1);
+
+    rerender(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i1", kind: "failed", error: "Nope." },
+      }),
+    );
+    expect(screen.getByText("Nope.")).toBeDefined();
+    // The edits are still here to retry or amend.
+    expect((field("Title") as HTMLInputElement).value).toBe("Order the worktop");
+  });
+
+  it("announces a failed triage to a screen reader, even on a collapsed row", () => {
+    renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i1", kind: "failed", error: "Nope." },
+      }),
+    );
+    expect(screen.getByRole("alert").textContent).toBe("Nope.");
+  });
+
+  it("does not wear a failure that belongs to a different item", () => {
+    renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        lastTriage: { seed: "s1", itemId: "i2", kind: "failed", error: "Nope." },
+      }),
+    );
+    expect(screen.queryByText("Nope.")).toBeNull();
   });
 
   it("says the inbox is empty when it is", () => {

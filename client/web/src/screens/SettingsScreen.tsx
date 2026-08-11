@@ -228,7 +228,7 @@ function BindingRow({
             </Button>
           </div>
           {writeError ? (
-            <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+            <p role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
               {writeError}
             </p>
           ) : null}

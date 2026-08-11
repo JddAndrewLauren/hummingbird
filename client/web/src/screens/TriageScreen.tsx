@@ -173,6 +173,7 @@ export function TriageScreen({
                 nowMs={nowMs}
                 onTriage={onTriage}
                 onComplete={onComplete}
+                lastTriage={task.lastTriage}
               />
             ))}
           </div>

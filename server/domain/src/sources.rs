@@ -18,6 +18,16 @@
 //! "unknown to the codebase" — do not read absence from this registry as a
 //! naming-convention violation on those tables.
 //!
+//! A source may of course be *both*: `city-waste/v2` writes a
+//! `context_snapshots` row every poll **and** mints an alert on a holiday
+//! week, under one string, because ADR-0009's join constraint is that the
+//! snapshot's `source` and the alert's `source` are the same value. It is
+//! enrolled here for the alert half; the snapshot half is not something
+//! this registry has an opinion about. What that does mean is that a
+//! future **snapshot-only** source will not be enrolled and so cannot be
+//! bound to an ingest token — see `handlers/admin_tokens.rs::mint`, which
+//! is where that bites.
+//!
 //! Nothing here validates a recipe at runtime: `source_key` is opaque to
 //! the server by design (no delimiter grammar, no parsing — ADR-0009 rule
 //! 4's "entire common core" stays intact). What this registry buys is a
@@ -108,6 +118,13 @@ impl SourceEntry {
 /// One `const`, two consumers, makes that drift a compile error instead.
 pub const ITEM_THRESHOLD_V1: &str = "item-threshold/v1";
 
+/// `city-waste/v2`'s frozen namespace, named for [`ITEM_THRESHOLD_V1`]'s
+/// reason: two consumers share one literal — the registry entry below and
+/// `server/city-waste`, the out-of-process poller that actually mints under
+/// it — so a future retirement to `/v3` is a compile error at the poller
+/// rather than a source string that quietly keeps resolving.
+pub const CITY_WASTE_V2: &str = "city-waste/v2";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -153,12 +170,11 @@ pub const REGISTRY: &[SourceEntry] = &[
     // it. `city_waste_v1_key` stays defined and tested below regardless —
     // retirement never breaks the recipe old rows still need.
     //
-    // No `city-waste/v2` entry exists here yet — that lands with #135-137,
-    // whichever poller actually produces `/v2` rows. Until then `city-waste`
-    // is entirely unmintable as an ingest-token source (`v1` 400s as
-    // retired, `v2` 400s as unregistered): correct per ADR-0014, and loud
-    // rather than silent, but worth knowing going in rather than
-    // rediscovering at that poller's `POST /api/admin/tokens` step.
+    // `city-waste/v2` is registered directly below (#120), so `v1` is now
+    // the ordinary retired case: it 400s at mint with its successor named,
+    // and `v2` mints. Do NOT edit `v1`'s strings — a retired entry is
+    // frozen, including the `key_recipe` and `expires_at` wording that
+    // describe what its already-minted rows meant.
     SourceEntry {
         source: "city-waste/v1",
         shape: Shape::Event,
@@ -166,7 +182,18 @@ pub const REGISTRY: &[SourceEntry] = &[
                       collection date, never whatever date a later \
                       correction slides to",
         expires_at: Expiry::Always("end of the affected collection date"),
-        retired_as: Some("city-waste/v2"),
+        retired_as: Some(CITY_WASTE_V2),
+    },
+    SourceEntry {
+        source: CITY_WASTE_V2,
+        shape: Shape::Event,
+        key_recipe: "the originally scheduled collection date, alone — never \
+                      the date a correction slides to, and never qualified \
+                      by which bins go out",
+        expires_at: Expiry::Always(
+            "end of the LATER of the scheduled and the slid-to collection date",
+        ),
+        retired_as: None,
     },
     SourceEntry {
         source: ITEM_THRESHOLD_V1,
@@ -272,6 +299,28 @@ pub fn city_waste_v1_key(stream: &str, scheduled_date: &str) -> String {
     format!("{stream}:{scheduled_date}")
 }
 
+/// `city-waste/v2`: the originally scheduled collection date, and nothing
+/// else.
+///
+/// **Two parameters left v1, and each absence is the point.**
+///
+/// The slid-to date is absent for v1's reason, carried forward verbatim:
+/// `scheduled_date` is the fixed coordinate, so a Tue → Wed correction to
+/// one holiday lands on the row already minted for it rather than minting a
+/// second alert about the same week.
+///
+/// The **stream** is absent because the domain corrected under it: there is
+/// one collection day, and everything going out that week goes out together
+/// (the finding that superseded the `waste-cadence` prototype's per-stream
+/// fan-out). One week's slide is therefore one occurrence. Keying per
+/// stream would mint three near-identical rows for one holiday, each
+/// wanting its own dismissal. Which bins go out is a *property* of the
+/// occurrence — carried in the alert's body and in the snapshot the pane
+/// reads — never part of its identity.
+pub fn city_waste_v2_key(scheduled_date: &str) -> String {
+    scheduled_date.to_string()
+}
+
 /// `item-threshold/v1`: `item:<id>`. Keyed on the item, not
 /// `item:<id>:<deadline>` — a re-committed deadline must re-raise the same
 /// row, never mint a second (ADR-0014).
@@ -350,6 +399,14 @@ mod tests {
                 Shape::Event,
                 Expiry::Always("end of the affected collection date"),
                 Some("city-waste/v2"),
+            ),
+            (
+                "city-waste/v2",
+                Shape::Event,
+                Expiry::Always(
+                    "end of the LATER of the scheduled and the slid-to collection date",
+                ),
+                None,
             ),
             ("item-threshold/v1", Shape::State, Expiry::Never, None),
             ("healthchecks/v1", Shape::State, Expiry::Never, None),
@@ -576,6 +633,67 @@ mod tests {
         let key_after_correction = city_waste_v1_key("trash", corrected_poll.scheduled_date);
         assert_eq!(key_when_first_seen, "trash:2026-08-17");
         assert_eq!(key_when_first_seen, key_after_correction);
+    }
+
+    /// v2's frozen vector, and it pins **two** independent ways the key
+    /// must refuse to move — the pair that decides whether one holiday is
+    /// one occurrence or several.
+    ///
+    /// A *correction* (Tue → Wed) is v1's clause carried forward: the
+    /// slid-to date is not a parameter, so it cannot reach the key.
+    ///
+    /// A *change in which bins go out* is the new one. Under the corrected
+    /// domain there is one collection day, so a week where recycling joins
+    /// the trash is the same collection, not a second one — and the key
+    /// takes no stream, so the two readings below are the same occurrence
+    /// by construction. If this ever regresses to `<stream>:<date>`, one
+    /// holiday starts minting a row per bin and each wants its own
+    /// dismissal.
+    #[test]
+    fn city_waste_v2_keys_on_the_scheduled_date_alone() {
+        struct CityPagePoll {
+            scheduled_date: &'static str,
+            /// Neither of these is a parameter of `city_waste_v2_key` —
+            /// they are what the key must ignore.
+            slides_to: &'static str,
+            streams: &'static [&'static str],
+        }
+        let first_poll = CityPagePoll {
+            scheduled_date: "2026-08-17",
+            slides_to: "2026-08-18",
+            streams: &["trash"],
+        };
+        let corrected_poll = CityPagePoll {
+            scheduled_date: "2026-08-17",
+            slides_to: "2026-08-19",
+            streams: &["trash", "recycling"],
+        };
+        assert_ne!(
+            first_poll.slides_to, corrected_poll.slides_to,
+            "the correction must actually move the slide date"
+        );
+        assert_ne!(
+            first_poll.streams, corrected_poll.streams,
+            "the second reading must actually differ in which bins go out"
+        );
+
+        let key_when_first_seen = city_waste_v2_key(first_poll.scheduled_date);
+        let key_after_correction = city_waste_v2_key(corrected_poll.scheduled_date);
+        assert_eq!(key_when_first_seen, "2026-08-17");
+        assert_eq!(key_when_first_seen, key_after_correction);
+    }
+
+    /// The next week's holiday is a *different* occurrence — ADR-0012's
+    /// Christmas/New Year case, written about this very source. Pinned
+    /// alongside the vector above, because "the key never moves" and "two
+    /// weeks are two occurrences" are the two halves of one property and a
+    /// key that over-collapsed would satisfy only the first.
+    #[test]
+    fn city_waste_v2_keys_two_consecutive_holiday_weeks_apart() {
+        assert_ne!(
+            city_waste_v2_key("2026-12-21"),
+            city_waste_v2_key("2026-12-28")
+        );
     }
 
     #[test]

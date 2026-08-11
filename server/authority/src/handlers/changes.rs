@@ -12,10 +12,9 @@
 //!
 //! [`ChangesResponse`]: hummingbird_domain::ChangesResponse
 
-use hummingbird_domain::{ChangesResponse, ContextSnapshot};
+use hummingbird_domain::ChangesResponse;
 
 use super::{error, json, query_param, read_meta_version, ApiResponse};
-use crate::codec::RowReader;
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
 pub fn changes(query: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
@@ -50,7 +49,13 @@ fn changes_since(since: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
         steps: pull(sql, since, "steps", "id", super::steps::step_from_row)?,
         blocked_by: pull(sql, since, "blocked_by", "item_id, blocker_id", super::blocked_by::edge_from_row)?,
         alerts: pull(sql, since, "alerts", "id", super::alerts::alert_from_row)?,
-        context_snapshots: pull(sql, since, "context_snapshots", "source, key", snapshot_from_row)?,
+        context_snapshots: pull(
+            sql,
+            since,
+            "context_snapshots",
+            "source, key",
+            super::snapshots::snapshot_from_row,
+        )?,
         settings: pull(sql, since, "settings", "key", super::settings::setting_from_row)?,
         rules: pull(sql, since, "rules", "id", super::rules::rule_from_row)?,
     };
@@ -73,15 +78,3 @@ fn pull<T>(
     .collect()
 }
 
-/// `context_snapshots` has no write handler in #114 (the server-polled lane
-/// wires post-cutover), so its row mapping lives with its only reader.
-fn snapshot_from_row(row: &Row) -> Result<ContextSnapshot, SqlError> {
-    let r = RowReader(row);
-    Ok(ContextSnapshot {
-        source: r.text("source")?,
-        key: r.text("key")?,
-        payload: r.text("payload")?,
-        fetched_at: r.int("fetched_at")?,
-        version: r.int("version")?,
-    })
-}

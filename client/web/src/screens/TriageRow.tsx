@@ -9,6 +9,7 @@ import { Select } from "../components/forms/Select";
 import { Textarea } from "../components/forms/Textarea";
 import { relativeAge } from "../shell/sync-status";
 import type { ProjectDTO, TaskItemDTO, TriageDestinationName } from "../store/protocol";
+import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { canMarkDone } from "./item-actions";
 import { PRIORITY_OPTIONS } from "./priority";
@@ -57,6 +58,13 @@ export interface TriageRowProps {
    * detail-panel act vocabulary still offers nothing here, but finishing is
    * one click on every screen (`item-actions.ts`'s `canMarkDone`). */
   onComplete?: (itemId: string) => void;
+  /** The most recent triage result any row got back (`TaskState.lastTriage`)
+   * — matched here by the item id the result itself carries, the same
+   * broadcast-recognition contract `NowScreen`'s `actError` uses for
+   * `lastAct`. A failure belongs to whichever item it names, never to
+   * "whichever row is open"; an `"ok"` for this item is what clears the
+   * typing below (issue #222 — a draft must survive a failed write). */
+  lastTriage?: TaskTriageResult | null;
 }
 
 /** One triage-inbox row: a single line by default, the full editor when
@@ -81,6 +89,7 @@ export function TriageRow({
   nowMs,
   onTriage,
   onComplete,
+  lastTriage,
 }: TriageRowProps) {
   // Only what the person has typed is state — see `effectiveDraft`'s doc for
   // why the rest is derived per render rather than seeded once.
@@ -94,15 +103,37 @@ export function TriageRow({
     setTouched((current) => ({ ...current, [field]: value }));
   }
 
+  // Reviewer finding on issue #222 (the capture/triage twin of PR #207's
+  // act-failure defect): the typing used to clear the instant Promote was
+  // clicked, optimistically, so a failed write lost the reader's edits AND
+  // said nothing about the failure. It now stays put — `promote` below only
+  // ever sends the mutation — and clears here, once and only once a result
+  // actually reports `"ok"` for THIS item. The React-docs "adjusting state
+  // when a prop changes" pattern, guarded on the result's own `seed` so a
+  // broadcast already observed is never reprocessed, and keyed by the itemId
+  // the result carries — a success on another row's item cannot wipe this
+  // row's still-in-flight edits.
+  const [processedTriageSeed, setProcessedTriageSeed] = useState<string | null>(null);
+  if (lastTriage && lastTriage.seed !== processedTriageSeed) {
+    setProcessedTriageSeed(lastTriage.seed);
+    if (lastTriage.kind === "ok" && lastTriage.itemId === item.id) {
+      setTouched({});
+    }
+  }
+
+  // Matched by item id, same broadcast-recognition contract `NowScreen.tsx`'s
+  // `actError` uses for `lastAct` — a failure belongs to whichever item it
+  // names, never to "whichever row is open".
+  const triageError =
+    lastTriage && lastTriage.itemId === item.id && lastTriage.kind !== "ok"
+      ? (lastTriage.error ?? "That triage didn't apply.")
+      : null;
+
   function promote(destination: TriageDestinationName): void {
     if (!onTriage || blocked) {
       return;
     }
     onTriage(item.id, destination, buildTriageEdits(draft, item));
-    // Drop the typing along with the row: the item is leaving this list, and a
-    // draft kept past that would reappear over whatever lands next under the
-    // same id.
-    setTouched({});
   }
 
   return (
@@ -195,6 +226,25 @@ export function TriageRow({
           />
         ) : null}
       </div>
+
+      {/* Outside the expanded block on purpose: a failure belongs to the item,
+          and it must still be on screen when the result lands after the reader
+          has collapsed the row. `role="alert"`: the paragraph appears with no
+          other change on the page, so colour alone would never reach a screen
+          reader. */}
+      {triageError ? (
+        <p
+          role="alert"
+          style={{
+            font: "var(--type-body-sm)",
+            color: "var(--status-danger-fg)",
+            padding: "0 var(--space-5) var(--space-4)",
+            margin: 0,
+          }}
+        >
+          {triageError}
+        </p>
+      ) : null}
 
       {expanded && onTriage ? (
         <div

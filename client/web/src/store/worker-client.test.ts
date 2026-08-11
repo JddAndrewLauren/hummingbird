@@ -991,7 +991,7 @@ describe("the task send helpers (#105/S7)", () => {
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "clearTaskApiKey" });
   });
 
-  it("captureTask posts a capture request carrying its seed", () => {
+  it("captureTask posts a capture request carrying its seed, with size/energy/context absent by default", () => {
     const worker = fakeWorker();
     captureTask(worker, "seed-1", "buy milk", "ready", 1_000);
     expect(worker.postMessage).toHaveBeenCalledWith({
@@ -999,6 +999,29 @@ describe("the task send helpers (#105/S7)", () => {
       seed: "seed-1",
       title: "buy milk",
       stage: "ready",
+      size: null,
+      energy: null,
+      context: null,
+      nowMs: 1_000,
+    });
+  });
+
+  // #208: a caller-supplied `fields` reaches the wire message verbatim.
+  it("captureTask posts a set size, energy and context verbatim", () => {
+    const worker = fakeWorker();
+    captureTask(worker, "seed-1", "buy milk", "ready", 1_000, {
+      size: "deep",
+      energy: "high",
+      context: "@errands",
+    });
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "capture",
+      seed: "seed-1",
+      title: "buy milk",
+      stage: "ready",
+      size: "deep",
+      energy: "high",
+      context: "@errands",
       nowMs: 1_000,
     });
   });

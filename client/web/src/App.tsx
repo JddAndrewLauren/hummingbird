@@ -31,7 +31,7 @@ import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
 import { taskTokenUiState } from "./task/token-ui";
 import { useStore } from "./store/useStore";
-import type { WorkerLike } from "./store/worker-client";
+import type { CaptureFields, WorkerLike } from "./store/worker-client";
 import { toggledPreference } from "./theme/theme";
 import { useTheme } from "./theme/useTheme";
 
@@ -142,18 +142,19 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // `demoData()` is null in production.
   const [demoCaptures, setDemoCaptures] = useState(() => demo?.triage ?? []);
 
-  function handleCapture(title: string, destination: CaptureDestination) {
+  function handleCapture(title: string, destination: CaptureDestination, fields: CaptureFields) {
     if (demo) {
-      // Fixtures, so `destination` is not honoured: the demo frontier is a
-      // hand-authored world, and a minted fixture appearing on it would be a
-      // second, divergent source of truth for what the demo shows.
+      // Fixtures, so `destination` is not honoured — and neither is `fields`:
+      // the demo frontier is a hand-authored world, and a minted fixture
+      // appearing on it would be a second, divergent source of truth for what
+      // the demo shows.
       setDemoCaptures((current) => [
         { id: `CAP-${current.length + 8}`, title, source: "Typed here", age: "just now" },
         ...current,
       ]);
       return;
     }
-    submitCapture(title, destination, Date.now());
+    submitCapture(title, destination, Date.now(), fields);
   }
 
   function dropDemoCapture(id: string) {
@@ -330,6 +331,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onClose={() => setCaptureOpen(false)}
         onSubmit={handleCapture}
         demo={demo !== null}
+        lastCapture={demo ? null : task.lastCapture}
       />
     </div>
   );

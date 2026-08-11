@@ -42,6 +42,16 @@ pub fn ingest(
     if ingest.subject_key.as_deref() == Some("") {
         return Ok(error(400, "validation", "subject_key must be non-empty when present"));
     }
+    // Two contradictory instructions about `raised_at`: one says "use this
+    // stamp", the other says "decide the stamp for me". Refused rather than
+    // silently ordered.
+    if ingest.restamp_on_change && ingest.raised_at.is_some() {
+        return Ok(error(
+            400,
+            "validation",
+            "restamp_on_change and an explicit raised_at cannot both be sent",
+        ));
+    }
     if token_source != Some(ingest.source.as_str()) {
         return Ok(empty_status(403));
     }
@@ -141,6 +151,27 @@ pub(crate) fn upsert(
     if next == current {
         return Ok((200, current));
     }
+
+    // Past this point the raise genuinely changed a source-owned field —
+    // which is exactly the condition `restamp_on_change` names (#120). A
+    // repeatedly-polled source re-reports the same occurrence every run for
+    // days and cannot tell those runs apart from a correction, because an
+    // ingest token cannot read the alert back; the equality check above is
+    // the server making that call on its behalf. `now_ms` is the **write
+    // clock**, deliberately, not the poller's nominal cron slot — a
+    // correction stamped at an 06:00 bucket would land before an 08:00
+    // dismissal made the same morning and stay silently quiet.
+    //
+    // Note where this sits: the unchanged re-poll returned above without a
+    // write at all, so the dismissal it must not disturb is never even
+    // rewritten. `dismissed_at` itself stays untouched here as everywhere —
+    // what a restamp does is let a later `raised_at` overtake it, which is
+    // ADR-0014's own "a later raise rings again over a settled alert".
+    let next = if ingest.restamp_on_change {
+        Alert { raised_at: now_ms, ..next }
+    } else {
+        next
+    };
 
     let version = read_meta_version(sql)? + 1;
     sql.exec(

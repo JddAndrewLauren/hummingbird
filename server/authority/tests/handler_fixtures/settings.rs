@@ -1,5 +1,6 @@
 //! `PUT /api/settings/:key` — create-or-update under one CAS rule, typed
-//! JSON stored canonically.
+//! JSON stored canonically — and `GET /api/settings/:key`, the one read a
+//! non-device scope reaches (#120).
 
 use hummingbird_domain::{ConflictResponse, Setting};
 
@@ -84,4 +85,75 @@ fn put_validation_400() {
         assert_eq!(resp.status, 400, "{why}: {}", resp.body);
     }
     assert_eq!(meta_version(&sql), 0);
+}
+
+// --- GET /api/settings/:key (#120) -------------------------------------
+
+#[test]
+fn get_reads_one_setting_by_key_and_404s_when_unset() {
+    let sql = RusqliteSql::new();
+    put_setting(
+        &sql,
+        "city-waste-page",
+        r#"{"expected_version": 0, "value": "https://city.example/collection?addr=1"}"#,
+        1000,
+    );
+
+    let resp = req(&sql, "GET", "/api/settings/city-waste-page", None, None, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let setting: Setting = body_as(&resp);
+    assert_eq!(setting.key, "city-waste-page");
+    assert_eq!(
+        setting.value, r#""https://city.example/collection?addr=1""#,
+        "the stored canonical JSON, quotes and all — the caller parses"
+    );
+
+    // "Nobody has set this" is a state the caller must handle, not a null
+    // to squint at: a poller's correct response is to exit without writing
+    // rather than to poll a guessed address.
+    let missing = req(&sql, "GET", "/api/settings/trips-calendar", None, None, 0);
+    assert_eq!(missing.status, 404, "{}", missing.body);
+
+    assert_eq!(meta_version(&sql), 1, "a read writes nothing");
+}
+
+/// The scope widening, stated as a test. An ingest token may read a
+/// setting — it needs the binding that tells it what to poll — and still
+/// may not read anything else.
+#[test]
+fn an_ingest_token_may_read_a_setting_and_nothing_else() {
+    let sql = RusqliteSql::new();
+    put_setting(&sql, "city-waste-page", r#"{"expected_version": 0, "value": "u"}"#, 0);
+    bind_ingest_token(&sql, "city-waste/v2");
+
+    let resp = req_as(&sql, INGEST_TOKEN, "GET", "/api/settings/city-waste-page", None, None, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+
+    // Still no route to the workspace itself, and still no write here.
+    for (method, path, query, body) in [
+        ("GET", "/api/changes", Some("since=0"), None),
+        ("GET", "/api/sweep", None, None),
+        ("PUT", "/api/settings/city-waste-page", None, Some(r#"{"expected_version": 1, "value": "x"}"#)),
+    ] {
+        let resp = req_as(&sql, INGEST_TOKEN, method, path, query, body, 0);
+        assert_eq!(resp.status, 403, "{method} {path}: {}", resp.body);
+        assert!(resp.body.is_empty(), "{method} {path} leaked: {}", resp.body);
+    }
+}
+
+#[test]
+fn a_sweeper_token_may_not_read_a_setting() {
+    let sql = RusqliteSql::new();
+    put_setting(&sql, "city-waste-page", r#"{"expected_version": 0, "value": "u"}"#, 0);
+    let resp = req_as(&sql, SWEEPER_TOKEN, "GET", "/api/settings/city-waste-page", None, None, 0);
+    assert_eq!(resp.status, 403, "{}", resp.body);
+}
+
+#[test]
+fn an_unauthenticated_settings_read_is_401() {
+    let sql = RusqliteSql::new();
+    put_setting(&sql, "city-waste-page", r#"{"expected_version": 0, "value": "u"}"#, 0);
+    let resp = req_anon(&sql, "GET", "/api/settings/city-waste-page", None, None);
+    assert_eq!(resp.status, 401);
+    assert!(resp.body.is_empty());
 }

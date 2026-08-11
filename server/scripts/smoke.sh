@@ -186,6 +186,38 @@ request 200 GET "/api/changes?since=0" '' "$DEVICE"
 request 200 PATCH "/api/alerts/$ALERT_ID" "{\"expected_version\":$AV,\"dismissed_at\":1}" "$DEVICE"
 [ "$(jq -r '.dismissed_at' <<<"$BODY")" = "1" ] || fail "dismiss did not apply: $BODY"
 
+# ---------------------------------------------------------- snapshots
+
+# The server-polled lane (#120), through the real DO rather than rusqlite:
+# first write 201, byte-identical replay no-op, a fresh stamp on an unchanged
+# payload still writing. The ingest token above is bound to
+# "healthchecks/v1", which is also the source used here — the route does not
+# care what the source *means*, only that the token is bound to it.
+SNAP='{"source":"healthchecks/v1","key":"collection","fetched_at":1000,"payload":{"schema":"healthchecks/v1","polled_every_ms":86400000,"body":{"n":1}}}'
+request 201 POST /api/snapshots "$SNAP" "$INGEST"
+SV=$(jq -r '.version' <<<"$BODY")
+request 200 POST /api/snapshots "$SNAP" "$INGEST"
+[ "$(jq -r '.version' <<<"$BODY")" = "$SV" ] || fail "byte-identical snapshot replay bumped: $BODY"
+
+# `fetched_at` is part of the value: an unchanged payload polled again still
+# moves the stamp, or a healthy poller reads as a dead one.
+FRESH=${SNAP/\"fetched_at\":1000/\"fetched_at\":87400000}
+request 200 POST /api/snapshots "$FRESH" "$INGEST"
+[ "$(jq -r '.fetched_at' <<<"$BODY")" = "87400000" ] || fail "fresh poll did not move fetched_at: $BODY"
+[ "$(jq -r '.version' <<<"$BODY")" != "$SV" ] || fail "fresh poll did not reach the delta: $BODY"
+
+# A broken envelope is refused at the write, naming what was wrong; a device
+# may not write here at all.
+request 400 POST /api/snapshots '{"source":"healthchecks/v1","key":"k","fetched_at":1,"payload":{"body":{}}}' "$INGEST"
+request 403 POST /api/snapshots "$SNAP" "$DEVICE"
+[ -z "$BODY" ] || fail "snapshot 403 leaked a body: $BODY"
+
+# The one read a non-device scope reaches, and its unset case.
+request 201 PUT /api/settings/city-waste-page '{"expected_version":0,"value":"https://city.example/x"}' "$DEVICE"
+request 200 GET /api/settings/city-waste-page '' "$INGEST"
+[ "$(jq -r '.value' <<<"$BODY")" = '"https://city.example/x"' ] || fail "settings read: $BODY"
+request 404 GET /api/settings/trips-calendar '' "$INGEST"
+
 # ------------------------------------------------------ sweep = delta
 
 SWEEP=$(curl -s -H "Authorization: Bearer $DEVICE" "$BASE/api/sweep")
