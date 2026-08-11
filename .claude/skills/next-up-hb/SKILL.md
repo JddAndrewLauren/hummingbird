@@ -1,6 +1,6 @@
 ---
 name: next-up-hb
-description: Pick what to do right now from the app-owned authority (ADR-0008) — survey what is startable in one read-only call, rank it with the deterministic ranker, and present one top pick with a few alternates and a pipeline-health footer. Use when the user asks "what should I do", "what's next", "what can I do in twenty minutes", or invokes /next-up-hb. Not a decomposer and not a delegator — /to-actions breaks a project into actions, /microtask breaks a picked issue into steps.
+description: Pick what to do right now from the app-owned authority (ADR-0008) — survey what is startable, rank it with the deterministic ranker, and present one top pick with a few alternates and a pipeline-health footer; also the front door for handing a single agent-marked item to an agent. Use when the user asks "what should I do", "what's next", "what can I do in twenty minutes", "what can I hand off", invokes /next-up-hb, or names an item to delegate. Not a decomposer — /to-actions breaks a project into actions, /microtask breaks a picked item into steps.
 ---
 
 # /next-up-hb
@@ -11,13 +11,15 @@ description: Pick what to do right now from the app-owned authority (ADR-0008) �
 > commands unambiguous. The runner op name and this directory carry it too.
 
 A **task selector**, not a router: answer "what should I do right now" against the
-app-owned authority with **one** top pick. Never a full list.
+app-owned authority with **one** top pick. Plus one branch — handing a single chosen item
+to an agent. Never a full list.
 
-Vocabulary (Action, Route, Destination, Fog, External wait) is in the root `CONTEXT.md`.
+Vocabulary (Action, Route, Destination, Fog, Delegation axis, External wait) is in the
+root `CONTEXT.md`.
 
 **This skill talks to nothing but hummingbird's own API.** No Linear, no issue ids of any
-other tracker, no `scripts/linear.sh` — `/next-up-personal` is the Linear-era skill and is
-untouched by this one.
+other tracker, no `linear.sh`. `/next-up-personal` was the Linear-era skill and is
+**retired** (#115) — this one replaced it, delegation branch included.
 
 ## What this skill does and does not decide
 
@@ -37,15 +39,18 @@ reading the fog, and writing the answer.
 ```
 .claude/skills/next-up-hb/scripts/next-up.sh survey \
   [--context @computer] [--energy low|medium|high] [--size quick|short|deep] \
-  [--calendar <file>]
+  [--agent] [--calendar <file>]
 ```
 
 One read-only `GET /api/sweep`, then the ranker. Everything the survey needs — items,
-blocked-by edges, projects, fog — arrives in that one payload.
+blocked-by edges, projects, fog — arrives in that one payload. This arm also carries the
+delegation verbs below.
 
 **Hosted runner** (#41/#256's second op): the runner is **context-blind**. The sweep
 payload arrives in the `{skill, args}` request from the calling device's mirror, so the
-runner holds no authority token and makes no HTTP call.
+runner holds no authority token and makes no HTTP call. **It therefore cannot delegate**:
+the branch below is three writes, and this arm has neither a credential nor a shell to
+make them with. Report `agent_doable` and stop.
 
 **On this arm the ranking has already happened.** The runner spawns `next-up-rank` itself
 before you are invoked and puts its answer in your prompt under `ranked` — you have no
@@ -66,7 +71,7 @@ the `survey` verb short-circuits the fetch and exercises the whole path.
 {
   "candidates": [ { "item": Item, "reasons": [ReasonCode, ...] }, ... ],  // best first
   "health": {
-    "triage": 2, "grilling": 0, "blocked_dropped": 1,
+    "triage": 2, "grilling": 0, "blocked_dropped": 1, "agent_doable": 3,
     "fog_exhausted": [ {"project_id": "...", "project": "...", "questions": ["...", ...]} ]
   }
 }
@@ -85,10 +90,14 @@ re-filter or re-sort it.
 One parser handles every entry point. Every axis is independently skippable, and skipping
 all three is fine and common — rank everything that qualifies.
 
+- **An item ref** (`HB-12`, case-insensitive `HB-\d+`, or a bare uuid) → skip the survey
+  entirely and go straight to **Delegation**. Required: delegation must work outside a
+  next-up context.
 - **Filter args**, any subset in any order: `office low 30m`, `@computer quick`, `high`.
   Contexts match with or without the `@`. Time is either a duration (`30m`, `2h`,
   `15 min`) or a size word; map a duration onto the nearest size — ≲15 min → `quick`, up
-  to about an hour → `short`, beyond that → `deep`.
+  to about an hour → `short`, beyond that → `deep`. Also **`agent`**, meaning "only what I
+  could hand off" — that is `--agent`, the fourth axis, not one of the three.
 - **Free text** ("I've got twenty minutes and no brain") is a fast path: read it into the
   same three axes and proceed. Don't interrogate.
 - **Bare `/next-up-hb`** → ask context, energy and time via the in-session multiple-choice
@@ -99,6 +108,26 @@ all three is fine and common — rank everything that qualifies.
 spellings, which the script rejects anything else for.
 
 **No standalone GUI.** Deferred to v2 behind the dashboard tripwire — don't smuggle one in.
+
+## The fourth axis
+
+Three axes rank; the fourth answers a different question. **Context, energy and size are
+`rank.rs`'s** and are not restated here. `agent` — CONTEXT.md's **delegation axis**, *who
+does this* — is the selector's, and it behaves unlike the other three in one way worth
+holding:
+
+**Context is a hard filter that untagged work survives. `agent` is a hard filter that
+untagged work fails.** An item naming no context is doable anywhere; an item carrying no
+`agent` is *the human's*. There is no marker for "the human does it" — the absence is the
+marker. So `--agent` is the only axis that makes the answer smaller by default, which is
+exactly what "what could I hand off right now" asks for: the 9pm case where the honest
+answer isn't a smaller task but *not one of mine*.
+
+Orthogonal to stage: an item can be agent-doable and still need grilling first.
+
+The filter is applied by `client/next-up`'s selector, not by you — pass `--agent` and read
+what comes back. `health.agent_doable` counts hand-off-able work on **every** survey,
+marked or not, so you can make the offer below without a second call.
 
 ## Calendar context (optional input)
 
@@ -157,9 +186,57 @@ Three parts, nothing more — plus the optional calendar line first.
 1. **One top pick** — id (and `seq` when the item has one), title, and the one-line why.
 2. **3–5 alternates** — one line each: id + title + the label or date that matters.
 3. **A one-line health footer** — `Triage N · Grilling N`, plus "N more blocked upstream"
-   when `blocked_dropped` is non-zero, plus any fog-exhausted project.
+   when `blocked_dropped` is non-zero, plus "N you could hand off" when `agent_doable` is,
+   plus any fog-exhausted project.
 
 Never print the full list.
+
+## Delegation branch
+
+Reached two ways: `/next-up-hb <item-ref>`, or the user accepting the offer on a pick that
+carries `agent`. Offer it on any `agent`-marked pick — one line, no push.
+
+On a directly-named item, `next-up.sh get <ref>` it first and read what came back:
+
+- `agent` is false → say so and ask for an explicit go-ahead before running it anyway;
+- non-empty `blockers` → say what is blocking it and stop, unless the user overrides;
+- already `done`, or archived → stop.
+
+**Completion protocol — fixed by #10, do not re-decide it:**
+
+1. **On start** — `next-up.sh move <ref> in_progress`. The visible claim, before any work.
+2. **Do the work** — read the item, do the chore, produce something a human can act on in
+   ten seconds (the three quotes and a recommendation, not a research diary).
+3. **On finish** — in this order:
+   - `next-up.sh note <ref> <file>` with the findings;
+   - `next-up.sh move <ref> ready`;
+   - `next-up.sh unflag-agent <ref>`.
+4. **Genuine external blocker only** — waiting on a callback, a form needing a human
+   identity, a credential you cannot hold: `note` what is needed, then
+   `move <ref> blocked`. Not for "this was harder than expected", and never for a
+   dependency on another item — that is a `blocked_by` edge, minted by `/to-actions`.
+
+**Never `done`.** An agent chore *advances* a chore, it does not complete it: "compare
+three insurance quotes" ends with three quotes and a recommendation; choosing and buying
+is the human's. Closing would silently drop the remaining human step. The script refuses
+`move <ref> done` outright, so this is enforced and not merely asked for.
+
+**Always clear the axis on finish.** `agent` means there is agent work *left* here, not
+that an agent touched this once. Leave it set and the next survey re-offers the hand-off
+and the agent redoes its own research into a second near-identical findings block.
+
+If a step fails mid-protocol, report exactly where it stopped — an item left In Progress
+with no findings is worse than one never claimed. Every verb is idempotent (`move` to the
+stage it already holds, a `note` that replaces its own section, `unflag-agent` on an
+already-clear axis), so a re-run of a half-finished finish is safe.
+
+**Where the findings actually go, and why you should say so if asked.** The owned schema
+has no comments table, so `note` appends to the item's `description` under
+`<!-- agent-findings -->` markers, replacing that section on a re-run. This is an
+acknowledged stopgap recorded in ADR-0009's 2026-08-11 amendment, not the end state — a
+real `notes` table is the follow-up. Two consequences for you: **do not hand-edit that
+section** (use `note`, which owns it), and **do not put anything in it that belongs in the
+item's own description** — the prose above the markers is the human's.
 
 ## The /microtask offer
 
@@ -175,23 +252,28 @@ the item down here.
   stop; do not fall back to a stale or invented survey.
 - **Empty `candidates`** — don't invent a pick. Say nothing qualified and name what is
   actually there: the Triage/Grilling counts, the blocked-upstream count, or `/to-actions`
-  if a project's route has run out.
+  if a project's route has run out. On an `--agent` survey, "nothing to hand off" is a
+  perfectly good answer and the whole list is one line.
+- **A 409 the script could not settle** — it retried once and the row moved again, so
+  another writer is on it. Report *where in the protocol it stopped* and stop; do not
+  re-run the whole protocol from the top, which would re-claim an item someone else is
+  now moving.
+- **`move <ref> done`** — refused by the script, with the reason. That is the protocol
+  working, not an error to route around.
 - **A malformed calendar block** — the binary names what was wrong (a status claiming an
   event that isn't there, or the reverse) and exits non-zero. Fix the input or drop the
   calendar block; never guess at it.
 
 ## Out of scope
 
-- **Delegation.** The owned schema cannot express it: `items` has no labels column, there
-  is no labels table and no comments table, so all three legs of #10's protocol — the
-  `agent` axis, the findings comment, and the `unlabel` that stops the re-offer loop — are
-  missing. `/next-up-personal`'s delegation branch stays where it is; this skill does not
-  reimplement it against a schema that cannot hold it. #291 tracks the owned-schema
-  delegation marker that would let it come back.
-- **Any write at all.** v1 is read-only: one `GET`, no `POST`, no `PATCH`, no minting, no
-  re-labelling to "fix" tagging.
+- **Any write beyond the delegation protocol's three.** The selector reads; delegation
+  writes exactly a stage, a findings section and the axis. No minting, no description
+  edits outside the markers, no Route refresh, no re-marking to "fix" someone's tagging.
+- **Delegation on the hosted runner arm.** Structural, not a rule: that arm holds no
+  credential and has no shell. It reports `agent_doable` and stops.
 - **Calendar polling, API calls and credentials** — the skill only reads the context field
   it is handed.
 - **A standalone read-GUI** — v2, behind the dashboard tripwire.
 - **Batch orchestration** — permanently out (#10). One item at a time.
-- **Linear, in any form.** No `ION-\d+` ids, no `linear.sh`, no workspace reads.
+- **Linear, in any form.** No other tracker's issue ids, no GraphQL, no workspace reads.
+  `HB-<seq>` is the only handle vocabulary there is.
