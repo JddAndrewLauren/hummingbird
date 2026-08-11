@@ -25,6 +25,9 @@ import {
 // *after* the last day — so the last day is that civil date minus one **day
 // on the calendar**. Getting this wrong is the "India in 394 days" defect
 // ADR-0015 records here, and the same arithmetic corrupts `returns_today`.
+// The exclusive-end rule is the **all-day** rule and only that: a timed
+// event's `end` is its real end instant, so `tripFromEvent` branches on
+// `allDay` (see its own doc for what applying it unconditionally cost).
 //
 // **Any booked trip keeps the pane out of `dormant`, however far away.**
 // `collapse.ts` collapses a dormant pane by default, and this pane sits
@@ -85,7 +88,8 @@ export interface Trip {
   location: string | null;
   /** First day, in the event's own zone. */
   startDate: CivilDate;
-  /** Last day — the exclusive end's civil date minus one **civil day**. */
+  /** Last day — for an all-day event the exclusive end's civil date minus one
+   * **civil day**; for a timed one the end instant's own civil date. */
   lastDate: CivilDate;
   /** The event's own boundaries, carried through for `withinBand` alone
    * (an instant is what the shell sorts on) — never for a day count. */
@@ -106,7 +110,10 @@ export interface Trip {
  * the authority (#117), and rewriting its titles would be the pane keeping a
  * vacation record of its own. */
 export function tripName(title: string): string {
-  return title.replace(/^\s*(trip|holiday|vacation|hols)\s*[:—-]\s*/i, "").trim() || title;
+  // Exactly the two prefixes #121 §4 names, and no more: every other word a
+  // title might open with is the operator's own, and stripping it would be
+  // the rewriting this pane is forbidden.
+  return title.replace(/^\s*(trip|holiday)\s*[:—-]\s*/i, "").trim() || title;
 }
 
 function classify(
@@ -150,21 +157,34 @@ function classify(
  * **unusable zone**. `""` is a real value on the wire (`protocol.ts`) and
  * `Intl.DateTimeFormat` throws a `RangeError` on it — so the event is dropped
  * rather than resolved against a guessed zone, which would move the whole
- * trip by up to a day. `zoned-day.ts`'s own rule. */
+ * trip by up to a day. `zoned-day.ts`'s own rule.
+ *
+ * **The exclusive-end rule is the ALL-DAY rule, and applying it to a timed
+ * event is a defect of its own** — the mirror image of the `endMs - DAY` one
+ * above. `allDay` is a real field on the wire (`worker/calendar-worker.ts`
+ * reads the provider's own `all_day`), and for a timed event `end` is the
+ * genuine end *instant*: subtracting a civil day from its date ends a
+ * multi-day trip one day early (a short `lengthDays`, `returns_today` a day
+ * early) and puts a same-day event's `lastDate` BEFORE its `startDate`,
+ * which reads as `past` and drops it out of `tripQueue` entirely — exactly
+ * the "some events on the Trips calendar are not trips" filter §4 forbids.
+ * So the end's own civil date is the last day, clamped to never precede the
+ * first (a timed event ending at local midnight is still that day's trip). */
 export function tripFromEvent(event: CalendarEventDTO, nowMs: number): Trip | null {
   const today = deviceCivilToday(nowMs);
   const startDate = civilDateInZone(event.start.instantMs, event.start.timeZone);
-  const endExclusive = civilDateInZone(event.end.instantMs, event.end.timeZone);
-  if (today === null || startDate === null || endExclusive === null) {
+  const endDate = civilDateInZone(event.end.instantMs, event.end.timeZone);
+  if (today === null || startDate === null || endDate === null) {
     return null;
   }
-  // The provider's end is EXCLUSIVE — local midnight after the last day — so
-  // the last day is the day before it, ON THE CALENDAR.
-  const lastDate = addCivilDays(endExclusive, -1);
+  // An all-day provider end is EXCLUSIVE — local midnight after the last day —
+  // so the last day is the day before it, ON THE CALENDAR. A timed end is the
+  // real end instant, so its own civil date is the last day.
+  const lastDate = event.allDay ? addCivilDays(endDate, -1) : endDate;
   if (lastDate === null) {
     return null;
   }
-  return classify(event, today, startDate, lastDate);
+  return classify(event, today, startDate, lastDate < startDate ? startDate : lastDate);
 }
 
 /** Every trip still ahead of (or under) today, soonest first.
@@ -275,8 +295,8 @@ export function vacationSetup(inputs: QuestionInputs): VacationSetup {
     // An unread bindings table lands here too, and deliberately: this pane's
     // *other* unbound reason (no calendar connected) has already been ruled
     // out, so the device is connected and simply has no trips calendar to
-    // read yet. `vacationSetupIsUnread` below is what tells the expanded
-    // rendering to say "checking" rather than "designate one".
+    // read yet. The `unread` kind is what tells the expanded rendering to say
+    // "checking" rather than "designate one".
     return inputs.bindings === null ? { kind: "unread" } : { kind: "unbound" };
   }
   const read = vacationRead(inputs);

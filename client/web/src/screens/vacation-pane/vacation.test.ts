@@ -46,6 +46,26 @@ function allDay(
   };
 }
 
+/** A timed event, boundaries given as local wall-clock stamps in `zone`
+ * (`YYYY-MM-DDTHH:MM`). Its `end` is the REAL end instant — no exclusive-end
+ * convention — which is the whole difference from `allDay` above. */
+function timed(
+  id: string,
+  title: string,
+  startAt: string,
+  endAt: string,
+  zone = "Europe/Lisbon",
+  calendarId = "trips@g",
+): CalendarEventDTO {
+  const at = (stamp: string) => new Date(`${stamp}:00${offsetOf(stamp.slice(0, 10), zone)}`).getTime();
+  return {
+    ...allDay(id, title, "2026-01-01", "2026-01-02", zone, calendarId),
+    start: { instantMs: at(startAt), timeZone: zone },
+    end: { instantMs: at(endAt), timeZone: zone },
+    allDay: false,
+  };
+}
+
 /** The UTC offset `zone` was on at local midnight of `date`, as `+HH:MM` —
  * derived from `Intl` rather than hardcoded, so a DST case in the tests is a
  * real one. */
@@ -174,13 +194,26 @@ describe("tripQueue — phases from civil dates", () => {
     ).toEqual(["Lisbon", "Oslo"]);
   });
 
-  it("takes a timed event on the trips calendar as a trip like any other", () => {
-    // #121 §4: the calendar is the authority. A pane that decided some events
-    // on the Trips calendar are not trips has started keeping a vacation
-    // record of its own.
-    const timed = allDay("t8", "Weekend in Sintra", "2026-04-03", "2026-04-06");
-    timed.allDay = false;
-    expect(tripQueue([timed], "trips@g", nowAt("2026-03-01")).length).toBe(1);
+  it("reads a timed event's end as its real end, not an exclusive one", () => {
+    // #121 §4: the calendar is the authority, all-day or timed. The all-day
+    // "minus one civil day" rule applied here would end this trip on the 5th —
+    // a short `lengthDays` and `returns_today` a day early.
+    const trip = timed("t8", "Weekend in Sintra", "2026-04-03T18:30", "2026-04-06T21:00");
+    const [next] = tripQueue([trip], "trips@g", nowAt("2026-03-01"));
+    expect(next.lastDate).toBe("2026-04-06");
+    expect(next.lengthDays).toBe(4);
+    expect(tripQueue([trip], "trips@g", nowAt("2026-04-06"))[0].phase).toBe("returns_today");
+    expect(tripQueue([trip], "trips@g", nowAt("2026-04-07")).length).toBe(0);
+  });
+
+  it("keeps a same-day timed event in the queue", () => {
+    // The same misapplied rule puts `lastDate` BEFORE `startDate` here, which
+    // reads as `past` and drops the event out of the queue with no trace.
+    const day = timed("t9", "Trip: Porto day out", "2026-04-03T07:15", "2026-04-03T22:40");
+    const [next] = tripQueue([day], "trips@g", nowAt("2026-04-03"));
+    expect(next.phase).toBe("departs_today");
+    expect(next.lengthDays).toBe(1);
+    expect(tripQueue([day], "trips@g", nowAt("2026-04-01"))[0].daysUntil).toBe(2);
   });
 });
 
