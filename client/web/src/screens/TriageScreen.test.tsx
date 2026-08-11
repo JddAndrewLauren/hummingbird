@@ -93,6 +93,67 @@ describe("TriageScreen — the capture box", () => {
     fireEvent.keyDown(input, { key: "Enter", isComposing: true });
     expect(onSubmitCapture).not.toHaveBeenCalled();
   });
+
+  // #208's headline acceptance, proved from the rendered controls
+  // themselves — not just that `resolveCaptureFields` (the pure layer)
+  // accepts a `CaptureMeta`. The Energy/Size sliders are `role="slider"`
+  // elements moved with the keyboard (`End` jumps to the last stop, per
+  // `Slider.tsx`'s own `onKeyDown`), never a plain `<input>`.
+  it("carries the capture box's Energy/Size/Context selections onto the wire message", () => {
+    const { onSubmitCapture } = renderTriage(taskState());
+    fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Buy soil" } });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Size" }), { key: "End" });
+    fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+
+    expect(onSubmitCapture).toHaveBeenCalledWith("Buy soil", expect.any(Number), {
+      size: "deep",
+      energy: "high",
+      context: "@garden",
+    });
+  });
+
+  it("leaves size, energy and context absent when the controls are left at rest", () => {
+    const { onSubmitCapture } = renderTriage(taskState());
+    fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Buy soil" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+
+    expect(onSubmitCapture).toHaveBeenCalledWith("Buy soil", expect.any(Number), {
+      size: null,
+      energy: null,
+      context: null,
+    });
+  });
+
+  it("sends only the one field the reader set, leaving the other two absent", () => {
+    const { onSubmitCapture } = renderTriage(taskState());
+    fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Buy soil" } });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
+
+    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+
+    expect(onSubmitCapture).toHaveBeenCalledWith("Buy soil", expect.any(Number), {
+      size: null,
+      energy: "high",
+      context: null,
+    });
+  });
+
+  it("clears the Energy/Size/Context controls back to rest after submit", () => {
+    renderTriage(taskState());
+    fireEvent.change(screen.getByLabelText("Capture"), { target: { value: "Buy soil" } });
+    const energySlider = screen.getByRole("slider", { name: "Energy" });
+    fireEvent.keyDown(energySlider, { key: "End" });
+    fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+
+    expect(energySlider.getAttribute("aria-valuenow")).toBe("-1");
+    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("");
+  });
 });
 
 describe("TriageScreen — the inbox", () => {

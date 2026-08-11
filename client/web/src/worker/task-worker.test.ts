@@ -126,14 +126,54 @@ describe("handleTaskRequest", () => {
   it("capture posts the minted id keyed by the seed the caller chose", async () => {
     const host = fakeHost();
     const posted = await run(
-      { type: "capture", seed: "seed-1", title: "buy milk", stage: "ready", nowMs: 1_000 },
+      {
+        type: "capture",
+        seed: "seed-1",
+        title: "buy milk",
+        stage: "ready",
+        size: null,
+        energy: null,
+        context: null,
+        nowMs: 1_000,
+      },
       host,
     );
 
-    expect(host.capture).toHaveBeenCalledWith("seed-1", "buy milk", "ready", 1_000);
+    expect(host.capture).toHaveBeenCalledWith("seed-1", "buy milk", "ready", null, null, null, 1_000);
     expect(posted).toEqual([
       { type: "captureResult", seed: "seed-1", kind: "ok", id: "item-1", error: null },
     ]);
+  });
+
+  // #208: the wire's `size`/`energy`/`context` must reach the host call
+  // verbatim — this is the pure-layer half of "the values reach the wire
+  // message"; the component test proves the rendered controls produce this
+  // request in the first place.
+  it("capture forwards a set size, energy and context to the host verbatim", async () => {
+    const host = fakeHost();
+    await run(
+      {
+        type: "capture",
+        seed: "seed-1",
+        title: "buy milk",
+        stage: "ready",
+        size: "deep",
+        energy: "high",
+        context: "@errands",
+        nowMs: 1_000,
+      },
+      host,
+    );
+
+    expect(host.capture).toHaveBeenCalledWith(
+      "seed-1",
+      "buy milk",
+      "ready",
+      "deep",
+      "high",
+      "@errands",
+      1_000,
+    );
   });
 
   it("capture posts a failed result with the error message, no id", async () => {
@@ -141,7 +181,16 @@ describe("handleTaskRequest", () => {
       capture: vi.fn().mockResolvedValue('{"kind":"failed","id":null,"error":"boom"}'),
     });
     const posted = await run(
-      { type: "capture", seed: "seed-1", title: "x", stage: "triage", nowMs: 1_000 },
+      {
+        type: "capture",
+        seed: "seed-1",
+        title: "x",
+        stage: "triage",
+        size: null,
+        energy: null,
+        context: null,
+        nowMs: 1_000,
+      },
       host,
     );
 
@@ -292,7 +341,16 @@ describe("handleTaskRequest", () => {
       takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_needed","at_ms":5000}]'),
     });
     const posted = await run(
-      { type: "capture", seed: "seed-1", title: "x", stage: "triage", nowMs: 1_000 },
+      {
+        type: "capture",
+        seed: "seed-1",
+        title: "x",
+        stage: "triage",
+        size: null,
+        energy: null,
+        context: null,
+        nowMs: 1_000,
+      },
       host,
     );
 

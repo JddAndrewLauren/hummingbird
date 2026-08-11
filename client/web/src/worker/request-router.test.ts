@@ -7,7 +7,16 @@ describe("isTaskWorkerRequest", () => {
     { type: "pushTaskApiKey", apiKey: "k" },
     { type: "initTaskApiKey", apiKey: "k" },
     { type: "clearTaskApiKey" },
-    { type: "capture", seed: "s", title: "t", stage: "triage", nowMs: 1 },
+    {
+      type: "capture",
+      seed: "s",
+      title: "t",
+      stage: "triage",
+      size: null,
+      energy: null,
+      context: null,
+      nowMs: 1,
+    },
     { type: "act", seed: "s", itemId: "i", action: "start", nowMs: 1 },
     {
       type: "triage",

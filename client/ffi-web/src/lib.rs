@@ -626,13 +626,31 @@ mod wasm_bindings {
 
         /// Captures a new item. Resolves to JSON:
         /// `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
-        pub fn capture(&self, seed: String, title: String, stage: String, now_ms: f64) -> js_sys::Promise {
+        /// `size`/`energy` (#208) are the wire's snake_case vocabulary names
+        /// (`"quick"`/`"short"`/`"deep"`, `"low"`/`"medium"`/`"high"`),
+        /// resolved by name — never a raw id — on the way in; `context`
+        /// carries straight through. Each defaults to absent, so a caller
+        /// that never sets them still produces a capture with all three
+        /// absent.
+        #[allow(clippy::too_many_arguments)]
+        pub fn capture(
+            &self,
+            seed: String,
+            title: String,
+            stage: String,
+            size: Option<String>,
+            energy: Option<String>,
+            context: Option<String>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
                 let Some(mut host) = inner.check_out() else {
                     return Ok(JsValue::from_str(BUSY_CAPTURE));
                 };
-                let response = host.capture(&seed, &title, &stage, now_ms as i64).await;
+                let response = host
+                    .capture(&seed, &title, &stage, size, energy, context, now_ms as i64)
+                    .await;
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CaptureResponse serializes"),

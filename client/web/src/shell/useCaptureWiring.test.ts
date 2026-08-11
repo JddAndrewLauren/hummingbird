@@ -20,22 +20,49 @@ describe("submitCaptureRequest", () => {
   it("posts a getTriageInbox request immediately after the capture — this must fail without the fix", () => {
     const worker = fakeWorker();
 
-    submitCaptureRequest(worker, "buy milk", 1_000, "seed-1");
+    submitCaptureRequest(worker, "buy milk", 1_000, {}, "seed-1");
 
     const types = worker.postMessage.mock.calls.map(([message]) => message.type);
     expect(types).toEqual(["capture", "getTriageInbox"]);
   });
 
-  it("the capture message itself carries the raw title and stage unmodified", () => {
+  it("the capture message itself carries the raw title and stage unmodified, with size/energy/context absent by default", () => {
     const worker = fakeWorker();
 
-    submitCaptureRequest(worker, "  Buy   OAT milk  ", 5_000, "seed-2");
+    submitCaptureRequest(worker, "  Buy   OAT milk  ", 5_000, {}, "seed-2");
 
     expect(worker.postMessage).toHaveBeenNthCalledWith(1, {
       type: "capture",
       seed: "seed-2",
       title: "  Buy   OAT milk  ",
       stage: "triage",
+      size: null,
+      energy: null,
+      context: null,
+      nowMs: 5_000,
+    });
+  });
+
+  // #208: a caller-supplied `fields` reaches the capture message verbatim.
+  it("carries a set size, energy and context onto the same capture message", () => {
+    const worker = fakeWorker();
+
+    submitCaptureRequest(
+      worker,
+      "buy milk",
+      5_000,
+      { size: "deep", energy: "high", context: "@errands" },
+      "seed-3",
+    );
+
+    expect(worker.postMessage).toHaveBeenNthCalledWith(1, {
+      type: "capture",
+      seed: "seed-3",
+      title: "buy milk",
+      stage: "triage",
+      size: "deep",
+      energy: "high",
+      context: "@errands",
       nowMs: 5_000,
     });
   });

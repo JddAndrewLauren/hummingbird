@@ -347,7 +347,24 @@ export type TaskWorkerRequest =
    * issued the capture can match its own seed back against the
    * `captureResult` broadcast (see `TaskWorkerResponse`), since the
    * worker->view direction never replies to just one sender. */
-  | { type: "capture"; seed: string; title: string; stage: TaskStageName; nowMs: number }
+  /** `size`/`energy`/`context` (#208) carry the capture box's own optional
+   * selections through to the wire, riding this single create mutation —
+   * never a follow-up patch. `size`/`energy` are the wire's snake_case
+   * vocabulary names, resolved by name through
+   * `hummingbird_domain::Size`/`Energy::parse` at the seam, same discipline
+   * `"triage"` already uses for its own edit fields; `null` (the resting
+   * state every one of these controls starts at) means "not set", never a
+   * default value reaching `Core`. */
+  | {
+      type: "capture";
+      seed: string;
+      title: string;
+      stage: TaskStageName;
+      size: "quick" | "short" | "deep" | null;
+      energy: "low" | "medium" | "high" | null;
+      context: string | null;
+      nowMs: number;
+    }
   /** S11/#109's act mutation: start, complete, block, cancel. `seed` is the
    * same "caller-mints, matches its own broadcast back" contract
    * `"capture"` documents above — `Core::act`'s own queue-entry id derives
