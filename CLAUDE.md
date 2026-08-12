@@ -3,9 +3,8 @@
 Personal GTD-style task system. The task authority **is** the app-owned server
 (ADR-0008), live at `hb.twinion.net` since 2026-08-10 (#237). Every skill here
 targets it with a `device` token from `~/.config/hummingbird/api-token`;
-**nothing in this repo reads `~/.config/linear/api-key` any more**. The one
-remaining Linear caller is `sweep.py`, which takes `LINEAR_API_KEY` from the
-environment (a Fly secret) and is itself OFF pending #123.
+**nothing in this repo calls Linear any more** — `sweep.py` was the last one,
+retargeted to `POST /api/items` with a `sweeper`-scope `HB_API_TOKEN` in #123.
 
 ## How to read this repo
 
@@ -23,7 +22,7 @@ grepping it.
 
 | Component | Where it lives | Read first |
 | --- | --- | --- |
-| The capture sweeper (OFF) | `sweep.py`, `crontab`, `fly.toml` | `docs/sweeper.md` |
+| The capture sweeper (awaiting go-live gates) | `sweep.py`, `crontab`, `fly.toml` | `docs/sweeper.md` |
 | The skill runner | `runner/` | `docs/runner.md` |
 | The owned schema + wire DTOs | `server/domain/` | `src/lib.rs`, ADR-0009 |
 | The authority server | `server/authority/` (+ `worker/` wasm32 shim) | `src/lib.rs`; DDL and its migration traps in `src/schema.rs` |

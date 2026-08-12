@@ -23,11 +23,18 @@ CFG = sweep.Config(
     google_client_id="cid",
     google_client_secret="secret",
     google_refresh_token="refresh",
-    linear_api_key="lin_key",
+    hb_api_token="hb_token",
+    hb_api_base="https://hb.example",
     healthcheck_url="https://hc.example/tasks",
     denylist_path="/nonexistent/denylist.json",
     gmail_healthcheck_url="https://hc.example/gmail",
 )
+
+ITEMS_URL = "https://hb.example/api/items"
+
+# Scripted answer meaning "a normal 201 for whatever was posted"; the create
+# refuses a 201 that is not the item it asked for.
+ECHO = "echo-the-posted-row"
 
 LABEL_ID = "Label_7"
 LABELS = {
@@ -141,12 +148,12 @@ class GmailDeriveCaptureTest(unittest.TestCase):
 
 
 class FakeHttp:
-    """Records every call; answers Google Tasks, Gmail, and Linear reads."""
+    """Records every call; answers Google Tasks, Gmail, and authority writes."""
 
-    def __init__(self, linear_responses=None, labels=None, messages=None,
+    def __init__(self, hb_responses=None, labels=None, messages=None,
                  lists_response=None):
         self.calls = []
-        self.linear_responses = list(linear_responses or [])
+        self.hb_responses = list(hb_responses or [])
         self.labels = labels if labels is not None else LABELS
         self.messages = messages if messages is not None else [message()]
         self.lists_response = lists_response or {
@@ -154,16 +161,23 @@ class FakeHttp:
         }
         self.tasks = {"items": [{"id": "task-1", "title": "call the vet", "notes": ""}]}
 
-    def __call__(self, url, method="GET", headers=None, body=None):
+    def __call__(self, url, method="GET", headers=None, body=None, with_status=False):
         self.calls.append({"url": url, "method": method, "headers": headers, "body": body})
         if url.startswith("https://hc.example/"):
             return {}
         if url == sweep.GOOGLE_TOKEN_URL:
             return {"access_token": "at"}
-        if url == sweep.LINEAR_URL:
-            if self.linear_responses:
-                return self.linear_responses.pop(0)
-            return {"data": {"issueCreate": {"success": True, "issue": {"id": "x"}}}}
+        if url == ITEMS_URL:
+            scripted = self.hb_responses.pop(0) if self.hb_responses else ECHO
+            if scripted == ECHO:
+                return {
+                    "id": body["id"],
+                    "seq": 1,
+                    "title": body["title"],
+                    "stage": "triage",
+                    "_status": 201,
+                }
+            return scripted
         if "/users/@me/lists" in url:
             return dict(self.lists_response)
         if "/tasks?" in url:
@@ -184,8 +198,8 @@ class FakeHttp:
     def gmail_mutations(self):
         return [c for c in self.calls if "/modify" in c["url"]]
 
-    def linear_creates(self):
-        return [c for c in self.calls if c["url"] == sweep.LINEAR_URL]
+    def creates(self):
+        return [c for c in self.calls if c["url"] == ITEMS_URL]
 
     def pings(self):
         return [c for c in self.calls if c["url"].startswith("https://hc.example/")]
@@ -218,19 +232,40 @@ class GmailFlowTest(unittest.TestCase):
         self.assertEqual(result.name, "gmail")
         self.assertEqual(result.healthcheck_url, CFG.gmail_healthcheck_url)
 
-        creates = fake.linear_creates()
+        creates = fake.creates()
         self.assertEqual(len(creates), 1)
-        fields = creates[0]["body"]["variables"]["input"]
+        fields = creates[0]["body"]
         self.assertEqual(fields["id"], sweep.deterministic_v4("msg-1", sweep.GMAIL_NAMESPACE))
         self.assertEqual(fields["title"], "Fwd: the thing")
         self.assertIn("Thread: https://mail.google.com/mail/u/0/#all/thr-1",
                       fields["description"])
+        self.assertEqual(creates[0]["headers"]["Authorization"], "Bearer hb_token")
 
-        # Create-in-Linear-first: the create precedes the ack.
+        # Create-in-authority-first: the create precedes the ack.
         mutation_order = [c["url"] for c in fake.calls
-                         if c["url"] == sweep.LINEAR_URL or "/modify" in c["url"]]
-        self.assertEqual(mutation_order[0], sweep.LINEAR_URL)
+                         if c["url"] == ITEMS_URL or "/modify" in c["url"]]
+        self.assertEqual(mutation_order[0], ITEMS_URL)
         self.assertIn("/modify", mutation_order[1])
+
+    def test_the_create_carries_its_own_provenance(self):
+        # Gmail's own frozen source string, the raw message id, and the thread
+        # deep link in the column a machine reads rather than only in prose.
+        fake = FakeHttp()
+        self.run_gmail(fake)
+
+        fields = fake.creates()[0]["body"]
+        self.assertEqual(fields["source"], "gmail/v1")
+        self.assertEqual(fields["source_key"], "msg-1")
+        self.assertEqual(
+            fields["source_url"], "https://mail.google.com/mail/u/0/#all/thr-1"
+        )
+
+    def test_the_two_adapters_never_share_a_source_string(self):
+        # The same separation the frozen id namespaces have, one table down:
+        # provenance that collided would make two sources indistinguishable.
+        self.assertNotEqual(
+            sweep.GoogleTasksAdapter.source, sweep.GmailAdapter.source
+        )
 
     def test_ack_removes_only_the_capture_label(self):
         # The whole ack: removeLabelIds with exactly the capture label id.
@@ -266,7 +301,7 @@ class GmailFlowTest(unittest.TestCase):
         result = self.run_gmail(fake)
 
         self.assertTrue(result.ok)
-        self.assertEqual(fake.linear_creates(), [])
+        self.assertEqual(fake.creates(), [])
         self.assertEqual(fake.gmail_mutations(), [])
 
     def test_missing_label_fails_closed(self):
@@ -277,42 +312,52 @@ class GmailFlowTest(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertTrue(any("failing closed" in line for line in result.failures))
-        self.assertEqual(fake.linear_creates(), [])
+        self.assertEqual(fake.creates(), [])
         self.assertEqual(fake.gmail_mutations(), [])
         self.assertFalse(any("/users/me/messages" in c["url"] for c in fake.calls))
 
     def test_retry_after_crash_before_ack_is_idempotent(self):
-        # The crash-window replay: the issue already exists from the previous
-        # run, so the create resolves to "existed" and the ack still happens.
-        exists = {
-            "_status": 400,
-            "errors": [
-                {
-                    "message": "Entity Issue with id abc already exists.",
-                    "extensions": {
-                        "code": "INPUT_ERROR",
-                        "userPresentableMessage": "Entity Issue with id abc already exists.",
-                    },
-                }
-            ],
-        }
-        fake = FakeHttp(linear_responses=[exists])
+        # The crash-window replay: the item already exists from the previous
+        # run, so the authority answers 200 with the stored row -- no write, no
+        # version bump -- the create resolves to "existed", and the ack that
+        # never happened last time happens now. The deterministic id is what
+        # makes the replay land on the same row, and it did not change with the
+        # retarget, which is why the months-long backlog drains clean.
+        item_id = sweep.deterministic_v4("msg-1", sweep.GMAIL_NAMESPACE)
+        exists = {"id": item_id, "seq": 4, "title": "Fwd: the thing",
+                  "stage": "triage", "version": 12, "_status": 200}
+        fake = FakeHttp(hb_responses=[exists])
         result = self.run_gmail(fake)
 
         self.assertTrue(result.ok)
-        self.assertEqual(len(fake.linear_creates()), 1)
+        self.assertEqual(len(fake.creates()), 1)
         self.assertEqual(len(fake.gmail_mutations()), 1)
+
+    def test_a_second_sweep_creates_nothing_new(self):
+        # Two runs over the same labelled message post the identical id, so
+        # the second is the idempotent replay rather than a duplicate.
+        first = FakeHttp()
+        self.run_gmail(first)
+        posted = first.creates()[0]["body"]["id"]
+
+        item_id = sweep.deterministic_v4("msg-1", sweep.GMAIL_NAMESPACE)
+        second = FakeHttp(hb_responses=[{"id": item_id, "seq": 4, "title": "t",
+                                         "stage": "triage", "_status": 200}])
+        result = self.run_gmail(second)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(second.creates()[0]["body"]["id"], posted)
 
     def test_failed_ack_leaves_the_label_for_retry_and_fails_the_run(self):
         fake = FakeHttp()
         real_call = fake.__call__
 
-        def flaky(url, method="GET", headers=None, body=None):
+        def flaky(url, method="GET", headers=None, body=None, with_status=False):
             if "/modify" in url:
                 fake.calls.append({"url": url, "method": method,
                                    "headers": headers, "body": body})
                 return {"_status": 503, "error": "backend"}
-            return real_call(url, method, headers, body)
+            return real_call(url, method, headers, body, with_status)
 
         sweep.http_json = flaky
         result = sweep.run_adapter(sweep.GmailAdapter(CFG), False)
@@ -324,7 +369,7 @@ class GmailFlowTest(unittest.TestCase):
         fake = FakeHttp()
         result = self.run_gmail(fake, dry_run=True)
         self.assertTrue(result.ok)
-        self.assertEqual(fake.linear_creates(), [])
+        self.assertEqual(fake.creates(), [])
         self.assertEqual(fake.gmail_mutations(), [])
 
 
@@ -350,7 +395,7 @@ class AdapterIsolationTest(unittest.TestCase):
         # Each adapter reports against its own check, never a shared one.
         self.assertEqual(results["google-tasks"].healthcheck_url, CFG.healthcheck_url)
         self.assertEqual(results["gmail"].healthcheck_url, CFG.gmail_healthcheck_url)
-        self.assertEqual(len(fake.linear_creates()), 2)  # one task + one message
+        self.assertEqual(len(fake.creates()), 2)  # one task + one message
 
     def test_gmail_failure_leaves_tasks_draining_normally(self):
         fake = FakeHttp(labels={"labels": []})  # capture label missing
@@ -423,7 +468,8 @@ class MainReportingTest(unittest.TestCase):
         "GOOGLE_CLIENT_ID": "cid",
         "GOOGLE_CLIENT_SECRET": "secret",
         "GOOGLE_REFRESH_TOKEN": "refresh",
-        "LINEAR_API_KEY": "lin_key",
+        "HB_API_TOKEN": "hb_token",
+        "HB_API_BASE": "https://hb.example",
         "HEALTHCHECK_URL": TASKS_CHECK,
         "GMAIL_HEALTHCHECK_URL": GMAIL_CHECK,
         "SWEEP_DENYLIST": "/nonexistent/denylist.json",
@@ -511,10 +557,10 @@ class MainReportingTest(unittest.TestCase):
     def test_a_config_failure_fails_every_check(self):
         # Nothing was swept, so no adapter may look alive.
         fake = FakeHttp()
-        self.assertEqual(self.run_main(fake, env={"LINEAR_API_KEY": ""}), 1)
+        self.assertEqual(self.run_main(fake, env={"HB_API_TOKEN": ""}), 1)
         for url in (self.TASKS_CHECK, self.GMAIL_CHECK):
             body = self.ping(fake, url + "/fail")["body"].decode("utf-8")
-            self.assertIn("LINEAR_API_KEY", body)
+            self.assertIn("HB_API_TOKEN", body)
 
     def test_a_dry_run_pings_nothing(self):
         fake = FakeHttp()
@@ -527,7 +573,8 @@ class GmailConfigTest(unittest.TestCase):
         "GOOGLE_CLIENT_ID": "cid",
         "GOOGLE_CLIENT_SECRET": "secret",
         "GOOGLE_REFRESH_TOKEN": "refresh",
-        "LINEAR_API_KEY": "lin",
+        "HB_API_TOKEN": "hb_token",
+        "HB_API_BASE": "https://hb.example",
         "HEALTHCHECK_URL": "https://hc.example/tasks",
     }
 
@@ -541,10 +588,10 @@ class GmailConfigTest(unittest.TestCase):
 
     def test_a_missing_credential_still_aborts_config(self):
         env = dict(self.ENV)
-        del env["LINEAR_API_KEY"]
+        del env["HB_API_TOKEN"]
         with self.assertRaises(sweep.SweepError) as ctx:
             sweep.config_from_env(env)
-        self.assertIn("LINEAR_API_KEY", str(ctx.exception))
+        self.assertIn("HB_API_TOKEN", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""One-way sweeper: capture sources -> Linear Triage issues.
+"""One-way sweeper: capture sources -> Triage items in the owned authority.
 
-OFF since 2026-08-08 (ADR-0008): the Fly machine is stopped and both
-healthchecks are paused while the authority moves to the app-owned server.
-One PR retargets the write side to POST /api/items when the owned stack is
-daily-usable; everything below describes the built artifact and stands
-otherwise. See docs/sweeper.md for the restart procedure.
+The write side targets the app-owned server (ADR-0008), `POST /api/items`
+with a `sweeper`-scope bearer token -- the one scope that route accepts
+besides `device`, and the only route that scope reaches. Retargeted off
+Linear in #123; see docs/sweeper.md for the go-live gates.
 
 One drain engine, isolated adapters (ADR-0002). Two capture adapters run per
 sweep: Google Tasks (every incomplete item outside the denylist, fail-open)
@@ -19,23 +18,26 @@ it is equally runnable locally (`./sweep.py --dry-run`) or by hand
 (`fly ssh console -C /app/sweep`). Python 3 stdlib only, no dependencies.
 
 Per item, in this order (the ordering is load-bearing):
-  1. issueCreate in Linear with a client-supplied, deterministic id
+  1. create the item in the authority with a client-supplied, deterministic id
   2. only then ack the item in its source (Tasks: PATCH to completed;
      Gmail: remove the capture label -- and nothing else)
 
 A crash between the two can only produce a visible duplicate attempt on the
-next sweep -- which the deterministic id turns into an "already exists"
-success -- never a silently lost capture.
+next sweep -- which the deterministic id turns into an already-exists success
+-- never a silently lost capture. The authority answers a replay of a known id
+with 200 and the stored row, no write and no version bump, so the retry is
+free.
 
 Failures split in two (#24). Transient ones -- 5xx, timeouts, a dead token --
 leave the task incomplete, fail the run, and trip the alarm; the next sweep
-retries. Terminal ones, where Linear refuses the capture's own content, are
-quarantined instead: logged loudly, left visible in Tasks, counted on the
+retries. Terminal ones, where the authority refuses the capture's own content,
+are quarantined instead: logged loudly, left visible in Tasks, counted on the
 success ping, but never failing the run. Retrying those forever is what pinned
 the dead-man's switch red, and an alarm that is always ringing is no alarm.
 
 Environment:
-  GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, LINEAR_API_KEY
+  GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, HB_API_TOKEN
+  HB_API_BASE            (optional; defaults to https://hb.twinion.net)
   HEALTHCHECK_URL        (Google Tasks check; required live, unused in --dry-run)
   GMAIL_HEALTHCHECK_URL  (Gmail check; required live, unused in --dry-run)
   Each check is validated at its own adapter's boundary, so a missing one
@@ -64,18 +66,29 @@ from pathlib import Path
 
 # --- frozen constants --------------------------------------------------------
 
-# NEVER CHANGE. Every Linear issue id an adapter has ever minted is
+# NEVER CHANGE. Every item id an adapter has ever minted is
 # sha256(namespace + source_key). Changing a namespace byte string re-mints
 # every id in that source, which silently breaks idempotency and duplicates
 # every open capture. One frozen namespace per source keeps the id spaces
 # disjoint (ADR-0002); each is guarded by its own frozen test vector.
+#
+# They survived the move off Linear (#123) precisely so the backlog that
+# accumulated while the sweeper was OFF drains duplicate-free: the ids the
+# authority now receives are the same ids Linear received.
 NAMESPACE = b"hummingbird-sweeper/google-tasks/v1"
 GMAIL_NAMESPACE = b"hummingbird-sweeper/gmail/v1"
 
-TEAM_ID = "84ab9e0b-f455-42d7-a48a-49e65da3b2e6"    # ION
-STATE_ID = "35cec1f9-df46-4212-9bef-8905015ad539"   # Triage
+# `items.source` values, which carry their own `/vN` (ADR-0014) and are a
+# different string from the id namespaces above -- these are provenance the
+# authority stores, those are a hash input it never sees.
+TASKS_SOURCE = "google-tasks/v1"
+GMAIL_SOURCE = "gmail/v1"
 
-LINEAR_URL = "https://api.linear.app/graphql"
+# Every other client defaults the same way (runner/src/main.js,
+# .claude/skills/*/scripts/*.sh). HB_API_BASE overrides it for a local
+# wrangler round-trip.
+HB_API_BASE_DEFAULT = "https://hb.twinion.net"
+
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 TASKS_URL = "https://tasks.googleapis.com/tasks/v1"
 GMAIL_URL = "https://gmail.googleapis.com/gmail/v1"
@@ -90,32 +103,32 @@ GMAIL_THREAD_LINK = "https://mail.google.com/mail/u/0/#all/%s"
 HTTP_TIMEOUT = 30
 PAGE_SIZE = 100
 
-# Linear rejects some inputs permanently -- a blank capture is the case that
-# found this (#24). Those are quarantined rather than retried, so one junk row
-# cannot hold the dead-man's switch red forever. But quarantine is only safe
+# The authority rejects some inputs permanently -- a blank capture is the case
+# that found this (#24). Those are quarantined rather than retried, so one junk
+# row cannot hold the dead-man's switch red forever. But quarantine is only safe
 # while it stays rare: past this many in a single sweep, the classification is
 # being trusted further than it has earned, so fail the run instead.
 QUARANTINE_LIMIT = 10
 
 # The only fields a *capture* can be rejected on. A validation error naming
-# anything else (teamId, stateId) is a broken sweeper, not a bad row -- that
-# stays a hard failure and rings the alarm.
+# anything else (id, priority, project_id, deadline) is a broken sweeper, not a
+# bad row -- that stays a hard failure and rings the alarm.
 CONTENT_FIELDS = frozenset(("title", "description"))
 
-ISSUE_CREATE = (
-    "mutation IssueCreate($input: IssueCreateInput!) {"
-    " issueCreate(input: $input) { success issue { id identifier } } }"
-)
-
-# Linear's duplicate-id rejection, verified live against the workspace.
-ALREADY_EXISTS = re.compile(r"^Entity Issue with id .* already exists\.$")
+# The authority's validation errors are prose: {"error": "validation",
+# "message": "title must be non-empty"}. There is no structured `property`
+# field the way Linear had one, so the field a rejection names is its first
+# word -- which is the whole vocabulary the route emits
+# (server/authority/src/handlers/items.rs).
+VALIDATION_FIELD = re.compile(r"^([a-z_]+)\b")
 
 DEFAULT_DENYLIST = Path(__file__).resolve().parent / "denylist.json"
 
 Config = namedtuple(
     "Config",
     "google_client_id google_client_secret google_refresh_token "
-    "linear_api_key healthcheck_url denylist_path gmail_healthcheck_url",
+    "hb_api_token hb_api_base healthcheck_url denylist_path "
+    "gmail_healthcheck_url",
     defaults=("",),
 )
 
@@ -125,7 +138,7 @@ class SweepError(Exception):
 
 
 class TerminalRejection(SweepError):
-    """Linear refuses this input. Retrying is guaranteed to fail identically.
+    """The authority refuses this input. Retrying fails identically forever.
 
     Distinct from every other error precisely because the standard remedy --
     leave the task incomplete, fail the run, let the next sweep retry -- is
@@ -141,13 +154,20 @@ def log(message):
     print("%s %s" % (stamp, message), flush=True)
 
 
-def http_json(url, method="GET", headers=None, body=None):
+def http_json(url, method="GET", headers=None, body=None, with_status=False):
     """The single HTTP choke point. Tests monkeypatch exactly this.
 
     `body` may be a dict (JSON-encoded) or bytes (sent verbatim). Returns the
     decoded response body as a dict; on a non-2xx response the decoded error
-    body is returned with an extra `_status` key rather than raised, because
-    Linear reports "already exists" as an HTTP 400 that means success.
+    body is returned with an extra `_status` key rather than raised, so a
+    caller can classify the rejection instead of catching an exception.
+
+    `with_status` stamps `_status` on the *success* path too, which the
+    authority's create needs: 201 and 200 are both success there and mean
+    different things (created versus already existed). It is opt-in because
+    every Google helper here reads `"_status" in payload` as "this call
+    failed" -- stamping unconditionally would make each of them raise on a
+    perfectly good response.
     """
     data = None
     hdrs = dict(headers or {})
@@ -160,7 +180,10 @@ def http_json(url, method="GET", headers=None, body=None):
     request = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
         with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
-            return _decode(response.read())
+            payload = _decode(response.read())
+            if with_status:
+                payload["_status"] = response.status
+            return payload
     except urllib.error.HTTPError as exc:
         payload = _decode(exc.read())
         payload["_status"] = exc.code
@@ -182,9 +205,13 @@ def _decode(raw):
 def deterministic_v4(source_key, namespace=NAMESPACE):
     """A UUID-v4-shaped id derived from a source item id.
 
-    Linear's IssueCreateInput accepts a client-supplied id but validates it as
-    version 4 specifically -- a genuine RFC-4122 v5 uuid is rejected with
-    "id must be a UUID". So hash, then force the version and variant nibbles.
+    The v4 shaping is historical: Linear accepted a client-supplied id but
+    validated it as version 4 specifically, rejecting a genuine RFC-4122 v5
+    uuid outright, so this hashes and then forces the version and variant
+    nibbles. The owned authority does not care -- `id` is an opaque non-empty
+    string to it -- but this function is frozen anyway, because every id ever
+    minted came out of it and the whole point of the retarget was that those
+    ids keep their meaning. Do not "simplify" it to uuid5.
 
     The namespace defaults to Google Tasks, the original source; every other
     adapter passes its own frozen namespace so id spaces never collide.
@@ -204,7 +231,8 @@ def derive_capture(title, notes):
 
     The rule from #14 is unchanged for every real capture: title verbatim, no
     cleanup, no truncation, no prefix. #24 added the two edges it never
-    contemplated, because Linear rejects an empty title outright:
+    contemplated, because an empty title is rejected outright (Linear did;
+    the authority does too -- "title must be non-empty"):
 
     - title empty, notes present -- the plausible case is a dictation that
       landed entirely in the notes, so its first non-blank line becomes the
@@ -422,94 +450,109 @@ def gmail_derive_capture(message):
     return title, description
 
 
-# --- Linear ------------------------------------------------------------------
+# --- the owned authority -----------------------------------------------------
 
 
-def linear_create_issue(api_key, issue_id, title, description):
-    """Create the issue. Returns "created" or "existed"; raises otherwise."""
-    fields = {"id": issue_id, "teamId": TEAM_ID, "stateId": STATE_ID, "title": title}
+def hb_create_item(cfg, item_id, title, description, source, source_key, source_url):
+    """Create the item in the authority. Returns "created" or "existed".
+
+    `POST /api/items` with a `sweeper`-scope bearer token -- the only route
+    that scope reaches (server/authority/src/handlers/auth.rs). The create is
+    idempotent by the client-supplied `id`: a replay of a known id is answered
+    200 with the stored row, no write and no version bump, which is what turns
+    a crash in the window between this call and the ack into a free retry.
+
+    `stage` is deliberately not sent. The route defaults it to Triage, which
+    is the landing stage; stating it here would be a second copy of a fact the
+    server already owns. `CreateItem` is `deny_unknown_fields`, so every key
+    below has to be a real column.
+    """
+    fields = {
+        "id": item_id,
+        "title": title,
+        "source": source,
+        "source_key": source_key,
+    }
     if description:
         fields["description"] = description
+    if source_url:
+        fields["source_url"] = source_url
+
+    url = cfg.hb_api_base.rstrip("/") + "/api/items"
     payload = http_json(
-        LINEAR_URL,
+        url,
         "POST",
-        # Raw key, not Bearer -- Linear personal API keys are sent unprefixed.
-        {"Authorization": api_key, "Content-Type": "application/json"},
-        {"query": ISSUE_CREATE, "variables": {"input": fields}},
+        {
+            "Authorization": "Bearer " + cfg.hb_api_token,
+            "Content-Type": "application/json",
+        },
+        fields,
+        with_status=True,
     )
+    status = payload.get("_status")
 
-    for error in payload.get("errors") or []:
-        extensions = error.get("extensions") or {}
-        message = extensions.get("userPresentableMessage") or ""
-        if extensions.get("code") == "INPUT_ERROR" and ALREADY_EXISTS.match(message):
-            return "existed"
+    if status == 201:
+        _require_item_row(payload, item_id)
+        return "created"
+    # 200 is the idempotent replay. 409 cannot happen on this route today --
+    # it belongs to PATCH's stale expected_version -- but if one ever appears
+    # here it can only mean already-exists, which is success.
+    if status in (200, 409):
+        return "existed"
 
-    if payload.get("errors") or "_status" in payload:
-        if _is_terminal(payload):
-            raise TerminalRejection(
-                "issueCreate %s rejected on content -> %s" % (issue_id, _brief(payload))
-            )
-        raise SweepError("issueCreate %s -> %s" % (issue_id, _brief(payload)))
-    result = (payload.get("data") or {}).get("issueCreate") or {}
-    if not result.get("success"):
-        raise SweepError("issueCreate %s not successful: %s" % (issue_id, _brief(payload)))
-    return "created"
+    if _is_terminal(payload):
+        raise TerminalRejection(
+            "create %s rejected on content -> %s" % (item_id, _brief(payload))
+        )
+    raise SweepError("create %s -> %s" % (item_id, _brief(payload)))
+
+
+def _require_item_row(payload, item_id):
+    """A 201 that did not come from the API is a misrouted request, not a win.
+
+    The authority shares an origin with the PWA, so an unmatched path is
+    answered by the static shell rather than the API. A status alone would
+    read that as success and the sweeper would ack a capture it never stored.
+    Transient on purpose: a misrouted request is a broken sweeper and has to
+    ring, not quarantine the innocent row that happened to hit it.
+    """
+    if payload.get("id") != item_id:
+        raise SweepError(
+            "create %s answered 201 without the item row (misrouted?) -> %s"
+            % (item_id, _brief(payload))
+        )
 
 
 def _is_terminal(payload):
     """Would this rejection recur identically on every future sweep?
 
-    Two conditions, both required. The error must be a validation error, and
-    every field it names must be one this *capture* supplied. Linear reports
-    the offending field ("property": "title" in the live #24 error), which is
-    what separates a junk row from a broken sweeper: a bad capture can only be
-    rejected on its own content, while a wrong teamId or stateId is rejected on
-    that field and must keep ringing the alarm.
+    Two conditions, both required. The rejection must be a validation error,
+    and the field it names must be one this *capture* supplied. That is what
+    separates a junk row from a broken sweeper: a bad capture can only be
+    rejected on its own content ("title must be non-empty", the live #24
+    case), while every other 400 the route emits -- "id must be non-empty",
+    "priority must be between 0 and 4", "unknown project_id", "deadline must
+    be ..." -- names a field the *sweeper* got wrong and must keep ringing the
+    alarm. The names moved from Linear's teamId/stateId to these; the property
+    they buy is identical.
 
-    Anything unrecognized -- an unparseable shape, an error naming no field at
-    all -- returns False. Fail loud is the safe default; quarantine is the
-    exception that has to earn itself. So *every* error has to earn it
-    separately: one recognized `title` violation does not cover for a sibling
-    error naming nothing, or the unexplained half would be quarantined too.
+    The authority reports the field in prose rather than a structured
+    `property`, so the field is the message's first word. Anything
+    unrecognized -- a non-validation error, an empty body (401/403 answer with
+    no body at all), a non-JSON shape, a message naming nothing -- returns
+    False. Fail loud is the safe default; quarantine is the exception that has
+    to earn itself.
 
     A 5xx is never terminal whatever its body says, per the classification in
     docs/sweeper.md: the server failing to answer says nothing about the
     capture, and the next sweep might well succeed.
     """
-    if payload.get("_status", 0) >= 500:
+    if payload.get("_status") != 400:
         return False
-
-    errors = payload.get("errors") or []
-    if not errors:
+    if payload.get("error") != "validation":
         return False
-
-    for error in errors:
-        code = (error.get("extensions") or {}).get("code")
-        if code not in ("INVALID_INPUT", "INPUT_ERROR"):
-            return False
-        properties = set()
-        _collect_properties(error, properties)
-        if not properties or not properties <= CONTENT_FIELDS:
-            return False
-    return True
-
-
-def _collect_properties(node, found):
-    """Every field named by a constraint violation, at any nesting depth.
-
-    Linear nests them under an `input` wrapper whose own node carries no
-    `constraints`, so requiring `constraints` picks the real leaves and skips
-    the wrapper.
-    """
-    if isinstance(node, dict):
-        name = node.get("property")
-        if isinstance(name, str) and node.get("constraints"):
-            found.add(name)
-        for value in node.values():
-            _collect_properties(value, found)
-    elif isinstance(node, list):
-        for value in node:
-            _collect_properties(value, found)
+    match = VALIDATION_FIELD.match(payload.get("message") or "")
+    return bool(match) and match.group(1) in CONTENT_FIELDS
 
 
 def _brief(payload):
@@ -579,6 +622,7 @@ class GoogleTasksAdapter:
 
     name = "google-tasks"
     namespace = NAMESPACE
+    source = TASKS_SOURCE
     healthcheck_env = "HEALTHCHECK_URL"
 
     def __init__(self, cfg):
@@ -616,6 +660,11 @@ class GoogleTasksAdapter:
     def source_key(self, item):
         return item[1].get("id")
 
+    def source_url(self, item):
+        # A Google Tasks row has no addressable url. The completed row in the
+        # Tasks app is the audit trail, exactly as before.
+        return None
+
     def derive_capture(self, item):
         return derive_capture(item[1].get("title"), item[1].get("notes"))
 
@@ -637,6 +686,7 @@ class GmailAdapter:
 
     name = "gmail"
     namespace = GMAIL_NAMESPACE
+    source = GMAIL_SOURCE
     healthcheck_env = "GMAIL_HEALTHCHECK_URL"
 
     def __init__(self, cfg):
@@ -672,6 +722,12 @@ class GmailAdapter:
 
     def source_key(self, item):
         return item.get("id")
+
+    def source_url(self, item):
+        # The thread deep link, which the description also carries in prose.
+        # The duplication is deliberate: the description's shape is a decided
+        # field mapping (#45) and the column is where a machine looks.
+        return GMAIL_THREAD_LINK % (item.get("threadId") or item.get("id") or "")
 
     def derive_capture(self, item):
         return gmail_derive_capture(item)
@@ -736,19 +792,26 @@ def run_adapter(adapter, dry_run):
                     log("WARN skipping empty capture %s (no title, no notes)" % ref)
                     continue
                 title, description = capture
-                issue_id = deterministic_v4(adapter.source_key(item), adapter.namespace)
+                source_key = adapter.source_key(item)
+                item_id = deterministic_v4(source_key, adapter.namespace)
                 if dry_run:
                     log(
                         "DRY-RUN would create %s title='%s' (%s)"
-                        % (issue_id, title, ref)
+                        % (item_id, title, ref)
                     )
                     log("DRY-RUN would ack %s" % ref)
                     continue
-                outcome = linear_create_issue(
-                    adapter.cfg.linear_api_key, issue_id, title, description
+                outcome = hb_create_item(
+                    adapter.cfg,
+                    item_id,
+                    title,
+                    description,
+                    adapter.source,
+                    source_key,
+                    adapter.source_url(item),
                 )
                 stats[outcome] += 1
-                log("%s issue %s title='%s'" % (outcome, issue_id, title))
+                log("%s item %s title='%s'" % (outcome, item_id, title))
                 adapter.ack(item)
                 stats["completed"] += 1
                 log("acked %s" % ref)
@@ -798,7 +861,8 @@ def run_adapter(adapter, dry_run):
     set_aside = []
     if stats["quarantined"]:
         set_aside.append(
-            "%d quarantined (Linear refused the content):" % stats["quarantined"]
+            "%d quarantined (the authority refused the content):"
+            % stats["quarantined"]
         )
         set_aside.extend(quarantined)
     if stats["skipped"]:
@@ -876,7 +940,10 @@ def config_from_env(env):
         google_client_id=required("GOOGLE_CLIENT_ID"),
         google_client_secret=required("GOOGLE_CLIENT_SECRET"),
         google_refresh_token=required("GOOGLE_REFRESH_TOKEN"),
-        linear_api_key=required("LINEAR_API_KEY"),
+        hb_api_token=required("HB_API_TOKEN"),
+        # Not required: every client in the repo defaults to production and
+        # takes an override only so a local wrangler round-trip is possible.
+        hb_api_base=env.get("HB_API_BASE") or HB_API_BASE_DEFAULT,
         healthcheck_url=healthcheck,
         denylist_path=env.get("SWEEP_DENYLIST") or DEFAULT_DENYLIST,
         gmail_healthcheck_url=gmail_healthcheck,
@@ -897,7 +964,9 @@ def acquire_lock(path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Sweep Google Tasks into Linear Triage.")
+    parser = argparse.ArgumentParser(
+        description="Sweep capture sources into the owned authority's Triage."
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
