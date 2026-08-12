@@ -412,10 +412,34 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
 6. **Dry run.** Label one test message, export the secrets locally, run
    `./sweep.py --dry-run`, and read both adapters' output — the Gmail adapter
    should log the labelled message and mutate nothing.
-7. **Go live.** Push to `main` (which deploys), `flyctl machine start`, watch
-   `flyctl logs`, unpause both checks, and verify one live capture of each
-   kind. The labelled message appears in the authority's Triage with the
-   subject as title and the sender/date/thread-link description, and only the
+7. **Go live.** Push to `main` (which deploys), then, **in this order**:
+
+   a. **Unpause both checks first.** healthchecks.io has a per-check rule for
+      what a *paused* check does with an incoming ping, and one setting of it
+      discards the ping and stays paused. Unpausing before anything can ping
+      makes that rule unreachable; unpausing afterwards leaves a window where
+      the first ping — success or fail — can vanish silently, which is a live
+      sweeper with no dead-man's switch. While you are there, confirm the new
+      check has a notification integration attached: healthchecks.io does not
+      reliably copy them onto a new check, and one without any goes red with
+      nobody told.
+   b. **`flyctl machine start <machine-id>` — by id, never bare.** There are
+      two machines and the second is a standby. A bare `flyctl machine start`
+      can bring up both, which is two supercronics on one `*/15` cron racing
+      each other's acks; `/tmp/sweep.lock` is per-container and does not help.
+      That is the competing-clocks failure `CLAUDE.md` bans, by a route
+      [#8](https://github.com/JddAndrewLauren/hummingbird/issues/8) did not
+      anticipate. Confirm with `flyctl machine list` that the standby stayed
+      stopped.
+
+   Note that `flyctl deploy` does **not** start a stopped machine — it updates
+   it in place and leaves it stopped. The start above is always its own action.
+   Nothing runs at boot either: `crontab` is `*/15` and supercronic fires on
+   the boundary, so the first sweep is up to fifteen minutes after the start.
+
+   Then watch `flyctl logs` and verify one live capture of each kind. The
+   labelled message appears in the authority's Triage with the subject as title
+   and the sender/date/thread-link description, and only the
    `hummingbird/capture` label disappears from it — still unarchived, still
    unread-state-untouched. Then re-run the sweep immediately and confirm it
    creates nothing new: the frozen namespaces still hold across the authority

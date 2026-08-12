@@ -86,6 +86,71 @@ class HttpStatusStampTest(unittest.TestCase):
         sweep.gmail_remove_label("at", "msg-1", "Label_7")
 
 
+class UserAgentTest(unittest.TestCase):
+    """The sweeper must never introduce itself as `Python-urllib`.
+
+    The authority is behind Cloudflare, whose Browser Integrity Check blocks
+    that string by name. Left at urllib's default it cost the first live run
+    after the #123 retarget all three Gmail creates -- `403 error code: 1010`,
+    rejected at the edge, so nothing reached the Worker and no log on the
+    authority side recorded the attempt. The header is set once at the single
+    HTTP choke point; these tests are what keep it there.
+    """
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(self, request, timeout=None):
+        self.seen = request
+        return self.FakeResponse()
+
+    def setUp(self):
+        self.seen = None
+        self.real_urlopen = sweep.urllib.request.urlopen
+        sweep.urllib.request.urlopen = self.urlopen
+
+    def tearDown(self):
+        sweep.urllib.request.urlopen = self.real_urlopen
+
+    def sent_agent(self):
+        # urllib title-cases header keys as it stores them, so normalise
+        # rather than guessing which spelling survives.
+        for key, value in self.seen.header_items():
+            if key.lower() == "user-agent":
+                return value
+        return None
+
+    def test_every_request_identifies_itself(self):
+        sweep.http_json("https://example.test/x")
+        self.assertEqual(self.sent_agent(), sweep.USER_AGENT)
+
+    def test_the_agent_is_never_the_urllib_default(self):
+        sweep.http_json("https://example.test/x")
+        self.assertNotIn("python-urllib", (self.sent_agent() or "").lower())
+
+    def test_a_caller_may_still_override_it(self):
+        # setdefault, not assignment: a caller that needs its own identity
+        # keeps it. Nothing does today; the seam costs nothing and the
+        # alternative silently ignores a caller's explicit header.
+        sweep.http_json("https://example.test/x", headers={"User-Agent": "other/1"})
+        self.assertEqual(self.sent_agent(), "other/1")
+
+    def test_the_post_path_carries_it_too(self):
+        # The failure was on POST /api/items specifically, and the body branch
+        # rebuilds the header dict on its way through.
+        sweep.http_json("https://example.test/x", method="POST", body={"a": 1})
+        self.assertEqual(self.sent_agent(), sweep.USER_AGENT)
+
+
 class DeriveCaptureTest(unittest.TestCase):
     """#14's "title verbatim" rule, plus the two edges #24 found."""
 
