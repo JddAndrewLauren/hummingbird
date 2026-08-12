@@ -12,6 +12,7 @@ mod entropy;
 mod fcm;
 mod handlers;
 mod schema;
+mod skills;
 mod sql;
 mod sweep;
 
@@ -24,6 +25,10 @@ pub use fcm::{
 };
 pub use handlers::{handle, ApiRequest, ApiResponse, HandleContext};
 pub use schema::{init_schema, SCHEMA_VERSION};
+pub use skills::{
+    credential_rejected, forwardable, run_url, unconfigured, unreachable, upstream_status,
+    ProxyFailure,
+};
 pub use sql::{Row, Sql, SqlError, SqlValue};
 pub use sweep::{tick as sweep_tick, TickMatch, ALARM_INTERVAL_MS};
 

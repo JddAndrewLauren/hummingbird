@@ -71,6 +71,11 @@ to the owned API).
   full in `server/worker/wrangler.toml`. The client half: the host supplies
   `self.location.origin` as the base URL, so dev — `vite.config.ts` proxies
   `/api` to `wrangler dev` — and production run the same same-origin path.)*
+  *(Extended 2026-08-12 by
+  [ADR-0018](0018-the-authority-proxies-the-skill-runner.md): the one lane
+  where the authority is itself a client of another service —
+  `POST /api/skills/run` proxies the cloud runner — keeps this rule rather
+  than making an exception to it.)*
 - **Commitment gate:** a walking-skeleton spike — one DO, one CAS write, one
   version-gated read, `wrangler dev` + CI. If `workers-rs` fights for more
   than a day, fall back to TypeScript + `ts-rs`-generated types on the same

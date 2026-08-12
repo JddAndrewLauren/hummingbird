@@ -191,10 +191,70 @@ believed the CLI does.
 - **A failed run** terminates the stream with the `{ok: false, error}`
   envelope; there is no retry inside the runner.
 - **Token rotation** is by re-set (`fly secrets set RUNNER_BEARER_TOKEN=...`
-  followed by a redeploy or restart) -- there is no rotation endpoint.
+  followed by a redeploy or restart) -- there is no rotation endpoint. Since
+  #273 this is a **two-place** operation: the authority's proxy holds the
+  same bearer as a Cloudflare Worker secret, and every tap from the app
+  answers 502 until both sides carry the new value. See below.
 - **Cost ceiling** is a spend cap set on the metered Anthropic key,
   operator-side (see the provider's own console), recorded in this runbook
   rather than enforced in the runner.
+
+## The authority's proxy (#273, ADR-0018)
+
+The browser never calls this app directly -- it has no CORS lane, and the
+shell's CSP is `connect-src 'self'`. The app taps
+**`POST /api/skills/run`** on the authority, which authorizes the caller's
+existing `device` token and proxies to `POST /run` here, forwarding the
+NDJSON stream unchanged. Full reasoning, the rejected alternatives, and the
+flip condition are in
+[ADR-0018](adr/0018-the-authority-proxies-the-skill-runner.md).
+
+Two Worker secrets, both set from the operator's terminal and **never in
+GitHub Actions** (the bearer reaches this app's own `HB_API_TOKEN`, a
+write-everything device token, and spends metered model tokens):
+
+```sh
+cd server/worker
+npx wrangler secret put RUNNER_BASE_URL       # https://hummingbird-runner.fly.dev
+npx wrangler secret put RUNNER_BEARER_TOKEN   # the same value as `fly secrets`
+```
+
+Either one unset fails the lane closed with a 503 naming the gap. What the
+proxy answers:
+
+| Case | Status | Body |
+| --- | --- | --- |
+| Bad/missing device token | 401 | empty |
+| Token out of scope | 403 | empty |
+| Wrong method | 405 | the authority's `ApiError` JSON |
+| Either secret unset | 503 | `"The cloud runner is not configured on this server."` |
+| The subrequest errors | 502 | `"Cloud runner unreachable."` |
+| This app answers 401 | **502** | `"The cloud runner rejected this server's credential."` |
+| This app answers 400 or 413 | forwarded verbatim | this app's own NDJSON line |
+| This app answers 200 | forwarded verbatim, streaming | this app's stream |
+| Anything else | 502 | `"The cloud runner answered <status>."` |
+
+Every proxy-generated failure is one NDJSON envelope line carrying
+`ok:false, skill:null` and **no stamp** -- nothing was attempted. The
+runner's 401 is deliberately never forwarded: it would make the app
+re-prompt the user for a device token that is perfectly fine.
+
+**Rotating `RUNNER_BEARER_TOKEN` touches two places** -- `fly secrets set`
+here and `wrangler secret put` on the authority. In between, every tap from
+the app is a 502.
+
+Verify after deploying either side:
+
+```sh
+curl -sS -D- -X POST https://hb.twinion.net/api/skills/run \
+  -H "Authorization: Bearer $HB_DEVICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"skill":"microtask","args":{"ref":"<an item uuid>"}}'
+```
+
+Expect `content-type: application/x-ndjson` and a streaming body. A
+`200 text/html` means the shell's SPA fallback answered instead -- the
+ADR-0008 route-precedence failure mode.
 
 ## Deploy runbook (operator gate -- #256 does not perform any of this)
 

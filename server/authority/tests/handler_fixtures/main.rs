@@ -22,6 +22,7 @@ mod routing;
 mod rules;
 mod schema;
 mod settings;
+mod skills;
 mod snapshots;
 mod steps;
 mod sweep;
