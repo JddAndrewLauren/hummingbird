@@ -350,16 +350,20 @@ pub struct SnapshotIngest {
 /// `expected_version`: webhook sources cannot track versions, and the
 /// upsert on `(source, source_key)` is inherently absolute — the source is
 /// authoritative for its own fields (ADR-0009 rule 3). Every source-owned
-/// field is set from this payload on each raise (absent = NULL), with two
-/// exceptions: an absent `raised_at` keeps the stored stamp on a re-raise,
-/// and an absent `severity` keeps the stored value, rather than clearing
-/// it, while the existing alert is still live (ADR-0014's ratchet) — a
-/// mint against a live alert may only raise severity, and clearing on
-/// absence would let a second, lower-severity mint quietly downgrade it,
-/// since the handler cannot tell that mint apart from the source's own
-/// next ping. Once the alert has left live, an absent `severity` clears
-/// like every other optional. `dismissed_at` is human-owned and never
-/// touched by ingest.
+/// field is set from this payload on each raise (absent = NULL), with one
+/// exception: an absent `raised_at` keeps the stored stamp on a re-raise, so
+/// an identical replay is a byte-identical no-op. `dismissed_at` is
+/// human-owned and never touched by ingest.
+///
+/// **`severity` is not a second exception, and was until #188.** It kept the
+/// stored value while the alert was live, and could only ratchet up
+/// (ADR-0014's ratchet, as originally written). ADR-0014's 2026-08-12
+/// amendment scopes that ratchet to what it was aimed at — the mint-time
+/// fold over concurrent rule verdicts, which every minting caller does
+/// before it ever posts here — and moves monotonicity to the delivery layer,
+/// which rings only on an escalation. So severity is now a *reading* like
+/// any other source-owned field: a source may lower it on its own still-live
+/// occurrence and may clear it by omission, and neither rings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlertIngest {

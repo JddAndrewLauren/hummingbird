@@ -171,6 +171,35 @@ each lifecycle stamp holds only until a later raise overtakes it, and expiry
 is a third clause. The rule in the dedupe key is the one that rang; the
 generation is the alert's `raised_at`.
 
+*Amended 2026-08-12 by [#188](https://github.com/JddAndrewLauren/hummingbird/issues/188):
+**"severity level" in the dedupe key is compared by rank, not by string
+equality: once something has rung for an (alert, rule, generation), a further
+delivery is warranted only by an escalation above the highest severity already
+rung for it.** The *entry* transition above is untouched and asked first — the
+first ring of an occurrence lands whatever its severity, ranked or not, and
+only the escalation half consults the order. Collapsing the two is a live trap:
+`severity` is free text, an unranked string ranks below every known one, and a
+rank-only test would silently never ring a source that raises at `warning`. As
+shipped,
+`deliver` matched the severity string exactly, which made any *change* of
+severity a fresh transition — including a fall. That was invisible only
+because the alerts ingest handler kept the stored severity monotonic, and
+[ADR-0014's note of the same date](0014-occurrence-identity-and-the-source-key-conventions.md)
+withdraws that ratchet: the row is now a reading, free to fall, so this layer
+has to decide direction for itself. It is the layer that should — this ADR's
+own transitions-not-states rule says a ring is warranted by an escalation,
+and it never said a de-escalation warrants one. The reasoning for the split
+lives in ADR-0014's note; only the dedupe consequence is recorded here.*
+
+*Concretely: a fall is silent, and so is a later climb back to a level this
+generation has already rung — the reader was told that much already. An
+unchanged re-raise is suppressed exactly as before, since an equal rank is
+not an escalation, so the rank comparison strictly subsumes the string match
+it replaces. The `UNIQUE` constraint in the DDL below is unchanged and needs
+no migration: it still keys the log rows, which continue to record the exact
+severity sent. The ranking is `domain`'s one total order, so an unranked
+string ranks below every known severity and cannot ring past one.*
+
 Deferred, not rejected: a nag re-ring for urgents unacked after N hours.
 The top-of-stack sort already nags visually; add the timer only if that
 proves insufficient.

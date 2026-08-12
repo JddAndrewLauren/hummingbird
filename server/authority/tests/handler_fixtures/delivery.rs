@@ -193,31 +193,170 @@ fn a_retry_of_the_same_transition_after_deliver_returns_is_never_re_logged() {
     assert_eq!(rows[0].get("id").unwrap().as_text(), Some(delivery_id.as_str()));
 }
 
-/// Non-blocking review note: `deliver` reads whatever severity string
-/// `alert.severity` carries and dedupes on a *change* of it, not on a
-/// validated escalation — enforcing the "never down" ratchet is the
-/// responsibility of whoever mutates `alert.severity` (the alerts ingest
-/// handler already does this via `domain::higher_severity`; #138's minting
-/// will too), not `deliver`'s. Pinned here so that stays a deliberate
-/// choice, not an oversight: a caller bug that let severity regress would
-/// still (correctly, from `deliver`'s own contract) be treated as a new
-/// transition and ring again.
+/// **`deliver` owns severity monotonicity** (ADR-0014's 2026-08-12
+/// amendment, #188). It used to dedupe on a *change* of the severity string,
+/// deliberately leaving direction to whoever wrote `alert.severity` — and
+/// the alerts ingest handler enforced it by ratcheting the stored row, which
+/// cost a source the ability to lower severity on its own live occurrence.
+/// The row is now a reading; this is the layer that refuses to ring for a
+/// fall.
+///
+/// One occurrence, one rule, walked up and down: only the two genuine
+/// escalations ring.
 #[test]
-fn deliver_treats_any_severity_change_as_a_new_transition_ratchet_or_not() {
+fn deliver_rings_on_an_escalation_and_never_on_a_fall_or_a_repeat() {
     let sql = RusqliteSql::new();
     seed_push_target_raw(&sql, "pt-1", "pixel-9");
     let rule = seed_rule(&sql, "r-1");
-    let first = seed_alert_full_raw(&sql, "al-1", Some("urgent"), 100, None, None, None);
-    deliver(&sql, 500, &first, &rule.id, rule.tier).unwrap();
+    let alert = seed_alert_full_raw(&sql, "al-1", Some("normal"), 100, None, None, None);
 
-    let downgraded = hummingbird_domain::Alert {
-        severity: Some("low".into()),
-        ..first.clone()
+    let at = |severity: &str| hummingbird_domain::Alert {
+        severity: Some(severity.into()),
+        ..alert.clone()
     };
-    let outcome = deliver(&sql, 700, &downgraded, &rule.id, rule.tier).unwrap();
+    let rang = |severity: &str, now_ms: i64| {
+        matches!(
+            deliver(&sql, now_ms, &at(severity), &rule.id, rule.tier).unwrap(),
+            DeliveryOutcome::Logged { .. }
+        )
+    };
+
+    assert!(rang("normal", 500), "the first ring of a generation always lands");
+    assert!(!rang("normal", 600), "an unchanged re-raise is absorbed, exactly as before #188");
+    assert!(rang("urgent", 700), "a rise above what has rung is an escalation");
+    assert!(!rang("high", 800), "a fall must never ring — the reader is being told good news");
+    assert!(!rang("urgent", 900), "a climb back to a level already rung says nothing new");
+    assert!(!rang("low", 1000), "a fall below where the generation opened is still just a fall");
+
+    let logged = sql.exec("SELECT severity FROM deliveries", &[]).unwrap();
+    assert_eq!(logged.len(), 2, "two rings across six calls: `normal`, then `urgent`");
+}
+
+/// The comparison is by `hummingbird_domain::severity_rank`, not by string
+/// order — which is the whole reason the highest-rung severity is folded in
+/// Rust rather than read as a SQL `MAX`. `"high"` sorts *below* `"normal"`
+/// lexicographically while ranking above it, so a `MAX(severity)` would have
+/// let this ring twice.
+#[test]
+fn the_escalation_comparison_ranks_severities_it_does_not_sort_them() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    let rule = seed_rule(&sql, "r-1");
+    let alert = seed_alert_full_raw(&sql, "al-1", Some("high"), 100, None, None, None);
+    deliver(&sql, 500, &alert, &rule.id, rule.tier).unwrap();
+
+    let lowered = hummingbird_domain::Alert { severity: Some("normal".into()), ..alert.clone() };
+    let outcome = deliver(&sql, 600, &lowered, &rule.id, rule.tier).unwrap();
+    assert_eq!(
+        outcome,
+        DeliveryOutcome::Suppressed(SuppressReason::AlreadyDelivered),
+        "`normal` ranks below `high` however the two strings sort"
+    );
+}
+
+/// **Regression, caught reviewing #188 before it merged.** ADR-0012 warrants
+/// a delivery on *entry* into live-unacked as well as on an escalation, and
+/// the first rank-based implementation collapsed the two: it asked only
+/// `rank > highest_rung`, with the baseline starting at `0`. `severity` is
+/// free text with no `CHECK`, so an unranked string also ranks `0` — and a
+/// first raise at `"warning"` ranked `0 > 0` and rang **nothing**, silently,
+/// for the whole occurrence.
+///
+/// Reachable, not theoretical: `delivery.rs`'s own `NoSeverity` doc names
+/// `healthchecks/v1` and `github/v1` as hand-rolled sources, and `"warning"`
+/// / `"critical"` are exactly what such a webhook sends. Silent under-ringing
+/// is the direction the module doc calls a bug, so the entry transition is
+/// pinned here independently of any rank.
+#[test]
+fn an_unranked_severity_still_rings_on_entry_into_live() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    let rule = seed_rule(&sql, "r-1");
+    let alert = seed_alert_full_raw(&sql, "al-1", Some("warning"), 100, None, None, None);
+
+    let outcome = deliver(&sql, 500, &alert, &rule.id, rule.tier).unwrap();
+    match outcome {
+        DeliveryOutcome::Logged { notification, .. } => {
+            assert_eq!(notification.severity, "warning", "sent verbatim, unranked or not");
+        }
+        other => panic!("an unranked first raise must still ring; got {other:?}"),
+    }
+
+    // And the escalation half still holds against it: a second unranked
+    // string ties at rank 0, so it is not an escalation.
+    let sideways = hummingbird_domain::Alert {
+        severity: Some("critical".into()),
+        ..alert.clone()
+    };
+    assert_eq!(
+        deliver(&sql, 600, &sideways, &rule.id, rule.tier).unwrap(),
+        DeliveryOutcome::Suppressed(SuppressReason::AlreadyDelivered),
+        "one unranked string does not outrank another"
+    );
+    // A known severity does outrank it, and rings.
+    let known = hummingbird_domain::Alert {
+        severity: Some("urgent".into()),
+        ..alert.clone()
+    };
+    assert!(
+        matches!(
+            deliver(&sql, 700, &known, &rule.id, rule.tier).unwrap(),
+            DeliveryOutcome::Logged { .. }
+        ),
+        "a ranked severity escalates past an unranked one"
+    );
+}
+
+/// An unranked severity ranks 0 (`domain::severity_rank`), so it can never
+/// win an *escalation* it did not earn — and it does not panic. The mirror of
+/// `domain`'s own unranked-challenger test, one layer up. (It may still open
+/// an occurrence: see
+/// `an_unranked_severity_still_rings_on_entry_into_live`.)
+#[test]
+fn an_unranked_severity_never_wins_a_ring() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    let rule = seed_rule(&sql, "r-1");
+    let alert = seed_alert_full_raw(&sql, "al-1", Some("normal"), 100, None, None, None);
+    deliver(&sql, 500, &alert, &rule.id, rule.tier).unwrap();
+
+    let bogus = hummingbird_domain::Alert {
+        severity: Some("catastrophic".into()),
+        ..alert.clone()
+    };
+    let outcome = deliver(&sql, 600, &bogus, &rule.id, rule.tier).unwrap();
+    assert_eq!(
+        outcome,
+        DeliveryOutcome::Suppressed(SuppressReason::AlreadyDelivered),
+        "an unranked string must not ring past a known severity"
+    );
+}
+
+/// The escalation baseline is scoped to one `generation`, and to one rule. A
+/// fresh occurrence rings on its own merits at whatever level it opens at —
+/// even one the *previous* occurrence had already rung above. A
+/// cross-generation baseline would reinstate the high-water mark #188
+/// rejected, one level up: a recovered-then-relapsed check could never ring
+/// below its old peak.
+#[test]
+fn a_new_generation_rings_below_the_previous_generations_peak() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    let rule = seed_rule(&sql, "r-1");
+    let urgent = seed_alert_full_raw(&sql, "al-1", Some("urgent"), 100, None, None, None);
+    deliver(&sql, 500, &urgent, &rule.id, rule.tier).unwrap();
+
+    // A later raise of the same alert: `raised_at` moves, so `generation`
+    // does, and this is a new occurrence.
+    let next = hummingbird_domain::Alert {
+        severity: Some("normal".into()),
+        raised_at: 900,
+        ..urgent.clone()
+    };
+    let outcome = deliver(&sql, 1000, &next, &rule.id, rule.tier).unwrap();
     assert!(
         matches!(outcome, DeliveryOutcome::Logged { .. }),
-        "deliver does not itself enforce the ratchet direction"
+        "a new occurrence is not held to the last one's peak"
     );
 }
 
