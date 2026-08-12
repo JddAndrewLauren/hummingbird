@@ -224,9 +224,29 @@ operator can close the provisioning gate #256's issue thread leaves open.
    are unaffected, and `microtask` declines with a named envelope error.
 
    Switching providers later is `fly secrets set` alone, no deploy
-   (decision 2) -- but eyeball a few runs after any swap: the per-skill
-   schema catches shape failures, never judgment failures. Set a spend cap
-   in whichever provider's console holds the key, at the same time -- the
+   (decision 2) -- but **use `runner/scripts/switch-provider.sh`** rather
+   than setting the variables by hand:
+
+   ```sh
+   runner/scripts/switch-provider.sh anthropic <key-file>
+   runner/scripts/switch-provider.sh third-party <key-file> <base-url> <model-id>
+   ```
+
+   The two credentials are **mutually exclusive**, which is what the script
+   is for: each direction clears the other side. With both
+   `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` set, the client sends both
+   headers and the provider rejects every request -- and a hand-run
+   `fly secrets set` sets one without clearing the other. It also reads the
+   credential from a mode-600 file and strips surrounding whitespace, since
+   a bearer token carrying a trailing newline fails auth in a way that looks
+   nothing like a whitespace problem.
+
+   Whichever way you swap, eyeball a few runs afterwards: the per-skill
+   schema catches shape failures, never judgment failures -- on the
+   2026-08-11 swap to Moonshot's `kimi-k3`, both read-only ops returned
+   schema-valid answers and picked the same item, and the only difference
+   was a vaguer `why` line, which no schema can catch. Set a spend cap in
+   whichever provider console holds the key, at the same time -- the
    cost-ceiling posture above.
 
 4. **Deploy**:
