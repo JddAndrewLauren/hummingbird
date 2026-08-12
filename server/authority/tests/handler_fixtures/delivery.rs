@@ -254,9 +254,64 @@ fn the_escalation_comparison_ranks_severities_it_does_not_sort_them() {
     );
 }
 
+/// **Regression, caught reviewing #188 before it merged.** ADR-0012 warrants
+/// a delivery on *entry* into live-unacked as well as on an escalation, and
+/// the first rank-based implementation collapsed the two: it asked only
+/// `rank > highest_rung`, with the baseline starting at `0`. `severity` is
+/// free text with no `CHECK`, so an unranked string also ranks `0` — and a
+/// first raise at `"warning"` ranked `0 > 0` and rang **nothing**, silently,
+/// for the whole occurrence.
+///
+/// Reachable, not theoretical: `delivery.rs`'s own `NoSeverity` doc names
+/// `healthchecks/v1` and `github/v1` as hand-rolled sources, and `"warning"`
+/// / `"critical"` are exactly what such a webhook sends. Silent under-ringing
+/// is the direction the module doc calls a bug, so the entry transition is
+/// pinned here independently of any rank.
+#[test]
+fn an_unranked_severity_still_rings_on_entry_into_live() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    let rule = seed_rule(&sql, "r-1");
+    let alert = seed_alert_full_raw(&sql, "al-1", Some("warning"), 100, None, None, None);
+
+    let outcome = deliver(&sql, 500, &alert, &rule.id, rule.tier).unwrap();
+    match outcome {
+        DeliveryOutcome::Logged { notification, .. } => {
+            assert_eq!(notification.severity, "warning", "sent verbatim, unranked or not");
+        }
+        other => panic!("an unranked first raise must still ring; got {other:?}"),
+    }
+
+    // And the escalation half still holds against it: a second unranked
+    // string ties at rank 0, so it is not an escalation.
+    let sideways = hummingbird_domain::Alert {
+        severity: Some("critical".into()),
+        ..alert.clone()
+    };
+    assert_eq!(
+        deliver(&sql, 600, &sideways, &rule.id, rule.tier).unwrap(),
+        DeliveryOutcome::Suppressed(SuppressReason::AlreadyDelivered),
+        "one unranked string does not outrank another"
+    );
+    // A known severity does outrank it, and rings.
+    let known = hummingbird_domain::Alert {
+        severity: Some("urgent".into()),
+        ..alert.clone()
+    };
+    assert!(
+        matches!(
+            deliver(&sql, 700, &known, &rule.id, rule.tier).unwrap(),
+            DeliveryOutcome::Logged { .. }
+        ),
+        "a ranked severity escalates past an unranked one"
+    );
+}
+
 /// An unranked severity ranks 0 (`domain::severity_rank`), so it can never
-/// win a ring it did not earn — and it does not panic. The mirror of
-/// `domain`'s own unranked-challenger test, one layer up.
+/// win an *escalation* it did not earn — and it does not panic. The mirror of
+/// `domain`'s own unranked-challenger test, one layer up. (It may still open
+/// an occurrence: see
+/// `an_unranked_severity_still_rings_on_entry_into_live`.)
 #[test]
 fn an_unranked_severity_never_wins_a_ring() {
     let sql = RusqliteSql::new();

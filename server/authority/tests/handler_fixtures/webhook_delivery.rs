@@ -100,6 +100,54 @@ fn a_replayed_identical_webhook_payload_is_never_re_delivered() {
     assert_eq!(rows.len(), 1, "no duplicate delivery row");
 }
 
+/// **#188's ruling, end to end on the lane it actually changed.** `alerts.rs`
+/// and `delivery.rs` are pinned separately by their own fixtures; this asserts
+/// the two halves compose across #255's inline hook, which is the only path a
+/// real pushed source takes.
+///
+/// A source de-escalates its own still-live occurrence: the **row** takes the
+/// lower reading (which the old ratchet forbade outright), and the **ring**
+/// does not happen (which the old exact-string dedupe would have let through,
+/// buzzing the phone for good news).
+#[test]
+fn a_de_escalating_re_raise_lowers_the_row_and_rings_nothing() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    seed_any_kind_rule(&sql, "r-1", "high");
+
+    let first = ingest_alert(
+        &sql,
+        r#"{"source": "healthchecks/v1", "source_key": "sweeper", "title": "sweeper is down",
+            "severity": "urgent"}"#,
+        1000,
+    );
+    assert!(matches!(first.deliveries[0], DeliveryOutcome::Logged { .. }), "the raise rings");
+
+    // Same live occurrence, the source now reports it as less bad.
+    let second = ingest_alert(
+        &sql,
+        r#"{"source": "healthchecks/v1", "source_key": "sweeper", "title": "sweeper is down",
+            "severity": "high"}"#,
+        2000,
+    );
+    assert_eq!(second.status, 200, "{}", second.body);
+    let alert: hummingbird_domain::Alert = body_as(&second);
+    assert_eq!(
+        alert.severity,
+        Some("high".into()),
+        "the row takes the source's latest assessment, downward"
+    );
+    assert_eq!(
+        second.deliveries[0],
+        DeliveryOutcome::Suppressed(SuppressReason::AlreadyDelivered),
+        "a de-escalation is good news and must not ring"
+    );
+
+    let rows = sql.exec("SELECT severity FROM deliveries", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "still just the one ring, from the original raise");
+    assert_eq!(rows[0].get("severity").unwrap().as_text(), Some("urgent"));
+}
+
 /// AC3: zero live targets suppresses without logging, exactly as it does
 /// for the sweep path — the transition is never burned, so it still rings
 /// once a device finally registers.

@@ -91,6 +91,56 @@ fn a_repeat_tick_on_the_same_still_matching_item_does_not_ring_again() {
     assert_eq!(deliveries.len(), 1, "still exactly one delivery row — no re-ring");
 }
 
+/// **The mint lane's half of #188.** The within-tick fold
+/// (`two_rules_one_item_*`) resolves *concurrent* verdicts; this pins what
+/// happens *across* ticks, which the old ratchet in `alerts::upsert` used to
+/// forbid. Tick one matches an `urgent` rule and a `normal` one and mints at
+/// `urgent`; the human then disables the `urgent` rule, so tick two's only
+/// verdict is `normal`.
+///
+/// The alert row takes the lower reading — this evaluation's assessment, not
+/// the occurrence's historical peak — and the fall rings nothing, because
+/// `deliver` only ever rings above what it has already rung for this
+/// generation.
+#[test]
+fn a_later_tick_matching_only_a_lower_rule_lowers_the_alert_without_ringing() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    seed_item_threshold_rule(&sql, "r-urgent", "deadline", "within_next", "2h", "urgent");
+    seed_item_threshold_rule(&sql, "r-normal", "deadline", "within_next", "24h", "normal");
+    seed_item_with_deadline(&sql, "it-1", "2026-08-15T10:00");
+
+    let first = sweep_tick(&sql, 1786784400000).unwrap();
+    assert_eq!(first.len(), 2, "both rules match this tick");
+    let severity = sql.exec("SELECT severity FROM alerts", &[]).unwrap();
+    assert_eq!(
+        severity[0].get("severity").unwrap().as_text(),
+        Some("urgent"),
+        "one mint at the highest concurrent verdict",
+    );
+
+    // The human disables the urgent rule. `load_enabled` skips it from here,
+    // so the next tick's only verdict is `normal`.
+    sql.exec("UPDATE rules SET enabled = 0 WHERE id = 'r-urgent'", &[]).unwrap();
+
+    let second = sweep_tick(&sql, 1786784400000 + hummingbird_authority::ALARM_INTERVAL_MS).unwrap();
+    assert_eq!(second.len(), 1, "only the normal rule is evaluated now");
+    assert_eq!(
+        second[0].outcome,
+        DeliveryOutcome::Suppressed(SuppressReason::AlreadyDelivered),
+        "a fall within one occurrence must not ring",
+    );
+
+    let severity = sql.exec("SELECT severity FROM alerts", &[]).unwrap();
+    assert_eq!(
+        severity[0].get("severity").unwrap().as_text(),
+        Some("normal"),
+        "the row records this tick's assessment, not the occurrence's peak",
+    );
+    let deliveries = sql.exec("SELECT id FROM deliveries", &[]).unwrap();
+    assert_eq!(deliveries.len(), 2, "still just tick one's two rings");
+}
+
 #[test]
 fn an_overdue_item_still_matches_within_next_unbounded_on_the_past_side() {
     let sql = RusqliteSql::new();

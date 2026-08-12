@@ -173,8 +173,14 @@ generation is the alert's `raised_at`.
 
 *Amended 2026-08-12 by [#188](https://github.com/JddAndrewLauren/hummingbird/issues/188):
 **"severity level" in the dedupe key is compared by rank, not by string
-equality — a delivery is warranted only by an escalation above the highest
-severity already rung for that (alert, rule, generation).** As shipped,
+equality: once something has rung for an (alert, rule, generation), a further
+delivery is warranted only by an escalation above the highest severity already
+rung for it.** The *entry* transition above is untouched and asked first — the
+first ring of an occurrence lands whatever its severity, ranked or not, and
+only the escalation half consults the order. Collapsing the two is a live trap:
+`severity` is free text, an unranked string ranks below every known one, and a
+rank-only test would silently never ring a source that raises at `warning`. As
+shipped,
 `deliver` matched the severity string exactly, which made any *change* of
 severity a fresh transition — including a fall. That was invisible only
 because the alerts ingest handler kept the stored severity monotonic, and

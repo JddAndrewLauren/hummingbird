@@ -9,11 +9,12 @@
 //! **This layer owns severity monotonicity** (ADR-0014's 2026-08-12
 //! amendment, #188). The alert row records what its source or its minting
 //! rules currently assess — a reading, free to fall as well as rise. What
-//! must never fall is what *rings*: [`is_escalation`] suppresses anything
-//! not above the highest severity already rung for this alert, rule and
-//! generation. The row and the ring were previously conflated, by a ratchet
-//! in `alerts::upsert` that kept the row monotonic so this layer's exact
-//! string match could not ring on a downgrade.
+//! must never fall is what *rings*: past the first ring of an occurrence,
+//! [`warrants_delivery`] suppresses anything not above the highest severity
+//! already rung for this alert, rule and generation. The row and the ring
+//! were previously conflated, by a ratchet in `alerts::upsert` that kept the
+//! row monotonic so this layer's exact string match could not ring on a
+//! downgrade.
 //!
 //! **`deliver` is sync and does not send.** The authority crate stays a
 //! pure, runtime-agnostic library (`lib.rs`'s own guard test) that never
@@ -81,11 +82,12 @@ pub enum DeliveryOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuppressReason {
-    /// Not an escalation: this severity does not outrank what
-    /// `(alert_id, rule_id, generation)` has already rung — an identical
-    /// re-raise of a live alert, a de-escalation, or a climb back to a level
-    /// already reported. Absorbed so a flapping source cannot spam
-    /// (ADR-0012, rank-based since #188 — see [`is_escalation`]).
+    /// Neither of ADR-0012's warranting transitions: something has already
+    /// rung for `(alert_id, rule_id, generation)` and this severity does not
+    /// outrank it — an identical re-raise of a live alert, a de-escalation, or
+    /// a climb back to a level already reported. Absorbed so a flapping source
+    /// cannot spam (ADR-0012, rank-based since #188 — see
+    /// [`warrants_delivery`]).
     AlreadyDelivered,
     /// The alert is not currently live under ADR-0014's three-clause
     /// predicate — nothing should ring for a settled or expired alert.
@@ -131,7 +133,7 @@ pub fn deliver(
     };
     let generation = alert.raised_at;
 
-    if !is_escalation(sql, &alert.id, rule_id, generation, severity)? {
+    if !warrants_delivery(sql, &alert.id, rule_id, generation, severity)? {
         return Ok(DeliveryOutcome::Suppressed(SuppressReason::AlreadyDelivered));
     }
 
@@ -167,25 +169,42 @@ pub fn deliver(
     Ok(DeliveryOutcome::Logged { delivery_id, targets, notification })
 }
 
-/// Whether `severity` outranks every severity already rung for this
-/// `(alert, rule, generation)` — ADR-0012's transitions-only dedupe, made
-/// rank-based by ADR-0014's 2026-08-12 amendment (#188).
+/// Whether this ring is one of ADR-0012's two delivery-warranting
+/// transitions for `(alert, rule, generation)` — made rank-based by
+/// ADR-0014's 2026-08-12 amendment (#188).
 ///
-/// This replaces an exact-string match, and **subsumes it**: an equal rank
-/// is not an escalation, so an unchanged re-raise is suppressed exactly as
-/// before. What the rank buys is the case the old severity ratchet in
-/// `alerts::upsert` used to make unreachable — a source lowering severity on
-/// its own still-live occurrence. Under exact-match that minted a dedupe key
-/// nobody had seen and rang the phone for *good* news, which ADR-0012 never
-/// warranted: it justifies a ring on escalation-while-live, never on
-/// de-escalation. A later climb back to a level already rung this generation
-/// is silent for the same reason — the reader was told that much already.
+/// **Both transitions, not one.** ADR-0012 warrants a delivery when an alert
+/// *enters* live-unacked **or** when its severity *escalates* while live, and
+/// the two are asked in that order here:
+///
+/// 1. **Entry** — nothing has rung yet for this generation, so this is the
+///    first ring of this occurrence and it lands whatever its severity says.
+/// 2. **Escalation** — something has rung, so this must outrank the highest
+///    of it.
+///
+/// Collapsing (1) into (2) is a trap worth naming, because it type-checks and
+/// passes every fixture with a known severity: `severity` is free text with no
+/// `CHECK` (see `domain::severity_rank`), an unranked string ranks `0`, and
+/// with a bare `> 0` comparison a first raise at `"warning"` or `"critical"`
+/// — plausible strings from a hand-rolled `healthchecks/v1` or `github/v1`
+/// webhook — would rank `0 > 0` and **never ring at all**. Silent
+/// under-ringing is the direction the module doc calls the bug.
+///
+/// **The escalation half subsumes the exact-string match it replaces:** an
+/// equal rank is not an escalation, so an unchanged re-raise is suppressed
+/// exactly as before. What the rank buys is the case the old severity ratchet
+/// in `alerts::upsert` used to make unreachable — a source lowering severity
+/// on its own still-live occurrence. Under exact-match that minted a dedupe
+/// key nobody had seen and rang the phone for *good* news, which ADR-0012
+/// never warranted. A later climb back to a level already rung this
+/// generation is silent for the same reason — the reader was told that much
+/// already.
 ///
 /// Ranking is `domain::severity_rank`, the one total order (so an unranked
-/// string ranks 0 and cannot win a ring it did not earn), folded here rather
-/// than in SQL: `severity` is free text, so a SQL `MAX` would order it
-/// lexicographically — `"urgent" > "normal" > "low" > "high"` — and quietly
-/// disagree with every other consumer of the order.
+/// string can never win an *escalation* it did not earn, even though it may
+/// open one), folded here rather than in SQL: a SQL `MAX` would order the
+/// free text lexicographically — `"urgent" > "normal" > "low" > "high"` — and
+/// quietly disagree with every other consumer of the order.
 ///
 /// The comparison is deliberately scoped to one `generation`. A fresh
 /// occurrence rings on its own merits, at whatever level it opens at; a
@@ -198,7 +217,7 @@ pub fn deliver(
 /// but it is a wiring-time obligation on any restamping source whose
 /// severity varies. Both shipped ones (`city-waste/v2`, `race-schedule/v1`)
 /// send a constant severity, so nothing hits it today.
-fn is_escalation(
+fn warrants_delivery(
     sql: &dyn Sql,
     alert_id: &str,
     rule_id: &str,
@@ -213,16 +232,24 @@ fn is_escalation(
             SqlValue::Integer(generation),
         ],
     )?;
-    let mut rung = 0;
+    // `None` is "nothing rung yet", which is not the same as "rung at rank
+    // zero" — keeping them distinct is what makes the entry transition fire
+    // for an unranked severity.
+    let mut rung: Option<usize> = None;
     for row in &rows {
         // A delivery row's `severity` is `NOT NULL` and written by the INSERT
         // above, so a missing or non-text cell is a corrupt row rather than a
         // shape this has to interpret — rank it 0 and let the comparison
-        // decide, instead of failing a live ring over it.
+        // decide, instead of failing a live ring over it. It still counts as
+        // *something* rung, so it closes the entry transition.
         let logged = RowReader(row).opt_text("severity").unwrap_or_default();
-        rung = rung.max(severity_rank(&logged));
+        let rank = severity_rank(&logged);
+        rung = Some(rung.map_or(rank, |highest: usize| highest.max(rank)));
     }
-    Ok(severity_rank(severity) > rung)
+    Ok(match rung {
+        None => true,
+        Some(rung) => severity_rank(severity) > rung,
+    })
 }
 
 fn live_push_targets(sql: &dyn Sql) -> Result<Vec<PushTarget>, SqlError> {
