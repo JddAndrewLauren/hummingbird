@@ -106,11 +106,14 @@ and is the reason this process holds an authority credential at all:
 
   - `prepare` fetches `GET /api/sweep`, resolves the ref (no route accepts
     `HB-<seq>`; it is a client-side affordance over `Item.seq`) and puts
-    the item plus its live steps in the prompt. An unknown ref, a missing
-    token and an unreachable authority all end the stream here, before a
-    model token is spent.
-  - `apply` runs **after** the model and appends one `POST /api/steps` per
-    line of its answer, at contiguous positions after the live maximum.
+    the item plus its **ticked** steps in the prompt -- the unticked ones
+    are the plan, and the model never sees them (#317). An unknown ref, a
+    missing token and an unreachable authority all end the stream here,
+    before a model token is spent.
+  - `apply` runs **after** the model. It writes one `POST /api/steps` per
+    line of the answer, at contiguous positions after the highest *ticked*
+    position -- the plan starts where the record ends -- and on a replace
+    it also moves and drops, per the `replace: true` bullet below.
     **`ok:true` means the checklist landed, not that a model answered**: a
     failed write is an `ok:false` envelope like any other.
   - Idempotence is structural at the write layer, not the request layer

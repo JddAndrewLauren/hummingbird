@@ -234,7 +234,7 @@ export const microtask = {
     return [
       "/microtask",
       "",
-      "Runner arm: the item and its live steps have ALREADY been read from the",
+      "Runner arm: the item and its ticked steps have ALREADY been read from the",
       "authority and follow as JSON. You have no shell here -- do not run",
       "scripts/hb.sh, and do not write, tick or drop anything yourself. Every",
       "step below is `record`: already done, carried only so you can report",
