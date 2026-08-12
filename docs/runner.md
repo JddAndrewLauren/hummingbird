@@ -1,13 +1,20 @@
 # The skill-runner endpoint
 
-> **Status (2026-08-11): deployed, two ops live.**
+> **Status (2026-08-12): deployed, all three ops live.**
 > `hummingbird-runner` is provisioned in `sjc` and answering at
-> `https://hummingbird-runner.fly.dev`. `parse-capture` and `next-up-hb` are
-> smoke-tested against it; `microtask` is registered but **declines**, because
-> `HB_API_TOKEN` is deliberately still unset (a supported state -- see step 3
-> of the Deploy runbook). Setting that secret and redeploying is what makes the
-> third op live. Provisioning was and remains an operator gate: #256 and #272
-> are build-only slices, the same posture #237's server deploy used.
+> `https://hummingbird-runner.fly.dev`, and all three ops are smoke-tested
+> against it. `HB_API_TOKEN` is set (a device-scope token minted as id
+> `runner`), so `microtask` holds a **write** credential against the live
+> authority and every run of it mints real Step rows -- confirmed by writing,
+> then soft-deleting, 28 of them. One finding came out of that run and is
+> **open**: an identical repeat request appends a further phase of steps rather
+> than converging, because the model reads the existing checklist as work
+> already covered
+> ([#307](https://github.com/JddAndrewLauren/hummingbird/issues/307)) -- so the
+> op is idempotent at the write layer and *not* at the request layer, which is
+> the level a client retries at. Provisioning was and remains an operator gate:
+> #256 and #272 are build-only slices, the same posture #237's server deploy
+> used.
 
 A fourth actor (#41 decided this, #256 builds it): a Fly app that takes
 `POST /run {skill, args}` and runs one Claude Code skill headlessly,
