@@ -15,7 +15,10 @@
  * radius: `device` is write-everything, so this module is a write
  * credential however read-only a given call looks -- which is why the
  * surface here is exactly four named verbs -- `sweep`, `createStep`,
- * `dropStep`, `moveStep` -- and not a general request helper.
+ * `dropStep`, `moveStep` -- and not a general request helper. Each takes
+ * camelCase arguments and composes the authority's snake_case wire body
+ * itself (`server/domain/src/api.rs` owns those DTOs), so no caller can
+ * hand this module a payload it did not write.
  *
  * `fetch` is injected for the same reason `spawn` is everywhere else: no
  * test in this suite reaches the network or needs a credential.
@@ -136,16 +139,16 @@ export function createAuthorityClient({ fetch, baseUrl, token, timeoutMs = REQUE
      * repeated run safe to simply re-send (the authority returns the stored
      * row on the already-exists path -- `handlers/steps.rs`).
      *
-     * @param {{id: string, item_id: string, body: string, position: number}} step
+     * @param {{id: string, itemId: string, body: string, position: number}} step
      * @returns {Promise<{ok: true, created: boolean, step: unknown} | {ok: false, error: string}>}
      */
-    async createStep(step) {
-      const raw = await request("POST", "/api/steps", step);
+    async createStep({ id, itemId, body, position }) {
+      const raw = await request("POST", "/api/steps", { id, item_id: itemId, body, position });
       if (!raw.ok) return raw;
       if (raw.status !== 201 && raw.status !== 200) {
         return {
           ok: false,
-          error: `POST /api/steps answered ${raw.status} for "${step.body}": ${raw.text.slice(0, 200)}`,
+          error: `POST /api/steps answered ${raw.status} for "${body}": ${raw.text.slice(0, 200)}`,
         };
       }
       const parsed = parse("POST", "/api/steps", raw);

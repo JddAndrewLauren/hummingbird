@@ -345,7 +345,7 @@ export const microtask = {
       }
       const write = await authority.createStep({
         id: stepId(itemId, body),
-        item_id: itemId,
+        itemId,
         body,
         position,
       });

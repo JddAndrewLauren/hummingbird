@@ -43,7 +43,7 @@ test("an empty token yields the unconfigured client, whose every call names the 
   const read = await authority.sweep();
   assert.equal(read.ok, false);
   assert.match(read.error, /HB_API_TOKEN/);
-  const write = await authority.createStep({ id: "s", item_id: "i", body: "b", position: 1 });
+  const write = await authority.createStep({ id: "s", itemId: "i", body: "b", position: 1 });
   assert.equal(write.ok, false);
   const drop = await authority.dropStep({ id: "s", expectedVersion: 1 });
   assert.equal(drop.ok, false);
@@ -118,20 +118,26 @@ test("an unreachable authority is a named outcome -- the caller must still end i
 
 test("createStep POSTs the step body as JSON and reads 201 as a create", async () => {
   const fetch = fakeFetch({ status: 201, body: '{"id":"s-1","version":7}' });
-  const step = { id: "s-1", item_id: "i-1", body: "put on music", position: 3 };
-  const write = await client(fetch).createStep(step);
+  const write = await client(fetch).createStep({ id: "s-1", itemId: "i-1", body: "put on music", position: 3 });
   assert.deepEqual(write, { ok: true, created: true, step: { id: "s-1", version: 7 } });
   assert.equal(fetch.calls[0].url, "https://hb.example/api/steps");
   assert.equal(fetch.calls[0].options.method, "POST");
   assert.equal(fetch.calls[0].options.headers["content-type"], "application/json");
-  assert.deepEqual(JSON.parse(fetch.calls[0].options.body), step);
+  // The verb takes camelCase and composes the wire body itself -- `item_id`
+  // is the authority's DTO (`server/domain/src/api.rs`), not the arg shape.
+  assert.deepEqual(JSON.parse(fetch.calls[0].options.body), {
+    id: "s-1",
+    item_id: "i-1",
+    body: "put on music",
+    position: 3,
+  });
 });
 
 /** Idempotence, the authority's half: already-exists is success and returns the stored row. */
 test("createStep reads 200 as a replay, not a duplicate and not a failure", async () => {
   const write = await client(fakeFetch({ status: 200, body: '{"id":"s-1"}' })).createStep({
     id: "s-1",
-    item_id: "i-1",
+    itemId: "i-1",
     body: "put on music",
     position: 3,
   });
@@ -142,7 +148,7 @@ test("createStep reads 200 as a replay, not a duplicate and not a failure", asyn
 test("a rejected create names the status and the step it was writing", async () => {
   const write = await client(fakeFetch({ status: 400, body: '{"error":"unknown item_id"}' })).createStep({
     id: "s-1",
-    item_id: "ghost",
+    itemId: "ghost",
     body: "put on music",
     position: 1,
   });

@@ -277,13 +277,13 @@ test("apply appends each step at a contiguous position after the live maximum", 
   assert.deepEqual(authority.writes, [
     {
       id: stepId(ITEM.id, "put on music"),
-      item_id: ITEM.id,
+      itemId: ITEM.id,
       body: "put on music",
       position: 3,
     },
     {
       id: stepId(ITEM.id, "grab a trash bag"),
-      item_id: ITEM.id,
+      itemId: ITEM.id,
       body: "grab a trash bag",
       position: 4,
     },
@@ -450,7 +450,7 @@ test("replace rewrites the plan: kept steps move, absent ones drop, new ones cre
   assert.deepEqual(authority.moves, [{ id: UNDONE_2.id, expectedVersion: UNDONE_2.version, position: 3 }]);
   // "new one" has no live match -- created, at the position after "fourth".
   assert.deepEqual(authority.writes, [
-    { id: stepId(ITEM.id, "new one"), item_id: ITEM.id, body: "new one", position: 4 },
+    { id: stepId(ITEM.id, "new one"), itemId: ITEM.id, body: "new one", position: 4 },
   ]);
 });
 
@@ -472,6 +472,29 @@ test("a kept step whose text repeats verbatim issues no create and no drop for i
   // has two done steps, so basePosition is 3 and UNDONE_2 already sits at
   // position 4, so it does move once, to the position the answer implies.
   assert.deepEqual(authority.moves, [{ id: UNDONE_2.id, expectedVersion: UNDONE_2.version, position: 3 }]);
+});
+
+/**
+ * The other half of the keep case: a kept step that already sits where the
+ * answer puts it is left entirely alone. A `moveStep` here would burn a CAS
+ * version on a row nothing is changing.
+ */
+test("a kept step already at its wanted position issues no move at all", async () => {
+  // DONE_1/DONE_2 occupy positions 1-2, so basePosition is 3 -- exactly
+  // where UNDONE ("third") already sits.
+  const authority = fakeAuthority({ sweep: { ok: true, sweep: SWEEP_WITH_LIVE_PLAN } });
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+  assert.equal(prepared.ok, true);
+
+  const applied = await microtask.apply(
+    { steps: ["third"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+
+  assert.equal(applied.ok, true);
+  assert.deepEqual(authority.moves, []);
+  assert.equal(authority.writes.length, 0);
+  assert.equal(authority.drops.length, 0);
 });
 
 test("a replace never touches a ticked step's id, done state or position", async () => {
@@ -514,6 +537,32 @@ test("creates and moves are attempted before any drop, and a drop failure stops 
   assert.equal(authority.writes.length, 1);
   assert.equal(authority.moves.length, 1);
   assert.equal(authority.drops.length, 1);
+});
+
+/**
+ * The same ordering property one step earlier: a move that fails stops the
+ * run before any drop is even attempted, so the whole old plan is still
+ * live -- the failure a subsequent replace converges, never a truncated
+ * checklist.
+ */
+test("a move failure stops the run before any drop, leaving the old plan whole", async () => {
+  const authority = fakeAuthority({
+    sweep: { ok: true, sweep: SWEEP_WITH_TWO_STEP_PLAN },
+    moveStep: () => ({ ok: false, error: "PATCH /api/steps/s-4 answered 500" }),
+  });
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+
+  const applied = await microtask.apply(
+    { steps: ["fourth", "new one"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+
+  assert.equal(applied.ok, false);
+  assert.match(applied.error, /answered 500/);
+  // The move was the first write attempted, and nothing followed it.
+  assert.equal(authority.moves.length, 1);
+  assert.equal(authority.writes.length, 0);
+  assert.equal(authority.drops.length, 0);
 });
 
 /**

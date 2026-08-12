@@ -329,7 +329,7 @@ test("a skill declaring apply writes after the model, and the envelope carries t
     // The item rode in the prompt, and the steps landed against it.
     assert.ok(calls[0].args[1].includes(ITEM.id));
     assert.deepEqual(
-      authority.writes.map((step) => [step.item_id, step.body, step.position]),
+      authority.writes.map((step) => [step.itemId, step.body, step.position]),
       [
         [ITEM.id, "put on music", 1],
         [ITEM.id, "grab a trash bag", 2],
