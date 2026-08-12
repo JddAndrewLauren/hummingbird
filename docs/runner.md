@@ -100,7 +100,7 @@ and is the reason this process holds an authority credential at all:
     **`ok:true` means the checklist landed, not that a model answered**: a
     failed write is an `ok:false` envelope like any other.
   - Idempotence is structural. Each step's id is
-    `sha256("hummingbird-skill/microtask/v1" + item + body)`, so a replay
+    `sha256("hummingbird-skill/microtask/v1" + item + "/" + body)`, so a replay
     lands on the authority's already-exists path (200, the stored row)
     rather than minting a duplicate -- and `runner/src/step-id.js` is the
     same recipe as the skill's own `hb.sh`, pinned against it by

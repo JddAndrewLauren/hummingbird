@@ -76,7 +76,16 @@ export function createAuthorityClient({ fetch, baseUrl, token, timeoutMs = REQUE
       return { ok: false, error: `${method} ${path} could not reach the authority: ${err.message}` };
     }
 
-    const text = await response.text().catch(() => "");
+    // Read failures get their own named outcome rather than an empty body.
+    // The timeout above covers the body too, so a stall *after* the headers
+    // arrive lands here -- swallowing it left that case reported as "answered
+    // 200 with a non-JSON body", which names the wrong problem.
+    let text;
+    try {
+      text = await response.text();
+    } catch (err) {
+      return { ok: false, error: `${method} ${path} could not read the authority's response: ${err.message}` };
+    }
     return { ok: true, status: response.status, text };
   }
 

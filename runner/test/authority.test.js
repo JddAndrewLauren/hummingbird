@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAuthorityClient, unconfiguredAuthority } from "../src/authority.js";
 
-/** A `fetch` that answers one canned response and records every call. */
+/**
+ * A `fetch` that answers one canned response and records every call. A
+ * response whose `body` is an `Error` rejects the body read instead of
+ * resolving it -- the shape a stall *after* the headers arrive has.
+ */
 function fakeFetch(responses) {
   const calls = [];
   const queue = Array.isArray(responses) ? [...responses] : [responses];
@@ -12,7 +16,10 @@ function fakeFetch(responses) {
     if (next instanceof Error) throw next;
     return {
       status: next.status,
-      text: async () => next.body,
+      text: async () => {
+        if (next.body instanceof Error) throw next.body;
+        return next.body;
+      },
     };
   };
   fetch.calls = calls;
@@ -72,6 +79,22 @@ test("a 200 that is not JSON is a named outcome, not an empty sweep", async () =
   const read = await client(fakeFetch({ status: 200, body: "<!doctype html>" })).sweep();
   assert.equal(read.ok, false);
   assert.match(read.error, /non-JSON/);
+});
+
+/**
+ * The request timeout covers the body too, so a stall after the headers
+ * arrive fails the read rather than the fetch. Swallowing it reported the
+ * wrong problem -- "answered 200 with a non-JSON body" names a malformed
+ * payload, not a connection that died mid-body.
+ */
+test("a body read that fails names the read, not a malformed payload", async () => {
+  const read = await client(
+    fakeFetch({ status: 200, body: new Error("The operation was aborted") }),
+  ).sweep();
+  assert.equal(read.ok, false);
+  assert.match(read.error, /could not read the authority's response/);
+  assert.match(read.error, /aborted/);
+  assert.ok(!/non-JSON/.test(read.error));
 });
 
 test("a 200 of the wrong shape is rejected as not a sweep payload", async () => {
