@@ -37,7 +37,7 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 | `runner/src/skills/parse-capture.js` | That skill's arg validation and prompt-building. |
 | `runner/src/skills/next-up-hb.js` | The same, for `/next-up-hb`: the sweep payload arrives in `args` (context-blind -- no authority token here, no HTTP call), plus the `prepare` hook that ranks before the model runs. |
 | `runner/src/skills/microtask.js` | The same, for `/microtask`: `prepare` reads the item from the authority, `apply` writes the checklist back to it. The one op that holds a credential. |
-| `runner/src/authority.js` | The client for the app-owned authority (`GET /api/sweep`, `POST /api/steps`) and the only place a `device` token lives in this process. `fetch` injected. |
+| `runner/src/authority.js` | The client for the app-owned authority (`GET /api/sweep`, `POST /api/steps`, `PATCH /api/steps/:id`) and the only place a `device` token lives in this process. `fetch` injected. |
 | `runner/src/step-id.js` | The deterministic step id, digit for digit the same recipe as `microtask`'s `hb.sh` -- what keeps the two arms from minting two copies of one step. |
 | `runner/src/rank-bin.js` | Spawns the baked `next-up-rank` over the envelope on stdin. The one child process here that is not `claude`. |
 | `runner/src/claude-cli.js` | Builds the `claude -p ... --output-format json --json-schema <path>` argv. |

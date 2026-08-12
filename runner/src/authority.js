@@ -14,7 +14,8 @@
  * (`main.js`), never from a request. Per CLAUDE.md's credential blast
  * radius: `device` is write-everything, so this module is a write
  * credential however read-only a given call looks -- which is why the
- * surface here is exactly two verbs and not a general request helper.
+ * surface here is exactly four named verbs -- `sweep`, `createStep`,
+ * `dropStep`, `moveStep` -- and not a general request helper.
  *
  * `fetch` is injected for the same reason `spawn` is everywhere else: no
  * test in this suite reaches the network or needs a credential.
