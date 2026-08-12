@@ -39,6 +39,53 @@ class DeterministicV4Test(unittest.TestCase):
         self.assertNotEqual(sweep.deterministic_v4("abc"), sweep.deterministic_v4("abd"))
 
 
+class HttpStatusStampTest(unittest.TestCase):
+    """`with_status` is opt-in, and that is load-bearing.
+
+    Every Google helper here reads `"_status" in payload` as "this call
+    failed". Stamping the status on every success would make each of them
+    raise on a perfectly good response -- the sweeper would create items and
+    then fail to ack a single one. Only the authority's create, where 201 and
+    200 are both success and mean different things, asks for it.
+    """
+
+    class FakeResponse:
+        status = 201
+
+        def read(self):
+            return b'{"id": "abc"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(self, request, timeout=None):
+        return self.FakeResponse()
+
+    def setUp(self):
+        self.real_urlopen = sweep.urllib.request.urlopen
+        sweep.urllib.request.urlopen = self.urlopen
+
+    def tearDown(self):
+        sweep.urllib.request.urlopen = self.real_urlopen
+
+    def test_success_carries_no_status_by_default(self):
+        self.assertEqual(sweep.http_json("https://example.test/x"), {"id": "abc"})
+
+    def test_success_carries_the_status_when_asked(self):
+        self.assertEqual(
+            sweep.http_json("https://example.test/x", with_status=True),
+            {"id": "abc", "_status": 201},
+        )
+
+    def test_a_google_ack_still_succeeds_on_an_unstamped_response(self):
+        # The concrete failure the opt-in prevents, at the call site that
+        # would have hit it first.
+        sweep.gmail_remove_label("at", "msg-1", "Label_7")
+
+
 class DeriveCaptureTest(unittest.TestCase):
     """#14's "title verbatim" rule, plus the two edges #24 found."""
 
@@ -67,10 +114,36 @@ CFG = sweep.Config(
     google_client_id="cid",
     google_client_secret="secret",
     google_refresh_token="refresh",
-    linear_api_key="lin_key",
+    hb_api_token="hb_token",
+    hb_api_base="https://hb.example",
     healthcheck_url="https://hc.example/ping",
     denylist_path="/nonexistent/denylist.json",  # fails open: sweep everything
 )
+
+ITEMS_URL = "https://hb.example/api/items"
+
+
+def created(item_id, **over):
+    """A 201 answer: the authority returns the whole stored row."""
+    row = {"id": item_id, "seq": 1, "title": "t", "stage": "triage", "_status": 201}
+    row.update(over)
+    return row
+
+
+def existed(item_id):
+    """A 200 answer: the idempotent replay of an id already stored."""
+    return dict(created(item_id), _status=200)
+
+
+def rejected(status, error, message):
+    """The authority's error envelope (server/domain/src/api.rs ApiError)."""
+    return {"error": error, "message": message, "_status": status}
+
+
+# Scripted answer meaning "a normal 201 for whatever was posted". The row has
+# to carry the posted id: `hb_create_item` refuses a 201 that is not the item,
+# which is what stops the PWA's static shell being mistaken for a create.
+ECHO = "echo-the-posted-row"
 
 LISTS = {"items": [{"id": "list-1", "title": "My Tasks"}]}
 TASKS = {
@@ -84,19 +157,22 @@ TASKS = {
 class FakeHttp:
     """Records every call; answers reads, and whatever the test scripts."""
 
-    def __init__(self, linear_responses=None, tasks=None):
+    def __init__(self, hb_responses=None, tasks=None):
         self.calls = []
-        self.linear_responses = list(linear_responses or [])
+        self.hb_responses = list(hb_responses or [])
         self.tasks = tasks if tasks is not None else TASKS
 
-    def __call__(self, url, method="GET", headers=None, body=None):
+    def __call__(self, url, method="GET", headers=None, body=None, with_status=False):
         self.calls.append({"url": url, "method": method, "headers": headers, "body": body})
         if url == sweep.GOOGLE_TOKEN_URL:
             return {"access_token": "at"}
-        if url == sweep.LINEAR_URL:
-            if self.linear_responses:
-                return self.linear_responses.pop(0)
-            return {"data": {"issueCreate": {"success": True, "issue": {"id": "x"}}}}
+        if url == ITEMS_URL:
+            assert with_status, "the create must ask for the status: 201 and 200 differ"
+            scripted = self.hb_responses.pop(0) if self.hb_responses else ECHO
+            if scripted == ECHO:
+                # What the real route does: answer with the whole stored row.
+                return created(body["id"], title=body["title"])
+            return scripted
         if "/users/@me/lists" in url:
             return dict(LISTS)
         if url.endswith("maxResults=100") and "/tasks?" in url:
@@ -105,11 +181,14 @@ class FakeHttp:
             return {"status": "completed"}
         raise AssertionError("unexpected request: %s %s" % (method, url))
 
+    def creates(self):
+        return [call for call in self.calls if call["url"] == ITEMS_URL]
+
     def mutating(self):
         return [
             call
             for call in self.calls
-            if call["url"] == sweep.LINEAR_URL or call["method"] == "PATCH"
+            if call["url"] == ITEMS_URL or call["method"] == "PATCH"
         ]
 
 
@@ -155,62 +234,91 @@ class SweepFlowTest(unittest.TestCase):
         self.assertEqual(
             sequence,
             [
-                ("POST", sweep.LINEAR_URL),
+                ("POST", ITEMS_URL),
                 ("PATCH", sequence[1][1]),
-                ("POST", sweep.LINEAR_URL),
+                ("POST", ITEMS_URL),
                 ("PATCH", sequence[3][1]),
             ],
         )
         self.assertIn("task-1", sequence[1][1])
         self.assertIn("task-2", sequence[3][1])
 
-        first = fake.mutating()[0]["body"]["variables"]["input"]
+        first = fake.creates()[0]["body"]
         self.assertEqual(first["id"], sweep.deterministic_v4("task-1"))
         self.assertEqual(first["title"], "call the vet")
-        self.assertEqual(first["teamId"], sweep.TEAM_ID)
-        self.assertEqual(first["stateId"], sweep.STATE_ID)
         self.assertNotIn("description", first)  # empty notes -> no description
+        # The landing stage is the route's own default; saying it here would
+        # be a second copy of a fact the server owns.
+        self.assertNotIn("stage", first)
 
-        second = fake.mutating()[2]["body"]["variables"]["input"]
+        second = fake.creates()[1]["body"]
         self.assertEqual(second["description"], "before Thursday")
 
-        self.assertEqual(fake.mutating()[0]["headers"]["Authorization"], "lin_key")
+        self.assertEqual(
+            fake.creates()[0]["headers"]["Authorization"], "Bearer hb_token"
+        )
+
+    def test_the_create_carries_its_own_provenance(self):
+        # The columns the owned schema reserved for exactly this
+        # (server/domain/src/item.rs). source_key is the raw task id -- the
+        # same string hashed into the deterministic id, kept legible.
+        fake = FakeHttp()
+        self.run_with(fake)
+        body = fake.creates()[0]["body"]
+        self.assertEqual(body["source"], "google-tasks/v1")
+        self.assertEqual(body["source_key"], "task-1")
+        # A Tasks row has no addressable url, so the field is simply absent
+        # rather than sent empty.
+        self.assertNotIn("source_url", body)
 
     def test_already_exists_is_success(self):
-        exists = {
-            "_status": 400,
-            "errors": [
-                {
-                    "message": "Entity Issue with id abc already exists.",
-                    "extensions": {
-                        "code": "INPUT_ERROR",
-                        "userPresentableMessage": "Entity Issue with id abc already exists.",
-                    },
-                }
-            ],
-        }
-        fake = FakeHttp(linear_responses=[exists, exists])
+        # The authority answers a replay of a known id with 200 and the stored
+        # row -- no write, no version bump. That is the crash-window retry.
+        fake = FakeHttp(hb_responses=[existed("a"), existed("b")])
         ok, failures, _ = self.run_with(fake)
         self.assertTrue(ok)
         self.assertEqual(failures, [])
         self.assertEqual(len(self.patched_tasks(fake)), 2)
 
+    def test_a_409_is_treated_as_already_exists(self):
+        # Unreachable on this route today -- 409 belongs to PATCH's stale
+        # expected_version -- but on a pure create path it could only ever
+        # mean already-exists, so it must never cost a capture.
+        fake = FakeHttp(hb_responses=[dict(existed("a"), _status=409), existed("b")])
+        ok, failures, _ = self.run_with(fake)
+        self.assertTrue(ok)
+        self.assertEqual(failures, [])
+        self.assertEqual(len(self.patched_tasks(fake)), 2)
+
+    def test_a_dead_token_is_transient_and_rings(self):
+        # 401 answers with no body at all, so there is nothing to classify --
+        # which is exactly why the default has to be transient.
+        fake = FakeHttp(hb_responses=[{"_status": 401}, ECHO])
+        ok, failures, _ = self.run_with(fake)
+        self.assertFalse(ok)
+        self.assertEqual(len(failures), 1)
+        patches = self.patched_tasks(fake)
+        self.assertEqual(len(patches), 1)  # task-1 stays incomplete for the retry
+
+    def test_a_201_without_the_item_row_fails_rather_than_acking(self):
+        # The authority shares an origin with the PWA, so a misrouted request
+        # gets the static shell back with a 200/201. Acking on that would
+        # discard the capture; it has to ring instead.
+        shell = {"_status": 201, "_raw": "<!doctype html>"}
+        fake = FakeHttp(hb_responses=[shell, ECHO])
+        ok, failures, _ = self.run_with(fake)
+        self.assertFalse(ok)
+        self.assertIn("misrouted", failures[0])
+        self.assertEqual(len(self.patched_tasks(fake)), 1)
+
     def test_unparseable_error_skips_patch_and_fails_the_run(self):
-        # Deliberately still a hard failure. This payload names no offending
-        # property, so the sweeper cannot tell a junk row from a broken
+        # Deliberately still a hard failure. This payload is not a validation
+        # error at all, so the sweeper cannot tell a junk row from a broken
         # sweeper -- and an unrecognized shape must fail loud rather than
         # quietly quarantine. Quarantine has to earn itself; see #24.
-        broken = {
-            "_status": 400,
-            "errors": [
-                {
-                    "message": "Argument Validation Error",
-                    "extensions": {"code": "INPUT_ERROR", "userPresentableMessage": "nope"},
-                }
-            ],
-        }
-        good = {"data": {"issueCreate": {"success": True, "issue": {"id": "x"}}}}
-        fake = FakeHttp(linear_responses=[broken, good])
+        broken = rejected(400, "bad_json", "expected value at line 1 column 1")
+        good = ECHO
+        fake = FakeHttp(hb_responses=[broken, good])
         ok, failures, _ = self.run_with(fake)
 
         self.assertFalse(ok)
@@ -275,33 +383,17 @@ class SweepFlowTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(failures, [])
         self.assertTrue(any("/tasks?" in call["url"] for call in fake.calls))
-        creates = [c for c in fake.mutating() if c["url"] == sweep.LINEAR_URL]
-        self.assertEqual(len(creates), 2)  # both TASKS items swept
+        self.assertEqual(len(fake.creates()), 2)  # both TASKS items swept
 
 
-def validation_error(prop, constraint, message="Argument Validation Error"):
-    """Linear's INVALID_INPUT shape, as observed live in the #24 incident."""
-    return {
-        "_status": 400,
-        "errors": [
-            {
-                "message": message,
-                "extensions": {
-                    "code": "INVALID_INPUT",
-                    "userError": True,
-                    "userPresentableMessage": constraint,
-                    "children": [
-                        {
-                            "property": "input",
-                            "children": [
-                                {"property": prop, "constraints": {"minLength": constraint}}
-                            ],
-                        }
-                    ],
-                },
-            }
-        ],
-    }
+def validation_error(message):
+    """The authority's validation envelope (handlers/items.rs).
+
+    Prose, not a structured `property` -- so the field a rejection names is
+    the message's first word, and that is the whole basis on which a capture
+    can earn quarantine.
+    """
+    return rejected(400, "validation", message)
 
 
 class TerminalFailureTest(unittest.TestCase):
@@ -311,8 +403,8 @@ class TerminalFailureTest(unittest.TestCase):
     failure that can never clear must not be retried into one.
     """
 
-    GOOD = {"data": {"issueCreate": {"success": True, "issue": {"id": "x"}}}}
-    BLANK_TITLE = "title must be longer than or equal to 1 characters"
+    GOOD = ECHO
+    BLANK_TITLE = "title must be non-empty"
 
     def setUp(self):
         self.real_http = sweep.http_json
@@ -327,7 +419,7 @@ class TerminalFailureTest(unittest.TestCase):
     def patched_tasks(self, fake):
         return [c["url"] for c in fake.mutating() if c["method"] == "PATCH"]
 
-    def test_blank_row_is_skipped_before_linear_is_called(self):
+    def test_blank_row_is_skipped_before_the_authority_is_called(self):
         # The literal #24 incident: rows made by pressing Enter in the Tasks
         # app. They carry no information, so there is nothing to lose.
         fake = FakeHttp(
@@ -344,11 +436,11 @@ class TerminalFailureTest(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertIn("1 empty captures skipped (no title, no notes)", notes)
 
-        # Never offered to Linear, and never disposed of in Tasks either --
-        # it stays visible for a human to delete.
-        creates = [c for c in fake.mutating() if c["url"] == sweep.LINEAR_URL]
+        # Never offered to the authority, and never disposed of in Tasks
+        # either -- it stays visible for a human to delete.
+        creates = fake.creates()
         self.assertEqual(len(creates), 1)
-        self.assertEqual(creates[0]["body"]["variables"]["input"]["title"], "call the vet")
+        self.assertEqual(creates[0]["body"]["title"], "call the vet")
         patches = self.patched_tasks(fake)
         self.assertEqual(len(patches), 1)
         self.assertIn("task-1", patches[0])
@@ -361,17 +453,16 @@ class TerminalFailureTest(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(failures, [])
-        created = fake.mutating()[0]["body"]["variables"]["input"]
-        self.assertEqual(created["title"], "ring mum")
-        self.assertEqual(created["description"], "ring mum\nabout the car")
+        posted = fake.creates()[0]["body"]
+        self.assertEqual(posted["title"], "ring mum")
+        self.assertEqual(posted["description"], "ring mum\nabout the car")
         self.assertEqual(len(self.patched_tasks(fake)), 1)  # and disposed of normally
 
     def test_content_rejection_is_quarantined_not_retried(self):
-        # Belt to the skip's braces: whatever else Linear one day refuses on
-        # title or description gets set aside rather than wedging the alarm.
-        fake = FakeHttp(
-            linear_responses=[validation_error("title", self.BLANK_TITLE), self.GOOD]
-        )
+        # Belt to the skip's braces: whatever else the authority one day
+        # refuses on title or description gets set aside rather than wedging
+        # the alarm.
+        fake = FakeHttp(hb_responses=[validation_error(self.BLANK_TITLE), self.GOOD])
         ok, failures, notes = self.run_with(fake)
 
         self.assertTrue(ok, "a content rejection must not fail the run")
@@ -384,29 +475,31 @@ class TerminalFailureTest(unittest.TestCase):
         self.assertIn("task-2", patches[0])
 
     def test_rejection_on_a_non_content_field_still_fails_the_run(self):
-        # The systematic case -- a wrong stateId or teamId breaks every
-        # capture, and must keep ringing the alarm exactly as before.
+        # The systematic case. These names moved with the retarget -- it used
+        # to be a wrong teamId or stateId -- but the property is identical: a
+        # rejection naming a field the *sweeper* supplied breaks every capture
+        # alike and must keep ringing the alarm.
+        for message in (
+            "id must be non-empty",
+            "priority must be between 0 and 4",
+            "unknown project_id",
+            "deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM",
+        ):
+            with self.subTest(message=message):
+                fake = FakeHttp(hb_responses=[validation_error(message), self.GOOD])
+                ok, failures, _ = self.run_with(fake)
+
+                self.assertFalse(ok)
+                self.assertEqual(len(failures), 1)
+                self.assertIn("task-1", failures[0])
+
+    def test_a_non_validation_rejection_stays_transient(self):
+        # `bad_json` means the sweeper built a body the route would not parse
+        # -- a broken sweeper, not a bad row. Only `validation` can ever earn
+        # quarantine, and only then on a content field.
         fake = FakeHttp(
-            linear_responses=[
-                validation_error("stateId", "stateId must be a UUID"),
-                self.GOOD,
-            ]
+            hb_responses=[rejected(400, "bad_json", "unknown field `titel`"), self.GOOD]
         )
-        ok, failures, _ = self.run_with(fake)
-
-        self.assertFalse(ok)
-        self.assertEqual(len(failures), 1)
-        self.assertIn("task-1", failures[0])
-
-    def test_an_unexplained_sibling_error_keeps_the_whole_rejection_transient(self):
-        # Every error has to earn quarantine on its own. A recognized title
-        # violation must not cover for a sibling naming no field at all --
-        # that half is unexplained, and unexplained fails loud.
-        rejection = validation_error("title", self.BLANK_TITLE)
-        rejection["errors"].append(
-            {"message": "Something else", "extensions": {"code": "INVALID_INPUT"}}
-        )
-        fake = FakeHttp(linear_responses=[rejection, self.GOOD])
         ok, failures, _ = self.run_with(fake)
 
         self.assertFalse(ok)
@@ -416,9 +509,9 @@ class TerminalFailureTest(unittest.TestCase):
     def test_a_5xx_is_transient_whatever_its_body_says(self):
         # The server failing to answer says nothing about the capture, so the
         # status is checked before the body is believed.
-        rejection = validation_error("title", self.BLANK_TITLE)
+        rejection = validation_error(self.BLANK_TITLE)
         rejection["_status"] = 503
-        fake = FakeHttp(linear_responses=[rejection, self.GOOD])
+        fake = FakeHttp(hb_responses=[rejection, self.GOOD])
         ok, failures, _ = self.run_with(fake)
 
         self.assertFalse(ok, "a 5xx must stay retryable, not be quarantined")
@@ -428,7 +521,7 @@ class TerminalFailureTest(unittest.TestCase):
     def test_quarantine_limit_is_a_backstop(self):
         count = sweep.QUARANTINE_LIMIT + 1
         fake = FakeHttp(
-            linear_responses=[validation_error("title", self.BLANK_TITLE)] * count,
+            hb_responses=[validation_error(self.BLANK_TITLE)] * count,
             tasks={
                 "items": [
                     {"id": "t-%d" % n, "title": "junk %d" % n, "notes": ""}
