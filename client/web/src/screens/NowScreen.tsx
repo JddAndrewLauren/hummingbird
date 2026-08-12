@@ -9,6 +9,7 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import type { DemoData } from "../fixtures/demo";
 import { demoQuestionInputs } from "../fixtures/demo-questions";
 import type { Screen } from "../shell/screens";
+import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
 import type { CalendarReadDTO, TaskActionName, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { blockedReasonLabel } from "./blocked-reason";
@@ -51,6 +52,10 @@ export interface NowScreenProps {
   /** #122's do-date write affordance — forwarded straight to `RankedRegion`,
    * `undefined` in demo mode like every other real-write callback here. */
   onSetScheduledDate?: (itemId: string, date: string | null) => void;
+  /** #273's microtask affordance for the open item, forwarded straight to
+   * `ItemDetailPanel`. `undefined` in demo mode like every other real-write
+   * callback here. */
+  microtask?: MicrotaskWiring;
 }
 
 /** The real-data half of `QuestionInputs` (never demo's) — exported so a
@@ -89,9 +94,10 @@ function RealFrontier({
   onOpenItem,
   onCloseItemDetail,
   onAct,
+  microtask,
 }: Pick<
   NowScreenProps,
-  "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail" | "onAct"
+  "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail" | "onAct" | "microtask"
 >) {
   // Reviewer finding on PR #207: a failed `actResult` used to be recorded
   // in `TaskState.lastAct` and rendered nowhere — this is what makes it
@@ -176,6 +182,9 @@ function RealFrontier({
   if (selectedItem) {
     return (
       <ItemDetailPanel
+        // Remounts per item so the grain/model selects reset with it — a
+        // grain chosen for one item says nothing about the next.
+        key={selectedItem.id}
         item={selectedItem}
         steps={task.stepsByItem[selectedItem.id] ?? []}
         onClose={onCloseItemDetail}
@@ -185,6 +194,7 @@ function RealFrontier({
           onAct(selectedItem.id, action);
         }}
         actError={actError}
+        microtask={microtask}
       />
     );
   }
@@ -295,6 +305,7 @@ export function NowScreen({
   calendarReads,
   calendarConnected,
   onSetScheduledDate,
+  microtask,
 }: NowScreenProps) {
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
@@ -382,6 +393,7 @@ export function NowScreen({
             onOpenItem={onOpenItem}
             onCloseItemDetail={onCloseItemDetail}
             onAct={onAct}
+            microtask={microtask}
           />
         )}
       </Column>

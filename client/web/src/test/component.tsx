@@ -29,6 +29,7 @@ import type {
   PaneReadDTO,
   PaneSnapshotDTO,
   ProjectDTO,
+  StepDTO,
   TaskItemDTO,
 } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -66,6 +67,21 @@ export function itemDTO(overrides: Partial<TaskItemDTO> = {}): TaskItemDTO {
     updatedAt: 1_000,
     version: 1,
     pending: false,
+    ...overrides,
+  };
+}
+
+/** A complete `StepDTO` at a boring default: live, unticked, first in
+ * position. Spelled out for the same reason `itemDTO` is. */
+export function stepDTO(overrides: Partial<StepDTO> = {}): StepDTO {
+  return {
+    id: "step-1",
+    itemId: "item-1",
+    body: "put on music",
+    done: false,
+    position: 1,
+    deletedAt: null,
+    version: 1,
     ...overrides,
   };
 }

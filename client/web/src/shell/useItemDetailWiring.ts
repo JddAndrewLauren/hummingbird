@@ -14,12 +14,19 @@ export interface ItemDetailWiring {
 export function useItemDetailWiring(worker: WorkerLike, syncOutcomeSeq: number): ItemDetailWiring {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
 
+  // Keyed on `syncOutcomeSeq` as well as the selection, exactly like
+  // `requestIsPending` below and for the same reason — #273 added a second
+  // writer of this item's steps that is not this view: the cloud runner
+  // writes the checklist to the authority, and a terminal `ok` asks for one
+  // sync cycle. This re-read is what puts those rows on screen, through the
+  // normal read path rather than a second reader for steps. No timer of its
+  // own; ADR-0007's single interval stays the only clock.
   useEffect(() => {
     if (selectedItemId !== null) {
       requestSteps(worker, selectedItemId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedItemId]);
+  }, [selectedItemId, syncOutcomeSeq]);
 
   // PR #207 round-2 fix: the open item's `pending` renders from
   // `TaskState.pending`, so it must be re-read whenever a sync cycle could
