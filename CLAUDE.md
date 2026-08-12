@@ -15,7 +15,7 @@ drifts; the section on a thing is one or two lines and a path.
 
 Before writing code: `CONTEXT.md` is the domain glossary (its terms adjudicate
 design questions — check work against them), and `docs/adr/` holds the
-decisions. Read the module header of whatever you are about to change before
+decisions (its `README.md` states how an accepted ADR is amended). Read the module header of whatever you are about to change before
 grepping it.
 
 ## The map
