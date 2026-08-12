@@ -53,11 +53,17 @@ RUN npm install -g @anthropic-ai/claude-code
 WORKDIR /app
 
 # The skills this build ships (#41 decision 5). `next-up-personal` is retired;
-# `microtask` and `to-actions` use the app-owned helpers interactively but are
-# not hosted runner operations. Widening this COPY is the whole change needed
-# to add the next registered op.
+# `to-actions` uses the app-owned helpers interactively but is not a hosted
+# runner operation. Widening this COPY is the whole change needed to add the
+# next registered op.
+#
+# `microtask` (#272) brings its `scripts/hb.sh` along with the rest of its
+# directory, and that is inert here rather than a second write path: the
+# hosted arm has no shell to run it with, and the writes it would make are
+# made by `runner/src/authority.js` instead.
 COPY .claude/skills/parse-capture ./.claude/skills/parse-capture
 COPY .claude/skills/next-up-hb ./.claude/skills/next-up-hb
+COPY .claude/skills/microtask ./.claude/skills/microtask
 
 # The prebuilt ranker, and the env var `scripts/next-up.sh` reads to find
 # it: with `HB_NEXT_UP_BIN` set, the script never falls back to `cargo run`

@@ -3,6 +3,7 @@ import { checkBearerToken } from "./auth.js";
 import { parseRunRequest } from "./request.js";
 import { getSkill } from "./skills-registry.js";
 import { runSkill } from "./run-skill.js";
+import { unconfiguredAuthority } from "./authority.js";
 import { progressLine, finalOkLine, finalErrorLine } from "./envelope.js";
 
 const MAX_BODY_BYTES = 1_000_000; // 1MB -- a capture is text, never a payload this size
@@ -26,6 +27,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000; // well under Fly's 60s idle-connection ki
  * @param {number} [opts.heartbeatIntervalMs]
  * @param {(path: string) => string} [opts.readSchema] how a skill's schema file is read (see `run-skill.js`)
  * @param {(envelope: unknown) => Promise<{ok: true, ranked: unknown} | {ok: false, error: string}>} [opts.runRanker] the `next-up-rank` seam (see `rank-bin.js`); only skills declaring `prepare` use it
+ * @param {typeof unconfiguredAuthority} [opts.authority] the app-owned authority client (see `authority.js`); only ops that read or write it use one, and the default names its own absence
  */
 export function createServer({
   bearerToken,
@@ -35,6 +37,7 @@ export function createServer({
   heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS,
   readSchema,
   runRanker,
+  authority = unconfiguredAuthority,
 }) {
   return createHttpServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/run") {
@@ -56,6 +59,7 @@ export function createServer({
           heartbeatIntervalMs,
           readSchema,
           runRanker,
+          authority,
         }),
       )
       .catch((err) => {
@@ -105,7 +109,7 @@ function readBody(req, maxBytes) {
   });
 }
 
-function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema, runRanker }) {
+function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema, runRanker, authority }) {
   const parsed = parseRunRequest(rawBody);
   if (!parsed.ok) {
     res.writeHead(400, { "content-type": "application/json" });
@@ -140,32 +144,15 @@ function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatInterval
 
   const onProgress = (message) => res.write(progressLine(message));
 
-  // A skill's optional deterministic half, run before the model (`next-up-hb`
-  // ranks here; `parse-capture` declares no `prepare` and skips straight
-  // through). It may rewrite the args the prompt is then built from, and a
-  // failure ends the stream with the ordinary envelope without ever
-  // spawning `claude` -- which is the point: the failure a caller reads is
-  // the ranker's own words, not a model's account of them.
-  const prepared = skill.prepare
-    ? skill.prepare(parsed.args, { runRanker, onProgress })
-    : Promise.resolve({ ok: true, args: parsed.args });
-
-  prepared
-    .catch((err) => ({ ok: false, error: err.message }))
-    .then((step) => {
-      if (!step.ok) return step;
-
-      return runSkill({
-        skillName: skill.name,
-        prompt: skill.buildPrompt(step.args),
-        schemaPath: `${repoRoot}/${skill.resultSchemaPath}`,
-        spawn,
-        claudeBin,
-        cwd: repoRoot,
-        onProgress,
-        ...(readSchema ? { readSchema } : {}),
-      });
-    })
+  runPipeline(skill, parsed.args, {
+    repoRoot,
+    spawn,
+    claudeBin,
+    readSchema,
+    runRanker,
+    authority,
+    onProgress,
+  })
     .catch((err) => ({ ok: false, error: err.message }))
     .then((outcome) => {
       clearInterval(heartbeat);
@@ -176,4 +163,50 @@ function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatInterval
       }
       res.end();
     });
+}
+
+/**
+ * One skill invocation, in the three beats every op shares -- and the
+ * handler above stays skill-agnostic because both optional beats are
+ * declared by the skill, never named here.
+ *
+ * 1. `prepare` (optional): the deterministic half, run **before** the model.
+ *    `next-up-hb` ranks here; `microtask` reads its item from the
+ *    authority. It may rewrite the args the prompt is then built from, and
+ *    a failure ends the stream with the ordinary envelope without ever
+ *    spawning `claude` -- which is the point: the failure a caller reads is
+ *    the ranker's or the authority's own words, not a model's account of
+ *    them.
+ * 2. The model run itself.
+ * 3. `apply` (optional): the write half, run **after** the model, handed
+ *    the schema-validated result and the prepared args. `microtask` lands
+ *    its checklist in the owned `steps` table here. A failed write is an
+ *    envelope `error` like any other -- the run is not "ok" because a model
+ *    answered, it is ok because the answer landed.
+ *
+ * @returns {Promise<{ok: true, result: unknown} | {ok: false, error: string}>}
+ */
+async function runPipeline(
+  skill,
+  args,
+  { repoRoot, spawn, claudeBin, readSchema, runRanker, authority, onProgress },
+) {
+  const prepared = skill.prepare
+    ? await skill.prepare(args, { runRanker, authority, onProgress })
+    : { ok: true, args };
+  if (!prepared.ok) return prepared;
+
+  const outcome = await runSkill({
+    skillName: skill.name,
+    prompt: skill.buildPrompt(prepared.args),
+    schemaPath: `${repoRoot}/${skill.resultSchemaPath}`,
+    spawn,
+    claudeBin,
+    cwd: repoRoot,
+    onProgress,
+    ...(readSchema ? { readSchema } : {}),
+  });
+  if (!outcome.ok || !skill.apply) return outcome;
+
+  return skill.apply(outcome.result, { args: prepared.args, authority, onProgress });
 }

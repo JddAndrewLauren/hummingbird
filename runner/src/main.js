@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createServer } from "./server.js";
 import { createRankRunner } from "./rank-bin.js";
+import { createAuthorityClient } from "./authority.js";
 
 const RUNNER_BEARER_TOKEN = process.env.RUNNER_BEARER_TOKEN;
 if (!RUNNER_BEARER_TOKEN) {
@@ -26,12 +27,29 @@ const REPO_ROOT = process.env.REPO_ROOT ?? DEFAULT_REPO_ROOT;
 // name keeps a PATH install working in local dev.
 const NEXT_UP_BIN = process.env.HB_NEXT_UP_BIN ?? "next-up-rank";
 
+// The app-owned authority (ADR-0008), for the one op that reads and writes
+// it (`microtask`, #272). The token is a server-side secret and is read
+// here, once, never from a request.
+//
+// A missing token is deliberately **not** fatal at boot, unlike
+// RUNNER_BEARER_TOKEN above: two of the three ops hold no authority
+// credential by design, and refusing to start would take them down over a
+// secret they never touch. `createAuthorityClient` answers a named
+// "not configured" error instead, which surfaces as an ordinary envelope
+// error on the one op that needs it -- see `authority.js`.
+const HB_API_BASE = process.env.HB_API_BASE ?? "https://hb.twinion.net";
+const HB_API_TOKEN = process.env.HB_API_TOKEN ?? "";
+if (!HB_API_TOKEN) {
+  console.error("HB_API_TOKEN is not set -- the microtask op will decline; every other op is unaffected.");
+}
+
 const server = createServer({
   bearerToken: RUNNER_BEARER_TOKEN,
   repoRoot: REPO_ROOT,
   spawn,
   claudeBin: CLAUDE_BIN,
   runRanker: createRankRunner({ spawn, bin: NEXT_UP_BIN }),
+  authority: createAuthorityClient({ fetch, baseUrl: HB_API_BASE, token: HB_API_TOKEN }),
 });
 
 server.listen(PORT, () => {

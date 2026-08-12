@@ -28,6 +28,7 @@ on:
       # through a workflow that never ran.
       - ".claude/skills/parse-capture/**"
       - ".claude/skills/next-up-hb/**"
+      - ".claude/skills/microtask/**"
       # The image also bakes in a *compiled* artifact (#116): the Rust
       # builder stage emits `client/next-up`'s `next-up-rank`. So a change
       # to `client/**` or `server/domain/**` can break this image while
@@ -48,6 +49,7 @@ on:
       - "runner/**"
       - ".claude/skills/parse-capture/**"
       - ".claude/skills/next-up-hb/**"
+      - ".claude/skills/microtask/**"
       - "client/**"
       - "server/domain/**"
       - "server/Cargo.toml"
@@ -63,7 +65,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Plain `node --test` over nine files with no install step; anything
+    # Plain `node --test` over thirteen files with no install step; anything
     # slower than this is a hung test, not a slow one.
     timeout-minutes: 5
     steps:
@@ -144,7 +146,9 @@ jobs:
           docker run --rm hummingbird-runner:ci \
             sh -c 'test -f /app/.claude/skills/parse-capture/SKILL.md \
                 && test -f /app/.claude/skills/next-up-hb/SKILL.md \
-                && test -f /app/.claude/skills/next-up-hb/schema.json'
+                && test -f /app/.claude/skills/next-up-hb/schema.json \
+                && test -f /app/.claude/skills/microtask/SKILL.md \
+                && test -f /app/.claude/skills/microtask/schema.json'
 
       # `claude` is spawned by name from `main.js`; a base-image or npm
       # change that moved it off PATH would otherwise only show up in

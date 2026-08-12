@@ -2,8 +2,9 @@
 
 > **Status (2026-08-11): built, not deployed.** No Fly app is provisioned,
 > no secrets are set, and no bearer token is minted -- #256 is a build-only
-> slice; provisioning is an operator gate (see Deploy runbook below), the
-> same posture #237's server deploy used.
+> slice and #272 (the `microtask` op) is another; provisioning is an
+> operator gate (see Deploy runbook below), the same posture #237's server
+> deploy used.
 
 A fourth actor (#41 decided this, #256 builds it): a Fly app that takes
 `POST /run {skill, args}` and runs one Claude Code skill headlessly,
@@ -22,20 +23,24 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 | `runner/src/server.js` | The `POST /run` HTTP handler: auth, request shape validation, skill dispatch, NDJSON streaming. |
 | `runner/src/auth.js` | Constant-time bearer-token check. |
 | `runner/src/request.js` | `{skill, args}` body parsing/shape validation. |
-| `runner/src/skills-registry.js` | The closed map of runnable skill names -- `parse-capture` (#256) and `next-up-hb` (#116). |
+| `runner/src/skills-registry.js` | The closed map of runnable skill names -- `parse-capture` (#256), `next-up-hb` (#116) and `microtask` (#272). |
 | `runner/src/skills/parse-capture.js` | That skill's arg validation and prompt-building. |
 | `runner/src/skills/next-up-hb.js` | The same, for `/next-up-hb`: the sweep payload arrives in `args` (context-blind -- no authority token here, no HTTP call), plus the `prepare` hook that ranks before the model runs. |
+| `runner/src/skills/microtask.js` | The same, for `/microtask`: `prepare` reads the item from the authority, `apply` writes the checklist back to it. The one op that holds a credential. |
+| `runner/src/authority.js` | The client for the app-owned authority (`GET /api/sweep`, `POST /api/steps`) and the only place a `device` token lives in this process. `fetch` injected. |
+| `runner/src/step-id.js` | The deterministic step id, digit for digit the same recipe as `microtask`'s `hb.sh` -- what keeps the two arms from minting two copies of one step. |
 | `runner/src/rank-bin.js` | Spawns the baked `next-up-rank` over the envelope on stdin. The one child process here that is not `claude`. |
 | `runner/src/claude-cli.js` | Builds the `claude -p ... --output-format json --json-schema <path>` argv. |
 | `runner/src/run-skill.js` | Spawns `claude` (with `cwd` = repo root, so its slash commands resolve), collects stdout/stderr, resolves ok/error. |
 | `runner/src/envelope.js` | NDJSON line builders (`progress`, final ok/error). |
-| `runner/src/main.js` | Reads env (`RUNNER_BEARER_TOKEN`, `PORT`, `CLAUDE_BIN`, `REPO_ROOT`), wires the real `child_process.spawn`, starts the server. |
+| `runner/src/main.js` | Reads env (`RUNNER_BEARER_TOKEN`, `PORT`, `CLAUDE_BIN`, `REPO_ROOT`, `HB_API_BASE`, `HB_API_TOKEN`), wires the real `child_process.spawn` and `fetch`, starts the server. |
 | `runner/Dockerfile` | `node:22-slim` + the Claude Code CLI installed globally + the skills this build ships + the runner server. Build context is the **repo root**, not `runner/` -- see Deploy runbook. |
 | `runner/fly.toml` | `hummingbird-runner`, `http_service` with `min_machines_running = 0` (scale-to-zero). |
 | `.claude/skills/parse-capture/` | The skill itself: `SKILL.md` + `schema.json` (the versioned per-skill result schema `run-skill.js` passes to `--json-schema`). |
 | `.claude/skills/next-up-hb/` | `SKILL.md` + `schema.json` + `scripts/next-up.sh` (two verbs: `survey` fetches with the operator's credential, `rank` reads a prebuilt envelope on stdin -- the by-hand equivalent of `rank-bin.js`). |
+| `.claude/skills/microtask/` | `SKILL.md` + `schema.json` + `scripts/hb.sh` (the interactive arm's reads and writes -- inert in the image, since the hosted arm has no shell). |
 | `client/next-up/` | The seam `/next-up-hb` is layered on: sweep payload in, `hummingbird_core::rank` candidates + health facts out. Its `next-up-rank` binary is built by the Dockerfile's Rust stage and baked in as `HB_NEXT_UP_BIN`. |
-| `runner/test/*.test.js` | `node --test`, run from `runner/`. Every module is unit-testable with an injected fake `spawn` -- no real `claude` binary or credentials needed. |
+| `runner/test/*.test.js` | `node --test`, run from `runner/`. Every module is unit-testable with an injected fake `spawn` (and, for the authority, a fake `fetch`) -- no real `claude` binary, no network, no credentials needed. |
 
 ## The contract
 
@@ -57,7 +62,8 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
   line at HTTP 200** -- the failure is inside the contract, not a broken
   connection.
 
-Two ops ship today, and **both write to nothing**:
+Three ops ship today. The first two **write to nothing**; the third writes,
+and is the reason this process holds an authority credential at all:
 
 - **`parse-capture`** (#256, 2026-08-10 decision): `{title, notes}`, #42's
   own minimal schema. The write-target question (Linear vs. the ADR-0008
@@ -79,10 +85,39 @@ Two ops ship today, and **both write to nothing**:
   ranking failure is therefore an envelope `error` in the ranker's own
   words, before a single model token is spent.
 
-`microtask` and `/to-actions` now use the app-owned authority helpers in
-interactive sessions, but they are not hosted runner operations. The retired
-`next-up-personal` selector is not registered here; `/next-up-hb` is its
-app-owned replacement.
+- **`microtask`** (#272): break one already-selected item into a checklist
+  of tiny steps. `args` are `{ref, grain?}` -- `HB-42` or a uuid, and
+  SKILL.md's 1-3 grain scale (default 2). This op **reads and writes the
+  authority**, which is the whole of what makes it different:
+
+  - `prepare` fetches `GET /api/sweep`, resolves the ref (no route accepts
+    `HB-<seq>`; it is a client-side affordance over `Item.seq`) and puts
+    the item plus its live steps in the prompt. An unknown ref, a missing
+    token and an unreachable authority all end the stream here, before a
+    model token is spent.
+  - `apply` runs **after** the model and appends one `POST /api/steps` per
+    line of its answer, at contiguous positions after the live maximum.
+    **`ok:true` means the checklist landed, not that a model answered**: a
+    failed write is an `ok:false` envelope like any other.
+  - Idempotence is structural. Each step's id is
+    `sha256("hummingbird-skill/microtask/v1" + item + "/" + body)`, so a replay
+    lands on the authority's already-exists path (200, the stored row)
+    rather than minting a duplicate -- and `runner/src/step-id.js` is the
+    same recipe as the skill's own `hb.sh`, pinned against it by
+    `runner/test/step-id.test.js`, so the interactive and hosted arms
+    cannot mint two copies of one step between them.
+  - This arm **appends only**. It has no `tick` and no `drop-step`: the
+    refresh rule's "decide what has been superseded" is a reading of the
+    work, and it stays with the interactive arm. The already-`done` steps
+    ride in the prompt so the model can *report* them in `note`.
+  - The model is not the one holding the credential. It has no shell here
+    for the same reason `next-up-hb`'s ranker runs out of process, and the
+    writes are made by `authority.js` from the args the model answered
+    with.
+
+`/to-actions` uses the app-owned authority helpers in interactive sessions,
+but it is not a hosted runner operation. The retired `next-up-personal`
+selector is not registered here; `/next-up-hb` is its app-owned replacement.
 
 **Confirmed against a live run**, and the CLI contract is narrower than it
 first looked. Both halves were assumed wrong on the first pass, and both
@@ -168,6 +203,23 @@ operator can close the provisioning gate #256's issue thread leaves open.
      ANTHROPIC_MODEL=<that provider's model id>
    ```
 
+   **And, for `microtask` (#272), the runner's own authority token** --
+   its scope is `device`, the authority's only read-capable scope, which
+   is write-everything (CLAUDE.md's credential blast radius). It is a
+   *distinct* token from any device's, so it can be revoked on its own:
+
+   ```sh
+   fly secrets set --config runner/fly.toml \
+     HB_API_TOKEN=<a device-scope token minted for the runner> \
+     HB_API_BASE=https://hb.twinion.net   # the default; set it only to point elsewhere
+   ```
+
+   Mint it the way every other device token is minted (`POST
+   /api/admin/tokens` with `ADMIN_SECRET`, from the operator's terminal --
+   never from Actions). **Leaving it unset is a supported state**: the
+   runner still starts and logs one line, `parse-capture` and `next-up-hb`
+   are unaffected, and `microtask` declines with a named envelope error.
+
    Switching providers later is `fly secrets set` alone, no deploy
    (decision 2) -- but eyeball a few runs after any swap: the per-skill
    schema catches shape failures, never judgment failures. Set a spend cap
@@ -201,8 +253,27 @@ operator can close the provisioning gate #256's issue thread leaves open.
      -d "{\"skill\":\"next-up-hb\",\"args\":{\"sweep\":$(cat sweep.json),\"now\":{\"local\":\"2026-08-11T09:53\",\"epoch_ms\":1786553580000}}}"
    ```
 
+   `microtask` is the one op whose smoke test leaves something behind --
+   the steps land in the owned `steps` table against the item named by
+   `ref`, so run it against an item you are willing to see a checklist on:
+
+   ```sh
+   curl -sS https://hummingbird-runner.fly.dev/run \
+     -H "authorization: Bearer <token>" \
+     -H "content-type: application/json" \
+     -d '{"skill":"microtask","args":{"ref":"HB-42","grain":2}}'
+   ```
+
+   Expect NDJSON progress ending in
+   `{"ok":true,"skill":"microtask","result":{"steps":[...],"note":"..."}}`,
+   and the steps themselves visible in the client (or in `GET /api/sweep`)
+   afterwards. **Re-running the identical request is the idempotence
+   check**: the second run writes the same ids and adds no rows.
+
 6. **Rotate the token** later by repeating step 2-3 with a fresh value,
-   then updating whatever client holds it.
+   then updating whatever client holds it. `HB_API_TOKEN` rotates
+   separately and the same way -- mint a new device-scope token, `fly
+   secrets set` it, revoke the old one.
 
 ## Testing (agent-facing, not part of the operator gate)
 
@@ -211,4 +282,5 @@ cd runner && node --test
 ```
 
 No network access, no `claude` binary, and no credentials are needed --
-every test injects a fake `spawn`.
+every test injects a fake `spawn`, and the one op that talks to the
+authority injects a fake `fetch` the same way.

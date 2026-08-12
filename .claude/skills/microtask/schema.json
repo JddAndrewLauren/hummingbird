@@ -1,0 +1,22 @@
+{
+  "title": "microtask result",
+  "description": "The checklist one /microtask run produces, as the hosted runner op returns it (#272) -- versioned beside its SKILL.md (#41 decision 4). Steps are plain lines, not records: the runner mints each row's id and position itself (runner/src/step-id.js), so a model that guessed either could not divide a checklist from its replay. No $schema key: the CLI's --json-schema rejects the draft-2020-12 ref outright.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["steps", "note"],
+  "properties": {
+    "steps": {
+      "type": "array",
+      "description": "The checklist, in the order it should be done, appended after whatever steps the item already has. Each entry is one concrete physical action of roughly 2-5 minutes at grains 1-2, and the first is deliberately trivial -- the ramp. Never a sub-item, never a planning-shaped step.",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "note": {
+      "type": "string",
+      "description": "One or two lines for the caller: the already-done steps this run found (the half of the refresh rule this arm can honour), or what was assumed about an item that gave little to work with. Empty string when there is nothing to say -- this arm cannot ask a question."
+    }
+  }
+}
