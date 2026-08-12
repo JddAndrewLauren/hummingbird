@@ -110,6 +110,55 @@ alternative is putting `rule_id` in the key.
 Without the ratchet the collision is silent: a `normal` rule's mint upserts
 an `urgent` row and downgrades it, and nothing surfaces that.
 
+*Amended 2026-08-12 by [#188](https://github.com/JddAndrewLauren/hummingbird/issues/188):
+**the ratchet above is a fold over concurrent judgments, not a monotonicity
+invariant on the alert row.** As shipped it was read as both, and the second
+reading is withdrawn. `severity` on an alert is a **reading** — how bad
+whoever is authoritative for that row currently says the thing is — and
+within one occurrence it may fall as well as rise. What may never fall is
+what **rings**, and that is now enforced in the delivery layer alone
+(ADR-0012's dedupe, see its own note of the same date).*
+
+*What the ratchet is.* "Two rules on one email produce one alert at the
+higher severity" is a statement about *simultaneous* matches, and every
+minting caller satisfies it before it writes anything: it collects all of
+that event's matching verdicts, folds `higher_severity` over them, and mints
+**once** at the maximum. `sweep::tick` does this for `item-threshold/v1`, and
+each evaluated-stream poller does it for its own stream. The fold is
+order-independent, so no rule ever observes a pre-ratchet severity, and no
+row is ever written twice for one event.
+
+*What it was also doing, wrongly.* The alerts ingest handler compared each
+incoming severity against the **stored** one and kept the higher while the
+row was live. That is a different rule — severity monotonic *across calls* —
+which this ADR never stated, and it had two costs. It made
+[ADR-0009](0009-the-owned-schema-and-context-lanes.md) rule 3 ("authorities
+stay authoritative") false for exactly one field: a healthchecks or Home
+Assistant source that raised at `urgent` and later reported the same
+still-live occurrence at `high` was silently ignored, unable to de-escalate
+its own occurrence until the row left live entirely. And it was load-bearing
+for the wrong reason — the only thing it actually protected was ADR-0012's
+dedupe key, which matched severity as an exact **string**, so a downgrade
+minted a key nobody had seen and rang the phone for good news.
+
+*Why the split, rather than a narrowing.* Scoping the ratchet to "the mint
+path" is not expressible where it was: [ADR-0011](0011-context-ingestion-moves-server-side.md)
+moved the evaluated-stream pollers out of process, so for four of the five
+minting lanes **the mint is a `POST /api/alerts` call**, indistinguishable at
+the handler from a pushed webhook raise except by consulting the source
+registry. Splitting by layer needs no such distinction, and puts each half
+where ADR-0012's own clean-layer principle already says it belongs: the row
+records what is true, `deliver` decides what rings.
+
+*The consequence accepted with it.* Because a downgrade is a changed
+source-owned field, a source declaring `restamp_on_change` bumps `raised_at`
+on one, opening a new generation that rings at the lower level. That is
+coherent — such a source is asserting a new occurrence, and a new occurrence
+rings on its own merits — but it is a **wiring-time obligation** on any
+future restamping source whose severity varies. Both shipped ones
+(`city-waste/v2`, `race-schedule/v1`) send a constant severity, so nothing
+reaches it today.
+
 ## Live: how a settled alert rings again
 
 ADR-0012 says a delivery is warranted when an alert re-enters live-unacked,

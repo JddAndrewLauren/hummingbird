@@ -74,13 +74,13 @@ fn changed_re_raise_updates_source_fields_absolutely() {
         r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "body": "details", "severity": "high"}"#,
         1000,
     );
-    // The source resolves the alert and stops sending body/severity. `body`
-    // clears — the source is authoritative for its own fields. `severity`
-    // is the ADR-0014 exception: the row was still live going into this
-    // call, so an absent severity ratchets (stays at its rank, never
-    // clears) rather than blind-overwriting to `None` like every other
-    // optional (see `severity_clears_once_the_alert_has_left_live` for the
-    // contrasting case).
+    // The source resolves the alert and stops sending body/severity. Both
+    // clear — the source is authoritative for its own fields. `severity`
+    // was the ADR-0014 exception here until #188: while the row was live an
+    // absent severity kept its stored rank instead of clearing. It is now
+    // uniform with every other source-owned optional, on both sides of live
+    // (`severity_clears_once_the_alert_has_left_live` pins the other side,
+    // and its behaviour is unchanged).
     let resp = ingest_alert(
         &sql,
         r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down", "resolved_at": 5000}"#,
@@ -90,7 +90,7 @@ fn changed_re_raise_updates_source_fields_absolutely() {
     let alert: Alert = body_as(&resp);
     assert_eq!(alert.resolved_at, Some(5000));
     assert_eq!(alert.body, None, "absent optional clears");
-    assert_eq!(alert.severity, Some("high".into()), "severity ratchets, it does not clear, while live");
+    assert_eq!(alert.severity, None, "so does severity, since #188 — no ratchet holds it");
     assert_eq!(alert.version, 2, "a real change bumps");
     assert_eq!(meta_version(&sql), 2);
 }
@@ -110,8 +110,11 @@ fn severity_clears_once_the_alert_has_left_live() {
         2000,
     );
     // A later raise (a fresh occurrence) that omits severity clears it,
-    // exactly like every other source-owned optional — the ratchet
-    // exception applies only while the row it is guarding is still live.
+    // exactly like every other source-owned optional. Since #188 the live
+    // path does this too — see
+    // `changed_re_raise_updates_source_fields_absolutely` — so this fixture
+    // no longer contrasts with anything; it is kept because a fresh
+    // occurrence's authority over its own fields is worth pinning directly.
     let resp = ingest_alert(
         &sql,
         r#"{"source": "healthchecks/v1", "source_key": "k", "title": "down again"}"#,
@@ -122,10 +125,14 @@ fn severity_clears_once_the_alert_has_left_live() {
     assert_eq!(alert.severity, None, "a fresh occurrence's payload is authoritative as-is");
 }
 
-/// ADR-0014's severity ratchet: a `normal` mint against a live `urgent`
-/// alert must not downgrade it.
+/// **The ruling of #188** (ADR-0014's 2026-08-12 amendment): a source may
+/// lower severity on its own still-live occurrence. This handler used to
+/// refuse — the ratchet kept the stored `urgent` — which made `severity` the
+/// one source-owned field ADR-0009 rule 3 did not actually reserve to the
+/// source. It rings nothing: `deliver` is where monotonicity lives now (see
+/// `delivery.rs`'s escalation fixtures).
 #[test]
-fn normal_mint_does_not_downgrade_a_live_urgent_alert() {
+fn a_live_re_raise_may_lower_severity() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
@@ -134,18 +141,21 @@ fn normal_mint_does_not_downgrade_a_live_urgent_alert() {
     );
     let resp = ingest_alert(
         &sql,
-        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "still down", "severity": "normal"}"#,
+        r#"{"source": "healthchecks/v1", "source_key": "k", "title": "still down", "severity": "high"}"#,
         2000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
     let alert: Alert = body_as(&resp);
-    assert_eq!(alert.severity, Some("urgent".into()), "a lower severity must never win the ratchet");
+    assert_eq!(
+        alert.severity,
+        Some("high".into()),
+        "the source's latest assessment stands, downward as well as upward"
+    );
 }
 
-/// The mirror case: an `urgent` mint against a live `normal` alert raises
-/// it.
+/// The mirror case, unchanged by #188: a live re-raise may also raise it.
 #[test]
-fn urgent_mint_escalates_a_live_normal_alert() {
+fn a_live_re_raise_may_raise_severity() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
@@ -159,14 +169,16 @@ fn urgent_mint_escalates_a_live_normal_alert() {
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
     let alert: Alert = body_as(&resp);
-    assert_eq!(alert.severity, Some("urgent".into()), "a higher severity escalates");
+    assert_eq!(alert.severity, Some("urgent".into()), "a higher severity is stored as-is");
 }
 
-/// An unranked severity string (outside `hummingbird_domain::SEVERITIES`)
-/// has defined behaviour: it neither panics nor wins a ratchet it did not
-/// earn.
+/// An unranked severity string (outside `hummingbird_domain::SEVERITIES`) is
+/// stored verbatim: the handler ranks nothing, so there is nothing here for
+/// an unrecognised string to fail at. Its *rank* still matters one layer up,
+/// where it can never win a ring it did not earn — `delivery.rs`'s
+/// `an_unranked_severity_never_wins_a_ring`.
 #[test]
-fn an_unranked_severity_does_not_win_the_ratchet_or_panic() {
+fn an_unranked_severity_is_stored_verbatim() {
     let sql = RusqliteSql::new();
     ingest_alert(
         &sql,
@@ -182,8 +194,8 @@ fn an_unranked_severity_does_not_win_the_ratchet_or_panic() {
     let alert: Alert = body_as(&resp);
     assert_eq!(
         alert.severity,
-        Some("normal".into()),
-        "an unranked incoming severity must not displace a known one"
+        Some("something-weird".into()),
+        "the ingest lane is not a severity validator; free text is the DDL's own contract"
     );
 }
 

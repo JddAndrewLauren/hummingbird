@@ -3,7 +3,7 @@
 //! webhook, **and a periodic DO alarm tick for time predicates**"). Reads
 //! items already held in the authority, presents each as a synthetic
 //! `item_threshold` [`Event`], evaluates every enabled rule against it, and
-//! for every match mints/ratchets the alert and calls `deliver` — the exact
+//! for every match mints the alert and calls `deliver` — the exact
 //! two-step sequence [`crate::delivery`]'s own module doc describes as the
 //! seam this sweep hangs off. **Never writes to `items` or `rules`**: a
 //! tick is read-then-mint, never a write to what it read.
@@ -14,14 +14,20 @@
 //! matching verdict is collected **before** any write: [`upsert_alert`] is
 //! called exactly once, at the highest severity among the matches, and only
 //! then does [`deliver`] run once per matching rule against that one
-//! already-ratcheted alert. Interleaving mint-then-deliver per rule instead
-//! would let the *first* rule deliver at a pre-ratchet severity and then
-//! fire again on a later tick once the ratchet moved the dedupe
-//! generation — a spurious re-ring with nothing changed in the world, and
-//! rule order would silently decide how many times a device's phone buzzes.
-//! ADR-0014 is explicit that this must not depend on order: "two rules
-//! matching one event mint one alert whose severity ratchets up... never
-//! down."
+//! already-folded alert. Interleaving mint-then-deliver per rule instead
+//! would let the *first* rule deliver at a pre-fold severity and then fire
+//! again once a later rule raised it — a spurious ring with nothing changed
+//! in the world, and rule order would silently decide how many times a
+//! device's phone buzzes. ADR-0014 is explicit that this must not depend on
+//! order: "two rules matching one event mint one alert whose severity
+//! ratchets up... never down."
+//!
+//! **This fold is the whole of ADR-0014's ratchet** (its 2026-08-12
+//! amendment, #188). It resolves *concurrent* judgments about one
+//! occurrence, here, before the write. It says nothing about successive
+//! ticks: if this tick's matching rules assess the item lower than the last
+//! tick's did, the row records the lower reading, and `deliver` simply does
+//! not ring for it.
 //!
 //! # Repeat ticks don't re-ring — routed through the frozen dedupe key
 //!
@@ -67,7 +73,7 @@
 //! independent things stop that here, either of which would be sufficient:
 //!
 //! 1. **The two phases partition the alert set.** Phase one records the
-//!    `source_key` of every alert it minted or ratcheted this tick; phase
+//!    `source_key` of every alert it minted or re-raised this tick; phase
 //!    two resolves exactly the live alerts whose key is *not* in that set.
 //!    No alert is written by both phases in one tick, by construction —
 //!    not by a rule the two phases have to agree to follow.
@@ -133,7 +139,7 @@ pub struct TickMatch {
 
 /// Runs one alarm tick: every enabled rule against every non-archived item,
 /// presented as an `item_threshold` event. All of one item's matching
-/// verdicts are resolved to a single mint/ratchet (see module doc's "one
+/// verdicts are folded to a single mint (see module doc's "one
 /// mint per item" section) before [`deliver`] runs once per matching rule
 /// against that one alert. Returns one [`TickMatch`] per (item, rule)
 /// match, regardless of whether `deliver` decided to log or suppress it —
@@ -304,8 +310,8 @@ fn load_live_items(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
 /// carry the item's own provenance (its adapter origin), never the alert
 /// identity `item-threshold/v1`/`item:<id>` minted above — the two are
 /// deliberately different namespaces answering different questions (where
-/// did this item come from, vs. which alert row does a matching rule
-/// ratchet). A rule naming no `event_kind` at all (`NULL` = "any kind",
+/// did this item come from, vs. which alert row does a matching rule mint
+/// against). A rule naming no `event_kind` at all (`NULL` = "any kind",
 /// ADR-0013) evaluates against this event's core fields exactly like every
 /// other kind — nothing here special-cases that away.
 fn item_threshold_event(item: &Item) -> Event {

@@ -6,15 +6,13 @@
 //!
 //! #255's inline evaluate-then-deliver hook lives here too, in [`ingest`]
 //! alone — never inside [`upsert`], which #138's sweep also calls to
-//! mint/ratchet its own `item-threshold/v1` alerts. Hooking it into `upsert`
+//! mint its own `item-threshold/v1` alerts. Hooking it into `upsert`
 //! would double-evaluate the sweep's own alerts as `alert_raised` events on
 //! top of the delivery `sweep_tick` already runs for them.
 
 use std::collections::BTreeMap;
 
-use hummingbird_domain::{
-    find_source, higher_severity, now_as_deadline, Alert, AlertIngest, AlertPatch, Event,
-};
+use hummingbird_domain::{find_source, now_as_deadline, Alert, AlertIngest, AlertPatch, Event};
 use hummingbird_rules_engine::{evaluate_rules, RuleOutcome};
 
 use super::{
@@ -131,7 +129,7 @@ fn evaluate_and_deliver(
 }
 
 /// ADR-0013's `alert_raised` event, straight off the alert row `upsert`
-/// just wrote/ratcheted. `occurred_at` is the alert's own `raised_at`, not
+/// just wrote. `occurred_at` is the alert's own `raised_at`, not
 /// this call's process clock — a still-live re-raise keeps its original
 /// `raised_at` (see `upsert`'s own doc), so a relative-time rule condition
 /// reads when the alert's occurrence actually began, not when this
@@ -160,13 +158,18 @@ fn alert_raised_event(alert: &Alert) -> Event {
     }
 }
 
-/// The mint/ratchet core, HTTP-agnostic — shared verbatim by the webhook
+/// The mint/re-raise core, HTTP-agnostic — shared verbatim by the webhook
 /// ingest route above and #138's internal DO-alarm sweep, which mints
 /// `item-threshold/v1` alerts through this exact same path rather than a
 /// parallel one (the brief's "through the same path as every other kind").
 /// Returns the HTTP status the caller would have answered with (201 first
-/// raise, 200 no-op-or-ratcheted re-raise) alongside the resulting row —
+/// raise, 200 no-op-or-updated re-raise) alongside the resulting row —
 /// the sweep ignores the status and uses only the alert.
+///
+/// Every caller is expected to have already resolved *concurrent* severity
+/// judgments into the one `severity` it passes (ADR-0014's mint fold); this
+/// function compares nothing against the stored row and never adjusts what
+/// it is given (#188).
 pub(crate) fn upsert(
     sql: &dyn Sql,
     now_ms: i64,
@@ -221,19 +224,21 @@ pub(crate) fn upsert(
     // so an identical replayed payload is a byte-identical state and the
     // upsert a no-op (AC1). `dismissed_at` is human-owned: never touched.
     //
-    // `severity` is the other exception (ADR-0014): while the existing row
-    // is still live, this re-raise is the same occurrence some other rule
-    // or a later ping might also be minting against, so it may only raise
-    // severity, never blind-overwrite it downward. Once the row has left
-    // live — resolved, dismissed, or expired — the *next* raise starts a
-    // fresh occurrence, and the payload's severity is authoritative as-is,
-    // like every other source-owned field.
+    // **`severity` is not a third exception** (ADR-0014's 2026-08-12
+    // amendment, #188). It was one: while the row was live, a re-raise could
+    // only ratchet severity up. That ratchet was the *delivery* layer's job
+    // done here — `deliver` dedupes on an exact severity string, so a
+    // downgrade would have rung — and holding it in the row cost a source
+    // the ability to say "less bad than I said" about its own live
+    // occurrence, which is precisely what ADR-0009 rule 3 reserves to the
+    // source. ADR-0014's real promise (N matching rules mint one alert at
+    // the highest severity) is held by the callers' pre-write fold over
+    // concurrent verdicts — `sweep::tick`, and each evaluated-stream
+    // poller — never by anything here; and monotonicity now lives in
+    // `deliver`, which rings only above the highest severity already rung
+    // for this `(alert, rule, generation)`. So severity is set absolutely,
+    // like every other source-owned field, and an absent one clears.
     let current = alert_from_row(&row)?;
-    let severity = if current.is_live(now_ms) {
-        higher_severity(current.severity.as_deref(), ingest.severity.as_deref()).map(str::to_string)
-    } else {
-        ingest.severity
-    };
     let next = Alert {
         // Source-owned like title/body/url: set absolutely, so a source
         // that stops naming a subject clears the join rather than leaving
@@ -242,7 +247,7 @@ pub(crate) fn upsert(
         title: ingest.title,
         body: ingest.body,
         url: ingest.url,
-        severity,
+        severity: ingest.severity,
         raised_at: ingest.raised_at.unwrap_or(current.raised_at),
         resolved_at: ingest.resolved_at,
         expires_at: ingest.expires_at,
@@ -352,7 +357,7 @@ fn deterministic_id(source: &str, source_key: &str) -> String {
     id
 }
 
-/// The mint/ratchet core's own identity read, exposed so a caller can
+/// The mint/re-raise core's own identity read, exposed so a caller can
 /// decide something *before* calling [`upsert`] — #138's sweep uses this to
 /// tell "still live, keep the stamp" apart from "settled or absent, a fresh
 /// occurrence starts now" ahead of picking what `raised_at` to pass in.

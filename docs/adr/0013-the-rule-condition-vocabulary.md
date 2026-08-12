@@ -95,6 +95,17 @@ Each registry entry declares its extra field descriptors and one flag:
   is ADR-0014's severity ratchet on a `mints: true` alert another rule
   already minted, which is the same occurrence and never a downgrade.
 
+*Amended 2026-08-12 by [#188](https://github.com/JddAndrewLauren/hummingbird/issues/188):
+the last clause — "never a downgrade" — no longer holds, and the rest of the
+bullet stands. A `mints: true` re-mint against an alert that is still live
+writes the severity of **this** evaluation's matching rules, which can be
+lower than the last one's if the event stopped matching the higher rule. The
+ratchet is a fold over one evaluation's concurrent verdicts, never a
+comparison against the stored row; a fall is recorded and simply does not
+ring. See [ADR-0014's note of the same date](0014-occurrence-identity-and-the-source-key-conventions.md).
+The `mints: false` half is untouched: a rule still cannot restamp severity
+on a pushed alert, and `rules.severity` stays unused for that kind.*
+
 **The registry is a `domain` artifact — code, not a table** — exported as
 JSON so the rules UI renders its dropdowns from the same source the engine
 evaluates. A data-driven catalogue could drift from what an adapter
