@@ -1,10 +1,16 @@
+import { useState } from "react";
 import { Badge } from "../core/Badge";
 import { Button } from "../core/Button";
 import { Card } from "../core/Card";
 import { IconButton } from "../core/IconButton";
 import { Checkbox } from "../forms/Checkbox";
+import { Select } from "../forms/Select";
 import { availableActions } from "../../screens/item-actions";
 import { hasPriority, priorityLabel } from "../../screens/priority";
+import { microtaskAffordance } from "../../skills/microtask-affordance";
+import { CLOUD_RUNNER_MODELS } from "../../skills/models";
+import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
+import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
 import type { StepDTO, TaskActionName, TaskItemDTO } from "../../store/protocol";
 import { StageBadge } from "./StageBadge";
 
@@ -37,7 +43,25 @@ export interface ItemDetailPanelProps {
    * per this product's "state what is true and stop" voice — an old error
    * next to a brand-new pending badge would be confusing, not honest). */
   actError?: string | null;
+  /** #273's microtask affordance. Optional, the `onSetScheduledDate`
+   * precedent: `undefined` in demo mode, which is what guarantees a future
+   * demo detail view cannot issue a real request. (There is no demo path to
+   * build today — `NowScreen` branches to `RealFrontier` only when demo is
+   * off, so this panel is never mounted under `?demo`.) */
+  microtask?: { run: SkillRunState; onRun: (request: MicrotaskRunRequest) => void };
 }
+
+/** SKILL.md's grain scale, as the select renders it. */
+const GRAINS = [
+  { value: "1", label: "Coarse" },
+  { value: "2", label: "Default grain" },
+  { value: "3", label: "Fine" },
+];
+
+/** Gated on the constant, not at the render site: a list trimmed to just
+ * the default must silently offer nothing rather than a choice that isn't
+ * one (`skills/models.ts`). */
+const HAS_MODEL_CHOICE = CLOUD_RUNNER_MODELS.length > 1;
 
 /** Item detail: description and Steps (issue #96), read-only from this
  * binding — S11 wires ticking a Step. Priority renders by its label, never
@@ -54,7 +78,16 @@ export interface ItemDetailPanelProps {
  * would only add a redundant request, never corrupt anything, but there is
  * nothing useful for a person to do with the item until the first one
  * resolves. */
-export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null }: ItemDetailPanelProps) {
+export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null, microtask }: ItemDetailPanelProps) {
+  // Local, and reset per item by the `key` on this element in
+  // `RealFrontier`: a grain chosen for one item says nothing about the next.
+  const [grain, setGrain] = useState("2");
+  const [model, setModel] = useState("");
+  const run = microtask?.run ?? IDLE;
+  const affordance = microtaskAffordance(steps);
+  const running = isRunning(run);
+  const stamp = stampLabel(run);
+
   return (
     <Card
       elevation={2}
@@ -109,8 +142,66 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null }
         <p style={{ font: "var(--type-body)", color: "var(--text-secondary)" }}>{item.description}</p>
       ) : null}
 
+      {/* The microtask affordance belongs to the steps block, not the act
+          row above: that row is `availableActions(item.stage)` — the funnel
+          — and asking for a checklist moves the item through nothing. */}
       <div>
-        <span className="hb-meta">steps</span>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "var(--space-4)",
+            flexWrap: "wrap",
+          }}
+        >
+          <span className="hb-meta">steps</span>
+          {microtask ? (
+            <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-4)", flexWrap: "wrap" }}>
+              {affordance.kind === "rewrite" ? (
+                <>
+                  <Select
+                    label="Grain"
+                    size="sm"
+                    options={GRAINS}
+                    value={grain}
+                    onChange={(event) => setGrain(event.target.value)}
+                  />
+                  {HAS_MODEL_CHOICE ? (
+                    <Select
+                      label="Model"
+                      size="sm"
+                      options={CLOUD_RUNNER_MODELS}
+                      value={model}
+                      onChange={(event) => setModel(event.target.value)}
+                    />
+                  ) : null}
+                </>
+              ) : null}
+              <Button
+                variant="secondary"
+                size="sm"
+                iconLeft={affordance.kind === "break" ? "sparkles" : "rotate-ccw"}
+                loading={running}
+                onClick={() =>
+                  microtask.onRun(
+                    affordance.kind === "break"
+                      ? { itemId: item.id }
+                      : { itemId: item.id, replace: true, grain: Number(grain), model },
+                  )
+                }
+              >
+                {/* The count is what makes a rewrite's destructive half
+                    legible without a confirm dialog. Not `variant="danger"`:
+                    it is a rewrite the user asked for, and the ticked steps
+                    are untouched. */}
+                {affordance.kind === "break"
+                  ? "Break into steps"
+                  : `Rewrite ${affordance.undoneCount} step${affordance.undoneCount === 1 ? "" : "s"}`}
+              </Button>
+            </div>
+          ) : null}
+        </div>
         {steps.length === 0 ? (
           <p
             style={{
@@ -135,6 +226,47 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null }
             ))}
           </div>
         )}
+
+        {run.phase !== "idle" ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--space-3)",
+              marginTop: "var(--space-5)",
+            }}
+          >
+            {/* `role="status"` (polite), the deliberate counterpart of the
+                `role="alert"` this file already justifies for `actError`:
+                narration arrives line by line while the user is watching,
+                so it must not interrupt. */}
+            <div role="status" style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+              {run.messages.map((message, index) => (
+                <span
+                  key={`${index}-${message}`}
+                  style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}
+                >
+                  {message}
+                </span>
+              ))}
+            </div>
+
+            {stamp ? <div><Badge mono>{stamp}</Badge></div> : null}
+
+            {run.phase === "done" && run.note ? (
+              <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>{run.note}</p>
+            ) : null}
+
+            {/* Verbatim, unprefixed, unbranched — #307 made the seam's
+                decline prose-only with no reason code precisely so nothing
+                string-matches it. */}
+            {run.phase === "declined" ? (
+              <p role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+                {run.reason}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </Card>
   );

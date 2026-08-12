@@ -27,6 +27,7 @@ import { useItemActions } from "./shell/useItemActions";
 import { useTriageWiring } from "./shell/useTriageWiring";
 import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
+import { useMicrotaskWiring } from "./shell/useMicrotaskWiring";
 import { useLedgerWiring } from "./shell/useLedgerWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { UpdateBanner } from "./shell/UpdateBanner";
@@ -121,6 +122,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     openItem: handleOpenItem,
     closeItem: handleCloseItemDetail,
   } = useItemDetailWiring(worker, task.syncOutcomeSeq);
+  // #273's microtask lane. Deliberately main-thread and outside the sync
+  // engine entirely — see `useMicrotaskWiring.ts`'s header for why a
+  // worker-hosted run would be #269's banned queue in all but name.
+  const microtaskWiring = useMicrotaskWiring(worker, selectedItemId);
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
   const { setBinding: handleSetBinding } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
   const { createRule: handleCreateRule, patchRule: handlePatchRule } = useRulesWiring(
@@ -322,6 +327,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               calendarReads={calendar.eventReads}
               calendarConnected={calendar.connected}
               onSetScheduledDate={demo ? undefined : handleSetScheduledDate}
+              microtask={demo ? undefined : microtaskWiring}
             />
           )}
           {screen === "triage" && (

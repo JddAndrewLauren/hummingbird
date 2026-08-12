@@ -51,7 +51,15 @@ on a device with real items), the **capture popover** open over Now, and
 editor**, since `?demo` renders the fixture rows (`DemoCapture`) and the editor
 only exists over a real `TaskItemDTO` — it is covered by
 `screens/TriageScreen.test.tsx` instead, and reviewed by hand on a device with
-real captures. The popover is a state rather than a screen — it
+real captures; and, since #273, **item detail's microtask states** — the two
+affordances, the streaming narration, the stamp badge and the decline — for
+the same reason one level up: `NowScreen.tsx` branches to `RealFrontier` only
+when demo is off, so `ItemDetailPanel` is never mounted under `?demo` at all.
+Teaching the flag to mount it would mean entangling the demo hero branch with
+`RealFrontier`, which that branch exists to prevent, so `visual/surfaces.spec.ts`
+is deliberately unchanged here and `components/domain/ItemDetailPanel.test.tsx`
+is the cover. Item detail is now the busiest unphotographed surface in the
+app, which is worth its own issue rather than a widening of this one. The popover is a state rather than a screen — it
 renders over whatever is showing (`shell/CapturePopover.tsx`), so no
 per-screen capture ever contains it, and the scrim covering the whole window
 plus the card fitting inside 768 are only decidable with it open. `?demo` drives

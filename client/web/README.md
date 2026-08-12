@@ -88,8 +88,10 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   visibility/focus reports — it owns no timer; see below),
   `useFrontierWiring` / `useItemDetailWiring` / `useCaptureWiring` (the same
   once-ready-then-per-cycle refresh, keyed on `syncOutcomeSeq`, never a
-  timer of their own) and the one-line send wrappers `useItemActions` /
-  `useTriageWiring`, plus the pure readouts `sync-cadence.ts`,
+  timer of their own), `useMicrotaskWiring` (#273's skill-runner lane —
+  main-thread and outside the sync engine entirely; its header says why a
+  worker-hosted run would be #269's banned queue in all but name) and the
+  one-line send wrappers `useItemActions` / `useTriageWiring`, plus the pure readouts `sync-cadence.ts`,
   `sync-status.ts` and `capture-hotkey.ts` (DOM-free: the caller extracts
   the facts from the real `KeyboardEvent`). Also the app-update lane —
   `UpdateBanner.tsx` / `useAppUpdate.ts` / `app-update.ts` / `update-check.ts`,
@@ -108,6 +110,19 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   shell — with one pane directory per question (`waste-pane/`,
   `weekend-pane/`, `vacation-pane/`, `race-pane/`, each with its own header);
   and `rules/` is #140's rule editor over the exported kind registry.
+- `src/skills/` — #273's skill-runner lane, and **the one place in this app
+  that speaks HTTP without going through the Rust core**: `POST
+  /api/skills/run` on the authority, which proxies to the cloud runner
+  (ADR-0018). Everything decidable is a pure module — `ndjson.ts` (chunk to
+  line), `envelope.ts` (line to meaning), `run-state.ts` (the four phases and
+  the duplicate-tap rule), `microtask-affordance.ts` (which gesture the
+  item's own steps make legal, #307), `microtask-args.ts`, `decline.ts`,
+  `models.ts` — around one seam, `run-skill.ts`, an async generator that
+  never throws. It writes nothing: the runner writes the checklist to the
+  authority, and the steps arrive through the normal step read path.
+  `skills/no-queue.test.ts` pins from the source text that nothing here can
+  reach the sync queue, the pending overlay, the dead-letter journal or a
+  timer.
 - `src/theme/` — the `light | dark | system` preference, persisted at
   `hb.theme` and resolved onto `[data-theme]`. "Follow system" is resolved in
   JS because the stylesheet only knows `[data-theme="dark"]`.
