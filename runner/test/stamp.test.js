@@ -25,8 +25,23 @@ test("a base URL carrying credentials stamps only the host", () => {
   );
 });
 
-test("a malformed base URL is named verbatim rather than refused", () => {
-  assert.equal(resolveBackend({ ANTHROPIC_BASE_URL: "not a url" }), "not a url");
+/**
+ * The whole reason this function takes the hostname is that a URL can carry
+ * things that must not reach a rendered line. An unparseable string can hold
+ * anything, so the fallback must not be the raw value either.
+ */
+test("a malformed base URL is 'unknown', never echoed back", () => {
+  for (const base of ["not a url", "://nope"]) {
+    assert.equal(resolveBackend({ ANTHROPIC_BASE_URL: base }), "unknown", base);
+  }
+});
+
+/** `URL` accepts any `scheme:rest`, so a value like this parses with an
+ * empty hostname — which would render as a blank stamp. */
+test("a URL that parses with no host is 'unknown', not an empty stamp", () => {
+  for (const base of ["user:hunter2@@@", "mailto:someone@example.com", "about:blank"]) {
+    assert.equal(resolveBackend({ ANTHROPIC_BASE_URL: base }), "unknown", base);
+  }
 });
 
 // --- the model half ------------------------------------------------------

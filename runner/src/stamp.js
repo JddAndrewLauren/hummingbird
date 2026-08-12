@@ -24,12 +24,18 @@ export function resolveBackend(env) {
   const base = env.ANTHROPIC_BASE_URL;
   if (!base) return "anthropic";
   try {
-    return new URL(base).hostname;
+    // A string can parse as a URL and still have no host — `URL` accepts
+    // any `scheme:rest`, so `user:secret@@@` yields an empty hostname. An
+    // empty backend would render as a blank stamp, which reads as a bug
+    // rather than as the misconfiguration it is.
+    return new URL(base).hostname || "unknown";
   } catch {
-    // A malformed base URL is the operator's problem, not a reason to
-    // refuse a stamp — name it verbatim and let the value be its own
-    // evidence.
-    return base;
+    // Never the raw value: returning it would defeat the reason this
+    // function takes the hostname at all, since an unparseable string can
+    // hold anything the operator typed. A malformed base URL is a
+    // misconfiguration, and "unknown" is the honest thing to render for
+    // one. The value itself is in the operator's own environment.
+    return "unknown";
   }
 }
 
