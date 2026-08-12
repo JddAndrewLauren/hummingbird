@@ -5,16 +5,20 @@
  * **Why this exists at all**, when the other two ops are deliberately
  * context-blind: `microtask` writes. Its checklist has to land in the owned
  * `steps` table against a real item (#272), so this arm reads the item from
- * the authority and appends its steps there -- the same two routes
- * `.claude/skills/microtask/scripts/hb.sh` uses on the interactive arm, with
- * the same idempotency, driven from here rather than from a shell the
- * hosted model does not have (`rank-bin.js` records why it never will).
+ * the authority and creates, moves and drops its steps there -- the same
+ * routes `.claude/skills/microtask/scripts/hb.sh` uses on the interactive
+ * arm, with the same idempotency, driven from here rather than from a shell
+ * the hosted model does not have (`rank-bin.js` records why it never will).
  *
  * The token is a `device`-scope token read from server-side configuration
  * (`main.js`), never from a request. Per CLAUDE.md's credential blast
  * radius: `device` is write-everything, so this module is a write
  * credential however read-only a given call looks -- which is why the
- * surface here is exactly two verbs and not a general request helper.
+ * surface here is exactly four named verbs -- `sweep`, `createStep`,
+ * `dropStep`, `moveStep` -- and not a general request helper. Each takes
+ * camelCase arguments and composes the authority's snake_case wire body
+ * itself (`server/domain/src/api.rs` owns those DTOs), so no caller can
+ * hand this module a payload it did not write.
  *
  * `fetch` is injected for the same reason `spawn` is everywhere else: no
  * test in this suite reaches the network or needs a credential.
@@ -38,6 +42,12 @@ export const unconfiguredAuthority = {
     return { ok: false, error: NOT_CONFIGURED };
   },
   async createStep() {
+    return { ok: false, error: NOT_CONFIGURED };
+  },
+  async dropStep() {
+    return { ok: false, error: NOT_CONFIGURED };
+  },
+  async moveStep() {
     return { ok: false, error: NOT_CONFIGURED };
   },
 };
@@ -129,21 +139,85 @@ export function createAuthorityClient({ fetch, baseUrl, token, timeoutMs = REQUE
      * repeated run safe to simply re-send (the authority returns the stored
      * row on the already-exists path -- `handlers/steps.rs`).
      *
-     * @param {{id: string, item_id: string, body: string, position: number}} step
+     * @param {{id: string, itemId: string, body: string, position: number}} step
      * @returns {Promise<{ok: true, created: boolean, step: unknown} | {ok: false, error: string}>}
      */
-    async createStep(step) {
-      const raw = await request("POST", "/api/steps", step);
+    async createStep({ id, itemId, body, position }) {
+      const raw = await request("POST", "/api/steps", { id, item_id: itemId, body, position });
       if (!raw.ok) return raw;
       if (raw.status !== 201 && raw.status !== 200) {
         return {
           ok: false,
-          error: `POST /api/steps answered ${raw.status} for "${step.body}": ${raw.text.slice(0, 200)}`,
+          error: `POST /api/steps answered ${raw.status} for "${body}": ${raw.text.slice(0, 200)}`,
         };
       }
       const parsed = parse("POST", "/api/steps", raw);
       if (!parsed.ok) return parsed;
       return { ok: true, created: raw.status === 201, step: parsed.value };
+    },
+
+    /**
+     * `PATCH /api/steps/:id` with `{expected_version, deleted_at: now}` --
+     * a CAS soft-delete. Writes exactly this one field plus the CAS
+     * version, never anything else on the row.
+     *
+     * @param {{id: string, expectedVersion: number}} args
+     * @returns {Promise<{ok: true, step: unknown} | {ok: false, error: string}>}
+     */
+    async dropStep({ id, expectedVersion }) {
+      const path = `/api/steps/${encodeURIComponent(id)}`;
+      const raw = await request("PATCH", path, { expected_version: expectedVersion, deleted_at: Date.now() });
+      if (!raw.ok) return raw;
+      if (raw.status === 200) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        return { ok: true, step: parsed.value };
+      }
+      if (raw.status === 409) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        const current = parsed.value && parsed.value.current;
+        // Already-applied: the conflicting row is already soft-deleted, so
+        // this is the same outcome the caller wanted -- report success, not
+        // a failure. No retry beyond this one check (#307's narrowed rules).
+        if (current && current.deleted_at != null) {
+          return { ok: true, step: current };
+        }
+        return { ok: false, error: `PATCH ${path} conflict dropping step ${id}: current row is still live` };
+      }
+      return { ok: false, error: `PATCH ${path} answered ${raw.status} dropping step ${id}: ${raw.text.slice(0, 200)}` };
+    },
+
+    /**
+     * `PATCH /api/steps/:id` with `{expected_version, position}` -- a CAS
+     * move. Writes exactly this one field plus the CAS version, never
+     * anything else on the row.
+     *
+     * @param {{id: string, expectedVersion: number, position: number}} args
+     * @returns {Promise<{ok: true, step: unknown} | {ok: false, error: string}>}
+     */
+    async moveStep({ id, expectedVersion, position }) {
+      const path = `/api/steps/${encodeURIComponent(id)}`;
+      const raw = await request("PATCH", path, { expected_version: expectedVersion, position });
+      if (!raw.ok) return raw;
+      if (raw.status === 200) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        return { ok: true, step: parsed.value };
+      }
+      if (raw.status === 409) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        const current = parsed.value && parsed.value.current;
+        // Already-applied: the conflicting row already sits at the wanted
+        // position, so this is the same outcome the caller wanted -- report
+        // success, not a failure. No retry beyond this one check.
+        if (current && current.position === position) {
+          return { ok: true, step: current };
+        }
+        return { ok: false, error: `PATCH ${path} conflict moving step ${id}: current position diverges` };
+      }
+      return { ok: false, error: `PATCH ${path} answered ${raw.status} moving step ${id}: ${raw.text.slice(0, 200)}` };
     },
   };
 }

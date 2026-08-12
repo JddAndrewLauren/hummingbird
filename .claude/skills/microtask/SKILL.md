@@ -15,16 +15,22 @@ Vocabulary (Action, **Step**, Route, Fog) is in the root `CONTEXT.md`.
 **Interactive** (a session, with the operator's credential): you read and write through
 `scripts/hb.sh` yourself, and everything below applies as written.
 
-**Hosted runner** (#272's third op): the runner has already read the item and its live
-steps from the authority and put them in your prompt as JSON — you have **no shell** here,
-so do not run `hb.sh`, and asking for it wastes the run (`claude -p` is non-interactive, a
-`Bash` call cannot be prompted for and is simply denied). Answer against
-`schema.json` — `{steps, note}` — and the runner appends those lines to the same `steps`
-table, at positions after the ones you were handed, with the same deterministic ids. That
-arm **appends only**: it has no `tick` and no `drop-step`, so the refresh rule's
-superseded-step decision stays with the interactive arm and what you can do here is
-*report* what is already done, in `note`. It also cannot ask a question — say what you
-assumed instead.
+**Hosted runner** (#272's third op; #307's decline; #317's rewrite): the runner has
+already read the item's live steps from the authority. A bare run only ever reaches you
+when every one of them is already `done` — an item with any live *unticked* step is
+declined by the runner itself, before you are called, naming the count and the remedy,
+and a different `grain` does not change that; the remedy is `replace: true`. So whatever
+steps ride in your prompt are always `record`, never a plan to continue — that is true on
+a bare run and on a replace alike, since the runner never shows you the plan it may be
+about to rewrite: report them in `note` and never re-propose them. You have **no shell**
+here, so do not run `hb.sh`, and asking for it wastes the run (`claude -p` is
+non-interactive, a `Bash` call cannot be prompted for and is simply denied). Answer
+against `schema.json` — `{steps, note}` — and the runner does the reconciling: on a bare
+run it appends those lines as the plan, with the same deterministic ids; on `replace:
+true` it diffs your answer against the live unticked steps by exact text — one your
+answer repeats verbatim is kept and repositioned, one that is absent is soft-deleted,
+everything else is created — and ticked steps are never touched. You never see or emit a
+step id either way. It also cannot ask a question — say what you assumed instead.
 
 Branch on which input you were handed: a prompt carrying the item and steps as JSON is the
 runner arm; anything else is the interactive one.
@@ -79,8 +85,9 @@ How finely to slice, calibrated on a real trial:
 At grain 3, steps run well under the 2-minute floor — that's the point; the ~2–5-minute
 guidance applies at grains 1–2. The trivial first step survives every grain.
 
-On the runner arm the invocation is `POST /run {skill: "microtask", args: {ref, grain?}}`,
-and `ref` is resolved before you are called — an unknown one never reaches you.
+On the runner arm the invocation is
+`POST /run {skill: "microtask", args: {ref, grain?, replace?}}`, and `ref` is resolved
+before you are called — an unknown one never reaches you.
 
 ## Read first, ask at most once
 
@@ -116,11 +123,17 @@ This survives from the Linear era in substance and is much smaller in form: it i
 field read (`done`) rather than a case-insensitive regex over prose, so there is no
 normalisation rule attached to it and no way to miss a tick that the client made.
 
-Then decide what has been superseded. **That decision is yours and stays here in prose** —
-`hb.sh` deliberately does not reconcile a checklist for you, because "this step no longer
-applies" is a reading of the work, not a diff. Soft-delete each superseded step with
-`drop-step` (the row stays, flagged) and `add-steps` the genuinely new ones, which land at
-higher positions.
+Then decide what has been superseded. **That decision is yours and stays here in prose,
+on the interactive arm** — `hb.sh` deliberately does not reconcile a checklist for you,
+because "this step no longer applies" is a reading of the work, not a diff. Soft-delete
+each superseded step with `drop-step` (the row stays, flagged) and `add-steps` the
+genuinely new ones, which land at higher positions.
+
+**On the runner arm this decision is never the model's** (#317): `replace: true` hands the
+runner your answer and the runner itself computes what has been superseded, by comparing
+text against the live unticked steps — never by asking you to judge, since you never see
+that plan. What stays banned there is the model deciding *per-step* what has been
+superseded; a caller-directed, wholesale replacement is a different thing.
 
 ## Walk-through mode
 

@@ -43,8 +43,14 @@ test("an empty token yields the unconfigured client, whose every call names the 
   const read = await authority.sweep();
   assert.equal(read.ok, false);
   assert.match(read.error, /HB_API_TOKEN/);
-  const write = await authority.createStep({ id: "s", item_id: "i", body: "b", position: 1 });
+  const write = await authority.createStep({ id: "s", itemId: "i", body: "b", position: 1 });
   assert.equal(write.ok, false);
+  const drop = await authority.dropStep({ id: "s", expectedVersion: 1 });
+  assert.equal(drop.ok, false);
+  assert.match(drop.error, /HB_API_TOKEN/);
+  const move = await authority.moveStep({ id: "s", expectedVersion: 1, position: 2 });
+  assert.equal(move.ok, false);
+  assert.match(move.error, /HB_API_TOKEN/);
 });
 
 test("sweep GETs /api/sweep with the token as a bearer header, never in the URL", async () => {
@@ -112,20 +118,26 @@ test("an unreachable authority is a named outcome -- the caller must still end i
 
 test("createStep POSTs the step body as JSON and reads 201 as a create", async () => {
   const fetch = fakeFetch({ status: 201, body: '{"id":"s-1","version":7}' });
-  const step = { id: "s-1", item_id: "i-1", body: "put on music", position: 3 };
-  const write = await client(fetch).createStep(step);
+  const write = await client(fetch).createStep({ id: "s-1", itemId: "i-1", body: "put on music", position: 3 });
   assert.deepEqual(write, { ok: true, created: true, step: { id: "s-1", version: 7 } });
   assert.equal(fetch.calls[0].url, "https://hb.example/api/steps");
   assert.equal(fetch.calls[0].options.method, "POST");
   assert.equal(fetch.calls[0].options.headers["content-type"], "application/json");
-  assert.deepEqual(JSON.parse(fetch.calls[0].options.body), step);
+  // The verb takes camelCase and composes the wire body itself -- `item_id`
+  // is the authority's DTO (`server/domain/src/api.rs`), not the arg shape.
+  assert.deepEqual(JSON.parse(fetch.calls[0].options.body), {
+    id: "s-1",
+    item_id: "i-1",
+    body: "put on music",
+    position: 3,
+  });
 });
 
 /** Idempotence, the authority's half: already-exists is success and returns the stored row. */
 test("createStep reads 200 as a replay, not a duplicate and not a failure", async () => {
   const write = await client(fakeFetch({ status: 200, body: '{"id":"s-1"}' })).createStep({
     id: "s-1",
-    item_id: "i-1",
+    itemId: "i-1",
     body: "put on music",
     position: 3,
   });
@@ -136,11 +148,110 @@ test("createStep reads 200 as a replay, not a duplicate and not a failure", asyn
 test("a rejected create names the status and the step it was writing", async () => {
   const write = await client(fakeFetch({ status: 400, body: '{"error":"unknown item_id"}' })).createStep({
     id: "s-1",
-    item_id: "ghost",
+    itemId: "ghost",
     body: "put on music",
     position: 1,
   });
   assert.equal(write.ok, false);
   assert.match(write.error, /answered 400/);
   assert.match(write.error, /put on music/);
+});
+
+test("dropStep PATCHes deleted_at and expected_version under CAS, and nothing else", async () => {
+  const fetch = fakeFetch({ status: 200, body: '{"id":"s-1","deleted_at":1000,"version":8}' });
+  const write = await client(fetch).dropStep({ id: "s-1", expectedVersion: 7 });
+  assert.equal(write.ok, true);
+  assert.deepEqual(write.step, { id: "s-1", deleted_at: 1000, version: 8 });
+  assert.equal(fetch.calls[0].url, "https://hb.example/api/steps/s-1");
+  assert.equal(fetch.calls[0].options.method, "PATCH");
+  const sent = JSON.parse(fetch.calls[0].options.body);
+  assert.equal(sent.expected_version, 7);
+  assert.equal(typeof sent.deleted_at, "number");
+  assert.deepEqual(Object.keys(sent).sort(), ["deleted_at", "expected_version"]);
+});
+
+test("dropStep's 409 is success, not a failure, when the current row is already soft-deleted", async () => {
+  const fetch = fakeFetch({
+    status: 409,
+    body: JSON.stringify({ error: "version_conflict", current: { id: "s-1", deleted_at: 999, version: 9 } }),
+  });
+  const write = await client(fetch).dropStep({ id: "s-1", expectedVersion: 7 });
+  assert.equal(write.ok, true);
+  assert.deepEqual(write.step, { id: "s-1", deleted_at: 999, version: 9 });
+});
+
+test("dropStep's 409 is a named failure naming the step, with no retry, when the current row is still live", async () => {
+  const fetch = fakeFetch({
+    status: 409,
+    body: JSON.stringify({ error: "version_conflict", current: { id: "s-1", deleted_at: null, version: 9 } }),
+  });
+  const write = await client(fetch).dropStep({ id: "s-1", expectedVersion: 7 });
+  assert.equal(write.ok, false);
+  assert.match(write.error, /s-1/);
+  assert.equal(fetch.calls.length, 1);
+});
+
+test("an unreachable authority on dropStep is a named outcome, not a throw", async () => {
+  const write = await client(fakeFetch(new Error("getaddrinfo ENOTFOUND hb.example"))).dropStep({
+    id: "s-1",
+    expectedVersion: 1,
+  });
+  assert.equal(write.ok, false);
+  assert.match(write.error, /could not reach the authority/);
+});
+
+test("a non-2xx, non-409 dropStep answer is a named outcome, not a throw", async () => {
+  const write = await client(fakeFetch({ status: 500, body: "boom" })).dropStep({ id: "s-1", expectedVersion: 1 });
+  assert.equal(write.ok, false);
+  assert.match(write.error, /answered 500/);
+});
+
+/**
+ * #317 feeds ids from the sweep rather than from a caller who only ever
+ * typed a hex uuid, so the path is encoded rather than trusted -- a step id
+ * containing a `/` must not be read by the authority as a second path
+ * segment.
+ */
+test("dropStep encodes the step id into the path", async () => {
+  const fetch = fakeFetch({ status: 200, body: '{"id":"s/1","deleted_at":1000,"version":2}' });
+  await client(fetch).dropStep({ id: "s/1", expectedVersion: 1 });
+  assert.equal(fetch.calls[0].url, "https://hb.example/api/steps/s%2F1");
+});
+
+test("moveStep PATCHes position and expected_version under CAS, and nothing else", async () => {
+  const fetch = fakeFetch({ status: 200, body: '{"id":"s-1","position":3,"version":8}' });
+  const write = await client(fetch).moveStep({ id: "s-1", expectedVersion: 7, position: 3 });
+  assert.equal(write.ok, true);
+  assert.deepEqual(write.step, { id: "s-1", position: 3, version: 8 });
+  assert.equal(fetch.calls[0].url, "https://hb.example/api/steps/s-1");
+  assert.equal(fetch.calls[0].options.method, "PATCH");
+  const sent = JSON.parse(fetch.calls[0].options.body);
+  assert.deepEqual(sent, { expected_version: 7, position: 3 });
+});
+
+test("moveStep's 409 is success, not a failure, when the current row already sits at the wanted position", async () => {
+  const fetch = fakeFetch({
+    status: 409,
+    body: JSON.stringify({ error: "version_conflict", current: { id: "s-1", position: 3, version: 9 } }),
+  });
+  const write = await client(fetch).moveStep({ id: "s-1", expectedVersion: 7, position: 3 });
+  assert.equal(write.ok, true);
+  assert.deepEqual(write.step, { id: "s-1", position: 3, version: 9 });
+});
+
+test("moveStep encodes the step id into the path", async () => {
+  const fetch = fakeFetch({ status: 200, body: '{"id":"s/1","position":3,"version":2}' });
+  await client(fetch).moveStep({ id: "s/1", expectedVersion: 1, position: 3 });
+  assert.equal(fetch.calls[0].url, "https://hb.example/api/steps/s%2F1");
+});
+
+test("moveStep's 409 is a named failure naming the step, with no retry, when the current position diverges", async () => {
+  const fetch = fakeFetch({
+    status: 409,
+    body: JSON.stringify({ error: "version_conflict", current: { id: "s-1", position: 5, version: 9 } }),
+  });
+  const write = await client(fetch).moveStep({ id: "s-1", expectedVersion: 7, position: 3 });
+  assert.equal(write.ok, false);
+  assert.match(write.error, /s-1/);
+  assert.equal(fetch.calls.length, 1);
 });

@@ -19,24 +19,56 @@ import { stepId } from "../step-id.js";
  *   so an unknown ref is a named envelope error with no tokens spent;
  * - the model's only job is judgment -- the grain, the ramp step, the
  *   wording -- answered against the versioned schema beside SKILL.md;
- * - `apply` performs the writes **after**, one `POST /api/steps` per step,
- *   with ids minted by `step-id.js`.
+ * - `apply` performs the writes **after**: one `POST /api/steps` per new
+ *   step, with ids minted by `step-id.js`, plus (on a replace, #317) the
+ *   `PATCH`es that move a kept step or drop a superseded one.
  *
- * **Idempotence is structural, not a retry policy.** Each step's id is
- * `sha256(namespace + item + body)`, and a create against an existing id is
- * the authority's already-exists path (200, the stored row) rather than a
- * duplicate. Re-running the identical checklist therefore mints nothing --
- * which is what makes an interrupted run safe to simply repeat, and it is
- * the same guarantee `hb.sh` gives the interactive arm because it is
- * literally the same id.
+ * **Idempotence is structural at the write layer, not at the request
+ * layer** (#307's finding). Each step's id is
+ * `sha256(namespace + item + "/" + body)`, and a create against an existing
+ * id is the authority's already-exists path (200, the stored row) rather
+ * than a duplicate -- a replay of the *identical* text mints nothing, which
+ * is what makes an interrupted write safe to simply repeat, and it is the
+ * same guarantee `hb.sh` gives the interactive arm because it is literally
+ * the same id. But a second, differently-worded request is not a replay:
+ * the model reads a live checklist as work already covered and answers a
+ * plausible continuation -- new ids, new rows, `ok:true`. Nothing at this
+ * layer catches that; the fix is one level up.
  *
- * **This arm appends and nothing else.** It has no `tick` and no
- * `drop-step`: the refresh rule's "decide what has been superseded" is a
- * reading of the work that stays with the operator's session, and a hosted
- * op that could soft-delete rows would widen this credential's reach for a
- * judgment nobody asked it to make. The already-`done` steps ride in the
- * prompt so the model can *report* them in `note`, which is the half of the
- * refresh rule this arm can honour.
+ * **A bare run never continues a live plan.** `prepare` declines before a
+ * model token is spent if the item has any live step that is not `done` --
+ * a different `grain` is not consent to touch it either, since grain says
+ * how finely to slice, not whether to discard what is already there. An
+ * item whose live steps are all `done` has no plan left to protect, so a
+ * bare run appends after them: the normal case, not a rewrite. The guard is
+ * asserted a second time in `apply`, because `prepare` reads before the
+ * model runs and `apply` writes after it, with the model's whole runtime in
+ * between -- two overlapping runs against an empty item would otherwise
+ * both pass `prepare` and both write. `apply` re-reads and refuses if a
+ * live undone step is present that `prepare` did not see; ticking or
+ * dropping a step between the two reads only shrinks that set, so it never
+ * aborts a run whose tokens are already spent.
+ *
+ * **`replace: true` rewrites the plan instead of declining** (#317). `apply`
+ * diffs the model's answer against the live unticked steps by exact text --
+ * an unticked step whose body the answer repeats verbatim is *kept* at its
+ * existing id (`moveStep`, if its position changed); one absent from the
+ * answer is *dropped* (`dropStep`); everything else is a `createStep`. Ticked
+ * steps are never part of that diff -- they are record, not plan, and a
+ * replace does not touch their id, `done` state or position. Creates and
+ * moves happen before any drop, so a write that fails partway leaves the old
+ * plan live rather than truncated. The model never sees the plan it is
+ * replacing or any step id; retention is computed here, by comparing text,
+ * which is why a duplicated `replace` is not idempotent -- a model that
+ * cannot see the old wording paraphrases it, so a second identical request
+ * drops what the first wrote and writes the same count back under rotated
+ * ids. That churn is the price of a genuinely fresh answer, not a bug.
+ *
+ * **Credential posture, restated at the line #317 actually draws it**: what
+ * stays banned is the *model* deciding per-step what has been superseded --
+ * it answers prose, never an id, and `apply` alone decides retention. A
+ * caller-directed, wholesale replacement widening the write surface by two
+ * verbs is a different thing, and it is what was asked for.
  */
 
 /** SKILL.md's grain scale: 1 coarse, 2 default, 3 max. */
@@ -84,6 +116,17 @@ export function liveSteps(sweep, itemId) {
     .sort((a, b) => a.position - b.position || String(a.id).localeCompare(String(b.id)));
 }
 
+/**
+ * The live steps that still have a plan left in them (#307). Only these
+ * block a bare run -- a `done` step is record, not something a continuation
+ * would clobber.
+ *
+ * @param {Array<Record<string, unknown>>} steps
+ */
+export function undoneSteps(steps) {
+  return steps.filter((step) => step?.done !== true);
+}
+
 export const microtask = {
   name: "microtask",
 
@@ -107,6 +150,9 @@ export const microtask = {
     }
     if (args.grain !== undefined && !GRAINS.includes(args.grain)) {
       return { ok: false, error: `"grain" must be one of ${GRAINS.join(", ")} when present` };
+    }
+    if (args.replace !== undefined && typeof args.replace !== "boolean") {
+      return { ok: false, error: '"replace" must be a boolean when present' };
     }
     return { ok: true };
   },
@@ -136,12 +182,38 @@ export const microtask = {
       `item ${resolved.item.id} has ${steps.length} live step${steps.length === 1 ? "" : "s"}`,
     );
 
+    // A bare run never continues a live plan (#307): only a checklist whose
+    // live steps are all `done` has no plan left to protect. A different
+    // `grain` is not consent to touch it either -- grain says how finely to
+    // slice, nothing about discarding what is already there. `replace: true`
+    // is the explicit gesture that is consent (#317).
+    const undone = undoneSteps(steps);
+    const replace = args.replace === true;
+    if (undone.length > 0 && !replace) {
+      return {
+        ok: false,
+        error:
+          `item ${resolved.item.id} already has ${undone.length} unticked step${undone.length === 1 ? "" : "s"} -- ` +
+          "tick or drop them first, or re-run with replace: true to rewrite the plan",
+      };
+    }
+
     // The raw sweep is dropped on the way through for the reason
     // `next-up-hb`'s prepare drops it: it is the largest thing in reach and
-    // nothing downstream reads it.
+    // nothing downstream reads it. `knownUndoneIds` is the id-aware form of
+    // `apply`'s check-then-act guard (#307 decision 6, #317's narrowing of
+    // it): empty for a bare run (since `undone.length` must be 0 to reach
+    // here), and the ids of the plan a replace is about to diff otherwise --
+    // never sent to the model (`buildPrompt` picks its own keys).
     return {
       ok: true,
-      args: { item: resolved.item, steps, grain: args.grain ?? DEFAULT_GRAIN },
+      args: {
+        item: resolved.item,
+        steps,
+        grain: args.grain ?? DEFAULT_GRAIN,
+        replace,
+        knownUndoneIds: undone.map((step) => step.id),
+      },
     };
   },
 
@@ -150,23 +222,36 @@ export const microtask = {
    * @returns {string}
    */
   buildPrompt(args) {
+    // Only ticked steps ever reach here -- a bare run has none unticked by
+    // `prepare`'s decline (#307), and a replace's unticked steps are the
+    // plan being replaced, which the model must never see (#317) -- but
+    // this filters explicitly rather than trusting either invariant
+    // silently. The object below is built from named keys rather than
+    // `{...args}` for the same reason: `prepare` carries `knownUndoneIds`
+    // for `apply`'s own guard, and it must never reach the model as a step
+    // id it could echo back.
+    const record = args.steps.filter((step) => step?.done === true);
     return [
       "/microtask",
       "",
-      "Runner arm: the item and its live steps have ALREADY been read from the",
+      "Runner arm: the item and its ticked steps have ALREADY been read from the",
       "authority and follow as JSON. You have no shell here -- do not run",
-      "scripts/hb.sh, and do not write, tick or drop anything yourself. Answer",
-      "in the schema; the runner appends your steps to the same `steps` table",
-      "hb.sh writes, at positions after the ones you were handed.",
+      "scripts/hb.sh, and do not write, tick or drop anything yourself. Every",
+      "step below is `record`: already done, carried only so you can report",
+      "it in `note` -- never re-propose it. Answer in the schema; the runner",
+      "writes your steps as the plan for this item.",
       "",
-      JSON.stringify(args),
+      JSON.stringify({ item: args.item, steps: record, grain: args.grain }),
     ].join("\n");
   },
 
   /**
-   * The write half, run after the model. Appends one step per line of the
-   * model's answer, at contiguous positions after whatever is already
-   * there, with the deterministic id that makes a replay a no-op.
+   * The write half, run after the model. On a bare run, appends one step
+   * per line of the model's answer, at contiguous positions after whatever
+   * is already there, with the deterministic id that makes a replay a
+   * no-op. On `replace: true`, diffs the answer against the live unticked
+   * steps by text and reconciles: kept steps move, superseded ones drop,
+   * new ones create -- see the module header.
    *
    * The envelope's `result` is returned **unchanged** -- it is the
    * schema-validated model answer and nothing else (#41 decision 4), so
@@ -189,17 +274,80 @@ export const microtask = {
       return { ok: false, error: "the model returned no steps to write" };
     }
 
+    // Re-assert `prepare`'s guard (#307/#317 decision 6): the model's whole
+    // runtime sat between that read and this write, so two overlapping runs
+    // against the same starting plan would otherwise both pass `prepare`
+    // and both write. The predicate is *appearance against `prepare`'s own
+    // set*, not emptiness -- a bare run's set is always empty (`prepare`
+    // declined otherwise), and a replace's set is the plan it read and is
+    // about to diff, so that plan being present here is expected, not an
+    // appearance. Ticking or dropping a step in between only shrinks the
+    // live undone set, never grows it, so it never aborts a run whose
+    // tokens are already spent.
+    const reread = await authority.sweep();
+    if (!reread.ok) return { ok: false, error: `authority: ${reread.error}` };
     const itemId = args.item.id;
-    const basePosition = args.steps.reduce((max, step) => Math.max(max, step.position), 0) + 1;
+    const freshSteps = liveSteps(reread.sweep, itemId);
+    const stillUndone = undoneSteps(freshSteps);
+    const known = new Set(args.knownUndoneIds ?? []);
+    const appeared = stillUndone.filter((step) => !known.has(step.id));
+    if (appeared.length > 0) {
+      return {
+        ok: false,
+        error:
+          `item ${itemId} gained ${appeared.length} unticked step${appeared.length === 1 ? "" : "s"} ` +
+          "while this run was in flight -- re-run once it settles",
+      };
+    }
 
+    // Positions are read fresh here rather than trusted from `prepare`'s
+    // snapshot: the plan being replaced (`stillUndone`) is about to be
+    // reordered wholesale, so the new plan's positions are anchored to the
+    // record -- the highest `done` position -- not to steps that are about
+    // to move or drop.
+    const doneMax = freshSteps
+      .filter((step) => step?.done === true)
+      .reduce((max, step) => Math.max(max, step.position), 0);
+    const basePosition = doneMax + 1;
+
+    // Diff the answer against the live unticked steps by exact text (#317
+    // decision 5/7): the model never sees or emits an id, so text is the
+    // only signal there is for "this is the same step, just repositioned"
+    // versus "this is genuinely new". Steps are consumed at most once each,
+    // so two identical bodies in the old plan match at most one line of the
+    // answer.
+    const remainingByBody = new Map();
+    for (const step of stillUndone) {
+      const queue = remainingByBody.get(step.body) ?? [];
+      queue.push(step);
+      remainingByBody.set(step.body, queue);
+    }
+
+    // Creates and moves happen before any drop (#307 decision 4/#317): a
+    // write that fails partway then leaves the old plan intact plus
+    // whatever landed -- a superset a subsequent replace converges -- never
+    // a truncated one.
+    const kept = new Set();
     let created = 0;
     let replayed = 0;
     for (const [index, body] of bodies.entries()) {
+      const position = basePosition + index;
+      const queue = remainingByBody.get(body);
+      const match = queue && queue.length > 0 ? queue.shift() : undefined;
+      if (match) {
+        kept.add(match.id);
+        if (match.position !== position) {
+          const move = await authority.moveStep({ id: match.id, expectedVersion: match.version, position });
+          if (!move.ok) return { ok: false, error: `authority: ${move.error}` };
+        }
+        onProgress(`kept step ${index + 1}/${bodies.length}`);
+        continue;
+      }
       const write = await authority.createStep({
         id: stepId(itemId, body),
-        item_id: itemId,
+        itemId,
         body,
-        position: basePosition + index,
+        position,
       });
       if (!write.ok) return { ok: false, error: `authority: ${write.error}` };
       if (write.created) created += 1;
@@ -207,7 +355,18 @@ export const microtask = {
       onProgress(`wrote step ${index + 1}/${bodies.length}`);
     }
 
-    onProgress(`${created} step${created === 1 ? "" : "s"} written, ${replayed} already existed`);
+    let dropped = 0;
+    for (const step of stillUndone) {
+      if (kept.has(step.id)) continue;
+      const drop = await authority.dropStep({ id: step.id, expectedVersion: step.version });
+      if (!drop.ok) return { ok: false, error: `authority: ${drop.error}` };
+      dropped += 1;
+    }
+
+    onProgress(
+      `${created} step${created === 1 ? "" : "s"} written, ${replayed} already existed, ` +
+        `${kept.size} kept, ${dropped} dropped`,
+    );
     return { ok: true, result };
   },
 };

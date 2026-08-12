@@ -6,15 +6,18 @@
 > against it. `HB_API_TOKEN` is set (a device-scope token minted as id
 > `runner`), so `microtask` holds a **write** credential against the live
 > authority and every run of it mints real Step rows -- confirmed by writing,
-> then soft-deleting, 28 of them. One finding came out of that run and is
-> **open**: an identical repeat request appends a further phase of steps rather
-> than converging, because the model reads the existing checklist as work
-> already covered
-> ([#307](https://github.com/JddAndrewLauren/hummingbird/issues/307)) -- so the
-> op is idempotent at the write layer and *not* at the request layer, which is
-> the level a client retries at. Provisioning was and remains an operator gate:
-> #256 and #272 are build-only slices, the same posture #237's server deploy
-> used.
+> then soft-deleting, 28 of them. One finding came out of that run: an
+> identical repeat request appended a further phase of steps rather than
+> converging, because the model read the existing checklist as work already
+> covered
+> ([#307](https://github.com/JddAndrewLauren/hummingbird/issues/307)) -- the
+> op is idempotent at the write layer and *not* at the request layer, which
+> is the level a client retries at. **Fixed in code by
+> [#312](https://github.com/JddAndrewLauren/hummingbird/issues/312): a bare
+> run against a live plan is now declined before a model token is spent** --
+> pending redeploy, the same operator gate as the rest of this section.
+> Provisioning was and remains an operator gate: #256 and #272 are
+> build-only slices, the same posture #237's server deploy used.
 
 A fourth actor (#41 decided this, #256 builds it): a Fly app that takes
 `POST /run {skill, args}` and runs one Claude Code skill headlessly,
@@ -37,7 +40,7 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 | `runner/src/skills/parse-capture.js` | That skill's arg validation and prompt-building. |
 | `runner/src/skills/next-up-hb.js` | The same, for `/next-up-hb`: the sweep payload arrives in `args` (context-blind -- no authority token here, no HTTP call), plus the `prepare` hook that ranks before the model runs. |
 | `runner/src/skills/microtask.js` | The same, for `/microtask`: `prepare` reads the item from the authority, `apply` writes the checklist back to it. The one op that holds a credential. |
-| `runner/src/authority.js` | The client for the app-owned authority (`GET /api/sweep`, `POST /api/steps`) and the only place a `device` token lives in this process. `fetch` injected. |
+| `runner/src/authority.js` | The client for the app-owned authority (`GET /api/sweep`, `POST /api/steps`, `PATCH /api/steps/:id`) and the only place a `device` token lives in this process. `fetch` injected. |
 | `runner/src/step-id.js` | The deterministic step id, digit for digit the same recipe as `microtask`'s `hb.sh` -- what keeps the two arms from minting two copies of one step. |
 | `runner/src/rank-bin.js` | Spawns the baked `next-up-rank` over the envelope on stdin. The one child process here that is not `claude`. |
 | `runner/src/claude-cli.js` | Builds the `claude -p ... --output-format json --json-schema <path>` argv. |
@@ -96,30 +99,61 @@ and is the reason this process holds an authority credential at all:
   words, before a single model token is spent.
 
 - **`microtask`** (#272): break one already-selected item into a checklist
-  of tiny steps. `args` are `{ref, grain?}` -- `HB-42` or a uuid, and
-  SKILL.md's 1-3 grain scale (default 2). This op **reads and writes the
-  authority**, which is the whole of what makes it different:
+  of tiny steps. `args` are `{ref, grain?, replace?}` -- `HB-42` or a uuid,
+  SKILL.md's 1-3 grain scale (default 2), and the explicit rewrite gesture
+  (#317). This op **reads and writes the authority**, which is the whole of
+  what makes it different:
 
   - `prepare` fetches `GET /api/sweep`, resolves the ref (no route accepts
     `HB-<seq>`; it is a client-side affordance over `Item.seq`) and puts
-    the item plus its live steps in the prompt. An unknown ref, a missing
-    token and an unreachable authority all end the stream here, before a
-    model token is spent.
-  - `apply` runs **after** the model and appends one `POST /api/steps` per
-    line of its answer, at contiguous positions after the live maximum.
+    the item plus its **ticked** steps in the prompt -- the unticked ones
+    are the plan, and the model never sees them (#317). An unknown ref, a
+    missing token and an unreachable authority all end the stream here,
+    before a model token is spent.
+  - `apply` runs **after** the model. It writes one `POST /api/steps` per
+    line of the answer, at contiguous positions after the highest *ticked*
+    position -- the plan starts where the record ends -- and on a replace
+    it also moves and drops, per the `replace: true` bullet below.
     **`ok:true` means the checklist landed, not that a model answered**: a
     failed write is an `ok:false` envelope like any other.
-  - Idempotence is structural. Each step's id is
+  - Idempotence is structural at the write layer, not the request layer
+    (#307). Each step's id is
     `sha256("hummingbird-skill/microtask/v1" + item + "/" + body)`, so a replay
-    lands on the authority's already-exists path (200, the stored row)
-    rather than minting a duplicate -- and `runner/src/step-id.js` is the
-    same recipe as the skill's own `hb.sh`, pinned against it by
-    `runner/test/step-id.test.js`, so the interactive and hosted arms
-    cannot mint two copies of one step between them.
-  - This arm **appends only**. It has no `tick` and no `drop-step`: the
-    refresh rule's "decide what has been superseded" is a reading of the
-    work, and it stays with the interactive arm. The already-`done` steps
-    ride in the prompt so the model can *report* them in `note`.
+    of the *identical* text lands on the authority's already-exists path
+    (200, the stored row) rather than minting a duplicate -- and
+    `runner/src/step-id.js` is the same recipe as the skill's own `hb.sh`,
+    pinned against it by `runner/test/step-id.test.js`, so the interactive
+    and hosted arms cannot mint two copies of one step between them. A
+    second, differently-worded request is not a replay, though: see #307
+    below.
+  - **A bare run never continues a live plan** (#307/#312). `prepare`
+    declines, before a model token is spent, if the item has any live step
+    that is not `done` -- naming the count and the remedy -- and a
+    different `grain` does not change that. An item whose live steps are
+    all `done` has no plan to protect, so a bare run appends after them,
+    the normal case.
+  - **`replace: true` is the explicit gesture that rewrites the plan
+    instead** (#317). `prepare` skips the decline and carries the live
+    unticked steps' ids forward as `knownUndoneIds`. `apply` diffs the
+    model's answer against those same steps by exact text: one the answer
+    repeats verbatim is *kept* at its existing id and moved to its new
+    position (`moveStep`); one absent from the answer is *dropped*
+    (`dropStep`); everything else is a `createStep`. Creates and moves
+    happen before any drop, so a write that fails partway leaves the old
+    plan live rather than truncated, and ticked steps are never part of the
+    diff -- their id, `done` state and position are untouched. The model
+    never sees the plan it may be replacing and never sees or emits a step
+    id, so a duplicated replace is not idempotent: it paraphrases what it
+    cannot see and writes the same count back under rotated ids.
+  - `apply` re-asserts `prepare`'s guard after the model runs, refusing only
+    if a live undone step is present whose id is not in `knownUndoneIds`
+    -- an id-aware check, not emptiness, since a replace's known set is
+    the very plan it is about to diff. Ticking or dropping a step in
+    between only shrinks that set and never aborts the write. The
+    already-`done` steps ride in the prompt, labelled `record`, so the
+    model can *report* them in `note` and never re-propose them -- on a
+    bare run or a replace alike, since the model never sees the unticked
+    steps either way.
   - The model is not the one holding the credential. It has no shell here
     for the same reason `next-up-hb`'s ranker runs out of process, and the
     writes are made by `authority.js` from the args the model answered
@@ -325,6 +359,14 @@ operator can close the provisioning gate #256's issue thread leaves open.
    HTTP request, however, re-invokes the model, and differently-worded
    steps are new ids and new rows. If run two adds rows, check whether the
    step text changed before calling it a defect.
+
+   To smoke-test a rewrite instead of an append, add `"replace":true` to
+   the same body once the item already has a live plan. Expect the
+   `note`-adjacent progress line naming written / kept / dropped counts,
+   and know the same non-idempotence applies one level further in: a
+   second identical `replace` is not a no-op either, since the model
+   cannot see the plan it is replacing and paraphrases it -- the count
+   stays the same, the ids and wording rotate.
 
 6. **Rotate the token** later by repeating step 2-3 with a fresh value,
    then updating whatever client holds it. `HB_API_TOKEN` rotates
