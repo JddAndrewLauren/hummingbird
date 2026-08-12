@@ -99,9 +99,10 @@ and is the reason this process holds an authority credential at all:
   words, before a single model token is spent.
 
 - **`microtask`** (#272): break one already-selected item into a checklist
-  of tiny steps. `args` are `{ref, grain?}` -- `HB-42` or a uuid, and
-  SKILL.md's 1-3 grain scale (default 2). This op **reads and writes the
-  authority**, which is the whole of what makes it different:
+  of tiny steps. `args` are `{ref, grain?, replace?}` -- `HB-42` or a uuid,
+  SKILL.md's 1-3 grain scale (default 2), and the explicit rewrite gesture
+  (#317). This op **reads and writes the authority**, which is the whole of
+  what makes it different:
 
   - `prepare` fetches `GET /api/sweep`, resolves the ref (no route accepts
     `HB-<seq>`; it is a client-side affordance over `Item.seq`) and puts
@@ -127,15 +128,29 @@ and is the reason this process holds an authority credential at all:
     that is not `done` -- naming the count and the remedy -- and a
     different `grain` does not change that. An item whose live steps are
     all `done` has no plan to protect, so a bare run appends after them,
-    the normal case. `apply` re-asserts the same guard after the model
-    runs, refusing only if a live undone step appeared that `prepare` did
-    not see; ticking or dropping a step in between only shrinks that set
-    and never aborts the write. This arm still has no `tick` and no
-    `drop-step` today -- that lands with `replace: true` (#317) -- so the
-    refresh rule's "decide what has been superseded" stays with the
-    interactive arm. The already-`done` steps ride in the prompt, labelled
-    `record`, so the model can *report* them in `note` and never
-    re-propose them.
+    the normal case.
+  - **`replace: true` is the explicit gesture that rewrites the plan
+    instead** (#317). `prepare` skips the decline and carries the live
+    unticked steps' ids forward as `knownUndoneIds`. `apply` diffs the
+    model's answer against those same steps by exact text: one the answer
+    repeats verbatim is *kept* at its existing id and moved to its new
+    position (`moveStep`); one absent from the answer is *dropped*
+    (`dropStep`); everything else is a `createStep`. Creates and moves
+    happen before any drop, so a write that fails partway leaves the old
+    plan live rather than truncated, and ticked steps are never part of the
+    diff -- their id, `done` state and position are untouched. The model
+    never sees the plan it may be replacing and never sees or emits a step
+    id, so a duplicated replace is not idempotent: it paraphrases what it
+    cannot see and writes the same count back under rotated ids.
+  - `apply` re-asserts `prepare`'s guard after the model runs, refusing only
+    if a live undone step is present whose id is not in `knownUndoneIds`
+    -- an id-aware check, not emptiness, since a replace's known set is
+    the very plan it is about to diff. Ticking or dropping a step in
+    between only shrinks that set and never aborts the write. The
+    already-`done` steps ride in the prompt, labelled `record`, so the
+    model can *report* them in `note` and never re-propose them -- on a
+    bare run or a replace alike, since the model never sees the unticked
+    steps either way.
   - The model is not the one holding the credential. It has no shell here
     for the same reason `next-up-hb`'s ranker runs out of process, and the
     writes are made by `authority.js` from the args the model answered
@@ -341,6 +356,14 @@ operator can close the provisioning gate #256's issue thread leaves open.
    HTTP request, however, re-invokes the model, and differently-worded
    steps are new ids and new rows. If run two adds rows, check whether the
    step text changed before calling it a defect.
+
+   To smoke-test a rewrite instead of an append, add `"replace":true` to
+   the same body once the item already has a live plan. Expect the
+   `note`-adjacent progress line naming written / kept / dropped counts,
+   and know the same non-idempotence applies one level further in: a
+   second identical `replace` is not a no-op either, since the model
+   cannot see the plan it is replacing and paraphrases it -- the count
+   stays the same, the ids and wording rotate.
 
 6. **Rotate the token** later by repeating step 2-3 with a fresh value,
    then updating whatever client holds it. `HB_API_TOKEN` rotates
