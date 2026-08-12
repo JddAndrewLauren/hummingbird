@@ -6,15 +6,18 @@
 > against it. `HB_API_TOKEN` is set (a device-scope token minted as id
 > `runner`), so `microtask` holds a **write** credential against the live
 > authority and every run of it mints real Step rows -- confirmed by writing,
-> then soft-deleting, 28 of them. One finding came out of that run and is
-> **open**: an identical repeat request appends a further phase of steps rather
-> than converging, because the model reads the existing checklist as work
-> already covered
-> ([#307](https://github.com/JddAndrewLauren/hummingbird/issues/307)) -- so the
-> op is idempotent at the write layer and *not* at the request layer, which is
-> the level a client retries at. Provisioning was and remains an operator gate:
-> #256 and #272 are build-only slices, the same posture #237's server deploy
-> used.
+> then soft-deleting, 28 of them. One finding came out of that run: an
+> identical repeat request appended a further phase of steps rather than
+> converging, because the model read the existing checklist as work already
+> covered
+> ([#307](https://github.com/JddAndrewLauren/hummingbird/issues/307)) -- the
+> op is idempotent at the write layer and *not* at the request layer, which
+> is the level a client retries at. **Fixed in code by
+> [#312](https://github.com/JddAndrewLauren/hummingbird/issues/312): a bare
+> run against a live plan is now declined before a model token is spent** --
+> pending redeploy, the same operator gate as the rest of this section.
+> Provisioning was and remains an operator gate: #256 and #272 are
+> build-only slices, the same posture #237's server deploy used.
 
 A fourth actor (#41 decided this, #256 builds it): a Fly app that takes
 `POST /run {skill, args}` and runs one Claude Code skill headlessly,
@@ -109,17 +112,30 @@ and is the reason this process holds an authority credential at all:
     line of its answer, at contiguous positions after the live maximum.
     **`ok:true` means the checklist landed, not that a model answered**: a
     failed write is an `ok:false` envelope like any other.
-  - Idempotence is structural. Each step's id is
+  - Idempotence is structural at the write layer, not the request layer
+    (#307). Each step's id is
     `sha256("hummingbird-skill/microtask/v1" + item + "/" + body)`, so a replay
-    lands on the authority's already-exists path (200, the stored row)
-    rather than minting a duplicate -- and `runner/src/step-id.js` is the
-    same recipe as the skill's own `hb.sh`, pinned against it by
-    `runner/test/step-id.test.js`, so the interactive and hosted arms
-    cannot mint two copies of one step between them.
-  - This arm **appends only**. It has no `tick` and no `drop-step`: the
-    refresh rule's "decide what has been superseded" is a reading of the
-    work, and it stays with the interactive arm. The already-`done` steps
-    ride in the prompt so the model can *report* them in `note`.
+    of the *identical* text lands on the authority's already-exists path
+    (200, the stored row) rather than minting a duplicate -- and
+    `runner/src/step-id.js` is the same recipe as the skill's own `hb.sh`,
+    pinned against it by `runner/test/step-id.test.js`, so the interactive
+    and hosted arms cannot mint two copies of one step between them. A
+    second, differently-worded request is not a replay, though: see #307
+    below.
+  - **A bare run never continues a live plan** (#307/#312). `prepare`
+    declines, before a model token is spent, if the item has any live step
+    that is not `done` -- naming the count and the remedy -- and a
+    different `grain` does not change that. An item whose live steps are
+    all `done` has no plan to protect, so a bare run appends after them,
+    the normal case. `apply` re-asserts the same guard after the model
+    runs, refusing only if a live undone step appeared that `prepare` did
+    not see; ticking or dropping a step in between only shrinks that set
+    and never aborts the write. This arm still has no `tick` and no
+    `drop-step` today -- that lands with `replace: true` (#317) -- so the
+    refresh rule's "decide what has been superseded" stays with the
+    interactive arm. The already-`done` steps ride in the prompt, labelled
+    `record`, so the model can *report* them in `note` and never
+    re-propose them.
   - The model is not the one holding the credential. It has no shell here
     for the same reason `next-up-hb`'s ranker runs out of process, and the
     writes are made by `authority.js` from the args the model answered

@@ -8,15 +8,33 @@ import { stepId } from "../src/step-id.js";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 const ITEM = { id: "11111111-2222-4333-8444-555555555555", seq: 42, title: "clear the garage" };
-const SWEEP = {
-  items: [ITEM, { id: "other", seq: 7, title: "something else" }],
-  steps: [
-    { id: "s-2", item_id: ITEM.id, body: "second", position: 2, done: false, deleted_at: null },
-    { id: "s-1", item_id: ITEM.id, body: "first", position: 1, done: true, deleted_at: null },
-    { id: "s-x", item_id: ITEM.id, body: "dropped", position: 3, deleted_at: 1000 },
-    { id: "s-o", item_id: "other", body: "not ours", position: 9, deleted_at: null },
-  ],
+
+// Every live step in the default fixture is already ticked -- no plan to
+// protect, so a bare run against it is the normal append case, not a
+// decline. `version` rides along because the CAS work (#308/#317) reads it
+// off the same rows.
+const DONE_1 = { id: "s-1", item_id: ITEM.id, body: "first", position: 1, done: true, version: 1, deleted_at: null };
+const DONE_2 = { id: "s-2", item_id: ITEM.id, body: "second", position: 2, done: true, version: 1, deleted_at: null };
+const DROPPED = {
+  id: "s-x",
+  item_id: ITEM.id,
+  body: "dropped",
+  position: 3,
+  done: false,
+  version: 1,
+  deleted_at: 1000,
 };
+const OTHER = { id: "s-o", item_id: "other", body: "not ours", position: 9, done: false, version: 1, deleted_at: null };
+
+function sweepFor(steps) {
+  return { items: [ITEM, { id: "other", seq: 7, title: "something else" }], steps };
+}
+
+const SWEEP = sweepFor([DONE_2, DONE_1, DROPPED, OTHER]);
+
+/** A live, unticked step -- the plan a bare run must decline to touch (#307). */
+const UNDONE = { id: "s-3", item_id: ITEM.id, body: "third", position: 3, done: false, version: 1, deleted_at: null };
+const SWEEP_WITH_LIVE_PLAN = sweepFor([DONE_1, DONE_2, UNDONE, DROPPED, OTHER]);
 
 /** An authority whose reads and writes are canned, and which records every write. */
 function fakeAuthority({ sweep = { ok: true, sweep: SWEEP }, createStep } = {}) {
@@ -127,6 +145,29 @@ test("prepare names an unknown ref rather than falling back to another item", as
   assert.match(prepared.error, /no item HB-999 in the sweep/);
 });
 
+/**
+ * The core of #307/#312: a bare run never continues a live plan. `prepare`
+ * declines before a model token is spent, naming the count and the remedy.
+ */
+test("prepare declines a bare run when the item has a live unticked step", async () => {
+  const prepared = await microtask.prepare(
+    { ref: "HB-42" },
+    { authority: fakeAuthority({ sweep: { ok: true, sweep: SWEEP_WITH_LIVE_PLAN } }), onProgress: noProgress },
+  );
+  assert.equal(prepared.ok, false);
+  assert.match(prepared.error, /1 unticked step/);
+  assert.match(prepared.error, /replace/);
+});
+
+test("a different grain is not consent to continue a live plan -- the decline is the same", async () => {
+  const prepared = await microtask.prepare(
+    { ref: "HB-42", grain: 3 },
+    { authority: fakeAuthority({ sweep: { ok: true, sweep: SWEEP_WITH_LIVE_PLAN } }), onProgress: noProgress },
+  );
+  assert.equal(prepared.ok, false);
+  assert.match(prepared.error, /1 unticked step/);
+});
+
 test("prepare passes an authority failure through in the authority's own words", async () => {
   const prepared = await microtask.prepare(
     { ref: "HB-42" },
@@ -147,6 +188,22 @@ test("buildPrompt invokes the slash command, names the runner arm, and carries t
   assert.match(prompt, /no shell/);
   assert.match(prompt, /do not run\s*\n?scripts\/hb\.sh/);
   assert.ok(prompt.includes(JSON.stringify({ item: ITEM, steps: [], grain: 2 })));
+});
+
+/**
+ * #307/#312: the ticked steps ride along as `record`, never as an implied
+ * continuation -- the exact framing that produced the doubling bug.
+ */
+test("buildPrompt labels the steps it carries as record, and never says the answer lands after them", () => {
+  const prompt = microtask.buildPrompt({ item: ITEM, steps: [DONE_1], grain: 2 });
+  assert.match(prompt, /record/);
+  assert.ok(!prompt.includes("at positions after the ones you were handed"));
+});
+
+test("buildPrompt drops any undone step rather than showing it to the model", () => {
+  const prompt = microtask.buildPrompt({ item: ITEM, steps: [DONE_1, UNDONE], grain: 2 });
+  assert.ok(prompt.includes(JSON.stringify({ item: ITEM, steps: [DONE_1], grain: 2 })));
+  assert.ok(!prompt.includes(UNDONE.body));
 });
 
 // --- apply ---------------------------------------------------------------
@@ -236,6 +293,58 @@ test("a failed write is an envelope error, and stops rather than grinding throug
   assert.equal(applied.ok, false);
   assert.match(applied.error, /answered 500/);
   assert.equal(authority.writes.length, 2);
+});
+
+/**
+ * `prepare` reads before the model runs and `apply` writes after it, with
+ * the model's whole runtime in between (#307's check-then-act). `apply`
+ * re-reads and refuses if a live undone step is present that `prepare` did
+ * not see -- prepare having reached here means it saw none, so anything
+ * undone found now is exactly an appearance.
+ */
+test("apply refuses when a live unticked step appeared after the read half ran", async () => {
+  const sweeps = [SWEEP, SWEEP_WITH_LIVE_PLAN];
+  const authority = {
+    sweep: async () => ({ ok: true, sweep: sweeps.shift() }),
+    createStep: async () => {
+      throw new Error("must not write once the guard should have refused");
+    },
+  };
+  const prepared = await microtask.prepare({ ref: "HB-42" }, { authority, onProgress: noProgress });
+  assert.equal(prepared.ok, true);
+
+  const applied = await microtask.apply(
+    { steps: ["new step"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+  assert.equal(applied.ok, false);
+  assert.match(applied.error, /1 unticked step/);
+});
+
+/**
+ * Ticking or dropping a step between the two reads only shrinks the live
+ * undone set -- it removes work, never doubles it -- so it must not abort a
+ * run whose model tokens are already spent (#307).
+ */
+test("apply proceeds when a step was ticked or dropped between the two reads", async () => {
+  const sweeps = [SWEEP, sweepFor([DONE_1, DROPPED, OTHER])]; // DONE_2 dropped mid-run
+  const writes = [];
+  const authority = {
+    sweep: async () => ({ ok: true, sweep: sweeps.shift() }),
+    createStep: async (step) => {
+      writes.push(step);
+      return { ok: true, created: true, step };
+    },
+  };
+  const prepared = await microtask.prepare({ ref: "HB-42" }, { authority, onProgress: noProgress });
+  assert.equal(prepared.ok, true);
+
+  const applied = await microtask.apply(
+    { steps: ["new step"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+  assert.equal(applied.ok, true);
+  assert.equal(writes.length, 1);
 });
 
 /** `ok:true` means the checklist landed, not that a model answered. */

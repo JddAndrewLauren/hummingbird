@@ -15,16 +15,19 @@ Vocabulary (Action, **Step**, Route, Fog) is in the root `CONTEXT.md`.
 **Interactive** (a session, with the operator's credential): you read and write through
 `scripts/hb.sh` yourself, and everything below applies as written.
 
-**Hosted runner** (#272's third op): the runner has already read the item and its live
-steps from the authority and put them in your prompt as JSON — you have **no shell** here,
-so do not run `hb.sh`, and asking for it wastes the run (`claude -p` is non-interactive, a
+**Hosted runner** (#272's third op; #307's decline): the runner has already read the
+item's live steps from the authority. A bare run only ever reaches you when every one of
+them is already `done` — an item with any live *unticked* step is declined by the runner
+itself, before you are called, naming the count and the remedy, and a different `grain`
+does not change that. So whatever steps ride in your prompt are `record`, not a plan to
+continue: report them in `note` and never re-propose them. You have **no shell** here, so
+do not run `hb.sh`, and asking for it wastes the run (`claude -p` is non-interactive, a
 `Bash` call cannot be prompted for and is simply denied). Answer against
-`schema.json` — `{steps, note}` — and the runner appends those lines to the same `steps`
-table, at positions after the ones you were handed, with the same deterministic ids. That
-arm **appends only**: it has no `tick` and no `drop-step`, so the refresh rule's
-superseded-step decision stays with the interactive arm and what you can do here is
-*report* what is already done, in `note`. It also cannot ask a question — say what you
-assumed instead.
+`schema.json` — `{steps, note}` — and the runner writes those lines as the plan, with the
+same deterministic ids. Rewriting a live plan on purpose is `replace: true` (#317), not
+yet built — today this arm still has no `tick` and no `drop-step`, so the refresh rule's
+superseded-step decision stays with the interactive arm. It also cannot ask a question —
+say what you assumed instead.
 
 Branch on which input you were handed: a prompt carrying the item and steps as JSON is the
 runner arm; anything else is the interactive one.

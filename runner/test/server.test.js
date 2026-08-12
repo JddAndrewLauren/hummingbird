@@ -377,6 +377,31 @@ test("with no authority configured, microtask declines before claude is spawned"
   });
 });
 
+/**
+ * #307/#312 end to end: a bare run against a live plan is declined by
+ * `prepare`, so the full pipeline never reaches `claude` at all.
+ */
+test("a bare microtask run against a live plan declines at HTTP 200 without spawning claude", async () => {
+  const authority = fakeAuthority();
+  authority.sweep = async () => ({
+    ok: true,
+    sweep: {
+      items: [ITEM],
+      steps: [{ id: "s-1", item_id: ITEM.id, body: "first", position: 1, done: false, deleted_at: null }],
+    },
+  });
+  await withRecordingServer({ authority }, async (base, calls) => {
+    const res = await post(base, { skill: "microtask", args: { ref: "HB-42" } });
+    assert.equal(res.status, 200);
+    const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+    const final = lines[lines.length - 1];
+    assert.equal(final.ok, false);
+    assert.equal(final.skill, "microtask");
+    assert.match(final.error, /1 unticked step/);
+    assert.equal(calls.length, 0);
+  });
+});
+
 test("400s a microtask request with no item reference, without spawning anything", async () => {
   await withRecordingServer({ authority: fakeAuthority() }, async (base, calls) => {
     const res = await post(base, { skill: "microtask", args: {} });
