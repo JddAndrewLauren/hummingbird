@@ -40,6 +40,12 @@ export const unconfiguredAuthority = {
   async createStep() {
     return { ok: false, error: NOT_CONFIGURED };
   },
+  async dropStep() {
+    return { ok: false, error: NOT_CONFIGURED };
+  },
+  async moveStep() {
+    return { ok: false, error: NOT_CONFIGURED };
+  },
 };
 
 /**
@@ -144,6 +150,70 @@ export function createAuthorityClient({ fetch, baseUrl, token, timeoutMs = REQUE
       const parsed = parse("POST", "/api/steps", raw);
       if (!parsed.ok) return parsed;
       return { ok: true, created: raw.status === 201, step: parsed.value };
+    },
+
+    /**
+     * `PATCH /api/steps/:id` with `{expected_version, deleted_at: now}` --
+     * a CAS soft-delete. Writes exactly this one field plus the CAS
+     * version, never anything else on the row.
+     *
+     * @param {{id: string, expectedVersion: number}} args
+     * @returns {Promise<{ok: true, step: unknown} | {ok: false, error: string}>}
+     */
+    async dropStep({ id, expectedVersion }) {
+      const path = `/api/steps/${id}`;
+      const raw = await request("PATCH", path, { expected_version: expectedVersion, deleted_at: Date.now() });
+      if (!raw.ok) return raw;
+      if (raw.status === 200) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        return { ok: true, step: parsed.value };
+      }
+      if (raw.status === 409) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        const current = parsed.value && parsed.value.current;
+        // Already-applied: the conflicting row is already soft-deleted, so
+        // this is the same outcome the caller wanted -- report success, not
+        // a failure. No retry beyond this one check (#307's narrowed rules).
+        if (current && current.deleted_at != null) {
+          return { ok: true, step: current };
+        }
+        return { ok: false, error: `PATCH ${path} conflict dropping step ${id}: current row is still live` };
+      }
+      return { ok: false, error: `PATCH ${path} answered ${raw.status} dropping step ${id}: ${raw.text.slice(0, 200)}` };
+    },
+
+    /**
+     * `PATCH /api/steps/:id` with `{expected_version, position}` -- a CAS
+     * move. Writes exactly this one field plus the CAS version, never
+     * anything else on the row.
+     *
+     * @param {{id: string, expectedVersion: number, position: number}} args
+     * @returns {Promise<{ok: true, step: unknown} | {ok: false, error: string}>}
+     */
+    async moveStep({ id, expectedVersion, position }) {
+      const path = `/api/steps/${id}`;
+      const raw = await request("PATCH", path, { expected_version: expectedVersion, position });
+      if (!raw.ok) return raw;
+      if (raw.status === 200) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        return { ok: true, step: parsed.value };
+      }
+      if (raw.status === 409) {
+        const parsed = parse("PATCH", path, raw);
+        if (!parsed.ok) return parsed;
+        const current = parsed.value && parsed.value.current;
+        // Already-applied: the conflicting row already sits at the wanted
+        // position, so this is the same outcome the caller wanted -- report
+        // success, not a failure. No retry beyond this one check.
+        if (current && current.position === position) {
+          return { ok: true, step: current };
+        }
+        return { ok: false, error: `PATCH ${path} conflict moving step ${id}: current position diverges` };
+      }
+      return { ok: false, error: `PATCH ${path} answered ${raw.status} moving step ${id}: ${raw.text.slice(0, 200)}` };
     },
   };
 }
