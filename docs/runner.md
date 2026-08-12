@@ -352,16 +352,18 @@ operator can close the provisioning gate #256's issue thread leaves open.
    Expect NDJSON progress ending in
    `{"ok":true,"skill":"microtask","result":{"steps":[...],"note":"..."}}`,
    and the steps themselves visible in the client (or in `GET /api/sweep`)
-   afterwards. **Re-running the identical request is the idempotence
-   check** -- but know what it does and does not guarantee before judging
-   the result. Writes are idempotent by `sha256(namespace + item + "/" +
-   body)`, so a retried write of the *same* answer mints nothing; a second
-   HTTP request, however, re-invokes the model, and differently-worded
-   steps are new ids and new rows. If run two adds rows, check whether the
-   step text changed before calling it a defect.
+   afterwards. **Re-running that identical request is the guard check, not
+   an idempotence check** (#307/#312): the item now carries a live unticked
+   plan, so the second run declines at `prepare` -- an `ok:false` envelope
+   naming the unticked count and the `replace: true` remedy, with no model
+   token spent and no rows added. A second run that *appends* is the #307
+   defect back, and is the thing to report. Write-level idempotence
+   (`sha256(namespace + item + "/" + body)`, so a retried write of the same
+   answer mints nothing) is not what this exercises and cannot be reached
+   from here -- the decline lands first.
 
-   To smoke-test a rewrite instead of an append, add `"replace":true` to
-   the same body once the item already has a live plan. Expect the
+   To smoke-test the rewrite the decline points at, add `"replace":true` to
+   that same second request. Expect the
    `note`-adjacent progress line naming written / kept / dropped counts,
    and know the same non-idempotence applies one level further in: a
    second identical `replace` is not a no-op either, since the model
