@@ -200,3 +200,86 @@ test("readOutcome refuses a non-object envelope", () => {
   assert.equal(outcome.ok, false);
   assert.match(outcome.error, /envelope/);
 });
+
+// --- the reported model (#273) -------------------------------------------
+
+/**
+ * Read defensively on purpose. This module's header records this repo being
+ * burned twice by believing something about the CLI's output shape, with
+ * green tests throughout both times -- so what these fixtures pin is not
+ * "the CLI emits `modelUsage`" but "if it does not, we degrade instead of
+ * lying". `docs/runner.md`'s runbook carries the live confirmation step.
+ */
+test("readOutcome names the model the CLI reported running", () => {
+  const outcome = readOutcome(
+    JSON.stringify({
+      is_error: false,
+      structured_output: { title: "t", notes: "" },
+      modelUsage: { "claude-opus-5": { inputTokens: 2, outputTokens: 423 } },
+    }),
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.model, "claude-opus-5");
+});
+
+test("an absent, empty or wrong-shaped modelUsage yields no reported model", () => {
+  for (const usage of [undefined, null, {}, [], "claude-opus-5", 42]) {
+    const outcome = readOutcome(
+      JSON.stringify({
+        is_error: false,
+        structured_output: { title: "t", notes: "" },
+        ...(usage === undefined ? {} : { modelUsage: usage }),
+      }),
+    );
+    assert.equal(outcome.ok, true, JSON.stringify(usage));
+    // Absent, never null: `stamp.js`'s chain then falls through to the
+    // requested or configured model rather than stamping `null`.
+    assert.equal("model" in outcome, false, JSON.stringify(usage));
+  }
+});
+
+/** An `is_error` run still spent tokens on a model worth naming. */
+test("the is_error path still reports its model", () => {
+  const outcome = readOutcome(
+    JSON.stringify({
+      is_error: true,
+      subtype: "error_during_execution",
+      result: "credit balance too low",
+      modelUsage: { "kimi-k3": {} },
+    }),
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.model, "kimi-k3");
+});
+
+test("a run that produced no structured output still reports its model", () => {
+  const outcome = readOutcome(
+    JSON.stringify({ is_error: false, result: "sure", modelUsage: { sonnet: {} } }),
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.model, "sonnet");
+});
+
+test("runSkill passes the requested model through to the argv", async () => {
+  let seenArgs;
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const promise = runSkill({
+    skillName: "microtask",
+    prompt: "/microtask",
+    schemaPath: "/app/schema.json",
+    spawn: (_command, args) => {
+      seenArgs = args;
+      return child;
+    },
+    onProgress: () => {},
+    readSchema: () => "{}",
+    model: "claude-opus-5",
+  });
+  child.stdout.emit("data", Buffer.from(cliEnvelope({ title: "t", notes: "" })));
+  child.emit("close", 0);
+  await promise;
+
+  assert.deepEqual(seenArgs.slice(-2), ["--model", "claude-opus-5"]);
+});

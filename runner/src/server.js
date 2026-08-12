@@ -4,7 +4,16 @@ import { parseRunRequest } from "./request.js";
 import { getSkill } from "./skills-registry.js";
 import { runSkill } from "./run-skill.js";
 import { unconfiguredAuthority } from "./authority.js";
+import { isValidModelId } from "./claude-cli.js";
+import { resolveModel } from "./stamp.js";
 import { progressLine, finalOkLine, finalErrorLine } from "./envelope.js";
+
+/**
+ * The stamp source when none is injected: no provider named, no configured
+ * model. Every terminal line still carries `backend`, so the client's
+ * classifier never has to special-case a half-stamped envelope.
+ */
+const UNCONFIGURED_STAMP = { backend: "unknown", configuredModel: null };
 
 const MAX_BODY_BYTES = 1_000_000; // 1MB -- a capture is text, never a payload this size
 const HEARTBEAT_INTERVAL_MS = 20_000; // well under Fly's 60s idle-connection kill
@@ -28,6 +37,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000; // well under Fly's 60s idle-connection ki
  * @param {(path: string) => string} [opts.readSchema] how a skill's schema file is read (see `run-skill.js`)
  * @param {(envelope: unknown) => Promise<{ok: true, ranked: unknown} | {ok: false, error: string}>} [opts.runRanker] the `next-up-rank` seam (see `rank-bin.js`); only skills declaring `prepare` use it
  * @param {typeof unconfiguredAuthority} [opts.authority] the app-owned authority client (see `authority.js`); only ops that read or write it use one, and the default names its own absence
+ * @param {{backend: string, configuredModel: string | null}} [opts.stamp] what the terminal line names as having produced the answer (#273) — computed from the environment in `main.js`, injected here rather than read inline like every other dependency
  */
 export function createServer({
   bearerToken,
@@ -38,6 +48,7 @@ export function createServer({
   readSchema,
   runRanker,
   authority = unconfiguredAuthority,
+  stamp = UNCONFIGURED_STAMP,
 }) {
   return createHttpServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/run") {
@@ -60,6 +71,7 @@ export function createServer({
           readSchema,
           runRanker,
           authority,
+          stamp,
         }),
       )
       .catch((err) => {
@@ -74,8 +86,10 @@ export function createServer({
           // resets the socket before it can read -- the same failure
           // `req.destroy()` had, measured. The drain in `readBody` is what
           // leaves the connection in a state worth keeping.
+          // No stamp: nothing was dispatched, so there is no backend and no
+          // model to name (`envelope.js`'s presence rule).
           res.writeHead(413, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: false, skill: null, error: err.message }));
+          res.end(finalErrorLine(null, err.message));
         } else {
           res.end();
         }
@@ -109,25 +123,41 @@ function readBody(req, maxBytes) {
   });
 }
 
-function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema, runRanker, authority }) {
+function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatIntervalMs, readSchema, runRanker, authority, stamp }) {
+  // Every pre-dispatch failure below is unstamped: nothing ran, so there is
+  // no backend and no model to name (`envelope.js`'s presence rule).
+  const reject400 = (skill, error) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(finalErrorLine(skill, error));
+  };
+
   const parsed = parseRunRequest(rawBody);
   if (!parsed.ok) {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: false, skill: null, error: parsed.error }));
+    reject400(null, parsed.error);
     return;
   }
 
   const skill = getSkill(parsed.skill);
   if (!skill) {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: false, skill: parsed.skill, error: `unknown skill: ${parsed.skill}` }));
+    reject400(parsed.skill, `unknown skill: ${parsed.skill}`);
     return;
   }
 
   const argsCheck = skill.validateArgs(parsed.args);
   if (!argsCheck.ok) {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: false, skill: skill.name, error: argsCheck.error }));
+    reject400(skill.name, argsCheck.error);
+    return;
+  }
+
+  // `model` is an argument of the *pipeline*, not of any one skill, so it is
+  // read and validated here — which is also what makes this a real boundary
+  // rather than a duplicate of `microtask`'s own check: no `validateArgs`
+  // rejects unknown keys, so without this gate a `model` on `parse-capture`
+  // or `next-up-hb` would reach argv unexamined. See `isValidModelId` for
+  // what "unexamined" would cost.
+  const requestedModel = parsed.args?.model;
+  if (requestedModel !== undefined && !isValidModelId(requestedModel)) {
+    reject400(skill.name, '"model" must be a model id when present');
     return;
   }
 
@@ -152,14 +182,26 @@ function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatInterval
     runRanker,
     authority,
     onProgress,
+    model: requestedModel,
   })
     .catch((err) => ({ ok: false, error: err.message }))
     .then((outcome) => {
       clearInterval(heartbeat);
+      // Past the dispatch, every terminal line is stamped — the run took a
+      // lane, and naming it is what lets the client render what produced
+      // the answer rather than a name it hardcoded.
+      const runStamp = {
+        backend: stamp.backend,
+        model: resolveModel({
+          reported: outcome.model,
+          requested: requestedModel,
+          configured: stamp.configuredModel,
+        }),
+      };
       if (outcome.ok) {
-        res.write(finalOkLine(skill.name, outcome.result));
+        res.write(finalOkLine(skill.name, outcome.result, runStamp));
       } else {
-        res.write(finalErrorLine(skill.name, outcome.error));
+        res.write(finalErrorLine(skill.name, outcome.error, runStamp));
       }
       res.end();
     });
@@ -184,12 +226,12 @@ function handleRun(rawBody, res, { repoRoot, spawn, claudeBin, heartbeatInterval
  *    envelope `error` like any other -- the run is not "ok" because a model
  *    answered, it is ok because the answer landed.
  *
- * @returns {Promise<{ok: true, result: unknown} | {ok: false, error: string}>}
+ * @returns {Promise<{ok: true, result: unknown, model?: string} | {ok: false, error: string, model?: string}>}
  */
 async function runPipeline(
   skill,
   args,
-  { repoRoot, spawn, claudeBin, readSchema, runRanker, authority, onProgress },
+  { repoRoot, spawn, claudeBin, readSchema, runRanker, authority, onProgress, model },
 ) {
   const prepared = skill.prepare
     ? await skill.prepare(args, { runRanker, authority, onProgress })
@@ -204,9 +246,18 @@ async function runPipeline(
     claudeBin,
     cwd: repoRoot,
     onProgress,
+    ...(model ? { model } : {}),
     ...(readSchema ? { readSchema } : {}),
   });
   if (!outcome.ok || !skill.apply) return outcome;
 
-  return skill.apply(outcome.result, { args: prepared.args, authority, onProgress });
+  // The reported model belongs to the run, not to the write — carry it
+  // across `apply` so a failed write still names what produced the answer
+  // it failed to land.
+  const applied = await skill.apply(outcome.result, {
+    args: prepared.args,
+    authority,
+    onProgress,
+  });
+  return outcome.model ? { ...applied, model: outcome.model } : applied;
 }

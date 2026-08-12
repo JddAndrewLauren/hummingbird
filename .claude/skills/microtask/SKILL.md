@@ -86,8 +86,10 @@ At grain 3, steps run well under the 2-minute floor — that's the point; the ~2
 guidance applies at grains 1–2. The trivial first step survives every grain.
 
 On the runner arm the invocation is
-`POST /run {skill: "microtask", args: {ref, grain?, replace?}}`, and `ref` is resolved
-before you are called — an unknown one never reaches you.
+`POST /run {skill: "microtask", args: {ref, grain?, replace?, model?}}`, and `ref` is
+resolved before you are called — an unknown one never reaches you. `model` picks which
+model runs you (#273); it never reaches your prompt, and the answer's schema is the same
+whichever one it names.
 
 ## Read first, ask at most once
 

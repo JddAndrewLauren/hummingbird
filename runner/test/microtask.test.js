@@ -117,6 +117,25 @@ test("validateArgs rejects a grain outside SKILL.md's 1-3 scale", () => {
   }
 });
 
+/**
+ * `model` is part of this op's args contract (#273) because the app's
+ * Rewrite gesture offers grain and model together. `server.js` gates it for
+ * every skill as well -- that gate is the security boundary; this is the
+ * contract.
+ */
+test("validateArgs accepts a model id, and rejects a flag-shaped one", () => {
+  assert.deepEqual(microtask.validateArgs({ ref: "HB-42", model: "claude-opus-5" }), { ok: true });
+  assert.deepEqual(
+    microtask.validateArgs({ ref: "HB-42", grain: 3, replace: true, model: "sonnet" }),
+    { ok: true },
+  );
+  for (const model of ["--dangerously-skip-permissions", "", "sonnet 4", 42, null]) {
+    const result = microtask.validateArgs({ ref: "HB-42", model });
+    assert.equal(result.ok, false, String(model));
+    assert.match(result.error, /"model"/, String(model));
+  }
+});
+
 // --- prepare -------------------------------------------------------------
 
 test("prepare resolves HB-<seq> off the sweep and carries the item's live steps in order", async () => {

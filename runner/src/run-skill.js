@@ -38,8 +38,9 @@ import { buildClaudeArgs } from "./claude-cli.js";
  * @param {(message: string) => void} opts.onProgress
  * @param {string} [opts.claudeBin]
  * @param {string} [opts.cwd] the directory whose `.claude/skills` the CLI reads
+ * @param {string} [opts.model] the request's `model` arg (#273), already validated
  * @param {(path: string) => string} [opts.readSchema]
- * @returns {Promise<{ok: true, result: unknown} | {ok: false, error: string}>}
+ * @returns {Promise<{ok: true, result: unknown, model?: string} | {ok: false, error: string, model?: string}>}
  */
 export function runSkill({
   skillName,
@@ -49,6 +50,7 @@ export function runSkill({
   onProgress,
   claudeBin = "claude",
   cwd,
+  model,
   readSchema = (path) => readFileSync(path, "utf8"),
 }) {
   return new Promise((resolve) => {
@@ -62,7 +64,11 @@ export function runSkill({
       return;
     }
 
-    const child = spawn(claudeBin, buildClaudeArgs(prompt, schemaText), ...(cwd ? [{ cwd }] : []));
+    const child = spawn(
+      claudeBin,
+      buildClaudeArgs(prompt, schemaText, model),
+      ...(cwd ? [{ cwd }] : []),
+    );
 
     let stdout = "";
     let stderr = "";
@@ -99,8 +105,12 @@ export function runSkill({
  * structured output at all -- is one direct test rather than a fake child
  * process.
  *
+ * Also where the envelope's **reported model** comes from (#273) — see
+ * [`reportedModel`]. It rides on both branches, because an `is_error` run
+ * still spent tokens on a model worth naming.
+ *
  * @param {string} stdout
- * @returns {{ok: true, result: unknown} | {ok: false, error: string}}
+ * @returns {{ok: true, result: unknown, model?: string} | {ok: false, error: string, model?: string}}
  */
 export function readOutcome(stdout) {
   let envelope;
@@ -114,18 +124,50 @@ export function readOutcome(stdout) {
     return { ok: false, error: "claude output was not the expected result envelope" };
   }
 
+  const model = reportedModel(envelope);
+
   if (envelope.is_error) {
     // `result` carries the CLI's own error prose on this branch.
     const detail = typeof envelope.result === "string" ? envelope.result : envelope.subtype;
-    return { ok: false, error: detail || "claude reported an error" };
+    return { ok: false, error: detail || "claude reported an error", ...(model ? { model } : {}) };
   }
 
   // A run that answered in prose rather than against the schema is a
   // failure here, not an empty success: the whole point of the per-skill
   // schema is that `result` conforms to it (#41 decision 4).
   if (envelope.structured_output === undefined || envelope.structured_output === null) {
-    return { ok: false, error: "claude returned no structured output" };
+    return {
+      ok: false,
+      error: "claude returned no structured output",
+      ...(model ? { model } : {}),
+    };
   }
 
-  return { ok: true, result: envelope.structured_output };
+  return { ok: true, result: envelope.structured_output, ...(model ? { model } : {}) };
+}
+
+/**
+ * Which model the CLI says it ran, read **defensively** (#273).
+ *
+ * This module's header records this repo being burned twice by believing
+ * something about the CLI's output shape — `--json-schema` taking a path,
+ * and `result` being the structured answer — with green tests throughout
+ * both times. So this read is written to degrade rather than lie: the
+ * plausible key is `modelUsage`, an object keyed by model id, and anything
+ * that is not a non-empty plain object yields `undefined`, which
+ * `stamp.js`'s precedence chain then answers from the requested or
+ * configured model instead of stamping `null`.
+ *
+ * `docs/runner.md`'s runbook carries the step that confirms this against a
+ * live run; until it is run, treat the reported half as unproven and the
+ * fallbacks as what is actually carrying the stamp.
+ *
+ * @param {Record<string, unknown>} envelope
+ * @returns {string | undefined}
+ */
+function reportedModel(envelope) {
+  const usage = envelope.modelUsage;
+  if (typeof usage !== "object" || usage === null || Array.isArray(usage)) return undefined;
+  const [first] = Object.keys(usage);
+  return first || undefined;
 }

@@ -36,3 +36,53 @@ test("finalErrorLine works with an unresolved skill name (e.g. unknown skill bef
   const parsed = JSON.parse(line);
   assert.deepEqual(parsed, { ok: false, skill: null, error: "unknown skill: bogus" });
 });
+
+// --- the backend/model stamp (#273) --------------------------------------
+
+/**
+ * The presence rule is the contract, and both halves of it matter: an
+ * unstamped line must omit the keys rather than send them as `null`, so a
+ * client can tell "nothing was attempted" from "we ran but could not name
+ * the model".
+ */
+test("an unstamped terminal line carries neither key", () => {
+  for (const line of [finalOkLine("microtask", {}), finalErrorLine("microtask", "boom")]) {
+    const parsed = JSON.parse(line);
+    assert.equal("backend" in parsed, false, line);
+    assert.equal("model" in parsed, false, line);
+  }
+});
+
+test("a stamped ok line carries the backend and the model", () => {
+  const parsed = JSON.parse(
+    finalOkLine("microtask", { steps: [] }, { backend: "anthropic", model: "claude-opus-5" }),
+  );
+  assert.deepEqual(parsed, {
+    ok: true,
+    skill: "microtask",
+    result: { steps: [] },
+    backend: "anthropic",
+    model: "claude-opus-5",
+  });
+});
+
+test("a stamped error line carries the backend, with the model possibly null", () => {
+  const parsed = JSON.parse(
+    finalErrorLine("microtask", "the item already has a plan", { backend: "anthropic", model: null }),
+  );
+  assert.deepEqual(parsed, {
+    ok: false,
+    skill: "microtask",
+    error: "the item already has a plan",
+    backend: "anthropic",
+    model: null,
+  });
+});
+
+/** An absent `model` on the stamp is `null` on the wire, never missing. */
+test("a stamp with no model still sends the key", () => {
+  const parsed = JSON.parse(finalOkLine("microtask", {}, { backend: "anthropic" }));
+  assert.equal(parsed.backend, "anthropic");
+  assert.equal(parsed.model, null);
+  assert.equal("model" in parsed, true);
+});
