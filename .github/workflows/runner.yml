@@ -88,8 +88,9 @@ jobs:
         run: node --test
 
       # `runner/scripts/` is operator-run bash that handles credentials, and
-      # nothing in this repo lints shell anywhere -- `skills.yml` gates
-      # `.claude/skills/*/scripts/*.sh` and watches nothing here. The suite
+      # each shell tree in this repo is linted by whichever workflow already
+      # watches its paths -- `skills.yml` gates `.claude/skills/*/scripts/*.sh`
+      # and `deploy.yml` gates the root `scripts/`; neither watches here. The suite
       # above does spawn `switch-provider.sh` against a stubbed flyctl, so its
       # behaviour is covered; this catches the quoting and expansion classes a
       # behavioural test cannot see. `-S style` because these are short scripts

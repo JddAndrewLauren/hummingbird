@@ -60,6 +60,19 @@ admin=${admin#"${admin%%[![:space:]]*}"}
 admin=${admin%"${admin##*[![:space:]]}"}
 [ -n "$admin" ] || { echo "$secretfile is empty" >&2; exit 2; }
 
+# The secret is handed to curl through a stdin config file below, whose format
+# is `header = "..."` with backslash escaping. A `"` or `\` in the secret would
+# be swallowed by that quoting and send a silently wrong credential -- which
+# arrives as a 401 that looks like a bad ADMIN_SECRET rather than a bad parse.
+# The authority mints hex, so this never fires; refuse rather than mis-send if
+# it ever does.
+case "$admin" in
+  *[\"\\]*)
+    echo "ADMIN_SECRET contains a quote or backslash, which this script cannot" >&2
+    echo "pass to curl without ambiguity. Re-mint it without those characters." >&2
+    exit 2 ;;
+esac
+
 # No `source` field. It is *required* for an ingest token and *forbidden* for
 # every other scope (handlers/admin_tokens.rs, per ADR-0008); sending one here
 # is a 400, not a harmless extra.
@@ -69,13 +82,19 @@ resp=$(mktemp)
 # shellcheck disable=SC2064  # expand $resp now: it must be removed even if reassigned
 trap "rm -f '$resp'" EXIT
 
+# The Authorization header goes in through `--config -` rather than `-H`, so
+# ADMIN_SECRET never appears in curl's argv where any local process could read
+# it out of `ps`. `printf` is a bash builtin, so the pipeline forks nothing that
+# carries the secret either, and nothing touches disk. This is what the header's
+# "an argv but flyctl's" claim rests on -- an `-H` here would quietly break it.
+#
 # One `-w` trailer on one line: two of them on two lines break on any empty
 # last field.
-code=$(curl -sS -o "$resp" -w '%{http_code}' \
-  -X POST "$API_BASE/api/admin/tokens" \
-  -H "Authorization: Bearer $admin" \
-  -H 'content-type: application/json' \
-  -d "$body")
+code=$(printf 'header = "Authorization: Bearer %s"\n' "$admin" \
+  | curl -sS -o "$resp" -w '%{http_code}' --config - \
+    -X POST "$API_BASE/api/admin/tokens" \
+    -H 'content-type: application/json' \
+    -d "$body")
 
 case "$code" in
   200|201) ;;
@@ -109,13 +128,16 @@ fi
 
 echo "minted a sweeper-scope token as id '$token_id'; staging HB_API_TOKEN"
 # `--stage`, unlike the runner's copy: see the header. Nothing applies until the
-# next deploy, which under #123's go-live order is the merge of PR #320.
+# next deploy of this app.
 "$FLY" secrets set --stage --config "$CONFIG" --app "$APP" "HB_API_TOKEN=$token"
 
 echo
 echo "staged. Nothing has changed on the running app yet, and the machine is"
-echo "still stopped: the next deploy applies this and starts supercronic."
+echo "still stopped. The next deploy applies this -- and leaves the machine"
+echo "stopped: a deploy updates a stopped machine in place and does not start"
+echo "it, so starting supercronic is always its own explicit act."
 echo "Remaining before that deploy: unset LINEAR_API_KEY (also --stage), set"
-echo "GOOGLE_REFRESH_TOKEN and GMAIL_HEALTHCHECK_URL, unpause both checks."
+echo "GOOGLE_REFRESH_TOKEN and GMAIL_HEALTHCHECK_URL. Unpause both checks"
+echo "before the machine start, not after -- see docs/sweeper.md step 7."
 echo "The authority cannot return this plaintext again; revoke it with"
 echo "DELETE /api/admin/tokens/$token_id."
