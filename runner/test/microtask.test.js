@@ -36,15 +36,31 @@ const SWEEP = sweepFor([DONE_2, DONE_1, DROPPED, OTHER]);
 const UNDONE = { id: "s-3", item_id: ITEM.id, body: "third", position: 3, done: false, version: 1, deleted_at: null };
 const SWEEP_WITH_LIVE_PLAN = sweepFor([DONE_1, DONE_2, UNDONE, DROPPED, OTHER]);
 
+/** A second unticked step -- a two-step live plan for the #317 diff tests. */
+const UNDONE_2 = { id: "s-4", item_id: ITEM.id, body: "fourth", position: 4, done: false, version: 1, deleted_at: null };
+const SWEEP_WITH_TWO_STEP_PLAN = sweepFor([DONE_1, DONE_2, UNDONE, UNDONE_2, DROPPED, OTHER]);
+
 /** An authority whose reads and writes are canned, and which records every write. */
-function fakeAuthority({ sweep = { ok: true, sweep: SWEEP }, createStep } = {}) {
+function fakeAuthority({ sweep = { ok: true, sweep: SWEEP }, createStep, dropStep, moveStep } = {}) {
   const writes = [];
+  const drops = [];
+  const moves = [];
   return {
     writes,
+    drops,
+    moves,
     sweep: async () => sweep,
     createStep: async (step) => {
       writes.push(step);
       return createStep ? createStep(step, writes.length) : { ok: true, created: true, step };
+    },
+    dropStep: async (args) => {
+      drops.push(args);
+      return dropStep ? dropStep(args, drops.length) : { ok: true, step: { id: args.id, deleted_at: Date.now() } };
+    },
+    moveStep: async (args) => {
+      moves.push(args);
+      return moveStep ? moveStep(args, moves.length) : { ok: true, step: { id: args.id, position: args.position } };
     },
   };
 }
@@ -168,6 +184,25 @@ test("a different grain is not consent to continue a live plan -- the decline is
   assert.match(prepared.error, /1 unticked step/);
 });
 
+/** #317: `replace: true` is the explicit gesture that is consent to touch a live plan. */
+test("replace: true does not decline a live plan, and carries its ids for apply's guard", async () => {
+  const prepared = await microtask.prepare(
+    { ref: "HB-42", replace: true },
+    { authority: fakeAuthority({ sweep: { ok: true, sweep: SWEEP_WITH_LIVE_PLAN } }), onProgress: noProgress },
+  );
+  assert.equal(prepared.ok, true);
+  assert.equal(prepared.args.replace, true);
+  assert.deepEqual(prepared.args.knownUndoneIds, [UNDONE.id]);
+});
+
+/** A bare run's known set is always empty -- there is nothing undone to know about. */
+test("a bare run's knownUndoneIds is empty", async () => {
+  const prepared = await microtask.prepare({ ref: "HB-42" }, { authority: fakeAuthority(), onProgress: noProgress });
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(prepared.args.knownUndoneIds, []);
+  assert.equal(prepared.args.replace, false);
+});
+
 test("prepare passes an authority failure through in the authority's own words", async () => {
   const prepared = await microtask.prepare(
     { ref: "HB-42" },
@@ -206,6 +241,25 @@ test("buildPrompt drops any undone step rather than showing it to the model", ()
   assert.ok(!prompt.includes(UNDONE.body));
 });
 
+/**
+ * #317: the model never sees an id, on a replace or otherwise --
+ * `knownUndoneIds` is `apply`'s own guard state and must never reach the
+ * prompt, and the undone steps it names are the plan being replaced, which
+ * the model must not see either.
+ */
+test("buildPrompt never leaks knownUndoneIds or the replace flag to the model", () => {
+  const prompt = microtask.buildPrompt({
+    item: ITEM,
+    steps: [DONE_1, UNDONE],
+    grain: 2,
+    replace: true,
+    knownUndoneIds: [UNDONE.id],
+  });
+  assert.ok(!prompt.includes("knownUndoneIds"));
+  assert.ok(!prompt.includes(UNDONE.id));
+  assert.ok(!prompt.includes(UNDONE.body));
+});
+
 // --- apply ---------------------------------------------------------------
 
 test("apply appends each step at a contiguous position after the live maximum", async () => {
@@ -237,7 +291,11 @@ test("apply appends each step at a contiguous position after the live maximum", 
 });
 
 test("apply starts at position 1 for an item with no steps yet", async () => {
-  const authority = fakeAuthority();
+  // basePosition is read fresh off the item's `done` steps at apply time
+  // (#317), not off `prepare`'s snapshot, so the fixture here has to
+  // actually carry none for this item -- unlike the default fixture, which
+  // has DONE_1/DONE_2 against ITEM.
+  const authority = fakeAuthority({ sweep: { ok: true, sweep: sweepFor([]) } });
   await microtask.apply(
     { steps: ["only step"], note: "" },
     { args: { item: ITEM, steps: [], grain: 2 }, authority, onProgress: noProgress },
@@ -278,7 +336,11 @@ test("apply reports what it wrote on the progress stream, replays included", asy
       onProgress: (message) => messages.push(message),
     },
   );
-  assert.deepEqual(messages, ["wrote step 1/2", "wrote step 2/2", "1 step written, 1 already existed"]);
+  assert.deepEqual(messages, [
+    "wrote step 1/2",
+    "wrote step 2/2",
+    "1 step written, 1 already existed, 0 kept, 0 dropped",
+  ]);
 });
 
 test("a failed write is an envelope error, and stops rather than grinding through the rest", async () => {
@@ -360,4 +422,141 @@ test("a result with no usable steps is a named failure, not a zero-write success
     assert.match(applied.error, /no steps/);
   }
   assert.equal(authority.writes.length, 0);
+});
+
+// --- replace: true rewrites the plan (#317) -------------------------------
+
+/**
+ * The core of #317: an unticked step whose text the answer repeats is kept
+ * at its existing id and moved to its new position; one absent from the
+ * answer is soft-deleted; the rest are created. Final live order is the
+ * ticked steps, then the answer in the model's own order.
+ */
+test("replace rewrites the plan: kept steps move, absent ones drop, new ones create", async () => {
+  const authority = fakeAuthority({ sweep: { ok: true, sweep: SWEEP_WITH_TWO_STEP_PLAN } });
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+  assert.equal(prepared.ok, true);
+
+  const applied = await microtask.apply(
+    { steps: ["fourth", "new one"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+
+  assert.equal(applied.ok, true);
+  // "third" (UNDONE) is absent from the answer -- dropped.
+  assert.deepEqual(authority.drops, [{ id: UNDONE.id, expectedVersion: UNDONE.version }]);
+  // "fourth" (UNDONE_2) is repeated verbatim -- kept at its own id, moved to
+  // its new position (right after the done steps, where the answer put it).
+  assert.deepEqual(authority.moves, [{ id: UNDONE_2.id, expectedVersion: UNDONE_2.version, position: 3 }]);
+  // "new one" has no live match -- created, at the position after "fourth".
+  assert.deepEqual(authority.writes, [
+    { id: stepId(ITEM.id, "new one"), item_id: ITEM.id, body: "new one", position: 4 },
+  ]);
+});
+
+test("a kept step whose text repeats verbatim issues no create and no drop for it", async () => {
+  const sweep = sweepFor([DONE_1, DONE_2, UNDONE_2, DROPPED, OTHER]);
+  const authority = fakeAuthority({ sweep: { ok: true, sweep: sweep } });
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+  assert.equal(prepared.ok, true);
+
+  const applied = await microtask.apply(
+    { steps: ["fourth"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+
+  assert.equal(applied.ok, true);
+  assert.equal(authority.writes.length, 0);
+  assert.equal(authority.drops.length, 0);
+  // Already at basePosition (3) with a single done step... but this fixture
+  // has two done steps, so basePosition is 3 and UNDONE_2 already sits at
+  // position 4, so it does move once, to the position the answer implies.
+  assert.deepEqual(authority.moves, [{ id: UNDONE_2.id, expectedVersion: UNDONE_2.version, position: 3 }]);
+});
+
+test("a replace never touches a ticked step's id, done state or position", async () => {
+  const authority = fakeAuthority({ sweep: { ok: true, sweep: SWEEP_WITH_TWO_STEP_PLAN } });
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+
+  await microtask.apply(
+    { steps: ["fourth", "new one"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+
+  for (const doneId of [DONE_1.id, DONE_2.id]) {
+    assert.ok(!authority.writes.some((step) => step.id === doneId));
+    assert.ok(!authority.drops.some((drop) => drop.id === doneId));
+    assert.ok(!authority.moves.some((move) => move.id === doneId));
+  }
+});
+
+/**
+ * #307 decision 4, narrowed for #317: creates and moves happen before any
+ * drop, so a failure mid-run leaves the old plan live rather than
+ * truncated. Proven here by a drop that fails after a create has already
+ * landed -- the create is not undone.
+ */
+test("creates and moves are attempted before any drop, and a drop failure stops the run without undoing them", async () => {
+  const authority = fakeAuthority({
+    sweep: { ok: true, sweep: SWEEP_WITH_TWO_STEP_PLAN },
+    dropStep: () => ({ ok: false, error: "PATCH /api/steps/s-3 answered 500" }),
+  });
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+
+  const applied = await microtask.apply(
+    { steps: ["fourth", "new one"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+
+  assert.equal(applied.ok, false);
+  assert.match(applied.error, /answered 500/);
+  // The create and the move both landed before the drop was even attempted.
+  assert.equal(authority.writes.length, 1);
+  assert.equal(authority.moves.length, 1);
+  assert.equal(authority.drops.length, 1);
+});
+
+/**
+ * #307 decision 6, narrowed for #317: the guard is id-aware, not emptiness.
+ * A replace's known set is non-empty by design (the plan it is about to
+ * diff), so only a step whose id `prepare` did not see -- a genuine
+ * appearance -- must still refuse the write.
+ */
+test("a replace still refuses when an unticked step appeared since the read half, with a non-empty known set", async () => {
+  const sweeps = [SWEEP_WITH_LIVE_PLAN, SWEEP_WITH_TWO_STEP_PLAN]; // UNDONE_2 appeared mid-run
+  const authority = {
+    sweep: async () => ({ ok: true, sweep: sweeps.shift() }),
+    createStep: async () => {
+      throw new Error("must not write once the guard should have refused");
+    },
+    dropStep: async () => {
+      throw new Error("must not write once the guard should have refused");
+    },
+    moveStep: async () => {
+      throw new Error("must not write once the guard should have refused");
+    },
+  };
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(prepared.args.knownUndoneIds, [UNDONE.id]);
+
+  const applied = await microtask.apply(
+    { steps: ["third"], note: "" },
+    { args: prepared.args, authority, onProgress: noProgress },
+  );
+  assert.equal(applied.ok, false);
+  assert.match(applied.error, /1 unticked step/);
+});
+
+test("the progress stream reports written, kept and dropped counts", async () => {
+  const messages = [];
+  const authority = fakeAuthority({ sweep: { ok: true, sweep: SWEEP_WITH_TWO_STEP_PLAN } });
+  const prepared = await microtask.prepare({ ref: "HB-42", replace: true }, { authority, onProgress: noProgress });
+
+  await microtask.apply(
+    { steps: ["fourth", "new one"], note: "" },
+    { args: prepared.args, authority, onProgress: (message) => messages.push(message) },
+  );
+
+  assert.equal(messages.at(-1), "1 step written, 0 already existed, 1 kept, 1 dropped");
 });

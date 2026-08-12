@@ -5,10 +5,10 @@
  * **Why this exists at all**, when the other two ops are deliberately
  * context-blind: `microtask` writes. Its checklist has to land in the owned
  * `steps` table against a real item (#272), so this arm reads the item from
- * the authority and appends its steps there -- the same two routes
- * `.claude/skills/microtask/scripts/hb.sh` uses on the interactive arm, with
- * the same idempotency, driven from here rather than from a shell the
- * hosted model does not have (`rank-bin.js` records why it never will).
+ * the authority and creates, moves and drops its steps there -- the same
+ * routes `.claude/skills/microtask/scripts/hb.sh` uses on the interactive
+ * arm, with the same idempotency, driven from here rather than from a shell
+ * the hosted model does not have (`rank-bin.js` records why it never will).
  *
  * The token is a `device`-scope token read from server-side configuration
  * (`main.js`), never from a request. Per CLAUDE.md's credential blast
@@ -162,7 +162,7 @@ export function createAuthorityClient({ fetch, baseUrl, token, timeoutMs = REQUE
      * @returns {Promise<{ok: true, step: unknown} | {ok: false, error: string}>}
      */
     async dropStep({ id, expectedVersion }) {
-      const path = `/api/steps/${id}`;
+      const path = `/api/steps/${encodeURIComponent(id)}`;
       const raw = await request("PATCH", path, { expected_version: expectedVersion, deleted_at: Date.now() });
       if (!raw.ok) return raw;
       if (raw.status === 200) {
@@ -194,7 +194,7 @@ export function createAuthorityClient({ fetch, baseUrl, token, timeoutMs = REQUE
      * @returns {Promise<{ok: true, step: unknown} | {ok: false, error: string}>}
      */
     async moveStep({ id, expectedVersion, position }) {
-      const path = `/api/steps/${id}`;
+      const path = `/api/steps/${encodeURIComponent(id)}`;
       const raw = await request("PATCH", path, { expected_version: expectedVersion, position });
       if (!raw.ok) return raw;
       if (raw.status === 200) {

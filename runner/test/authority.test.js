@@ -200,6 +200,18 @@ test("a non-2xx, non-409 dropStep answer is a named outcome, not a throw", async
   assert.match(write.error, /answered 500/);
 });
 
+/**
+ * #317 feeds ids from the sweep rather than from a caller who only ever
+ * typed a hex uuid, so the path is encoded rather than trusted -- a step id
+ * containing a `/` must not be read by the authority as a second path
+ * segment.
+ */
+test("dropStep encodes the step id into the path", async () => {
+  const fetch = fakeFetch({ status: 200, body: '{"id":"s/1","deleted_at":1000,"version":2}' });
+  await client(fetch).dropStep({ id: "s/1", expectedVersion: 1 });
+  assert.equal(fetch.calls[0].url, "https://hb.example/api/steps/s%2F1");
+});
+
 test("moveStep PATCHes position and expected_version under CAS, and nothing else", async () => {
   const fetch = fakeFetch({ status: 200, body: '{"id":"s-1","position":3,"version":8}' });
   const write = await client(fetch).moveStep({ id: "s-1", expectedVersion: 7, position: 3 });
@@ -219,6 +231,12 @@ test("moveStep's 409 is success, not a failure, when the current row already sit
   const write = await client(fetch).moveStep({ id: "s-1", expectedVersion: 7, position: 3 });
   assert.equal(write.ok, true);
   assert.deepEqual(write.step, { id: "s-1", position: 3, version: 9 });
+});
+
+test("moveStep encodes the step id into the path", async () => {
+  const fetch = fakeFetch({ status: 200, body: '{"id":"s/1","position":3,"version":2}' });
+  await client(fetch).moveStep({ id: "s/1", expectedVersion: 1, position: 3 });
+  assert.equal(fetch.calls[0].url, "https://hb.example/api/steps/s%2F1");
 });
 
 test("moveStep's 409 is a named failure naming the step, with no retry, when the current position diverges", async () => {
