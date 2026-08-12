@@ -20,7 +20,15 @@ not `healthchecks`), so the namespace bump is always available as the
 sanctioned way to change a `source_key` recipe; and an alert is **live**
 when `dismissed_at IS NULL OR raised_at > dismissed_at`, which is what lets
 a state source ring again after an ack without a machine ever writing the
-human-owned column.
+human-owned column. · **amended 2026-08-10 by
+[ADR-0015](0015-the-standing-question-read-contract.md):**
+`context_snapshots.payload` gains a common envelope (`schema`,
+`polled_every_ms`, `body`) — enveloped outside, source-shaped inside; and
+`alerts` gains `subject_key`, `SCHEMA_VERSION` 3 → 4.
+**Amendments to this ADR follow [the pointer convention](README.md):** what
+a later ADR changed is written in *that* ADR, and named here only. The
+dated notes in the body below are the convention's exception — amendments
+no other ADR owns.
 **Context:** the authority-move grilling of 2026-08-08. Companion to
 [ADR-0008](0008-the-authority-is-an-app-owned-server.md); amends
 [ADR-0002](0002-sources-join-by-role-urgency-computed-at-read-time.md)'s
@@ -186,6 +194,11 @@ CREATE INDEX idx_steps_item    ON steps(item_id);
 CREATE INDEX idx_items_project ON items(project_id);
 ```
 
+*This DDL is the schema as accepted, not the current schema: later ADRs add
+to it and their DDL stays with them — see the amendment pointers in the
+Status header (and the `items.agent` amendment at the foot of this file).
+`server/authority/src/schema.rs` is what actually runs.*
+
 ### What dissolved from the S1 model, deliberately
 
 S1 (#94) was built against Linear's shape. Under the owned schema:
@@ -208,6 +221,12 @@ who can hold the credential and how the data moves:
 | Context, device-polled | client core, per-device OAuth (ADR-0005) | Google Calendar, M365 | replaced in the device mirror |
 | Context, server-polled | DO cron + static keys as Worker secrets | Anthropic/OpenAI usage, GitHub repo stats, photo-site analytics, race schedules, the city waste-collection page | `context_snapshots` row replaced wholesale |
 | Context, pushed | webhooks at `/api/alerts`, `ingest`-scoped tokens; or a sweeper adapter for pull-only sources | infra checks (auto-resolve), Home Assistant (dismiss/expire), Gmail `hummingbird/alert` label (dismiss), GitHub events, photo-site events | `alerts` upsert on `(source, source_key)`; leaves view by resolve / dismiss / expiry |
+
+*Four lanes as accepted; there are five. A later ADR that adds a lane keeps
+the row — see the Status header, and
+[ADR-0011](0011-context-ingestion-moves-server-side.md) for the fifth,
+**Context, evaluated stream** (mail and calendar events judged in-poll,
+only matches persisting).*
 
 Rules that hold across every lane:
 
