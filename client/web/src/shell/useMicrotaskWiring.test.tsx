@@ -40,20 +40,35 @@ function Harness({
   worker,
   fetchImpl,
   store,
+  selectedItemId = "item-1",
 }: {
   worker: WorkerLike;
   fetchImpl: typeof globalThis.fetch;
   store: TaskTokenStoreLike;
+  selectedItemId?: string;
 }) {
-  const { run, onRun } = useMicrotaskWiring(worker, "item-1", {
+  const { run, onRun } = useMicrotaskWiring(worker, selectedItemId, {
     fetch: fetchImpl,
     tokenStore: store,
   });
   return (
-    <button type="button" onClick={() => onRun({ itemId: "item-1" })}>
-      {run.phase}
-    </button>
+    <>
+      <span data-testid="phase">{run.phase}</span>
+      {["item-1", "item-2"].map((itemId) => (
+        <button key={itemId} type="button" aria-label={itemId} onClick={() => onRun({ itemId })}>
+          run
+        </button>
+      ))}
+    </>
   );
+}
+
+function phase(): string {
+  return screen.getByTestId("phase").textContent ?? "";
+}
+
+function tap(itemId = "item-1"): void {
+  fireEvent.click(screen.getByLabelText(itemId));
 }
 
 async function settle(): Promise<void> {
@@ -78,12 +93,12 @@ describe("useMicrotaskWiring", () => {
     );
     render(<Harness worker={worker} fetchImpl={fetchImpl as never} store={tokenStore()} />);
 
-    fireEvent.click(screen.getByRole("button"));
+    tap();
     await settle();
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/skills/run");
-    expect(screen.getByRole("button").textContent).toBe("done");
+    expect(phase()).toBe("done");
     expect(manualSyncCount(worker)).toBe(1);
   });
 
@@ -96,10 +111,10 @@ describe("useMicrotaskWiring", () => {
     );
     render(<Harness worker={worker} fetchImpl={fetchImpl as never} store={tokenStore()} />);
 
-    fireEvent.click(screen.getByRole("button"));
+    tap();
     await settle();
 
-    expect(screen.getByRole("button").textContent).toBe("declined");
+    expect(phase()).toBe("declined");
     expect(manualSyncCount(worker)).toBe(0);
   });
 
@@ -122,11 +137,11 @@ describe("useMicrotaskWiring", () => {
     });
     render(<Harness worker={worker} fetchImpl={fetchImpl as never} store={tokenStore()} />);
 
-    fireEvent.click(screen.getByRole("button"));
+    tap();
     await settle();
-    expect(screen.getByRole("button").textContent).toBe("running");
+    expect(phase()).toBe("running");
 
-    fireEvent.click(screen.getByRole("button"));
+    tap();
     await settle();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
 
@@ -140,11 +155,11 @@ describe("useMicrotaskWiring", () => {
     const fetchImpl = vi.fn();
     render(<Harness worker={worker} fetchImpl={fetchImpl as never} store={tokenStore(null)} />);
 
-    fireEvent.click(screen.getByRole("button"));
+    tap();
     await settle();
 
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(screen.getByRole("button").textContent).toBe("declined");
+    expect(phase()).toBe("declined");
     expect(manualSyncCount(worker)).toBe(0);
   });
 
@@ -159,10 +174,76 @@ describe("useMicrotaskWiring", () => {
     });
     render(<Harness worker={worker} fetchImpl={fetchImpl as never} store={tokenStore()} />);
 
-    fireEvent.click(screen.getByRole("button"));
+    tap();
     await settle();
 
-    expect(screen.getByRole("button").textContent).toBe("declined");
+    expect(phase()).toBe("declined");
     expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The regression this exists for: with one `AbortController` for the whole
+   * hook, starting a run on item-2 aborted item-1's, and item-1 was left
+   * reading "The run ended without an answer." — a lie, since the runner
+   * writes to the authority and item-1's checklist was very likely landing
+   * while the app said it had not. Runs on different items are independent.
+   */
+  it("a run on one item does not abort a run on another", async () => {
+    const worker = fakeWorker();
+    const releases = new Map<string, () => void>();
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const ref = JSON.parse(String(init?.body)).args.ref as string;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode('{"type":"progress","message":"reading"}\n'));
+          // A real `fetch` errors the body stream when its signal aborts.
+          // Honouring that here is what makes this test able to fail: a
+          // fake that ignores the signal would pass whether or not the
+          // controllers are per-item.
+          init?.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("The operation was aborted.", "AbortError"));
+          });
+          releases.set(ref, () => {
+            controller.enqueue(
+              encoder.encode('{"ok":true,"result":null,"backend":"anthropic","model":null}\n'),
+            );
+            controller.close();
+          });
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} store={tokenStore()} />,
+    );
+
+    tap("item-1");
+    await settle();
+    tap("item-2");
+    await settle();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    // item-1's stream is still open — the second run did not tear it down.
+    releases.get("item-1")?.();
+    await settle();
+    expect(phase()).toBe("done");
+
+    // ...and item-2's is its own, still running until released.
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selectedItemId="item-2"
+      />,
+    );
+    expect(phase()).toBe("running");
+
+    releases.get("item-2")?.();
+    await settle();
+    expect(phase()).toBe("done");
+    // One cycle per completed run, neither lost to the other's abort.
+    expect(manualSyncCount(worker)).toBe(2);
   });
 });

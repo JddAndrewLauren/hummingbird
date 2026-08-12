@@ -63,28 +63,41 @@ export function useMicrotaskWiring(
   deps: MicrotaskWiringDeps = {},
 ): MicrotaskWiring {
   const [runs, setRuns] = useState<Record<string, SkillRunState>>({});
-  const abortRef = useRef<AbortController | null>(null);
-  // The in-flight lock, in a ref rather than read off `runs`: two clicks in
-  // one React batch would both see the same pre-render `runs` and both
-  // start. The reducer's own duplicate-tap rule and the button's `disabled`
-  // are the other two expressions of the same thing; this is the one that
-  // holds between a click and the render it causes.
-  const inFlight = useRef<Set<string>>(new Set());
+  // **One controller per item**, not one for the hook. A single shared
+  // controller would make starting a run on item B abort item A's — and A
+  // would then be left reading "The run ended without an answer.", which is
+  // a lie: the runner writes to the authority, so A's checklist is very
+  // likely landing while the app says it did not. Runs on different items
+  // are independent, and the map is what says so.
+  //
+  // This doubles as the in-flight lock, which has to be a ref rather than a
+  // read off `runs`: two clicks in one React batch would both see the same
+  // pre-render state and both start. The reducer's own duplicate-tap rule
+  // and the button's `disabled` are the other two expressions of the same
+  // thing; this is the one that holds between a click and the render it
+  // causes.
+  const inFlight = useRef<Map<string, AbortController>>(new Map());
 
-  // Abort whatever is in flight when the view goes away. Not a timeout and
-  // not a retry: the run simply stops being narrated, and the runner's own
-  // write still lands.
-  useEffect(() => () => abortRef.current?.abort(), []);
+  // Abort every live run when the view goes away. Not a timeout and not a
+  // retry: the runs simply stop being narrated, and the runner's own writes
+  // still land.
+  // The map is read inside the effect body rather than during render: this
+  // repo's lint config forbids touching a ref while rendering
+  // (`react-hooks/refs`), and an effect is not a render.
+  useEffect(() => {
+    const running = inFlight.current;
+    return () => {
+      for (const controller of running.values()) controller.abort();
+      running.clear();
+    };
+  }, []);
 
   const onRun = useCallback(
     (request: MicrotaskRunRequest) => {
       const itemId = request.itemId;
       if (inFlight.current.has(itemId)) return;
-      inFlight.current.add(itemId);
-
       const controller = new AbortController();
-      abortRef.current?.abort();
-      abortRef.current = controller;
+      inFlight.current.set(itemId, controller);
 
       const runDeps: RunSkillDeps = {
         fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),

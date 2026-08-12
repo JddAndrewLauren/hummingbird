@@ -140,11 +140,19 @@ describe("runSkill", () => {
     expect((events.at(-1) as { error: string }).error).toContain("Failed to fetch");
   });
 
+  /** Both spellings of "no credential": `null` from a store that holds
+   * nothing, and `""` from one holding an empty record. Issuing the request
+   * anyway would spend a round trip to be told what is already known here. */
   it("with no token stored it declines and never calls fetch", async () => {
-    const fetchSpy = vi.fn();
-    const events = await collect({ fetch: fetchSpy as never, readToken: async () => null });
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(events).toEqual([{ kind: "started" }, { kind: "failed", error: NO_TOKEN, backend: null, model: null }]);
+    for (const token of [null, ""]) {
+      const fetchSpy = vi.fn();
+      const events = await collect({ fetch: fetchSpy as never, readToken: async () => token });
+      expect(fetchSpy, String(token)).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        { kind: "started" },
+        { kind: "failed", error: NO_TOKEN, backend: null, model: null },
+      ]);
+    }
   });
 
   it("sends the token as a bearer, and never puts it in a message", async () => {

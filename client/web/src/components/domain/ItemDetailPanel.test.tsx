@@ -83,6 +83,38 @@ describe("the affordance follows the item's own steps", () => {
     panel({ microtask: false });
     expect(screen.queryByRole("button", { name: /break into steps/i })).toBeNull();
   });
+
+  /**
+   * The whole shape of the feature in one test: the gesture is a function of
+   * the steps the normal read path delivered, so when a run's checklist
+   * lands at the next sync cycle the affordance flips on its own. Nothing
+   * re-decides it, and no run state is consulted.
+   */
+  it("flips from Break to Rewrite when the run's steps arrive through the read path", () => {
+    const onRun = vi.fn();
+    const { rerender } = render(
+      <ItemDetailPanel
+        item={itemDTO({ id: "item-1" })}
+        steps={[]}
+        onClose={() => {}}
+        microtask={{ run: IDLE, onRun }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /break into steps/i })).toBeTruthy();
+
+    rerender(
+      <ItemDetailPanel
+        item={itemDTO({ id: "item-1" })}
+        steps={[stepDTO({ id: "a" }), stepDTO({ id: "b" }), stepDTO({ id: "c", done: true })]}
+        onClose={() => {}}
+        microtask={{ run: IDLE, onRun }}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /break into steps/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Rewrite 2 steps" })).toBeTruthy();
+    // And the grain select only exists on the rewrite side.
+    expect(screen.getByLabelText("Grain")).toBeTruthy();
+  });
 });
 
 describe("an in-flight run", () => {
