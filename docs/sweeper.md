@@ -441,9 +441,23 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    labelled message appears in the authority's Triage with the subject as title
    and the sender/date/thread-link description, and only the
    `hummingbird/capture` label disappears from it — still unarchived, still
-   unread-state-untouched. Then re-run the sweep immediately and confirm it
-   creates nothing new: the frozen namespaces still hold across the authority
-   change.
+   unread-state-untouched.
+
+   Then check the replay guard — but note that **a bare re-run cannot check
+   it**, and reads like a pass while checking nothing. The ack removed the
+   label, `gmail_list_message_ids` enumerates strictly by `labelIds`, and so a
+   sweep run straight after a successful one logs `carries 0 message(s)` and
+   finishes `created=0 existed=0` having made no authority call at all. Google
+   Tasks has the same shape once its lane is drained. What the guard needs is
+   something to enumerate: re-apply `hummingbird/capture` to a message the
+   sweep just acked, give Gmail's index a minute or two — `messages.list`
+   trails a label mutation — and sweep again. The pass condition is
+   **`existed=1`**, the authority answering the replayed id with 200 and the
+   stored row, alongside `created=0`, an unchanged `version` on that item, and
+   the label acked off a second time. `created=1` and a second item for the
+   same message means the frozen namespace did not survive whatever changed
+   underneath it; that is the failure this step exists to catch, and the only
+   one that matters here.
 
 ## Acceptance (post-provisioning)
 
