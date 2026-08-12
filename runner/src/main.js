@@ -4,6 +4,7 @@ import path from "node:path";
 import { createServer } from "./server.js";
 import { createRankRunner } from "./rank-bin.js";
 import { createAuthorityClient } from "./authority.js";
+import { resolveBackend } from "./stamp.js";
 
 const RUNNER_BEARER_TOKEN = process.env.RUNNER_BEARER_TOKEN;
 if (!RUNNER_BEARER_TOKEN) {
@@ -43,6 +44,19 @@ if (!HB_API_TOKEN) {
   console.error("HB_API_TOKEN is not set -- the microtask op will decline; every other op is unaffected.");
 }
 
+// What the terminal envelope names as having produced the answer (#273).
+// Read here, once, like every other environment fact -- `server.js` takes
+// it injected rather than reaching for `process.env` inline.
+//
+// `ANTHROPIC_MODEL` is deliberately allowed to be absent: it is set only on
+// the third-party provider path (`switch-provider.sh`), so on the ordinary
+// first-party deployment the model on the stamp comes from what the CLI
+// reported or what the request asked for. See `stamp.js`.
+const STAMP = {
+  backend: resolveBackend(process.env),
+  configuredModel: process.env.ANTHROPIC_MODEL ?? null,
+};
+
 const server = createServer({
   bearerToken: RUNNER_BEARER_TOKEN,
   repoRoot: REPO_ROOT,
@@ -50,6 +64,7 @@ const server = createServer({
   claudeBin: CLAUDE_BIN,
   runRanker: createRankRunner({ spawn, bin: NEXT_UP_BIN }),
   authority: createAuthorityClient({ fetch, baseUrl: HB_API_BASE, token: HB_API_TOKEN }),
+  stamp: STAMP,
 });
 
 server.listen(PORT, () => {

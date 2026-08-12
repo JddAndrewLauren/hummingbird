@@ -1,4 +1,5 @@
 import { stepId } from "../step-id.js";
+import { isValidModelId } from "../claude-cli.js";
 
 /**
  * The runner's third op (#272): break one already-selected item into a
@@ -153,6 +154,13 @@ export const microtask = {
     }
     if (args.replace !== undefined && typeof args.replace !== "boolean") {
       return { ok: false, error: '"replace" must be a boolean when present' };
+    }
+    // Part of this op's stated args contract (#273), so it is named here
+    // even though `server.js` gates `model` for every skill: the app's
+    // Rewrite gesture offers grain *and* model together, and a reader of
+    // this file should find both.
+    if (args.model !== undefined && !isValidModelId(args.model)) {
+      return { ok: false, error: '"model" must be a model id when present' };
     }
     return { ok: true };
   },

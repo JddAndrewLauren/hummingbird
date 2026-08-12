@@ -28,15 +28,25 @@ function cliEnvelope(structuredOutput) {
   });
 }
 
+/**
+ * The injected stamp every helper below runs with unless a test says
+ * otherwise (#273) -- a named backend and no configured model, which is the
+ * ordinary first-party deployment: `ANTHROPIC_MODEL` is set only on the
+ * third-party provider path.
+ */
+const TEST_STAMP = { backend: "test-backend", configuredModel: null };
+
 async function withServer(opts, run) {
+  const { stamp = TEST_STAMP, ...spawnOpts } = opts;
   const server = createServer({
     bearerToken: "test-token",
     repoRoot: "/app",
-    spawn: fakeSpawnEmitting(opts),
+    spawn: fakeSpawnEmitting(spawnOpts),
     // `repoRoot` is fictional here, so the schema read is faked too --
     // this suite is about the HTTP contract, not the filesystem.
     readSchema: () => '{"type":"object"}',
     heartbeatIntervalMs: 10_000,
+    stamp,
   });
   await new Promise((resolve) => server.listen(0, resolve));
   const { port } = server.address();
@@ -140,6 +150,11 @@ test("200s a valid request and streams NDJSON ending in the ok envelope", async 
       ok: true,
       skill: "parse-capture",
       result: { title: "buy milk", notes: "" },
+      // #273: an ok line always carries both stamp keys. `model` is null
+      // here because the fake CLI envelope reports none, the request asked
+      // for none, and nothing is configured.
+      backend: "test-backend",
+      model: null,
     });
     // at least one progress line preceded it
     assert.ok(lines.length >= 2);
@@ -185,7 +200,7 @@ test("a failed claude run still ends the stream in an ok:false envelope, HTTP 20
 // --- the prepare hook and the spawn's cwd --------------------------------
 
 /** Like `withServer`, but records every `spawn` call so argv and options are assertable. */
-async function withRecordingServer({ runRanker, authority, stdout = "", code = 0 }, run) {
+async function withRecordingServer({ runRanker, authority, stdout = "", code = 0, stamp = TEST_STAMP }, run) {
   const calls = [];
   const spawn = (command, args, options) => {
     calls.push({ command, args, options });
@@ -205,6 +220,7 @@ async function withRecordingServer({ runRanker, authority, stdout = "", code = 0
     readSchema: () => '{"type":"object"}',
     heartbeatIntervalMs: 10_000,
     runRanker,
+    stamp,
     ...(authority ? { authority } : {}),
   });
   await new Promise((resolve) => server.listen(0, resolve));
@@ -325,7 +341,13 @@ test("a skill declaring apply writes after the model, and the envelope carries t
     const res = await post(base, { skill: "microtask", args: { ref: "HB-42" } });
     assert.equal(res.status, 200);
     const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
-    assert.deepEqual(lines[lines.length - 1], { ok: true, skill: "microtask", result });
+    assert.deepEqual(lines[lines.length - 1], {
+      ok: true,
+      skill: "microtask",
+      result,
+      backend: "test-backend",
+      model: null,
+    });
     // The item rode in the prompt, and the steps landed against it.
     assert.ok(calls[0].args[1].includes(ITEM.id));
     assert.deepEqual(
@@ -412,4 +434,127 @@ test("400s a microtask request with no item reference, without spawning anything
     assert.match(body.error, /ref/);
     assert.equal(calls.length, 0);
   });
+});
+
+// --- the stamp and the model arg (#273) ----------------------------------
+
+/**
+ * The presence rule at the HTTP layer: a pre-dispatch failure names no
+ * backend and no model, because nothing ran. Every 400 in the contract, and
+ * the 413, are that case.
+ */
+test("no pre-dispatch failure carries a stamp", async () => {
+  await withServer({}, async (base) => {
+    const bodies = [
+      "not json at all",
+      JSON.stringify({ skill: "no-such-skill", args: {} }),
+      JSON.stringify({ skill: "parse-capture", args: {} }),
+    ];
+    for (const body of bodies) {
+      const res = await fetch(`${base}/run`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+        body,
+      });
+      assert.equal(res.status, 400, body);
+      const parsed = await res.json();
+      assert.equal(parsed.ok, false, body);
+      assert.equal("backend" in parsed, false, body);
+      assert.equal("model" in parsed, false, body);
+    }
+
+    const tooLarge = await fetch(`${base}/run`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token" },
+      body: JSON.stringify({ skill: "parse-capture", args: { text: "x".repeat(1_100_000) } }),
+    });
+    assert.equal(tooLarge.status, 413);
+    const parsed = await tooLarge.json();
+    assert.equal("backend" in parsed, false);
+    assert.equal("model" in parsed, false);
+  });
+});
+
+test("a pipeline error past the dispatch is stamped", async () => {
+  await withServer({ stderr: "boom", code: 1 }, async (base) => {
+    const res = await fetch(`${base}/run`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token" },
+      body: JSON.stringify({ skill: "parse-capture", args: { text: "buy milk" } }),
+    });
+    const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+    const final = lines[lines.length - 1];
+    assert.equal(final.ok, false);
+    assert.equal(final.backend, "test-backend");
+    assert.equal(final.model, null);
+  });
+});
+
+test("the requested model reaches the spawned argv, and the stamp names it", async () => {
+  const result = { steps: ["put on music"], note: "" };
+  await withRecordingServer({ authority: fakeAuthority(), stdout: cliEnvelope(result) }, async (base, calls) => {
+    const res = await post(base, {
+      skill: "microtask",
+      args: { ref: "HB-42", model: "claude-opus-5" },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls[0].args.slice(-2), ["--model", "claude-opus-5"]);
+    const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+    const final = lines[lines.length - 1];
+    assert.equal(final.ok, true);
+    // Requested, not reported: this fake CLI envelope carries no
+    // `modelUsage`, which is precisely the fallback `stamp.js` exists for.
+    assert.equal(final.model, "claude-opus-5");
+    assert.equal(final.backend, "test-backend");
+  });
+});
+
+test("what the CLI reported it ran outranks what was requested", async () => {
+  const stdout = JSON.stringify({
+    is_error: false,
+    structured_output: { steps: ["put on music"], note: "" },
+    modelUsage: { "claude-sonnet-4-5-20250929": {} },
+  });
+  await withRecordingServer({ authority: fakeAuthority(), stdout }, async (base) => {
+    const res = await post(base, { skill: "microtask", args: { ref: "HB-42", model: "sonnet" } });
+    const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines[lines.length - 1].model, "claude-sonnet-4-5-20250929");
+  });
+});
+
+test("a configured model carries the stamp when the request asked for none", async () => {
+  await withServer(
+    { stdout: cliEnvelope({ title: "t", notes: "" }), stamp: { backend: "api.moonshot.ai", configuredModel: "kimi-k3" } },
+    async (base) => {
+      const res = await fetch(`${base}/run`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+        body: JSON.stringify({ skill: "parse-capture", args: { text: "buy milk" } }),
+      });
+      const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+      const final = lines[lines.length - 1];
+      assert.equal(final.backend, "api.moonshot.ai");
+      assert.equal(final.model, "kimi-k3");
+    },
+  );
+});
+
+/**
+ * The gate is in the pipeline, not in any one skill, because no
+ * `validateArgs` rejects unknown keys -- so `parse-capture`, which knows
+ * nothing about a `model`, is the case that proves it. A flag-shaped value
+ * must never reach argv.
+ */
+test("an invalid model is a 400 before any spawn, on every skill", async () => {
+  for (const skill of ["parse-capture", "microtask"]) {
+    await withRecordingServer({ authority: fakeAuthority() }, async (base, calls) => {
+      const res = await post(base, {
+        skill,
+        args: { text: "buy milk", ref: "HB-42", model: "--dangerously-skip-permissions" },
+      });
+      assert.equal(res.status, 400, skill);
+      assert.match((await res.json()).error, /"model"/, skill);
+      assert.equal(calls.length, 0, `${skill} must not have spawned anything`);
+    });
+  }
 });

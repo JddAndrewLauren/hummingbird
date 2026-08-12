@@ -43,9 +43,10 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 | `runner/src/authority.js` | The client for the app-owned authority (`GET /api/sweep`, `POST /api/steps`, `PATCH /api/steps/:id`) and the only place a `device` token lives in this process. `fetch` injected. |
 | `runner/src/step-id.js` | The deterministic step id, digit for digit the same recipe as `microtask`'s `hb.sh` -- what keeps the two arms from minting two copies of one step. |
 | `runner/src/rank-bin.js` | Spawns the baked `next-up-rank` over the envelope on stdin. The one child process here that is not `claude`. |
-| `runner/src/claude-cli.js` | Builds the `claude -p ... --output-format json --json-schema <path>` argv. |
+| `runner/src/claude-cli.js` | Builds the `claude -p ... --output-format json --json-schema <path>` argv, plus `isValidModelId` -- the charset rule that keeps a flag-shaped `model` arg out of argv. |
+| `runner/src/stamp.js` | The envelope's `backend`/`model` stamp (#273): the provider from `ANTHROPIC_BASE_URL`, and the four-step model precedence. |
 | `runner/src/run-skill.js` | Spawns `claude` (with `cwd` = repo root, so its slash commands resolve), collects stdout/stderr, resolves ok/error. |
-| `runner/src/envelope.js` | NDJSON line builders (`progress`, final ok/error). |
+| `runner/src/envelope.js` | NDJSON line builders (`progress`, final ok/error) -- the one place a terminal line is built, which is what makes the stamp-presence rule structural. |
 | `runner/src/main.js` | Reads env (`RUNNER_BEARER_TOKEN`, `PORT`, `CLAUDE_BIN`, `REPO_ROOT`, `HB_API_BASE`, `HB_API_TOKEN`), wires the real `child_process.spawn` and `fetch`, starts the server. |
 | `runner/Dockerfile` | `node:22-slim` + the Claude Code CLI installed globally + the skills this build ships + the runner server. Build context is the **repo root**, not `runner/` -- see Deploy runbook. |
 | `runner/fly.toml` | `hummingbird-runner`, `http_service` with `min_machines_running = 0` (scale-to-zero). |
@@ -62,9 +63,9 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 
 - **401** — missing or wrong bearer token. Empty body.
 - **400** — malformed JSON, a missing/wrong-shaped `skill` or `args` field,
-  an unknown skill name, or args that fail that skill's own
-  `validateArgs`. JSON body `{ok: false, skill, error}` (`skill` is `null`
-  when the request never named a resolvable one).
+  an unknown skill name, args that fail that skill's own `validateArgs`, or
+  a `model` arg that is not a model id. JSON body `{ok: false, skill,
+  error}` (`skill` is `null` when the request never named a resolvable one).
 - **200**, `content-type: application/x-ndjson` — the request passed every
   check and a `claude` run was attempted. The body is newline-delimited
   JSON: zero or more `{"type":"progress","message":"..."}` lines (including
@@ -74,6 +75,53 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
   stdout, a spawn error) still ends the stream in the `ok:false` envelope
   line at HTTP 200** -- the failure is inside the contract, not a broken
   connection.
+
+### The stamp (#273)
+
+The terminal line carries **`backend` and `model`** naming what produced the
+answer, so a client renders what actually ran rather than a name it
+hardcoded (#274 makes it vary). The presence rule is part of the contract:
+
+| Terminal line | `backend` | `model` |
+| --- | --- | --- |
+| `ok: true` | always | always (possibly `null`) |
+| a pipeline error (a `prepare` decline, a failed run, a failed write) | always | always (possibly `null`) |
+| a pre-dispatch 400 or the 413 | **absent** | **absent** |
+
+Absent, never `null`, on the pre-dispatch failures: nothing was attempted,
+and a client must be able to tell that from "we ran but could not name the
+model". `runner/src/envelope.js` is the one builder of a terminal line, so
+the rule holds by construction.
+
+`backend` is `ANTHROPIC_BASE_URL`'s **hostname** (never the whole URL, which
+can carry a path, a port, or in a misconfiguration credentials), or
+`anthropic` when it is unset. `model` resolves in four steps: **what the CLI
+reported it ran → the `model` arg the request asked for → `ANTHROPIC_MODEL`
+→ `null`**.
+
+The order exists because of a trap: `ANTHROPIC_MODEL` is set **only on the
+third-party provider path** below, so on the ordinary first-party deployment
+a config-only read would stamp `null`. The first step is also the one
+believing something about the CLI's output shape — this repo has been burned
+twice that way with green tests throughout — so it reads `modelUsage`
+defensively and degrades to the next step rather than lying. **The runbook's
+step 6 is what confirms it against a live run**; until that is done, treat
+the reported half as unproven.
+
+### The `model` arg
+
+Any skill's `args` may carry `model`, validated in the pipeline (not by any
+one skill, because no `validateArgs` rejects unknown keys) against a
+**charset rule**, not an allowlist: `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`.
+An allowlist would make every provider swap a code change and a redeploy,
+contradicting #41 decision 2's "switching providers is `fly secrets set`
+alone".
+
+The risk closed is not shell injection — the value is a single argv element
+and nothing is shelled out to — but an argv element that reads as a *flag*.
+**The leading-alphanumeric requirement is that guard and must never be
+relaxed.** The charset accepts `sonnet`, `claude-sonnet-4-5-20250929`,
+`kimi-k3` and Bedrock-style `us.anthropic.claude-…-v1:0`.
 
 Three ops ship today. The first two **write to nothing**; the third writes,
 and is the reason this process holds an authority credential at all:
@@ -99,9 +147,11 @@ and is the reason this process holds an authority credential at all:
   words, before a single model token is spent.
 
 - **`microtask`** (#272): break one already-selected item into a checklist
-  of tiny steps. `args` are `{ref, grain?, replace?}` -- `HB-42` or a uuid,
-  SKILL.md's 1-3 grain scale (default 2), and the explicit rewrite gesture
-  (#317). This op **reads and writes the authority**, which is the whole of
+  of tiny steps. `args` are `{ref, grain?, replace?, model?}` -- `HB-42` or
+  a uuid, SKILL.md's 1-3 grain scale (default 2), the explicit rewrite
+  gesture (#317), and the model to run it on (#273: the app's Rewrite
+  gesture offers grain and model together). This op **reads and writes the
+  authority**, which is the whole of
   what makes it different:
 
   - `prepare` fetches `GET /api/sweep`, resolves the ref (no route accepts
@@ -430,7 +480,29 @@ operator can close the provisioning gate #256's issue thread leaves open.
    cannot see the plan it is replacing and paraphrases it -- the count
    stays the same, the ids and wording rotate.
 
-6. **Rotate the token** later by repeating step 2-3 with a fresh value,
+6. **Confirm the model stamp** (#273) against that same live run. Every
+   terminal line above now carries `backend` and `model`; what needs
+   confirming is which *step* of the precedence chain answered, because the
+   first one reads a key of the CLI's own output envelope
+   (`modelUsage`) that nothing else in this repo depends on:
+
+   ```sh
+   curl -sS https://hummingbird-runner.fly.dev/run \
+     -H "authorization: Bearer <token>" \
+     -H "content-type: application/json" \
+     -d '{"skill":"parse-capture","args":{"text":"call mom"}}' \
+     | tail -1 | jq '{backend, model}'
+   ```
+
+   On the first-party path expect `{"backend":"anthropic","model":"<an id>"}`.
+   **A `null` model here means the CLI does not report `modelUsage`** and the
+   stamp is being carried by the fallbacks alone — send the same request
+   again with `"model":"sonnet"` in `args` and confirm it comes back stamped
+   `sonnet`, then record the finding in `runner/src/run-skill.js`'s
+   `reportedModel`, which is written to degrade rather than lie for exactly
+   this case.
+
+7. **Rotate the token** later by repeating step 2-3 with a fresh value,
    then updating whatever client holds it. `HB_API_TOKEN` rotates
    separately: `DELETE /api/admin/tokens/runner` to revoke, then
    `mint-hb-token.sh` again under the same id (the mint is idempotent by
