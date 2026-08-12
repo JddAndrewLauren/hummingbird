@@ -331,6 +331,31 @@ request 200 GET /api/settings/city-waste-page '' "$INGEST"
 [ "$(jq -r '.value' <<<"$BODY")" = '"https://city.example/x"' ] || fail "settings read: $BODY"
 request 404 GET /api/settings/trips-calendar '' "$INGEST"
 
+# ------------------------------------------------ the skill-runner proxy
+
+# The only wire coverage `server/worker`'s proxy (#273, ADR-0018) gets — it
+# has no test harness, so its two decidable properties are asserted here and
+# everything else lives in the natively-tested `skills` module.
+#
+# 1. The verdict runs BEFORE the secrets are read, so an unauthenticated tap
+#    is an empty-bodied 401 that discloses nothing about whether the lane is
+#    provisioned.
+# 2. Unset secrets fail closed as a 503, never as a 401 — a 401 would make
+#    the client re-prompt a device token that is perfectly fine. `wrangler
+#    dev` sets neither `RUNNER_BASE_URL` nor `RUNNER_BEARER_TOKEN`, so this
+#    is exactly the state under test.
+RUN_BODY='{"skill":"microtask","args":{"ref":"smoke-1"}}'
+request 401 POST /api/skills/run "$RUN_BODY"
+[ -z "$BODY" ] || fail "skills/run 401 leaked a body: $BODY"
+request 403 POST /api/skills/run "$RUN_BODY" "$INGEST"
+[ -z "$BODY" ] || fail "skills/run 403 leaked a body: $BODY"
+request 503 POST /api/skills/run "$RUN_BODY" "$DEVICE"
+[ "$(jq -r '.ok' <<<"$BODY")" = "false" ] || fail "skills/run 503 envelope shape: $BODY"
+[ "$(jq -r '.error' <<<"$BODY")" = "The cloud runner is not configured on this server." ] ||
+  fail "skills/run unconfigured prose: $BODY"
+# A known path with the wrong method is a 405, not a 404.
+request 405 GET /api/skills/run '' "$DEVICE"
+
 # ------------------------------------------------------ sweep = delta
 
 SWEEP=$(curl -s -H "Authorization: Bearer $DEVICE" "$BASE/api/sweep")

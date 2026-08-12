@@ -72,6 +72,25 @@ routes = [
 # evaluates rules and still logs deliveries, and each one it cannot send is
 # reported with `console_error!`. Nothing here is needed until a real
 # device registers a push target.
+#
+# RUNNER_BASE_URL and RUNNER_BEARER_TOKEN are the skill-runner proxy's two
+# secrets (#273, ADR-0018): the Fly app's origin (e.g.
+# `https://hummingbird-runner.fly.dev`) and the bearer it authenticates
+# `POST /run` with. Both `wrangler secret put`, set from the operator's
+# terminal and never in GitHub Actions — the bearer reaches the runner's own
+# `HB_API_TOKEN`, a write-everything device token, and spends metered model
+# tokens, so it is transitively a write credential plus a spend faucet
+# (CLAUDE.md, "Credential blast radius"). The base URL is a secret rather
+# than a var deliberately, so the pair rotates together.
+#
+# Note the bearer now lives in **two** places: `fly secrets set` on the
+# runner and `wrangler secret put` here. Rotating one without the other
+# makes every tap answer 502 ("the cloud runner rejected this server's
+# credential") until the second lands.
+#
+# Either one unset (the state of every local `wrangler dev` and of CI) fails
+# the lane closed with a 503 naming the gap in prose — deliberately not a
+# 401, which would make the client re-prompt a device token that is fine.
 name = "hummingbird-authority"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-08-08"

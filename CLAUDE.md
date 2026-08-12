@@ -62,9 +62,15 @@ when its worst-case abuse is bounded and local — `CITY_WASTE_INGEST_TOKEN`
 reaches three routes for one source and the worst it can do is a wrong bin
 day. `ADMIN_SECRET` (mints every other token) and `FCM_SERVICE_ACCOUNT`
 (carries an RSA private key) stay out of Actions, set from the operator's
-terminal. A `device` token is the authority's only read-capable scope and is
-write-everything, so anything holding one is treated as a write credential
-however read-only it looks. See ADR-0011 for the per-source table.
+terminal. `RUNNER_BEARER_TOKEN` sits between them: a holder can run any
+registered skill — spending metered model tokens — and reach the runner's own
+`HB_API_TOKEN`, so it is **transitively a write credential plus a spend
+faucet**. Cloudflare Worker secret plus a Fly secret, both set from the
+operator's terminal, never Actions; since #273 rotating it is a two-place
+operation (ADR-0018). A `device` token is the authority's only read-capable
+scope and is write-everything, so anything holding one is treated as a write
+credential however read-only it looks — and since #273 it can also *cause
+spend*, via `POST /api/skills/run`. See ADR-0011 for the per-source table.
 
 **No competing clocks.** Exactly one thing owns each cadence: supercronic owns
 the sweeper's, the Durable Object's `alarm()` owns the sweep tick's. A second

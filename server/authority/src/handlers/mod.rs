@@ -14,6 +14,7 @@ pub(crate) mod push_targets;
 mod routes;
 mod rules;
 mod settings;
+mod skills;
 mod snapshots;
 mod steps;
 
@@ -164,6 +165,11 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         }
         ("GET", ["changes"]) => changes::changes(req.query, now_ms, sql),
         ("GET", ["sweep"]) => changes::sweep(now_ms, sql),
+        // The skill-runner proxy's authorization verdict (#273): the DO
+        // answers only whether the caller may run a skill; the shim
+        // performs the egress above this dispatch. The body never reaches
+        // here — the preflight is deliberately bodiless.
+        ("POST", ["skills", "run"]) => Ok(skills::run_verdict()),
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
         (
@@ -184,6 +190,11 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         {
             Ok(method_not_allowed())
         }
+        // `["skills", "run"]` is a known path whose second segment is a
+        // literal, not an id, so neither collection arm above covers it —
+        // without this it would 404 on a `GET`, unlike every other known
+        // route.
+        (_, ["skills", "run"]) => Ok(method_not_allowed()),
         _ => Ok(error(404, "not_found", "no such route")),
     }
 }

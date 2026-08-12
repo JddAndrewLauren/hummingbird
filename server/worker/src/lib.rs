@@ -18,10 +18,12 @@ mod shim {
     use std::rc::Rc;
 
     use hummingbird_authority::{
-        handle, init_schema, revoke_dead_target, ApiRequest, DeliveryOutcome, Entropy,
-        HandleContext, Row, SendVerdict, Sql, SqlError, SqlValue,
+        credential_rejected, forwardable, handle, init_schema, revoke_dead_target, run_url,
+        unconfigured, unreachable, upstream_status, ApiRequest, DeliveryOutcome, Entropy,
+        HandleContext, ProxyFailure, Row, SendVerdict, Sql, SqlError, SqlValue,
     };
     use hummingbird_domain::ApiError;
+    use wasm_bindgen::JsValue;
     use worker::*;
 
     use crate::fcm::FcmSender;
@@ -315,10 +317,130 @@ mod shim {
         Ok(Response::ok(body)?.with_status(status).with_headers(headers))
     }
 
+    // ------------------------------------------- the skill-runner proxy
+
+    /// The one route answered **above** the Durable Object (#273,
+    /// ADR-0018): `POST /api/skills/run` is proxied to the cloud runner's
+    /// `POST /run` and its NDJSON stream is returned to the browser
+    /// unchanged.
+    ///
+    /// Two reasons the egress cannot happen inside the DO. The decisive one
+    /// is a **cycle**: `microtask.apply` calls back into
+    /// `hb.twinion.net/api/steps` with the runner's own token, so a run
+    /// dispatched through the DO would await a subrequest only that same
+    /// object can answer. The second is cost: every DO `fetch` runs
+    /// `init_schema` + `ensure_alarm_scheduled` first, and an open request
+    /// accrues duration and blocks hibernation for the length of a model
+    /// call.
+    ///
+    /// Authorization still needs the `tokens` table, which is inside the
+    /// DO. So this sends a **bodiless preflight** — a fresh minimal
+    /// `Request` carrying the same URL, method and `authorization` and
+    /// nothing else. Never `req.clone()`: that would buffer the body inside
+    /// the DO and consume the stream this function still has to forward.
+    ///
+    /// Order is load-bearing: **verdict first, secrets second.** Checking
+    /// the secrets first would tell an unauthenticated caller whether the
+    /// lane is provisioned at all.
+    ///
+    /// Every user-visible word and every status below comes from
+    /// `hummingbird_authority`'s `skills` module, because this file has no
+    /// test harness; the only literals here are `console_error!` lines,
+    /// which no client ever sees.
+    async fn proxy_skill_run(mut req: Request, env: Env) -> Result<Response> {
+        let stub = env
+            .durable_object("AUTHORITY")?
+            .id_from_name(WORKSPACE)?
+            .get_stub()?;
+
+        let verdict_headers = Headers::new();
+        if let Some(authorization) = req.headers().get("authorization")? {
+            verdict_headers.set("authorization", &authorization)?;
+        }
+        let mut verdict_init = RequestInit::new();
+        verdict_init
+            .with_method(Method::Post)
+            .with_headers(verdict_headers);
+        let verdict = stub
+            .fetch_with_request(Request::new_with_init(req.url()?.as_ref(), &verdict_init)?)
+            .await?;
+        // 401/403/405 are already the answer, in the shape the client's
+        // contract expects (empty for the first two, the pure crate's JSON
+        // for the third).
+        if verdict.status_code() != 204 {
+            return Ok(verdict);
+        }
+
+        let (Ok(base_url), Ok(bearer)) = (
+            env.secret("RUNNER_BASE_URL"),
+            env.secret("RUNNER_BEARER_TOKEN"),
+        ) else {
+            // Names the gap in the log, never in the body.
+            console_error!(
+                "POST /api/skills/run: RUNNER_BASE_URL and/or RUNNER_BEARER_TOKEN is unset; \
+                 the skill-runner lane fails closed",
+            );
+            return ndjson_failure(unconfigured());
+        };
+
+        let body = req.text().await?;
+        let headers = Headers::new();
+        headers.set("content-type", "application/json")?;
+        headers.set("authorization", &format!("Bearer {bearer}"))?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_headers(headers)
+            .with_body(Some(JsValue::from_str(&body)));
+
+        let runner_url = run_url(&base_url.to_string());
+        let response = match Fetch::Request(Request::new_with_init(&runner_url, &init)?)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                console_error!("POST /api/skills/run: the runner subrequest failed: {e}");
+                return ndjson_failure(unreachable());
+            }
+        };
+
+        let status = response.status_code();
+        if forwardable(status) {
+            // Returned directly, which streams: a `worker::Response` holds
+            // a `ResponseBody::Stream`, and the immutability trap that
+            // applies to a `Request` does not apply here.
+            return Ok(response);
+        }
+        if status == 401 {
+            console_error!(
+                "POST /api/skills/run: the runner rejected RUNNER_BEARER_TOKEN — it was \
+                 rotated on one side only (`fly secrets set` and `wrangler secret put` \
+                 are now both required)",
+            );
+            return ndjson_failure(credential_rejected());
+        }
+        console_error!("POST /api/skills/run: the runner answered {status}");
+        ndjson_failure(upstream_status(status))
+    }
+
+    /// A proxy-generated failure as its one NDJSON line — the same
+    /// content-type the runner's own stream carries, so the client has one
+    /// parser and never branches on a body shape.
+    fn ndjson_failure(failure: ProxyFailure) -> Result<Response> {
+        let headers = Headers::new();
+        headers.set("content-type", "application/x-ndjson")?;
+        Ok(Response::ok(failure.body)?
+            .with_status(failure.status)
+            .with_headers(headers))
+    }
+
     #[event(fetch)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         if !req.path().starts_with("/api/") {
             return Response::error("not found", 404);
+        }
+        if req.method() == Method::Post && req.path() == "/api/skills/run" {
+            return proxy_skill_run(req, env).await;
         }
         env.durable_object("AUTHORITY")?
             .id_from_name(WORKSPACE)?
