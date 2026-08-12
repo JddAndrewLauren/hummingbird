@@ -237,7 +237,7 @@ operator can close the provisioning gate #256's issue thread leaves open.
    `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` set, the client sends both
    headers and the provider rejects every request -- and a hand-run
    `fly secrets set` sets one without clearing the other. It also reads the
-   credential from a mode-600 file and strips surrounding whitespace, since
+   credential from a mode-600 file and strips leading/trailing whitespace, since
    a bearer token carrying a trailing newline fails auth in a way that looks
    nothing like a whitespace problem.
 
