@@ -65,7 +65,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Plain `node --test` over fourteen files with no install step; anything
+    # Plain `node --test` over fifteen files with no install step; anything
     # slower than this is a hung test, not a slow one.
     timeout-minutes: 5
     steps:

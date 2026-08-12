@@ -212,14 +212,20 @@ operator can close the provisioning gate #256's issue thread leaves open.
    *distinct* token from any device's, so it can be revoked on its own:
 
    ```sh
-   fly secrets set --config runner/fly.toml \
-     HB_API_TOKEN=<a device-scope token minted for the runner> \
-     HB_API_BASE=https://hb.twinion.net   # the default; set it only to point elsewhere
+   runner/scripts/mint-hb-token.sh <admin-secret-file>   # mints, then sets HB_API_TOKEN
    ```
 
-   Mint it the way every other device token is minted (`POST
+   It is minted the way every other device token is (`POST
    /api/admin/tokens` with `ADMIN_SECRET`, from the operator's terminal --
-   never from Actions). **Leaving it unset is a supported state**: the
+   never from Actions), and the script exists because **the plaintext
+   appears only in the original 201**: the route is idempotent by `id` and
+   stores only a hash, so a replay answers 200 with the metadata and no
+   token, unrecoverably. So the mint and the `fly secrets set` that
+   consumes it have to happen in one pass. Set `HB_TOKEN_OUT=<path>` to
+   keep a mode-600 copy for 1Password. `HB_API_BASE` defaults to
+   `https://hb.twinion.net`; set it by hand only to point elsewhere.
+
+   **Leaving it unset is a supported state**: the
    runner still starts and logs one line, `parse-capture` and `next-up-hb`
    are unaffected, and `microtask` declines with a named envelope error.
 
@@ -306,12 +312,18 @@ operator can close the provisioning gate #256's issue thread leaves open.
    `{"ok":true,"skill":"microtask","result":{"steps":[...],"note":"..."}}`,
    and the steps themselves visible in the client (or in `GET /api/sweep`)
    afterwards. **Re-running the identical request is the idempotence
-   check**: the second run writes the same ids and adds no rows.
+   check** -- but know what it does and does not guarantee before judging
+   the result. Writes are idempotent by `sha256(namespace + item + "/" +
+   body)`, so a retried write of the *same* answer mints nothing; a second
+   HTTP request, however, re-invokes the model, and differently-worded
+   steps are new ids and new rows. If run two adds rows, check whether the
+   step text changed before calling it a defect.
 
 6. **Rotate the token** later by repeating step 2-3 with a fresh value,
    then updating whatever client holds it. `HB_API_TOKEN` rotates
-   separately and the same way -- mint a new device-scope token, `fly
-   secrets set` it, revoke the old one.
+   separately: `DELETE /api/admin/tokens/runner` to revoke, then
+   `mint-hb-token.sh` again under the same id (the mint is idempotent by
+   `id`, so the revoke has to come first or the replay returns no token).
 
 ## Testing (agent-facing, not part of the operator gate)
 
