@@ -103,6 +103,16 @@ GMAIL_THREAD_LINK = "https://mail.google.com/mail/u/0/#all/%s"
 HTTP_TIMEOUT = 30
 PAGE_SIZE = 100
 
+# Every request this file makes identifies itself. `urllib.request` otherwise
+# sends `Python-urllib/3.x`, which Cloudflare's Browser Integrity Check blocks
+# by name -- the authority sits behind Cloudflare, so the first live run after
+# the #123 retarget lost all three Gmail creates to `403 error code: 1010`
+# before a single one reached the Worker. The block is on the string, not on
+# the caller's address: `Python-urllib/3.x` is refused from anywhere and even
+# *no* User-Agent gets through, so this is a header fix and emphatically not a
+# reason to widen anything at the edge.
+USER_AGENT = "hummingbird-sweeper (+https://github.com/JddAndrewLauren/hummingbird)"
+
 # The authority rejects some inputs permanently -- a blank capture is the case
 # that found this (#24). Those are quarantined rather than retried, so one junk
 # row cannot hold the dead-man's switch red forever. But quarantine is only safe
@@ -171,6 +181,7 @@ def http_json(url, method="GET", headers=None, body=None, with_status=False):
     """
     data = None
     hdrs = dict(headers or {})
+    hdrs.setdefault("User-Agent", USER_AGENT)
     if body is not None:
         if isinstance(body, (bytes, bytearray)):
             data = bytes(body)
