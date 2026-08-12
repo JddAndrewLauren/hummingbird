@@ -366,10 +366,18 @@ work; every one touches a live account.
    `{"id": "<uuid>", "name": "hummingbird-sweeper", "scope": "sweeper"}`.
    Omit `source`: it is required for `ingest` and **rejected** for every other
    scope. The plaintext `hb_…` comes back exactly once and is unrecoverable
-   afterwards. `runner/scripts/mint-hb-token.sh` does this for the runner's
-   device token and is the shape to copy.
-2. **Set it and drop the old one.** `flyctl secrets set HB_API_TOKEN=<token>`
-   and `flyctl secrets unset LINEAR_API_KEY` on `hummingbird-sweeper`.
+   afterwards — so **use `scripts/mint-hb-token.sh`**, which mints and stages the
+   secret in one pass and keeps the plaintext out of a shell history. Set
+   `HB_TOKEN_OUT` when you run it: the mint takes the token `id` the moment it
+   succeeds, so if the staging step then fails, the only copy of an unreissuable
+   plaintext dies with the process. (`runner/scripts/mint-hb-token.sh` is the
+   same gesture for the runner's *device* token; the two divergences are
+   documented in this one's header.)
+2. **Set it and drop the old one.** The script above stages `HB_API_TOKEN`
+   already; `flyctl secrets unset --stage LINEAR_API_KEY` drops the stale key.
+   Use `--stage` for both while the machine is stopped: a plain `secrets set`
+   restarts the machines, which hands Fly the choice of when supercronic starts
+   ticking.
 3. **Dry run over the deferred backlog.** Export the secrets locally and run
    `./sweep.py --dry-run`. This matters more than it did in #45: months of
    un-drained Tasks items and labelled messages arrive in the first real run,
