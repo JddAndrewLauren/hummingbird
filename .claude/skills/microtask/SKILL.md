@@ -10,7 +10,27 @@ tiny concrete steps. Write first, offer company second. Speed is the value.
 
 Vocabulary (Action, **Step**, Route, Fog) is in the root `CONTEXT.md`.
 
-All reads and writes go through `scripts/hb.sh` (in this skill's directory):
+## The two arms
+
+**Interactive** (a session, with the operator's credential): you read and write through
+`scripts/hb.sh` yourself, and everything below applies as written.
+
+**Hosted runner** (#272's third op): the runner has already read the item and its live
+steps from the authority and put them in your prompt as JSON — you have **no shell** here,
+so do not run `hb.sh`, and asking for it wastes the run (`claude -p` is non-interactive, a
+`Bash` call cannot be prompted for and is simply denied). Answer against
+`schema.json` — `{steps, note}` — and the runner appends those lines to the same `steps`
+table, at positions after the ones you were handed, with the same deterministic ids. That
+arm **appends only**: it has no `tick` and no `drop-step`, so the refresh rule's
+superseded-step decision stays with the interactive arm and what you can do here is
+*report* what is already done, in `note`. It also cannot ask a question — say what you
+assumed instead.
+
+Branch on which input you were handed: a prompt carrying the item and steps as JSON is the
+runner arm; anything else is the interactive one.
+
+All reads and writes on the interactive arm go through `scripts/hb.sh` (in this skill's
+directory):
 
 - `hb.sh get <ref>` — the item and its live steps, in position order
 - `hb.sh steps <ref>` — just the live steps
@@ -59,6 +79,9 @@ How finely to slice, calibrated on a real trial:
 At grain 3, steps run well under the 2-minute floor — that's the point; the ~2–5-minute
 guidance applies at grains 1–2. The trivial first step survives every grain.
 
+On the runner arm the invocation is `POST /run {skill: "microtask", args: {ref, grain?}}`,
+and `ref` is resolved before you are called — an unknown one never reaches you.
+
 ## Read first, ask at most once
 
 Read the item's title, description, project and axes. Ask **one** question only if they
@@ -67,7 +90,8 @@ Never a second: three questions in, the user would rather just do the chore.
 
 ## Write the steps
 
-Write the checklist to a file, one step per line, and hand it to `hb.sh add-steps`.
+Write the checklist to a file, one step per line, and hand it to `hb.sh add-steps` — or, on
+the runner arm, return those same lines as `steps` and let the runner append them.
 
 - Each step is **one concrete physical action, ~2–5 minutes**. Minutes, not sittings.
 - **First step deliberately trivial** ("put on music, grab a trash bag") — the ramp.
@@ -79,7 +103,9 @@ Steps are appended after whatever is already there, and `add-steps` numbers the 
 contiguously from the current maximum position. **Re-running the identical checklist mints
 nothing**: each step's id is derived deterministically from the item and the step's own
 text, so a replay lands on the idempotent already-exists path. That is what makes an
-interrupted write safe to simply repeat.
+interrupted write safe to simply repeat. The runner arm mints the identical id from the
+identical inputs (`runner/src/step-id.js`), so the two arms cannot mint two copies of one
+step between them.
 
 ## Refresh rule
 
@@ -97,6 +123,8 @@ applies" is a reading of the work, not a diff. Soft-delete each superseded step 
 higher positions.
 
 ## Walk-through mode
+
+**Interactive arm only** — the runner arm is one-shot and has nothing to walk with.
 
 Offer it **only after** the checklist is written, never before. On accept: the user reports
 a step done → `hb.sh tick <step-id>` → hand over the next step. Declining costs nothing —
@@ -117,6 +145,10 @@ That agreement between the two surfaces is the point of Steps being records.
   Say which step, and stop.
 - **An unknown ref** — `HB-99` that is not in the sweep is a named failure, not an empty
   answer. Do not fall back to writing steps against something else.
+- **On the runner arm none of the above is yours to report.** Every authority failure —
+  no token, an unreachable server, a non-200 on a write — happens outside your run and
+  ends the stream in a named `{ok:false, error}` envelope. Your only failure mode there is
+  answering outside the schema.
 - **Scope guard** — write only `steps` rows. This skill's `hb.sh` has no verb that touches
   an item, a project, a route or the delegation axis, so the guard is structural; do not
   reach for another skill's script to get around it.

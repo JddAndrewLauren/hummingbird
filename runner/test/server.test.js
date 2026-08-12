@@ -185,7 +185,7 @@ test("a failed claude run still ends the stream in an ok:false envelope, HTTP 20
 // --- the prepare hook and the spawn's cwd --------------------------------
 
 /** Like `withServer`, but records every `spawn` call so argv and options are assertable. */
-async function withRecordingServer({ runRanker, stdout = "", code = 0 }, run) {
+async function withRecordingServer({ runRanker, authority, stdout = "", code = 0 }, run) {
   const calls = [];
   const spawn = (command, args, options) => {
     calls.push({ command, args, options });
@@ -205,6 +205,7 @@ async function withRecordingServer({ runRanker, stdout = "", code = 0 }, run) {
     readSchema: () => '{"type":"object"}',
     heartbeatIntervalMs: 10_000,
     runRanker,
+    ...(authority ? { authority } : {}),
   });
   await new Promise((resolve) => server.listen(0, resolve));
   const { port } = server.address();
@@ -299,4 +300,91 @@ test("a prepare that throws is an envelope error, never a dropped connection", a
       assert.match(lines[lines.length - 1].error, /unexpected/);
     },
   );
+});
+
+// --- the apply hook: the write half, after the model (#272) --------------
+
+const ITEM = { id: "11111111-2222-4333-8444-555555555555", seq: 42, title: "clear the garage" };
+
+function fakeAuthority({ createStep } = {}) {
+  const writes = [];
+  return {
+    writes,
+    sweep: async () => ({ ok: true, sweep: { items: [ITEM], steps: [] } }),
+    createStep: async (step) => {
+      writes.push(step);
+      return createStep ? createStep(step) : { ok: true, created: true, step };
+    },
+  };
+}
+
+test("a skill declaring apply writes after the model, and the envelope carries the schema result", async () => {
+  const result = { steps: ["put on music", "grab a trash bag"], note: "" };
+  const authority = fakeAuthority();
+  await withRecordingServer({ authority, stdout: cliEnvelope(result) }, async (base, calls) => {
+    const res = await post(base, { skill: "microtask", args: { ref: "HB-42" } });
+    assert.equal(res.status, 200);
+    const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(lines[lines.length - 1], { ok: true, skill: "microtask", result });
+    // The item rode in the prompt, and the steps landed against it.
+    assert.ok(calls[0].args[1].includes(ITEM.id));
+    assert.deepEqual(
+      authority.writes.map((step) => [step.item_id, step.body, step.position]),
+      [
+        [ITEM.id, "put on music", 1],
+        [ITEM.id, "grab a trash bag", 2],
+      ],
+    );
+  });
+});
+
+/**
+ * The run is not "ok" because a model answered -- it is ok because the
+ * answer landed. A write that failed has to reach the caller as an
+ * `ok:false` envelope at HTTP 200, like every other failure in this
+ * contract.
+ */
+test("a failed write ends the stream in an ok:false envelope, HTTP 200", async () => {
+  const authority = fakeAuthority({ createStep: () => ({ ok: false, error: "POST /api/steps answered 500" }) });
+  await withRecordingServer(
+    { authority, stdout: cliEnvelope({ steps: ["put on music"], note: "" }) },
+    async (base) => {
+      const res = await post(base, { skill: "microtask", args: { ref: "HB-42" } });
+      assert.equal(res.status, 200);
+      const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+      const final = lines[lines.length - 1];
+      assert.equal(final.ok, false);
+      assert.equal(final.skill, "microtask");
+      assert.match(final.error, /answered 500/);
+    },
+  );
+});
+
+/**
+ * The default authority is the "not configured" one, so a runner started
+ * without `HB_API_TOKEN` declines this op by name -- before the model runs,
+ * and without taking the other two ops down at boot.
+ */
+test("with no authority configured, microtask declines before claude is spawned", async () => {
+  await withRecordingServer({}, async (base, calls) => {
+    const res = await post(base, { skill: "microtask", args: { ref: "HB-42" } });
+    assert.equal(res.status, 200);
+    const lines = (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+    const final = lines[lines.length - 1];
+    assert.equal(final.ok, false);
+    assert.match(final.error, /HB_API_TOKEN/);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("400s a microtask request with no item reference, without spawning anything", async () => {
+  await withRecordingServer({ authority: fakeAuthority() }, async (base, calls) => {
+    const res = await post(base, { skill: "microtask", args: {} });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.skill, "microtask");
+    assert.match(body.error, /ref/);
+    assert.equal(calls.length, 0);
+  });
 });
