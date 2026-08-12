@@ -1,10 +1,13 @@
 # The skill-runner endpoint
 
-> **Status (2026-08-11): built, not deployed.** No Fly app is provisioned,
-> no secrets are set, and no bearer token is minted -- #256 is a build-only
-> slice and #272 (the `microtask` op) is another; provisioning is an
-> operator gate (see Deploy runbook below), the same posture #237's server
-> deploy used.
+> **Status (2026-08-11): deployed, two ops live.**
+> `hummingbird-runner` is provisioned in `sjc` and answering at
+> `https://hummingbird-runner.fly.dev`. `parse-capture` and `next-up-hb` are
+> smoke-tested against it; `microtask` is registered but **declines**, because
+> `HB_API_TOKEN` is deliberately still unset (a supported state -- see step 3
+> of the Deploy runbook). Setting that secret and redeploying is what makes the
+> third op live. Provisioning was and remains an operator gate: #256 and #272
+> are build-only slices, the same posture #237's server deploy used.
 
 A fourth actor (#41 decided this, #256 builds it): a Fly app that takes
 `POST /run {skill, args}` and runs one Claude Code skill headlessly,
@@ -231,6 +234,21 @@ operator can close the provisioning gate #256's issue thread leaves open.
    ```sh
    fly deploy --config runner/fly.toml --dockerfile runner/Dockerfile
    ```
+
+   Two things in this output look like failures and are not (both seen on
+   the first real deploy, 2026-08-11):
+
+   - **`WARNING The app is not listening on the expected address`**, listing
+     only `/.fly/hallpass`. flyctl probes the socket within a few seconds of
+     boot, before `node src/main.js` finishes starting; the machine's own log
+     says `hummingbird-runner listening on :8080` immediately after. Read the
+     log (`fly logs`), not the warning. A *genuine* bind failure looks the
+     same in this warning but has no `listening on :8080` line behind it.
+   - **`This deployment will: create 2 "app" machines`.** Fly adds a second
+     machine for HA regardless of `min_machines_running = 0` -- that setting
+     governs how many stay *running*, not how many exist. Both still stop
+     when idle, so scale-to-zero and the idle cost are unaffected. Pass
+     `--ha=false` if one machine is wanted instead.
 
 5. **Smoke-test** (replace `<token>`):
 
