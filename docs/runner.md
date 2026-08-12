@@ -1,10 +1,20 @@
 # The skill-runner endpoint
 
-> **Status (2026-08-11): built, not deployed.** No Fly app is provisioned,
-> no secrets are set, and no bearer token is minted -- #256 is a build-only
-> slice and #272 (the `microtask` op) is another; provisioning is an
-> operator gate (see Deploy runbook below), the same posture #237's server
-> deploy used.
+> **Status (2026-08-12): deployed, all three ops live.**
+> `hummingbird-runner` is provisioned in `sjc` and answering at
+> `https://hummingbird-runner.fly.dev`, and all three ops are smoke-tested
+> against it. `HB_API_TOKEN` is set (a device-scope token minted as id
+> `runner`), so `microtask` holds a **write** credential against the live
+> authority and every run of it mints real Step rows -- confirmed by writing,
+> then soft-deleting, 28 of them. One finding came out of that run and is
+> **open**: an identical repeat request appends a further phase of steps rather
+> than converging, because the model reads the existing checklist as work
+> already covered
+> ([#307](https://github.com/JddAndrewLauren/hummingbird/issues/307)) -- so the
+> op is idempotent at the write layer and *not* at the request layer, which is
+> the level a client retries at. Provisioning was and remains an operator gate:
+> #256 and #272 are build-only slices, the same posture #237's server deploy
+> used.
 
 A fourth actor (#41 decided this, #256 builds it): a Fly app that takes
 `POST /run {skill, args}` and runs one Claude Code skill headlessly,
@@ -209,21 +219,47 @@ operator can close the provisioning gate #256's issue thread leaves open.
    *distinct* token from any device's, so it can be revoked on its own:
 
    ```sh
-   fly secrets set --config runner/fly.toml \
-     HB_API_TOKEN=<a device-scope token minted for the runner> \
-     HB_API_BASE=https://hb.twinion.net   # the default; set it only to point elsewhere
+   runner/scripts/mint-hb-token.sh <admin-secret-file>   # mints, then sets HB_API_TOKEN
    ```
 
-   Mint it the way every other device token is minted (`POST
+   It is minted the way every other device token is (`POST
    /api/admin/tokens` with `ADMIN_SECRET`, from the operator's terminal --
-   never from Actions). **Leaving it unset is a supported state**: the
+   never from Actions), and the script exists because **the plaintext
+   appears only in the original 201**: the route is idempotent by `id` and
+   stores only a hash, so a replay answers 200 with the metadata and no
+   token, unrecoverably. So the mint and the `fly secrets set` that
+   consumes it have to happen in one pass. Set `HB_TOKEN_OUT=<path>` to
+   keep a mode-600 copy for 1Password. `HB_API_BASE` defaults to
+   `https://hb.twinion.net`; set it by hand only to point elsewhere.
+
+   **Leaving it unset is a supported state**: the
    runner still starts and logs one line, `parse-capture` and `next-up-hb`
    are unaffected, and `microtask` declines with a named envelope error.
 
    Switching providers later is `fly secrets set` alone, no deploy
-   (decision 2) -- but eyeball a few runs after any swap: the per-skill
-   schema catches shape failures, never judgment failures. Set a spend cap
-   in whichever provider's console holds the key, at the same time -- the
+   (decision 2) -- but **use `runner/scripts/switch-provider.sh`** rather
+   than setting the variables by hand:
+
+   ```sh
+   runner/scripts/switch-provider.sh anthropic <key-file>
+   runner/scripts/switch-provider.sh third-party <key-file> <base-url> <model-id>
+   ```
+
+   The two credentials are **mutually exclusive**, which is what the script
+   is for: each direction clears the other side. With both
+   `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` set, the client sends both
+   headers and the provider rejects every request -- and a hand-run
+   `fly secrets set` sets one without clearing the other. It also reads the
+   credential from a mode-600 file and strips leading/trailing whitespace, since
+   a bearer token carrying a trailing newline fails auth in a way that looks
+   nothing like a whitespace problem.
+
+   Whichever way you swap, eyeball a few runs afterwards: the per-skill
+   schema catches shape failures, never judgment failures -- on the
+   2026-08-11 swap to Moonshot's `kimi-k3`, both read-only ops returned
+   schema-valid answers and picked the same item, and the only difference
+   was a vaguer `why` line, which no schema can catch. Set a spend cap in
+   whichever provider console holds the key, at the same time -- the
    cost-ceiling posture above.
 
 4. **Deploy**:
@@ -231,6 +267,21 @@ operator can close the provisioning gate #256's issue thread leaves open.
    ```sh
    fly deploy --config runner/fly.toml --dockerfile runner/Dockerfile
    ```
+
+   Two things in this output look like failures and are not (both seen on
+   the first real deploy, 2026-08-11):
+
+   - **`WARNING The app is not listening on the expected address`**, listing
+     only `/.fly/hallpass`. flyctl probes the socket within a few seconds of
+     boot, before `node src/main.js` finishes starting; the machine's own log
+     says `hummingbird-runner listening on :8080` immediately after. Read the
+     log (`fly logs`), not the warning. A *genuine* bind failure looks the
+     same in this warning but has no `listening on :8080` line behind it.
+   - **`This deployment will: create 2 "app" machines`.** Fly adds a second
+     machine for HA regardless of `min_machines_running = 0` -- that setting
+     governs how many stay *running*, not how many exist. Both still stop
+     when idle, so scale-to-zero and the idle cost are unaffected. Pass
+     `--ha=false` if one machine is wanted instead.
 
 5. **Smoke-test** (replace `<token>`):
 
@@ -268,12 +319,18 @@ operator can close the provisioning gate #256's issue thread leaves open.
    `{"ok":true,"skill":"microtask","result":{"steps":[...],"note":"..."}}`,
    and the steps themselves visible in the client (or in `GET /api/sweep`)
    afterwards. **Re-running the identical request is the idempotence
-   check**: the second run writes the same ids and adds no rows.
+   check** -- but know what it does and does not guarantee before judging
+   the result. Writes are idempotent by `sha256(namespace + item + "/" +
+   body)`, so a retried write of the *same* answer mints nothing; a second
+   HTTP request, however, re-invokes the model, and differently-worded
+   steps are new ids and new rows. If run two adds rows, check whether the
+   step text changed before calling it a defect.
 
 6. **Rotate the token** later by repeating step 2-3 with a fresh value,
    then updating whatever client holds it. `HB_API_TOKEN` rotates
-   separately and the same way -- mint a new device-scope token, `fly
-   secrets set` it, revoke the old one.
+   separately: `DELETE /api/admin/tokens/runner` to revoke, then
+   `mint-hb-token.sh` again under the same id (the mint is idempotent by
+   `id`, so the revoke has to come first or the replay returns no token).
 
 ## Testing (agent-facing, not part of the operator gate)
 

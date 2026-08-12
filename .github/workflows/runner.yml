@@ -65,7 +65,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Plain `node --test` over thirteen files with no install step; anything
+    # Plain `node --test` over fifteen files with no install step; anything
     # slower than this is a hung test, not a slow one.
     timeout-minutes: 5
     steps:
@@ -86,6 +86,19 @@ jobs:
       - name: node --test (runner)
         working-directory: runner
         run: node --test
+
+      # `runner/scripts/` is operator-run bash that handles credentials, and
+      # nothing in this repo lints shell anywhere -- `skills.yml` gates
+      # `.claude/skills/*/scripts/*.sh` and watches nothing here. The suite
+      # above does spawn `switch-provider.sh` against a stubbed flyctl, so its
+      # behaviour is covered; this catches the quoting and expansion classes a
+      # behavioural test cannot see. `-S style` because these are short scripts
+      # where the style checks are worth having and they pass clean today.
+      # ubuntu-latest ships shellcheck; assert that rather than skip silently.
+      - name: shellcheck (runner/scripts)
+        run: |
+          command -v shellcheck
+          shellcheck -S style runner/scripts/*.sh
 
   # The gate the suite structurally cannot be. `runner/`'s tests inject a
   # fake `spawn`, which is the right call -- no test should need a real
