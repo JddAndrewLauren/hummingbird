@@ -10,7 +10,8 @@
 import { describe, expect, it } from "vitest";
 import { StatusScreen } from "./StatusScreen";
 import { QUESTION_ORDER } from "./questions/contract";
-import { QUESTIONS } from "./questions/registry";
+import { QUESTIONS, rankPanes } from "./questions/registry";
+import { realQuestionInputs } from "./NowScreen";
 import { render, screen, taskState } from "../test/component";
 
 const NOW_MS = 1_700_000_000_000;
@@ -52,6 +53,18 @@ describe("StatusScreen", () => {
   });
 
   it("shows every gap question as a gap — the manual check's 'gap panes, not an empty screen'", () => {
+    // The expected count is the number of *gap* panes — status panes the
+    // registry itself answers `bound-but-unacquired` for these same inputs —
+    // not the number of status questions, which stays 4 when #313-#316 each
+    // replace a placeholder with a real, non-gap pane. Derived from
+    // `rankPanes`, so those slices touch nothing here; the guard keeps this
+    // from degenerating into asserting an empty screen.
+    const expectedGaps = rankPanes(
+      { ...realQuestionInputs(taskState(), {}, false), nowMs: NOW_MS },
+      "status",
+    ).filter((pane) => pane.answer.answerState === "bound-but-unacquired").length;
+    expect(expectedGaps).toBeGreaterThan(0);
+
     render(
       <StatusScreen
         demo={null}
@@ -65,10 +78,8 @@ describe("StatusScreen", () => {
 
     // "No answer yet" is the placeholder's collapsed headline, and dormant
     // (a gap) is collapsed by default — the same rule `collapse.ts` gives
-    // every other never-answered pane. Asserted against the registry's own
-    // count rather than a literal, so a slice that turns one placeholder
-    // into a real, non-gap pane (#313 first) shrinks this by exactly one
-    // with no edit required here.
-    expect(screen.getAllByText("No answer yet")).toHaveLength(STATUS_LABELS.length);
+    // every other never-answered pane. If a gap pane stops rendering its
+    // headline, the DOM count falls below `expectedGaps` and this fails.
+    expect(screen.getAllByText("No answer yet")).toHaveLength(expectedGaps);
   });
 });
