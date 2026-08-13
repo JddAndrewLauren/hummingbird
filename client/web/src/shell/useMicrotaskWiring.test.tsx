@@ -362,6 +362,31 @@ describe("useMicrotaskWiring — #274's routing", () => {
     expect(screen.queryByText(/switch to/i)).toBeNull();
   });
 
+  it("offers no fallback for a NO_TOKEN decline — the failure names nothing to switch away FROM", async () => {
+    // NO_TOKEN is not evidence the pinned backend is unreachable (no
+    // request was ever made), so "switch to Home runner" would be an
+    // actively wrong suggestion here.
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn();
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore(null)}
+        selection="cloud"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
+  });
+
   it("offers no fallback under Auto — nothing to fall back FROM", async () => {
     const worker = fakeWorker();
     const fetchImpl = vi.fn(async () => {

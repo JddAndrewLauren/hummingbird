@@ -5,8 +5,11 @@
 // ever skips a tier the memo already knows is dead; whether an *attempted*
 // tier answers is found out by really calling it, with a short connect
 // timeout (`entry.connectTimeoutMs`) so a sleeping home machine cannot make
-// the tap hang. That timeout is `AbortSignal.timeout`, scoped to one
-// attempt's own lifetime and cleared the moment the attempt settles — the
+// the tap hang. That timeout bounds only the connect phase — the wait for
+// `fetch` itself to settle — and is disarmed the moment it does, whether
+// `fetch` resolved or rejected; it never reaches the body reader, because
+// the runner's own 20s "still running" heartbeat (`run-state.ts`) means a
+// timeout armed for the whole run would abort every real streamed run. The
 // same category as the unmount `AbortController` `useMicrotaskWiring.ts`
 // already uses, not a second interval against ADR-0007.
 //
@@ -18,7 +21,7 @@
 // attempt.** Nothing here polls it on a schedule — there is no schedule.
 
 import { AUTO_SELECTION, type BackendEntry } from "./backend-registry";
-import { NO_TERMINAL_LINE } from "./decline";
+import { NO_TERMINAL_LINE, NO_TOKEN } from "./decline";
 import { markDead, markReachable, type ReachabilityMemo } from "./reachability-memo";
 import { planRoute, type RouteStep } from "./route-plan";
 import { runSkill, type RunSkillDeps } from "./run-skill";
@@ -79,16 +82,36 @@ export async function* runRouted(
       return;
     }
 
-    deps.memoStore.set(markDead(deps.memoStore.get(), entry.id, deps.now()));
+    // `NO_TOKEN` is not evidence the backend is unreachable — `fetch` was
+    // never even called — so it must not memoize the entry as dead. Doing
+    // so would make the very next tap's plan all-skip (every entry
+    // memoized dead), which is exactly the stuck-forever bug below.
+    if (terminal.error !== NO_TOKEN) {
+      deps.memoStore.set(markDead(deps.memoStore.get(), entry.id, deps.now()));
+    }
     const moreToTry = steps.slice(index + 1).some((s) => s.kind === "attempt");
     if (!moreToTry) {
+      // NO_TOKEN already names the actionable problem on its own — wrapping
+      // it in "<entry> did not answer: …" would suggest the pinned backend
+      // was unreachable, when no request was ever sent to it.
       yield failure(
-        selection === AUTO_SELECTION ? terminal.error : declineForPinnedFailure(entry, terminal.error),
+        terminal.error === NO_TOKEN
+          ? terminal.error
+          : selection === AUTO_SELECTION
+            ? terminal.error
+            : declineForPinnedFailure(entry, terminal.error),
       );
       return;
     }
     yield { kind: "progress", message: `${entry.label} unreachable, trying the next backend.` };
   }
+
+  // Every step was a `skip` — the plan was exhausted before a single
+  // attempt was made (every registered entry memoized dead). The module
+  // contract is exactly one terminal event per run; without this, the loop
+  // above yields nothing but `progress` and returns, leaving the caller's
+  // reducer at `phase: "running"` forever.
+  yield failure(NO_REACHABLE_BACKEND);
 }
 
 /** One tier's attempt: `runSkill`'s own `started` is swallowed (this
@@ -101,25 +124,55 @@ async function* attempt(
   body: unknown,
   deps: RouteRunDeps,
 ): AsyncGenerator<SkillEvent, { kind: "ok"; result: unknown; backend: string | null; model: string | null } | { kind: "failed"; error: string; backend: string | null; model: string | null }> {
-  const timeoutSignal = AbortSignal.timeout(entry.connectTimeoutMs);
-  const signal = deps.signal ? AbortSignal.any([deps.signal, timeoutSignal]) : timeoutSignal;
+  // The connect-phase timeout: a plain `AbortController` rather than
+  // `AbortSignal.timeout`, because it has to be disarmed once `fetch`
+  // settles — `AbortSignal.timeout`'s timer cannot be cleared, so it would
+  // stay live across the whole streamed run.
+  const connectController = new AbortController();
+  const connectTimer = setTimeout(() => connectController.abort(), entry.connectTimeoutMs);
+  const signal = deps.signal ? AbortSignal.any([deps.signal, connectController.signal]) : connectController.signal;
+
+  // Wraps `deps.fetch` only to disarm the connect timer the moment the call
+  // settles — resolved or rejected. After that point `signal` (still passed
+  // to the body reader below) can only fire from `deps.signal`, never from
+  // the connect timeout: a sleeping backend that never answers still aborts
+  // at `connectTimeoutMs`, but a slow *stream* from a backend that did
+  // answer promptly is never punished for taking longer than that to finish.
+  const connectBoundedFetch: typeof globalThis.fetch = async (input, init) => {
+    try {
+      return await deps.fetch(input, init);
+    } finally {
+      clearTimeout(connectTimer);
+    }
+  };
 
   let terminal:
     | { kind: "ok"; result: unknown; backend: string | null; model: string | null }
     | { kind: "failed"; error: string; backend: string | null; model: string | null }
     | null = null;
 
-  for await (const event of runSkill(entry, body, { fetch: deps.fetch, readToken: deps.readToken, signal })) {
-    if (event.kind === "started") continue;
-    if (event.kind === "progress") {
-      yield event;
-      continue;
+  try {
+    for await (const event of runSkill(entry, body, {
+      fetch: connectBoundedFetch,
+      readToken: deps.readToken,
+      signal,
+    })) {
+      if (event.kind === "started") continue;
+      if (event.kind === "progress") {
+        yield event;
+        continue;
+      }
+      // `runSkill`'s own contract: `unreadable` is dropped inside it and
+      // never escapes as a terminal event — this guard exists only so the
+      // type narrows to `ok | failed` without a cast; it is unreachable at
+      // runtime.
+      if (event.kind === "unreadable") continue;
+      terminal = event;
     }
-    // `runSkill`'s own contract: `unreadable` is dropped inside it and never
-    // escapes as a terminal event — this guard exists only so the type
-    // narrows to `ok | failed` without a cast; it is unreachable at runtime.
-    if (event.kind === "unreadable") continue;
-    terminal = event;
+  } finally {
+    // Covers the paths that never call `fetch` at all (`NO_TOKEN`) and any
+    // early return — the timer must not outlive this attempt either way.
+    clearTimeout(connectTimer);
   }
 
   return terminal ?? { kind: "failed", error: NO_TERMINAL_LINE, backend: null, model: null };
@@ -128,6 +181,9 @@ async function* attempt(
 function failure(error: string): SkillEvent {
   return { kind: "failed", error, backend: null, model: null };
 }
+
+/** Every registered entry was memoized dead, so nothing was even attempted. */
+const NO_REACHABLE_BACKEND = "No backend is currently reachable.";
 
 function declineForPinnedDead(entry: BackendEntry, fallback: BackendEntry | null): string {
   const base = `${entry.label} is not answering right now.`;

@@ -19,6 +19,44 @@ function ndjson(status: number, ...lines: string[]): Response {
   return new Response(body, { status });
 }
 
+/** A response that resolves (headers) immediately but trickles its body in
+ * slowly, and — like a real `fetch` — actually tears the read down when
+ * `signal` aborts mid-wait. `perLineDelayMs` is real elapsed time, not a
+ * mocked clock: this is exercising `AbortSignal` timing, which fake timers
+ * do not drive. */
+function slowNdjson(
+  status: number,
+  perLineDelayMs: number,
+  signal: AbortSignal | undefined,
+  ...lines: string[]
+): Response {
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      for (const line of lines) {
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+          }
+          const timer = setTimeout(resolve, perLineDelayMs);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              reject(new DOMException("Aborted", "AbortError"));
+            },
+            { once: true },
+          );
+        });
+        controller.enqueue(encoder.encode(`${line}\n`));
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, { status });
+}
+
 function memoStore(initial: ReachabilityMemo = EMPTY_MEMO): ReachabilityMemoStore & { current: ReachabilityMemo } {
   const store = {
     current: initial,
@@ -225,6 +263,104 @@ describe("runRouted", () => {
       ),
     );
     expect(seen).toEqual(["cloud", "home"]);
+  });
+
+  it("connectTimeoutMs bounds only the connect phase, not the whole streamed run", async () => {
+    // `fetch` itself resolves instantly (a prompt first response), but the
+    // body then takes longer than connectTimeoutMs to finish streaming: a
+    // progress line at 40ms, the terminal line at 80ms, against a 50ms
+    // connect timeout. A connect timeout that stays armed across the whole
+    // run aborts the read mid-stream (same signal used for both `fetch` and
+    // the body reader); one scoped to the connect phase alone must let this
+    // finish.
+    const entry: BackendEntry = { ...CLOUD, connectTimeoutMs: 50 };
+    const memo = memoStore();
+    const events = await collect(
+      runRouted("cloud", () => ({ skill: "microtask", args: {} }), {
+        registry: [entry],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: async (_input, init) =>
+          slowNdjson(
+            200,
+            40,
+            init?.signal ?? undefined,
+            '{"type":"progress","message":"still running"}',
+            '{"ok":true,"result":null,"backend":"anthropic","model":"opus"}',
+          ),
+      }),
+    );
+    expect(events.at(-1)).toMatchObject({ kind: "ok" });
+  });
+
+  it("an all-skipped plan still emits exactly one terminal event, never leaving the run open", async () => {
+    // Every registered entry memoized dead: `planRoute` returns a sequence
+    // of nothing but `skip` steps, and no attempt is ever made. The
+    // `started`/terminal contract (module header) has to hold even here —
+    // otherwise a caller's reducer is stuck at `phase: "running"` forever,
+    // because a `progress` line never closes a run.
+    const memo = memoStore(markDead(EMPTY_MEMO, "cloud", 0, 30_000));
+    const events = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD],
+        memoStore: memo,
+        now: () => 1_000,
+        readToken: async () => "hb_token",
+        fetch: async () => {
+          throw new Error("must not be called: every tier is a skip");
+        },
+      }),
+    );
+    expect(events[0]).toEqual({ kind: "started" });
+    const terminals = events.filter((event) => event.kind === "ok" || event.kind === "failed");
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toMatchObject({ kind: "failed" });
+  });
+
+  it("a NO_TOKEN decline does not mark the backend dead", async () => {
+    const memo = memoStore();
+    const events = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => null,
+        fetch: async () => {
+          throw new Error("must not be called: NO_TOKEN never reaches fetch");
+        },
+      }),
+    );
+    expect(events).toEqual([{ kind: "started" }, { kind: "failed", error: NO_TOKEN, backend: null, model: null }]);
+    expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
+  });
+
+  it("double-tapping with no device token declines both times, each with exactly one terminal event", async () => {
+    // The reported repro: no device token stored, tap the affordance twice
+    // within the memo's TTL. If the first tap wrongly memoized "cloud" as
+    // dead, the second tap's plan would be all-skip and (absent the fix
+    // above) emit zero terminal events — the button-disabled-forever bug.
+    const memo = memoStore();
+    const deps = {
+      registry: [CLOUD],
+      memoStore: memo,
+      readToken: async () => null,
+      fetch: async () => {
+        throw new Error("must not be called: NO_TOKEN never reaches fetch");
+      },
+    };
+
+    const first = await collect(runRouted("auto", () => ({ skill: "microtask", args: {} }), { ...deps, now: () => 0 }));
+    const second = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), { ...deps, now: () => 1_000 }),
+    );
+
+    for (const events of [first, second]) {
+      expect(events[0]).toEqual({ kind: "started" });
+      const terminals = events.filter((event) => event.kind === "ok" || event.kind === "failed");
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({ kind: "failed", error: NO_TOKEN });
+    }
   });
 
   it("with no token stored it declines without any fetch, same as the unrouted seam", async () => {
