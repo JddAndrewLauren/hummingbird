@@ -303,6 +303,45 @@ describe("RulesScreen", () => {
     expect(screen.getAllByText(/unranked/i).length).toBeGreaterThan(1);
   });
 
+  it("renders the invalid and unranked badges together when a rule is both, neither suppressing the other", () => {
+    render(
+      <RulesScreen
+        rules={[
+          rule({
+            severity: "warning",
+            conditions: [{ field: "removed_field", op: "eq", value: "x", negate: false }],
+          }),
+        ]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    // Both badges, with their own copy: the two facts are independent —
+    // "this condition could not be written today" and "this severity ranks
+    // below every declared one" — so neither is allowed to stand in for the
+    // other, and neither early-returns past it.
+    const invalid = screen.getByText("Invalid — names a field its kind no longer declares");
+    const unranked = screen.getByText(/^Unranked severity —/);
+    expect(invalid.textContent).toContain("no longer declares");
+    expect(unranked.textContent).toContain("can never escalate a notification");
+
+    // And at their own tones — danger for the broken rule, warn for the
+    // working-but-outranked one. A single tone for both would say the
+    // unranked rule is broken, which it is not (#338).
+    const badge = (labelEl: HTMLElement) => labelEl.parentElement?.getAttribute("style") ?? "";
+    expect(badge(invalid)).toContain("--status-danger-fg");
+    expect(badge(unranked)).toContain("--status-warn-fg");
+
+    // Same row, in the card's badge group, rather than one of them landing
+    // somewhere else on the card.
+    expect(invalid.parentElement?.parentElement).toBe(unranked.parentElement?.parentElement);
+  });
+
   it("does not mark a rule at a declared severity as unranked", () => {
     render(
       <RulesScreen
