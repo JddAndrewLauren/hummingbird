@@ -1,6 +1,10 @@
 # ADR-0015: The standing-question read contract
 
-**Status:** accepted · 2026-08-10
+**Status:** accepted · 2026-08-10 · **amended 2026-08-12 by
+[ADR-0017](0017-the-standing-question-surface-axis.md):** the ranked region
+is instantiated per surface — `QuestionDef` gains `surface: "now" | "status"`
+— so "the ranked region owns Now's Context aside" and "one region, one slot"
+are true of Now specifically, not of every surface that will ever exist.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on
 #118 (settings bindings) and widened when that slice proved undesignable
 alone — the bindings exist to pose standing questions, and four throwaway
