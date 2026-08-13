@@ -14,7 +14,26 @@ import type { SkillLine } from "./envelope";
 import { microtaskResult } from "./envelope";
 import { NO_TERMINAL_LINE } from "./decline";
 
-export type SkillEvent = { kind: "started" } | SkillLine;
+/**
+ * A terminal `failed` that **routing** has annotated with the one fact no
+ * line carries: whether a backend actually answered this run (#274).
+ *
+ * It lives here rather than in `envelope.ts` because it is not a property of
+ * a line — the wire never sends it, and `classifyLine` never sets it. Only
+ * `route-run.ts` knows it, from whether its `fetch` resolved, and the
+ * distinction is not recoverable downstream: a seam decline (#307), a 401
+ * and a rejected connection can all arrive as an unstamped `failed`, and
+ * `decline.ts` forbids telling them apart by their prose.
+ */
+export interface RoutedFailure {
+  kind: "failed";
+  error: string;
+  backend: string | null;
+  model: string | null;
+  answered: boolean;
+}
+
+export type SkillEvent = { kind: "started" } | SkillLine | RoutedFailure;
 
 export type SkillRunState =
   | { phase: "idle" }
@@ -36,6 +55,12 @@ export type SkillRunState =
       reason: string;
       backend: string | null;
       model: string | null;
+      /** Whether a backend answered this run (#274). A decline that a
+       * backend *answered* is not evidence any backend is unreachable, so
+       * nothing may offer switching away from one on the strength of it.
+       * `false` whenever the event did not say — an unrouted run, or a
+       * caller feeding this reducer raw envelope lines. */
+      answered: boolean;
     };
 
 export const IDLE: SkillRunState = { phase: "idle" };
@@ -90,6 +115,9 @@ export function reduceRun(state: SkillRunState, event: SkillEvent): SkillRunStat
         reason: event.error,
         backend: event.backend,
         model: event.model,
+        // Absent means unrouted, which is the safe reading: "nothing told
+        // me a backend answered", never "a backend definitely did not".
+        answered: "answered" in event ? event.answered : false,
       };
 
     case "unreadable":

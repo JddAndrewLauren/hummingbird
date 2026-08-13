@@ -406,6 +406,31 @@ describe("useMicrotaskWiring — #274's routing", () => {
     expect(screen.queryByText(/switch to/i)).toBeNull();
   });
 
+  it("offers no fallback for an UNSTAMPED answered decline either — a 401 names no backend", async () => {
+    // The case a stamp-based reading gets wrong: 401/403 are empty-bodied
+    // by design (ADR-0018), so the decline carries no backend name at all,
+    // yet the backend answered. Switching tiers collects the same 401 from
+    // the same proxy with the same device token.
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 401 }));
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="cloud"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
+  });
+
   it("offers no fallback for a NO_TOKEN decline — the failure names nothing to switch away FROM", async () => {
     // NO_TOKEN is not evidence the pinned backend is unreachable (no
     // request was ever made), so "switch to Home runner" would be an
