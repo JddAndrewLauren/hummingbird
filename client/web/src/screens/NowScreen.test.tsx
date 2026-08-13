@@ -42,10 +42,37 @@ import type { TaskState } from "../store/store";
 
 const NOW_MS = 1_700_000_000_000;
 
+/** A fresh in-memory `storage` per render, and the reason it is not optional.
+ *
+ * `NowScreen` falls back to the ambient `localStorage` when given no `storage`
+ * prop, and since #403 the frontier persists its grouping axis there. Left to
+ * the fallback, a test that switches the axis writes into storage every LATER
+ * test in this file then reads — so the suite's outcome depends on test order
+ * and on whether the runtime has a working `localStorage` at all. It does not
+ * under this repo's local vitest (node reports "localStorage is not available
+ * because --localstorage-file was not provided") and it does in CI, which is
+ * how the same commit passed here and failed there. Hermetic per test instead;
+ * `renderNow`'s own `rerender` deliberately keeps the SAME instance, because a
+ * rerender is not a remount and must not reset what the screen restored. */
+function memoryStorage(seed: Record<string, string> = {}) {
+  const entries = { ...seed };
+  return {
+    entries,
+    getItem: (key: string) => entries[key] ?? null,
+    setItem: (key: string, value: string) => {
+      entries[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete entries[key];
+    },
+  };
+}
+
 function renderNow(task: TaskState, selectedItemId: string | null = null) {
   const onAct = vi.fn();
   const onOpenItem = vi.fn();
   const onCloseItemDetail = vi.fn();
+  const storage = memoryStorage();
   const view = render(
     <NowScreen
       demo={null}
@@ -58,6 +85,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
       onAct={onAct}
       calendarReads={{}}
       calendarConnected={false}
+      storage={storage}
     />,
   );
   const rerender = (next: TaskState, nextSelected: string | null = selectedItemId) =>
@@ -73,10 +101,60 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
         onAct={onAct}
         calendarReads={{}}
         calendarConnected={false}
+        storage={storage}
       />,
     );
-  return { onAct, onOpenItem, onCloseItemDetail, rerender };
+  return { onAct, onOpenItem, onCloseItemDetail, rerender, storage };
 }
+
+// The guard for the defect above: a test that reached the ambient
+// `localStorage` made this file's result depend on test order, and it only
+// showed up in CI because the local runtime has no `localStorage` to leak
+// through. Asserted structurally rather than trusted to a convention.
+describe("NowScreen — test isolation", () => {
+  it("never touches the ambient localStorage when given a storage prop", () => {
+    const calls: string[] = [];
+    const spy = {
+      getItem: (key: string) => {
+        calls.push(`get ${key}`);
+        return null;
+      },
+      setItem: (key: string) => {
+        calls.push(`set ${key}`);
+      },
+      removeItem: (key: string) => {
+        calls.push(`remove ${key}`);
+      },
+    };
+    const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { value: spy, configurable: true });
+    try {
+      renderNow(
+        taskState({ frontier: [itemDTO({ id: "i1", title: "A thing", context: "@computer" })] }),
+      );
+      // Switching the axis is the write that used to leak across tests.
+      fireEvent.click(screen.getByRole("button", { name: "Energy" }));
+      expect(calls).toEqual([]);
+    } finally {
+      if (original) {
+        Object.defineProperty(globalThis, "localStorage", original);
+      } else {
+        Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    }
+  });
+
+  it("gives each render its own storage, so an axis switch cannot outlive its test", () => {
+    const first = renderNow(taskState({ frontier: [itemDTO({ id: "i1", context: "@computer" })] }));
+    fireEvent.click(screen.getByRole("button", { name: "Energy" }));
+    expect(first.storage.entries["hb.now.frontier-axis"]).toBe("energy");
+
+    const second = renderNow(taskState({ frontier: [itemDTO({ id: "i2", context: "@computer" })] }));
+    expect("hb.now.frontier-axis" in second.storage.entries).toBe(false);
+    // ...and the second render is back on the default axis.
+    expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeDefined();
+  });
+});
 
 describe("NowScreen — the act lifecycle (PR #207 round 2)", () => {
   it("re-enables the action row once the queued act drains, for an item that left every live query", () => {
