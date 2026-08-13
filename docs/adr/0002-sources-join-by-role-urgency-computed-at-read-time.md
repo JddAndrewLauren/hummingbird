@@ -13,6 +13,11 @@ two more out-of-scope entries — M365 mail and the pager/alert-router role
 time and stamp severity only on the alerts they mint; nothing ever writes
 urgency onto an existing record; ranking is a read-time query over lifecycle
 state.
+**Amended 2026-08-12 by
+[ADR-0019](0019-the-gmail-capture-unit-is-the-conversation-the-key-stays-the-message.md):**
+the Placements table's Gmail row said the message is the unit; the decided
+capture unit is now the **conversation**, with the message staying only the
+identifying key.
 **Context:** the data-sources grilling of 2026-08-07, issue
 [#43](https://github.com/JddAndrewLauren/hummingbird/issues/43); extends
 [ADR-0001](0001-linear-is-the-authority-behind-a-clean-seam.md).
@@ -76,6 +81,10 @@ calendar event is background context at T−3 days and constrains
 | Gmail | capture (fail-closed: dedicated label is the gesture, unlabel is the ack, the **message** is the unit) |
 | Google Calendar | context — the record archetype; read-only |
 | M365 calendar | context — sequenced after Google Calendar (second auth stack: MS identity + Graph) |
+
+*Amended 2026-08-12 by [ADR-0019](0019-the-gmail-capture-unit-is-the-conversation-the-key-stays-the-message.md)
+(see the Status header): the Gmail row above is superseded — the capture
+unit is the conversation, and the message stays only the identifying key.*
 
 ## Consumer order
 

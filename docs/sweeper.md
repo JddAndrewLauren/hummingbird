@@ -164,8 +164,9 @@ capture.
 ## The Gmail adapter
 
 An inbox is a firehose, so Gmail inverts Tasks' fail-open posture to
-**opt-in, fail-closed** (ADR-0002). The unit is the **message**, and the
-`hummingbird/capture` label is the whole gesture:
+**opt-in, fail-closed** (ADR-0002). The **capture unit is the conversation;
+the key stays the message** (ADR-0019, #336) — deliberately not the same
+thing. The `hummingbird/capture` label is the whole gesture:
 
 - **Only labelled messages are enumerated.** Everything else is invisible to
   the sweeper — it never lists, reads, or touches an unlabelled message.
@@ -175,11 +176,30 @@ An inbox is a firehose, so Gmail inverts Tasks' fail-open posture to
   the gesture would be a second, invisible rule.
 - **The label is rechecked on retrieval.** Listing and metadata fetch are two
   calls; if the label came off in between, the retrieved `labelIds` win and the
-  message is skipped with a log line, not captured. Only a *currently* labelled
-  message enters the drain.
+  message is skipped with a log line, not captured, and it can never be a
+  thread's winner. Only a *currently* labelled message enters the drain.
+- **One conversation, one capture per sweep.** Gmail's UI applies the label at
+  **thread** granularity, so a forward chain labels every message in it.
+  Enumeration groups the still-labelled, retrieved messages by `threadId` and
+  selects one **winner**: the **oldest labelled message by `internalDate`**,
+  with the message id as a deterministic tiebreak. Oldest, not newest — a
+  forward arriving between sweeps moves "newest" and must never move which id
+  a thread mints, since an observer-dependent key is exactly what turns a
+  replay into a duplicate. The **id derivation is untouched**: the winner's
+  message id is still what `deterministic_v4` hashes; there is no thread-keyed
+  id and none is planned (ADR-0019 rejects it by name).
+- **Losing messages are acked without creating.** A thread's non-winning
+  messages mint nothing and count as no capture, but their label is removed
+  too, so they do not re-enumerate forever.
+- **The collapse is thread-atomic and fail-closed.** Losing messages are acked
+  **only after the winner's create has succeeded**; if that create fails,
+  nothing in the thread is acked and the whole conversation stays labelled for
+  the next sweep to re-enumerate and retry. One thread's failure never touches
+  another's — the engine's per-item isolation (below) is unchanged.
 - **The ack removes exactly that label from that message.** Never archive,
   mark-read, star, delete, or any other mutation. The message stays where it
   was as the audit trail; the thread deep link in the issue is the road back.
+  This applies to the winner *and* every collapsed message.
 - **The label missing from the mailbox entirely fails the adapter** — visibly,
   on its own healthcheck — rather than enumerating anything. No gesture, no
   trust. Google Tasks keeps draining normally either way.
@@ -318,6 +338,13 @@ Quarantine nobody can see would just be the original bug inverted, so
 successful sweep set anything aside its summary rides along as the **body of
 the success ping**. The check reads green — capture is working — while its page
 shows the junk accumulating.
+
+`collapsed=` joins the same `sweep finish` line (#336), counting the Gmail
+adapter's non-winning thread messages that were acked without creating; it is
+**never** carried in the success ping body, unlike `skipped=`/`quarantined=`
+above — a collapsed message is normal operation, not something set aside for
+a human to look at. Each collapsed message also gets its own log line naming
+its thread and the winning message id.
 
 **The ping URL is a bearer secret and is never logged.** Its path *is* the
 credential — anyone holding it can forge a success ping and silence the alarm —
@@ -500,16 +527,18 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    underneath it; that is the failure this step exists to catch, and the only
    one that matters here.
 
-   Label it from the **message**, not the thread. Gmail's UI applies a label to
-   every message in a thread while the adapter enumerates messages, so
-   labelling a thread that carries a forward chain sweeps each message in it
-   and mints one item per message. Doing this during gate 8 on 2026-08-12 put
-   the label on three messages of one thread and produced the intended
-   `existed=1` alongside two unwanted `Fwd:` captures of the same conversation.
-   That fan-out is the adapter's long-standing behaviour rather than anything
-   the retarget changed — see
-   [#336](https://github.com/JddAndrewLauren/hummingbird/issues/336) — but it
-   makes a thread-level label a poor instrument for this check.
+   Labelling a thread that carries a forward chain is no longer a hazard for
+   this check ([#336](https://github.com/JddAndrewLauren/hummingbird/issues/336),
+   ADR-0019): the adapter now collapses every labelled message in a
+   conversation to the one winner it created. Re-labelling from the
+   **conversation view** puts the label back on every message of the
+   already-acked thread; they re-group under the same `threadId` and the
+   winner is once again the same oldest message, so the check still gets
+   `existed=1`, now alongside `collapsed=N-1` for the rest. Labelling a
+   single **newer** message on its own instead enumerates as a thread of
+   one and legitimately mints `created=1` — the ADR-0019 recapture the
+   adapter is designed to allow, not the namespace break the pass condition
+   above exists to catch.
 
 ### Authority-reachability go-live (#328)
 
