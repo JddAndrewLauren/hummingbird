@@ -7,6 +7,7 @@ import { NowScreen } from "./screens/NowScreen";
 import { RoutesScreen } from "./screens/RoutesScreen";
 import { RulesScreen } from "./screens/RulesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
+import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
@@ -364,6 +365,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               task={task}
               nowMs={syncNowMs}
               onComplete={(itemId) => handleAct(itemId, "complete")}
+            />
+          )}
+          {screen === "status" && (
+            <StatusScreen
+              demo={demo}
+              onScreen={setScreen}
+              task={task}
+              nowMs={syncNowMs}
+              calendarReads={calendar.eventReads}
+              calendarConnected={calendar.connected}
             />
           )}
           {screen === "settings" && (

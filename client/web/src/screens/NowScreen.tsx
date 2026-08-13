@@ -461,6 +461,7 @@ export function NowScreen({
             snapshot tiles — and it is the same component in both modes: only
             the inputs differ, so `?demo` photographs the real shell. */}
         <RankedRegion
+          surface="now"
           inputs={
             demo
               ? demoQuestionInputs(nowMs)

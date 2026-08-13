@@ -14,6 +14,7 @@ import { VacationPaneExpanded } from "./VacationPaneExpanded";
  * mirror was never filled for. */
 export const vacationQuestion: QuestionDef = {
   label: "Next vacation",
+  surface: "now",
   sources: [],
   subjects: () => [SUBJECT_KEY],
   answer: (_subjectKey, inputs) => vacationAnswer(inputs),

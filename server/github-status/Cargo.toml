@@ -1,0 +1,53 @@
+[package]
+name = "hummingbird-github-status"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller behind the `github-hummingbird/v1` standing
+# question (#314, ADR-0017 decision 2): once a day it reads this repo's own
+# GitHub Actions run history for every workflow that carries a `schedule:`
+# trigger, and writes one `context_snapshots` row per workflow — the
+# 60-day-auto-disable tell the four evaluated-stream pollers otherwise have
+# no equivalent of (`docs/sweeper.md`'s reasoning, generalised past the
+# sweeper itself).
+#
+# A workspace member, so CI's `cargo clippy --workspace` /
+# `cargo test --workspace` gate it. It must NEVER become a dependency of
+# `hummingbird-authority-worker`: that crate builds for wasm32 and has no
+# business carrying an HTTP client (asserted from the other side in
+# `lib.rs`'s tests, as every other poller here does).
+#
+# The same split every poller here keeps: everything decidable — cron
+# parsing, workflow-manifest scanning, run-history parsing, the
+# conclusion/cadence verdict — lives in the lib and is natively tested;
+# `main.rs` holds only `std::env`, the workflow-directory scan, the fetches
+# and the writes.
+
+[dependencies]
+# The real `GITHUB_HUMMINGBIRD_V1`, never a hand-copied twin: the frozen
+# entry in `sources.rs` is only a tripwire if the one adapter that mints
+# under this source goes through it.
+hummingbird-domain = { path = "../domain" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# `main.rs` only. Blocking by design: this is a one-shot process run once a
+# day, so an async runtime would be pure ceremony — every poller here gives
+# the same reasoning.
+[dependencies.ureq]
+version = "3"
+default-features = false
+features = ["rustls", "json"]
+
+# **No YAML crate, and no cron crate.** The workflow manifest scan
+# (`manifest.rs`) and the cron-to-cadence read (`cron.rs`) are both
+# dependency-free, hand-rolled parsers scoped to exactly the shapes this
+# repo's own workflow files use — `race-poll`'s own "no jiff" posture,
+# carried over for the same reason: a full YAML or cron grammar is a much
+# bigger dependency than the handful of lines this repo's own files need
+# read correctly, and every shape either parser refuses to guess at is
+# covered by a named test against the real committed file.
+
+[[bin]]
+name = "github-status-poll"
+path = "src/bin/main.rs"

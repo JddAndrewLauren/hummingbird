@@ -1,0 +1,9 @@
+{
+  "body": {
+    "available_balance": 4.1,
+    "cash_balance": -1.0,
+    "voucher_balance": 5.1
+  },
+  "polled_every_ms": 21600000,
+  "schema": "kimi-balance/v1"
+}

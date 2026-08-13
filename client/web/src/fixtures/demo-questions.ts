@@ -1,8 +1,11 @@
 import type { QuestionInputs } from "../screens/questions/contract";
+import { SOURCE as GITHUB_SOURCE } from "../screens/github-pane/github";
+import { SNAPSHOT_KEY as KIMI_SNAPSHOT_KEY, SOURCE as KIMI_SOURCE } from "../screens/kimi-pane/kimi";
 import {
   BINDING_KEY as RACE_BINDING_KEY,
   SOURCE as RACE_SOURCE,
 } from "../screens/race-pane/race";
+import { SOURCE as UPTIME_SOURCE } from "../screens/uptime-pane/uptime";
 import { BINDING_KEY, SNAPSHOT_KEY, SOURCE } from "../screens/waste-pane/waste";
 import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 
@@ -17,6 +20,30 @@ import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 // there must never be one — the whole point of `QuestionInputs` being a
 // plain value is that a fixture can drive the real shell rather than a
 // parallel copy of it that drifts from it. What `?demo` shows is what ships.
+//
+// This one world now feeds BOTH surfaces (ADR-0017, #311): `NowScreen`'s
+// aside filters it to the `"now"` questions below (waste answered/imminent,
+// race answered/distant — one non-dormant and one quiet reading, so the
+// capture proves both), and `StatusScreen` filters the same object to the
+// `"status"` infra questions. Two of those still ignore `QuestionInputs`
+// entirely — `screens/questions/placeholder.tsx`'s factory answers
+// `bound-but-unacquired` unconditionally, because no poller exists behind
+// either of them yet — so there is nothing to add here for those until
+// #315-#316 give each one a real source to read.
+//
+// **`kimi-balance/v1` (#313) is the first exception.** `kimiRead` below
+// gives the Status capture its first poller-backed, non-gap pane: a modest
+// "near" reading (the ADR's own worked example, `$4.10`) with a genuinely
+// negative `cash_balance`, so the capture also exercises the voucher/cash
+// split without needing a second, exhausted-balance world to prove it.
+//
+// **`github-hummingbird/v1` (#314) is the second.** `githubRead` below gives
+// the Status capture five workflow rows, one per band the pane can produce
+// (`live`/`imminent`/`near`/`distant`/`dormant`) — the collapsed-stack case
+// the brief's acceptance line calls out ("this slice is the one that makes
+// the region long"), so the 768px capture actually has five rows to prove
+// readable rather than the one gap pane a fixture with no rows would leave
+// it with.
 
 /** The address the fixture's collection happens at. Fixed rather than the
  * device's own zone: a fixture whose answer changed with where the reviewer
@@ -120,12 +147,178 @@ function raceRead(nowMs: number): PaneReadDTO {
   };
 }
 
+/** `$4.10` available, `$5.10` voucher, `-$1.00` cash — the ADR's own worked
+ * example (decision 5) plus a genuinely negative cash position, so the
+ * Status capture shows both the "near" band's wording and the voucher/cash
+ * split in one pane, comfortably fresh against the 6h cadence. */
+function kimiRead(nowMs: number): PaneReadDTO {
+  return {
+    source: KIMI_SOURCE,
+    snapshots: [
+      {
+        key: KIMI_SNAPSHOT_KEY,
+        fetchedAtMs: nowMs - 40 * 60_000,
+        envelope: {
+          kind: "ok",
+          schema: KIMI_SOURCE,
+          polledEveryMs: 21_600_000,
+          body: JSON.stringify({
+            available_balance: 4.1,
+            voucher_balance: 5.1,
+            cash_balance: -1.0,
+          }),
+        },
+        freshness: { kind: "age", ageMs: 40 * 60_000, declaredCadenceMs: 21_600_000 },
+      },
+    ],
+    liveAlerts: [],
+  };
+}
+
+/** One row per band `githubBand` can produce, keyed by a real workflow file
+ * name from `.github/workflows/` — the collapsed-stack case the brief's
+ * acceptance line names ("this slice is the one that makes the region
+ * long"). Every row is comfortably fresh against the 30h stale line (#371
+ * review round 1's blocker 3 is about a *stale* answer, not this one), so
+ * the capture shows the bands doing the work, not the staleness escalation
+ * on top of them. */
+function githubRead(nowMs: number): PaneReadDTO {
+  function workflowSnapshot(
+    key: string,
+    displayName: string,
+    body: {
+      declaredCadenceMs: number | null;
+      lastRunConclusion: string | null;
+      lastRunEvent: string | null;
+      lastRunAtMs: number | null;
+      lastScheduledSuccessAtMs: number | null;
+    },
+  ) {
+    return {
+      key,
+      fetchedAtMs: nowMs - 40 * 60_000,
+      envelope: {
+        kind: "ok" as const,
+        schema: GITHUB_SOURCE,
+        polledEveryMs: 86_400_000,
+        body: JSON.stringify({
+          display_name: displayName,
+          declared_cadence_ms: body.declaredCadenceMs,
+          last_run_conclusion: body.lastRunConclusion,
+          last_run_event: body.lastRunEvent,
+          last_run_at_ms: body.lastRunAtMs,
+          last_scheduled_success_at_ms: body.lastScheduledSuccessAtMs,
+        }),
+      },
+      // Forty minutes old against the poller's own daily cadence — fresh,
+      // same margin `wasteRead`/`kimiRead` use.
+      freshness: { kind: "age" as const, ageMs: 40 * 60_000, declaredCadenceMs: 86_400_000 },
+    };
+  }
+
+  const fifteenMin = 15 * 60 * 1000;
+
+  return {
+    source: GITHUB_SOURCE,
+    snapshots: [
+      // `live` — never run at all, the auto-disable tell.
+      workflowSnapshot("race-alert-poll.yml", "race-alert-poll", {
+        declaredCadenceMs: 6 * 60 * 60 * 1000,
+        lastRunConclusion: null,
+        lastRunEvent: null,
+        lastRunAtMs: null,
+        lastScheduledSuccessAtMs: null,
+      }),
+      // `imminent` — has run, but its last *scheduled* success is well past
+      // three times its own declared cadence.
+      workflowSnapshot("calendar-poll.yml", "calendar-poll", {
+        declaredCadenceMs: fifteenMin,
+        lastRunConclusion: "success",
+        lastRunEvent: "schedule",
+        lastRunAtMs: nowMs - 90 * 60_000,
+        lastScheduledSuccessAtMs: nowMs - 90 * 60_000,
+      }),
+      // `near` — a single recent failure, still on cadence otherwise.
+      workflowSnapshot("graph-mail-poll.yml", "graph-mail-poll", {
+        declaredCadenceMs: fifteenMin,
+        lastRunConclusion: "failure",
+        lastRunEvent: "schedule",
+        lastRunAtMs: nowMs - 5 * 60_000,
+        lastScheduledSuccessAtMs: nowMs - 20 * 60_000,
+      }),
+      // `distant` — a cron shape (weekly, day-of-week) the hand-rolled
+      // parser correctly refuses to guess a cadence for, so the pane says
+      // "cadence unreadable" rather than trusting the fall-through to
+      // "healthy" (#371 review round 1's blocker 1).
+      workflowSnapshot("graph-calendar-poll.yml", "graph-calendar-poll", {
+        declaredCadenceMs: null,
+        lastRunConclusion: "success",
+        lastRunEvent: "schedule",
+        lastRunAtMs: nowMs - 6 * 60 * 60 * 1000,
+        lastScheduledSuccessAtMs: nowMs - 6 * 60 * 60 * 1000,
+      }),
+      // `dormant` — healthy, on cadence: the state most workflows sit in
+      // most of the time, and the one the collapsed stack mostly renders.
+      workflowSnapshot("gmail-poll.yml", "gmail-poll", {
+        declaredCadenceMs: fifteenMin,
+        lastRunConclusion: "success",
+        lastRunEvent: "schedule",
+        lastRunAtMs: nowMs - 5 * 60_000,
+        lastScheduledSuccessAtMs: nowMs - 5 * 60_000,
+      }),
+    ],
+    liveAlerts: [],
+  };
+}
+
+/** One row per the three corrected `uptime/v1` services (ADR-0017 decision
+ * 4 over #310/#315's finding) — `authority` and `runner` both healthy at
+ * their declared refusal (401), `web` healthy at its declared 200. All
+ * `dormant`/agreement: the demo world's honest steady state, since
+ * `githubRead` already carries this region's non-dormant rows. */
+function uptimeRead(nowMs: number): PaneReadDTO {
+  function serviceSnapshot(key: string, expectStatus: number) {
+    return {
+      key,
+      fetchedAtMs: nowMs - 5 * 60_000,
+      envelope: {
+        kind: "ok" as const,
+        schema: UPTIME_SOURCE,
+        polledEveryMs: 3_600_000,
+        body: JSON.stringify({
+          expected: "on",
+          expect_status: expectStatus,
+          observed_status: expectStatus,
+          error: null,
+        }),
+      },
+      freshness: { kind: "age" as const, ageMs: 5 * 60_000, declaredCadenceMs: 3_600_000 },
+    };
+  }
+
+  return {
+    source: UPTIME_SOURCE,
+    snapshots: [
+      serviceSnapshot("authority", 401),
+      serviceSnapshot("web", 200),
+      serviceSnapshot("runner", 401),
+    ],
+    liveAlerts: [],
+  };
+}
+
 /** The demo world's answer to `QuestionInputs`, minus the clock the region
  * supplies itself. */
 export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs"> {
   return {
     bindings: [boundBinding, boundRaceBinding],
-    paneReads: { [SOURCE]: wasteRead(nowMs), [RACE_SOURCE]: raceRead(nowMs) },
+    paneReads: {
+      [SOURCE]: wasteRead(nowMs),
+      [RACE_SOURCE]: raceRead(nowMs),
+      [KIMI_SOURCE]: kimiRead(nowMs),
+      [GITHUB_SOURCE]: githubRead(nowMs),
+      [UPTIME_SOURCE]: uptimeRead(nowMs),
+    },
     // The demo world mounts no calendar credential and no items — `?demo`
     // photographs the snapshot-lane panes; the weekend pane's own demo state (a
     // `not_read` calendar, since nothing here ever pushes a token) is the

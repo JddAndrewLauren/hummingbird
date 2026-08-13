@@ -1,5 +1,6 @@
 import type { HTMLAttributes } from "react";
 import {
+  Activity,
   ArrowUpRight,
   Bell,
   BellOff,
@@ -44,6 +45,7 @@ import {
 // would bundle every glyph) and makes `name` a compile-checked union, so
 // an icon missing from the map is a type error rather than a blank box.
 export const ICON_MAP = {
+  activity: Activity,
   "arrow-up-right": ArrowUpRight,
   bell: Bell,
   "bell-off": BellOff,

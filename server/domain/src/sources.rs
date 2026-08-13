@@ -38,11 +38,12 @@
 //! sources this registry did not yet carry; the races lane is now enrolled
 //! (`race-schedule/v1`, #266 — and as `Writes::Both`, not the snapshot-only
 //! entry the ADR anticipated, because the same lane's second binary raises
-//! the race-start alert under the same string). Two remain unenrolled
-//! (`anthropic-usage/v1`, `github-hummingbird/v1`), and each enrolls when
-//! its own lane is built, exactly as every source above did. `find`
-//! returning `None` for one of them today means "not enrolled yet," not
-//! "will never write here."
+//! the race-start alert under the same string). `github-hummingbird/v1`
+//! enrolled at #314, snapshot-only, one source for every scheduled workflow
+//! (ADR-0017 decision 2). One remains unenrolled (`anthropic-usage/v1`), and
+//! it enrolls when its own lane is built, exactly as every source above did.
+//! `find` returning `None` for it today means "not enrolled yet," not "will
+//! never write here."
 //!
 //! Nothing here validates a recipe at runtime: `source_key` is opaque to
 //! the server by design (no delimiter grammar, no parsing — ADR-0009 rule
@@ -102,10 +103,12 @@ pub enum Writes {
     /// Mints alert rows only — every webhook source enrolled before #254,
     /// plus `item-threshold/v1`, the internal DO-alarm sweep source.
     Alerts,
-    /// Writes `context_snapshots` rows only. No shipped source is this yet
-    /// (see the module doc's "enrollment is at wiring time"); the shape
-    /// exists so a snapshot-only adapter has somewhere to enroll without
-    /// forcing a `key_recipe` it has no use for.
+    /// Writes `context_snapshots` rows only — `kimi-balance/v1` (#313) and
+    /// `github-hummingbird/v1` (#314) are both this shape today: a gauge (or,
+    /// for #314, one gauge per scheduled workflow) with nothing for an
+    /// `alerts` row to ever mean. The shape exists so any snapshot-only
+    /// adapter has somewhere to enroll without forcing a `key_recipe` it has
+    /// no use for.
     Snapshots,
     /// Both — every evaluated-stream poller's source (a delta cursor, and
     /// for `google-calendar/v1` the `busy_now` gauge too, alongside the
@@ -235,6 +238,51 @@ pub const M365_CALENDAR_V1: &str = "m365-calendar/v1";
 /// poller rather than a source string that quietly keeps resolving.
 pub const RACE_SCHEDULE_V1: &str = "race-schedule/v1";
 
+/// `kimi-balance/v1`'s frozen namespace (#313, ADR-0017 decision 5): two
+/// consumers share one literal — the registry entry below and
+/// `server/kimi-balance`, the out-of-process poller that mints the one
+/// `context_snapshots` row under it every six hours — so a future retirement
+/// to `/v2` (e.g. once Moonshot ships a consumption endpoint) is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving. **Snapshots only**: there is no spend endpoint to alert on, so
+/// this source never mints an `alerts` row and carries no `key_recipe` — a
+/// snapshot's identity is `(source, key)`, authored by the poller directly.
+pub const KIMI_BALANCE_V1: &str = "kimi-balance/v1";
+
+/// `github-hummingbird/v1`'s frozen namespace (#314, ADR-0017 decision 2):
+/// two consumers share one literal — the registry entry below and
+/// `server/github-status`, the out-of-process poller that mints one
+/// `context_snapshots` row per scheduled workflow under it, keyed by the
+/// workflow's file name — so a future retirement to `/v2` is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving. **One source for every GitHub fact, not one per workflow**:
+/// the slash is already claimed by the version suffix, and folding a
+/// sub-scope (which workflow) into a second source string per workflow is
+/// exactly the unbounded, runtime-generated vocabulary ADR-0017 decision 2
+/// rejects for the same reason it rejects one source per platform for
+/// `race-schedule/v1`. **Snapshots only**: a scheduled workflow's run
+/// history has nothing for an `alerts` row to mean — the pane derives its
+/// own band from the snapshot at read time — so this source never mints an
+/// `alerts` row and carries no `key_recipe`.
+pub const GITHUB_HUMMINGBIRD_V1: &str = "github-hummingbird/v1";
+
+/// `uptime/v1`'s frozen namespace (#315, ADR-0017 decisions 2/3/4/6): two
+/// consumers share one literal — the registry entry below and
+/// `server/uptime-probe`, the out-of-process poller that mints one
+/// `context_snapshots` row per manifest-declared service under it, keyed by
+/// the service's own `id` — so a future retirement to `/v2` is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving. **One source spanning two platforms** (Cloudflare — the
+/// authority and the web origin — and Fly, the runner): ADR-0017 decision 2's
+/// deliberate refinement, since splitting by platform would need two
+/// `ingest` tokens minted for what is otherwise one credential-free binary
+/// issuing plain HTTP requests, and the poller itself makes no such
+/// distinction. **Snapshots only**: an unauthenticated reachability probe has
+/// nothing for an `alerts` row to ever mean — the pane derives its own band
+/// from the raw verdict at read time (`body.rs`'s own header) — so this
+/// source never mints an `alerts` row and carries no `key_recipe`.
+pub const UPTIME_V1: &str = "uptime/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -345,6 +393,46 @@ pub const REGISTRY: &[SourceEntry] = &[
              not (no source-owned field changes, so nothing restamps)",
         ),
         expires_at: Expiry::Always("the race's start time"),
+        retired_as: None,
+    },
+    // The registry's first live Snapshots-only entry (#313) — the case
+    // `a_snapshot_only_entry_is_representable_and_not_alert_writing` below
+    // exercised on a locally-built fixture before any real source needed it.
+    // Moonshot's balance endpoint reports remaining balance, never
+    // consumption (ADR-0017 decision 5), so there is nothing here for an
+    // `alerts` row to ever mean.
+    SourceEntry {
+        source: KIMI_BALANCE_V1,
+        shape: Shape::State,
+        writes: Writes::Snapshots,
+        key_recipe: None,
+        expires_at: Expiry::Never,
+        retired_as: None,
+    },
+    // The registry's second Snapshots-only entry (#314) — one row per
+    // scheduled workflow, keyed by the workflow's file name, under this one
+    // source string (ADR-0017 decision 2's "many panes, one source, one
+    // question").
+    SourceEntry {
+        source: GITHUB_HUMMINGBIRD_V1,
+        shape: Shape::State,
+        writes: Writes::Snapshots,
+        key_recipe: None,
+        expires_at: Expiry::Never,
+        retired_as: None,
+    },
+    // The registry's third Snapshots-only entry (#315) — one row per
+    // manifest-declared service (`authority`, `web`, `runner`), keyed by the
+    // service's own `id` under this one source string. The sweeper carries
+    // no line in `services.json` and no row here (ADR-0017 decision 4): it
+    // never opens a listener, so no truthful `url`/`method`/`expect_status`
+    // triple exists for it.
+    SourceEntry {
+        source: UPTIME_V1,
+        shape: Shape::State,
+        writes: Writes::Snapshots,
+        key_recipe: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
@@ -606,6 +694,9 @@ mod tests {
                 Expiry::Always("the race's start time"),
                 None,
             ),
+            ("kimi-balance/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
+            ("github-hummingbird/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
+            ("uptime/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
             ("item-threshold/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("healthchecks/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("home-assistant/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
@@ -665,9 +756,11 @@ mod tests {
     }
 
     /// Acceptance: `Writes` answers `writes_alerts`/`writes_snapshots`
-    /// correctly for all three states, including the case no shipped source
-    /// exercises yet (`Snapshots`-only) — proven directly on the enum
-    /// rather than waiting for a real snapshot-only entry to enroll.
+    /// correctly for all three states, including the `Snapshots`-only case
+    /// — which `kimi-balance/v1` (#313) and `github-hummingbird/v1` (#314)
+    /// now both exercise for real — proven directly on the enum so a
+    /// regression is caught here even if a real entry's own pinned test
+    /// were somehow weakened.
     #[test]
     fn writes_predicates_cover_all_three_states() {
         assert!(Writes::Alerts.writes_alerts());
@@ -681,11 +774,11 @@ mod tests {
     }
 
     /// A locally built snapshot-only entry — the case ADR-0009's
-    /// `anthropic-usage/v1`/`github-hummingbird/v1` will eventually be (the
-    /// third lane it named, races, enrolled at #266 as `Writes::Both`
-    /// instead, since its second binary also raises an alert) — is
-    /// representable and correctly rejected for the alerts table, exactly
-    /// like [`a_retired_source_is_representable_and_distinct_from_unknown`]
+    /// `anthropic-usage/v1` will eventually be (the third lane it named,
+    /// races, enrolled at #266 as `Writes::Both` instead, since its second
+    /// binary also raises an alert) — is representable and correctly
+    /// rejected for the alerts table, exactly like
+    /// [`a_retired_source_is_representable_and_distinct_from_unknown`]
     /// exercises retirement without a second real retired entry.
     #[test]
     fn a_snapshot_only_entry_is_representable_and_not_alert_writing() {
@@ -722,6 +815,53 @@ mod tests {
         assert!(entry.writes_snapshots());
         assert_eq!(entry.shape, Shape::Event, "a race start is an occurrence");
         assert_eq!(entry.expires_at, Expiry::Always("the race's start time"));
+    }
+
+    /// `kimi-balance/v1` (#313) is the registry's first real, live
+    /// Snapshots-only entry — pinned directly against `find` so a
+    /// regression to `Alerts` or `Both` silently re-adds an `alerts` write
+    /// path this source has no `source_key` recipe for.
+    #[test]
+    fn kimi_balance_v1_is_registered_snapshot_only() {
+        let entry = find(KIMI_BALANCE_V1).expect("kimi-balance/v1 is registered");
+        assert!(!entry.writes_alerts());
+        assert!(entry.writes_snapshots());
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.key_recipe.is_none(), "no recipe to document");
+        assert!(!entry.is_retired());
+    }
+
+    /// `github-hummingbird/v1` (#314) is the registry's second live
+    /// Snapshots-only entry — pinned directly against `find` so a regression
+    /// to `Alerts` or `Both` silently re-adds an `alerts` write path this
+    /// source has no `source_key` recipe for. One source, many panes (one
+    /// per scheduled workflow, keyed by file name) — the registry itself
+    /// carries no notion of "many panes"; that fan-out lives entirely in the
+    /// poller and the pane.
+    #[test]
+    fn github_hummingbird_v1_is_registered_snapshot_only() {
+        let entry = find(GITHUB_HUMMINGBIRD_V1).expect("github-hummingbird/v1 is registered");
+        assert!(!entry.writes_alerts());
+        assert!(entry.writes_snapshots());
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.key_recipe.is_none(), "no recipe to document");
+        assert!(!entry.is_retired());
+    }
+
+    /// `uptime/v1` (#315) is the registry's third live Snapshots-only entry
+    /// — pinned directly against `find` so a regression to `Alerts` or
+    /// `Both` silently re-adds an `alerts` write path this source has no
+    /// `source_key` recipe for. One source, many panes (one per
+    /// manifest-declared service, keyed by service id) — `github_hummingbird
+    /// _v1_is_registered_snapshot_only`'s own shape.
+    #[test]
+    fn uptime_v1_is_registered_snapshot_only() {
+        let entry = find(UPTIME_V1).expect("uptime/v1 is registered");
+        assert!(!entry.writes_alerts());
+        assert!(entry.writes_snapshots());
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.key_recipe.is_none(), "no recipe to document");
+        assert!(!entry.is_retired());
     }
 
     /// `item-threshold/v1` is the one live example of an alerts-only entry

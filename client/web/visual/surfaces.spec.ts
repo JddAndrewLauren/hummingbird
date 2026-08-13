@@ -33,6 +33,15 @@ const SCREENS = [
   // gap, and the populated rows are covered by their component tests.
   { name: "done", nav: "Done" },
   { name: "ledger", nav: "Ledger" },
+  // #311/ADR-0017: the same `?demo` world drives the real Status region.
+  // #313 landed the first poller-backed, non-gap pane (`kimi-balance/v1`,
+  // banded "near" with a negative cash split); #314 landed the second
+  // (`github-hummingbird/v1`, five workflow rows — one per band the pane can
+  // produce — which is what makes the collapsed stack long enough to be
+  // worth capturing at 768px). This capture now shows both alongside the two
+  // still-honest gap panes (#315-#316 unpolled). Not permanent: each of
+  // those replaces its own gap in turn.
+  { name: "status", nav: "Status" },
   { name: "settings", nav: "Settings" },
 ] as const;
 

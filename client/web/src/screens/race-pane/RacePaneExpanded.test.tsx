@@ -61,6 +61,7 @@ function read(bodies: Record<string, unknown>, liveAlerts: PaneAlertDTO[] = []):
 function mount(inputs: Omit<QuestionInputs, "nowMs">, onScreen = vi.fn()) {
   render(
     <RankedRegion
+      surface="now"
       inputs={inputs}
       nowMs={NOW}
       syncOutcomeSeq={1}

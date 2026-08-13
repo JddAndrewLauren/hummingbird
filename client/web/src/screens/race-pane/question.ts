@@ -14,6 +14,7 @@ import { RacePaneExpanded } from "./RacePaneExpanded";
  * exists. */
 export const raceQuestion: QuestionDef = {
   label: "When is the next race",
+  surface: "now",
   sources: [SOURCE],
   subjects: raceSubjects,
   answer: raceAnswer,

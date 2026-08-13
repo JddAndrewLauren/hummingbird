@@ -21,6 +21,7 @@ import { WeekendPaneExpanded } from "./WeekendPaneExpanded";
  * `wasteQuestion` documents for its own binding. */
 export const weekendQuestion: QuestionDef = {
   label: "This weekend",
+  surface: "now",
   sources: [],
   subjects: () => [SUBJECT_KEY],
   answer: (_subjectKey, inputs) => weekendAnswer(inputs),

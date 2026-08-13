@@ -10,12 +10,15 @@ export type Screen =
   | "rules"
   | "done"
   | "ledger"
+  | "status"
   | "settings";
 
 /** Rail order, defined once. `NavRail` maps over this and looks its labels and
  * icons up by screen, so the order lives here and nowhere else. The working
- * surfaces come first; Done and the Ledger are the looking-back pair, so they
- * sit between the working set and Settings. */
+ * surfaces come first; Done, the Ledger and Status are the looking-at-things
+ * (rather than acting-on-things) trio, so they sit between the working set
+ * and Settings — Status last of the three (ADR-0017, #311) since it looks at
+ * the machine rather than at the reader's own history. */
 export const SCREENS: readonly Screen[] = [
   "now",
   "triage",
@@ -24,6 +27,7 @@ export const SCREENS: readonly Screen[] = [
   "rules",
   "done",
   "ledger",
+  "status",
   "settings",
 ] as const;
 
@@ -37,5 +41,6 @@ export const SCREEN_TITLES: Record<Screen, string> = {
   rules: "Rules",
   done: "Done",
   ledger: "Ledger",
+  status: "Is everything working",
   settings: "Settings",
 };

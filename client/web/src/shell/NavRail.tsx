@@ -23,6 +23,7 @@ const NAV: Record<Screen, { label: string; icon: IconName }> = {
   rules: { label: "Rules", icon: "siren" },
   done: { label: "Done", icon: "circle-check" },
   ledger: { label: "Ledger", icon: "scroll-text" },
+  status: { label: "Status", icon: "activity" },
   settings: { label: "Settings", icon: "settings" },
 };
 
