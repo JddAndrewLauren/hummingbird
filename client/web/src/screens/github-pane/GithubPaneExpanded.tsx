@@ -7,7 +7,12 @@ import { NEVER_POLLED_SUBJECT, githubBand, githubGapReason, githubView } from ".
 // The GitHub workflow pane's own expanded rendering — `KimiPaneExpanded`'s
 // shape, carried over: a headline first, supporting detail below it,
 // freshness last. There is no dormant rendering here, on the same pane's
-// own reasoning — dormant IS the collapsed row, which the shell owns.
+// own reasoning — dormant IS the collapsed row, which the shell owns. A
+// `distant` (cadence-unreadable) pane is different: it is non-`dormant`, so
+// `collapse.ts`'s default rule opens it, and this card is the view the
+// reader actually gets — it must carry the same "cadence unreadable" fact
+// the collapsed headline does, or the unjudged overdue-ness reads as an
+// ordinary healthy card (#314 review round 2).
 
 function ageLabel(ageMs: number): string {
   const hours = Math.floor(ageMs / 3_600_000);
@@ -72,7 +77,7 @@ export function GithubPaneExpanded({
           color:
             band === "live" || band === "imminent"
               ? "var(--status-danger-fg)"
-              : band === "near"
+              : band === "near" || band === "distant"
                 ? "var(--status-warn-fg)"
                 : "var(--text-primary)",
         }}
@@ -101,6 +106,13 @@ export function GithubPaneExpanded({
         {band === "live" || band === "imminent" ? (
           <Badge tone="danger" mono>
             cron stalled
+          </Badge>
+        ) : body.declaredCadenceMs === null ? (
+          // The overdue judgement could not be made — `githubBand` bands
+          // this `distant`, and this card must say so, not present two
+          // green facts unwarned.
+          <Badge tone="warn" mono>
+            cadence unreadable
           </Badge>
         ) : null}
       </div>

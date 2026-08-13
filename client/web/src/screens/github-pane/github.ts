@@ -335,9 +335,12 @@ export function githubGapReason(fileName: string, inputs: QuestionInputs): strin
  * **This is where the self-death tell has to live.** #314's own brief and
  * this crate's header both claim the pane reveals `github-status.yml`
  * itself dying — but `view.stale` is otherwise read only by
- * `GithubPaneExpanded`, which never renders for a `dormant` (or now
- * `distant`) pane once the shell collapses it (`collapse.ts`'s
- * `defaultCollapsed`: only a non-`dormant` band opens by default). Read from
+ * `GithubPaneExpanded`, which the shell never renders for a `dormant` pane
+ * (`collapse.ts`'s `defaultCollapsed` collapses exactly the `dormant` band).
+ * A `distant` pane is non-`dormant`, so it *does* open and its card does
+ * carry the stale line — escalating it here too is belt-and-braces, kept
+ * because a stale `distant` reading is no more trustworthy than a stale
+ * `dormant` one and the escalation names that on the headline. Read from
  * the payload alone, a `dormant`/`distant` band is only as trustworthy as
  * the poller that wrote it: once that poller has itself gone quiet, every
  * row it ever wrote keeps reporting whatever it last saw, forever. So a

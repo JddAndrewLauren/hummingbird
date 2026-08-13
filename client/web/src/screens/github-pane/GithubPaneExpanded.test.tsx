@@ -117,4 +117,41 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
     expect(screen.getByText("never run")).toBeTruthy();
     expect(screen.getByText("no scheduled success on record")).toBeTruthy();
   });
+
+  it("opens a cadence-unreadable workflow and the card itself says the judgement could not be made", () => {
+    // `declared_cadence_ms: null` bands `distant`, which is non-`dormant`,
+    // so `collapse.ts`'s default rule opens the pane — the reader gets this
+    // card, never the collapsed headline. The card must therefore carry the
+    // "cadence unreadable" fact itself; without its `distant` arm this pane
+    // renders two green facts unwarned (#314 review round 2's blocker).
+    const rows = read([
+      snapshot("graph-calendar-poll.yml", {
+        envelope: {
+          kind: "ok",
+          schema: SOURCE,
+          polledEveryMs: null,
+          body: body({ display_name: "graph-calendar-poll", declared_cadence_ms: null }),
+        },
+      }),
+    ]);
+
+    render(
+      <StatusScreen
+        demo={null}
+        onScreen={() => {}}
+        task={taskState({ paneReads: { [SOURCE]: rows } })}
+        nowMs={NOW_MS}
+        calendarReads={{}}
+        calendarConnected={false}
+      />,
+    );
+
+    // The expanded card is what rendered (a collapsed row renders no
+    // expanded content at all), and it names the unreadable cadence.
+    expect(screen.getByText("graph-calendar-poll")).toBeTruthy();
+    expect(screen.getByText("last run success (schedule), under an hour ago")).toBeTruthy();
+    expect(screen.getByText("cadence unreadable")).toBeTruthy();
+    // The collapsed sentence is NOT what matched above — this pane is open.
+    expect(screen.queryByText(/· cadence unreadable/)).toBeNull();
+  });
 });
