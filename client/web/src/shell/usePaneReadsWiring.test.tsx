@@ -35,6 +35,12 @@ function sources(worker: ReturnType<typeof fakeWorker>): string[] {
     .map((message) => message.source ?? "");
 }
 
+/** The hook's own answer to "which sources" — both surfaces (ADR-0017,
+ * #311), unioned exactly as `usePaneReadsWiring.ts` unions them. */
+function allSources(): string[] {
+  return [...new Set([...requiredSources("now"), ...requiredSources("status")])];
+}
+
 describe("usePaneReadsWiring", () => {
   it("asks nothing while the core is still loading", () => {
     const worker = fakeWorker();
@@ -45,7 +51,7 @@ describe("usePaneReadsWiring", () => {
   it("requests every source the registry needs once the core is ready", () => {
     const worker = fakeWorker();
     render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
-    expect(sources(worker)).toEqual(requiredSources());
+    expect(sources(worker)).toEqual(allSources());
   });
 
   it("re-requests them on every completed cycle", () => {
@@ -55,13 +61,13 @@ describe("usePaneReadsWiring", () => {
     const worker = fakeWorker();
     const view = render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
     view.rerender(<Probe worker={worker} status="ready" syncOutcomeSeq={1} />);
-    expect(sources(worker)).toEqual([...requiredSources(), ...requiredSources()]);
+    expect(sources(worker)).toEqual([...allSources(), ...allSources()]);
   });
 
   it("does not re-request on a render that changed nothing", () => {
     const worker = fakeWorker();
     const view = render(<Probe worker={worker} status="ready" syncOutcomeSeq={3} />);
     view.rerender(<Probe worker={worker} status="ready" syncOutcomeSeq={3} />);
-    expect(sources(worker)).toEqual(requiredSources());
+    expect(sources(worker)).toEqual(allSources());
   });
 });

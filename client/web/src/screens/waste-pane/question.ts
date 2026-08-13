@@ -10,6 +10,7 @@ import { WastePaneExpanded } from "./WastePaneExpanded";
  * was configured could never be configured. */
 export const wasteQuestion: QuestionDef = {
   label: "Which cans go out",
+  surface: "now",
   sources: [SOURCE],
   subjects: () => [SNAPSHOT_KEY],
   answer: (_subjectKey, inputs) => wasteAnswer(inputs),

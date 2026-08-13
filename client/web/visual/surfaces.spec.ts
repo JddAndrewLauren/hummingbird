@@ -33,6 +33,10 @@ const SCREENS = [
   // gap, and the populated rows are covered by their component tests.
   { name: "done", nav: "Done" },
   { name: "ledger", nav: "Ledger" },
+  // #311/ADR-0017: the same `?demo` world drives the real Status region, so
+  // this photographs the honest first state — four gap panes, since no
+  // poller exists behind any of them yet.
+  { name: "status", nav: "Status" },
   { name: "settings", nav: "Settings" },
 ] as const;
 

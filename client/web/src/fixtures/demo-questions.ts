@@ -17,6 +17,21 @@ import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 // there must never be one — the whole point of `QuestionInputs` being a
 // plain value is that a fixture can drive the real shell rather than a
 // parallel copy of it that drifts from it. What `?demo` shows is what ships.
+//
+// This one world now feeds BOTH surfaces (ADR-0017, #311): `NowScreen`'s
+// aside filters it to the `"now"` questions below (waste answered/imminent,
+// race answered/distant — one non-dormant and one quiet reading, so the
+// capture proves both), and `StatusScreen` filters the same object to the
+// four `"status"` infra questions. Those four ignore `QuestionInputs`
+// entirely — `screens/questions/placeholder.ts`'s factory answers
+// `bound-but-unacquired` unconditionally, because no poller exists behind
+// any of them yet — so there is nothing to add here for Status specifically
+// until #313-#316 give each one a real source to read: the demo capture
+// photographs exactly the four honest gap panes the Acceptance section's
+// manual check asks for, not a fabricated "healthy" or "diverging" reading
+// this slice has no data to back.
+
+
 
 /** The address the fixture's collection happens at. Fixed rather than the
  * device's own zone: a fixture whose answer changed with where the reviewer

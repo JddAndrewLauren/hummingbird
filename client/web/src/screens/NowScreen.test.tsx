@@ -388,3 +388,18 @@ describe("NowScreen — the mark-done checkmark", () => {
     ).toBe(true);
   });
 });
+
+// ADR-0017/#311's converse of `StatusScreen.test.tsx`'s wiring gate: the
+// aside is `surface="now"`, so none of the four infra questions the Status
+// screen owns may ever appear in it, whatever the sort does with them.
+describe("NowScreen — the surface filter (ADR-0017, #311)", () => {
+  it("never renders a status-surface pane in Now's aside", () => {
+    renderNow(taskState());
+    for (const label of ["Kimi balance", "GitHub workflows", "Uptime", "This device"]) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+    // The `"now"` questions are still there — the filter removes the OTHER
+    // surface's panes, not every pane.
+    expect(screen.getByRole("button", { name: /which cans/i })).toBeTruthy();
+  });
+});

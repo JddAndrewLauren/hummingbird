@@ -48,12 +48,29 @@ describe("QUESTION_ORDER", () => {
 });
 
 describe("requiredSources", () => {
-  it("unions every question's sources without repeating one", () => {
-    const sources = requiredSources();
+  it("unions every 'now' question's sources without repeating one", () => {
+    const sources = requiredSources("now");
     expect(new Set(sources).size).toBe(sources.length);
     for (const question of QUESTION_ORDER) {
+      if (QUESTIONS[question].surface !== "now") {
+        continue;
+      }
       for (const source of QUESTIONS[question].sources) {
         expect(sources).toContain(source);
+      }
+    }
+  });
+
+  it("never asks for a source only a question on the OTHER surface reads (ADR-0017, #311)", () => {
+    for (const surface of ["now", "status"] as const) {
+      const sources = requiredSources(surface);
+      for (const question of QUESTION_ORDER) {
+        if (QUESTIONS[question].surface === surface) {
+          continue;
+        }
+        for (const source of QUESTIONS[question].sources) {
+          expect(sources).not.toContain(source);
+        }
       }
     }
   });
@@ -91,15 +108,41 @@ describe("rankPanes", () => {
     // `bound-but-unacquired` — both are gaps, and the shared assertion here
     // is the one thing every registered question owes: never `answered`
     // with nothing behind it.
-    const panes = rankPanes(emptyInputs());
+    const panes = rankPanes(emptyInputs(), "now");
     expect(panes.length).toBeGreaterThan(0);
     expect(panes.every((pane) => pane.answer.answerState !== "answered")).toBe(true);
   });
 
   it("keys each pane by question and subject, never by position", () => {
-    for (const pane of rankPanes(emptyInputs())) {
+    for (const pane of rankPanes(emptyInputs(), "now")) {
       expect(pane.paneKey).toBe(paneKey(pane.question, pane.subjectKey));
     }
+  });
+
+  it("filters to exactly one surface's questions (ADR-0017, #311)", () => {
+    const nowPanes = rankPanes(emptyInputs(), "now");
+    const statusPanes = rankPanes(emptyInputs(), "status");
+    expect(nowPanes.length).toBeGreaterThan(0);
+    expect(statusPanes.length).toBeGreaterThan(0);
+    for (const pane of nowPanes) {
+      expect(QUESTIONS[pane.question].surface).toBe("now");
+    }
+    for (const pane of statusPanes) {
+      expect(QUESTIONS[pane.question].surface).toBe("status");
+    }
+    // No question appears on both — the two lists never overlap.
+    const nowQuestions = new Set(nowPanes.map((pane) => pane.question));
+    for (const pane of statusPanes) {
+      expect(nowQuestions.has(pane.question)).toBe(false);
+    }
+  });
+
+  it("renders every never-polled infra question as a gap, never as nothing (ADR-0017 decision 4, #311)", () => {
+    const statusPanes = rankPanes(emptyInputs(), "status");
+    expect(statusPanes).toHaveLength(4);
+    expect(statusPanes.every((pane) => pane.answer.answerState === "bound-but-unacquired")).toBe(
+      true,
+    );
   });
 
   it("ranks every subject of a multi-subject question, and none of a question with no subjects", () => {
@@ -109,6 +152,7 @@ describe("rankPanes", () => {
     // them would test the sort a second time and the expansion not at all.
     const multi: QuestionDef = {
       label: "Two things",
+      surface: "now",
       sources: [],
       subjects: () => ["b", "a"],
       answer: (subjectKey) => ({
