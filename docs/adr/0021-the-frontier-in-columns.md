@@ -19,9 +19,10 @@ whole of #399 is a read-time presentation change over the same queries.
 
 ## Where this decision came from
 
-The answer was not reasoned to; it was **tried**. A throwaway prototype
-(`client/web/src/screens/now-prototype/`, recorded in that directory's
-`NOTES.md`) mounted three structurally disagreeing variants — A "narrow it
+The answer was not reasoned to; it was **tried**. A throwaway prototype — once
+at `client/web/src/screens/now-prototype/`, with its findings in that
+directory's `NOTES.md`; **both deleted by #405, so do not go looking** —
+mounted three structurally disagreeing variants — A "narrow it
 down" (no groups, sticky facets), B "lanes" (six computed lanes, no controls),
 C "board" (wrapping columns, axis as the control) — **inside the real Now
 screen**, with its real header, rail, aside and density, behind `?variant=`.
@@ -33,8 +34,10 @@ their verdicts are usable here: the horizontal-overflow problem, the
 collapsed-column hole and the takeover-on-select complaint were all found at
 real widths against the real aside, and none of them is visible in a mockup.
 
-The prototype is deleted by #405. **Everything below that came from it is
-recorded here first, because this ADR is where it survives.**
+**Everything below that came from the prototype is recorded here, because this
+ADR is where it survives** — in particular the four *rejected* approaches
+(decisions 2, 3 and 4), which are the expensive knowledge and are written down
+nowhere else now that `NOTES.md` is gone.
 
 ## Decision 1 — the grouping axis is switchable, and there are four of them
 
@@ -87,6 +90,19 @@ A card's leading edge carries its **urgency** (`calm` / `soon` / `now` /
 `overdue`, `client/web/src/screens/urgency.ts`). `calm` gets no swatch — the
 default is not a claim worth colouring — so a legend names the three that are.
 Nothing else on the card is coloured.
+
+**Why colour must say exactly one thing here, more than elsewhere.** Colour
+reads *across* whichever axis the columns are grouped by, and position reads
+*along* it: colour answers "how much claim does this have", position answers
+"where does it belong". Two independent questions, one encoding each. A colour
+that meant several things at once would be the only mark on the surface whose
+meaning changed when the axis switched.
+
+**And exactly one encoding of it per card.** The first prototype pass carried
+both a leading edge *and* `ItemRow`'s urgency dot. Two encodings of overlapping
+facts on one 240px card was one too many, so the dot is not carried onto the
+card — which is also why the card is a separate component rather than a denser
+`ItemRow`.
 
 **Why, and what was cut to get here.** The prototype's round-2 graft took
 variant B's colour, which partitioned items into six computed buckets:

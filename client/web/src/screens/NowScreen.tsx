@@ -23,7 +23,6 @@ import { blockedReasonLabel } from "./blocked-reason";
 import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
-import { NowPrototype, prototypeVariant } from "./now-prototype";
 import { NowTriageSection } from "./NowTriageSection";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
@@ -391,50 +390,10 @@ export function NowScreen({
     : undefined;
   const rest = demo ? demo.items.filter((item) => item.id !== top?.id && item.stage !== "done") : [];
 
-  // PROTOTYPE (throwaway, `screens/now-prototype/`): `?variant=A|B|C` swaps
-  // the frontier rendering for one of the grouping/filtering variations,
-  // leaving the header, rail and aside exactly as they are. Reads
-  // `window.location.search` directly because no router is installed here —
-  // `?demo`'s own precedent. Compiles away in production with the DEV gate
-  // inside `prototypeVariant`.
-  const variant =
-    typeof window === "undefined" ? null : prototypeVariant(window.location.search);
-  // Clicking an item in a variant expands the REAL `ItemDetailPanel` above the
-  // board, with the board left standing under it. The panel is threaded the
-  // app's own act callback, steps, error and microtask affordance, so item
-  // detail is never re-prototyped — the affordances that live there (the act
-  // row, the microtask button, whatever lands next) arrive unchanged. The
-  // optimistic post-act fallback `RealFrontier` keeps is deliberately not
-  // duplicated: it is not what this prototype is asking about.
-  const variantActError =
-    task.lastAct && task.lastAct.itemId === selectedItemId && task.lastAct.kind !== "ok"
-      ? (task.lastAct.error ?? "That action didn't apply.")
-      : null;
-
   return (
     <TwoColumn>
       <Column>
-        {variant ? (
-          <NowPrototype
-            initialVariant={variant}
-            frontier={demo ? [] : task.frontier}
-            projects={task.projects}
-            nowMs={nowMs}
-            onOpenItem={onOpenItem}
-            detail={
-              demo
-                ? undefined
-                : {
-                    selectedItemId,
-                    steps: selectedItemId ? (task.stepsByItem[selectedItemId] ?? []) : [],
-                    actError: variantActError,
-                    onAct,
-                    onClose: onCloseItemDetail,
-                    microtask,
-                  }
-            }
-          />
-        ) : demo && top ? (
+        {demo && top ? (
           <>
             <div>
               <span className="hb-meta">top pick</span>
