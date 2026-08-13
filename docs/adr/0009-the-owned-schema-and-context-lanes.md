@@ -50,7 +50,8 @@ the operation whose impossibility under Linear triggered ADR-0008.
 ```sql
 -- meta: the workspace version counter (one row), bumped by every write.
 -- Every mutated row stamps its `version` from this counter; the delta pull
--- is "WHERE version > ?" per table. Rows are never deleted, only flagged.
+-- is "WHERE version > ?" per table. Rows are never deleted, only flagged
+-- (why, and what reversing it would cost: ADR-0020).
 CREATE TABLE meta (
   id             INTEGER PRIMARY KEY CHECK (id = 1),
   version        INTEGER NOT NULL,
@@ -121,7 +122,7 @@ CREATE TABLE steps (
   body       TEXT NOT NULL,
   done       INTEGER NOT NULL DEFAULT 0,    -- ticking = one scalar CAS write
   position   INTEGER NOT NULL,
-  deleted_at INTEGER,                       -- flagged, never erased
+  deleted_at INTEGER,                       -- flagged, never erased (ADR-0020)
   version    INTEGER NOT NULL
 );
 
