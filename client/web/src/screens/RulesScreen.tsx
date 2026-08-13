@@ -35,6 +35,20 @@ function withCurrentOption(known: string[], current: string): string[] {
   return known.includes(current) || current === "" ? known : [current, ...known];
 }
 
+/** Whether `current` is a severity this build's registry does not declare —
+ * the same condition `withCurrentOption` already detects (and special-cases
+ * for the empty string, which is not a stamped value to warn about), spent
+ * here on telling the reader rather than only avoiding a blank `<select>`.
+ * `hummingbird_domain::severity_rank` (#335/#338) ranks such a value `0`:
+ * below every declared severity, so it loses every mint fold and can never
+ * ring an escalation — a legal, working rule, not a validation error. */
+function isUnrankedSeverity(known: string[], current: string): boolean {
+  return current !== "" && !known.includes(current);
+}
+
+const UNRANKED_SEVERITY_COPY =
+  "Unranked severity — loses every fold against a declared severity, and can never escalate a notification.";
+
 function ConditionRow({
   condition,
   registry,
@@ -349,12 +363,19 @@ function RuleEditorForm({
             onChange({ ...state, eventKind, conditions: [] });
           }}
         />
-        <Select
-          label="Severity"
-          value={state.severity}
-          options={severityOptions.map((s) => ({ value: s, label: s }))}
-          onChange={(e) => onChange({ ...state, severity: e.target.value })}
-        />
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          <Select
+            label="Severity"
+            value={state.severity}
+            options={severityOptions.map((s) => ({ value: s, label: s }))}
+            onChange={(e) => onChange({ ...state, severity: e.target.value })}
+          />
+          {isUnrankedSeverity(registry.severities, state.severity) ? (
+            <Badge tone="warn" icon="info">
+              {UNRANKED_SEVERITY_COPY}
+            </Badge>
+          ) : null}
+        </div>
         <Select
           label="Tier"
           value={state.tier}
@@ -468,6 +489,11 @@ function RuleCard({
           {!valid ? (
             <Badge tone="danger" icon="info">
               Invalid — names a field its kind no longer declares
+            </Badge>
+          ) : null}
+          {isUnrankedSeverity(registry.severities, rule.severity) ? (
+            <Badge tone="warn" icon="info">
+              {UNRANKED_SEVERITY_COPY}
             </Badge>
           ) : null}
         </div>
