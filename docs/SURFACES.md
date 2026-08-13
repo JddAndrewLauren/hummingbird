@@ -22,6 +22,7 @@ human gate.
 | **Code root** | `client/web/src/` |
 | **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Done, Ledger, Settings |
 | **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121, `screens/race-pane/` #119 — the first question emitting one pane *per subject*, so the aside's height varies with the `race-series` binding). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
+| **Now's centre column** | `screens/NowScreen.tsx`'s `RealFrontier` — the frontier grouped by project, then Blocked, then `screens/NowTriageSection.tsx`: the triage inbox brought under the promoted items, collapsible (persisted device-locally by `screens/triage-collapse.ts`) and capping its own list at `60dvh`. That cap is the **only independent scroll container in the centre column** — everywhere else the shell's one container scrolls the page — so a long inbox is the state to check it in. |
 | **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx`, `shell/CapturePopover.tsx` (the capture box, over any screen), `shell/UpdateBanner.tsx` (the "new version — reload" strip, under the header), `screens/layout.tsx` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 16-component library |
 | **Toolset** | Playwright (`client/web/playwright.config.ts`, `client/web/visual/`) |
@@ -59,7 +60,14 @@ Teaching the flag to mount it would mean entangling the demo hero branch with
 `RealFrontier`, which that branch exists to prevent, so `visual/surfaces.spec.ts`
 is deliberately unchanged here and `components/domain/ItemDetailPanel.test.tsx`
 is the cover. Item detail is now the busiest unphotographed surface in the
-app, which is worth its own issue rather than a widening of this one. The popover is a state rather than a screen — it
+app, which is worth its own issue rather than a widening of this one. **Now's
+triage section** joins that list for the same reason one more level up:
+`NowScreen.tsx` branches to `RealFrontier` only when demo is off, so the
+section — its header toggle, its collapsed state, its capped scroll container
+and the `TriageRow` editors inside it — is never mounted under `?demo`.
+`screens/NowScreen.test.tsx` and `screens/triage-collapse.test.ts` are the
+cover; the scroll cap and the frontier-above-it are reviewed by hand on a
+device with real captures, which is where a full inbox exists at all. The popover is a state rather than a screen — it
 renders over whatever is showing (`shell/CapturePopover.tsx`), so no
 per-screen capture ever contains it, and the scrim covering the whole window
 plus the card fitting inside 768 are only decidable with it open. `?demo` drives
