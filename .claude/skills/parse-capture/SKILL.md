@@ -12,6 +12,19 @@ the production online-parse path (#41 decision 4/6, #256) -- it writes to
 response; nothing here calls Linear, the owned authority, or any other
 write target. That question is deliberately deferred (#256).
 
+## Which lane this governs
+
+Two dictated-capture lanes exist. This skill governs the **unattended**
+lane only: phone/watch/speaker -> Gemini -> Google Tasks -> sweeper ->
+Triage, where no author is present when the text lands -- that absence is
+exactly why parsing happens here and why it drops nothing and infers
+nothing (see "What to do" below). The **attended** lane -- in-app dictation
+-- deliberately skips this skill: the operator is watching the transcript
+and edits it in place before submitting, so the human is the parser and no
+skill is invoked. The "same whether typed or dictated" rule in step 1 below
+is scoped to the unattended lane; attended in-app dictation is a
+deliberate exception to it, not a violation of it.
+
 ## What to do
 
 Given the raw capture text as input:
@@ -19,8 +32,9 @@ Given the raw capture text as input:
 1. **Find the actionable line and use it verbatim as `title`.** Do not
    clean up, summarize, or rephrase it -- the sweeper's own rule
    (`docs/sweeper.md`) is "title verbatim, no cleanup, truncation, or
-   prefix," and this skill keeps the same discipline so a capture reads
-   the same whether it came in typed or dictated.
+   prefix," and this skill keeps the same discipline so an unattended
+   capture reads the same whether it came in typed or dictated -- see
+   "Which lane this governs" above for the attended-dictation exception.
 2. **Everything else becomes `notes`.** If the whole capture is usable as
    the title with nothing left over, `notes` is an empty string -- never
    omitted, never null (the schema requires both keys).
