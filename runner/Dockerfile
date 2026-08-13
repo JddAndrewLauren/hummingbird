@@ -64,6 +64,7 @@ WORKDIR /app
 COPY .claude/skills/parse-capture ./.claude/skills/parse-capture
 COPY .claude/skills/next-up-hb ./.claude/skills/next-up-hb
 COPY .claude/skills/microtask ./.claude/skills/microtask
+COPY .claude/skills/grill-me ./.claude/skills/grill-me
 
 # The prebuilt ranker, and the env var `scripts/next-up.sh` reads to find
 # it: with `HB_NEXT_UP_BIN` set, the script never falls back to `cargo run`

@@ -6,6 +6,7 @@ test("resolves each shipped skill by name", () => {
   assert.equal(getSkill("parse-capture")?.name, "parse-capture");
   assert.equal(getSkill("next-up-hb")?.name, "next-up-hb");
   assert.equal(getSkill("microtask")?.name, "microtask");
+  assert.equal(getSkill("grill-me")?.name, "grill-me");
 });
 
 test("returns undefined for an unknown skill name", () => {

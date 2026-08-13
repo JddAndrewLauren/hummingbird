@@ -29,6 +29,7 @@ on:
       - ".claude/skills/parse-capture/**"
       - ".claude/skills/next-up-hb/**"
       - ".claude/skills/microtask/**"
+      - ".claude/skills/grill-me/**"
       # The image also bakes in a *compiled* artifact (#116): the Rust
       # builder stage emits `client/next-up`'s `next-up-rank`. So a change
       # to `client/**` or `server/domain/**` can break this image while
@@ -50,6 +51,7 @@ on:
       - ".claude/skills/parse-capture/**"
       - ".claude/skills/next-up-hb/**"
       - ".claude/skills/microtask/**"
+      - ".claude/skills/grill-me/**"
       - "client/**"
       - "server/domain/**"
       - "server/Cargo.toml"
@@ -162,7 +164,9 @@ jobs:
                 && test -f /app/.claude/skills/next-up-hb/SKILL.md \
                 && test -f /app/.claude/skills/next-up-hb/schema.json \
                 && test -f /app/.claude/skills/microtask/SKILL.md \
-                && test -f /app/.claude/skills/microtask/schema.json'
+                && test -f /app/.claude/skills/microtask/schema.json \
+                && test -f /app/.claude/skills/grill-me/SKILL.md \
+                && test -f /app/.claude/skills/grill-me/schema.json'
 
       # `claude` is spawned by name from `main.js`; a base-image or npm
       # change that moved it off PATH would otherwise only show up in

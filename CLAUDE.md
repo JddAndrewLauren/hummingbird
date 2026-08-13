@@ -45,9 +45,9 @@ grepping it.
 Agent skills live in `.claude/skills/`, each with its own `SKILL.md`:
 `/next-up-hb` (select and delegate), `/to-actions` (project → actions),
 `/microtask` (item → steps), `/hummingbird-design` (the brand), and
-`parse-capture` (runner-only). The three personal skills each own a
-self-contained script that speaks the owned API — the duplication between
-them is deliberate and each script's header says why; `.github/workflows/skills.yml`
+`parse-capture` and `grill-me` (both runner-only). The three personal skills
+each own a self-contained script that speaks the owned API — the duplication
+between them is deliberate and each script's header says why; `.github/workflows/skills.yml`
 gates them.
 
 Working docs: `docs/agents/issue-tracker.md` (issues are GitHub issues driven
