@@ -859,11 +859,6 @@ class GmailAdapter:
             losers = [m for m in messages if m is not winner]
             if losers:
                 winner["_collapsed_ids"] = [loser.get("id") for loser in losers]
-                for loser in losers:
-                    log(
-                        "message %s collapsed into thread %s (winner %s)"
-                        % (loser.get("id"), thread_id, winner.get("id"))
-                    )
             yield winner
 
     def source_key(self, item):
@@ -894,8 +889,13 @@ class GmailAdapter:
         """
         gmail_remove_label(self.token, item.get("id"), self.label_id)
         collapsed_ids = item.get("_collapsed_ids") or []
+        thread_id = item.get("threadId") or item.get("id")
         for collapsed_id in collapsed_ids:
             gmail_remove_label(self.token, collapsed_id, self.label_id)
+            log(
+                "message %s collapsed into thread %s (winner %s)"
+                % (collapsed_id, thread_id, item.get("id"))
+            )
         return len(collapsed_ids)
 
 

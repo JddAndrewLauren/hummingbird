@@ -556,6 +556,44 @@ class GmailThreadCollapseTest(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn("collapsed=0", buffer.getvalue())
 
+    def test_dry_run_never_logs_a_collapse(self):
+        # A dry run never calls ack(), so the per-message collapse line --
+        # which only fires once a label removal actually happened -- must
+        # never appear; nothing here is a completed mutation.
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[older, newer])
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = self.run_gmail(fake, dry_run=True)
+
+        self.assertTrue(result.ok)
+        output = buffer.getvalue()
+        self.assertNotIn("collapsed into thread", output)
+        self.assertEqual(fake.gmail_mutations(), [])
+
+    def test_winner_create_failure_never_logs_a_collapse(self):
+        # The collapse line must not claim messages were unlabelled when the
+        # winner's create failed and ack() was never called -- the exact
+        # "logs report it as success" shape ADR-0019 warns against.
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(
+            messages=[older, newer],
+            hb_responses=[{"_status": 503, "error": "backend down"}],
+        )
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = self.run_gmail(fake)
+
+        self.assertFalse(result.ok)
+        output = buffer.getvalue()
+        self.assertNotIn("collapsed into thread", output)
+        self.assertIn("collapsed=0", output)
+        self.assertEqual(fake.gmail_mutations(), [])
+
 
 class AdapterIsolationTest(unittest.TestCase):
     """One run, both adapters; a failure in either never stops the other."""

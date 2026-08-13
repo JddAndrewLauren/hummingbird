@@ -530,9 +530,15 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    Labelling a thread that carries a forward chain is no longer a hazard for
    this check ([#336](https://github.com/JddAndrewLauren/hummingbird/issues/336),
    ADR-0019): the adapter now collapses every labelled message in a
-   conversation to the one winner it created. Re-labelling any message in the
-   already-acked thread re-enumerates it as a fresh, single-message "thread"
-   and hits the same `existed=1` pass condition above.
+   conversation to the one winner it created. Re-labelling from the
+   **conversation view** puts the label back on every message of the
+   already-acked thread; they re-group under the same `threadId` and the
+   winner is once again the same oldest message, so the check still gets
+   `existed=1`, now alongside `collapsed=N-1` for the rest. Labelling a
+   single **newer** message on its own instead enumerates as a thread of
+   one and legitimately mints `created=1` — the ADR-0019 recapture the
+   adapter is designed to allow, not the namespace break the pass condition
+   above exists to catch.
 
 ### Authority-reachability go-live (#328)
 
