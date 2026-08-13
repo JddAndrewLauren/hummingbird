@@ -31,6 +31,7 @@ CFG = sweep.Config(
 )
 
 ITEMS_URL = "https://hb.example/api/items"
+AUTHORITY_PROBE_URL = "https://hb.example" + sweep.AUTHORITY_PROBE_PATH
 
 # Scripted answer meaning "a normal 201 for whatever was posted"; the create
 # refuses a 201 that is not the item it asked for.
@@ -151,7 +152,7 @@ class FakeHttp:
     """Records every call; answers Google Tasks, Gmail, and authority writes."""
 
     def __init__(self, hb_responses=None, labels=None, messages=None,
-                 lists_response=None):
+                 lists_response=None, authority_probe_status=401):
         self.calls = []
         self.hb_responses = list(hb_responses or [])
         self.labels = labels if labels is not None else LABELS
@@ -160,9 +161,15 @@ class FakeHttp:
             "items": [{"id": "list-1", "title": "My Tasks"}]
         }
         self.tasks = {"items": [{"id": "task-1", "title": "call the vet", "notes": ""}]}
+        # Default 401: the authority-reachability probe's own pass condition
+        # (#328), so tests that never touch it still see a "reachable"
+        # authority rather than tripping an unrelated failure ping.
+        self.authority_probe_status = authority_probe_status
 
     def __call__(self, url, method="GET", headers=None, body=None, with_status=False):
         self.calls.append({"url": url, "method": method, "headers": headers, "body": body})
+        if url == AUTHORITY_PROBE_URL:
+            return {"_status": self.authority_probe_status}
         if url.startswith("https://hc.example/"):
             return {}
         if url == sweep.GOOGLE_TOKEN_URL:
@@ -566,6 +573,64 @@ class MainReportingTest(unittest.TestCase):
         fake = FakeHttp()
         self.assertEqual(self.run_main(fake, argv=["--dry-run"]), 0)
         self.assertEqual(fake.pings(), [])
+
+    # -- the authority-reachability check (#328) -----------------------------
+
+    AUTHORITY_CHECK = "https://hc.example/authority"
+
+    def test_authority_reachable_and_both_lanes_empty_all_three_green(self):
+        fake = FakeHttp(authority_probe_status=401)
+        fake.tasks = {"items": []}
+        fake.messages = []
+        self.assertEqual(
+            self.run_main(fake, env={"AUTHORITY_HEALTHCHECK_URL": self.AUTHORITY_CHECK}),
+            0,
+        )
+        for url in (self.TASKS_CHECK, self.GMAIL_CHECK, self.AUTHORITY_CHECK):
+            ping = self.ping(fake, url)
+            self.assertEqual(ping["method"], "GET")  # success, no body
+        self.assertIsNone(fake.first_index(self.AUTHORITY_CHECK + "/fail"))
+
+    def test_authority_unreachable_leaves_only_the_authority_check_red(self):
+        # 500 (a storage fault) rather than 401 -- the authority is up but
+        # cannot answer the probe's own auth query. Both lanes still find
+        # nothing to do and reachable Google, so they stay green: the
+        # criterion this restates is superseded by this design (see the
+        # Agent Brief) -- the Tasks check correctly stays green, and the new
+        # check alone carries the signal.
+        fake = FakeHttp(authority_probe_status=500)
+        fake.tasks = {"items": []}
+        fake.messages = []
+        self.assertEqual(
+            self.run_main(fake, env={"AUTHORITY_HEALTHCHECK_URL": self.AUTHORITY_CHECK}),
+            0,
+        )
+        self.assertEqual(self.ping(fake, self.TASKS_CHECK)["method"], "GET")
+        self.assertEqual(self.ping(fake, self.GMAIL_CHECK)["method"], "GET")
+        authority_fail = self.ping(fake, self.AUTHORITY_CHECK + "/fail")
+        self.assertEqual(authority_fail["method"], "POST")
+
+    def test_a_failing_probe_does_not_touch_either_adapters_ping_or_the_exit_code(self):
+        # Blast radius: purely observational. A red authority check must not
+        # fail the run when both adapters themselves drained cleanly.
+        fake = FakeHttp(authority_probe_status=403)
+        fake.tasks = {"items": []}
+        fake.messages = []
+        exit_code = self.run_main(fake, env={"AUTHORITY_HEALTHCHECK_URL": self.AUTHORITY_CHECK})
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(self.ping(fake, self.TASKS_CHECK)["method"], "GET")
+        self.assertEqual(self.ping(fake, self.GMAIL_CHECK)["method"], "GET")
+
+    def test_unset_authority_check_leaves_the_two_adapter_pings_unchanged(self):
+        # No AUTHORITY_HEALTHCHECK_URL in the environment at all (the shared
+        # ENV omits it) -- the probe must skip itself without touching either
+        # adapter's own ping.
+        fake = FakeHttp()
+        self.assertEqual(self.run_main(fake), 0)
+        self.assertEqual(
+            sorted(c["url"] for c in fake.pings()),
+            [self.GMAIL_CHECK, self.TASKS_CHECK],
+        )
 
 
 class GmailConfigTest(unittest.TestCase):
