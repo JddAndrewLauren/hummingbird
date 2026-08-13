@@ -5,6 +5,8 @@
 is instantiated per surface — `QuestionDef` gains `surface: "now" | "status"`
 — so "the ranked region owns Now's Context aside" and "one region, one slot"
 are true of Now specifically, not of every surface that will ever exist.
+**Amendments to this ADR follow [the pointer convention](README.md):** what
+a later ADR changed is written in *that* ADR, and named here only.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on
 #118 (settings bindings) and widened when that slice proved undesignable
 alone — the bindings exist to pose standing questions, and four throwaway

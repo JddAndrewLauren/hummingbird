@@ -62,9 +62,11 @@ generally: it multiplies rows in a registry meant to stay frozen and
 reviewable, for what is mechanically one feed polled once.
 
 **One deliberate refinement: the credential-free prober breaks its own
-rule.** `uptime/v1` (#315) spans both Cloudflare (the web origin) and Fly
-(the authority, the runner) under a single source, even though those are
-two platforms. Splitting it by platform would need two `ingest`-scoped
+rule.** `uptime/v1` (#315) spans both Cloudflare (the web origin, and the
+authority per [ADR-0008](0008-the-authority-is-an-app-owned-server.md):35 —
+a Worker plus a SQLite Durable Object) and Fly (the skill runner and the
+sweeper) under a single source, even though those are two platforms.
+Splitting it by platform would need two `ingest`-scoped
 tokens minted for what is otherwise one credential-free binary issuing
 plain HTTP requests — machinery bought for a distinction the poller itself
 does not need to make. **Where a poller holds no credential, the credential
@@ -143,28 +145,35 @@ rule exists to prevent.
 
 ## Decision 6 — Scale-to-zero inverts cadence
 
-`server/authority`'s Fly deployment runs `min_machines_running = 0`: no
-machine running is its normal, healthy, idle state, and a 401 probe against
-it **cold-boots the machine**. This inverts the intuitive polling
-frequency — the most important service (the authority) gets the *least*
-frequent probe (hourly, #315), because each probe wakes a sleeping machine
-to learn nothing new when nothing has changed, and polling every 15 minutes
-would be 96 avoidable wake-ups a day for a service most of that traffic
-finds already fine.
+Of the two Fly apps, only the skill runner scales to zero:
+`runner/fly.toml:21` sets `min_machines_running = 0` (root `fly.toml`, the
+sweeper, deliberately carries no such setting or `[http_service]` at
+all — `docs/sweeper.md` forbids it, so autostop can't suspend a sweep
+mid-run). No machine running is the runner's normal, healthy, idle state,
+and a 401 probe against it **cold-boots the machine**. The authority holds
+no such setting to invert: per ADR-0008:35 it is a Cloudflare Worker plus a
+SQLite Durable Object, live on every request with no machine to sleep or
+wake.
+
+This inverts the intuitive polling frequency **for the whole probe
+workflow**, not per service: probing every 15 minutes would cost the
+runner 96 avoidable wake-ups a day to learn nothing new when nothing has
+changed, so #315's workflow that carries every `uptime/v1` service —
+authority, web origin, runner, sweeper alike — runs **hourly as one unit**.
 
 **Fly machine state is not a health signal, and this is the rejected
 alternative recorded explicitly:** reading machine state via the Fly API
-(is a machine running right now?) looks like the obvious healthcheck, but
-under `min_machines_running = 0` it would read the authority as *down* for
-most of every day — its correct idle state — and #306 already records
-`flyctl` itself misreading its own boot timing on top of that. The
-401-probe design in decision 3 is the one that survives scale-to-zero
-correctly; platform machine state is actively wrong here.
+(is a machine running right now?) looks like the obvious healthcheck for
+the runner, but under `min_machines_running = 0` it would read the runner
+as *down* for most of every day — its correct idle state — and #306
+already records `flyctl` itself misreading its own boot timing on top of
+that. The 401-probe design in decision 3 is the one that survives
+scale-to-zero correctly; platform machine state is actively wrong here.
 
 ## What this obliges
 
 - **CLAUDE.md's map table** gains a **Status screen** row pointing at
-  `client/web/src/screens/questions/contract.ts` and this ADR.
+  `client/web/src/screens/StatusScreen.tsx` (#311) and this ADR.
 - **ADR-0015** gains an amendment-pointer entry in its Status header, per
   [the pointer convention](README.md): the region it designed is now
   instantiated per surface, and its placement rules ("the ranked region
