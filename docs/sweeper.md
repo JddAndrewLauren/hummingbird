@@ -240,6 +240,40 @@ must still trip the alarm. Any failure or exception POSTs that adapter's
 accumulated failure lines to its check's `/fail` for immediate alerting. The
 ping itself is wrapped in its own try/except and can never fail a run.
 
+**A per-adapter green proves that adapter's drain ran without error — nothing
+more.** An empty enumeration (nothing to capture) makes no authority call at
+all, so both lanes ping green on a day with nothing to do, and since the
+2026-08-12 go-live an empty drain is the steady state for both
+([#328](https://github.com/JddAndrewLauren/hummingbird/issues/328)). Neither
+adapter check is evidence the authority is reachable; only the third check
+below is.
+
+### The authority-reachability check
+
+A third healthchecks.io check, owned by no adapter and no capture source
+(ADR-0002 rule 6, amended — see the ADR-0002 inline amendment). One probe per
+sweep, independent of both drains: a `GET` to an existing `/api/` route
+(`/api/rules`) carrying a **deliberately invalid** bearer token, via the same
+`http_json` choke point every other request uses (so it inherits `USER_AGENT`
+too). Success is **exactly 401** — the authority resolves a bearer by
+querying the `tokens` table before it can answer 401, so a 401 proves edge,
+Worker *and* storage are all live; a storage fault surfaces as 500. A 403 is
+not a pass: Cloudflare's own Browser Integrity Check also answers 403 (#326),
+so 403 cannot distinguish "the authority said out-of-scope" from "the edge
+blocked us." Any 403, any 5xx, any timeout, or any connection error fails the
+probe. The probe never sends `$HB_API_TOKEN` and never writes — there is no
+benign authenticated read on the `sweeper` scope to spend instead, since that
+scope reaches only `POST /api/items`.
+
+`$AUTHORITY_HEALTHCHECK_URL` is this check's ping url. **Blast radius is
+purely observational**: the probe never fails the run and never touches
+either adapter's result — both drains attempt exactly what they would have
+otherwise, whatever the probe found, so the sweep itself stays fail-closed
+through the adapters as always. Unset is **inert**, unlike a missing adapter
+check: the probe is skipped with a `WARN` line rather than failing anything,
+because this code is meant to land before the check exists. A dry run pings
+nothing, same convention as both adapters.
+
 Fly health checks are explicitly *not* the mechanism: they restart, they don't
 notify. Structural backstop: unswept items visibly accumulate in the Tasks app.
 
@@ -298,7 +332,8 @@ and `flyctl secrets set HEALTHCHECK_URL=...`.
 Set with `flyctl secrets set`; nothing on-device, nothing committed.
 
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`,
-`HB_API_TOKEN`, `HEALTHCHECK_URL`, `GMAIL_HEALTHCHECK_URL`.
+`HB_API_TOKEN`, `HEALTHCHECK_URL`, `GMAIL_HEALTHCHECK_URL`,
+`AUTHORITY_HEALTHCHECK_URL`.
 
 `HB_API_BASE` is **not** a secret and is normally unset: it defaults to
 `https://hb.twinion.net` and exists only so a local run can be pointed at a
@@ -475,6 +510,23 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    the retarget changed — see
    [#336](https://github.com/JddAndrewLauren/hummingbird/issues/336) — but it
    makes a thread-level label a poor instrument for this check.
+
+### Authority-reachability go-live (#328)
+
+The code lands inert — `$AUTHORITY_HEALTHCHECK_URL` unset skips the probe
+with a `WARN` and fails nothing — so this can be provisioned whenever, on its
+own schedule, independent of the Tasks/Gmail gates above.
+
+1. **healthchecks.io.** Create a third, dedicated check — same 45-minute
+   grace period as the other two; record its ping URL. Leave it paused until
+   go-live, same reasoning as the other checks.
+2. **Secret.** `flyctl secrets set AUTHORITY_HEALTHCHECK_URL=<ping url>`.
+3. **Unpause and verify.** After a live sweep, confirm the check went green,
+   then prove the failure path once by hand: point `HB_API_BASE` at something
+   unreachable for a manual `./sweep.py` run (not `--dry-run`, since a dry run
+   pings nothing) and confirm the check goes red while both adapter checks —
+   run against the same broken base — behave exactly as they did before this
+   issue.
 
 ## Acceptance (post-provisioning)
 

@@ -600,6 +600,188 @@ class TerminalFailureTest(unittest.TestCase):
         self.assertTrue(any("systematic" in line for line in failures))
 
 
+class ConfigFromEnvTest(unittest.TestCase):
+    """config_from_env reads the authority-reachability check url the same
+    way it reads the two adapter check urls: optional, empty string when
+    unset (#328)."""
+
+    BASE_ENV = {
+        "GOOGLE_CLIENT_ID": "cid",
+        "GOOGLE_CLIENT_SECRET": "secret",
+        "GOOGLE_REFRESH_TOKEN": "refresh",
+        "HB_API_TOKEN": "hb_token",
+    }
+
+    def test_authority_healthcheck_url_unset_is_empty(self):
+        cfg = sweep.config_from_env(dict(self.BASE_ENV))
+        self.assertEqual(cfg.authority_healthcheck_url, "")
+
+    def test_authority_healthcheck_url_is_read_from_env(self):
+        env = dict(self.BASE_ENV, AUTHORITY_HEALTHCHECK_URL="https://hc.example/authority")
+        cfg = sweep.config_from_env(env)
+        self.assertEqual(cfg.authority_healthcheck_url, "https://hc.example/authority")
+
+    def test_missing_authority_url_does_not_raise(self):
+        # Unlike the two adapter checks, this one is never `required()` --
+        # the code lands before the check exists, and an unprovisioned probe
+        # must not block config from loading at all.
+        sweep.config_from_env(dict(self.BASE_ENV))  # must not raise
+
+
+class AuthorityProbeTest(unittest.TestCase):
+    """The authority-reachability probe (#328): a GET to an existing `/api/`
+    route with a deliberately invalid bearer, where only an exact 401 passes.
+    """
+
+    CFG = sweep.Config(
+        google_client_id="cid",
+        google_client_secret="secret",
+        google_refresh_token="refresh",
+        hb_api_token="hb_token",
+        hb_api_base="https://hb.example",
+        healthcheck_url="https://hc.example/tasks",
+        denylist_path="/nonexistent/denylist.json",
+        gmail_healthcheck_url="https://hc.example/gmail",
+        authority_healthcheck_url="https://hc.example/authority",
+    )
+
+    def setUp(self):
+        self.real_http = sweep.http_json
+        self.real_ping_success = sweep.ping_success
+        self.real_ping_failure = sweep.ping_failure
+
+    def tearDown(self):
+        sweep.http_json = self.real_http
+        sweep.ping_success = self.real_ping_success
+        sweep.ping_failure = self.real_ping_failure
+
+    def _respond(self, status):
+        # Mirrors what the real http_json returns after decoding a non-2xx
+        # response (an empty-body 401/403, per docs/sweeper.md): the status
+        # stamped, nothing else.
+        calls = []
+
+        def fake(url, method="GET", headers=None, body=None, with_status=False):
+            calls.append({"url": url, "method": method, "headers": headers, "body": body})
+            return {"_status": status}
+
+        sweep.http_json = fake
+        return calls
+
+    # -- probe_authority_reachable ------------------------------------------
+
+    def test_exactly_401_is_reachable(self):
+        calls = self._respond(401)
+        self.assertTrue(sweep.probe_authority_reachable(self.CFG))
+        self.assertEqual(len(calls), 1)
+
+    def test_403_is_not_reachable(self):
+        self._respond(403)
+        self.assertFalse(sweep.probe_authority_reachable(self.CFG))
+
+    def test_5xx_is_not_reachable(self):
+        self._respond(500)
+        self.assertFalse(sweep.probe_authority_reachable(self.CFG))
+
+    def test_a_connection_error_propagates(self):
+        def boom(*args, **kwargs):
+            raise TimeoutError("timed out")
+
+        sweep.http_json = boom
+        with self.assertRaises(TimeoutError):
+            sweep.probe_authority_reachable(self.CFG)
+
+    def test_sends_no_valid_credential(self):
+        calls = self._respond(401)
+        sweep.probe_authority_reachable(self.CFG)
+        auth_header = calls[0]["headers"]["Authorization"]
+        self.assertNotIn(self.CFG.hb_api_token, auth_header)
+        self.assertTrue(auth_header.startswith("Bearer "))
+
+    def test_method_is_get_with_no_body(self):
+        calls = self._respond(401)
+        sweep.probe_authority_reachable(self.CFG)
+        self.assertEqual(calls[0]["method"], "GET")
+        self.assertIsNone(calls[0]["body"])
+
+    def test_hits_an_existing_api_route(self):
+        calls = self._respond(401)
+        sweep.probe_authority_reachable(self.CFG)
+        self.assertTrue(calls[0]["url"].startswith("https://hb.example/api/"))
+
+    # -- run_authority_probe --------------------------------------------------
+
+    def test_401_pings_success(self):
+        self._respond(401)
+        pings = []
+        sweep.ping_success = lambda url, body=None, name="": pings.append(("success", url, name))
+        try:
+            sweep.run_authority_probe(self.CFG, dry_run=False)
+        finally:
+            sweep.ping_success = self.real_ping_success
+        self.assertEqual(pings, [("success", "https://hc.example/authority", "authority")])
+
+    def test_403_pings_failure(self):
+        self._respond(403)
+        pings = []
+        sweep.ping_failure = lambda url, body, name="": pings.append(("failure", url, name))
+        try:
+            sweep.run_authority_probe(self.CFG, dry_run=False)
+        finally:
+            sweep.ping_failure = self.real_ping_failure
+        self.assertEqual(len(pings), 1)
+        self.assertEqual(pings[0][1:], ("https://hc.example/authority", "authority"))
+
+    def test_a_timeout_pings_failure_and_does_not_raise(self):
+        def boom(*args, **kwargs):
+            raise TimeoutError("timed out")
+
+        sweep.http_json = boom
+        pings = []
+        sweep.ping_failure = lambda url, body, name="": pings.append((url, name))
+        try:
+            sweep.run_authority_probe(self.CFG, dry_run=False)  # must not raise
+        finally:
+            sweep.ping_failure = self.real_ping_failure
+        self.assertEqual(pings, [("https://hc.example/authority", "authority")])
+
+    def test_unset_url_skips_with_warn_and_pings_nothing(self):
+        import contextlib
+        import io as io_mod
+
+        cfg = self.CFG._replace(authority_healthcheck_url="")
+        pinged = []
+        sweep.ping_success = lambda *a, **k: pinged.append("success")
+        sweep.ping_failure = lambda *a, **k: pinged.append("failure")
+        buffer = io_mod.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                sweep.run_authority_probe(cfg, dry_run=False)
+        finally:
+            sweep.ping_success = self.real_ping_success
+            sweep.ping_failure = self.real_ping_failure
+        self.assertEqual(pinged, [])
+        self.assertIn("WARN", buffer.getvalue())
+
+    def test_dry_run_pings_nothing(self):
+        calls = self._respond(401)
+        pinged = []
+        sweep.ping_success = lambda *a, **k: pinged.append("success")
+        sweep.ping_failure = lambda *a, **k: pinged.append("failure")
+        try:
+            sweep.run_authority_probe(self.CFG, dry_run=True)
+        finally:
+            sweep.ping_success = self.real_ping_success
+            sweep.ping_failure = self.real_ping_failure
+        self.assertEqual(pinged, [])
+        self.assertEqual(calls, [])  # not even the probe request itself
+
+    def test_failing_probe_never_raises(self):
+        self._respond(500)
+        sweep.run_authority_probe(self.CFG, dry_run=False)  # must not raise
+
+
+
 class PingSecrecyTest(unittest.TestCase):
     """HEALTHCHECK_URL is a bearer secret: holding it lets anyone forge a
     success ping and silence the dead-man's switch. It must never reach stdout,

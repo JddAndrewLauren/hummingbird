@@ -58,6 +58,16 @@ calendar event is background context at T−3 days and constrains
    shared check held red by one broken drain hides the health of the others.
    Context pollers get no healthchecks; a stale "as of…" tile is their alarm.
 
+   *Amended 2026-08-12 (#328): the taxonomy now admits one check belonging to
+   no source — authority reachability. Both lanes ping their own check green
+   on an empty drain, having made no authority call at all, and since the
+   2026-08-12 go-live an empty drain is the steady state for both; a per-source
+   green therefore stopped being evidence the authority is reachable. The
+   fix is a third check, owned by no capture source, that probes the
+   authority directly once per sweep and reports only itself — per-source
+   isolation is otherwise unchanged: this check's failure never touches
+   either adapter's result, and either adapter's failure never touches it.*
+
 ## Placements
 
 | Source | Role(s) |
