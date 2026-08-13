@@ -59,8 +59,12 @@ when demo is off, so `ItemDetailPanel` is never mounted under `?demo` at all.
 Teaching the flag to mount it would mean entangling the demo hero branch with
 `RealFrontier`, which that branch exists to prevent, so `visual/surfaces.spec.ts`
 is deliberately unchanged here and `components/domain/ItemDetailPanel.test.tsx`
-is the cover. Item detail is now the busiest unphotographed surface in the
-app, which is worth its own issue rather than a widening of this one. **Now's
+is the cover. #274's pinned-decline fallback button ("Switch to `<entry>`")
+joins that exclusion under that same cover; the picker it belongs to lives on
+**Settings**, which *is* photographed, so the control itself stays in the
+matrix even though the decline that offers it does not. Item detail is now
+the busiest unphotographed surface in the app, which is worth its own issue
+rather than a widening of this one. **Now's
 triage section** joins that list for the same reason one more level up:
 `NowScreen.tsx` branches to `RealFrontier` only when demo is off, so the
 section — its header toggle, its collapsed state, its capped scroll container

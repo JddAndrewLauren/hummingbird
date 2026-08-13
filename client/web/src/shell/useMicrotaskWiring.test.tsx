@@ -378,6 +378,34 @@ describe("useMicrotaskWiring — #274's routing", () => {
     expect(screen.queryByText(/switch to/i)).toBeNull();
   });
 
+  it("offers no fallback for a decline the backend answered — switching tiers fixes nothing it reports", async () => {
+    // The seam's own guard (#307) declined this run; the pinned backend
+    // answered, and said so with a stamp. Every other tier would answer the
+    // same way, because the condition is the item's steps, not the
+    // backend's health — so "switch to Home runner" would be as wrong here
+    // as it is for NO_TOKEN below.
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () =>
+      ndjson('{"ok":false,"error":"That item already has live steps.","backend":"anthropic","model":"opus"}'),
+    );
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="cloud"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
+  });
+
   it("offers no fallback for a NO_TOKEN decline — the failure names nothing to switch away FROM", async () => {
     // NO_TOKEN is not evidence the pinned backend is unreachable (no
     // request was ever made), so "switch to Home runner" would be an

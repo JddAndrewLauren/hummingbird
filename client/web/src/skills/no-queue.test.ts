@@ -108,7 +108,7 @@ describe("the skill lane cannot reach the sync engine", () => {
     }
   });
 
-  it("nothing in the lane starts a timer", () => {
+  it("nothing in the lane hand-rolls a timer", () => {
     // ADR-0007's single 60s interval stays the only clock. An
     // `AbortController` is not a clock, which is why aborting on unmount is
     // allowed here and a `setTimeout` is not.

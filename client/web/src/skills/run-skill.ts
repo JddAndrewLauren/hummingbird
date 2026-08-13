@@ -10,7 +10,11 @@
 //
 // **Which backend stays outside this module** — the caller passes it in.
 // That is the whole of #273's "keep the which-backend decision outside the
-// seam", and #274 replaces exactly one expression in the wiring.
+// seam", and it is what let #274 add routing without touching this file's
+// contract: `route-run.ts` now sits between the wiring and this module,
+// calling it once per tier it tries. Nothing here knows that happened —
+// which was the point — but the app no longer calls this directly, so read
+// `route-run.ts` too before assuming this file is the whole lane.
 //
 // Four invariants, each pinned by a test:
 //
@@ -27,7 +31,11 @@
 // 4. **Nothing here is enqueued, retried or timed.** A skill request is a
 //    question, and questions go stale (#269) — the caller's
 //    `AbortController` is the only way a run ends early, and an
-//    `AbortController` is not a clock.
+//    `AbortController` is not a clock. Still true of this module, and
+//    deliberately narrower than the lane: #274's `route-run.ts` hands in a
+//    `fetch` wrapped in a one-shot connect deadline, which is that same
+//    category (see ADR-0007's #274 amendment) — but it is the caller's, and
+//    nothing here starts, holds or clears it.
 
 import { classifyLine } from "./envelope";
 import { declineForResponse, declineForTransport, NO_TERMINAL_LINE, NO_TOKEN } from "./decline";
@@ -35,8 +43,9 @@ import { takeLines } from "./ndjson";
 import type { SkillEvent } from "./run-state";
 
 export interface SkillBackend {
-  /** Stable id, for a caller that wants to label which lane ran. #274 makes
-   * this vary. */
+  /** Stable id, for a caller that wants to label which lane ran. Since #274
+   * it varies per attempt: `route-run.ts` passes a different registry entry
+   * for each tier it tries. */
   id: string;
   /** Same-origin path (ADR-0018): the authority proxies to the runner. */
   endpoint: string;

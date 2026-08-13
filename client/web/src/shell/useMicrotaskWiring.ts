@@ -194,6 +194,15 @@ export function useMicrotaskWiring(
     // whether the pinned backend itself is reachable, so offering "switch
     // to X" here would suggest a fix for a problem that was never observed.
     if (run.reason === NO_TOKEN) return null;
+    // A decline that NAMES a backend is one a backend answered — ADR-0018's
+    // rule, that a null stamp always means no lane named itself, read in the
+    // one direction it can be read. Switching tiers fixes nothing such a
+    // decline reports: "That item already has live steps." is true of every
+    // tier, because the guard is the seam's (#307), not the backend's. The
+    // offer is scoped to a backend that is *dead* — the same principle the
+    // NO_TOKEN case above states, applied to the other way a decline can
+    // arrive without evidencing unreachability.
+    if (run.backend !== null) return null;
     const fallback = fallbackEntry(registry, selection);
     const onSelectBackend = deps.onSelectBackend;
     if (fallback === null || onSelectBackend === undefined) return null;
