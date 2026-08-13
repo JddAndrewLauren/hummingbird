@@ -40,6 +40,7 @@ grepping it.
 | The SharedWorker layer | `client/web/src/worker/` | `core.worker.ts` (note its top-level-`await` invariant), ADR-0010 |
 | The standing-question panes | `client/web/src/screens/questions/` + `*-pane/` | `questions/contract.ts`, ADR-0015 |
 | The Status screen (second surface of the ranked region) | `client/web/src/screens/StatusScreen.tsx` (#311) | `questions/contract.ts`, ADR-0017 |
+| Now's centre column — the frontier in columns | `client/web/src/screens/{FrontierColumns.tsx,frontier-columns.ts,frontier-facets.ts,frontier-prefs.ts}` (#399) | `FrontierColumns.tsx`, ADR-0021 |
 | Surfaces registry (visual gate) | `client/web/visual/` | `docs/SURFACES.md` |
 
 Agent skills live in `.claude/skills/`, each with its own `SKILL.md`:

@@ -76,6 +76,28 @@ const URGENCY_LABEL: Record<Urgency, string> = {
   calm: "Calm",
 };
 
+/** The colour the urgency *word* is painted, which is deliberately **not**
+ * `URGENCY_EDGE`.
+ *
+ * The word exists because ADR-0021 decision 2 makes colour non-load-bearing —
+ * it is the channel for a reader who cannot use the swatch. Painting it in the
+ * very colour it compensates for defeats that, and measurably so: at
+ * `hb-meta`'s 11px on `--surface-card` in light mode, `--urgency-soon`
+ * (`amber-500`) is ~2.4:1 and `--urgency-now` (`ember-500`) ~3.1:1, against
+ * WCAG AA's 4.5:1 for small text. Stepping down the ramp does not rescue it
+ * either — `amber-600` is still only ~3.5:1.
+ *
+ * So the swatch carries the colour and the word carries the information, in
+ * text colours meant for text. `overdue` keeps an emphatic one because
+ * `--status-danger-fg` is the repo's own "this is bad" text token and clears AA
+ * comfortably (~8.5:1); the rest read as ordinary meta. */
+const URGENCY_TEXT: Record<Urgency, string> = {
+  overdue: "var(--status-danger-fg)",
+  now: "var(--text-secondary)",
+  soon: "var(--text-secondary)",
+  calm: "var(--text-muted)",
+};
+
 /** Cards shown per column before the `n more` toggle. The cap is what makes
  * wrapping work — a wrapping row takes its height from the tallest column in
  * its line, so one fat column would otherwise strand its neighbours in
@@ -157,13 +179,10 @@ function ItemCard({
         >
           {/* Colour carries urgency, so the card says it in words too. Text
               rather than `ItemRow`'s `title` tooltip, which a keyboard or
-              screen-reader user does not reliably get (ADR-0021 decision 2). */}
-          <span
-            className="hb-meta"
-            style={{
-              color: urgency === "calm" ? "var(--text-muted)" : URGENCY_EDGE[urgency],
-            }}
-          >
+              screen-reader user does not reliably get (ADR-0021 decision 2) —
+              and in `URGENCY_TEXT`, not the swatch colour, for the contrast
+              reason recorded there. */}
+          <span className="hb-meta" style={{ color: URGENCY_TEXT[urgency] }}>
             {URGENCY_LABEL[urgency]}
           </span>
           {/* "Ready" is the default and says nothing at card size — the stage
@@ -308,7 +327,7 @@ export function FrontierColumns({
   // `orderFrontier` unchanged, applied once before filtering and grouping —
   // neither reorders, so the within-column rule is `orderFrontier` and there is
   // no second ordering function.
-  const ordered = orderFrontier([...frontier]);
+  const ordered = orderFrontier(frontier);
   const shown = applyFacets(ordered, picked, nowMs);
   const columns = groupFrontier(shown, axis, projects);
   const activeFacets = facetCount(picked);
@@ -326,13 +345,41 @@ export function FrontierColumns({
     setExpanded(new Set<string>());
   };
 
+  // The keys a column could legitimately have on this axis, so a write can
+  // prune dead ones. Without pruning, a collapsed column whose label stops
+  // existing — the last `@garden` action done, a project archived or renamed —
+  // keeps its entry in storage forever: the very "an override map would accrete
+  // keys for panes that no longer exist" failure ADR-0021 decision 5 cites as
+  // its reason to stay out of the `settings` table. Device-local does not make
+  // unbounded growth fine, and a column of that name appearing again later would
+  // come back collapsed for a reason the reader cannot see.
+  // `questions/collapse.ts`'s `writeCollapseOverride(…, livePaneKeys)` is the
+  // in-repo shape for this.
+  //
+  // Derived from the **unfiltered** frontier, which is the whole subtlety: a
+  // column the live filter happens to be hiding is not dead, and pruning
+  // against `columns` would silently forget it was shut.
+  const liveKeys = new Set(
+    groupFrontier(ordered, axis, projects).map((column) => column.value ?? ""),
+  );
+
   const toggleCollapsed = (key: string) => {
-    const next = new Set(collapsed);
-    if (next.has(key)) {
+    const next = new Set<string>();
+    for (const entry of collapsed) {
+      if (liveKeys.has(entry)) {
+        next.add(entry);
+      }
+    }
+    if (collapsed.has(key)) {
       next.delete(key);
     } else {
       next.add(key);
     }
+    // Computed here rather than inside a `setCollapsed` updater on purpose: an
+    // updater must be pure, and StrictMode calls it twice, so the storage write
+    // does not belong in one. Reading `collapsed` directly is safe because each
+    // header click is its own React event — two collapses cannot batch into one
+    // pass, which is the only case an updater would buy anything for.
     setCollapsed(next);
     writeCollapsedColumns(storage, next);
   };
@@ -614,10 +661,23 @@ export function FrontierColumns({
                       onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
                     />
                   ))}
-              {/* The count never lies about what is hidden. */}
-              {!isCollapsed && (hidden > 0 || isOpen) ? (
+              {/* The count never lies about what is hidden. Offered only when
+                  there is genuinely something to reveal or re-hide: an expanded
+                  column that has since dropped to the cap (a filter picked, an
+                  item completed) has `hidden === 0` and would otherwise keep a
+                  "Show fewer" that changes nothing when clicked. */}
+              {!isCollapsed && (hidden > 0 || (isOpen && column.items.length > COLUMN_CAP)) ? (
                 <button
                   type="button"
+                  aria-expanded={isOpen}
+                  // The visible text is deliberately terse, which leaves two
+                  // columns hiding the same number of cards with two
+                  // identically-named buttons and nothing tying either to its
+                  // column. The accessible name carries the column, the same fix
+                  // the facet chips needed.
+                  aria-label={
+                    isOpen ? `Show fewer in ${heading}` : `Show ${hidden} more in ${heading}`
+                  }
                   onClick={() => toggleExpanded(key)}
                   style={{
                     font: "var(--type-body-sm)",

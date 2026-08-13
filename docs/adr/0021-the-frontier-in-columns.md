@@ -84,12 +84,28 @@ only if it is used. A surface that always shows one axis wants that axis
 hard-coded and the space back — and the honest response then is to delete the
 control, not to add a fifth axis to justify it.
 
-## Decision 2 — colour encodes urgency, and nothing else
+## Decision 2 — the card's own colour encodes urgency, and nothing else
 
 A card's leading edge carries its **urgency** (`calm` / `soon` / `now` /
 `overdue`, `client/web/src/screens/urgency.ts`). `calm` gets no swatch — the
 default is not a claim worth colouring — so a legend names the three that are.
-Nothing else on the card is coloured.
+**Colour the card itself introduces means urgency and nothing else.**
+
+That is deliberately narrower than "nothing else on the card is coloured",
+which an earlier draft of this ADR claimed and the card does not honour: it also
+renders a `StageBadge` for a non-`ready` stage and the priority label in
+`--text-brand`. Both are inherited unchanged from
+`components/domain/ItemRow.tsx` rather than invented here, and both are
+*already* licensed by the very design-system rule this decision leans on — "a
+coloured pill always encodes stage, tier or urgency, never decoration". Stage is
+one of the three. Dropping them would make the literal sentence true at the cost
+of the at-a-glance in-progress signal every other list in the app gives, and
+would make this one surface disagree with `ItemRow` about what a stage looks
+like.
+
+So the claim worth holding is the one that actually does work: **this surface
+adds no fourth meaning to colour.** The design system's rule needs no exception
+either way — which was the point.
 
 **Why colour must say exactly one thing here, more than elsewhere.** Colour
 reads *across* whichever axis the columns are grouped by, and position reads

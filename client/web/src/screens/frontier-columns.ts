@@ -47,7 +47,7 @@ export interface FrontierColumn {
   items: TaskItemDTO[];
 }
 
-function axisValue(item: TaskItemDTO, axis: FrontierAxis): string | null {
+function rawAxisValue(item: TaskItemDTO, axis: FrontierAxis): string | null {
   if (axis === "context") {
     return item.context;
   }
@@ -58,6 +58,23 @@ function axisValue(item: TaskItemDTO, axis: FrontierAxis): string | null {
     return item.size;
   }
   return item.energy;
+}
+
+/** An **empty string is not a value**, and is folded into the no-value bucket.
+ *
+ * This is not defensive noise. `items.context` is free text —
+ * `context TEXT` with no CHECK (`server/authority/src/schema.rs`) and no
+ * empty-string rejection on the write path — so while every in-app writer
+ * normalises `""` to `null` (`screens/triage-form.ts`, `screens/capture-meta.ts`),
+ * any API writer holding a `device` token can land a `""`. Without this fold it
+ * would produce a *second* no-value column: the caller keys columns by their
+ * value with `null` rendered as `""`, so the two would share a React key, share
+ * one collapse entry, and one of them would render a heading with no accessible
+ * name at all. Keeping the no-value bucket single is what keeps that key
+ * unforgeable. */
+function axisValue(item: TaskItemDTO, axis: FrontierAxis): string | null {
+  const raw = rawAxisValue(item, axis);
+  return raw === null || raw === "" ? null : raw;
 }
 
 /** Columns for one axis: **fullest first**, and the "names no value on this

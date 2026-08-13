@@ -159,6 +159,41 @@ describe("groupFrontier — bucketing, on every axis", () => {
     expect(columns.map((column) => column.value)).toEqual(["@phone", "@computer"]);
   });
 
+  it("folds an empty-string axis value into the no-value column, keeping it single", () => {
+    // `items.context` is `TEXT` with no CHECK and no server-side empty
+    // rejection, so an API writer can land `""` even though every in-app writer
+    // normalises it to `null`. Two no-value columns would share the caller's
+    // `value ?? ""` key: duplicate React key, one collapse entry for two
+    // columns, and a heading with no accessible name.
+    for (const axis of FRONTIER_AXES) {
+      const empty = item({ id: "a", [FIELD[axis]]: "" });
+      const absent = item({ id: "b" });
+      const named = item({ id: "c", [FIELD[axis]]: "x" });
+
+      const columns = groupFrontier([empty, absent, named], axis, []);
+
+      expect(columns.map((column) => column.value)).toEqual(["x", null]);
+      // Both landed in the one no-value column, and it still sorts last even
+      // though it is now the fuller of the two.
+      expect(columns[1].items.map((entry) => entry.id)).toEqual(["a", "b"]);
+    }
+  });
+
+  it("gives every column a key no other column can produce", () => {
+    // The property the fold above exists to protect, stated directly.
+    const columns = groupFrontier(
+      [
+        item({ id: "a", context: "" }),
+        item({ id: "b", context: null }),
+        item({ id: "c", context: "@computer" }),
+      ],
+      "context",
+      [],
+    );
+    const keys = columns.map((column) => column.value ?? "");
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
   it("returns no columns for an empty frontier", () => {
     for (const axis of FRONTIER_AXES) {
       expect(groupFrontier([], axis, [])).toEqual([]);

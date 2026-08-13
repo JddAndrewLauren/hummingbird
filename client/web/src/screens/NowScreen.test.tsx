@@ -261,16 +261,67 @@ describe("NowScreen — the frontier list", () => {
       }),
     );
 
-    // Six of nine on screen, and the count never lies about the rest.
+    // Six of nine on screen, and the count never lies about the rest. Both
+    // halves are asserted: `queryByText(...).toBeDefined()` would pass whether
+    // the card were there or not, since `queryByText` returns `null` on a miss
+    // and `toBeDefined()` accepts `null`.
     expect(screen.getByRole("heading", { name: "@computer" })).toBeDefined();
-    expect(screen.queryByText("Action 5")).toBeDefined();
+    expect(screen.getByText("Action 0")).toBeDefined();
+    expect(screen.getByText("Action 5")).toBeDefined();
     expect(screen.queryByText("Action 6")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "3 more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 3 more in @computer" }));
     expect(screen.getByText("Action 8")).toBeDefined();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show fewer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show fewer in @computer" }));
     expect(screen.queryByText("Action 6")).toBeNull();
+  });
+
+  it("names the reveal toggle by its column, so two columns are not two identical buttons", () => {
+    // #403's facet chips needed the same fix. Two columns hiding the same count
+    // give two buttons whose visible text is identical, and nothing else ties
+    // either to the column it belongs to.
+    renderNow(
+      taskState({
+        frontier: [
+          ...Array.from({ length: 8 }, (_, i) =>
+            itemDTO({ id: `a${i}`, title: `A${i}`, context: "@computer" }),
+          ),
+          ...Array.from({ length: 8 }, (_, i) =>
+            itemDTO({ id: `b${i}`, title: `B${i}`, context: "@phone" }),
+          ),
+        ],
+      }),
+    );
+
+    expect(screen.getAllByText("2 more")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Show 2 more in @computer" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Show 2 more in @phone" })).toBeDefined();
+  });
+
+  it("drops the reveal toggle when an expanded column falls back to the cap", () => {
+    // Expand a 7-card column, then filter it down to 6: `hidden` is 0, so a
+    // surviving "Show fewer" would be a control that changes nothing.
+    renderNow(
+      taskState({
+        frontier: [
+          ...Array.from({ length: 6 }, (_, i) =>
+            itemDTO({ id: `q${i}`, title: `Q${i}`, context: "@computer", size: "quick" }),
+          ),
+          itemDTO({ id: "d1", title: "Deep one", context: "@computer", size: "deep" }),
+        ],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 more in @computer" }));
+    expect(screen.getByText("Deep one")).toBeDefined();
+
+    // Filter to `quick`: the column is exactly at the cap now.
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+
+    expect(screen.queryByText("Show fewer")).toBeNull();
+    expect(screen.queryByText(/ more$/)).toBeNull();
   });
 
   it("states urgency in words as well as colour", () => {
@@ -302,15 +353,29 @@ describe("NowScreen — the frontier list", () => {
       }),
     );
 
-    const container = document.body;
-    const wrappers = [...container.querySelectorAll<HTMLElement>("div")].filter(
-      (node) => node.style.flexWrap === "wrap" && node.style.gap === "var(--space-6)",
-    );
-    expect(wrappers).toHaveLength(1);
-    for (const node of container.querySelectorAll<HTMLElement>("div")) {
-      expect(node.style.overflowX).toBe("");
-      expect(node.style.overflow).toBe("");
+    // Anchored on the columns themselves rather than on a spacing token: the
+    // wrap container is the one whose children are the column headings, so an
+    // unrelated `gap` change cannot silently make this test vacuous.
+    const heading = screen.getByRole("heading", { name: "@c0" });
+    const column = heading.closest("div")?.parentElement;
+    const wrapper = column?.parentElement;
+    expect(wrapper?.style.flexWrap).toBe("wrap");
+    // Five columns, all siblings in the one wrap container — no nesting, no
+    // per-line sub-container that could scroll on its own.
+    expect(wrapper?.childElementCount).toBe(5);
+
+    // And nothing from the wrap container up to the page declares a scroller,
+    // which is the assertion that keeps `docs/SURFACES.md`'s "only independent
+    // scroll container" clause true. Walking ancestors rather than every div
+    // means an element that never sets `overflow` cannot pad the pass count.
+    let node: HTMLElement | null = wrapper ?? null;
+    let checked = 0;
+    while (node && node !== document.body) {
+      expect([node.style.overflow, node.style.overflowX, node.style.overflowY]).toEqual(["", "", ""]);
+      checked += 1;
+      node = node.parentElement;
     }
+    expect(checked).toBeGreaterThan(1);
   });
 
   it("names the blockers holding an item off the frontier", () => {
@@ -814,6 +879,73 @@ describe("NowScreen — the frontier's controls (#403)", () => {
     }
   });
 
+  it("prunes a dead column's collapse rather than keeping it forever", () => {
+    // ADR-0021 decision 5 rejects the `settings` table because "an override map
+    // would accrete keys for panes that no longer exist". Device-local storage
+    // has the same failure, and `questions/collapse.ts` prunes for exactly this
+    // reason. Without it, a column of that name later would come back collapsed.
+    const storage = fakeStorage();
+    const first = renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@garden" }));
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@phone" }));
+    expect(JSON.parse(storage.entries["hb.now.frontier-collapsed"])).toEqual([
+      "@garden",
+      "@phone",
+    ]);
+    first.unmount();
+
+    // The @garden item is done and gone; that column no longer exists.
+    const shrunk = taskState({
+      frontier: [itemDTO({ id: "i1", title: "Email the council", context: "@computer" })],
+    });
+    renderWithStorage(shrunk, storage);
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@computer" }));
+
+    // The next write carries only keys a column could still have.
+    expect(JSON.parse(storage.entries["hb.now.frontier-collapsed"])).toEqual(["@computer"]);
+  });
+
+  it("does not prune a column the live filter is merely hiding", () => {
+    // The subtlety in the pruning: a filtered-out column is not a dead one, and
+    // forgetting it was shut would be a silent loss.
+    const storage = fakeStorage();
+    renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@garden" }));
+
+    // Filter to quick, which hides @garden's only (deep) item entirely.
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+    expect(screen.queryByRole("button", { name: "@garden" })).toBeNull();
+
+    // Toggling a surviving column writes — and must not drop @garden.
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@computer" }));
+    expect(JSON.parse(storage.entries["hb.now.frontier-collapsed"]).sort()).toEqual([
+      "@computer",
+      "@garden",
+    ]);
+  });
+
+  it("clears the per-column reveal state when the axis changes, not just the collapse", () => {
+    renderWithStorage(
+      taskState({
+        frontier: Array.from({ length: 8 }, (_, i) =>
+          itemDTO({ id: `i${i}`, title: `Action ${i}`, context: "@computer", size: "quick" }),
+        ),
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more in @computer" }));
+    expect(screen.getByText("Action 7")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    // Same eight items, now one "quick" column — re-collapsed to the cap,
+    // because the expansion was keyed by a label that no longer exists.
+    expect(screen.queryByText("Action 7")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show 2 more in quick" })).toBeDefined();
+  });
+
   it("does not persist the filter selection — Now never opens filtered", () => {
     const storage = fakeStorage();
     const first = renderWithStorage(spread(), storage);
@@ -1041,6 +1173,34 @@ describe("NowScreen — selection above the columns (#404)", () => {
     expect(screen.queryByRole("heading", { name: "Email the council" })).toBeNull();
     expect(screen.getByRole("button", { name: "Project", pressed: true })).toBeDefined();
     expect(screen.getByRole("button", { expanded: false, name: "No project" })).toBeDefined();
+  });
+
+  it("withholds \"Nothing to start\" while the panel is open", () => {
+    // Reachable, not hypothetical: block your only startable item and both
+    // queries go empty while the optimistic fallback keeps the panel standing.
+    // Without the guard the screen showed the open item, "Nothing to start", and
+    // no triage section — the combination `NowScreen`'s own comment warns
+    // against, since triage is withheld whenever the panel is open.
+    const { rerender } = renderNow(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Email the council", stage: "ready" })],
+        triageInbox: [itemDTO({ id: "c1", title: "Ring the plumber", stage: "triage" })],
+      }),
+      "i1",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /mark blocked/i }));
+    rerender(taskState({ frontier: [], blocked: [], pending: {} }), "i1");
+
+    // The panel is still standing on the optimistic item...
+    expect(screen.getByRole("heading", { name: "Email the council" })).toBeDefined();
+    // ...and neither of the two things that would contradict it is on screen.
+    expect(screen.queryByText("Nothing to start")).toBeNull();
+    expect(screen.queryByText("Ring the plumber")).toBeNull();
+
+    // Closed, with the frontier genuinely empty, it says so again.
+    rerender(taskState({ frontier: [], blocked: [], pending: {} }), null);
+    expect(screen.getByText("Nothing to start")).toBeDefined();
   });
 
   it("brings the panel into view when it opens", () => {

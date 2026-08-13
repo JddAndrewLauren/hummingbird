@@ -268,8 +268,17 @@ function RealFrontier({
           an inbox full of captures with nothing yet promoted is the commonest
           state of a new device, and returning early here would render
           "Nothing to start" over a hidden triage section — the one moment
-          the section is the only thing worth showing. */}
-      {task.frontier.length === 0 && task.blocked.length === 0 ? (
+          the section is the only thing worth showing.
+
+          Withheld while item detail is open, which #404 made a reachable state
+          rather than a hypothetical one: block or cancel your only startable
+          item and both queries go empty while the optimistic fallback keeps the
+          panel standing, so without this guard the screen would show the open
+          item, "Nothing to start", and no triage section — precisely the
+          combination the paragraph above exists to prevent. "Nothing to start"
+          is a claim about what you could pick *instead*, and that is not the
+          question being asked while one item is expanded. */}
+      {selectedItem === null && task.frontier.length === 0 && task.blocked.length === 0 ? (
         <Card padding="var(--space-3)">
           <EmptyState
             icon="zap"
