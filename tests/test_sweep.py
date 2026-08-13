@@ -6,6 +6,7 @@ monkeypatch exactly that one function and assert on the calls it receives.
 
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -288,6 +289,24 @@ class SweepFlowTest(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(notes, [])
         self.assertEqual(fake.mutating(), [])
+
+    def test_dry_run_ack_narration_names_the_task_and_nothing_else(self):
+        # The Gmail adapter's dry run names the siblings its ack would unlabel
+        # too; a task is one record to one item, so this narration must stay
+        # exactly the ref it always was.
+        import contextlib
+        import io
+
+        fake = FakeHttp()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.run_with(fake, dry_run=True)
+
+        ack_lines = [l for l in buffer.getvalue().splitlines() if "DRY-RUN would ack" in l]
+        self.assertTrue(ack_lines)
+        for line in ack_lines:
+            named = line.split("DRY-RUN would ack ")[1]
+            self.assertRegex(named, r"^task \S+ in list \S+$")
 
     def test_live_run_creates_then_patches_per_item(self):
         fake = FakeHttp()
@@ -691,6 +710,17 @@ class AuthorityProbeTest(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             sweep.probe_authority_reachable(self.CFG)
 
+    def test_a_url_error_propagates_too(self):
+        # `urllib.error.URLError` -- DNS failure, refused connection, a dead
+        # edge -- is the other way a probe never reaches the authority at all.
+        # It takes the same path as a timeout and must behave identically.
+        def boom(*args, **kwargs):
+            raise urllib.error.URLError("name or service not known")
+
+        sweep.http_json = boom
+        with self.assertRaises(urllib.error.URLError):
+            sweep.probe_authority_reachable(self.CFG)
+
     def test_sends_no_valid_credential(self):
         calls = self._respond(401)
         sweep.probe_authority_reachable(self.CFG)
@@ -714,7 +744,9 @@ class AuthorityProbeTest(unittest.TestCase):
     def test_401_pings_success(self):
         self._respond(401)
         pings = []
-        sweep.ping_success = lambda url, body=None, name="": pings.append(("success", url, name))
+        sweep.ping_success = lambda url, body=None, name="", kind="adapter": pings.append(
+            ("success", url, name)
+        )
         try:
             sweep.run_authority_probe(self.CFG, dry_run=False)
         finally:
@@ -724,7 +756,9 @@ class AuthorityProbeTest(unittest.TestCase):
     def test_403_pings_failure(self):
         self._respond(403)
         pings = []
-        sweep.ping_failure = lambda url, body, name="": pings.append(("failure", url, name))
+        sweep.ping_failure = lambda url, body, name="", kind="adapter": pings.append(
+            ("failure", url, name)
+        )
         try:
             sweep.run_authority_probe(self.CFG, dry_run=False)
         finally:
@@ -738,12 +772,29 @@ class AuthorityProbeTest(unittest.TestCase):
 
         sweep.http_json = boom
         pings = []
-        sweep.ping_failure = lambda url, body, name="": pings.append((url, name))
+        sweep.ping_failure = lambda url, body, name="", kind="adapter": pings.append(
+            (url, name)
+        )
         try:
             sweep.run_authority_probe(self.CFG, dry_run=False)  # must not raise
         finally:
             sweep.ping_failure = self.real_ping_failure
         self.assertEqual(pings, [("https://hc.example/authority", "authority")])
+
+    def test_a_url_error_pings_failure_and_does_not_raise(self):
+        def boom(*args, **kwargs):
+            raise urllib.error.URLError("name or service not known")
+
+        sweep.http_json = boom
+        pings = []
+        sweep.ping_failure = lambda url, body, name="", kind="adapter": pings.append(
+            (url, name, kind)
+        )
+        try:
+            sweep.run_authority_probe(self.CFG, dry_run=False)  # must not raise
+        finally:
+            sweep.ping_failure = self.real_ping_failure
+        self.assertEqual(pings, [("https://hc.example/authority", "authority", "check")])
 
     def test_unset_url_skips_with_warn_and_pings_nothing(self):
         import contextlib
@@ -780,6 +831,58 @@ class AuthorityProbeTest(unittest.TestCase):
         self._respond(500)
         sweep.run_authority_probe(self.CFG, dry_run=False)  # must not raise
 
+
+
+class PingLabelTest(unittest.TestCase):
+    """A ping's log line says what the check belongs to. Every check but one
+    belongs to an adapter; the authority-reachability check belongs to no
+    adapter and no capture source (ADR-0002 rule 6, amended), so its line must
+    not invent one -- while the two real adapters' lines stay exactly as they
+    were."""
+
+    URL = "https://hc.example/check"
+
+    def setUp(self):
+        self.real_http = sweep.http_json
+        sweep.http_json = lambda *a, **k: {}
+
+    def tearDown(self):
+        sweep.http_json = self.real_http
+
+    def _capture(self, call):
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            call()
+        return buffer.getvalue()
+
+    def test_an_adapters_ping_still_names_it_as_an_adapter(self):
+        output = self._capture(lambda: sweep.ping_success(self.URL, name="gmail"))
+        self.assertIn("adapter=gmail", output)
+
+    def test_an_adapters_fail_ping_still_names_it_as_an_adapter(self):
+        output = self._capture(lambda: sweep.ping_failure(self.URL, "why", name="google-tasks"))
+        self.assertIn("adapter=google-tasks", output)
+
+    def test_the_authority_check_is_not_logged_as_an_adapter(self):
+        output = self._capture(
+            lambda: sweep.ping_success(self.URL, name="authority", kind="check")
+        )
+        self.assertIn("check=authority", output)
+        self.assertNotIn("adapter=", output)
+
+    def test_the_authority_probe_pings_are_labelled_as_a_check(self):
+        # Through the real caller, so the label is pinned where it is chosen
+        # rather than only where it is formatted.
+        cfg = AuthorityProbeTest.CFG
+        sweep.http_json = lambda url, method="GET", headers=None, body=None, with_status=False: (
+            {"_status": 401} if url.startswith(cfg.hb_api_base) else {}
+        )
+        output = self._capture(lambda: sweep.run_authority_probe(cfg, dry_run=False))
+        self.assertIn("check=authority", output)
+        self.assertNotIn("adapter=", output)
 
 
 class PingSecrecyTest(unittest.TestCase):

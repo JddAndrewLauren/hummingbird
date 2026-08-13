@@ -606,22 +606,29 @@ def _redact(value):
 # --- healthchecks.io ---------------------------------------------------------
 
 
-def ping_success(url, body=None, name=""):
+def ping_success(url, body=None, name="", kind="adapter"):
     # A body is sent when the sweep set something aside. healthchecks.io keeps
     # it on the check page, so quarantined and skipped items stay visible
     # without the run having to fail to show them.
-    _ping(url, "POST" if body else "GET", body, "success", name)
+    _ping(url, "POST" if body else "GET", body, "success", name, kind)
 
 
-def ping_failure(url, body, name=""):
-    _ping(url.rstrip("/") + "/fail", "POST", body, "fail", name)
+def ping_failure(url, body, name="", kind="adapter"):
+    _ping(url.rstrip("/") + "/fail", "POST", body, "fail", name, kind)
 
 
-def _ping(url, method, body, label, name=""):
+def _ping(url, method, body, label, name="", kind="adapter"):
     # Never log the url. Each ping url is a bearer secret -- anyone holding it
     # can forge a success ping and silence the dead-man's switch -- and these
     # lines go to stdout, which means the Fly log stream.
-    suffix = " adapter=%s" % name if name else ""
+    #
+    # `kind` names what the ping belongs to, and defaults to `adapter` because
+    # every check but one is an adapter's. The authority-reachability check is
+    # owned by no adapter and no capture source (ADR-0002 rule 6, amended), so
+    # calling its ping `adapter=authority` would print a source that does not
+    # exist; it passes `kind="check"` instead. Both real adapters' lines are
+    # unchanged by this.
+    suffix = " %s=%s" % (kind, name) if name else ""
     try:
         http_json(
             url,
@@ -700,17 +707,19 @@ def run_authority_probe(cfg, dry_run):
             cfg.authority_healthcheck_url,
             "authority probe error: %s" % exc,
             name="authority",
+            kind="check",
         )
         return
     if reachable:
         log("authority probe ok (401)")
-        ping_success(cfg.authority_healthcheck_url, name="authority")
+        ping_success(cfg.authority_healthcheck_url, name="authority", kind="check")
     else:
         log("authority probe failed: expected 401")
         ping_failure(
             cfg.authority_healthcheck_url,
             "authority probe did not get 401",
             name="authority",
+            kind="check",
         )
 
 
@@ -785,7 +794,15 @@ class GoogleTasksAdapter:
     def describe(self, item):
         return "task %s in list %s" % (item[1].get("id"), item[0])
 
-    def ack(self, item):
+    def describe_ack(self, item):
+        # A task is one record to one item, so its ack does exactly what
+        # `describe` already names -- there is nothing to collapse here
+        # (ADR-0019 puts this adapter out of scope by name).
+        return self.describe(item)
+
+    def ack(self, item, collapsed):
+        # `collapsed` is the engine's collapse counter, and this adapter never
+        # calls it: see describe_ack above.
         complete_task(self.token, item[0], item[1].get("id"))
 
 
@@ -876,7 +893,27 @@ class GmailAdapter:
     def describe(self, item):
         return "message %s" % item.get("id")
 
-    def ack(self, item):
+    def describe_ack(self, item):
+        """What this item's ack would do, for the dry run's narration.
+
+        A dry run that said only "would ack message X" under-narrated the
+        collapse: the ack of a labelled thread unlabels the winner *and* every
+        sibling the collapse chose against, which is N-1 mutations the dry run
+        never mentioned. Naming them here keeps the dry run what it claims to
+        be -- exactly what would happen, mutating nothing.
+        """
+        base = self.describe(item)
+        collapsed_ids = item.get("_collapsed_ids") or []
+        if not collapsed_ids:
+            return base
+        return "%s and unlabel %d collapsed message(s) in thread %s: %s" % (
+            base,
+            len(collapsed_ids),
+            item.get("threadId") or item.get("id"),
+            ", ".join(collapsed_ids),
+        )
+
+    def ack(self, item, collapsed):
         """Unlabel the winner, then every message it collapsed (#336).
 
         Called only after the winner's create has succeeded (`run_adapter`'s
@@ -884,8 +921,13 @@ class GmailAdapter:
         the winner is unlabelled first, and only then are the losers -- if the
         winner's own unlabel raises, the losers stay labelled for the next
         sweep to re-enumerate and retry, same as any other transient failure.
-        Returns the number of collapsed messages unlabelled, for the caller's
-        `collapsed` count.
+
+        `collapsed` is the engine's counter, called once per message actually
+        unlabelled, on the same line as that message's log line. It is a
+        callback rather than a returned total precisely because a loser's
+        unlabel can raise midway: a total returned at the end is lost when
+        that happens, and the finish line would report `collapsed=0` beside
+        log lines saying real messages were collapsed. Counted iff logged.
         """
         gmail_remove_label(self.token, item.get("id"), self.label_id)
         collapsed_ids = item.get("_collapsed_ids") or []
@@ -896,7 +938,7 @@ class GmailAdapter:
                 "message %s collapsed into thread %s (winner %s)"
                 % (collapsed_id, thread_id, item.get("id"))
             )
-        return len(collapsed_ids)
+            collapsed()
 
 
 AdapterResult = namedtuple("AdapterResult", "name healthcheck_url ok failures notes")
@@ -923,6 +965,13 @@ def run_adapter(adapter, dry_run):
         stats["failed"] += 1
         failures.append("%s: %s" % (ref, exc))
         log("ERROR %s: %s" % (ref, exc))
+
+    def collapsed():
+        # Counted as each collapse happens rather than totalled when the ack
+        # returns, so an ack that raises partway through a thread still reports
+        # the collapses it did perform (#336). The count and the per-message
+        # collapse log lines can therefore never disagree.
+        stats["collapsed"] += 1
 
     try:
         if not dry_run and not adapter.healthcheck_url:
@@ -959,7 +1008,7 @@ def run_adapter(adapter, dry_run):
                         "DRY-RUN would create %s title='%s' (%s)"
                         % (item_id, title, ref)
                     )
-                    log("DRY-RUN would ack %s" % ref)
+                    log("DRY-RUN would ack %s" % adapter.describe_ack(item))
                     continue
                 outcome = hb_create_item(
                     adapter.cfg,
@@ -972,7 +1021,7 @@ def run_adapter(adapter, dry_run):
                 )
                 stats[outcome] += 1
                 log("%s item %s title='%s'" % (outcome, item_id, title))
-                stats["collapsed"] += adapter.ack(item) or 0
+                adapter.ack(item, collapsed)
                 stats["completed"] += 1
                 log("acked %s" % ref)
             except TerminalRejection as exc:
