@@ -33,7 +33,7 @@ import { NO_TERMINAL_LINE, NO_TOKEN } from "./decline";
 import { markDead, markReachable, type ReachabilityMemo } from "./reachability-memo";
 import { planRoute, type RouteStep } from "./route-plan";
 import { runSkill, type RunSkillDeps } from "./run-skill";
-import type { SkillEvent } from "./run-state";
+import type { RoutedFailure, SkillEvent } from "./run-state";
 
 /** The reachability memo's resting place for the run's lifetime — a plain
  * get/set pair so the caller can hold it in a `useRef` (or a test can hold
@@ -101,8 +101,12 @@ export async function* runRouted(
     // would be the same mistake in a different place) and its own stamp
     // (which `failure()` below would discard, so a declined run would lose
     // the badge naming who answered — and comparing tiers is the point).
+    // `answered: true` travels with it, because nothing downstream can
+    // recover the fact: an unstamped 401 and a rejected connection are the
+    // same shape here, and `run-state.ts` is where the affordance that must
+    // not offer "switch backends" for an answered decline reads it.
     if (answered) {
-      yield terminal;
+      yield { ...terminal, answered: true };
       return;
     }
 
@@ -225,8 +229,14 @@ async function* attempt(
   };
 }
 
-function failure(error: string): SkillEvent {
-  return { kind: "failed", error, backend: null, model: null };
+/** A terminal this module synthesized: no stamp, because no lane named
+ * itself (ADR-0018), and `answered: false`, because every path that reaches
+ * here is one where no backend answered — a plan that declined before
+ * attempting anything, an exhausted plan, or a tier whose `fetch` never
+ * resolved. An answered terminal is never built here; it is forwarded from
+ * `attempt` intact. */
+function failure(error: string): RoutedFailure {
+  return { kind: "failed", error, backend: null, model: null, answered: false };
 }
 
 /** Every registered entry was memoized dead, so nothing was even attempted. */
