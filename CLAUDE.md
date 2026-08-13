@@ -39,6 +39,7 @@ grepping it.
 | The web app | `client/web/` | `client/web/README.md` |
 | The SharedWorker layer | `client/web/src/worker/` | `core.worker.ts` (note its top-level-`await` invariant), ADR-0010 |
 | The standing-question panes | `client/web/src/screens/questions/` + `*-pane/` | `questions/contract.ts`, ADR-0015 |
+| Status screen | `client/web/src/screens/questions/` (surface axis) | `questions/contract.ts`, ADR-0017 |
 | Surfaces registry (visual gate) | `client/web/visual/` | `docs/SURFACES.md` |
 
 Agent skills live in `.claude/skills/`, each with its own `SKILL.md`:
