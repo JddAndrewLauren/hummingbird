@@ -705,3 +705,197 @@ describe("NowScreen — the triage section", () => {
     expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Newer capture");
   });
 });
+
+// #403's controls, tested through the mounted screen because what they are
+// about is the *thread*: the axis and the collapsed set are read from and
+// written to the one `storage` prop `NowScreen` resolves, and the clearing rule
+// couples two pieces of state that live in different modules. The preference
+// modules' own five-test templates are in `frontier-prefs.test.ts`; these are
+// the wiring those templates cannot see.
+describe("NowScreen — the frontier's controls (#403)", () => {
+  function fakeStorage(seed: Record<string, string> = {}) {
+    const entries = { ...seed };
+    return {
+      entries,
+      getItem: (key: string) => entries[key] ?? null,
+      setItem: (key: string, value: string) => {
+        entries[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete entries[key];
+      },
+    };
+  }
+
+  function renderWithStorage(task: TaskState, storage = fakeStorage()) {
+    const view = render(
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={task}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={storage}
+      />,
+    );
+    return { storage, unmount: view.unmount };
+  }
+
+  const spread = () =>
+    taskState({
+      frontier: [
+        itemDTO({ id: "i1", title: "Email the council", context: "@computer", size: "quick", energy: "low" }),
+        itemDTO({ id: "i2", title: "Prune the hedge", context: "@garden", size: "deep", energy: "high" }),
+        itemDTO({ id: "i3", title: "Ring the vet", context: "@phone", size: "quick", energy: "low" }),
+      ],
+    });
+
+  it("collapses a column in place, keeping its heading and its count readable", () => {
+    renderWithStorage(spread());
+
+    const header = screen.getByRole("button", { expanded: true, name: /@computer/ });
+    fireEvent.click(header);
+
+    // Shut: the card is gone, but the column still says what it is and how
+    // much is inside it — a closed column that hid its own count would be
+    // worse than no count at all. The count is a sibling of the heading rather
+    // than inside it, so neither accessible name reads "@computer 1".
+    expect(screen.queryByText("Email the council")).toBeNull();
+    const shut = screen.getByRole("button", { expanded: false, name: "@computer" });
+    const shutHeader = shut.closest("div");
+    expect(shutHeader?.textContent).toContain("@computer");
+    expect(shutHeader?.textContent).toContain("1");
+    // Its neighbours are untouched — collapse is per-column and additive.
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+
+    fireEvent.click(shut);
+    expect(screen.getByText("Email the council")).toBeDefined();
+  });
+
+  it("persists the collapsed set and the axis across a remount", () => {
+    const storage = fakeStorage();
+    const first = renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: /quick/ }));
+    first.unmount();
+
+    // A reload: same storage, fresh mount.
+    renderWithStorage(spread(), storage);
+    expect(screen.getByRole("button", { name: "Size", pressed: true })).toBeDefined();
+    expect(screen.getByRole("button", { expanded: false, name: /quick/ })).toBeDefined();
+    expect(screen.queryByText("Email the council")).toBeNull();
+  });
+
+  it("clears the collapsed set when the axis changes — the labels no longer exist", () => {
+    const { storage } = renderWithStorage(spread());
+
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: /@computer/ }));
+    expect(storage.entries["hb.now.frontier-collapsed"]).toBe('["@computer"]');
+
+    fireEvent.click(screen.getByRole("button", { name: "Energy" }));
+
+    // Nothing shut, and the stored key is gone rather than holding a label from
+    // an axis that is no longer live. Scoped to the column headings, since the
+    // Filter button legitimately carries its own `aria-expanded={false}`.
+    expect("hb.now.frontier-collapsed" in storage.entries).toBe(false);
+    // Energy across this spread is low, high, low — two columns.
+    const headers = screen
+      .getAllByRole("heading", { level: 2 })
+      .map((heading) => heading.querySelector("button"));
+    expect(headers).toHaveLength(2);
+    for (const header of headers) {
+      expect(header?.getAttribute("aria-expanded")).toBe("true");
+    }
+  });
+
+  it("does not persist the filter selection — Now never opens filtered", () => {
+    const storage = fakeStorage();
+    const first = renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size deep" }));
+    expect(screen.queryByText("Email the council")).toBeNull();
+    first.unmount();
+
+    renderWithStorage(spread(), storage);
+    // Opening Now to a filtered board you would misread as an empty frontier
+    // is the failure this avoids.
+    expect(screen.getByText("Email the council")).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+  });
+
+  it("narrows behind the Filter button, with an honest count and an active badge", () => {
+    renderWithStorage(spread());
+
+    // Shut by default: filtering is the occasional gesture, so it costs one
+    // button rather than four permanent chip rows.
+    expect(screen.queryByRole("button", { name: "size deep" })).toBeNull();
+    expect(screen.queryByText(/of 3 shown/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size deep" }));
+
+    // One of the three is deep, and the readout says so rather than leaving the
+    // reader to notice two cards missing.
+    expect(screen.getByText("1 of 3 shown")).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+    expect(screen.queryByText("Email the council")).toBeNull();
+
+    // OR *within* a facet widens: deep plus quick is every judged item.
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+    expect(screen.getByText("3 of 3 shown")).toBeDefined();
+
+    // AND *across* facets narrows again: of those three, only one is @garden.
+    fireEvent.click(screen.getByRole("button", { name: "context @garden" }));
+    expect(screen.getByText("1 of 3 shown")).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+
+    // The count follows the panel shut, and the button carries the tally of
+    // picked values (deep, quick, @garden).
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    expect(screen.getByText("1 of 3 shown")).toBeDefined();
+    expect(screen.getByRole("button", { name: /^Filter/ }).textContent).toContain("3");
+  });
+
+  it("says an empty result is empty, not that the frontier is", () => {
+    renderWithStorage(spread());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    // Nothing is both quick and high-energy in this spread.
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+    fireEvent.click(screen.getByRole("button", { name: "energy high" }));
+
+    expect(screen.getByText("Nothing matches")).toBeDefined();
+    expect(screen.getByText("0 of 3 shown")).toBeDefined();
+    // The two facts must not look alike.
+    expect(screen.queryByText("Nothing to start")).toBeNull();
+  });
+
+  it("applies a preference for the session even when storage cannot keep it", () => {
+    // Reads and writes that go nowhere: the preference still applies until the
+    // tab closes. `frontier-prefs.test.ts` pins the module's own tolerance;
+    // this pins that the screen does not depend on a write succeeding.
+    const readOnly = {
+      entries: {} as Record<string, string>,
+      getItem: (key: string) => readOnly.entries[key] ?? null,
+      setItem: () => {
+        throw new Error("nope");
+      },
+      removeItem: () => {
+        throw new Error("nope");
+      },
+    };
+    renderWithStorage(spread(), readOnly);
+
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    expect(screen.getByRole("heading", { name: "quick" })).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "quick" }));
+    expect(screen.queryByText("Email the council")).toBeNull();
+  });
+});

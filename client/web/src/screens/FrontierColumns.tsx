@@ -11,17 +11,33 @@
 import { useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Card } from "../components/core/Card";
+import { Icon } from "../components/core/Icon";
 import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
+import { EmptyState } from "../components/feedback/EmptyState";
+import { FRONTIER_AXES, groupFrontier, type FrontierAxis } from "./frontier-columns";
 import {
-  DEFAULT_FRONTIER_AXIS,
-  FRONTIER_AXES,
-  groupFrontier,
-  type FrontierAxis,
-} from "./frontier-columns";
+  applyFacets,
+  contextsOf,
+  ENERGIES,
+  facetCount,
+  NO_FACETS,
+  SIZES,
+  toggleFacet,
+  URGENCIES,
+  type Facet,
+  type FacetSelection,
+} from "./frontier-facets";
 import { orderFrontier } from "./frontier-order";
+import {
+  readCollapsedColumns,
+  readFrontierAxis,
+  writeCollapsedColumns,
+  writeFrontierAxis,
+} from "./frontier-prefs";
 import { canMarkDone } from "./item-actions";
 import { hasPriority, priorityLabel } from "./priority";
+import type { StorageLike } from "./triage-collapse";
 import { computeUrgency, type Urgency } from "./urgency";
 import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
 
@@ -203,6 +219,58 @@ function controlStyle(selected: boolean) {
   };
 }
 
+const FACET_LABEL: Record<Facet, string> = {
+  context: "context",
+  size: "size",
+  energy: "energy",
+  urgency: "urgency",
+};
+
+function FacetRow({
+  facet,
+  values,
+  selected,
+  onToggle,
+}: {
+  facet: Facet;
+  values: readonly string[];
+  selected: ReadonlySet<string>;
+  onToggle: (value: string) => void;
+}) {
+  if (values.length === 0) {
+    return null;
+  }
+  return (
+    <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "baseline", flexWrap: "wrap" }}>
+      <span className="hb-meta" style={{ minWidth: 64 }}>
+        {FACET_LABEL[facet]}
+      </span>
+      {values.map((value) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={selected.has(value)}
+          // The chip's visible text is the bare value, which does not say which
+          // facet it belongs to — and on the `context` axis it collides exactly
+          // with a column heading of the same name. The accessible name carries
+          // the facet, so "@garden" the filter and "@garden" the column are
+          // distinguishable by ear as well as by eye.
+          aria-label={`${FACET_LABEL[facet]} ${value}`}
+          onClick={() => onToggle(value)}
+          style={{
+            ...controlStyle(selected.has(value)),
+            minHeight: "var(--row-height)",
+            padding: "var(--space-2) var(--space-4)",
+            borderRadius: "var(--radius-pill)",
+          }}
+        >
+          {value}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function FrontierColumns({
   frontier,
   projects,
@@ -210,6 +278,7 @@ export function FrontierColumns({
   selectedItemId,
   onOpenItem,
   onAct,
+  storage,
 }: {
   frontier: readonly TaskItemDTO[];
   projects: readonly ProjectDTO[];
@@ -217,23 +286,55 @@ export function FrontierColumns({
   selectedItemId: string | null;
   onOpenItem: (itemId: string) => void;
   onAct: (itemId: string, action: "complete") => void;
+  /** The same injected storage `NowScreen` resolves once for the triage
+   * section and the ranked region — threaded rather than read here, so the
+   * screen has one storage seam and not three. */
+  storage?: StorageLike;
 }) {
-  // Local for this slice. #403 persists it device-locally through the
-  // `storage` seam `NowScreen` already threads, and clears the per-column
-  // state with it.
-  const [axis, setAxis] = useState<FrontierAxis>(DEFAULT_FRONTIER_AXIS);
+  // Seeded from storage on first render, then written on every change. `useState`'s
+  // initialiser runs once, which is what makes a reload restore rather than a
+  // re-render re-read.
+  const [axis, setAxis] = useState<FrontierAxis>(() => readFrontierAxis(storage));
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() =>
+    readCollapsedColumns(storage),
+  );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set<string>());
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  // Deliberately NOT persisted — see `frontier-prefs.ts`. Opening Now to a
+  // filtered board you would misread as an empty frontier is the failure this
+  // avoids.
+  const [picked, setPicked] = useState<FacetSelection>(NO_FACETS);
 
-  // `orderFrontier` unchanged, applied once before grouping — the grouping
-  // module preserves input order inside each column, so the within-column
-  // rule is `orderFrontier` and there is no second ordering function.
-  const columns = groupFrontier(orderFrontier([...frontier]), axis, projects);
+  // `orderFrontier` unchanged, applied once before filtering and grouping —
+  // neither reorders, so the within-column rule is `orderFrontier` and there is
+  // no second ordering function.
+  const ordered = orderFrontier([...frontier]);
+  const shown = applyFacets(ordered, picked, nowMs);
+  const columns = groupFrontier(shown, axis, projects);
+  const activeFacets = facetCount(picked);
 
   const pickAxis = (next: FrontierAxis) => {
     setAxis(next);
-    // The `n more` expansions are keyed by column, and switching the axis
-    // means those columns no longer exist.
+    writeFrontierAxis(storage, next);
+    // Both per-column states are keyed by the column's own label, and
+    // switching the axis re-labels every column — the old keys would then
+    // apply to whatever happened to share a name. Cleared with the switch, the
+    // same instinct as ADR-0015 discarding a pane override when its computed
+    // band changes.
+    setCollapsed(new Set<string>());
+    writeCollapsedColumns(storage, new Set<string>());
     setExpanded(new Set<string>());
+  };
+
+  const toggleCollapsed = (key: string) => {
+    const next = new Set(collapsed);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    setCollapsed(next);
+    writeCollapsedColumns(storage, next);
   };
 
   const toggleExpanded = (key: string) => {
@@ -272,7 +373,99 @@ export function FrontierColumns({
             {AXIS_LABEL[entry]}
           </button>
         ))}
+
+        {/* The axis switch is permanent chrome and the filter hides behind a
+            button: filtering is the occasional gesture, so only one of the two
+            earns permanent space. The button still carries its own count,
+            because a filtered board that looks unfiltered is a lie. */}
+        <button
+          type="button"
+          aria-expanded={filtersOpen}
+          onClick={() => setFiltersOpen(!filtersOpen)}
+          style={{ ...controlStyle(activeFacets > 0), marginLeft: "var(--space-4)" }}
+        >
+          <Icon name="search" size={14} />
+          Filter
+          {activeFacets > 0 ? (
+            <Badge mono tone="brand">
+              {activeFacets}
+            </Badge>
+          ) : null}
+        </button>
+        {/* Only when the panel is shut — open, the panel states the same count
+            at the foot of the chips it belongs to. */}
+        {activeFacets > 0 && !filtersOpen ? (
+          <span className="hb-meta" style={{ marginLeft: "var(--space-3)" }}>
+            {`${shown.length} of ${ordered.length} shown`}
+          </span>
+        ) : null}
       </div>
+
+      {filtersOpen ? (
+        <Card
+          padding="var(--space-5)"
+          style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+        >
+          <FacetRow
+            facet="context"
+            values={contextsOf(ordered)}
+            selected={picked.context}
+            onToggle={(value) => setPicked(toggleFacet(picked, "context", value))}
+          />
+          <FacetRow
+            facet="size"
+            values={SIZES}
+            selected={picked.size}
+            onToggle={(value) => setPicked(toggleFacet(picked, "size", value))}
+          />
+          <FacetRow
+            facet="energy"
+            values={ENERGIES}
+            selected={picked.energy}
+            onToggle={(value) => setPicked(toggleFacet(picked, "energy", value))}
+          />
+          <FacetRow
+            facet="urgency"
+            values={URGENCIES}
+            selected={picked.urgency}
+            onToggle={(value) => setPicked(toggleFacet(picked, "urgency", value))}
+          />
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "var(--space-4)",
+              borderTop: "1px solid var(--border-subtle)",
+              paddingTop: "var(--space-4)",
+            }}
+          >
+            <span className="hb-meta">
+              {`${shown.length} of ${ordered.length} shown`}
+            </span>
+            {activeFacets > 0 ? (
+              <button
+                type="button"
+                onClick={() => setPicked(NO_FACETS)}
+                style={{
+                  font: "var(--type-body-sm)",
+                  minHeight: "var(--row-height)",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text-link)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-2)",
+                }}
+              >
+                <Icon name="x" size={14} />
+                Clear
+              </button>
+            ) : null}
+          </div>
+        </Card>
+      ) : null}
 
       {/* The one thing colour says here, stated once as a key. */}
       <div style={{ display: "flex", gap: "var(--space-5)", flexWrap: "wrap", alignItems: "center" }}>
@@ -286,6 +479,20 @@ export function FrontierColumns({
           </span>
         ))}
       </div>
+
+      {/* An empty result says so, rather than rendering as an empty frontier —
+          "nothing matches what you picked" and "nothing is startable" are very
+          different facts and must not look alike. */}
+      {columns.length === 0 ? (
+        <Card padding="var(--space-3)">
+          <EmptyState
+            icon="search"
+            headingLevel={2}
+            title="Nothing matches"
+            body="No startable action carries every facet you picked."
+          />
+        </Card>
+      ) : null}
 
       {/* Wrapping columns, never a sideways-scrolling strip: they flow onto as
           many lines as the width needs, in reading order, and this container
@@ -307,56 +514,108 @@ export function FrontierColumns({
               ? NO_VALUE_LABEL[axis]
               : (column.label ?? `Project ${column.value}`);
           const isOpen = expanded.has(key);
+          const isCollapsed = collapsed.has(key);
           const visible = isOpen ? column.items : column.items.slice(0, COLUMN_CAP);
           const hidden = column.items.length - visible.length;
           return (
             <div
               key={key}
-              style={{
-                flex: "1 1 240px",
-                minWidth: 240,
-                // Wide enough that a narrow window — where only one column
-                // fits beside the aside — fills its width instead of
-                // stranding a strip of empty page.
-                maxWidth: 380,
-                display: "flex",
-                flexDirection: "column",
-                gap: "var(--space-3)",
-              }}
+              style={
+                isCollapsed
+                  ? {
+                      // A collapsed column keeps exactly its place in the board
+                      // — but it stops claiming a full column's width, so its
+                      // neighbours reflow around it instead of a wrapping line
+                      // holding a slot that is only a header tall. Shrink-to-fit
+                      // is what makes collapsing *in place* actually buy space,
+                      // and it is the same wrinkle as the no-sideways-scroll
+                      // fix: a wrapping row takes its height from the tallest
+                      // column in its line.
+                      flex: "0 0 auto",
+                      display: "flex",
+                      flexDirection: "column",
+                    }
+                  : {
+                      flex: "1 1 240px",
+                      minWidth: 240,
+                      // Wide enough that a narrow window — where only one column
+                      // fits beside the aside — fills its width instead of
+                      // stranding a strip of empty page.
+                      maxWidth: 380,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "var(--space-3)",
+                    }
+              }
             >
+              {/* The header is the collapse control. A column you have ruled out
+                  (wrong context, wrong energy) should cost one line, not a
+                  screenful — and unlike the filter this is per-column and
+                  additive, so you can shut three and leave the rest alone.
+                  The count sits *beside* the heading rather than inside it, so
+                  neither the heading's nor the button's accessible name reads
+                  "@computer 4" — the number is meta about the column, not part
+                  of what the column is called. */}
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: "var(--space-3)",
-                  padding: "var(--space-2)",
+                  borderBottom: `1px solid ${isCollapsed ? "var(--border-subtle)" : "transparent"}`,
                 }}
               >
-                <h2
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    margin: 0,
-                    font: "var(--type-body-strong)",
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  {heading}
+                <h2 style={{ margin: 0, flex: 1, minWidth: 0, font: "inherit" }}>
+                  <button
+                    type="button"
+                    aria-expanded={!isCollapsed}
+                    onClick={() => toggleCollapsed(key)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-3)",
+                      width: "100%",
+                      minHeight: "var(--row-height)",
+                      padding: "var(--space-2)",
+                      background: "none",
+                      border: "none",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      font: "var(--type-body-strong)",
+                      color: isCollapsed ? "var(--text-secondary)" : "var(--text-primary)",
+                    }}
+                  >
+                    <Icon
+                      name="chevron-down"
+                      size={14}
+                      style={{
+                        color: "var(--text-muted)",
+                        transform: isCollapsed ? "rotate(-90deg)" : "none",
+                        transition: "transform var(--dur-fast) var(--ease-flit)",
+                      }}
+                    />
+                    <span style={{ flex: 1, minWidth: 0 }}>{heading}</span>
+                  </button>
                 </h2>
-                <span className="hb-meta">{column.items.length}</span>
+                {/* The count stays readable while shut: a closed column must
+                    still say how much is inside it. */}
+                <span className="hb-meta" style={{ paddingRight: "var(--space-2)" }}>
+                  {column.items.length}
+                </span>
               </div>
-              {visible.map((item) => (
-                <ItemCard
-                  key={item.id}
-                  item={item}
-                  nowMs={nowMs}
-                  selected={item.id === selectedItemId}
-                  onOpen={() => onOpenItem(item.id)}
-                  onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
-                />
-              ))}
+              {isCollapsed
+                ? null
+                : visible.map((item) => (
+                    <ItemCard
+                      key={item.id}
+                      item={item}
+                      nowMs={nowMs}
+                      selected={item.id === selectedItemId}
+                      onOpen={() => onOpenItem(item.id)}
+                      onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
+                    />
+                  ))}
               {/* The count never lies about what is hidden. */}
-              {hidden > 0 || isOpen ? (
+              {!isCollapsed && (hidden > 0 || isOpen) ? (
                 <button
                   type="button"
                   onClick={() => toggleExpanded(key)}

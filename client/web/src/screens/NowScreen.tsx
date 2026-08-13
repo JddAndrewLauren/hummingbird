@@ -71,9 +71,11 @@ export interface NowScreenProps {
   /** The triage row checkmark's `Core::act` complete — `undefined` in demo
    * mode, same as every other real-write callback. */
   onCompleteTriage?: (itemId: string) => void;
-  /** Injected storage for the triage section's persisted collapse, threaded
-   * here rather than read in two places — `RankedRegion` gets the same guard
-   * below. */
+  /** Injected storage for this screen's device-local view preferences —
+   * resolved once here rather than read in each consumer: the triage section's
+   * persisted collapse, `RankedRegion`'s pane overrides, and (#403) the
+   * frontier's grouping axis and collapsed columns. One storage seam, three
+   * readers. */
   storage?: StorageLike;
 }
 
@@ -259,6 +261,7 @@ function RealFrontier({
           selectedItemId={selectedItemId}
           onOpenItem={onOpenItem}
           onAct={onAct}
+          storage={storage}
         />
       ) : null}
 
