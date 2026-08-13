@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -573,6 +574,114 @@ class GmailThreadCollapseTest(unittest.TestCase):
         self.assertNotIn("collapsed into thread", output)
         self.assertEqual(fake.gmail_mutations(), [])
 
+    def test_an_unparseable_internal_date_never_wins_over_a_real_one(self):
+        # Gmail always supplies internalDate, so this is the shape nobody has
+        # seen: a message whose timestamp cannot be read sorts last rather than
+        # defaulting to epoch, which would make it win every thread it sits in
+        # and move the id an earlier sweep already minted.
+        dated = message(msg_id="dated", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        undated = message(msg_id="undated", thread_id="thr-1", internal_date="not-a-number")
+        fake = FakeHttp(messages=[undated, dated])  # the undated one listed first
+        result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        creates = fake.creates()
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(
+            creates[0]["body"]["id"], sweep.deterministic_v4("dated", sweep.GMAIL_NAMESPACE)
+        )
+
+    def test_a_missing_internal_date_never_wins_over_a_real_one_either(self):
+        # The absent-key half of the same edge: `internalDate` missing entirely
+        # rather than present and unreadable.
+        dated = message(msg_id="dated", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        undated = message(msg_id="undated", thread_id="thr-1", internal_date=None)
+        fake = FakeHttp(messages=[undated, dated])
+        result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            fake.creates()[0]["body"]["id"],
+            sweep.deterministic_v4("dated", sweep.GMAIL_NAMESPACE),
+        )
+
+    def test_a_thread_of_only_undated_messages_still_collapses_deterministically(self):
+        # No timestamp to sort by anywhere in the thread: the message id is the
+        # tiebreak, so the drain neither crashes nor picks an observer-dependent
+        # winner -- listing order must not decide it.
+        first = message(msg_id="aaa", thread_id="thr-1", internal_date=None)
+        second = message(msg_id="bbb", thread_id="thr-1", internal_date=None)
+
+        forwards = FakeHttp(messages=[first, second])
+        self.assertTrue(self.run_gmail(forwards).ok)
+        backwards = FakeHttp(messages=[second, first])
+        self.assertTrue(self.run_gmail(backwards).ok)
+
+        expected = sweep.deterministic_v4("aaa", sweep.GMAIL_NAMESPACE)
+        self.assertEqual(forwards.creates()[0]["body"]["id"], expected)
+        self.assertEqual(backwards.creates()[0]["body"]["id"], expected)
+
+    def test_a_mid_ack_failure_still_reports_the_collapses_it_performed(self):
+        # A loser's unlabel raises with a sibling already unlabelled. Thread
+        # atomicity is intact -- the winner's create succeeded before any ack --
+        # so this is a reporting question: the finish line must not say
+        # collapsed=0 beside a log line naming a real collapse.
+        winner = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        loser_a = message(msg_id="loser-a", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        loser_b = message(msg_id="loser-b", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[winner, loser_a, loser_b])
+        real_call = fake.__call__
+
+        def flaky(url, method="GET", headers=None, body=None, with_status=False):
+            if "/messages/loser-b/modify" in url:
+                fake.calls.append({"url": url, "method": method,
+                                   "headers": headers, "body": body})
+                return {"_status": 503, "error": "backend"}
+            return real_call(url, method, headers, body, with_status)
+
+        sweep.http_json = flaky
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = sweep.run_adapter(sweep.GmailAdapter(CFG), False)
+
+        output = buffer.getvalue()
+        self.assertFalse(result.ok)
+        self.assertEqual(len(fake.creates()), 1)
+        self.assertIn("message loser-a collapsed into thread thr-1", output)
+        self.assertNotIn("message loser-b collapsed", output)
+        # Counted iff logged: one collapse happened, so one is reported.
+        self.assertIn("collapsed=1", output)
+
+    def test_dry_run_ack_line_names_the_sibling_unlabels(self):
+        # The ack of a labelled thread unlabels the winner *and* its N-1
+        # siblings, so a dry run that named only the winner under-narrated the
+        # mutations it was promising to describe.
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[older, newer])
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = self.run_gmail(fake, dry_run=True)
+
+        self.assertTrue(result.ok)
+        ack_lines = [l for l in buffer.getvalue().splitlines() if "DRY-RUN would ack" in l]
+        self.assertEqual(len(ack_lines), 1)
+        self.assertIn("message older", ack_lines[0])
+        self.assertIn("1 collapsed message(s) in thread thr-1", ack_lines[0])
+        self.assertIn("newer", ack_lines[0])
+        self.assertEqual(fake.gmail_mutations(), [])
+
+    def test_dry_run_ack_line_claims_no_collapse_for_a_single_message_thread(self):
+        fake = FakeHttp(messages=[message(msg_id="solo", thread_id="thr-solo")])
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.run_gmail(fake, dry_run=True)
+
+        ack_lines = [l for l in buffer.getvalue().splitlines() if "DRY-RUN would ack" in l]
+        self.assertEqual(ack_lines[0].split("DRY-RUN would ack ")[1], "message solo")
+
     def test_winner_create_failure_never_logs_a_collapse(self):
         # The collapse line must not claim messages were unlabelled when the
         # winner's create failed and ack() was never called -- the exact
@@ -835,6 +944,29 @@ class MainReportingTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(self.ping(fake, self.TASKS_CHECK)["method"], "GET")
         self.assertEqual(self.ping(fake, self.GMAIL_CHECK)["method"], "GET")
+
+    def test_a_probe_connection_error_touches_neither_adapter_nor_the_exit_code(self):
+        # The same blast-radius guarantee as the 403 case above, on the path
+        # where the probe never reaches the authority at all: a URLError (DNS
+        # failure, refused connection) rather than an answered status. A
+        # TimeoutError travels this identical path.
+        fake = FakeHttp()
+        fake.tasks = {"items": []}
+        fake.messages = []
+        real_call = fake.__call__
+
+        def unreachable(url, method="GET", headers=None, body=None, with_status=False):
+            if url == AUTHORITY_PROBE_URL:
+                raise urllib.error.URLError("name or service not known")
+            return real_call(url, method, headers, body, with_status)
+
+        exit_code = self.run_main(
+            unreachable, env={"AUTHORITY_HEALTHCHECK_URL": self.AUTHORITY_CHECK}
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(self.ping(fake, self.TASKS_CHECK)["method"], "GET")
+        self.assertEqual(self.ping(fake, self.GMAIL_CHECK)["method"], "GET")
+        self.assertEqual(self.ping(fake, self.AUTHORITY_CHECK + "/fail")["method"], "POST")
 
     def test_unset_authority_check_leaves_the_two_adapter_pings_unchanged(self):
         # No AUTHORITY_HEALTHCHECK_URL in the environment at all (the shared
