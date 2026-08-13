@@ -37,12 +37,16 @@ the dead-man's switch red, and an alarm that is always ringing is no alarm.
 
 Environment:
   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, HB_API_TOKEN
-  HB_API_BASE            (optional; defaults to https://hb.twinion.net)
-  HEALTHCHECK_URL        (Google Tasks check; required live, unused in --dry-run)
-  GMAIL_HEALTHCHECK_URL  (Gmail check; required live, unused in --dry-run)
+  HB_API_BASE              (optional; defaults to https://hb.twinion.net)
+  HEALTHCHECK_URL          (Google Tasks check; required live, unused in --dry-run)
+  GMAIL_HEALTHCHECK_URL    (Gmail check; required live, unused in --dry-run)
   Each check is validated at its own adapter's boundary, so a missing one
   fails only that adapter.
-  SWEEP_LOCK             (optional; defaults to /tmp/sweep.lock)
+  AUTHORITY_HEALTHCHECK_URL (authority-reachability check; owned by no
+                             adapter, #328. Unset is inert -- the probe is
+                             skipped with a WARN, never failed -- because this
+                             code lands before the check exists.)
+  SWEEP_LOCK               (optional; defaults to /tmp/sweep.lock)
 
 Exit codes: 0 = success, dry run, or lock contention. 1 = any failure.
 """
@@ -138,8 +142,8 @@ Config = namedtuple(
     "Config",
     "google_client_id google_client_secret google_refresh_token "
     "hb_api_token hb_api_base healthcheck_url denylist_path "
-    "gmail_healthcheck_url",
-    defaults=("",),
+    "gmail_healthcheck_url authority_healthcheck_url",
+    defaults=("", ""),
 )
 
 
@@ -425,6 +429,25 @@ def _gmail_timestamp(message, headers):
     return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _gmail_internal_date(message):
+    try:
+        return int(message["internalDate"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _gmail_thread_winner_key(message):
+    """Sort key for picking one message per thread (#336): the oldest by
+    `internalDate`, with the message id as a deterministic tiebreak.
+
+    A message with no parseable `internalDate` sorts last (never wins over one
+    that has a real timestamp) rather than crashing or defaulting to epoch,
+    which would make a malformed message win every thread it is in.
+    """
+    internal_date = _gmail_internal_date(message)
+    return (internal_date is None, internal_date or 0, message.get("id") or "")
+
+
 def gmail_derive_capture(message):
     """(title, description) for one labelled message. Never None.
 
@@ -611,6 +634,86 @@ def _ping(url, method, body, label, name=""):
         log("WARN healthcheck %s ping failed%s: %s" % (label, suffix, _redact(exc)))
 
 
+# --- authority reachability ---------------------------------------------------
+
+# Deliberately invalid, and never the real sweeper token: the probe must
+# authenticate as nothing. Any string the tokens table has never stored works;
+# this one just says what it is in the (never-checked) logs of whichever route
+# happens to answer it.
+AUTHORITY_PROBE_TOKEN = "sweeper-authority-probe-invalid-token"  # nosec: not a secret
+
+# A route that exists, requires no params, and is a pure read -- so the probe
+# never risks writing. Which route makes no difference to the result: every
+# non-admin `/api/` path authenticates before it dispatches
+# (server/authority/src/handlers/mod.rs), so a bogus bearer 401s identically
+# everywhere. `rules` is picked because it is a real, named route.
+AUTHORITY_PROBE_PATH = "/api/rules"
+
+
+def probe_authority_reachable(cfg):
+    """GET an existing `/api/` route with a deliberately invalid bearer. True
+    iff the response is exactly 401 -- and only 401.
+
+    401 is the only pass: the authority resolves a bearer by querying the
+    `tokens` table before it can answer 401 (`authenticate()` in
+    `server/authority/src/handlers/auth.rs`), so a 401 here proves edge,
+    Worker *and* storage are all live. A storage fault surfaces as 500.
+    Cloudflare's own Browser Integrity Check also answers 403 (#326), so a 403
+    cannot be trusted to mean "the authority said out-of-scope" rather than
+    "the edge blocked us" -- both fail the probe, and so does any 5xx, timeout,
+    or connection error (those propagate as exceptions and are the caller's
+    problem, not this function's).
+
+    Sending no `Authorization` header at all would short-circuit before any
+    table lookup and prove only that the Worker is running, so this always
+    sends one -- and it is never `cfg.hb_api_token`: the probe must not
+    authenticate as anything real, and never writes.
+    """
+    url = cfg.hb_api_base.rstrip("/") + AUTHORITY_PROBE_PATH
+    payload = http_json(url, "GET", {"Authorization": "Bearer " + AUTHORITY_PROBE_TOKEN})
+    return payload.get("_status") == 401
+
+
+def run_authority_probe(cfg, dry_run):
+    """Ping the authority-reachability check. Owned by no adapter (#328;
+    ADR-0002 rule 6, amended): one probe per run, independent of the Tasks and
+    Gmail drains, so an authority outage is visible even when both lanes
+    drain empty and ping themselves green.
+
+    Purely observational: this never raises, never touches an adapter's
+    result, and never fails the sweep -- a real outage still leaves the run
+    itself fail-closed via the adapters, whatever this reports. Unprovisioned
+    is inert: `$AUTHORITY_HEALTHCHECK_URL` unset skips the probe with a WARN
+    rather than failing anything, because this code lands before the check
+    exists. A dry run pings nothing, same convention as both adapters.
+    """
+    if dry_run:
+        return
+    if not cfg.authority_healthcheck_url:
+        log("WARN authority healthcheck url unset; skipping authority reachability probe")
+        return
+    try:
+        reachable = probe_authority_reachable(cfg)
+    except Exception as exc:
+        log("authority probe error: %s" % _redact(exc))
+        ping_failure(
+            cfg.authority_healthcheck_url,
+            "authority probe error: %s" % exc,
+            name="authority",
+        )
+        return
+    if reachable:
+        log("authority probe ok (401)")
+        ping_success(cfg.authority_healthcheck_url, name="authority")
+    else:
+        log("authority probe failed: expected 401")
+        ping_failure(
+            cfg.authority_healthcheck_url,
+            "authority probe did not get 401",
+            name="authority",
+        )
+
+
 # --- the sweep ---------------------------------------------------------------
 
 
@@ -688,7 +791,15 @@ class GoogleTasksAdapter:
 
 class GmailAdapter:
     """Opt-in capture from the mailbox: the `hummingbird/capture` label is the
-    gesture, unlabelling is the ack, the message is the unit (ADR-0002).
+    gesture, unlabelling is the ack (ADR-0002).
+
+    The **capture unit is the conversation; the key stays the message**
+    (ADR-0019, #336). Gmail applies the label at thread granularity, so
+    `enumerate` groups retrieved messages by `threadId` and yields one winner
+    per thread -- the oldest labelled message by `internalDate`, tiebroken by
+    message id -- carrying its losing siblings' ids so `ack` can unlabel them
+    too, once the winner's create has succeeded. `source_key`/the frozen id
+    derivation are untouched: they still key on the winning message's id.
 
     Everything fails closed. Only labelled messages are ever enumerated; a
     mailbox without the label fails the adapter visibly rather than guessing;
@@ -714,6 +825,7 @@ class GmailAdapter:
         self.label_id = gmail_capture_label_id(self.token)
         message_ids = gmail_list_message_ids(self.token, self.label_id)
         log("gmail label '%s' carries %d message(s)" % (GMAIL_CAPTURE_LABEL, len(message_ids)))
+        threads = {}
         for message_id in message_ids:
             try:
                 message = gmail_get_message(self.token, message_id)
@@ -722,14 +834,32 @@ class GmailAdapter:
                 continue
             # Listing and retrieval are two calls, and the label can come off
             # between them. Only a *currently* labelled message may enter the
-            # drain, so the retrieved labels are the authority, not the list.
+            # drain -- and be a winner candidate -- so the retrieved labels are
+            # the authority, not the list.
             if self.label_id not in (message.get("labelIds") or []):
                 log(
                     "message %s lost the capture label since listing; skipping"
                     % message_id
                 )
                 continue
-            yield message
+            thread_id = message.get("threadId") or message.get("id")
+            threads.setdefault(thread_id, []).append(message)
+
+        # One winner per thread (#336): Gmail's UI applies the capture label
+        # at thread granularity, so a forward chain labels every message in a
+        # conversation and would otherwise mint one capture per message. The
+        # winner is the oldest by internalDate -- deliberately not the
+        # newest, so a message arriving between sweeps can never change which
+        # id an earlier sweep already minted -- with the message id as a
+        # deterministic tiebreak. Losers ride along on the winner as
+        # `_collapsed_ids` so `ack` can unlabel them only after the winner's
+        # create has succeeded (thread-atomic fail-closed).
+        for thread_id, messages in threads.items():
+            winner = min(messages, key=_gmail_thread_winner_key)
+            losers = [m for m in messages if m is not winner]
+            if losers:
+                winner["_collapsed_ids"] = [loser.get("id") for loser in losers]
+            yield winner
 
     def source_key(self, item):
         return item.get("id")
@@ -747,7 +877,26 @@ class GmailAdapter:
         return "message %s" % item.get("id")
 
     def ack(self, item):
+        """Unlabel the winner, then every message it collapsed (#336).
+
+        Called only after the winner's create has succeeded (`run_adapter`'s
+        ordering), so this is where the collapse's own fail-closed half lives:
+        the winner is unlabelled first, and only then are the losers -- if the
+        winner's own unlabel raises, the losers stay labelled for the next
+        sweep to re-enumerate and retry, same as any other transient failure.
+        Returns the number of collapsed messages unlabelled, for the caller's
+        `collapsed` count.
+        """
         gmail_remove_label(self.token, item.get("id"), self.label_id)
+        collapsed_ids = item.get("_collapsed_ids") or []
+        thread_id = item.get("threadId") or item.get("id")
+        for collapsed_id in collapsed_ids:
+            gmail_remove_label(self.token, collapsed_id, self.label_id)
+            log(
+                "message %s collapsed into thread %s (winner %s)"
+                % (collapsed_id, thread_id, item.get("id"))
+            )
+        return len(collapsed_ids)
 
 
 AdapterResult = namedtuple("AdapterResult", "name healthcheck_url ok failures notes")
@@ -767,7 +916,7 @@ def run_adapter(adapter, dry_run):
     failures = []
     quarantined = []
     stats = {"created": 0, "existed": 0, "completed": 0, "failed": 0,
-             "skipped": 0, "quarantined": 0}
+             "skipped": 0, "quarantined": 0, "collapsed": 0}
     log("sweep start adapter=%s dry_run=%d" % (adapter.name, int(dry_run)))
 
     def fail(ref, exc):
@@ -823,7 +972,7 @@ def run_adapter(adapter, dry_run):
                 )
                 stats[outcome] += 1
                 log("%s item %s title='%s'" % (outcome, item_id, title))
-                adapter.ack(item)
+                stats["collapsed"] += adapter.ack(item) or 0
                 stats["completed"] += 1
                 log("acked %s" % ref)
             except TerminalRejection as exc:
@@ -855,7 +1004,7 @@ def run_adapter(adapter, dry_run):
     ok = not failures
     log(
         "sweep finish adapter=%s ok=%d created=%d existed=%d completed=%d "
-        "failed=%d skipped=%d quarantined=%d duration=%.1fs"
+        "failed=%d skipped=%d quarantined=%d collapsed=%d duration=%.1fs"
         % (
             adapter.name,
             int(ok),
@@ -865,6 +1014,7 @@ def run_adapter(adapter, dry_run):
             stats["failed"],
             stats["skipped"],
             stats["quarantined"],
+            stats["collapsed"],
             time.time() - started,
         )
     )
@@ -946,6 +1096,11 @@ def config_from_env(env):
     # run_adapter instead.
     healthcheck = env.get("HEALTHCHECK_URL") or ""
     gmail_healthcheck = env.get("GMAIL_HEALTHCHECK_URL") or ""
+    # Also not required, but for a different reason than the two above: this
+    # check belongs to no adapter (#328), and the code lands before the check
+    # exists. Missing is inert -- the probe skips itself with a WARN -- rather
+    # than failing anything, unlike a missing adapter check.
+    authority_healthcheck = env.get("AUTHORITY_HEALTHCHECK_URL") or ""
 
     return Config(
         google_client_id=required("GOOGLE_CLIENT_ID"),
@@ -958,6 +1113,7 @@ def config_from_env(env):
         healthcheck_url=healthcheck,
         denylist_path=env.get("SWEEP_DENYLIST") or DEFAULT_DENYLIST,
         gmail_healthcheck_url=gmail_healthcheck,
+        authority_healthcheck_url=authority_healthcheck,
     )
 
 
@@ -998,6 +1154,7 @@ def main(argv=None):
     # grace period (ADR-0002).
     on_result = None if args.dry_run else report_result
 
+    cfg = None
     try:
         cfg = config_from_env(os.environ)
         results = run_sweep(cfg, args.dry_run, on_result)
@@ -1018,6 +1175,15 @@ def main(argv=None):
         if on_result is not None:
             for result in results:
                 on_result(result)
+
+    # Independent of both adapters (#328): only attempted once config itself
+    # loaded, and wrapped so nothing here can turn into the aborted-sweep
+    # fallback above or flip the run's own exit code.
+    if cfg is not None:
+        try:
+            run_authority_probe(cfg, args.dry_run)
+        except Exception as exc:
+            log("ERROR authority probe crashed: %s" % exc)
 
     lock.close()
     return 0 if all(result.ok for result in results) else 1

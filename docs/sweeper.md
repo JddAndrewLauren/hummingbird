@@ -164,8 +164,9 @@ capture.
 ## The Gmail adapter
 
 An inbox is a firehose, so Gmail inverts Tasks' fail-open posture to
-**opt-in, fail-closed** (ADR-0002). The unit is the **message**, and the
-`hummingbird/capture` label is the whole gesture:
+**opt-in, fail-closed** (ADR-0002). The **capture unit is the conversation;
+the key stays the message** (ADR-0019, #336) — deliberately not the same
+thing. The `hummingbird/capture` label is the whole gesture:
 
 - **Only labelled messages are enumerated.** Everything else is invisible to
   the sweeper — it never lists, reads, or touches an unlabelled message.
@@ -175,11 +176,30 @@ An inbox is a firehose, so Gmail inverts Tasks' fail-open posture to
   the gesture would be a second, invisible rule.
 - **The label is rechecked on retrieval.** Listing and metadata fetch are two
   calls; if the label came off in between, the retrieved `labelIds` win and the
-  message is skipped with a log line, not captured. Only a *currently* labelled
-  message enters the drain.
+  message is skipped with a log line, not captured, and it can never be a
+  thread's winner. Only a *currently* labelled message enters the drain.
+- **One conversation, one capture per sweep.** Gmail's UI applies the label at
+  **thread** granularity, so a forward chain labels every message in it.
+  Enumeration groups the still-labelled, retrieved messages by `threadId` and
+  selects one **winner**: the **oldest labelled message by `internalDate`**,
+  with the message id as a deterministic tiebreak. Oldest, not newest — a
+  forward arriving between sweeps moves "newest" and must never move which id
+  a thread mints, since an observer-dependent key is exactly what turns a
+  replay into a duplicate. The **id derivation is untouched**: the winner's
+  message id is still what `deterministic_v4` hashes; there is no thread-keyed
+  id and none is planned (ADR-0019 rejects it by name).
+- **Losing messages are acked without creating.** A thread's non-winning
+  messages mint nothing and count as no capture, but their label is removed
+  too, so they do not re-enumerate forever.
+- **The collapse is thread-atomic and fail-closed.** Losing messages are acked
+  **only after the winner's create has succeeded**; if that create fails,
+  nothing in the thread is acked and the whole conversation stays labelled for
+  the next sweep to re-enumerate and retry. One thread's failure never touches
+  another's — the engine's per-item isolation (below) is unchanged.
 - **The ack removes exactly that label from that message.** Never archive,
   mark-read, star, delete, or any other mutation. The message stays where it
   was as the audit trail; the thread deep link in the issue is the road back.
+  This applies to the winner *and* every collapsed message.
 - **The label missing from the mailbox entirely fails the adapter** — visibly,
   on its own healthcheck — rather than enumerating anything. No gesture, no
   trust. Google Tasks keeps draining normally either way.
@@ -240,6 +260,40 @@ must still trip the alarm. Any failure or exception POSTs that adapter's
 accumulated failure lines to its check's `/fail` for immediate alerting. The
 ping itself is wrapped in its own try/except and can never fail a run.
 
+**A per-adapter green proves that adapter's drain ran without error — nothing
+more.** An empty enumeration (nothing to capture) makes no authority call at
+all, so both lanes ping green on a day with nothing to do, and since the
+2026-08-12 go-live an empty drain is the steady state for both
+([#328](https://github.com/JddAndrewLauren/hummingbird/issues/328)). Neither
+adapter check is evidence the authority is reachable; only the third check
+below is.
+
+### The authority-reachability check
+
+A third healthchecks.io check, owned by no adapter and no capture source
+(ADR-0002 rule 6, amended — see the ADR-0002 inline amendment). One probe per
+sweep, independent of both drains: a `GET` to an existing `/api/` route
+(`/api/rules`) carrying a **deliberately invalid** bearer token, via the same
+`http_json` choke point every other request uses (so it inherits `USER_AGENT`
+too). Success is **exactly 401** — the authority resolves a bearer by
+querying the `tokens` table before it can answer 401, so a 401 proves edge,
+Worker *and* storage are all live; a storage fault surfaces as 500. A 403 is
+not a pass: Cloudflare's own Browser Integrity Check also answers 403 (#326),
+so 403 cannot distinguish "the authority said out-of-scope" from "the edge
+blocked us." Any 403, any 5xx, any timeout, or any connection error fails the
+probe. The probe never sends `$HB_API_TOKEN` and never writes — there is no
+benign authenticated read on the `sweeper` scope to spend instead, since that
+scope reaches only `POST /api/items`.
+
+`$AUTHORITY_HEALTHCHECK_URL` is this check's ping url. **Blast radius is
+purely observational**: the probe never fails the run and never touches
+either adapter's result — both drains attempt exactly what they would have
+otherwise, whatever the probe found, so the sweep itself stays fail-closed
+through the adapters as always. Unset is **inert**, unlike a missing adapter
+check: the probe is skipped with a `WARN` line rather than failing anything,
+because this code is meant to land before the check exists. A dry run pings
+nothing, same convention as both adapters.
+
 Fly health checks are explicitly *not* the mechanism: they restart, they don't
 notify. Structural backstop: unswept items visibly accumulate in the Tasks app.
 
@@ -285,6 +339,13 @@ successful sweep set anything aside its summary rides along as the **body of
 the success ping**. The check reads green — capture is working — while its page
 shows the junk accumulating.
 
+`collapsed=` joins the same `sweep finish` line (#336), counting the Gmail
+adapter's non-winning thread messages that were acked without creating; it is
+**never** carried in the success ping body, unlike `skipped=`/`quarantined=`
+above — a collapsed message is normal operation, not something set aside for
+a human to look at. Each collapsed message also gets its own log line naming
+its thread and the winning message id.
+
 **The ping URL is a bearer secret and is never logged.** Its path *is* the
 credential — anyone holding it can forge a success ping and silence the alarm —
 and sweeper stdout is the Fly log stream. The log lines say `healthcheck
@@ -298,7 +359,8 @@ and `flyctl secrets set HEALTHCHECK_URL=...`.
 Set with `flyctl secrets set`; nothing on-device, nothing committed.
 
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`,
-`HB_API_TOKEN`, `HEALTHCHECK_URL`, `GMAIL_HEALTHCHECK_URL`.
+`HB_API_TOKEN`, `HEALTHCHECK_URL`, `GMAIL_HEALTHCHECK_URL`,
+`AUTHORITY_HEALTHCHECK_URL`.
 
 `HB_API_BASE` is **not** a secret and is normally unset: it defaults to
 `https://hb.twinion.net` and exists only so a local run can be pointed at a
@@ -465,16 +527,35 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    underneath it; that is the failure this step exists to catch, and the only
    one that matters here.
 
-   Label it from the **message**, not the thread. Gmail's UI applies a label to
-   every message in a thread while the adapter enumerates messages, so
-   labelling a thread that carries a forward chain sweeps each message in it
-   and mints one item per message. Doing this during gate 8 on 2026-08-12 put
-   the label on three messages of one thread and produced the intended
-   `existed=1` alongside two unwanted `Fwd:` captures of the same conversation.
-   That fan-out is the adapter's long-standing behaviour rather than anything
-   the retarget changed — see
-   [#336](https://github.com/JddAndrewLauren/hummingbird/issues/336) — but it
-   makes a thread-level label a poor instrument for this check.
+   Labelling a thread that carries a forward chain is no longer a hazard for
+   this check ([#336](https://github.com/JddAndrewLauren/hummingbird/issues/336),
+   ADR-0019): the adapter now collapses every labelled message in a
+   conversation to the one winner it created. Re-labelling from the
+   **conversation view** puts the label back on every message of the
+   already-acked thread; they re-group under the same `threadId` and the
+   winner is once again the same oldest message, so the check still gets
+   `existed=1`, now alongside `collapsed=N-1` for the rest. Labelling a
+   single **newer** message on its own instead enumerates as a thread of
+   one and legitimately mints `created=1` — the ADR-0019 recapture the
+   adapter is designed to allow, not the namespace break the pass condition
+   above exists to catch.
+
+### Authority-reachability go-live (#328)
+
+The code lands inert — `$AUTHORITY_HEALTHCHECK_URL` unset skips the probe
+with a `WARN` and fails nothing — so this can be provisioned whenever, on its
+own schedule, independent of the Tasks/Gmail gates above.
+
+1. **healthchecks.io.** Create a third, dedicated check — same 45-minute
+   grace period as the other two; record its ping URL. Leave it paused until
+   go-live, same reasoning as the other checks.
+2. **Secret.** `flyctl secrets set AUTHORITY_HEALTHCHECK_URL=<ping url>`.
+3. **Unpause and verify.** After a live sweep, confirm the check went green,
+   then prove the failure path once by hand: point `HB_API_BASE` at something
+   unreachable for a manual `./sweep.py` run (not `--dry-run`, since a dry run
+   pings nothing) and confirm the check goes red while both adapter checks —
+   run against the same broken base — behave exactly as they did before this
+   issue.
 
 ## Acceptance (post-provisioning)
 

@@ -13,6 +13,11 @@ two more out-of-scope entries — M365 mail and the pager/alert-router role
 time and stamp severity only on the alerts they mint; nothing ever writes
 urgency onto an existing record; ranking is a read-time query over lifecycle
 state.
+**Amended 2026-08-12 by
+[ADR-0019](0019-the-gmail-capture-unit-is-the-conversation-the-key-stays-the-message.md):**
+the Placements table's Gmail row said the message is the unit; the decided
+capture unit is now the **conversation**, with the message staying only the
+identifying key.
 **Context:** the data-sources grilling of 2026-08-07, issue
 [#43](https://github.com/JddAndrewLauren/hummingbird/issues/43); extends
 [ADR-0001](0001-linear-is-the-authority-behind-a-clean-seam.md).
@@ -58,6 +63,16 @@ calendar event is background context at T−3 days and constrains
    shared check held red by one broken drain hides the health of the others.
    Context pollers get no healthchecks; a stale "as of…" tile is their alarm.
 
+   *Amended 2026-08-12 (#328): the taxonomy now admits one check belonging to
+   no source — authority reachability. Both lanes ping their own check green
+   on an empty drain, having made no authority call at all, and since the
+   2026-08-12 go-live an empty drain is the steady state for both; a per-source
+   green therefore stopped being evidence the authority is reachable. The
+   fix is a third check, owned by no capture source, that probes the
+   authority directly once per sweep and reports only itself — per-source
+   isolation is otherwise unchanged: this check's failure never touches
+   either adapter's result, and either adapter's failure never touches it.*
+
 ## Placements
 
 | Source | Role(s) |
@@ -66,6 +81,10 @@ calendar event is background context at T−3 days and constrains
 | Gmail | capture (fail-closed: dedicated label is the gesture, unlabel is the ack, the **message** is the unit) |
 | Google Calendar | context — the record archetype; read-only |
 | M365 calendar | context — sequenced after Google Calendar (second auth stack: MS identity + Graph) |
+
+*Amended 2026-08-12 by [ADR-0019](0019-the-gmail-capture-unit-is-the-conversation-the-key-stays-the-message.md)
+(see the Status header): the Gmail row above is superseded — the capture
+unit is the conversation, and the message stays only the identifying key.*
 
 ## Consumer order
 

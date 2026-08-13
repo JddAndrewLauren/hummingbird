@@ -31,6 +31,7 @@ CFG = sweep.Config(
 )
 
 ITEMS_URL = "https://hb.example/api/items"
+AUTHORITY_PROBE_URL = "https://hb.example" + sweep.AUTHORITY_PROBE_PATH
 
 # Scripted answer meaning "a normal 201 for whatever was posted"; the create
 # refuses a 201 that is not the item it asked for.
@@ -151,7 +152,7 @@ class FakeHttp:
     """Records every call; answers Google Tasks, Gmail, and authority writes."""
 
     def __init__(self, hb_responses=None, labels=None, messages=None,
-                 lists_response=None):
+                 lists_response=None, authority_probe_status=401):
         self.calls = []
         self.hb_responses = list(hb_responses or [])
         self.labels = labels if labels is not None else LABELS
@@ -160,9 +161,15 @@ class FakeHttp:
             "items": [{"id": "list-1", "title": "My Tasks"}]
         }
         self.tasks = {"items": [{"id": "task-1", "title": "call the vet", "notes": ""}]}
+        # Default 401: the authority-reachability probe's own pass condition
+        # (#328), so tests that never touch it still see a "reachable"
+        # authority rather than tripping an unrelated failure ping.
+        self.authority_probe_status = authority_probe_status
 
     def __call__(self, url, method="GET", headers=None, body=None, with_status=False):
         self.calls.append({"url": url, "method": method, "headers": headers, "body": body})
+        if url == AUTHORITY_PROBE_URL:
+            return {"_status": self.authority_probe_status}
         if url.startswith("https://hc.example/"):
             return {}
         if url == sweep.GOOGLE_TOKEN_URL:
@@ -373,6 +380,221 @@ class GmailFlowTest(unittest.TestCase):
         self.assertEqual(fake.gmail_mutations(), [])
 
 
+class GmailThreadCollapseTest(unittest.TestCase):
+    """One labelled thread mints one capture (#336): the winner is the oldest
+    labelled message by internalDate, and every message in the thread ends up
+    unlabelled once the winner's create has succeeded."""
+
+    OLDER_DATE = "1600000000000"  # 2020-09-13T12:26:40Z
+    NEWER_DATE = "1700000000000"  # 2023-11-14T22:13:20Z
+
+    def setUp(self):
+        self.real_http = sweep.http_json
+
+    def tearDown(self):
+        sweep.http_json = self.real_http
+
+    def run_gmail(self, fake, dry_run=False):
+        sweep.http_json = fake
+        return sweep.run_adapter(sweep.GmailAdapter(CFG), dry_run)
+
+    def test_one_thread_two_messages_yields_one_created_item(self):
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[newer, older])  # listing order deliberately reversed
+        result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        creates = fake.creates()
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(
+            creates[0]["body"]["id"], sweep.deterministic_v4("older", sweep.GMAIL_NAMESPACE)
+        )
+
+    def test_winner_is_oldest_and_unaffected_by_a_newer_message_existing(self):
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+
+        solo = FakeHttp(messages=[older])
+        self.run_gmail(solo)
+        solo_id = solo.creates()[0]["body"]["id"]
+
+        with_newer = FakeHttp(messages=[older, newer])
+        self.run_gmail(with_newer)
+        paired_id = with_newer.creates()[0]["body"]["id"]
+
+        self.assertEqual(solo_id, paired_id)
+        self.assertEqual(solo_id, sweep.deterministic_v4("older", sweep.GMAIL_NAMESPACE))
+
+    def test_every_message_in_the_thread_ends_up_unlabelled(self):
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[older, newer])
+        result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        unlabelled_ids = {
+            c["url"].split("/messages/")[1].split("/modify")[0]
+            for c in fake.gmail_mutations()
+        }
+        self.assertEqual(unlabelled_ids, {"older", "newer"})
+
+    def test_create_precedes_every_ack_in_the_thread(self):
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[older, newer])
+        self.run_gmail(fake)
+
+        create_index = fake.first_index(ITEMS_URL)
+        for mutation in fake.gmail_mutations():
+            self.assertGreater(fake.calls.index(mutation), create_index)
+
+    def test_winner_create_failure_leaves_the_whole_thread_labelled(self):
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(
+            messages=[older, newer],
+            hb_responses=[{"_status": 503, "error": "backend down"}],
+        )
+        result = self.run_gmail(fake)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(fake.gmail_mutations(), [])
+
+    def test_other_threads_unaffected_by_one_threads_create_failure(self):
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        other = message(msg_id="other-thread-msg", thread_id="thr-2",
+                         internal_date=self.OLDER_DATE)
+
+        def hb_response_for(item_id):
+            if item_id == sweep.deterministic_v4("older", sweep.GMAIL_NAMESPACE):
+                return {"_status": 503, "error": "backend down"}
+            return None
+
+        fake = FakeHttp(messages=[older, newer, other])
+        real_call = fake.__call__
+
+        def routed(url, method="GET", headers=None, body=None, with_status=False):
+            if url == ITEMS_URL and body is not None:
+                error = hb_response_for(body.get("id"))
+                if error is not None:
+                    fake.calls.append(
+                        {"url": url, "method": method, "headers": headers, "body": body}
+                    )
+                    return error
+            return real_call(url, method, headers, body, with_status)
+
+        sweep.http_json = routed
+        result = sweep.run_adapter(sweep.GmailAdapter(CFG), False)
+
+        self.assertFalse(result.ok)
+        # The failing thread's messages stay labelled.
+        unlabelled_ids = {
+            c["url"].split("/messages/")[1].split("/modify")[0]
+            for c in fake.gmail_mutations()
+        }
+        self.assertEqual(unlabelled_ids, {"other-thread-msg"})
+
+    def test_message_that_lost_its_label_is_never_selected_as_winner(self):
+        # "older" is the oldest by internalDate but lost its label between
+        # listing and retrieval, so it must be skipped and never win, leaving
+        # "newer" -- still labelled -- as the sole surviving candidate.
+        older = message(
+            msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE,
+            label_ids=("INBOX",),
+        )
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[older, newer])
+        result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        creates = fake.creates()
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(
+            creates[0]["body"]["id"], sweep.deterministic_v4("newer", sweep.GMAIL_NAMESPACE)
+        )
+        unlabelled_ids = {
+            c["url"].split("/messages/")[1].split("/modify")[0]
+            for c in fake.gmail_mutations()
+        }
+        self.assertEqual(unlabelled_ids, {"newer"})
+
+    def test_two_different_threads_still_mint_two_items(self):
+        first = message(msg_id="first", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        second = message(msg_id="second", thread_id="thr-2", internal_date=self.OLDER_DATE)
+        fake = FakeHttp(messages=[first, second])
+        result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(fake.creates()), 2)
+        self.assertEqual(len(fake.gmail_mutations()), 2)
+
+    def test_finish_line_reports_collapsed_and_logs_thread_and_winner(self):
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[older, newer])
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        output = buffer.getvalue()
+        self.assertIn("collapsed=1", output)
+        self.assertIn("thr-1", output)
+        self.assertIn("newer", output)
+        self.assertIn("older", output)
+
+    def test_single_message_thread_is_not_reported_as_collapsed(self):
+        fake = FakeHttp(messages=[message(msg_id="solo", thread_id="thr-solo")])
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = self.run_gmail(fake)
+
+        self.assertTrue(result.ok)
+        self.assertIn("collapsed=0", buffer.getvalue())
+
+    def test_dry_run_never_logs_a_collapse(self):
+        # A dry run never calls ack(), so the per-message collapse line --
+        # which only fires once a label removal actually happened -- must
+        # never appear; nothing here is a completed mutation.
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(messages=[older, newer])
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = self.run_gmail(fake, dry_run=True)
+
+        self.assertTrue(result.ok)
+        output = buffer.getvalue()
+        self.assertNotIn("collapsed into thread", output)
+        self.assertEqual(fake.gmail_mutations(), [])
+
+    def test_winner_create_failure_never_logs_a_collapse(self):
+        # The collapse line must not claim messages were unlabelled when the
+        # winner's create failed and ack() was never called -- the exact
+        # "logs report it as success" shape ADR-0019 warns against.
+        older = message(msg_id="older", thread_id="thr-1", internal_date=self.OLDER_DATE)
+        newer = message(msg_id="newer", thread_id="thr-1", internal_date=self.NEWER_DATE)
+        fake = FakeHttp(
+            messages=[older, newer],
+            hb_responses=[{"_status": 503, "error": "backend down"}],
+        )
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = self.run_gmail(fake)
+
+        self.assertFalse(result.ok)
+        output = buffer.getvalue()
+        self.assertNotIn("collapsed into thread", output)
+        self.assertIn("collapsed=0", output)
+        self.assertEqual(fake.gmail_mutations(), [])
+
+
 class AdapterIsolationTest(unittest.TestCase):
     """One run, both adapters; a failure in either never stops the other."""
 
@@ -566,6 +788,64 @@ class MainReportingTest(unittest.TestCase):
         fake = FakeHttp()
         self.assertEqual(self.run_main(fake, argv=["--dry-run"]), 0)
         self.assertEqual(fake.pings(), [])
+
+    # -- the authority-reachability check (#328) -----------------------------
+
+    AUTHORITY_CHECK = "https://hc.example/authority"
+
+    def test_authority_reachable_and_both_lanes_empty_all_three_green(self):
+        fake = FakeHttp(authority_probe_status=401)
+        fake.tasks = {"items": []}
+        fake.messages = []
+        self.assertEqual(
+            self.run_main(fake, env={"AUTHORITY_HEALTHCHECK_URL": self.AUTHORITY_CHECK}),
+            0,
+        )
+        for url in (self.TASKS_CHECK, self.GMAIL_CHECK, self.AUTHORITY_CHECK):
+            ping = self.ping(fake, url)
+            self.assertEqual(ping["method"], "GET")  # success, no body
+        self.assertIsNone(fake.first_index(self.AUTHORITY_CHECK + "/fail"))
+
+    def test_authority_unreachable_leaves_only_the_authority_check_red(self):
+        # 500 (a storage fault) rather than 401 -- the authority is up but
+        # cannot answer the probe's own auth query. Both lanes still find
+        # nothing to do and reachable Google, so they stay green: the
+        # criterion this restates is superseded by this design (see the
+        # Agent Brief) -- the Tasks check correctly stays green, and the new
+        # check alone carries the signal.
+        fake = FakeHttp(authority_probe_status=500)
+        fake.tasks = {"items": []}
+        fake.messages = []
+        self.assertEqual(
+            self.run_main(fake, env={"AUTHORITY_HEALTHCHECK_URL": self.AUTHORITY_CHECK}),
+            0,
+        )
+        self.assertEqual(self.ping(fake, self.TASKS_CHECK)["method"], "GET")
+        self.assertEqual(self.ping(fake, self.GMAIL_CHECK)["method"], "GET")
+        authority_fail = self.ping(fake, self.AUTHORITY_CHECK + "/fail")
+        self.assertEqual(authority_fail["method"], "POST")
+
+    def test_a_failing_probe_does_not_touch_either_adapters_ping_or_the_exit_code(self):
+        # Blast radius: purely observational. A red authority check must not
+        # fail the run when both adapters themselves drained cleanly.
+        fake = FakeHttp(authority_probe_status=403)
+        fake.tasks = {"items": []}
+        fake.messages = []
+        exit_code = self.run_main(fake, env={"AUTHORITY_HEALTHCHECK_URL": self.AUTHORITY_CHECK})
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(self.ping(fake, self.TASKS_CHECK)["method"], "GET")
+        self.assertEqual(self.ping(fake, self.GMAIL_CHECK)["method"], "GET")
+
+    def test_unset_authority_check_leaves_the_two_adapter_pings_unchanged(self):
+        # No AUTHORITY_HEALTHCHECK_URL in the environment at all (the shared
+        # ENV omits it) -- the probe must skip itself without touching either
+        # adapter's own ping.
+        fake = FakeHttp()
+        self.assertEqual(self.run_main(fake), 0)
+        self.assertEqual(
+            sorted(c["url"] for c in fake.pings()),
+            [self.GMAIL_CHECK, self.TASKS_CHECK],
+        )
 
 
 class GmailConfigTest(unittest.TestCase):
