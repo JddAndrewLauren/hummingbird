@@ -5,6 +5,11 @@
 is instantiated per surface — `QuestionDef` gains `surface: "now" | "status"`
 — so "the ranked region owns Now's Context aside" and "one region, one slot"
 are true of Now specifically, not of every surface that will ever exist.
+· **amended 2026-08-13 by
+[ADR-0021](0021-the-frontier-in-columns.md):** the aside this ADR calls "Now's
+Context aside" is renamed **Standing questions** — the `Context` label has been
+stale since this ADR replaced the calendar context tile with the ranked region,
+and the word is needed for the frontier's grouping axis in the centre column.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on

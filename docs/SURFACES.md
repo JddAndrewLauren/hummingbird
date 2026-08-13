@@ -78,7 +78,20 @@ section — its header toggle, its collapsed state, its capped scroll container
 and the `TriageRow` editors inside it — is never mounted under `?demo`.
 `screens/NowScreen.test.tsx` and `screens/triage-collapse.test.ts` are the
 cover; the scroll cap and the frontier-above-it are reviewed by hand on a
-device with real captures, which is where a full inbox exists at all. The popover is a state rather than a screen — it
+device with real captures, which is where a full inbox exists at all. **Now's
+frontier columns** join the list for that same reason and are settled up front
+rather than discovered mid-slice (ADR-0021 decision 8, #400): because
+`NowScreen.tsx` branches to `RealFrontier` only when demo is off, the columns
+themselves, the axis switch, the facet-filter panel, the collapsed and
+`n more` states and the urgency colours are unphotographed at **every width and
+theme**. They take #273's disposition — `screens/NowScreen.test.tsx` plus the
+grouping and preference modules' own unit tests are the cover, and the wrap
+behaviour, the collapse reflow and the absence of horizontal page overflow are
+reviewed by hand at 1440, 1024 and 768 in both themes on a device with real
+items, which is where enough columns to wrap exist at all. Entangling `?demo`
+with `RealFrontier` to photograph them is rejected there, not merely skipped:
+that branch exists to keep the two apart, so widening it would trade a
+documented coverage gap for an undocumented behavioural one. The popover is a state rather than a screen — it
 renders over whatever is showing (`shell/CapturePopover.tsx`), so no
 per-screen capture ever contains it, and the scrim covering the whole window
 plus the card fitting inside 768 are only decidable with it open. `?demo` drives
