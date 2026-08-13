@@ -65,7 +65,31 @@ fn the_source_agrees_with_the_pane() {
 
 /// `.github/workflows/uptime-probe.yml`'s cron must agree with this — the
 /// declared cadence `Freshness` reads.
+///
+/// **Checked against the workflow file, not only against itself.** A bare
+/// `assert_eq!(POLLED_EVERY_MS, 60 * 60 * 1000)` restates the constant and
+/// would still pass the day someone changed the cron and left this alone,
+/// which is the exact drift this file exists to catch on every *other*
+/// contract it guards. `hummingbird-github-status::cron::declared_cadence_ms`
+/// would decide this properly, but reaching it means a cross-crate
+/// dependency for a test, so the cron line itself is asserted here instead —
+/// no dependency, and the failure still lands on a real edit to the
+/// workflow.
+const UPTIME_PROBE_WORKFLOW: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../.github/workflows/uptime-probe.yml"
+));
+
 #[test]
-fn polled_every_ms_is_one_hour() {
+fn polled_every_ms_is_one_hour_and_the_workflow_says_so_too() {
     assert_eq!(POLLED_EVERY_MS, 60 * 60 * 1000);
+    assert!(
+        UPTIME_PROBE_WORKFLOW.contains(r#"- cron: "5 * * * *""#),
+        "uptime-probe.yml no longer runs hourly at :05 — `POLLED_EVERY_MS` is now a lie, and \
+         every pane reading `declaredCadenceMs` bands its freshness against the wrong cadence"
+    );
+    // The whole cron field, so a *second* schedule entry tightening or
+    // loosening the real cadence cannot slip past the `contains` above.
+    let cron_lines = UPTIME_PROBE_WORKFLOW.lines().filter(|l| l.trim().starts_with("- cron:")).count();
+    assert_eq!(cron_lines, 1, "uptime-probe.yml declares more than one cron; POLLED_EVERY_MS names one cadence");
 }

@@ -48,9 +48,13 @@ Screen states: the nine screens under `?demo` (deterministic, populated
 fixtures — except **Done** and the **Ledger**, which have no demo fixtures
 and photograph their "not read yet" holding state; their populated rows are
 covered by `DoneScreen.test.tsx`/`LedgerScreen.test.tsx` and reviewed by hand
-on a device with real items; **Status** photographs three poller-backed
-panes fed by `src/fixtures/demo-questions.ts` (#313-#315) plus the one
-remaining gap pane, `reachability`, pending #316), the **capture popover** open
+on a device with real items; **Status** photographs **ten panes** fed by
+`src/fixtures/demo-questions.ts` — counted in *panes*, not questions, because
+two of its wired questions emit one pane *per subject* the way the race
+question does: one `kimi-balance/v1` gauge, five `github-hummingbird/v1`
+workflow rows and three `uptime/v1` service rows (#313-#315) make **nine
+poller-backed panes**, plus the one remaining gap pane, `reachability`,
+pending #316), the **capture popover** open
 over Now, and **Now's honest empty state** without the flag. What no capture reaches: Triage's **expanded row
 editor**, since `?demo` renders the fixture rows (`DemoCapture`) and the editor
 only exists over a real `TaskItemDTO` — it is covered by

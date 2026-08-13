@@ -136,6 +136,72 @@ mod tests {
         assert_eq!(parsed.polled_every_ms, Some(POLLED_EVERY_MS));
     }
 
+    /// A service the manifest declares deliberately down. Nothing in
+    /// `services.json` is `expected: "off"` today, so without this the
+    /// `Expected::Off` arm of `expected_str` — and the whole `"off"` path
+    /// through this layer — is only ever exercised inside `verdict`'s own
+    /// unit tests, one level below the body the pane actually reads.
+    fn deliberately_down_service() -> Service {
+        Service {
+            id: "runner".to_string(),
+            url: "https://hummingbird-runner.fly.dev/run".to_string(),
+            method: "POST".to_string(),
+            expect_status: 401,
+            expected: Expected::Off,
+        }
+    }
+
+    /// The `expected: "off"` agreement case, driven all the way through this
+    /// layer: the verdict says agreement, and the body the pane reads says
+    /// `"off"` with the transport error carried through. `uptime.ts`'s
+    /// `uptimeBand` reads exactly these two fields to answer `dormant`, so a
+    /// body that wrote `"on"` here would render a deliberately-down service
+    /// as a live outage.
+    #[test]
+    fn an_expected_off_service_correctly_unreachable_writes_an_off_body_the_authority_accepts() {
+        let service = deliberately_down_service();
+        let outcome = Outcome::Unreachable("connection refused".to_string());
+        assert_eq!(
+            crate::verdict::decide(service.expected, service.expect_status, &outcome),
+            crate::verdict::Verdict::Agreement
+        );
+
+        let body = ProbeBody::from_outcome(&service, &outcome);
+        assert_eq!(body.expected, "off");
+        assert_eq!(body.observed_status, None);
+        assert_eq!(body.error, Some("connection refused".to_string()));
+
+        let payload = body.envelope().to_string();
+        let parsed = hummingbird_domain::SnapshotEnvelope::parse(&payload)
+            .expect("an expected-off body still passes the authority's own parse");
+        assert_eq!(parsed.schema, "uptime/v1");
+        let on_the_wire: serde_json::Value =
+            serde_json::from_str(&parsed.body).expect("the carried body is JSON");
+        assert_eq!(on_the_wire.get("expected").and_then(|v| v.as_str()), Some("off"));
+        assert_eq!(on_the_wire.get("observed_status"), Some(&serde_json::Value::Null));
+    }
+
+    /// The fault the other way, through the same layer: something is running
+    /// that should not be. The body must carry `"off"` *and* the observed
+    /// status, since that pair is the only thing that lets the pane say
+    /// "reachable when it should be off" rather than reading as healthy.
+    #[test]
+    fn an_expected_off_service_that_answers_writes_the_divergent_pair() {
+        let service = deliberately_down_service();
+        let outcome = Outcome::Reached(401);
+        assert_eq!(
+            crate::verdict::decide(service.expected, service.expect_status, &outcome),
+            crate::verdict::Verdict::Divergent
+        );
+
+        let body = ProbeBody::from_outcome(&service, &outcome);
+        assert_eq!(body.expected, "off");
+        assert_eq!(body.observed_status, Some(401));
+        assert_eq!(body.error, None);
+        hummingbird_domain::SnapshotEnvelope::parse(&body.envelope().to_string())
+            .expect("a divergent expected-off body still parses");
+    }
+
     /// The unreachable shape must still build a valid envelope — `error` is
     /// `Some` and `observed_status` is `None`, and that is a legitimate
     /// value, not a failure to construct.

@@ -125,6 +125,19 @@ mod tests {
         assert_eq!(services.len(), 3);
     }
 
+    /// `expected: "off"` is the deliberate-downtime mechanism this module's
+    /// header describes, and nothing in the committed manifest uses it — so
+    /// without this test the `Expected::Off` deserialize arm is never
+    /// exercised at all, and a rename of the serde spelling would only be
+    /// caught the day someone actually took a service down on purpose.
+    #[test]
+    fn a_service_declared_deliberately_down_parses_as_expected_off() {
+        let contents = r#"[{"id":"runner","url":"https://hummingbird-runner.fly.dev/run","method":"POST","expect_status":401,"expected":"off"}]"#;
+        let services = parse_manifest(contents).expect("an expected-off manifest parses");
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].expected, Expected::Off);
+    }
+
     #[test]
     fn an_unrecognised_expected_value_refuses_to_parse() {
         let bad = r#"[{"id":"x","url":"https://example.com","method":"GET","expect_status":200,"expected":"maybe"}]"#;

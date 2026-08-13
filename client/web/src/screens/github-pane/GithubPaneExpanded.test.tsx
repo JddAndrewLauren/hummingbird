@@ -154,4 +154,37 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
     // The collapsed sentence is NOT what matched above — this pane is open.
     expect(screen.queryByText(/· cadence unreadable/)).toBeNull();
   });
+
+  /** The card's `stale — age unknown` arm: a freshness the shell could not
+   * age at all. `isStaleFreshness` reads `unknown` as stale, so
+   * `githubAnswer` escalates the otherwise-healthy `dormant` reading to
+   * `imminent` and the pane opens — which means this card is the whole view
+   * the reader gets. Without this line the open card shows two green facts
+   * and a "cron stalled" badge with nothing saying *why* it is unjudgeable,
+   * and the branch had no test at either level. */
+  it("names the staleness without an age when the freshness itself is unknown", () => {
+    const rows = read([
+      snapshot("gmail-poll.yml", {
+        envelope: { kind: "ok", schema: SOURCE, polledEveryMs: null, body: body({ display_name: "gmail-poll" }) },
+        freshness: { kind: "unknown" },
+      }),
+    ]);
+
+    render(
+      <StatusScreen
+        demo={null}
+        onScreen={() => {}}
+        task={taskState({ paneReads: { [SOURCE]: rows } })}
+        nowMs={NOW_MS}
+        calendarReads={{}}
+        calendarConnected={false}
+      />,
+    );
+
+    expect(screen.getByText("gmail-poll")).toBeTruthy();
+    expect(screen.getByText("stale — age unknown")).toBeTruthy();
+    // Open, not collapsed — the collapsed sentence would have named the
+    // staleness instead of the card.
+    expect(screen.queryByText(/· answer may be stale/)).toBeNull();
+  });
 });
