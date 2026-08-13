@@ -124,25 +124,33 @@ async function* attempt(
   body: unknown,
   deps: RouteRunDeps,
 ): AsyncGenerator<SkillEvent, { kind: "ok"; result: unknown; backend: string | null; model: string | null } | { kind: "failed"; error: string; backend: string | null; model: string | null }> {
-  // The connect-phase timeout: a plain `AbortController` rather than
-  // `AbortSignal.timeout`, because it has to be disarmed once `fetch`
-  // settles — `AbortSignal.timeout`'s timer cannot be cleared, so it would
-  // stay live across the whole streamed run.
-  const connectController = new AbortController();
-  const connectTimer = setTimeout(() => connectController.abort(), entry.connectTimeoutMs);
-  const signal = deps.signal ? AbortSignal.any([deps.signal, connectController.signal]) : connectController.signal;
-
-  // Wraps `deps.fetch` only to disarm the connect timer the moment the call
-  // settles — resolved or rejected. After that point `signal` (still passed
-  // to the body reader below) can only fire from `deps.signal`, never from
-  // the connect timeout: a sleeping backend that never answers still aborts
-  // at `connectTimeoutMs`, but a slow *stream* from a backend that did
-  // answer promptly is never punished for taking longer than that to finish.
+  // Wraps `deps.fetch` so the connect timeout bounds only the wait for
+  // `fetch` to settle. A real `fetch`'s `AbortSignal` stays tied to the
+  // whole request, headers AND body — so a signal that is still armed when
+  // the body starts streaming would abort it just the same as one shared
+  // outright, no better than the bug this replaces. Instead a fresh
+  // `AbortSignal.timeout(entry.connectTimeoutMs)` only ever *arms*
+  // `cancelSignal` (via `addEventListener`), and that arming listener is
+  // detached — `removeEventListener`, not a cleared timer — the moment
+  // `fetch` settles, resolved or rejected. From then on `cancelSignal` can
+  // no longer fire from the connect timeout, so a backend that answered
+  // within the connect window is never aborted mid-stream no matter how
+  // long the runner's own 20s heartbeats make the stream run.
+  // `AbortSignal.timeout` owns its own platform timer; nothing here starts
+  // one (ADR-0007 — the 60s sync interval stays the only clock in this
+  // lane).
   const connectBoundedFetch: typeof globalThis.fetch = async (input, init) => {
+    const cancelController = new AbortController();
+    const connectTimeoutSignal = AbortSignal.timeout(entry.connectTimeoutMs);
+    const onConnectTimeout = () => cancelController.abort();
+    connectTimeoutSignal.addEventListener("abort", onConnectTimeout, { once: true });
+    const signal = init?.signal
+      ? AbortSignal.any([init.signal, cancelController.signal])
+      : cancelController.signal;
     try {
-      return await deps.fetch(input, init);
+      return await deps.fetch(input, { ...init, signal });
     } finally {
-      clearTimeout(connectTimer);
+      connectTimeoutSignal.removeEventListener("abort", onConnectTimeout);
     }
   };
 
@@ -151,28 +159,22 @@ async function* attempt(
     | { kind: "failed"; error: string; backend: string | null; model: string | null }
     | null = null;
 
-  try {
-    for await (const event of runSkill(entry, body, {
-      fetch: connectBoundedFetch,
-      readToken: deps.readToken,
-      signal,
-    })) {
-      if (event.kind === "started") continue;
-      if (event.kind === "progress") {
-        yield event;
-        continue;
-      }
-      // `runSkill`'s own contract: `unreadable` is dropped inside it and
-      // never escapes as a terminal event — this guard exists only so the
-      // type narrows to `ok | failed` without a cast; it is unreachable at
-      // runtime.
-      if (event.kind === "unreadable") continue;
-      terminal = event;
+  for await (const event of runSkill(entry, body, {
+    fetch: connectBoundedFetch,
+    readToken: deps.readToken,
+    signal: deps.signal,
+  })) {
+    if (event.kind === "started") continue;
+    if (event.kind === "progress") {
+      yield event;
+      continue;
     }
-  } finally {
-    // Covers the paths that never call `fetch` at all (`NO_TOKEN`) and any
-    // early return — the timer must not outlive this attempt either way.
-    clearTimeout(connectTimer);
+    // `runSkill`'s own contract: `unreadable` is dropped inside it and
+    // never escapes as a terminal event — this guard exists only so the
+    // type narrows to `ok | failed` without a cast; it is unreachable at
+    // runtime.
+    if (event.kind === "unreadable") continue;
+    terminal = event;
   }
 
   return terminal ?? { kind: "failed", error: NO_TERMINAL_LINE, backend: null, model: null };
