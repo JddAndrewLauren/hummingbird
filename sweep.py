@@ -429,6 +429,25 @@ def _gmail_timestamp(message, headers):
     return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _gmail_internal_date(message):
+    try:
+        return int(message["internalDate"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _gmail_thread_winner_key(message):
+    """Sort key for picking one message per thread (#336): the oldest by
+    `internalDate`, with the message id as a deterministic tiebreak.
+
+    A message with no parseable `internalDate` sorts last (never wins over one
+    that has a real timestamp) rather than crashing or defaulting to epoch,
+    which would make a malformed message win every thread it is in.
+    """
+    internal_date = _gmail_internal_date(message)
+    return (internal_date is None, internal_date or 0, message.get("id") or "")
+
+
 def gmail_derive_capture(message):
     """(title, description) for one labelled message. Never None.
 
@@ -772,7 +791,15 @@ class GoogleTasksAdapter:
 
 class GmailAdapter:
     """Opt-in capture from the mailbox: the `hummingbird/capture` label is the
-    gesture, unlabelling is the ack, the message is the unit (ADR-0002).
+    gesture, unlabelling is the ack (ADR-0002).
+
+    The **capture unit is the conversation; the key stays the message**
+    (ADR-0019, #336). Gmail applies the label at thread granularity, so
+    `enumerate` groups retrieved messages by `threadId` and yields one winner
+    per thread -- the oldest labelled message by `internalDate`, tiebroken by
+    message id -- carrying its losing siblings' ids so `ack` can unlabel them
+    too, once the winner's create has succeeded. `source_key`/the frozen id
+    derivation are untouched: they still key on the winning message's id.
 
     Everything fails closed. Only labelled messages are ever enumerated; a
     mailbox without the label fails the adapter visibly rather than guessing;
@@ -798,6 +825,7 @@ class GmailAdapter:
         self.label_id = gmail_capture_label_id(self.token)
         message_ids = gmail_list_message_ids(self.token, self.label_id)
         log("gmail label '%s' carries %d message(s)" % (GMAIL_CAPTURE_LABEL, len(message_ids)))
+        threads = {}
         for message_id in message_ids:
             try:
                 message = gmail_get_message(self.token, message_id)
@@ -806,14 +834,37 @@ class GmailAdapter:
                 continue
             # Listing and retrieval are two calls, and the label can come off
             # between them. Only a *currently* labelled message may enter the
-            # drain, so the retrieved labels are the authority, not the list.
+            # drain -- and be a winner candidate -- so the retrieved labels are
+            # the authority, not the list.
             if self.label_id not in (message.get("labelIds") or []):
                 log(
                     "message %s lost the capture label since listing; skipping"
                     % message_id
                 )
                 continue
-            yield message
+            thread_id = message.get("threadId") or message.get("id")
+            threads.setdefault(thread_id, []).append(message)
+
+        # One winner per thread (#336): Gmail's UI applies the capture label
+        # at thread granularity, so a forward chain labels every message in a
+        # conversation and would otherwise mint one capture per message. The
+        # winner is the oldest by internalDate -- deliberately not the
+        # newest, so a message arriving between sweeps can never change which
+        # id an earlier sweep already minted -- with the message id as a
+        # deterministic tiebreak. Losers ride along on the winner as
+        # `_collapsed_ids` so `ack` can unlabel them only after the winner's
+        # create has succeeded (thread-atomic fail-closed).
+        for thread_id, messages in threads.items():
+            winner = min(messages, key=_gmail_thread_winner_key)
+            losers = [m for m in messages if m is not winner]
+            if losers:
+                winner["_collapsed_ids"] = [loser.get("id") for loser in losers]
+                for loser in losers:
+                    log(
+                        "message %s collapsed into thread %s (winner %s)"
+                        % (loser.get("id"), thread_id, winner.get("id"))
+                    )
+            yield winner
 
     def source_key(self, item):
         return item.get("id")
@@ -831,7 +882,21 @@ class GmailAdapter:
         return "message %s" % item.get("id")
 
     def ack(self, item):
+        """Unlabel the winner, then every message it collapsed (#336).
+
+        Called only after the winner's create has succeeded (`run_adapter`'s
+        ordering), so this is where the collapse's own fail-closed half lives:
+        the winner is unlabelled first, and only then are the losers -- if the
+        winner's own unlabel raises, the losers stay labelled for the next
+        sweep to re-enumerate and retry, same as any other transient failure.
+        Returns the number of collapsed messages unlabelled, for the caller's
+        `collapsed` count.
+        """
         gmail_remove_label(self.token, item.get("id"), self.label_id)
+        collapsed_ids = item.get("_collapsed_ids") or []
+        for collapsed_id in collapsed_ids:
+            gmail_remove_label(self.token, collapsed_id, self.label_id)
+        return len(collapsed_ids)
 
 
 AdapterResult = namedtuple("AdapterResult", "name healthcheck_url ok failures notes")
@@ -851,7 +916,7 @@ def run_adapter(adapter, dry_run):
     failures = []
     quarantined = []
     stats = {"created": 0, "existed": 0, "completed": 0, "failed": 0,
-             "skipped": 0, "quarantined": 0}
+             "skipped": 0, "quarantined": 0, "collapsed": 0}
     log("sweep start adapter=%s dry_run=%d" % (adapter.name, int(dry_run)))
 
     def fail(ref, exc):
@@ -907,7 +972,7 @@ def run_adapter(adapter, dry_run):
                 )
                 stats[outcome] += 1
                 log("%s item %s title='%s'" % (outcome, item_id, title))
-                adapter.ack(item)
+                stats["collapsed"] += adapter.ack(item) or 0
                 stats["completed"] += 1
                 log("acked %s" % ref)
             except TerminalRejection as exc:
@@ -939,7 +1004,7 @@ def run_adapter(adapter, dry_run):
     ok = not failures
     log(
         "sweep finish adapter=%s ok=%d created=%d existed=%d completed=%d "
-        "failed=%d skipped=%d quarantined=%d duration=%.1fs"
+        "failed=%d skipped=%d quarantined=%d collapsed=%d duration=%.1fs"
         % (
             adapter.name,
             int(ok),
@@ -949,6 +1014,7 @@ def run_adapter(adapter, dry_run):
             stats["failed"],
             stats["skipped"],
             stats["quarantined"],
+            stats["collapsed"],
             time.time() - started,
         )
     )
