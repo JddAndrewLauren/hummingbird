@@ -1,17 +1,15 @@
 # The capture sweeper
 
-> **Status: retargeted, awaiting its go-live gates.** The write side now
-> targets the app-owned authority
-> ([ADR-0008](adr/0008-the-authority-is-an-app-owned-server.md)) —
+> **Status: live since 2026-08-12.** The write side targets the app-owned
+> authority ([ADR-0008](adr/0008-the-authority-is-an-app-owned-server.md)) —
 > `POST /api/items` with a `sweeper`-scope token — replacing Linear
-> ([#123](https://github.com/JddAndrewLauren/hummingbird/issues/123)). The Fly
-> machine is still stopped and both healthchecks still paused until the
-> operator works the **Human setup checklist** below; the code change alone
-> starts nothing. Captures have waited in their sources since 2026-08-08 —
-> Tasks items incomplete, Gmail labels on — and the frozen namespaces make
-> that whole backlog drain duplicate-free, because the ids the authority now
-> receives are the ids Linear received. Go live = mint the token, run the
-> gates, `flyctl machine start`, unpause the checks.
+> ([#123](https://github.com/JddAndrewLauren/hummingbird/issues/123)). Machine
+> `d8de469c7e13d8` is started (its standby deliberately is not), both
+> healthchecks are unpaused and green, and supercronic has ticked `*/15` since
+> 23:00Z that day. The **Human setup checklist** below is worked and stays as
+> the record of what go-live cost and the procedure for rebuilding this from
+> nothing. Both lanes sweep empty in the steady state now — what the first
+> live sweeps actually established is under *Acceptance (post-provisioning)*.
 
 A one-way sweeper that drains capture sources into the owned authority's
 Triage as bare-text items and reports its own liveness to healthchecks.io. One
@@ -219,6 +217,12 @@ skipped iff its id is a key. A stale or unknown id **fails open**: the list
 gets swept, not skipped. Noise in Triage, never a lost capture. Changing it is
 a normal push-and-deploy.
 
+`Shopping` is the only entry. `My Tasks` and `Default List` are both swept, and
+leaving `Default List` out of the file is a **decision taken at go-live on
+2026-08-12**, not an omission — it was empty at the time and is meant to stay
+sweepable. Recorded here because failing open makes an unprotected list and a
+forgotten one look identical from inside the file.
+
 ## Liveness
 
 healthchecks.io, free tier, **grace period 45 minutes** (three consecutive
@@ -378,11 +382,13 @@ work; every one touches a live account.
    Use `--stage` for both while the machine is stopped: a plain `secrets set`
    restarts the machines, which hands Fly the choice of when supercronic starts
    ticking.
-3. **Dry run over the deferred backlog.** Export the secrets locally and run
-   `./sweep.py --dry-run`. This matters more than it did in #45: months of
-   un-drained Tasks items and labelled messages arrive in the first real run,
-   so read the volume and confirm it is the volume you expect before anything
-   mutates. A dry run touches neither side and pings nothing.
+3. **Dry run over whatever is waiting.** Export the secrets locally and run
+   `./sweep.py --dry-run`, read the volume, and confirm it is the volume you
+   expect before anything mutates. A dry run touches neither side and pings
+   nothing. When this was written it braced for months of un-drained Tasks
+   items arriving in the first real run; by the 2026-08-12 go-live the Tasks
+   lane had drained itself and the run reported nothing. Read the volume, but
+   do not read a small one as a fault.
 
 Then the Gmail steps below, which were deferred from #45 and never ran.
 
@@ -466,6 +472,26 @@ All five were verified live against Linear on 2026-08-07; the record is on map
 restated here against the owned authority, and are what the operator re-checks
 after the go-live gates above — the retarget changed the destination, not a
 single one of these properties.
+
+The owned-authority go-live then ran on 2026-08-12. Three things it established
+differ from what the gates above expect, and the difference is the point:
+
+- **The Tasks lane arrives empty, and that is its steady state.** The deferred
+  backlog the checklist braces for drained itself between 08-07 and 08-11, so a
+  healthy Tasks sweep now reports `created=0` and will until something new is
+  dictated. The "months of un-drained items arrive in the first real run"
+  expectation is retired; a first run reporting nothing is no longer evidence
+  that anything is wrong.
+- **Both adapters ping their check green on an empty sweep**, having made no
+  authority call at all. A green check therefore no longer implies the
+  authority is reachable —
+  [#328](https://github.com/JddAndrewLauren/hummingbird/issues/328) holds that,
+  filed against the Tasks lane and true of both.
+- **The frozen namespaces survived the change of authority.** A message
+  relabelled after its ack replayed as `existed=1` against an id minted for
+  Linear, with the stored item's `version` unbumped — the property the whole id
+  derivation exists to protect, now checked against the owned API rather than
+  argued from the code.
 
 - A dictated capture (phone/watch/speaker → Gemini → Tasks) appears in the
   authority's Triage within ~15 minutes and is marked completed in Tasks.

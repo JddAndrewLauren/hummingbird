@@ -22,7 +22,7 @@ grepping it.
 
 | Component | Where it lives | Read first |
 | --- | --- | --- |
-| The capture sweeper (awaiting go-live gates) | `sweep.py`, `crontab`, `fly.toml` | `docs/sweeper.md` |
+| The capture sweeper (live since 2026-08-12) | `sweep.py`, `crontab`, `fly.toml` | `docs/sweeper.md` |
 | The skill runner | `runner/` | `docs/runner.md` |
 | The owned schema + wire DTOs | `server/domain/` | `src/lib.rs`, ADR-0009 |
 | The authority server | `server/authority/` (+ `worker/` wasm32 shim) | `src/lib.rs`; DDL and its migration traps in `src/schema.rs` |
