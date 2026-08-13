@@ -9,6 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "../test/component";
+import type { BackendEntry } from "../skills/backend-registry";
 import type { TaskTokenStoreLike } from "../task/token-store";
 import type { WorkerLike } from "../store/worker-client";
 import { useMicrotaskWiring } from "./useMicrotaskWiring";
@@ -41,19 +42,32 @@ function Harness({
   fetchImpl,
   store,
   selectedItemId = "item-1",
+  selection = "auto",
+  registry,
+  onSelectBackend,
 }: {
   worker: WorkerLike;
   fetchImpl: typeof globalThis.fetch;
   store: TaskTokenStoreLike;
   selectedItemId?: string;
+  selection?: string;
+  registry?: BackendEntry[];
+  onSelectBackend?: (id: string) => void;
 }) {
-  const { run, onRun } = useMicrotaskWiring(worker, selectedItemId, {
+  const { run, onRun, declinedFallback } = useMicrotaskWiring(worker, selectedItemId, selection, {
     fetch: fetchImpl,
     tokenStore: store,
+    registry,
+    onSelectBackend,
   });
   return (
     <>
       <span data-testid="phase">{run.phase}</span>
+      {declinedFallback ? (
+        <button type="button" onClick={() => declinedFallback.onSwitchAndRun({ itemId: "item-1" })}>
+          switch to {declinedFallback.label}
+        </button>
+      ) : null}
       {["item-1", "item-2"].map((itemId) => (
         <button key={itemId} type="button" aria-label={itemId} onClick={() => onRun({ itemId })}>
           run
@@ -245,5 +259,198 @@ describe("useMicrotaskWiring", () => {
     expect(phase()).toBe("done");
     // One cycle per completed run, neither lost to the other's abort.
     expect(manualSyncCount(worker)).toBe(2);
+  });
+});
+
+/** #274's picker: which entry a run actually attempts, and the affordance
+ * offered when a pin is dead. */
+describe("useMicrotaskWiring — #274's routing", () => {
+  const CLOUD: BackendEntry = { id: "cloud", label: "Cloud runner", model: null, endpoint: "/api/skills/run", connectTimeoutMs: 2500 };
+  const HOME: BackendEntry = { id: "home", label: "Home runner", model: "llama3", endpoint: "/api/home-run", connectTimeoutMs: 2500 };
+
+  it("Auto attempts the first registered entry's own endpoint", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async (_input: unknown) =>
+      ndjson('{"ok":true,"result":null,"backend":"anthropic","model":"opus"}'),
+    );
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="auto"
+        registry={[CLOUD, HOME]}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/skills/run");
+    expect(phase()).toBe("done");
+  });
+
+  it("a pin attempts only its own entry, using its endpoint", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async (_input: unknown) =>
+      ndjson('{"ok":true,"result":null,"backend":"home-runner","model":"llama3"}'),
+    );
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="home"
+        registry={[CLOUD, HOME]}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/home-run");
+  });
+
+  it("a dead pin's one-tap switch retries against the NEW backend, not the pin it just left", async () => {
+    // The bug this pins: switching and re-running used to be two calls in
+    // one tick, and `onRun` is closed over the render's `selection` — so
+    // the retry re-attempted the dead pin (and, freshly memoized dead,
+    // declined instantly without sending anything). The selection prop here
+    // deliberately stays "cloud" for the whole test, exactly as it does in
+    // the tick before React re-renders with the new preference.
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === "/api/home-run"
+        ? ndjson('{"ok":true,"result":null,"backend":"home","model":"llama3"}')
+        : Promise.reject(new Error("connection refused")),
+    );
+    const onSelectBackend = vi.fn();
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="cloud"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={onSelectBackend}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual(["/api/skills/run"]);
+
+    fireEvent.click(screen.getByText(/switch to home runner/i));
+    await settle();
+
+    // Both halves, and the second is the one that used to be wrong: the
+    // preference moved, AND the retry went to home.
+    expect(onSelectBackend).toHaveBeenCalledWith("home");
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
+      "/api/skills/run",
+      "/api/home-run",
+    ]);
+    expect(phase()).toBe("done");
+  });
+
+  it("offers no fallback while pinned to the registry's only entry", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="cloud"
+        registry={[CLOUD]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
+  });
+
+  it("offers no fallback for a decline the backend answered — switching tiers fixes nothing it reports", async () => {
+    // The seam's own guard (#307) declined this run; the pinned backend
+    // answered, and said so with a stamp. Every other tier would answer the
+    // same way, because the condition is the item's steps, not the
+    // backend's health — so "switch to Home runner" would be as wrong here
+    // as it is for NO_TOKEN below.
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () =>
+      ndjson('{"ok":false,"error":"That item already has live steps.","backend":"anthropic","model":"opus"}'),
+    );
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="cloud"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
+  });
+
+  it("offers no fallback for a NO_TOKEN decline — the failure names nothing to switch away FROM", async () => {
+    // NO_TOKEN is not evidence the pinned backend is unreachable (no
+    // request was ever made), so "switch to Home runner" would be an
+    // actively wrong suggestion here.
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn();
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore(null)}
+        selection="cloud"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
+  });
+
+  it("offers no fallback under Auto — nothing to fall back FROM", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="auto"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
   });
 });

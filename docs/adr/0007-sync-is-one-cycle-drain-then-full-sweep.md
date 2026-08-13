@@ -83,6 +83,18 @@ pre-write server state.
   Android / Wear / iPad hosts schedule it per-platform when those clients
   exist.
 
+*Amended 2026-08-12 (#274): the 60s foreground timer is still the only
+**cadence** in the web client, and that is what this rule bans a second of.
+It does not ban a one-shot deadline. #274's routing gives each backend
+attempt a short connect timeout (`client/web/src/skills/route-run.ts`, via
+`AbortSignal.timeout`, disarmed the moment `fetch` settles) so a sleeping
+home machine cannot make a tap hang: it arms once per attempt, cannot
+repeat, reschedule or poll, and starts no timer this codebase owns — the
+same category as the unmount `AbortController` the lane already used.
+`client/web/src/skills/no-queue.test.ts` pins the distinction from the
+source text, banning hand-rolled `setTimeout`/`setInterval` across the lane
+while naming `AbortSignal.timeout` as the sanctioned exception.*
+
 ### Conflicts: field-level, and losers are journaled
 
 Each queued mutation records the entity's **base `updatedAt`** and the **set

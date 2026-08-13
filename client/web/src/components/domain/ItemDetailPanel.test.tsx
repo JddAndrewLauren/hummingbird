@@ -19,8 +19,9 @@ const STARTED: SkillEvent = { kind: "started" };
 function panel(options: {
   steps?: ReturnType<typeof stepDTO>[];
   run?: SkillRunState;
-  onRun?: (request: { itemId: string; replace?: boolean; grain?: number; model?: string }) => void;
+  onRun?: (request: { itemId: string; replace?: boolean; grain?: number }) => void;
   microtask?: boolean;
+  declinedFallback?: { label: string; onSwitchAndRun: (request: { itemId: string }) => void } | null;
 } = {}) {
   const onRun = options.onRun ?? vi.fn();
   render(
@@ -29,7 +30,9 @@ function panel(options: {
       steps={options.steps ?? []}
       onClose={() => {}}
       microtask={
-        options.microtask === false ? undefined : { run: options.run ?? IDLE, onRun }
+        options.microtask === false
+          ? undefined
+          : { run: options.run ?? IDLE, onRun, declinedFallback: options.declinedFallback }
       }
     />,
   );
@@ -66,16 +69,18 @@ describe("the affordance follows the item's own steps", () => {
     expect(screen.getByRole("button", { name: "Rewrite 1 step" })).toBeTruthy();
   });
 
-  it("a rewrite sends replace, the chosen grain and the chosen model", () => {
+  /** #274 moved which backend/model answers to an app-level preference
+   * (Settings) — this panel offers only the grain, never a model of its
+   * own. */
+  it("a rewrite sends replace and the chosen grain, with no model select on screen", () => {
     const onRun = panel({ steps: [stepDTO({ id: "b" })] });
+    expect(screen.queryByLabelText("Model")).toBeNull();
     fireEvent.change(screen.getByLabelText("Grain"), { target: { value: "3" } });
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "haiku" } });
     fireEvent.click(screen.getByRole("button", { name: "Rewrite 1 step" }));
     expect(onRun).toHaveBeenCalledWith({
       itemId: "item-1",
       replace: true,
       grain: 3,
-      model: "haiku",
     });
   });
 
@@ -191,6 +196,26 @@ describe("the outcome", () => {
     expect(screen.getByRole("alert").textContent).toBe(reason);
   });
 
+  /** Box 7: the stamp "always names the backend and model that actually
+   * answered" — a declined answer included, because comparing tiers is the
+   * whole point of the picker. Routing used to flatten every non-ok
+   * terminal's stamp to `null` on its way here, so this rendered nothing. */
+  it("renders the stamp on a decline the backend answered with", () => {
+    panel({
+      run: stateFrom([
+        STARTED,
+        {
+          kind: "failed",
+          error: "That item already has live steps.",
+          backend: "anthropic",
+          model: "opus",
+        },
+      ]),
+    });
+    expect(screen.getByText("anthropic · opus")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toBe("That item already has live steps.");
+  });
+
   it("the button is live again once a run has ended", () => {
     const onRun = panel({
       run: stateFrom([STARTED, { kind: "failed", error: "nope", backend: null, model: null }]),
@@ -205,5 +230,42 @@ describe("the outcome", () => {
     panel();
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+/** #274: a pinned, dead backend is never silently rerouted — the picker's
+ * one-tap offer is a button beside the decline, not an automatic retry. */
+describe("the pinned-backend decline (#274)", () => {
+  it("offers a one-tap switch when the caller has a fallback to offer", () => {
+    const onSwitchAndRun = vi.fn();
+    const onRun = panel({
+      run: stateFrom([STARTED, { kind: "failed", error: "Cloud runner is not answering right now.", backend: null, model: null }]),
+      declinedFallback: { label: "Home runner", onSwitchAndRun },
+    });
+
+    const button = screen.getByRole("button", { name: /switch to home runner/i });
+    fireEvent.click(button);
+
+    // One call, carrying the request — switching and re-running are the
+    // caller's single operation, because doing them as two here would
+    // re-run against the selection this panel was rendered with, i.e. the
+    // pin that just declined.
+    expect(onSwitchAndRun).toHaveBeenCalledWith({ itemId: "item-1" });
+    expect(onRun).not.toHaveBeenCalled();
+  });
+
+  it("offers nothing when the caller has no fallback (this slice's single-entry registry)", () => {
+    panel({
+      run: stateFrom([STARTED, { kind: "failed", error: "Cloud runner is not answering right now.", backend: null, model: null }]),
+      declinedFallback: null,
+    });
+    expect(screen.queryByRole("button", { name: /switch to/i })).toBeNull();
+  });
+
+  it("offers nothing while the selection is Auto — nothing to fall back FROM", () => {
+    panel({
+      run: stateFrom([STARTED, { kind: "failed", error: "nope", backend: null, model: null }]),
+    });
+    expect(screen.queryByRole("button", { name: /switch to/i })).toBeNull();
   });
 });

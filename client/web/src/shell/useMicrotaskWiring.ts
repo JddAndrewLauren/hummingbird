@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry, type BackendEntry } from "../skills/backend-registry";
+import { NO_TOKEN } from "../skills/decline";
 import { microtaskRunBody } from "../skills/microtask-args";
-import { runSkill, type RunSkillDeps, type SkillBackend } from "../skills/run-skill";
+import { EMPTY_MEMO, type ReachabilityMemo } from "../skills/reachability-memo";
+import { runRouted, type ReachabilityMemoStore } from "../skills/route-run";
+import type { RunSkillDeps } from "../skills/run-skill";
 import { IDLE, reduceRun, type SkillRunState } from "../skills/run-state";
 import { createIndexedDbTaskTokenStore, type TaskTokenStoreLike } from "../task/token-store";
 import { triggerSyncManual, type WorkerLike } from "../store/worker-client";
@@ -35,14 +39,10 @@ import { triggerSyncManual, type WorkerLike } from "../store/worker-client";
 // not. The in-flight lock below is an affordance — it keeps one person from
 // double-tapping one button — not the thing that protects a checklist.
 
-/** #274 replaces this one expression with a picker. */
-const CLOUD_RUNNER: SkillBackend = { id: "cloud", endpoint: "/api/skills/run" };
-
 export interface MicrotaskRunRequest {
   itemId: string;
   replace?: boolean;
   grain?: number;
-  model?: string;
 }
 
 export interface MicrotaskWiring {
@@ -50,19 +50,52 @@ export interface MicrotaskWiring {
    * item never renders under another. */
   run: SkillRunState;
   onRun: (request: MicrotaskRunRequest) => void;
+  /** #274's one-tap offer beside a pinned decline. `null` whenever there is
+   * nothing to offer: the run is not declined, the current selection is
+   * Auto (nothing to fall back FROM — Auto already tried everything it
+   * could), or the registry has no other entry. Still never an *automatic*
+   * fallback — nothing here fires without the user pressing the button.
+   *
+   * **Switching and re-running are one call on purpose.** They cannot be
+   * two: `onRun` is a `useCallback` closed over the render's `selection`,
+   * so a caller doing `onSwitch(); onRun(request)` in one tick re-attempts
+   * the very pin that just declined — and, freshly memoized dead, gets an
+   * instant decline instead of the retry it asked for. Handing back one
+   * function makes that miswiring unexpressible. */
+  declinedFallback: { label: string; onSwitchAndRun: (request: MicrotaskRunRequest) => void } | null;
 }
 
 export interface MicrotaskWiringDeps {
   fetch?: typeof globalThis.fetch;
   tokenStore?: TaskTokenStoreLike;
+  registry?: BackendEntry[];
+  /** Device-local, from `useBackendSelection.ts`'s `setSelection` — how the
+   * fallback button actually switches. Omitted (e.g. in a test with no
+   * picker wired up) simply means the fallback is never offered. */
+  onSelectBackend?: (backendId: string) => void;
 }
 
 export function useMicrotaskWiring(
   worker: WorkerLike,
   selectedItemId: string | null,
+  /** #274's picker choice — `AUTO_SELECTION` or a registered entry's id.
+   * Device-local (`useBackendSelection.ts`), never a synced fact, and this
+   * hook only ever reads it — the selection itself is owned one level up. */
+  selection: string = AUTO_SELECTION,
   deps: MicrotaskWiringDeps = {},
 ): MicrotaskWiring {
   const [runs, setRuns] = useState<Record<string, SkillRunState>>({});
+  const registry = deps.registry ?? BACKEND_REGISTRY;
+  // The reachability memo (#274): brief, in-memory, and scoped to this
+  // hook's own lifetime — never persisted, never read on a schedule. It is
+  // written only as the side effect of a real attempt inside `runRouted`.
+  const memo = useRef<ReachabilityMemo>(EMPTY_MEMO);
+  const memoStore: ReachabilityMemoStore = useRef<ReachabilityMemoStore>({
+    get: () => memo.current,
+    set: (next) => {
+      memo.current = next;
+    },
+  }).current;
   // **One controller per item**, not one for the hook. A single shared
   // controller would make starting a run on item B abort item A's — and A
   // would then be left reading "The run ended without an answer.", which is
@@ -92,8 +125,12 @@ export function useMicrotaskWiring(
     };
   }, []);
 
-  const onRun = useCallback(
-    (request: MicrotaskRunRequest) => {
+  // Takes the selection to route with as an argument rather than reading
+  // the closed-over one, so the fallback button can run as the backend it
+  // just switched to — in the same tick, before any re-render has handed
+  // this hook the new selection.
+  const startRun = useCallback(
+    (request: MicrotaskRunRequest, runAs: string) => {
       const itemId = request.itemId;
       if (inFlight.current.has(itemId)) return;
       const controller = new AbortController();
@@ -113,7 +150,11 @@ export function useMicrotaskWiring(
         // loop ended, and the sync cycle below would never fire.
         let state: SkillRunState = IDLE;
         try {
-          for await (const event of runSkill(CLOUD_RUNNER, microtaskRunBody(request), runDeps)) {
+          for await (const event of runRouted(
+            runAs,
+            (entry) => microtaskRunBody({ ...request, model: entry.model ?? undefined }),
+            { ...runDeps, registry, memoStore, now: Date.now },
+          )) {
             state = reduceRun(state, event);
             const next = state;
             setRuns((current) => ({ ...current, [itemId]: next }));
@@ -137,10 +178,47 @@ export function useMicrotaskWiring(
         if (state.phase === "done") triggerSyncManual(worker);
       })();
     },
-    [worker, deps.fetch, deps.tokenStore],
+    [worker, deps.fetch, deps.tokenStore, registry, memoStore],
   );
 
-  return { run: (selectedItemId && runs[selectedItemId]) || IDLE, onRun };
+  const onRun = useCallback(
+    (request: MicrotaskRunRequest) => startRun(request, selection),
+    [startRun, selection],
+  );
+
+  const run = (selectedItemId && runs[selectedItemId]) || IDLE;
+
+  const declinedFallback = useMemo(() => {
+    if (run.phase !== "declined" || selection === AUTO_SELECTION) return null;
+    // NO_TOKEN means no request was ever made — it says nothing about
+    // whether the pinned backend itself is reachable, so offering "switch
+    // to X" here would suggest a fix for a problem that was never observed.
+    if (run.reason === NO_TOKEN) return null;
+    // A decline that NAMES a backend is one a backend answered — ADR-0018's
+    // rule, that a null stamp always means no lane named itself, read in the
+    // one direction it can be read. Switching tiers fixes nothing such a
+    // decline reports: "That item already has live steps." is true of every
+    // tier, because the guard is the seam's (#307), not the backend's. The
+    // offer is scoped to a backend that is *dead* — the same principle the
+    // NO_TOKEN case above states, applied to the other way a decline can
+    // arrive without evidencing unreachability.
+    if (run.backend !== null) return null;
+    const fallback = fallbackEntry(registry, selection);
+    const onSelectBackend = deps.onSelectBackend;
+    if (fallback === null || onSelectBackend === undefined) return null;
+    return {
+      label: fallback.label,
+      onSwitchAndRun: (request: MicrotaskRunRequest) => {
+        // The preference change is device-local and takes effect on the
+        // next render; the run cannot wait for it, so it is told which
+        // backend to use outright.
+        onSelectBackend(fallback.id);
+        startRun(request, fallback.id);
+      },
+    };
+  }, [run, selection, registry, deps.onSelectBackend, startRun]);
+
+  return { run, onRun, declinedFallback };
 }
 
 let cachedStore: TaskTokenStoreLike | null = null;

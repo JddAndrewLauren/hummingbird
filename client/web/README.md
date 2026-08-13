@@ -90,7 +90,9 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   once-ready-then-per-cycle refresh, keyed on `syncOutcomeSeq`, never a
   timer of their own), `useMicrotaskWiring` (#273's skill-runner lane —
   main-thread and outside the sync engine entirely; its header says why a
-  worker-hosted run would be #269's banned queue in all but name) and the
+  worker-hosted run would be #269's banned queue in all but name),
+  `useBackendSelection` (#274's picker choice — a device preference in the
+  same shape as the theme's, read once at mount, never synced) and the
   one-line send wrappers `useItemActions` / `useTriageWiring`, plus the pure readouts `sync-cadence.ts`,
   `sync-status.ts` and `capture-hotkey.ts` (DOM-free: the caller extracts
   the facts from the real `KeyboardEvent`). Also the app-update lane —
@@ -116,13 +118,20 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   (ADR-0018). Everything decidable is a pure module — `ndjson.ts` (chunk to
   line), `envelope.ts` (line to meaning), `run-state.ts` (the four phases and
   the duplicate-tap rule), `microtask-affordance.ts` (which gesture the
-  item's own steps make legal, #307), `microtask-args.ts`, `decline.ts`,
-  `models.ts` — around one seam, `run-skill.ts`, an async generator that
-  never throws. It writes nothing: the runner writes the checklist to the
-  authority, and the steps arrive through the normal step read path.
-  `skills/no-queue.test.ts` pins from the source text that nothing here can
+  item's own steps make legal, #307), `microtask-args.ts`, `decline.ts` —
+  around **two** layers, both async generators that never throw:
+  `run-skill.ts` is one request to one backend, and `route-run.ts` (#274) is
+  what the app actually calls, choosing which backend that is. Its decision
+  is itself pure and lives next door: `backend-registry.ts` (the ordered
+  entries), `backend-selection.ts` (the device-local choice, with
+  `shell/useBackendSelection.ts` as its hook), `reachability-memo.ts` (a
+  short-TTL record written only as the side effect of a real attempt) and
+  `route-plan.ts` (what to try, given all four). It writes nothing: the
+  runner writes the checklist to the authority, and the steps arrive through
+  the normal step read path. `skills/no-queue.test.ts` pins from the source
+  text that nothing in the lane — the two `shell/` hooks included — can
   reach the sync queue, the pending overlay, the dead-letter journal or a
-  timer.
+  hand-rolled timer.
 - `src/theme/` — the `light | dark | system` preference, persisted at
   `hb.theme` and resolved onto `[data-theme]`. "Follow system" is resolved in
   JS because the stylesheet only knows `[data-theme="dark"]`.
