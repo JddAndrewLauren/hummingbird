@@ -899,3 +899,169 @@ describe("NowScreen — the frontier's controls (#403)", () => {
     expect(screen.queryByText("Email the council")).toBeNull();
   });
 });
+
+// #404: selection stops being a takeover. Every one of these is about the
+// *thread* — the panel and the columns are separate subtrees now, and what
+// typecheck cannot see is whether both are mounted at once, whether the card
+// still says it is the source, and whether the optimistic fallback PR #207
+// bought still holds when the item has left every live query.
+describe("NowScreen — selection above the columns (#404)", () => {
+  const spread = () =>
+    taskState({
+      frontier: [
+        itemDTO({ id: "i1", title: "Email the council", context: "@computer", stage: "ready" }),
+        itemDTO({ id: "i2", title: "Prune the hedge", context: "@garden", stage: "ready" }),
+      ],
+    });
+
+  it("mounts the panel with the columns still mounted and visible", () => {
+    renderNow(spread(), "i1");
+
+    // The panel: `ItemDetailPanel` heads with the item's title.
+    expect(screen.getByRole("heading", { name: "Email the council" })).toBeDefined();
+    // ...and the columns are still there under it, including the OTHER column,
+    // which is the whole point: picking one action must not cost the view of
+    // everything you might have picked instead.
+    expect(screen.getByRole("heading", { name: "@computer" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "@garden" })).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+    // The axis switch survives too — the surface is not replaced.
+    expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeDefined();
+  });
+
+  it("puts the panel above the columns, not below them", () => {
+    renderNow(spread(), "i1");
+
+    const headings = screen.getAllByRole("heading").map((node) => node.textContent);
+    // "it goes to the top" has to be true of the document order, not just of a
+    // CSS position.
+    expect(headings.indexOf("Email the council")).toBeLessThan(headings.indexOf("@computer"));
+  });
+
+  it("marks the originating card, visibly and programmatically", () => {
+    renderNow(spread(), "i1");
+
+    // Two things carry the title now — the panel heading and the source card.
+    // The card is the button.
+    const card = screen
+      .getAllByRole("button")
+      .find((node) => node.getAttribute("aria-current") === "true");
+    expect(card).toBeDefined();
+    expect(card?.textContent).toContain("Email the council");
+    // Visibly, not only programmatically: the accent fill, per ADR-0021.
+    expect(card?.style.background).toBe("var(--accent-quiet)");
+    // And only the one card.
+    expect(
+      screen.getAllByRole("button").filter((n) => n.getAttribute("aria-current") === "true"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the ranked-region aside mounted while the panel is open", () => {
+    // #359 calls this "the one thing this surface has that Triage does not",
+    // so it is asserted rather than eyeballed.
+    renderNow(spread(), "i1");
+    expect(screen.getByRole("complementary", { name: "Standing questions" })).toBeDefined();
+  });
+
+  it("keeps the optimistic post-act fallback: the panel survives an item leaving every live query", () => {
+    // PR #207's machinery, which the prototype deliberately skipped and
+    // production must not. `block` sets a stage neither `frontier` nor
+    // `blocked` reads, so without the fallback the panel goes blank.
+    const { onAct, rerender } = renderNow(spread(), "i1");
+
+    fireEvent.click(screen.getByRole("button", { name: /mark blocked/i }));
+    expect(onAct).toHaveBeenCalledWith("i1", "block");
+
+    rerender(taskState({ frontier: [], blocked: [], pending: {} }), "i1");
+    expect(screen.getByRole("heading", { name: "Email the council" })).toBeDefined();
+    expect(screen.getByRole("button", { name: /^start$/i }).hasAttribute("disabled")).toBe(true);
+
+    // ...and it re-enables once the queued mutation drains, exactly as before.
+    rerender(taskState({ frontier: [], blocked: [], pending: { i1: true } }), "i1");
+    rerender(taskState({ frontier: [], blocked: [], pending: { i1: false } }), "i1");
+    expect(screen.getByRole("button", { name: /^start$/i }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("returns to the columns on close, with the axis and collapse state intact", () => {
+    function fakeStorage(seed: Record<string, string> = {}) {
+      const entries = { ...seed };
+      return {
+        entries,
+        getItem: (key: string) => entries[key] ?? null,
+        setItem: (key: string, value: string) => {
+          entries[key] = value;
+        },
+        removeItem: (key: string) => {
+          delete entries[key];
+        },
+      };
+    }
+    const storage = fakeStorage();
+    const view = render(
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={spread()}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={storage}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "No project" }));
+
+    const withSelection = (selected: string | null) => (
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={spread()}
+        nowMs={NOW_MS}
+        selectedItemId={selected}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={storage}
+      />
+    );
+
+    view.rerender(withSelection("i1"));
+    // Open: the axis and the shut column are still what they were.
+    expect(screen.getByRole("button", { name: "Project", pressed: true })).toBeDefined();
+    expect(screen.getByRole("button", { expanded: false, name: "No project" })).toBeDefined();
+
+    view.rerender(withSelection(null));
+    expect(screen.queryByRole("heading", { name: "Email the council" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Project", pressed: true })).toBeDefined();
+    expect(screen.getByRole("button", { expanded: false, name: "No project" })).toBeDefined();
+  });
+
+  it("brings the panel into view when it opens", () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      const { rerender } = renderNow(spread(), null);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      rerender(spread(), "i1");
+      // A card near the bottom of a long board would otherwise expand
+      // off-screen, which makes "it goes to the top" true of the DOM and false
+      // for the reader.
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      // A different item is a new selection, so it scrolls again.
+      rerender(spread(), "i2");
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});

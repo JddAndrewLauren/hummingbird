@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
@@ -101,6 +102,24 @@ export function realQuestionInputs(
     calendarConnected,
     items: [...task.frontier, ...task.blocked.map((entry) => entry.item)],
   };
+}
+
+/** The slot the selected item expands into, above the columns (#404).
+ *
+ * Its whole job beyond layout is the scroll: a card near the bottom of a long
+ * board would otherwise expand off-screen, which makes "it goes to the top"
+ * true of the DOM and false for the reader. Keyed by the caller on the item id,
+ * so this mounts fresh per selection and the effect fires once per item rather
+ * than on every re-render of the same one.
+ *
+ * `scrollIntoView` is called defensively: jsdom does not implement it, and a
+ * view preference — which is all this is — is never worth a crash. */
+function SelectedItemSection({ children }: { children: ReactNode }) {
+  const slot = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    slot.current?.scrollIntoView?.({ block: "nearest" });
+  }, []);
+  return <div ref={slot}>{children}</div>;
 }
 
 /** Real-data frontier/blocked rendering (issue #108) — kept out of the
@@ -212,28 +231,40 @@ function RealFrontier({
       ? { ...fallbackItem, pending: fallbackResolution.pending }
       : null);
 
-  if (selectedItem) {
-    return (
-      <ItemDetailPanel
-        // Remounts per item so the grain/model selects reset with it — a
-        // grain chosen for one item says nothing about the next.
-        key={selectedItem.id}
-        item={selectedItem}
-        steps={task.stepsByItem[selectedItem.id] ?? []}
-        onClose={onCloseItemDetail}
-        onAct={(action) => {
-          setOptimisticItem(applyItemAction(selectedItem, action));
-          setAwaitingPendingConfirm(true);
-          onAct(selectedItem.id, action);
-        }}
-        actError={actError}
-        microtask={microtask}
-      />
-    );
-  }
-
   return (
     <>
+      {/* #404 / ADR-0021 decision 7: the selected item expands ABOVE the
+          columns, which stay standing under it — this used to be an early
+          `return` of the panel *instead of* the frontier, so picking one action
+          cost you the view of everything you might have picked instead. The
+          slot above the frontier is Now's own: ADR-0015 gives the *aside* to
+          the ranked region, and its "standing questions never take the banner"
+          is a claim about the aside's contents, not about this column.
+
+          The panel is the existing `ItemDetailPanel`, threaded the app's own
+          act callback, steps, last-act error and microtask affordance — never a
+          second implementation, so whatever lands on item detail next (Grill
+          me, #359) arrives with no parallel code path to reconcile. */}
+      {selectedItem ? (
+        <SelectedItemSection key={selectedItem.id}>
+          <ItemDetailPanel
+            // Remounts per item so the grain/model selects reset with it — a
+            // grain chosen for one item says nothing about the next.
+            key={selectedItem.id}
+            item={selectedItem}
+            steps={task.stepsByItem[selectedItem.id] ?? []}
+            onClose={onCloseItemDetail}
+            onAct={(action) => {
+              setOptimisticItem(applyItemAction(selectedItem, action));
+              setAwaitingPendingConfirm(true);
+              onAct(selectedItem.id, action);
+            }}
+            actError={actError}
+            microtask={microtask}
+          />
+        </SelectedItemSection>
+      ) : null}
+
       {/* The empty frontier is a *section* rather than a whole-branch return:
           an inbox full of captures with nothing yet promoted is the commonest
           state of a new device, and returning early here would render
@@ -307,16 +338,25 @@ function RealFrontier({
         </Section>
       ) : null}
 
-      {/* Under the promoted items, always — see this component's own doc. */}
-      <NowTriageSection
-        items={task.triageInbox}
-        projects={task.projects}
-        nowMs={nowMs}
-        lastTriage={task.lastTriage}
-        onTriage={onTriage}
-        onComplete={onCompleteTriage}
-        storage={storage}
-      />
+      {/* Under the promoted items, always — see this component's own doc.
+          Still withheld while item detail is open, which is the ONE thing #404
+          deliberately did not change about selection: `TriageRow`'s expanded
+          editor and `ItemDetailPanel` are both editors, and "two editors are
+          never open at once" is S13/#111's own invariant. The columns stay
+          because a reader choosing among startable actions must keep seeing
+          the alternatives; an unsorted capture is not an alternative they were
+          choosing between, so nothing about that argument reaches down here. */}
+      {selectedItem ? null : (
+        <NowTriageSection
+          items={task.triageInbox}
+          projects={task.projects}
+          nowMs={nowMs}
+          lastTriage={task.lastTriage}
+          onTriage={onTriage}
+          onComplete={onCompleteTriage}
+          storage={storage}
+        />
+      )}
     </>
   );
 }
