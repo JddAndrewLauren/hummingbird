@@ -68,6 +68,7 @@ describe("RankedRegion", () => {
   it("renders an answered, imminent pane expanded, from real-shaped inputs", () => {
     render(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -85,6 +86,7 @@ describe("RankedRegion", () => {
     // no quiet card, and the pane ships no compact form of its own.
     render(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -106,6 +108,7 @@ describe("RankedRegion", () => {
     // cursor — while the content it renders stays live.
     const view = render(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -117,6 +120,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -131,6 +135,7 @@ describe("RankedRegion", () => {
   it("re-samples the order when a cycle completes", () => {
     const view = render(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -141,6 +146,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={1}
@@ -164,6 +170,7 @@ describe("RankedRegion", () => {
     // the same unread `bindings` table and says the same words about it.
     const view = render(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -176,6 +183,7 @@ describe("RankedRegion", () => {
 
     view.rerender(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -189,6 +197,7 @@ describe("RankedRegion", () => {
   it("keeps a collapse override across a remount, through storage", () => {
     const storage = fakeStorage();
     const props = {
+      surface: "now" as const,
       inputs: { bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] },
       nowMs: NOW,
       syncOutcomeSeq: 0,
@@ -208,9 +217,43 @@ describe("RankedRegion", () => {
     expect(screen.getByText("Trash tonight")).toBeTruthy();
   });
 
+  it("namespaces the collapse key so a Status toggle cannot prune Now's overrides", () => {
+    // Regression test for the bug `namespacedStorage` exists to prevent:
+    // `collapse.ts:writeCollapseOverride` prunes its stored map down to
+    // exactly the caller's own live pane keys, so one shared
+    // `hb.questions.collapse` key would have a Status toggle silently drop
+    // every override Now had written (and vice versa).
+    const storage = fakeStorage();
+    // Seed a Now override under the bare, un-suffixed key — the one every
+    // device before this surface existed already wrote its overrides under.
+    const nowOverride = JSON.stringify({ "waste:trash": { band: "dormant", collapsed: true } });
+    storage.setItem("hb.questions.collapse", nowOverride);
+
+    render(
+      <RankedRegion
+        surface="status"
+        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
+        nowMs={NOW}
+        syncOutcomeSeq={0}
+        storage={storage}
+        onScreen={() => {}}
+      />,
+    );
+
+    // Toggle a Status pane (a placeholder, dormant/collapsed by default).
+    fireEvent.click(screen.getByRole("button", { name: /kimi balance/i }));
+
+    // Now's stored map is intact, untouched by the Status write.
+    expect(storage.entries.get("hb.questions.collapse")).toBe(nowOverride);
+    // The Status toggle landed under its own namespaced key instead.
+    expect(storage.entries.has("hb.questions.collapse.status")).toBe(true);
+    expect(storage.entries.get("hb.questions.collapse.status")).not.toBe(nowOverride);
+  });
+
   it("renders a gap as a gap, with the reason in words", () => {
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: bound(),
           paneReads: {
@@ -236,6 +279,7 @@ describe("RankedRegion", () => {
   it("tells an unread bindings table apart from an unset binding, on screen", () => {
     render(
       <RankedRegion
+        surface="now"
         inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
@@ -254,6 +298,7 @@ describe("RankedRegion", () => {
     const onScreen = vi.fn();
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [{ key: BINDING_KEY, known: true, pending: false, value: { state: "other", raw: "7" } }],
           paneReads: {},
@@ -275,6 +320,7 @@ describe("RankedRegion", () => {
     const onScreen = vi.fn();
     render(
       <RankedRegion
+        surface="now"
         // `calendarConnected: true` keeps the weekend pane out of its own
         // `unbound` state here — this test is about the waste question's
         // unset binding, and a second "Not set up" row from the weekend

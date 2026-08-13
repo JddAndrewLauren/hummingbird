@@ -20,8 +20,9 @@ human gate.
 | | |
 | --- | --- |
 | **Code root** | `client/web/src/` |
-| **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Done, Ledger, Settings |
+| **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Done, Ledger, Status, Settings |
 | **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121, `screens/race-pane/` #119 — the first question emitting one pane *per subject*, so the aside's height varies with the `race-series` binding). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
+| **Status** | `screens/StatusScreen.tsx` (#311, ADR-0017) — the same `RankedRegion` as Now's aside, instantiated a second time (`surface="status"`) as a single-column screen rather than an aside; its four infra questions (`screens/{kimi,github,uptime,reachability}-pane/`) are placeholders until #313-#316 wire each one's poller, so today it always renders four gap panes. |
 | **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx`, `shell/CapturePopover.tsx` (the capture box, over any screen), `shell/UpdateBanner.tsx` (the "new version — reload" strip, under the header), `screens/layout.tsx` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 16-component library |
 | **Toolset** | Playwright (`client/web/playwright.config.ts`, `client/web/visual/`) |
@@ -30,7 +31,7 @@ human gate.
 
 ### Matrix
 
-Three widths × two themes × ten screen states, per run.
+Three widths × two themes × eleven screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
@@ -42,12 +43,13 @@ Themes: `light` and `dark`, seeded into `localStorage` at `hb.theme` before
 first paint (the app resolves `light | dark | system` onto
 `[data-theme]` — `src/theme/`).
 
-Screen states: the eight screens under `?demo` (deterministic, populated
+Screen states: the nine screens under `?demo` (deterministic, populated
 fixtures — except **Done** and the **Ledger**, which have no demo fixtures
 and photograph their "not read yet" holding state; their populated rows are
 covered by `DoneScreen.test.tsx`/`LedgerScreen.test.tsx` and reviewed by hand
-on a device with real items), the **capture popover** open over Now, and
-**Now's honest empty state** without the flag. What no capture reaches: Triage's **expanded row
+on a device with real items; **Status** photographs its four gap panes,
+since #311 ships no poller behind any of them), the **capture popover** open
+over Now, and **Now's honest empty state** without the flag. What no capture reaches: Triage's **expanded row
 editor**, since `?demo` renders the fixture rows (`DemoCapture`) and the editor
 only exists over a real `TaskItemDTO` — it is covered by
 `screens/TriageScreen.test.tsx` instead, and reviewed by hand on a device with

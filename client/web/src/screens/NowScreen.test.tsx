@@ -19,6 +19,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { NowScreen } from "./NowScreen";
+import { QUESTION_ORDER } from "./questions/contract";
+import { QUESTIONS } from "./questions/registry";
 import { CALENDAR_REQUEST_KEY, weekendWindow } from "./weekend-pane/weekend";
 import {
   blockedEntryDTO,
@@ -386,5 +388,28 @@ describe("NowScreen — the mark-done checkmark", () => {
     expect(
       screen.getByRole("button", { name: 'Mark "Queued thing" done' }).hasAttribute("disabled"),
     ).toBe(true);
+  });
+});
+
+// ADR-0017/#311's converse of `StatusScreen.test.tsx`'s wiring gate: the
+// aside is `surface="now"`, so none of the Status-surface questions the
+// Status screen owns may ever appear in it, whatever the sort does with
+// them. Derived from the registry, not hardcoded — #313-#316 each replace
+// one of these labels in turn, and a literal array here would be a shared
+// line every one of those four PRs has to edit.
+describe("NowScreen — the surface filter (ADR-0017, #311)", () => {
+  it("never renders a status-surface pane in Now's aside", () => {
+    const statusLabels = QUESTION_ORDER.filter((q) => QUESTIONS[q].surface === "status").map(
+      (q) => QUESTIONS[q].label,
+    );
+    expect(statusLabels.length).toBeGreaterThan(0);
+
+    renderNow(taskState());
+    for (const label of statusLabels) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+    // The `"now"` questions are still there — the filter removes the OTHER
+    // surface's panes, not every pane.
+    expect(screen.getByRole("button", { name: /which cans/i })).toBeTruthy();
   });
 });

@@ -17,6 +17,11 @@ import { requestPaneRead, type WorkerLike } from "../store/worker-client";
 // Which sources to ask for is `registry.ts`'s answer, unioned over every
 // registered question: a question added to the registry is requested here
 // without this file changing, which is what stops the two lists drifting.
+//
+// This hook is not screen-scoped — it fires once, regardless of which
+// screen is showing — so it asks `requiredSources` for BOTH surfaces
+// (ADR-0017) and unions them: switching from Now to Status must never wait
+// on a fetch this hook could already have made.
 
 export function usePaneReadsWiring(
   worker: WorkerLike,
@@ -33,7 +38,8 @@ export function usePaneReadsWiring(
       return;
     }
     const nowMs = Date.now();
-    for (const source of requiredSources()) {
+    const sources = new Set([...requiredSources("now"), ...requiredSources("status")]);
+    for (const source of sources) {
       requestPaneRead(worker, source, nowMs);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -55,6 +55,7 @@ function mount(options: {
   const freshness = options.freshness ?? { kind: "age", ageMs: 60_000, declaredCadenceMs: null };
   return render(
     <RankedRegion
+      surface="now"
       inputs={{
         bindings: options.bindings === undefined ? bound : options.bindings,
         paneReads: {},

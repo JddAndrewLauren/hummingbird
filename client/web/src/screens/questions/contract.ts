@@ -96,21 +96,44 @@ export interface PaneAnswer {
   icon?: PaneGlyph[];
 }
 
+/** ADR-0017's second axis: which ranked region a question renders into.
+ * `NowScreen`'s aside ("now") or the Status screen ("status") — a *declared*
+ * value, not a set. A pane wanting both surfaces is the recorded tripwire
+ * (ADR-0017 decision 1), not something this contract accommodates today: it
+ * would need its own decision about how it sorts and collapses on each
+ * surface, which is exactly the kind of quiet expansion a closed union is
+ * meant to force into the open. */
+export type Surface = "now" | "status";
+
 /** Every standing question this build can render. A closed vocabulary, on
  * the same reasoning as `BindingKey` in Rust: the registry is what makes
  * "every question, in a declared order" a fact the type system checks, not a
  * list someone has to remember to update. */
-export type StandingQuestion = "waste" | "weekend" | "vacation" | "race";
+export type StandingQuestion =
+  | "waste"
+  | "weekend"
+  | "vacation"
+  | "race"
+  | "kimi"
+  | "github"
+  | "uptime"
+  | "reachability";
 
 /** Declared display order — the last axis of the cross-pane sort, and the
  * order the wiring unions its sources in. Declaration order, not
  * alphabetical, so a question's place does not move when another is
- * renamed. */
+ * renamed. The four infra questions (ADR-0017, #311) are declared after
+ * Now's four so neither surface's existing order moves when the other
+ * surface's questions are filtered in or out. */
 export const QUESTION_ORDER: readonly StandingQuestion[] = [
   "waste",
   "weekend",
   "vacation",
   "race",
+  "kimi",
+  "github",
+  "uptime",
+  "reachability",
 ];
 
 /** Everything a question needs to answer, and nothing else: the bindings
@@ -188,16 +211,32 @@ export interface QuestionDef {
    * `collapsedHeadline` is the *answer*, and a pane that put its own
    * question in there would say it twice. */
   label: string;
+  /** ADR-0017's surface axis: which ranked region (`NowScreen`'s aside or
+   * the Status screen) this question renders into. Read by `registry.ts`'s
+   * `rankPanes`/`requiredSources` to filter `QUESTION_ORDER` per view — the
+   * sort, the band vocabulary and the collapse rule downstream of that
+   * filter are entirely unaware a second surface exists. */
+  surface: Surface;
   /** Which `context_snapshots` sources the wiring must request a pane read
    * for. Empty for a question that reads no snapshot lane at all (the
-   * calendar-lane questions, #117/#121/#122). */
+   * calendar-lane questions, #117/#121/#122, and every never-polled infra
+   * placeholder, #311). */
   sources: readonly string[];
   /** Which subjects this question currently has — 0..N, so one question can
    * answer for several things (several bins, several race series).
    *
    * An **unbound** question still returns one sentinel subject: an unbound
    * pane must render its setup prompt, and a question that vanished when
-   * nobody had bound it would be a question nobody could ever discover. */
+   * nobody had bound it would be a question nobody could ever discover.
+   *
+   * **The same rule extends to the never-polled case (ADR-0017, #311).** A
+   * question whose subjects have never been acquired — no poller has run
+   * yet, so there is no row in `context_snapshots` and (unlike the waste
+   * pane) no binding to be unset either — must still return one sentinel
+   * subject, answered `bound-but-unacquired`. A platform with no rows yet
+   * renders as a gap, never as nothing: a question that renders nothing is
+   * the quietly-empty answer ADR-0015 rules out, and it is exactly the state
+   * every infra question is in until #313-#316 wire its poller. */
   subjects(inputs: QuestionInputs): string[];
   answer(subjectKey: string, inputs: QuestionInputs): PaneAnswer;
   /** Every #267 calendar-arm interval this question needs, given the clock

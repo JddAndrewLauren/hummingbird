@@ -1,4 +1,8 @@
+import { githubQuestion } from "../github-pane/question";
+import { kimiQuestion } from "../kimi-pane/question";
 import { raceQuestion } from "../race-pane/question";
+import { reachabilityQuestion } from "../reachability-pane/question";
+import { uptimeQuestion } from "../uptime-pane/question";
 import { wasteQuestion } from "../waste-pane/question";
 import { vacationQuestion } from "../vacation-pane/question";
 import { weekendQuestion } from "../weekend-pane/question";
@@ -10,6 +14,7 @@ import {
   type QuestionInputs,
   type RankedPane,
   type StandingQuestion,
+  type Surface,
 } from "./contract";
 import { orderPanes } from "./sort";
 
@@ -27,15 +32,28 @@ export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
   weekend: weekendQuestion,
   vacation: vacationQuestion,
   race: raceQuestion,
+  kimi: kimiQuestion,
+  github: githubQuestion,
+  uptime: uptimeQuestion,
+  reachability: reachabilityQuestion,
 };
 
-/** Every `context_snapshots` source the wiring must request a pane read for
- * — the union over every registered question, deduplicated, in declared
- * order. A question that reads no snapshot lane (the calendar-lane ones,
- * #117/#121/#122) contributes nothing here and is not special-cased. */
-export function requiredSources(): string[] {
+/** `QUESTION_ORDER`, filtered to the questions declared for one surface
+ * (ADR-0017 decision 1) — the one filter `rankPanes` and `requiredSources`
+ * both apply, so the two can never disagree about which questions belong to
+ * a view. */
+function questionsFor(surface: Surface): StandingQuestion[] {
+  return QUESTION_ORDER.filter((question) => QUESTIONS[question].surface === surface);
+}
+
+/** Every `context_snapshots` source one surface's registered questions must
+ * request a pane read for — the union over that surface's questions,
+ * deduplicated, in declared order. A question that reads no snapshot lane
+ * (the calendar-lane ones, #117/#121/#122, and every never-polled infra
+ * placeholder, #311) contributes nothing here and is not special-cased. */
+export function requiredSources(surface: Surface): string[] {
   const sources: string[] = [];
-  for (const question of QUESTION_ORDER) {
+  for (const question of questionsFor(surface)) {
     for (const source of QUESTIONS[question].sources) {
       if (!sources.includes(source)) {
         sources.push(source);
@@ -93,12 +111,15 @@ export function panesFrom(
   return orderPanes(panes, order);
 }
 
-/** Every question, every subject, ranked (ADR-0015's cross-pane order).
+/** Every question declared for one surface, every subject, ranked (ADR-0015's
+ * cross-pane order, ADR-0017's per-surface filter). A view never ranks a
+ * question its surface cannot show — `NowScreen`'s aside asks for `"now"`,
+ * the Status screen for `"status"`, and neither reads the other's panes.
  *
  * Pure and clock-free beyond the `nowMs` on `inputs` — which is what lets
  * `RankedRegion` capture one ranking in state and re-sample it on its own
  * terms, and what lets the demo fixture rank a hand-authored world through
  * the very same code the real region uses. */
-export function rankPanes(inputs: QuestionInputs): RankedPane[] {
-  return panesFrom(QUESTIONS, QUESTION_ORDER, inputs);
+export function rankPanes(inputs: QuestionInputs, surface: Surface): RankedPane[] {
+  return panesFrom(QUESTIONS, questionsFor(surface), inputs);
 }

@@ -47,6 +47,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
   it("renders due and scheduled entries distinctly, and a due item's residue do-date", () => {
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [],
           paneReads: {},
@@ -76,6 +77,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
   it("an item both due and scheduled the same day renders exactly once, as due, do-date shown", () => {
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [],
           paneReads: {},
@@ -101,6 +103,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
     const onSetScheduledDate = vi.fn();
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [],
           paneReads: {},
@@ -126,6 +129,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
     const onSetScheduledDate = vi.fn();
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [],
           paneReads: {},
@@ -150,6 +154,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
   it("renders a clear-weekend empty state for a genuinely empty answered pane", () => {
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [],
           paneReads: {},
@@ -172,6 +177,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
     const onScreen = vi.fn();
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [],
           paneReads: {},
@@ -197,6 +203,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
   it("shows 'Checking your calendar', never the setup prompt, when connected but not yet acquired", () => {
     render(
       <RankedRegion
+        surface="now"
         inputs={{
           bindings: [],
           paneReads: {},

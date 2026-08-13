@@ -7,6 +7,7 @@ import {
   type PaneGlyph,
   type QuestionInputs,
   type RankedPane,
+  type Surface,
 } from "./contract";
 import {
   readCollapseMap,
@@ -57,6 +58,12 @@ interface Sample {
 }
 
 export interface RankedRegionProps {
+  /** ADR-0017's surface axis: which ranked region this instance is —
+   * `NowScreen`'s aside or the Status screen. Threaded straight into
+   * `rankPanes`, which is the one place the filter is actually applied; the
+   * sort, `samePaneIdentity` sampling and the collapse map below are
+   * unaware a second surface exists. */
+  surface: Surface;
   /** Everything but the clock — the region supplies `nowMs` itself so a tick
    * cannot be forgotten at one call site and not another. */
   inputs: Omit<QuestionInputs, "nowMs">;
@@ -147,7 +154,22 @@ function CollapsedRow({
   );
 }
 
+/** Rewrites every key a `StorageLike` sees, so `collapse.ts` — which always
+ * reads/writes its own one fixed key — actually lands in a different real
+ * slot per surface. `"now"` is left un-suffixed on purpose: it is the key
+ * every device before this surface existed already wrote its overrides
+ * under. */
+function namespacedStorage(base: StorageLike, surface: Surface): StorageLike {
+  const suffix = surface === "now" ? "" : `.${surface}`;
+  return {
+    getItem: (key) => base.getItem(`${key}${suffix}`),
+    setItem: (key, value) => base.setItem(`${key}${suffix}`, value),
+    removeItem: (key) => base.removeItem(`${key}${suffix}`),
+  };
+}
+
 export function RankedRegion({
+  surface,
   inputs,
   nowMs,
   syncOutcomeSeq,
@@ -155,26 +177,39 @@ export function RankedRegion({
   onScreen,
   onSetScheduledDate,
 }: RankedRegionProps) {
-  const live = rankPanes({ ...inputs, nowMs });
+  const live = rankPanes({ ...inputs, nowMs }, surface);
 
   const [sample, setSample] = useState<Sample>(() => ({ seq: syncOutcomeSeq, panes: live }));
   if (sample.seq !== syncOutcomeSeq || !samePaneIdentity(sample.panes, live)) {
     setSample({ seq: syncOutcomeSeq, panes: live });
   }
 
+  // `collapse.ts` prunes its map down to exactly the pane keys ITS caller
+  // currently has live (`writeCollapseOverride`'s own doc) — correct for one
+  // surface's region, but two surfaces sharing one `localStorage` key would
+  // each read the other's panes as "no longer ranked" and prune them away on
+  // every toggle. `collapse.ts` stays surface-blind (it is a pure module with
+  // no reason to know ADR-0017 exists, and `sort.test.ts`/`collapse.test.ts`
+  // are the tripwire for that leaking in) — so the isolation happens here
+  // instead, by giving each surface's region its own key inside the same
+  // storage rather than a second storage-layer concept. `"now"` keeps the
+  // bare key so an existing device's Now overrides survive this surface
+  // shipping.
+  const scopedStorage = storage ? namespacedStorage(storage, surface) : undefined;
+
   const [collapseMap, setCollapseMap] = useState<CollapseMap>(() =>
-    storage ? readCollapseMap(storage) : {},
+    scopedStorage ? readCollapseMap(scopedStorage) : {},
   );
 
   function toggle(paneKey: string, answer: PaneAnswer, collapsed: boolean): void {
     const override = { band: answer.band, collapsed: !collapsed };
-    if (!storage) {
+    if (!scopedStorage) {
       setCollapseMap({ ...collapseMap, [paneKey]: override });
       return;
     }
     setCollapseMap(
       writeCollapseOverride(
-        storage,
+        scopedStorage,
         collapseMap,
         paneKey,
         override,
