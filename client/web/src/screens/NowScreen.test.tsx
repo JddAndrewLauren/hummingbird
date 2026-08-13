@@ -197,7 +197,10 @@ describe("NowScreen — the frontier list", () => {
     expect(screen.getAllByText("Pending")).toHaveLength(1);
   });
 
-  it("groups by project name, with the unassigned group last", () => {
+  // Rewritten from "groups by project name, with the unassigned group last"
+  // (#402): project is now one of four axes rather than the only grouping, so
+  // the same fact is asserted through the axis switch.
+  it("groups by the live axis, with the unnamed column last", () => {
     renderNow(
       taskState({
         frontier: [
@@ -207,9 +210,107 @@ describe("NowScreen — the frontier list", () => {
         projects: [projectDTO({ id: "p1", name: "Kitchen rebuild" })],
       }),
     );
+
+    // Context is the default axis, and neither item names one.
+    expect(screen.getByRole("heading", { name: "No context" })).toBeDefined();
+    expect(screen.queryByRole("heading", { name: "Kitchen rebuild" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Project", pressed: false }));
+
     const headings = screen.getAllByRole("heading").map((node) => node.textContent);
     expect(headings.indexOf("Kitchen rebuild")).toBeGreaterThanOrEqual(0);
     expect(headings.indexOf("Kitchen rebuild")).toBeLessThan(headings.indexOf("No project"));
+  });
+
+  it("switches the axis across all four, and each one groups by its own field", () => {
+    // One item per axis-value so every axis produces a *named* column — the
+    // regression this guards is an axis silently reading the wrong field.
+    renderNow(
+      taskState({
+        frontier: [
+          itemDTO({
+            id: "i1",
+            title: "Rewire the lamp",
+            context: "@garden",
+            size: "deep",
+            energy: "high",
+            projectId: "p1",
+          }),
+        ],
+        projects: [projectDTO({ id: "p1", name: "Kitchen rebuild" })],
+      }),
+    );
+
+    for (const [axis, heading] of [
+      ["Context", "@garden"],
+      ["Project", "Kitchen rebuild"],
+      ["Size", "deep"],
+      ["Energy", "high"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("button", { name: axis }));
+      expect(screen.getByRole("heading", { name: heading })).toBeDefined();
+    }
+  });
+
+  it("caps a column at six cards and says how many are hidden", () => {
+    renderNow(
+      taskState({
+        frontier: Array.from({ length: 9 }, (_, index) =>
+          itemDTO({ id: `i${index}`, title: `Action ${index}`, context: "@computer" }),
+        ),
+      }),
+    );
+
+    // Six of nine on screen, and the count never lies about the rest.
+    expect(screen.getByRole("heading", { name: "@computer" })).toBeDefined();
+    expect(screen.queryByText("Action 5")).toBeDefined();
+    expect(screen.queryByText("Action 6")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "3 more" }));
+    expect(screen.getByText("Action 8")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show fewer" }));
+    expect(screen.queryByText("Action 6")).toBeNull();
+  });
+
+  it("states urgency in words as well as colour", () => {
+    // ADR-0021 decision 2: colour is never the only carrier, and the words are
+    // text rather than `ItemRow`'s `title` tooltip.
+    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Renew it", deadline: "1999-01-01" })] }));
+
+    // Twice on purpose: once naming the swatch in the legend, once on the card
+    // itself. The card's is the one that makes colour non-load-bearing.
+    expect(screen.getAllByText("Overdue")).toHaveLength(2);
+    // `calm` has no swatch, so it is named on cards but never in the legend.
+    expect(screen.queryByText("Calm")).toBeNull();
+  });
+
+  // `docs/SURFACES.md` records the triage section's `60dvh` cap as the ONLY
+  // independent scroll container in the centre column, and ADR-0021 decision 3
+  // makes that a live constraint rather than a description: the columns wrap
+  // onto more lines instead of scrolling, and no column overflows on its own.
+  // jsdom cannot lay out, so this asserts the *declarations* that would make a
+  // scroller — which is the half of the criterion a test can hold. The widths
+  // themselves are hand-reviewed on a device with real items (#273's
+  // disposition, recorded in `docs/SURFACES.md`).
+  it("adds no scroll container of its own — the columns wrap instead", () => {
+    renderNow(
+      taskState({
+        frontier: Array.from({ length: 20 }, (_, index) =>
+          itemDTO({ id: `i${index}`, title: `Action ${index}`, context: `@c${index % 5}` }),
+        ),
+      }),
+    );
+
+    const container = document.body;
+    const wrappers = [...container.querySelectorAll<HTMLElement>("div")].filter(
+      (node) => node.style.flexWrap === "wrap" && node.style.gap === "var(--space-6)",
+    );
+    expect(wrappers).toHaveLength(1);
+    for (const node of container.querySelectorAll<HTMLElement>("div")) {
+      expect(node.style.overflowX).toBe("");
+      expect(node.style.overflow).toBe("");
+    }
   });
 
   it("names the blockers holding an item off the frontier", () => {
@@ -494,10 +595,14 @@ describe("NowScreen — the triage section", () => {
       }),
     );
 
+    // The frontier's column heading, on the default `context` axis — the
+    // section title this used to look for ("No project") is gone with the
+    // project grouping (#402), but what it was really asserting is unchanged:
+    // triage sits below whatever the frontier rendered.
     const headings = screen.getAllByRole("heading", { level: 2 }).map((node) => node.textContent);
-    expect(headings).toContain("No project");
+    expect(headings).toContain("No context");
     const triageIndex = headings.findIndex((text) => text?.startsWith("Triage"));
-    expect(triageIndex).toBeGreaterThan(headings.indexOf("No project"));
+    expect(triageIndex).toBeGreaterThan(headings.indexOf("No context"));
     expect(screen.getByText("1 unsorted")).toBeDefined();
     expect(screen.getByText("Ring the plumber")).toBeDefined();
   });

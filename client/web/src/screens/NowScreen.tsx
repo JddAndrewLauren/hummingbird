@@ -19,8 +19,7 @@ import type {
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
-import { groupByProject } from "./frontier-groups";
-import { orderFrontier } from "./frontier-order";
+import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 import { NowPrototype, prototypeVariant } from "./now-prototype";
@@ -28,7 +27,6 @@ import { NowTriageSection } from "./NowTriageSection";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./triage-collapse";
-import { computeUrgency } from "./urgency";
 
 export interface NowScreenProps {
   demo: DemoData | null;
@@ -232,8 +230,6 @@ function RealFrontier({
     );
   }
 
-  const groups = groupByProject(orderFrontier(task.frontier), task.projects);
-
   return (
     <>
       {/* The empty frontier is a *section* rather than a whole-branch return:
@@ -241,7 +237,7 @@ function RealFrontier({
           state of a new device, and returning early here would render
           "Nothing to start" over a hidden triage section — the one moment
           the section is the only thing worth showing. */}
-      {groups.length === 0 && task.blocked.length === 0 ? (
+      {task.frontier.length === 0 && task.blocked.length === 0 ? (
         <Card padding="var(--space-3)">
           <EmptyState
             icon="zap"
@@ -252,37 +248,19 @@ function RealFrontier({
         </Card>
       ) : null}
 
-      {groups.map((group) => (
-        <Section
-          key={group.projectId ?? "unassigned"}
-          title={
-            group.projectId === null
-              ? "No project"
-              : (group.projectName ?? `Project ${group.projectId}`)
-          }
-          meta={`${group.items.length} ${group.items.length === 1 ? "action" : "actions"}`}
-        >
-          <Card padding="var(--space-3)">
-            {group.items.map((item) => (
-              <ItemRow
-                key={item.id}
-                title={item.title}
-                stage={item.stage}
-                urgency={computeUrgency(item.deadline, nowMs)}
-                deadline={item.deadline ?? undefined}
-                scheduled={item.scheduledDate ?? undefined}
-                size={item.size ?? undefined}
-                priority={item.priority}
-                pending={item.pending}
-                onClick={() => onOpenItem(item.id)}
-                onComplete={
-                  canMarkDone(item) ? () => onAct(item.id, "complete") : undefined
-                }
-              />
-            ))}
-          </Card>
-        </Section>
-      ))}
+      {/* ADR-0021: the frontier in columns, grouped by a switchable axis, in
+          place of the fixed project sections this branch used to cut. Project
+          is now one of the four axes, so nothing is lost. */}
+      {task.frontier.length > 0 ? (
+        <FrontierColumns
+          frontier={task.frontier}
+          projects={task.projects}
+          nowMs={nowMs}
+          selectedItemId={selectedItemId}
+          onOpenItem={onOpenItem}
+          onAct={onAct}
+        />
+      ) : null}
 
       {task.blocked.length > 0 ? (
         <Section
