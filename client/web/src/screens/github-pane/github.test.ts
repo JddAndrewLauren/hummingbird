@@ -10,6 +10,7 @@ import {
   githubBand,
   githubCollapsedHeadline,
   githubGapReason,
+  githubGlyph,
   githubSubjects,
   githubView,
   isStaleFreshness,
@@ -203,10 +204,23 @@ describe("githubBand", () => {
     expect(bandOrder.indexOf(stoppedBand)).toBeLessThan(bandOrder.indexOf(failedBand));
   });
 
-  it("does not judge overdue-ness when the cadence is unrecognised", () => {
-    expect(githubBand({ ...healthy, declaredCadenceMs: null, lastScheduledSuccessAtMs: NOW - 999_999_999 }, NOW)).toBe(
-      "dormant",
+  it("does not judge overdue-ness when the cadence is unrecognised, and never reports that as healthy", () => {
+    const band = githubBand(
+      { ...healthy, declaredCadenceMs: null, lastScheduledSuccessAtMs: NOW - 999_999_999 },
+      NOW,
     );
+    expect(band).toBe("distant");
+    // The regression this blocker is about: an unreadable cadence must
+    // never fall through to the same band a genuinely healthy, on-cadence
+    // workflow gets. If this ever comes back `dormant`, a workflow GitHub
+    // silently auto-disabled 60 days ago would read as healthy forever.
+    expect(band).not.toBe("dormant");
+  });
+
+  it("still reports a genuine failure (near) ahead of an unreadable cadence (distant)", () => {
+    expect(
+      githubBand({ ...healthy, declaredCadenceMs: null, lastRunConclusion: "failure" }, NOW),
+    ).toBe("near");
   });
 });
 
@@ -228,6 +242,33 @@ describe("githubCollapsedHeadline", () => {
     expect(githubCollapsedHeadline({ ...healthy, lastRunConclusion: "failure" }, NOW)).toBe(
       "gmail-poll · last run failed",
     );
+  });
+
+  it("says the cadence is unreadable rather than healthy, and names how long ago the last scheduled success was", () => {
+    const twoHoursAgo = NOW - 2 * 60 * 60 * 1000;
+    const headline = githubCollapsedHeadline(
+      { ...healthy, declaredCadenceMs: null, lastScheduledSuccessAtMs: twoHoursAgo },
+      NOW,
+    );
+    expect(headline).toBe("gmail-poll · cadence unreadable, last scheduled success 2h ago");
+    expect(headline).not.toContain("healthy");
+  });
+});
+
+describe("githubGlyph", () => {
+  const healthy = {
+    displayName: "gmail-poll",
+    declaredCadenceMs: 15 * 60 * 1000,
+    lastRunConclusion: "success",
+    lastRunEvent: "schedule",
+    lastRunAtMs: NOW - 60_000,
+    lastScheduledSuccessAtMs: NOW - 60_000,
+  };
+
+  it("uses a distinct glyph for an unreadable cadence — never the healthy circle-check", () => {
+    const glyph = githubGlyph({ ...healthy, declaredCadenceMs: null }, NOW);
+    expect(glyph).toEqual({ kind: "icon", name: "help-circle", label: "gmail-poll cadence unreadable" });
+    expect(glyph.kind === "icon" && glyph.name).not.toBe("circle-check");
   });
 });
 
@@ -273,6 +314,48 @@ describe("githubAnswer", () => {
     const answer = githubAnswer(FILE_NAME, inputs({ paneReads: { [SOURCE]: rows } }));
     expect(answer.band).toBe("live");
     expect(answer.icon?.[0]).toEqual({ kind: "icon", name: "siren", label: "gmail-poll never run" });
+  });
+
+  // Blocker 3 (#371 review round 1): the self-death tell — this pane's own
+  // staleness must be visible on the *collapsed* row, since `dormant` and
+  // `distant` panes never render `GithubPaneExpanded` (the only other place
+  // `view.stale` was read). If `github-status.yml` itself stops running,
+  // every row it ever wrote keeps reporting whatever it last saw; the only
+  // way a reader learns anything is wrong is if staleness escalates the
+  // band here.
+  const staleFreshness: FreshnessDTO = { kind: "age", ageMs: STALE_AFTER_MS + 60_000, declaredCadenceMs: 86_400_000 };
+
+  it("escalates a stale dormant (healthy) reading to imminent, and says so in the headline", () => {
+    const rows = read([snapshot({ freshness: staleFreshness })]);
+    const answer = githubAnswer(FILE_NAME, inputs({ paneReads: { [SOURCE]: rows } }));
+    expect(answer.band).not.toBe("dormant");
+    expect(answer.band).toBe("imminent");
+    expect(answer.collapsedHeadline).not.toContain("healthy");
+    expect(answer.collapsedHeadline).toContain("stale");
+  });
+
+  it("escalates a stale distant (cadence-unreadable) reading to imminent", () => {
+    const rows = read([
+      snapshot({
+        freshness: staleFreshness,
+        envelope: { kind: "ok", schema: SOURCE, polledEveryMs: null, body: body({ declaredCadenceMs: null }) },
+      }),
+    ]);
+    const answer = githubAnswer(FILE_NAME, inputs({ paneReads: { [SOURCE]: rows } }));
+    expect(answer.band).toBe("imminent");
+    expect(answer.collapsedHeadline).toContain("stale");
+  });
+
+  it("does not need a second escalation for a band that is already non-green when stale", () => {
+    const rows = read([
+      snapshot({
+        freshness: staleFreshness,
+        envelope: { kind: "ok", schema: SOURCE, polledEveryMs: null, body: body({ lastRunConclusion: "failure" }) },
+      }),
+    ]);
+    const answer = githubAnswer(FILE_NAME, inputs({ paneReads: { [SOURCE]: rows } }));
+    expect(answer.band).toBe("near");
+    expect(answer.collapsedHeadline).toBe("gmail-poll · last run failed");
   });
 });
 

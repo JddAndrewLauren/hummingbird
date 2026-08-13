@@ -1,5 +1,5 @@
 import type { FreshnessDTO, PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
-import type { PaneAnswer, PaneGlyph, QuestionInputs } from "../questions/contract";
+import type { Band, PaneAnswer, PaneGlyph, QuestionInputs } from "../questions/contract";
 import { isStaleFreshness } from "../questions/freshness";
 
 // **The GitHub workflow-health question** (#314, ADR-0017 decision 2) —
@@ -172,8 +172,22 @@ const FAILURE_CONCLUSIONS = new Set([
  * all** (the auto-disable tell) outranks one that is merely **overdue**
  * against its own declared cadence, which outranks a **single failed run**
  * that the cron is otherwise still meeting on schedule, which outranks a
- * healthy workflow. */
-export function githubBand(body: WorkflowBody, nowMs: number): "live" | "imminent" | "near" | "dormant" {
+ * healthy workflow.
+ *
+ * **An unreadable cadence (`declaredCadenceMs === null`) is never reported
+ * as healthy.** `cron.rs`'s refusal to guess at a day-of-month/month/
+ * day-of-week/step-zero shape is correct — but the refusal means the overdue
+ * comparison above genuinely could not run, which is a different fact from
+ * "ran the comparison and it came back clean". Reporting the former as
+ * `dormant` is exactly the silently-green failure this pane exists to
+ * prevent: a workflow GitHub auto-disabled 60 days ago can still have a
+ * `lastScheduledSuccessAtMs` inside the 20-run window, so a fall-through to
+ * `dormant` would read a dead cron as healthy forever. `distant` is the
+ * honest reading instead — below `near` (a definite failure still outranks
+ * an unproven overdue-ness) but above `dormant` (which is reserved for "the
+ * judgement ran and came back clean", never for "the judgement could not be
+ * made" — `vacation.ts`'s own distinction between `dormant` and `distant`). */
+export function githubBand(body: WorkflowBody, nowMs: number): Band {
   if (body.lastRunAtMs === null) {
     return "live";
   }
@@ -190,6 +204,11 @@ export function githubBand(body: WorkflowBody, nowMs: number): "live" | "imminen
   }
   if (body.lastRunConclusion !== null && FAILURE_CONCLUSIONS.has(body.lastRunConclusion)) {
     return "near";
+  }
+  if (body.declaredCadenceMs === null) {
+    // The overdue comparison above never ran — this is a gap in the
+    // judgement, not a clean result of it.
+    return "distant";
   }
   return "dormant";
 }
@@ -219,6 +238,13 @@ export function githubCollapsedHeadline(body: WorkflowBody, nowMs: number): stri
         : `${body.displayName} · stalled, last ok ${ageWords(nowMs - body.lastScheduledSuccessAtMs)}`;
     case "near":
       return `${body.displayName} · last run failed`;
+    case "distant": {
+      // `body.lastScheduledSuccessAtMs` is non-null here — `githubBand`
+      // only reaches `distant` after both null checks have already
+      // returned, but the type checker can't see across that call.
+      const lastSuccessAtMs = body.lastScheduledSuccessAtMs ?? nowMs;
+      return `${body.displayName} · cadence unreadable, last scheduled success ${ageWords(nowMs - lastSuccessAtMs)}`;
+    }
     default:
       return `${body.displayName} · healthy`;
   }
@@ -233,6 +259,9 @@ export function githubGlyph(body: WorkflowBody, nowMs: number): PaneGlyph {
   }
   if (band === "near") {
     return { kind: "icon", name: "bell", label: `${body.displayName} last run failed` };
+  }
+  if (band === "distant") {
+    return { kind: "icon", name: "help-circle", label: `${body.displayName} cadence unreadable` };
   }
   return { kind: "icon", name: "circle-check", label: `${body.displayName} healthy` };
 }
@@ -301,7 +330,24 @@ export function githubGapReason(fileName: string, inputs: QuestionInputs): strin
  * `withinBand` is `null` throughout: there is no "next relevant moment" a
  * workflow's own run history names — the pane's whole story is about the
  * past (when did it last succeed), never a future instant to sort by, on
- * `kimi.ts`'s own reasoning for its single gauge. */
+ * `kimi.ts`'s own reasoning for its single gauge.
+ *
+ * **This is where the self-death tell has to live.** #314's own brief and
+ * this crate's header both claim the pane reveals `github-status.yml`
+ * itself dying — but `view.stale` is otherwise read only by
+ * `GithubPaneExpanded`, which never renders for a `dormant` (or now
+ * `distant`) pane once the shell collapses it (`collapse.ts`'s
+ * `defaultCollapsed`: only a non-`dormant` band opens by default). Read from
+ * the payload alone, a `dormant`/`distant` band is only as trustworthy as
+ * the poller that wrote it: once that poller has itself gone quiet, every
+ * row it ever wrote keeps reporting whatever it last saw, forever. So a
+ * stale `dormant`/`distant` reading is escalated to `imminent` **here**,
+ * before it ever reaches the collapsed row — both lifting the band (so the
+ * pane opens instead of collapsing) and naming the staleness in the
+ * headline, so the words match the escalation. A `live`/`imminent`/`near`
+ * reading is left alone: it is already non-green, and going stale on top of
+ * an already-reported problem does not need a second escalation to be
+ * visible. */
 export function githubAnswer(subjectKey: string, inputs: QuestionInputs): PaneAnswer {
   if (subjectKey === NEVER_POLLED_SUBJECT) {
     return {
@@ -327,9 +373,21 @@ export function githubAnswer(subjectKey: string, inputs: QuestionInputs): PaneAn
     };
   }
 
+  const band = githubBand(view.body, inputs.nowMs);
+  if (view.stale && (band === "dormant" || band === "distant")) {
+    const heardAgo = view.freshness.kind === "age" ? ageWords(view.freshness.ageMs) : "an unknown time ago";
+    return {
+      answerState: "answered",
+      band: "imminent",
+      withinBand: null,
+      collapsedHeadline: `${view.body.displayName} · answer may be stale, last heard ${heardAgo}`,
+      icon: [{ kind: "icon", name: "cloud-fog", label: `${view.body.displayName} answer may be stale` }],
+    };
+  }
+
   return {
     answerState: "answered",
-    band: githubBand(view.body, inputs.nowMs),
+    band,
     withinBand: null,
     collapsedHeadline: githubCollapsedHeadline(view.body, inputs.nowMs),
     icon: [githubGlyph(view.body, inputs.nowMs)],

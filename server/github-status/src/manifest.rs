@@ -15,8 +15,12 @@
 //! **This is the part of the brief that "cannot forget to declare itself"**
 //! (#314's own phrasing): the poller reads *this repo's own committed
 //! workflow files* rather than a second, hand-maintained list of "which
-//! workflows are scheduled" — a sixth `schedule:` workflow shows up here the
-//! moment its file lands, with no second edit anywhere in this crate.
+//! workflows are scheduled" — a tenth `schedule:` workflow (nine exist
+//! today: `calendar-poll.yml`, `city-waste.yml`, `github-status.yml`,
+//! `gmail-poll.yml`, `graph-calendar-poll.yml`, `graph-mail-poll.yml`,
+//! `kimi-balance.yml`, `race-alert-poll.yml`, `race-schedule-poll.yml`)
+//! shows up here the moment its file lands, with no second edit anywhere in
+//! this crate.
 
 /// One workflow this build found a `schedule:` trigger on.
 #[derive(Debug, Clone, PartialEq, Eq)]

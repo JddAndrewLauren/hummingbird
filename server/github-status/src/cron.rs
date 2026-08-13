@@ -6,7 +6,7 @@
 //! `MM HH * * *` (once a day) — and [`declared_cadence_ms`] recognises only
 //! those three, refusing (returning `None`) rather than guessing at anything
 //! else. A workflow whose cadence cannot be read this way still gets a pane
-//! (its conclusion is still reported, see `verdict.rs`) — it simply cannot
+//! (its conclusion is still reported, see `runs.rs`) — it simply cannot
 //! be judged overdue against a cadence nothing here could work out, which is
 //! the honest reading: a guessed cadence that was wrong would lift or
 //! silence a band for the wrong reason.
