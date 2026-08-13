@@ -10,15 +10,23 @@ import type { DemoData } from "../fixtures/demo";
 import { demoQuestionInputs } from "../fixtures/demo-questions";
 import type { Screen } from "../shell/screens";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
-import type { CalendarReadDTO, TaskActionName, TaskItemDTO } from "../store/protocol";
+import type {
+  CalendarReadDTO,
+  TaskActionName,
+  TaskItemDTO,
+  TriageDestinationName,
+} from "../store/protocol";
 import type { TaskState } from "../store/store";
+import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
 import { groupByProject } from "./frontier-groups";
 import { orderFrontier } from "./frontier-order";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+import { NowTriageSection } from "./NowTriageSection";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
+import type { StorageLike } from "./triage-collapse";
 import { computeUrgency } from "./urgency";
 
 export interface NowScreenProps {
@@ -56,6 +64,18 @@ export interface NowScreenProps {
    * `ItemDetailPanel`. `undefined` in demo mode like every other real-write
    * callback here. */
   microtask?: MicrotaskWiring;
+  /** S13/#111's triage mutation, for the triage section under the frontier —
+   * `shell/useTriageWiring.ts`'s `triage`, the SAME callback the Triage
+   * screen gets. Now is a second view of one inbox, never a second entry
+   * point into it. `undefined` in demo mode. */
+  onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  /** The triage row checkmark's `Core::act` complete — `undefined` in demo
+   * mode, same as every other real-write callback. */
+  onCompleteTriage?: (itemId: string) => void;
+  /** Injected storage for the triage section's persisted collapse, threaded
+   * here rather than read in two places — `RankedRegion` gets the same guard
+   * below. */
+  storage?: StorageLike;
 }
 
 /** The real-data half of `QuestionInputs` (never demo's) — exported so a
@@ -95,9 +115,21 @@ function RealFrontier({
   onCloseItemDetail,
   onAct,
   microtask,
+  onTriage,
+  onCompleteTriage,
+  storage,
 }: Pick<
   NowScreenProps,
-  "task" | "nowMs" | "selectedItemId" | "onOpenItem" | "onCloseItemDetail" | "onAct" | "microtask"
+  | "task"
+  | "nowMs"
+  | "selectedItemId"
+  | "onOpenItem"
+  | "onCloseItemDetail"
+  | "onAct"
+  | "microtask"
+  | "onTriage"
+  | "onCompleteTriage"
+  | "storage"
 >) {
   // Reviewer finding on PR #207: a failed `actResult` used to be recorded
   // in `TaskState.lastAct` and rendered nowhere — this is what makes it
@@ -201,21 +233,24 @@ function RealFrontier({
 
   const groups = groupByProject(orderFrontier(task.frontier), task.projects);
 
-  if (groups.length === 0 && task.blocked.length === 0) {
-    return (
-      <Card padding="var(--space-3)">
-        <EmptyState
-          icon="zap"
-          headingLevel={2}
-          title="Nothing to start"
-          body="No actions are Ready or In Progress right now."
-        />
-      </Card>
-    );
-  }
-
   return (
     <>
+      {/* The empty frontier is a *section* rather than a whole-branch return:
+          an inbox full of captures with nothing yet promoted is the commonest
+          state of a new device, and returning early here would render
+          "Nothing to start" over a hidden triage section — the one moment
+          the section is the only thing worth showing. */}
+      {groups.length === 0 && task.blocked.length === 0 ? (
+        <Card padding="var(--space-3)">
+          <EmptyState
+            icon="zap"
+            headingLevel={2}
+            title="Nothing to start"
+            body="No actions are Ready or In Progress right now."
+          />
+        </Card>
+      ) : null}
+
       {groups.map((group) => (
         <Section
           key={group.projectId ?? "unassigned"}
@@ -289,6 +324,17 @@ function RealFrontier({
           </Card>
         </Section>
       ) : null}
+
+      {/* Under the promoted items, always — see this component's own doc. */}
+      <NowTriageSection
+        items={task.triageInbox}
+        projects={task.projects}
+        nowMs={nowMs}
+        lastTriage={task.lastTriage}
+        onTriage={onTriage}
+        onComplete={onCompleteTriage}
+        storage={storage}
+      />
     </>
   );
 }
@@ -306,7 +352,15 @@ export function NowScreen({
   calendarConnected,
   onSetScheduledDate,
   microtask,
+  onTriage,
+  onCompleteTriage,
+  storage,
 }: NowScreenProps) {
+  // Resolved once, for both the ranked region and the triage section. The
+  // fallback keeps every existing caller (and every test that mounts this
+  // screen without the prop) on exactly the storage it had before.
+  const resolvedStorage =
+    storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
   // would let a reordered fixture describe the wrong action.
@@ -394,6 +448,9 @@ export function NowScreen({
             onCloseItemDetail={onCloseItemDetail}
             onAct={onAct}
             microtask={microtask}
+            onTriage={onTriage}
+            onCompleteTriage={onCompleteTriage}
+            storage={resolvedStorage}
           />
         )}
       </Column>
@@ -411,7 +468,7 @@ export function NowScreen({
           }
           nowMs={nowMs}
           syncOutcomeSeq={task.syncOutcomeSeq}
-          storage={typeof localStorage === "undefined" ? undefined : localStorage}
+          storage={resolvedStorage}
           onScreen={onScreen}
           onSetScheduledDate={demo ? undefined : onSetScheduledDate}
         />
