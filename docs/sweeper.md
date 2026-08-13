@@ -459,6 +459,17 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    underneath it; that is the failure this step exists to catch, and the only
    one that matters here.
 
+   Label it from the **message**, not the thread. Gmail's UI applies a label to
+   every message in a thread while the adapter enumerates messages, so
+   labelling a thread that carries a forward chain sweeps each message in it
+   and mints one item per message. Doing this during gate 8 on 2026-08-12 put
+   the label on three messages of one thread and produced the intended
+   `existed=1` alongside two unwanted `Fwd:` captures of the same conversation.
+   That fan-out is the adapter's long-standing behaviour rather than anything
+   the retarget changed — see
+   [#336](https://github.com/JddAndrewLauren/hummingbird/issues/336) — but it
+   makes a thread-level label a poor instrument for this check.
+
 ## Acceptance (post-provisioning)
 
 All five were verified live against Linear on 2026-08-07; the record is on map
