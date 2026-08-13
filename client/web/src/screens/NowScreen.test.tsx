@@ -301,6 +301,24 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
 
     expect(screen.getByText("Trash Tonight")).toBeTruthy();
   });
+
+  // #401 / ADR-0021 decision 6. The landmark was called `Context` long after
+  // ADR-0015 swapped the calendar context tile out for the ranked region, and
+  // the word was needed for the frontier's grouping axis. What matters is not
+  // the string but that the landmark still HAS an accessible name at all:
+  // `layout.tsx` exists to give it one, because "a complementary landmark with
+  // no accessible name is just 'complementary', and there is one on four
+  // screens". A rename that fell through to `undefined` would typecheck.
+  it("names its complementary landmark for the standing questions it holds", () => {
+    renderNow(taskState());
+
+    const aside = screen.getByRole("complementary", { name: "Standing questions" });
+    expect(aside.tagName).toBe("ASIDE");
+    // The stale name is gone, and — the point of the rename — nothing on the
+    // screen calls itself Context in the landmark sense any more, so the axis
+    // control #402 adds is free to use the word.
+    expect(screen.queryByRole("complementary", { name: "Context" })).toBeNull();
+  });
 });
 
 describe("NowScreen — the calendar-reads arm (#267/#122)", () => {

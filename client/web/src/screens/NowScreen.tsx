@@ -496,11 +496,19 @@ export function NowScreen({
         )}
       </Column>
 
-      <Aside label="Context">
+      <Aside label="Standing questions">
         {/* ADR-0015's ranked region replaces everything that used to be in
             here — the context tile, the demo standing-question card and the
             snapshot tiles — and it is the same component in both modes: only
-            the inputs differ, so `?demo` photographs the real shell. */}
+            the inputs differ, so `?demo` photographs the real shell.
+
+            The landmark was still called `Context` long after that swap, which
+            is what ADR-0021 renamed (#401): the panel holds standing questions
+            and nothing called context, this was the one inaccurate aside name
+            of the four, and the word is needed for the frontier's grouping
+            axis in the centre column — otherwise the screen says "Context"
+            twice, meaning an item's `@computer` on one side and context
+            *sources* on the other. */}
         <RankedRegion
           surface="now"
           inputs={
