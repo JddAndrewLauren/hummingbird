@@ -42,10 +42,37 @@ import type { TaskState } from "../store/store";
 
 const NOW_MS = 1_700_000_000_000;
 
+/** A fresh in-memory `storage` per render, and the reason it is not optional.
+ *
+ * `NowScreen` falls back to the ambient `localStorage` when given no `storage`
+ * prop, and since #403 the frontier persists its grouping axis there. Left to
+ * the fallback, a test that switches the axis writes into storage every LATER
+ * test in this file then reads — so the suite's outcome depends on test order
+ * and on whether the runtime has a working `localStorage` at all. It does not
+ * under this repo's local vitest (node reports "localStorage is not available
+ * because --localstorage-file was not provided") and it does in CI, which is
+ * how the same commit passed here and failed there. Hermetic per test instead;
+ * `renderNow`'s own `rerender` deliberately keeps the SAME instance, because a
+ * rerender is not a remount and must not reset what the screen restored. */
+function memoryStorage(seed: Record<string, string> = {}) {
+  const entries = { ...seed };
+  return {
+    entries,
+    getItem: (key: string) => entries[key] ?? null,
+    setItem: (key: string, value: string) => {
+      entries[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete entries[key];
+    },
+  };
+}
+
 function renderNow(task: TaskState, selectedItemId: string | null = null) {
   const onAct = vi.fn();
   const onOpenItem = vi.fn();
   const onCloseItemDetail = vi.fn();
+  const storage = memoryStorage();
   const view = render(
     <NowScreen
       demo={null}
@@ -58,6 +85,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
       onAct={onAct}
       calendarReads={{}}
       calendarConnected={false}
+      storage={storage}
     />,
   );
   const rerender = (next: TaskState, nextSelected: string | null = selectedItemId) =>
@@ -73,10 +101,60 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
         onAct={onAct}
         calendarReads={{}}
         calendarConnected={false}
+        storage={storage}
       />,
     );
-  return { onAct, onOpenItem, onCloseItemDetail, rerender };
+  return { onAct, onOpenItem, onCloseItemDetail, rerender, storage };
 }
+
+// The guard for the defect above: a test that reached the ambient
+// `localStorage` made this file's result depend on test order, and it only
+// showed up in CI because the local runtime has no `localStorage` to leak
+// through. Asserted structurally rather than trusted to a convention.
+describe("NowScreen — test isolation", () => {
+  it("never touches the ambient localStorage when given a storage prop", () => {
+    const calls: string[] = [];
+    const spy = {
+      getItem: (key: string) => {
+        calls.push(`get ${key}`);
+        return null;
+      },
+      setItem: (key: string) => {
+        calls.push(`set ${key}`);
+      },
+      removeItem: (key: string) => {
+        calls.push(`remove ${key}`);
+      },
+    };
+    const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { value: spy, configurable: true });
+    try {
+      renderNow(
+        taskState({ frontier: [itemDTO({ id: "i1", title: "A thing", context: "@computer" })] }),
+      );
+      // Switching the axis is the write that used to leak across tests.
+      fireEvent.click(screen.getByRole("button", { name: "Energy" }));
+      expect(calls).toEqual([]);
+    } finally {
+      if (original) {
+        Object.defineProperty(globalThis, "localStorage", original);
+      } else {
+        Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    }
+  });
+
+  it("gives each render its own storage, so an axis switch cannot outlive its test", () => {
+    const first = renderNow(taskState({ frontier: [itemDTO({ id: "i1", context: "@computer" })] }));
+    fireEvent.click(screen.getByRole("button", { name: "Energy" }));
+    expect(first.storage.entries["hb.now.frontier-axis"]).toBe("energy");
+
+    const second = renderNow(taskState({ frontier: [itemDTO({ id: "i2", context: "@computer" })] }));
+    expect("hb.now.frontier-axis" in second.storage.entries).toBe(false);
+    // ...and the second render is back on the default axis.
+    expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeDefined();
+  });
+});
 
 describe("NowScreen — the act lifecycle (PR #207 round 2)", () => {
   it("re-enables the action row once the queued act drains, for an item that left every live query", () => {
@@ -197,7 +275,10 @@ describe("NowScreen — the frontier list", () => {
     expect(screen.getAllByText("Pending")).toHaveLength(1);
   });
 
-  it("groups by project name, with the unassigned group last", () => {
+  // Rewritten from "groups by project name, with the unassigned group last"
+  // (#402): project is now one of four axes rather than the only grouping, so
+  // the same fact is asserted through the axis switch.
+  it("groups by the live axis, with the unnamed column last", () => {
     renderNow(
       taskState({
         frontier: [
@@ -207,9 +288,172 @@ describe("NowScreen — the frontier list", () => {
         projects: [projectDTO({ id: "p1", name: "Kitchen rebuild" })],
       }),
     );
+
+    // Context is the default axis, and neither item names one.
+    expect(screen.getByRole("heading", { name: "No context" })).toBeDefined();
+    expect(screen.queryByRole("heading", { name: "Kitchen rebuild" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Project", pressed: false }));
+
     const headings = screen.getAllByRole("heading").map((node) => node.textContent);
     expect(headings.indexOf("Kitchen rebuild")).toBeGreaterThanOrEqual(0);
     expect(headings.indexOf("Kitchen rebuild")).toBeLessThan(headings.indexOf("No project"));
+  });
+
+  it("switches the axis across all four, and each one groups by its own field", () => {
+    // One item per axis-value so every axis produces a *named* column — the
+    // regression this guards is an axis silently reading the wrong field.
+    renderNow(
+      taskState({
+        frontier: [
+          itemDTO({
+            id: "i1",
+            title: "Rewire the lamp",
+            context: "@garden",
+            size: "deep",
+            energy: "high",
+            projectId: "p1",
+          }),
+        ],
+        projects: [projectDTO({ id: "p1", name: "Kitchen rebuild" })],
+      }),
+    );
+
+    for (const [axis, heading] of [
+      ["Context", "@garden"],
+      ["Project", "Kitchen rebuild"],
+      ["Size", "deep"],
+      ["Energy", "high"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("button", { name: axis }));
+      expect(screen.getByRole("heading", { name: heading })).toBeDefined();
+    }
+  });
+
+  it("caps a column at six cards and says how many are hidden", () => {
+    renderNow(
+      taskState({
+        frontier: Array.from({ length: 9 }, (_, index) =>
+          itemDTO({ id: `i${index}`, title: `Action ${index}`, context: "@computer" }),
+        ),
+      }),
+    );
+
+    // Six of nine on screen, and the count never lies about the rest. Both
+    // halves are asserted: `queryByText(...).toBeDefined()` would pass whether
+    // the card were there or not, since `queryByText` returns `null` on a miss
+    // and `toBeDefined()` accepts `null`.
+    expect(screen.getByRole("heading", { name: "@computer" })).toBeDefined();
+    expect(screen.getByText("Action 0")).toBeDefined();
+    expect(screen.getByText("Action 5")).toBeDefined();
+    expect(screen.queryByText("Action 6")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 3 more in @computer" }));
+    expect(screen.getByText("Action 8")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show fewer in @computer" }));
+    expect(screen.queryByText("Action 6")).toBeNull();
+  });
+
+  it("names the reveal toggle by its column, so two columns are not two identical buttons", () => {
+    // #403's facet chips needed the same fix. Two columns hiding the same count
+    // give two buttons whose visible text is identical, and nothing else ties
+    // either to the column it belongs to.
+    renderNow(
+      taskState({
+        frontier: [
+          ...Array.from({ length: 8 }, (_, i) =>
+            itemDTO({ id: `a${i}`, title: `A${i}`, context: "@computer" }),
+          ),
+          ...Array.from({ length: 8 }, (_, i) =>
+            itemDTO({ id: `b${i}`, title: `B${i}`, context: "@phone" }),
+          ),
+        ],
+      }),
+    );
+
+    expect(screen.getAllByText("2 more")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Show 2 more in @computer" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Show 2 more in @phone" })).toBeDefined();
+  });
+
+  it("drops the reveal toggle when an expanded column falls back to the cap", () => {
+    // Expand a 7-card column, then filter it down to 6: `hidden` is 0, so a
+    // surviving "Show fewer" would be a control that changes nothing.
+    renderNow(
+      taskState({
+        frontier: [
+          ...Array.from({ length: 6 }, (_, i) =>
+            itemDTO({ id: `q${i}`, title: `Q${i}`, context: "@computer", size: "quick" }),
+          ),
+          itemDTO({ id: "d1", title: "Deep one", context: "@computer", size: "deep" }),
+        ],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 more in @computer" }));
+    expect(screen.getByText("Deep one")).toBeDefined();
+
+    // Filter to `quick`: the column is exactly at the cap now.
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+
+    expect(screen.queryByText("Show fewer")).toBeNull();
+    expect(screen.queryByText(/ more$/)).toBeNull();
+  });
+
+  it("states urgency in words as well as colour", () => {
+    // ADR-0021 decision 2: colour is never the only carrier, and the words are
+    // text rather than `ItemRow`'s `title` tooltip.
+    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Renew it", deadline: "1999-01-01" })] }));
+
+    // Twice on purpose: once naming the swatch in the legend, once on the card
+    // itself. The card's is the one that makes colour non-load-bearing.
+    expect(screen.getAllByText("Overdue")).toHaveLength(2);
+    // `calm` has no swatch, so it is named on cards but never in the legend.
+    expect(screen.queryByText("Calm")).toBeNull();
+  });
+
+  // `docs/SURFACES.md` records the triage section's `60dvh` cap as the ONLY
+  // independent scroll container in the centre column, and ADR-0021 decision 3
+  // makes that a live constraint rather than a description: the columns wrap
+  // onto more lines instead of scrolling, and no column overflows on its own.
+  // jsdom cannot lay out, so this asserts the *declarations* that would make a
+  // scroller — which is the half of the criterion a test can hold. The widths
+  // themselves are hand-reviewed on a device with real items (#273's
+  // disposition, recorded in `docs/SURFACES.md`).
+  it("adds no scroll container of its own — the columns wrap instead", () => {
+    renderNow(
+      taskState({
+        frontier: Array.from({ length: 20 }, (_, index) =>
+          itemDTO({ id: `i${index}`, title: `Action ${index}`, context: `@c${index % 5}` }),
+        ),
+      }),
+    );
+
+    // Anchored on the columns themselves rather than on a spacing token: the
+    // wrap container is the one whose children are the column headings, so an
+    // unrelated `gap` change cannot silently make this test vacuous.
+    const heading = screen.getByRole("heading", { name: "@c0" });
+    const column = heading.closest("div")?.parentElement;
+    const wrapper = column?.parentElement;
+    expect(wrapper?.style.flexWrap).toBe("wrap");
+    // Five columns, all siblings in the one wrap container — no nesting, no
+    // per-line sub-container that could scroll on its own.
+    expect(wrapper?.childElementCount).toBe(5);
+
+    // And nothing from the wrap container up to the page declares a scroller,
+    // which is the assertion that keeps `docs/SURFACES.md`'s "only independent
+    // scroll container" clause true. Walking ancestors rather than every div
+    // means an element that never sets `overflow` cannot pad the pass count.
+    let node: HTMLElement | null = wrapper ?? null;
+    let checked = 0;
+    while (node && node !== document.body) {
+      expect([node.style.overflow, node.style.overflowX, node.style.overflowY]).toEqual(["", "", ""]);
+      checked += 1;
+      node = node.parentElement;
+    }
+    expect(checked).toBeGreaterThan(1);
   });
 
   it("names the blockers holding an item off the frontier", () => {
@@ -300,6 +544,24 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
     );
 
     expect(screen.getByText("Trash Tonight")).toBeTruthy();
+  });
+
+  // #401 / ADR-0021 decision 6. The landmark was called `Context` long after
+  // ADR-0015 swapped the calendar context tile out for the ranked region, and
+  // the word was needed for the frontier's grouping axis. What matters is not
+  // the string but that the landmark still HAS an accessible name at all:
+  // `layout.tsx` exists to give it one, because "a complementary landmark with
+  // no accessible name is just 'complementary', and there is one on four
+  // screens". A rename that fell through to `undefined` would typecheck.
+  it("names its complementary landmark for the standing questions it holds", () => {
+    renderNow(taskState());
+
+    const aside = screen.getByRole("complementary", { name: "Standing questions" });
+    expect(aside.tagName).toBe("ASIDE");
+    // The stale name is gone, and — the point of the rename — nothing on the
+    // screen calls itself Context in the landmark sense any more, so the axis
+    // control #402 adds is free to use the word.
+    expect(screen.queryByRole("complementary", { name: "Context" })).toBeNull();
   });
 });
 
@@ -476,10 +738,14 @@ describe("NowScreen — the triage section", () => {
       }),
     );
 
+    // The frontier's column heading, on the default `context` axis — the
+    // section title this used to look for ("No project") is gone with the
+    // project grouping (#402), but what it was really asserting is unchanged:
+    // triage sits below whatever the frontier rendered.
     const headings = screen.getAllByRole("heading", { level: 2 }).map((node) => node.textContent);
-    expect(headings).toContain("No project");
+    expect(headings).toContain("No context");
     const triageIndex = headings.findIndex((text) => text?.startsWith("Triage"));
-    expect(triageIndex).toBeGreaterThan(headings.indexOf("No project"));
+    expect(triageIndex).toBeGreaterThan(headings.indexOf("No context"));
     expect(screen.getByText("1 unsorted")).toBeDefined();
     expect(screen.getByText("Ring the plumber")).toBeDefined();
   });
@@ -580,5 +846,479 @@ describe("NowScreen — the triage section", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Triage Newer capture/ }));
     expect(screen.getAllByLabelText("Title")).toHaveLength(1);
     expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Newer capture");
+  });
+});
+
+// #403's controls, tested through the mounted screen because what they are
+// about is the *thread*: the axis and the collapsed set are read from and
+// written to the one `storage` prop `NowScreen` resolves, and the clearing rule
+// couples two pieces of state that live in different modules. The preference
+// modules' own five-test templates are in `frontier-prefs.test.ts`; these are
+// the wiring those templates cannot see.
+describe("NowScreen — the frontier's controls (#403)", () => {
+  function fakeStorage(seed: Record<string, string> = {}) {
+    const entries = { ...seed };
+    return {
+      entries,
+      getItem: (key: string) => entries[key] ?? null,
+      setItem: (key: string, value: string) => {
+        entries[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete entries[key];
+      },
+    };
+  }
+
+  function renderWithStorage(task: TaskState, storage = fakeStorage()) {
+    const view = render(
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={task}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={storage}
+      />,
+    );
+    return { storage, unmount: view.unmount };
+  }
+
+  const spread = () =>
+    taskState({
+      frontier: [
+        itemDTO({ id: "i1", title: "Email the council", context: "@computer", size: "quick", energy: "low" }),
+        itemDTO({ id: "i2", title: "Prune the hedge", context: "@garden", size: "deep", energy: "high" }),
+        itemDTO({ id: "i3", title: "Ring the vet", context: "@phone", size: "quick", energy: "low" }),
+      ],
+    });
+
+  it("collapses a column in place, keeping its heading and its count readable", () => {
+    renderWithStorage(spread());
+
+    const header = screen.getByRole("button", { expanded: true, name: /@computer/ });
+    fireEvent.click(header);
+
+    // Shut: the card is gone, but the column still says what it is and how
+    // much is inside it — a closed column that hid its own count would be
+    // worse than no count at all. The count is a sibling of the heading rather
+    // than inside it, so neither accessible name reads "@computer 1".
+    expect(screen.queryByText("Email the council")).toBeNull();
+    const shut = screen.getByRole("button", { expanded: false, name: "@computer" });
+    const shutHeader = shut.closest("div");
+    expect(shutHeader?.textContent).toContain("@computer");
+    expect(shutHeader?.textContent).toContain("1");
+    // Its neighbours are untouched — collapse is per-column and additive.
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+
+    fireEvent.click(shut);
+    expect(screen.getByText("Email the council")).toBeDefined();
+  });
+
+  it("persists the collapsed set and the axis across a remount", () => {
+    const storage = fakeStorage();
+    const first = renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: /quick/ }));
+    first.unmount();
+
+    // A reload: same storage, fresh mount.
+    renderWithStorage(spread(), storage);
+    expect(screen.getByRole("button", { name: "Size", pressed: true })).toBeDefined();
+    expect(screen.getByRole("button", { expanded: false, name: /quick/ })).toBeDefined();
+    expect(screen.queryByText("Email the council")).toBeNull();
+  });
+
+  it("clears the collapsed set when the axis changes — the labels no longer exist", () => {
+    const { storage } = renderWithStorage(spread());
+
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: /@computer/ }));
+    expect(storage.entries["hb.now.frontier-collapsed"]).toBe('["@computer"]');
+
+    fireEvent.click(screen.getByRole("button", { name: "Energy" }));
+
+    // Nothing shut, and the stored key is gone rather than holding a label from
+    // an axis that is no longer live. Scoped to the column headings, since the
+    // Filter button legitimately carries its own `aria-expanded={false}`.
+    expect("hb.now.frontier-collapsed" in storage.entries).toBe(false);
+    // Energy across this spread is low, high, low — two columns.
+    const headers = screen
+      .getAllByRole("heading", { level: 2 })
+      .map((heading) => heading.querySelector("button"));
+    expect(headers).toHaveLength(2);
+    for (const header of headers) {
+      expect(header?.getAttribute("aria-expanded")).toBe("true");
+    }
+  });
+
+  it("prunes a dead column's collapse rather than keeping it forever", () => {
+    // ADR-0021 decision 5 rejects the `settings` table because "an override map
+    // would accrete keys for panes that no longer exist". Device-local storage
+    // has the same failure, and `questions/collapse.ts` prunes for exactly this
+    // reason. Without it, a column of that name later would come back collapsed.
+    const storage = fakeStorage();
+    const first = renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@garden" }));
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@phone" }));
+    expect(JSON.parse(storage.entries["hb.now.frontier-collapsed"])).toEqual([
+      "@garden",
+      "@phone",
+    ]);
+    first.unmount();
+
+    // The @garden item is done and gone; that column no longer exists.
+    const shrunk = taskState({
+      frontier: [itemDTO({ id: "i1", title: "Email the council", context: "@computer" })],
+    });
+    renderWithStorage(shrunk, storage);
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@computer" }));
+
+    // The next write carries only keys a column could still have.
+    expect(JSON.parse(storage.entries["hb.now.frontier-collapsed"])).toEqual(["@computer"]);
+  });
+
+  it("does not prune a column the live filter is merely hiding", () => {
+    // The subtlety in the pruning: a filtered-out column is not a dead one, and
+    // forgetting it was shut would be a silent loss.
+    const storage = fakeStorage();
+    renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@garden" }));
+
+    // Filter to quick, which hides @garden's only (deep) item entirely.
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+    expect(screen.queryByRole("button", { name: "@garden" })).toBeNull();
+
+    // Toggling a surviving column writes — and must not drop @garden.
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "@computer" }));
+    expect(JSON.parse(storage.entries["hb.now.frontier-collapsed"]).sort()).toEqual([
+      "@computer",
+      "@garden",
+    ]);
+  });
+
+  it("clears the per-column reveal state when the axis changes, not just the collapse", () => {
+    renderWithStorage(
+      taskState({
+        frontier: Array.from({ length: 8 }, (_, i) =>
+          itemDTO({ id: `i${i}`, title: `Action ${i}`, context: "@computer", size: "quick" }),
+        ),
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more in @computer" }));
+    expect(screen.getByText("Action 7")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    // Same eight items, now one "quick" column — re-collapsed to the cap,
+    // because the expansion was keyed by a label that no longer exists.
+    expect(screen.queryByText("Action 7")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show 2 more in quick" })).toBeDefined();
+  });
+
+  it("does not persist the filter selection — Now never opens filtered", () => {
+    const storage = fakeStorage();
+    const first = renderWithStorage(spread(), storage);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size deep" }));
+    expect(screen.queryByText("Email the council")).toBeNull();
+    first.unmount();
+
+    renderWithStorage(spread(), storage);
+    // Opening Now to a filtered board you would misread as an empty frontier
+    // is the failure this avoids.
+    expect(screen.getByText("Email the council")).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+  });
+
+  it("narrows behind the Filter button, with an honest count and an active badge", () => {
+    renderWithStorage(spread());
+
+    // Shut by default: filtering is the occasional gesture, so it costs one
+    // button rather than four permanent chip rows.
+    expect(screen.queryByRole("button", { name: "size deep" })).toBeNull();
+    expect(screen.queryByText(/of 3 shown/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: "size deep" }));
+
+    // One of the three is deep, and the readout says so rather than leaving the
+    // reader to notice two cards missing.
+    expect(screen.getByText("1 of 3 shown")).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+    expect(screen.queryByText("Email the council")).toBeNull();
+
+    // OR *within* a facet widens: deep plus quick is every judged item.
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+    expect(screen.getByText("3 of 3 shown")).toBeDefined();
+
+    // AND *across* facets narrows again: of those three, only one is @garden.
+    fireEvent.click(screen.getByRole("button", { name: "context @garden" }));
+    expect(screen.getByText("1 of 3 shown")).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+
+    // The count follows the panel shut, and the button carries the tally of
+    // picked values (deep, quick, @garden).
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    expect(screen.getByText("1 of 3 shown")).toBeDefined();
+    expect(screen.getByRole("button", { name: /^Filter/ }).textContent).toContain("3");
+  });
+
+  it("says an empty result is empty, not that the frontier is", () => {
+    renderWithStorage(spread());
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    // Nothing is both quick and high-energy in this spread.
+    fireEvent.click(screen.getByRole("button", { name: "size quick" }));
+    fireEvent.click(screen.getByRole("button", { name: "energy high" }));
+
+    expect(screen.getByText("Nothing matches")).toBeDefined();
+    expect(screen.getByText("0 of 3 shown")).toBeDefined();
+    // The two facts must not look alike.
+    expect(screen.queryByText("Nothing to start")).toBeNull();
+  });
+
+  it("applies a preference for the session even when storage cannot keep it", () => {
+    // Reads and writes that go nowhere: the preference still applies until the
+    // tab closes. `frontier-prefs.test.ts` pins the module's own tolerance;
+    // this pins that the screen does not depend on a write succeeding.
+    const readOnly = {
+      entries: {} as Record<string, string>,
+      getItem: (key: string) => readOnly.entries[key] ?? null,
+      setItem: () => {
+        throw new Error("nope");
+      },
+      removeItem: () => {
+        throw new Error("nope");
+      },
+    };
+    renderWithStorage(spread(), readOnly);
+
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    expect(screen.getByRole("heading", { name: "quick" })).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "quick" }));
+    expect(screen.queryByText("Email the council")).toBeNull();
+  });
+});
+
+// #404: selection stops being a takeover. Every one of these is about the
+// *thread* — the panel and the columns are separate subtrees now, and what
+// typecheck cannot see is whether both are mounted at once, whether the card
+// still says it is the source, and whether the optimistic fallback PR #207
+// bought still holds when the item has left every live query.
+describe("NowScreen — selection above the columns (#404)", () => {
+  const spread = () =>
+    taskState({
+      frontier: [
+        itemDTO({ id: "i1", title: "Email the council", context: "@computer", stage: "ready" }),
+        itemDTO({ id: "i2", title: "Prune the hedge", context: "@garden", stage: "ready" }),
+      ],
+    });
+
+  it("mounts the panel with the columns still mounted and visible", () => {
+    renderNow(spread(), "i1");
+
+    // The panel: `ItemDetailPanel` heads with the item's title.
+    expect(screen.getByRole("heading", { name: "Email the council" })).toBeDefined();
+    // ...and the columns are still there under it, including the OTHER column,
+    // which is the whole point: picking one action must not cost the view of
+    // everything you might have picked instead.
+    expect(screen.getByRole("heading", { name: "@computer" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "@garden" })).toBeDefined();
+    expect(screen.getByText("Prune the hedge")).toBeDefined();
+    // The axis switch survives too — the surface is not replaced.
+    expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeDefined();
+  });
+
+  it("puts the panel above the columns, not below them", () => {
+    renderNow(spread(), "i1");
+
+    const headings = screen.getAllByRole("heading").map((node) => node.textContent);
+    // "it goes to the top" has to be true of the document order, not just of a
+    // CSS position.
+    expect(headings.indexOf("Email the council")).toBeLessThan(headings.indexOf("@computer"));
+  });
+
+  it("marks the originating card, visibly and programmatically", () => {
+    renderNow(spread(), "i1");
+
+    // Two things carry the title now — the panel heading and the source card.
+    // The card is the button.
+    const card = screen
+      .getAllByRole("button")
+      .find((node) => node.getAttribute("aria-current") === "true");
+    expect(card).toBeDefined();
+    expect(card?.textContent).toContain("Email the council");
+    // Visibly, not only programmatically. The mark is the accent BORDER, not a
+    // fill — the design system gives the answering card "an ember-tinted
+    // border, not a fill", so a fill here would be this surface disagreeing
+    // with every other card in the app.
+    expect(card?.style.border).toBe("1px solid var(--accent-quiet-border)");
+    expect(card?.style.background).not.toBe("var(--accent-quiet)");
+    // And only the one card.
+    expect(
+      screen.getAllByRole("button").filter((n) => n.getAttribute("aria-current") === "true"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the ranked-region aside mounted while the panel is open", () => {
+    // #359 calls this "the one thing this surface has that Triage does not",
+    // so it is asserted rather than eyeballed.
+    renderNow(spread(), "i1");
+    expect(screen.getByRole("complementary", { name: "Standing questions" })).toBeDefined();
+  });
+
+  it("keeps the optimistic post-act fallback: the panel survives an item leaving every live query", () => {
+    // PR #207's machinery, which the prototype deliberately skipped and
+    // production must not. `block` sets a stage neither `frontier` nor
+    // `blocked` reads, so without the fallback the panel goes blank.
+    const { onAct, rerender } = renderNow(spread(), "i1");
+
+    fireEvent.click(screen.getByRole("button", { name: /mark blocked/i }));
+    expect(onAct).toHaveBeenCalledWith("i1", "block");
+
+    rerender(taskState({ frontier: [], blocked: [], pending: {} }), "i1");
+    expect(screen.getByRole("heading", { name: "Email the council" })).toBeDefined();
+    expect(screen.getByRole("button", { name: /^start$/i }).hasAttribute("disabled")).toBe(true);
+
+    // ...and it re-enables once the queued mutation drains, exactly as before.
+    rerender(taskState({ frontier: [], blocked: [], pending: { i1: true } }), "i1");
+    rerender(taskState({ frontier: [], blocked: [], pending: { i1: false } }), "i1");
+    expect(screen.getByRole("button", { name: /^start$/i }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("returns to the columns on close, with the axis, collapse and filter state intact", () => {
+    function fakeStorage(seed: Record<string, string> = {}) {
+      const entries = { ...seed };
+      return {
+        entries,
+        getItem: (key: string) => entries[key] ?? null,
+        setItem: (key: string, value: string) => {
+          entries[key] = value;
+        },
+        removeItem: (key: string) => {
+          delete entries[key];
+        },
+      };
+    }
+    const storage = fakeStorage();
+    const view = render(
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={spread()}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={storage}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    fireEvent.click(screen.getByRole("button", { expanded: true, name: "No project" }));
+
+    // The filter is the third thing #404 names, and unlike the other two it is
+    // deliberately NOT persisted (#403) — it survives only because it is state
+    // in a component that must not remount. That is exactly why it is asserted
+    // here: a remount would lose it silently while the axis and collapse, being
+    // restored from storage, would still look right.
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "context @garden" }));
+    // Asserted through the count rather than the hidden card, because the
+    // collapsed column above already hides every card either way.
+    expect(screen.getByText("1 of 2 shown")).toBeDefined();
+
+    const withSelection = (selected: string | null) => (
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={spread()}
+        nowMs={NOW_MS}
+        selectedItemId={selected}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={storage}
+      />
+    );
+
+    view.rerender(withSelection("i1"));
+    // Open: the axis, the shut column and the picked facet are all what they were.
+    expect(screen.getByRole("button", { name: "Project", pressed: true })).toBeDefined();
+    expect(screen.getByRole("button", { expanded: false, name: "No project" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "context @garden", pressed: true })).toBeDefined();
+    expect(screen.getByText("1 of 2 shown")).toBeDefined();
+
+    view.rerender(withSelection(null));
+    expect(screen.queryByRole("heading", { name: "Email the council" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Project", pressed: true })).toBeDefined();
+    expect(screen.getByRole("button", { expanded: false, name: "No project" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "context @garden", pressed: true })).toBeDefined();
+    expect(screen.getByText("1 of 2 shown")).toBeDefined();
+  });
+
+  it("withholds \"Nothing to start\" while the panel is open", () => {
+    // Reachable, not hypothetical: block your only startable item and both
+    // queries go empty while the optimistic fallback keeps the panel standing.
+    // Without the guard the screen showed the open item, "Nothing to start", and
+    // no triage section — the combination `NowScreen`'s own comment warns
+    // against, since triage is withheld whenever the panel is open.
+    const { rerender } = renderNow(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Email the council", stage: "ready" })],
+        triageInbox: [itemDTO({ id: "c1", title: "Ring the plumber", stage: "triage" })],
+      }),
+      "i1",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /mark blocked/i }));
+    rerender(taskState({ frontier: [], blocked: [], pending: {} }), "i1");
+
+    // The panel is still standing on the optimistic item...
+    expect(screen.getByRole("heading", { name: "Email the council" })).toBeDefined();
+    // ...and neither of the two things that would contradict it is on screen.
+    expect(screen.queryByText("Nothing to start")).toBeNull();
+    expect(screen.queryByText("Ring the plumber")).toBeNull();
+
+    // Closed, with the frontier genuinely empty, it says so again.
+    rerender(taskState({ frontier: [], blocked: [], pending: {} }), null);
+    expect(screen.getByText("Nothing to start")).toBeDefined();
+  });
+
+  it("brings the panel into view when it opens", () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      const { rerender } = renderNow(spread(), null);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      rerender(spread(), "i1");
+      // A card near the bottom of a long board would otherwise expand
+      // off-screen, which makes "it goes to the top" true of the DOM and false
+      // for the reader.
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      // A different item is a new selection, so it scrolls again.
+      rerender(spread(), "i2");
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
   });
 });

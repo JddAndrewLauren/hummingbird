@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
@@ -19,15 +20,13 @@ import type {
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
-import { groupByProject } from "./frontier-groups";
-import { orderFrontier } from "./frontier-order";
+import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 import { NowTriageSection } from "./NowTriageSection";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./triage-collapse";
-import { computeUrgency } from "./urgency";
 
 export interface NowScreenProps {
   demo: DemoData | null;
@@ -72,9 +71,11 @@ export interface NowScreenProps {
   /** The triage row checkmark's `Core::act` complete — `undefined` in demo
    * mode, same as every other real-write callback. */
   onCompleteTriage?: (itemId: string) => void;
-  /** Injected storage for the triage section's persisted collapse, threaded
-   * here rather than read in two places — `RankedRegion` gets the same guard
-   * below. */
+  /** Injected storage for this screen's device-local view preferences —
+   * resolved once here rather than read in each consumer: the triage section's
+   * persisted collapse, `RankedRegion`'s pane overrides, and (#403) the
+   * frontier's grouping axis and collapsed columns. One storage seam, three
+   * readers. */
   storage?: StorageLike;
 }
 
@@ -100,6 +101,24 @@ export function realQuestionInputs(
     calendarConnected,
     items: [...task.frontier, ...task.blocked.map((entry) => entry.item)],
   };
+}
+
+/** The slot the selected item expands into, above the columns (#404).
+ *
+ * Its whole job beyond layout is the scroll: a card near the bottom of a long
+ * board would otherwise expand off-screen, which makes "it goes to the top"
+ * true of the DOM and false for the reader. Keyed by the caller on the item id,
+ * so this mounts fresh per selection and the effect fires once per item rather
+ * than on every re-render of the same one.
+ *
+ * `scrollIntoView` is called defensively: jsdom does not implement it, and a
+ * view preference — which is all this is — is never worth a crash. */
+function SelectedItemSection({ children }: { children: ReactNode }) {
+  const slot = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    slot.current?.scrollIntoView?.({ block: "nearest" });
+  }, []);
+  return <div ref={slot}>{children}</div>;
 }
 
 /** Real-data frontier/blocked rendering (issue #108) — kept out of the
@@ -211,36 +230,55 @@ function RealFrontier({
       ? { ...fallbackItem, pending: fallbackResolution.pending }
       : null);
 
-  if (selectedItem) {
-    return (
-      <ItemDetailPanel
-        // Remounts per item so the grain/model selects reset with it — a
-        // grain chosen for one item says nothing about the next.
-        key={selectedItem.id}
-        item={selectedItem}
-        steps={task.stepsByItem[selectedItem.id] ?? []}
-        onClose={onCloseItemDetail}
-        onAct={(action) => {
-          setOptimisticItem(applyItemAction(selectedItem, action));
-          setAwaitingPendingConfirm(true);
-          onAct(selectedItem.id, action);
-        }}
-        actError={actError}
-        microtask={microtask}
-      />
-    );
-  }
-
-  const groups = groupByProject(orderFrontier(task.frontier), task.projects);
-
   return (
     <>
+      {/* #404 / ADR-0021 decision 7: the selected item expands ABOVE the
+          columns, which stay standing under it — this used to be an early
+          `return` of the panel *instead of* the frontier, so picking one action
+          cost you the view of everything you might have picked instead. The
+          slot above the frontier is Now's own: ADR-0015 gives the *aside* to
+          the ranked region, and its "standing questions never take the banner"
+          is a claim about the aside's contents, not about this column.
+
+          The panel is the existing `ItemDetailPanel`, threaded the app's own
+          act callback, steps, last-act error and microtask affordance — never a
+          second implementation, so whatever lands on item detail next (Grill
+          me, #359) arrives with no parallel code path to reconcile. */}
+      {selectedItem ? (
+        <SelectedItemSection key={selectedItem.id}>
+          <ItemDetailPanel
+            // Remounts per item so the grain/model selects reset with it — a
+            // grain chosen for one item says nothing about the next.
+            key={selectedItem.id}
+            item={selectedItem}
+            steps={task.stepsByItem[selectedItem.id] ?? []}
+            onClose={onCloseItemDetail}
+            onAct={(action) => {
+              setOptimisticItem(applyItemAction(selectedItem, action));
+              setAwaitingPendingConfirm(true);
+              onAct(selectedItem.id, action);
+            }}
+            actError={actError}
+            microtask={microtask}
+          />
+        </SelectedItemSection>
+      ) : null}
+
       {/* The empty frontier is a *section* rather than a whole-branch return:
           an inbox full of captures with nothing yet promoted is the commonest
           state of a new device, and returning early here would render
           "Nothing to start" over a hidden triage section — the one moment
-          the section is the only thing worth showing. */}
-      {groups.length === 0 && task.blocked.length === 0 ? (
+          the section is the only thing worth showing.
+
+          Withheld while item detail is open, which #404 made a reachable state
+          rather than a hypothetical one: block or cancel your only startable
+          item and both queries go empty while the optimistic fallback keeps the
+          panel standing, so without this guard the screen would show the open
+          item, "Nothing to start", and no triage section — precisely the
+          combination the paragraph above exists to prevent. "Nothing to start"
+          is a claim about what you could pick *instead*, and that is not the
+          question being asked while one item is expanded. */}
+      {selectedItem === null && task.frontier.length === 0 && task.blocked.length === 0 ? (
         <Card padding="var(--space-3)">
           <EmptyState
             icon="zap"
@@ -251,37 +289,20 @@ function RealFrontier({
         </Card>
       ) : null}
 
-      {groups.map((group) => (
-        <Section
-          key={group.projectId ?? "unassigned"}
-          title={
-            group.projectId === null
-              ? "No project"
-              : (group.projectName ?? `Project ${group.projectId}`)
-          }
-          meta={`${group.items.length} ${group.items.length === 1 ? "action" : "actions"}`}
-        >
-          <Card padding="var(--space-3)">
-            {group.items.map((item) => (
-              <ItemRow
-                key={item.id}
-                title={item.title}
-                stage={item.stage}
-                urgency={computeUrgency(item.deadline, nowMs)}
-                deadline={item.deadline ?? undefined}
-                scheduled={item.scheduledDate ?? undefined}
-                size={item.size ?? undefined}
-                priority={item.priority}
-                pending={item.pending}
-                onClick={() => onOpenItem(item.id)}
-                onComplete={
-                  canMarkDone(item) ? () => onAct(item.id, "complete") : undefined
-                }
-              />
-            ))}
-          </Card>
-        </Section>
-      ))}
+      {/* ADR-0021: the frontier in columns, grouped by a switchable axis, in
+          place of the fixed project sections this branch used to cut. Project
+          is now one of the four axes, so nothing is lost. */}
+      {task.frontier.length > 0 ? (
+        <FrontierColumns
+          frontier={task.frontier}
+          projects={task.projects}
+          nowMs={nowMs}
+          selectedItemId={selectedItemId}
+          onOpenItem={onOpenItem}
+          onAct={onAct}
+          storage={storage}
+        />
+      ) : null}
 
       {task.blocked.length > 0 ? (
         <Section
@@ -325,16 +346,25 @@ function RealFrontier({
         </Section>
       ) : null}
 
-      {/* Under the promoted items, always — see this component's own doc. */}
-      <NowTriageSection
-        items={task.triageInbox}
-        projects={task.projects}
-        nowMs={nowMs}
-        lastTriage={task.lastTriage}
-        onTriage={onTriage}
-        onComplete={onCompleteTriage}
-        storage={storage}
-      />
+      {/* Under the promoted items, always — see this component's own doc.
+          Still withheld while item detail is open, which is the ONE thing #404
+          deliberately did not change about selection: `TriageRow`'s expanded
+          editor and `ItemDetailPanel` are both editors, and "two editors are
+          never open at once" is S13/#111's own invariant. The columns stay
+          because a reader choosing among startable actions must keep seeing
+          the alternatives; an unsorted capture is not an alternative they were
+          choosing between, so nothing about that argument reaches down here. */}
+      {selectedItem ? null : (
+        <NowTriageSection
+          items={task.triageInbox}
+          projects={task.projects}
+          nowMs={nowMs}
+          lastTriage={task.lastTriage}
+          onTriage={onTriage}
+          onComplete={onCompleteTriage}
+          storage={storage}
+        />
+      )}
     </>
   );
 }
@@ -455,11 +485,19 @@ export function NowScreen({
         )}
       </Column>
 
-      <Aside label="Context">
+      <Aside label="Standing questions">
         {/* ADR-0015's ranked region replaces everything that used to be in
             here — the context tile, the demo standing-question card and the
             snapshot tiles — and it is the same component in both modes: only
-            the inputs differ, so `?demo` photographs the real shell. */}
+            the inputs differ, so `?demo` photographs the real shell.
+
+            The landmark was still called `Context` long after that swap, which
+            is what ADR-0021 renamed (#401): the panel holds standing questions
+            and nothing called context, this was the one inaccurate aside name
+            of the four, and the word is needed for the frontier's grouping
+            axis in the centre column — otherwise the screen says "Context"
+            twice, meaning an item's `@computer` on one side and context
+            *sources* on the other. */}
         <RankedRegion
           surface="now"
           inputs={

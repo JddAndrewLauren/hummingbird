@@ -62,8 +62,9 @@ else — labels, buttons, headings. UPPERCASE only in the 11px mono meta style
 
 **Domain words are exact.** These are terms of art; do not paraphrase them.
 Item, Stage, Action, Route, Destination, Fog, Mint, Step, External wait,
-Capture source, Context source, Mirror, Urgency, Due date, Scheduled date,
-Alert, Rule, Promotion, Tier, Delivery log, Ack, Context snapshot, Standing
+Capture source, Context source, Mirror, Urgency, Deadline, Scheduled date,
+Size, Energy, Context, Alert, Rule, Promotion, Tier, Delivery log, Ack,
+Context snapshot, Standing
 question, Cycle, Outbound queue, Dead-letter journal, View. Say "mint an
 action", not "create a task". Say "ack", not "dismiss" — they mean different
 things. "Blocked" means an external wait and nothing else.
@@ -201,7 +202,7 @@ picks a different set, `Icon.jsx` is the only file that changes.
   `inbox` (triage), `route`, `zap` (now / next up), `bell` / `siren` /
   `bell-off` (the notification lane), `calendar-clock` and `radio` (context
   tile: upcoming vs. in progress), `cloud-fog` (fog), `list-checks` (steps),
-  `flag` (due date), `calendar` (scheduled date), `link` (blocked by),
+  `flag` (deadline), `calendar` (scheduled date), `link` (blocked by),
   `refresh-cw`, `check`, `sparkles` (mint).
 - **Emoji:** never. **Unicode as icons:** never — the middle dot `·` in meta
   lines is punctuation, not an icon.
@@ -238,7 +239,7 @@ notes on how it was chosen:
   generic: they encode ADR-0009's stage vocabulary and ADR-0012's alert
   lane. Prefer them over a generic list row.
 - `Slider` exists for the capture form's optional metadata — **energy**
-  (`low / medium / high`), **size** (`quick / normal / deep`) — alongside a
+  (`low / medium / high`), **size** (`quick / short / deep`) — alongside a
   `Select` for **context** (`@home`, `@computer`, `@phone`, `@errands`,
   `@garden`, `@waiting`). All three are optional on every surface: unset is
   the default and a legitimate resting state, because deciding is mint-time
