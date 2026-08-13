@@ -1,0 +1,32 @@
+[package]
+name = "hummingbird-kimi-balance"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller for `kimi-balance/v1` (#313, ADR-0017 decision
+# 5). A workspace member so CI's `cargo test --workspace` gates it, on the
+# same reasoning `city-waste`'s manifest already states.
+#
+# It must NEVER become a dependency of `hummingbird-authority-worker`: that
+# crate builds for wasm32 and this one holds an HTTP client. Unlike
+# `city-waste` this crate needs no tzdb at all — a balance has no calendar
+# day to resolve, only a dollar figure — so there is nothing here for the
+# wasm32 budget to even be tempted by.
+#
+# The split inside this crate is the same one `city-waste` and `race-poll`
+# already draw: everything decidable lives in the lib and is natively
+# tested; `main.rs` holds only `std::env`, one GET and one POST.
+
+[dependencies]
+# The real `kimi_balance_v1_key`-free entry and the real `KIMI_BALANCE_V1`,
+# never a hand-copied twin.
+hummingbird-domain = { path = "../domain" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# `main.rs` only. Blocking by design: the poller is a one-shot process, so
+# an async runtime would be pure ceremony.
+[dependencies.ureq]
+version = "3"
+default-features = false
+features = ["rustls", "json"]

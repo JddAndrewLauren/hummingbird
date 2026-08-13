@@ -1,4 +1,5 @@
 import type { QuestionInputs } from "../screens/questions/contract";
+import { SNAPSHOT_KEY as KIMI_SNAPSHOT_KEY, SOURCE as KIMI_SOURCE } from "../screens/kimi-pane/kimi";
 import {
   BINDING_KEY as RACE_BINDING_KEY,
   SOURCE as RACE_SOURCE,
@@ -22,14 +23,17 @@ import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 // aside filters it to the `"now"` questions below (waste answered/imminent,
 // race answered/distant — one non-dormant and one quiet reading, so the
 // capture proves both), and `StatusScreen` filters the same object to the
-// four `"status"` infra questions. Those four ignore `QuestionInputs`
+// `"status"` infra questions. Three of those still ignore `QuestionInputs`
 // entirely — `screens/questions/placeholder.tsx`'s factory answers
 // `bound-but-unacquired` unconditionally, because no poller exists behind
-// any of them yet — so there is nothing to add here for Status specifically
-// until #313-#316 give each one a real source to read: the demo capture
-// photographs exactly the four honest gap panes the Acceptance section's
-// manual check asks for, not a fabricated "healthy" or "diverging" reading
-// this slice has no data to back.
+// any of them yet — so there is nothing to add here for those until
+// #314-#316 give each one a real source to read.
+//
+// **`kimi-balance/v1` (#313) is the first exception.** `kimiRead` below
+// gives the Status capture its first poller-backed, non-gap pane: a modest
+// "near" reading (the ADR's own worked example, `$4.10`) with a genuinely
+// negative `cash_balance`, so the capture also exercises the voucher/cash
+// split without needing a second, exhausted-balance world to prove it.
 
 /** The address the fixture's collection happens at. Fixed rather than the
  * device's own zone: a fixture whose answer changed with where the reviewer
@@ -133,12 +137,44 @@ function raceRead(nowMs: number): PaneReadDTO {
   };
 }
 
+/** `$4.10` available, `$5.10` voucher, `-$1.00` cash — the ADR's own worked
+ * example (decision 5) plus a genuinely negative cash position, so the
+ * Status capture shows both the "near" band's wording and the voucher/cash
+ * split in one pane, comfortably fresh against the 6h cadence. */
+function kimiRead(nowMs: number): PaneReadDTO {
+  return {
+    source: KIMI_SOURCE,
+    snapshots: [
+      {
+        key: KIMI_SNAPSHOT_KEY,
+        fetchedAtMs: nowMs - 40 * 60_000,
+        envelope: {
+          kind: "ok",
+          schema: KIMI_SOURCE,
+          polledEveryMs: 21_600_000,
+          body: JSON.stringify({
+            available_balance: 4.1,
+            voucher_balance: 5.1,
+            cash_balance: -1.0,
+          }),
+        },
+        freshness: { kind: "age", ageMs: 40 * 60_000, declaredCadenceMs: 21_600_000 },
+      },
+    ],
+    liveAlerts: [],
+  };
+}
+
 /** The demo world's answer to `QuestionInputs`, minus the clock the region
  * supplies itself. */
 export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs"> {
   return {
     bindings: [boundBinding, boundRaceBinding],
-    paneReads: { [SOURCE]: wasteRead(nowMs), [RACE_SOURCE]: raceRead(nowMs) },
+    paneReads: {
+      [SOURCE]: wasteRead(nowMs),
+      [RACE_SOURCE]: raceRead(nowMs),
+      [KIMI_SOURCE]: kimiRead(nowMs),
+    },
     // The demo world mounts no calendar credential and no items — `?demo`
     // photographs the snapshot-lane panes; the weekend pane's own demo state (a
     // `not_read` calendar, since nothing here ever pushes a token) is the
