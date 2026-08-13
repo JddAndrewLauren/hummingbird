@@ -1,11 +1,22 @@
 //! Reading a declared cadence off a workflow's own `cron:` string.
 //!
-//! **Deliberately not a general cron parser.** This repo's own scheduled
-//! workflows use exactly three shapes today — `*/N * * * *` (every N
-//! minutes), `0 */N * * *` (every N hours, on the hour) and a fixed
-//! `MM HH * * *` (once a day) — and [`declared_cadence_ms`] recognises only
-//! those three, refusing (returning `None`) rather than guessing at anything
-//! else. A workflow whose cadence cannot be read this way still gets a pane
+//! **Deliberately not a general cron parser.** [`declared_cadence_ms`]
+//! recognises exactly three shapes — `*/N * * * *` (every N minutes),
+//! `0 */N * * *` (every N hours, on the hour) and a fixed `MM HH * * *`
+//! (once a day) — refusing (returning `None`) rather than guessing at
+//! anything else.
+//!
+//! **This repo's own workflows are not all inside that set.** Since #315,
+//! `.github/workflows/uptime-probe.yml`'s `5 * * * *` — hourly at a fixed
+//! minute — is a fourth shape, and this parser refuses it: a fixed minute
+//! with a wildcard hour matches none of the three arms. So that workflow's
+//! own pane reads "cadence unreadable" (`distant`) rather than "hourly".
+//! That is honest rather than green — the refusal is what `distant` means —
+//! but it is a real limitation, named here and pinned by
+//! `an_hourly_fixed_minute_shape_is_currently_unrecognised` below rather
+//! than left as a surprise.
+//!
+//! A workflow whose cadence cannot be read this way still gets a pane
 //! (its conclusion is still reported, see `runs.rs`) — it simply cannot
 //! be judged overdue against a cadence nothing here could work out, which is
 //! the honest reading: a guessed cadence that was wrong would lift or
@@ -100,6 +111,18 @@ mod tests {
     fn a_fixed_daily_time_is_recognised() {
         // city-waste.yml.
         assert_eq!(declared_cadence_ms("40 13 * * *"), Some(DAY_MS));
+    }
+
+    /// `uptime-probe.yml`'s own shape, and the one place this repo already
+    /// steps outside the three recognised ones (this module's header). A
+    /// fixed minute against a wildcard hour *is* a real hourly cadence, but
+    /// no arm here reads it, so the pane says "cadence unreadable" rather
+    /// than "hourly". Pinned so the limitation is a stated fact rather than
+    /// a surprise, and so teaching the parser this shape is a deliberate,
+    /// test-visible change.
+    #[test]
+    fn an_hourly_fixed_minute_shape_is_currently_unrecognised() {
+        assert_eq!(declared_cadence_ms("5 * * * *"), None);
     }
 
     #[test]

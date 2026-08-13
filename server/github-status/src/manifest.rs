@@ -15,12 +15,12 @@
 //! **This is the part of the brief that "cannot forget to declare itself"**
 //! (#314's own phrasing): the poller reads *this repo's own committed
 //! workflow files* rather than a second, hand-maintained list of "which
-//! workflows are scheduled" — a tenth `schedule:` workflow (nine exist
+//! workflows are scheduled" — an eleventh `schedule:` workflow (ten exist
 //! today: `calendar-poll.yml`, `city-waste.yml`, `github-status.yml`,
 //! `gmail-poll.yml`, `graph-calendar-poll.yml`, `graph-mail-poll.yml`,
-//! `kimi-balance.yml`, `race-alert-poll.yml`, `race-schedule-poll.yml`)
-//! shows up here the moment its file lands, with no second edit anywhere in
-//! this crate.
+//! `kimi-balance.yml`, `race-alert-poll.yml`, `race-schedule-poll.yml`,
+//! `uptime-probe.yml`) shows up here the moment its file lands, with no
+//! second edit anywhere in this crate.
 
 /// One workflow this build found a `schedule:` trigger on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,12 +136,100 @@ mod tests {
     // own regression guard: a workflow file edited into a shape this parser
     // stops recognising fails a build-time test here rather than silently
     // dropping out of the pane.
+    //
+    // **Every one of the ten scheduled workflows is embedded**, not a
+    // sample of them: a guard that covered four would have said nothing
+    // about the other six, which is exactly the drop-out this guard exists
+    // to catch. `EVERY_SCHEDULED_WORKFLOW` below is the list, and
+    // `every_committed_scheduled_workflow_is_still_read_as_scheduled` walks
+    // it.
+    const CALENDAR_POLL: &str = include_str!("../../../.github/workflows/calendar-poll.yml");
     const CITY_WASTE: &str = include_str!("../../../.github/workflows/city-waste.yml");
-    const KIMI_BALANCE: &str = include_str!("../../../.github/workflows/kimi-balance.yml");
+    const GITHUB_STATUS: &str = include_str!("../../../.github/workflows/github-status.yml");
     const GMAIL_POLL: &str = include_str!("../../../.github/workflows/gmail-poll.yml");
+    const GRAPH_CALENDAR_POLL: &str =
+        include_str!("../../../.github/workflows/graph-calendar-poll.yml");
+    const GRAPH_MAIL_POLL: &str = include_str!("../../../.github/workflows/graph-mail-poll.yml");
+    const KIMI_BALANCE: &str = include_str!("../../../.github/workflows/kimi-balance.yml");
     const RACE_ALERT_POLL: &str = include_str!("../../../.github/workflows/race-alert-poll.yml");
+    const RACE_SCHEDULE_POLL: &str =
+        include_str!("../../../.github/workflows/race-schedule-poll.yml");
+    const UPTIME_PROBE: &str = include_str!("../../../.github/workflows/uptime-probe.yml");
     const DEPLOY: &str = include_str!("../../../.github/workflows/deploy.yml");
     const CLIENT: &str = include_str!("../../../.github/workflows/client.yml");
+
+    /// `(file name, contents, expected top-level `name:`, expected crons)`
+    /// for every `schedule:`-carrying workflow committed in this repo.
+    /// Adding an eleventh scheduled workflow without adding it here fails
+    /// `the_embedded_list_covers_every_scheduled_workflow_in_the_repo`.
+    const EVERY_SCHEDULED_WORKFLOW: &[(&str, &str, &str, &[&str])] = &[
+        ("calendar-poll.yml", CALENDAR_POLL, "calendar-poll", &["*/15 * * * *"]),
+        ("city-waste.yml", CITY_WASTE, "city-waste", &["40 13 * * *"]),
+        ("github-status.yml", GITHUB_STATUS, "github-status", &["15 6 * * *"]),
+        ("gmail-poll.yml", GMAIL_POLL, "gmail-poll", &["*/15 * * * *"]),
+        ("graph-calendar-poll.yml", GRAPH_CALENDAR_POLL, "graph-calendar-poll", &["*/15 * * * *"]),
+        ("graph-mail-poll.yml", GRAPH_MAIL_POLL, "graph-mail-poll", &["*/15 * * * *"]),
+        ("kimi-balance.yml", KIMI_BALANCE, "kimi-balance", &["0 */6 * * *"]),
+        ("race-alert-poll.yml", RACE_ALERT_POLL, "race-alert-poll", &["*/15 * * * *"]),
+        ("race-schedule-poll.yml", RACE_SCHEDULE_POLL, "race-schedule-poll", &["0 */6 * * *"]),
+        ("uptime-probe.yml", UPTIME_PROBE, "uptime-probe", &["5 * * * *"]),
+    ];
+
+    /// The general guard the module header claims: **every** committed
+    /// scheduled workflow, read through the real parser, with its own
+    /// `name:` and cron strings pinned. A file edited into a shape this
+    /// parser stops recognising — a reindented `schedule:` block, a
+    /// `name:` moved off column 0, a cron rewritten — fails here rather
+    /// than silently dropping out of the pane.
+    #[test]
+    fn every_committed_scheduled_workflow_is_still_read_as_scheduled() {
+        for (file_name, contents, display_name, crons) in EVERY_SCHEDULED_WORKFLOW {
+            let workflow = parse_workflow(file_name, contents)
+                .unwrap_or_else(|| panic!("{file_name} carries a schedule: and must parse"));
+            assert_eq!(&workflow.file_name, file_name);
+            assert_eq!(&workflow.display_name, display_name, "{file_name}");
+            assert_eq!(workflow.cron_expressions, *crons, "{file_name}");
+        }
+    }
+
+    /// The list above is only a general guard while it is complete. This
+    /// reads the workflow directory itself — the same directory `main.rs`
+    /// scans — and fails if any file carrying a `schedule:` trigger is
+    /// missing from it.
+    #[test]
+    fn the_embedded_list_covers_every_scheduled_workflow_in_the_repo() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.github/workflows");
+        let mut scheduled: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("the workflow directory is readable") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path).expect("a readable workflow file");
+            if parse_workflow("probe.yml", &contents).is_some() {
+                scheduled.push(
+                    path.file_name().expect("a file name").to_string_lossy().into_owned(),
+                );
+            }
+        }
+        scheduled.sort();
+
+        let mut embedded: Vec<String> =
+            EVERY_SCHEDULED_WORKFLOW.iter().map(|(name, ..)| (*name).to_string()).collect();
+        embedded.sort();
+
+        assert_eq!(
+            scheduled, embedded,
+            "a scheduled workflow is not covered by this crate's regression guard — add it to \
+             EVERY_SCHEDULED_WORKFLOW (and to this module's header count)"
+        );
+    }
+
+    /// The header's own count, pinned: ten today.
+    #[test]
+    fn the_repo_carries_ten_scheduled_workflows_today() {
+        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 10);
+    }
 
     #[test]
     fn city_waste_is_read_as_a_daily_scheduled_workflow() {

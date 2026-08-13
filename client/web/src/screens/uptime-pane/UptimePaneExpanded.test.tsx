@@ -147,6 +147,87 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
     expect(screen.getByText("runner · off, as expected")).toBeTruthy();
   });
 
+  /** The card's `near` arm — an `expected: "on"` service whose door is open
+   * but answering with the wrong code. Reachable-but-wrong is the *lesser*
+   * fault (`uptimeBand`'s own reasoning), so it is the arm most at risk of
+   * being read as fine; the card has to name it. */
+  it("opens a reachable-but-wrong-status service and the card names the unexpected status", () => {
+    const rows = read([
+      snapshot("authority", { envelope: { kind: "ok", schema: SOURCE, polledEveryMs: null, body: body({ expect_status: 401, observed_status: 500 }) } }),
+    ]);
+
+    render(
+      <StatusScreen
+        demo={null}
+        onScreen={() => {}}
+        task={taskState({ paneReads: { [SOURCE]: rows } })}
+        nowMs={NOW_MS}
+        calendarReads={{}}
+        calendarConnected={false}
+      />,
+    );
+
+    // Open, not collapsed: the collapsed sentence is absent and the card's
+    // own heading plus its raw observation are present.
+    expect(screen.queryByText(/authority · unexpected status/)).toBeNull();
+    expect(screen.getByText("authority")).toBeTruthy();
+    expect(screen.getByText("answered 500 (wanted 401)")).toBeTruthy();
+    expect(screen.getByText("unexpected status")).toBeTruthy();
+  });
+
+  /** The card's staleness line, with an age to report. A `dormant` reading
+   * this old is escalated to `imminent` by `uptimeAnswer`, so the pane
+   * opens — and the card must repeat the staleness, or an open pane shows a
+   * green-looking observation with nothing saying it is hours out of date. */
+  it("names the staleness on the card when the probe workflow itself has gone quiet", () => {
+    const rows = read([
+      snapshot("web", {
+        envelope: { kind: "ok", schema: SOURCE, polledEveryMs: null, body: body({ expect_status: 200, observed_status: 200 }) },
+        freshness: { kind: "age", ageMs: 5 * 60 * 60 * 1000, declaredCadenceMs: 3_600_000 },
+      }),
+    ]);
+
+    render(
+      <StatusScreen
+        demo={null}
+        onScreen={() => {}}
+        task={taskState({ paneReads: { [SOURCE]: rows } })}
+        nowMs={NOW_MS}
+        calendarReads={{}}
+        calendarConnected={false}
+      />,
+    );
+
+    expect(screen.getByText("web")).toBeTruthy();
+    expect(screen.getByText("stale — as of 5h ago")).toBeTruthy();
+  });
+
+  /** The other half of the same line: a freshness the shell could not age at
+   * all. `isStaleFreshness` reads `unknown` as stale, so the pane still
+   * opens; the card must say so without inventing an age. */
+  it("names the staleness without an age when the freshness itself is unknown", () => {
+    const rows = read([
+      snapshot("web", {
+        envelope: { kind: "ok", schema: SOURCE, polledEveryMs: null, body: body({ expect_status: 200, observed_status: 200 }) },
+        freshness: { kind: "unknown" },
+      }),
+    ]);
+
+    render(
+      <StatusScreen
+        demo={null}
+        onScreen={() => {}}
+        task={taskState({ paneReads: { [SOURCE]: rows } })}
+        nowMs={NOW_MS}
+        calendarReads={{}}
+        calendarConnected={false}
+      />,
+    );
+
+    expect(screen.getByText("web")).toBeTruthy();
+    expect(screen.getByText("stale — age unknown")).toBeTruthy();
+  });
+
   it("reads a malformed payload as a gap, never as a healthy reading", () => {
     const rows = read([
       snapshot("authority", { envelope: { kind: "ok", schema: SOURCE, polledEveryMs: null, body: "not json at all" } }),

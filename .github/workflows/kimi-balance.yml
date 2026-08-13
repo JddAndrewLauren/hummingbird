@@ -6,10 +6,13 @@
 # hummingbird is public, so scheduled Actions runs are free, and this lane
 # is self-monitoring on the same posture: the pane bands its own answer
 # stale at ~13h and then refuses to answer at all, so a stalled poller is
-# visible within half a day without anyone watching this workflow. This is
-# the sixth `schedule:` in the repo (after `city-waste.yml`,
+# visible within half a day without anyone watching this workflow. This was
+# the eighth `schedule:` in the repo when it landed (after `city-waste.yml`,
 # `gmail-poll.yml`, `calendar-poll.yml`, `graph-mail-poll.yml`,
-# `graph-calendar-poll.yml`), and the same overturn of issue #8's ban
+# `graph-calendar-poll.yml`, `race-alert-poll.yml`,
+# `race-schedule-poll.yml`); `github-status.yml` (#314) and
+# `uptime-probe.yml` (#315) landed after it, so **ten `schedule:` workflows
+# exist today**. The same overturn of issue #8's ban
 # applies verbatim — that ban was about a *private* repo's pooled Actions
 # minutes and $0 spending cap, neither of which exists here. It does not
 # compete with any live clock: this is the only thing that ever polls this

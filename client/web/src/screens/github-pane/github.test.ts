@@ -373,6 +373,16 @@ describe("isStaleFreshness / staleness", () => {
     expect(isStaleFreshness(unknown, STALE_AFTER_MS)).toBe(true);
   });
 
+  /** The module-level half of the `stale — age unknown` branch: with an
+   * unageable freshness the escalated headline must say so in words rather
+   * than reporting a number it does not have. */
+  it("escalates an unageable freshness and says so without inventing an age", () => {
+    const rows = read([snapshot({ freshness: { kind: "unknown" } })]);
+    const answer = githubAnswer(FILE_NAME, inputs({ paneReads: { [SOURCE]: rows } }));
+    expect(answer.band).toBe("imminent");
+    expect(answer.collapsedHeadline).toContain("last heard an unknown time ago");
+  });
+
   it("bands stale at ~30h against the daily cadence", () => {
     const freshRead = read([snapshot({ freshness: { kind: "age", ageMs: 29 * 60 * 60 * 1000, declaredCadenceMs: 86_400_000 } })]);
     const staleRead = read([snapshot({ freshness: { kind: "age", ageMs: 31 * 60 * 60 * 1000, declaredCadenceMs: 86_400_000 } })]);

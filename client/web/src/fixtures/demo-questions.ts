@@ -25,11 +25,12 @@ import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 // aside filters it to the `"now"` questions below (waste answered/imminent,
 // race answered/distant — one non-dormant and one quiet reading, so the
 // capture proves both), and `StatusScreen` filters the same object to the
-// `"status"` infra questions. Two of those still ignore `QuestionInputs`
-// entirely — `screens/questions/placeholder.tsx`'s factory answers
-// `bound-but-unacquired` unconditionally, because no poller exists behind
-// either of them yet — so there is nothing to add here for those until
-// #315-#316 give each one a real source to read.
+// `"status"` infra questions. One of those four still ignores
+// `QuestionInputs` entirely — `reachability`, whose
+// `screens/questions/placeholder.tsx` factory answers
+// `bound-but-unacquired` unconditionally, because nothing polls behind it
+// yet — so there is nothing to add here for it until #316 gives it a real
+// source to read.
 //
 // **`kimi-balance/v1` (#313) is the first exception.** `kimiRead` below
 // gives the Status capture its first poller-backed, non-gap pane: a modest
@@ -44,6 +45,12 @@ import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 // the region long"), so the 768px capture actually has five rows to prove
 // readable rather than the one gap pane a fixture with no rows would leave
 // it with.
+//
+// **`uptime/v1` (#315) is the third.** `uptimeRead` below gives the Status
+// capture three service rows — `authority`, `web`, `runner` — all in quiet
+// agreement, the honest steady state (see its own docstring). Between the
+// three, the Status capture holds **nine poller-backed panes** (1 + 5 + 3)
+// plus the single `reachability` gap pane.
 
 /** The address the fixture's collection happens at. Fixed rather than the
  * device's own zone: a fixture whose answer changed with where the reviewer

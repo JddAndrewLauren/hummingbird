@@ -38,9 +38,11 @@ const SCREENS = [
   // banded "near" with a negative cash split); #314 landed the second
   // (`github-hummingbird/v1`, five workflow rows — one per band the pane can
   // produce — which is what makes the collapsed stack long enough to be
-  // worth capturing at 768px). This capture now shows both alongside the two
-  // still-honest gap panes (#315-#316 unpolled). Not permanent: each of
-  // those replaces its own gap in turn.
+  // worth capturing at 768px); #315 landed the third (`uptime/v1`, three
+  // service rows, all in quiet agreement). This capture therefore shows nine
+  // poller-backed panes alongside the *one* still-honest gap pane that is
+  // left — `reachability`, unpolled pending #316. Not permanent: that gap
+  // goes when #316 lands.
   { name: "status", nav: "Status" },
   { name: "settings", nav: "Settings" },
 ] as const;
