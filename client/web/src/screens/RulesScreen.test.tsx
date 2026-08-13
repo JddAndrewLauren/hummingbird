@@ -279,6 +279,66 @@ describe("RulesScreen", () => {
     expect(Array.from(severitySelect.options).map((o) => o.value)).toEqual(registry.severities);
   });
 
+  it("marks a rule stored at a severity outside the registry as unranked, on the card and in the editor", () => {
+    render(
+      <RulesScreen
+        rules={[rule({ severity: "warning" })]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    // Visible on the closed card, with the cost spelled out — not just
+    // that the value is unusual.
+    expect(screen.getByText(/unranked/i)).toBeTruthy();
+    expect(screen.getByText(/loses/i)).toBeTruthy();
+    expect(screen.getByText(/escalate/i)).toBeTruthy();
+
+    // And again in the editor, next to the severity select itself.
+    fireEvent.click(screen.getByText("Edit"));
+    expect(screen.getAllByText(/unranked/i).length).toBeGreaterThan(1);
+  });
+
+  it("does not mark a rule at a declared severity as unranked", () => {
+    render(
+      <RulesScreen
+        rules={[rule({ severity: "high" })]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/unranked/i)).toBeNull();
+    fireEvent.click(screen.getByText("Edit"));
+    expect(screen.queryByText(/unranked/i)).toBeNull();
+  });
+
+  it("does not mark a rule stored at the empty-string severity as unranked", () => {
+    render(
+      <RulesScreen
+        rules={[rule({ severity: "" })]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/unranked/i)).toBeNull();
+    fireEvent.click(screen.getByText("Edit"));
+    expect(screen.queryByText(/unranked/i)).toBeNull();
+  });
+
   it("offers a date/time picker for deadline, never the plain duration control", () => {
     render(
       <RulesScreen
