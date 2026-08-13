@@ -1,0 +1,41 @@
+[package]
+name = "hummingbird-uptime-probe"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller behind the `uptime/v1` standing question (#315,
+# ADR-0017 decisions 2/3/4/6): once an hour it issues one credential-free
+# HTTP request per service declared in the committed `services.json` (the
+# authority, the web origin, the runner) and writes one `context_snapshots`
+# row per service, keyed by the service's own `id`.
+#
+# A workspace member, so CI's `cargo clippy --workspace` /
+# `cargo test --workspace` gate it. It must NEVER become a dependency of
+# `hummingbird-authority-worker`: that crate builds for wasm32 and has no
+# business carrying an HTTP client (asserted from the other side in
+# `lib.rs`'s tests, as every other poller here does).
+#
+# The same split every poller here keeps: everything decidable — the
+# manifest shape, the verdict function over (declared expectation, observed
+# status, transport error), the envelope — lives in the lib and is natively
+# tested; `main.rs` holds only `std::env`, the requests and the writes.
+
+[dependencies]
+# The real `UPTIME_V1`, never a hand-copied twin: the frozen entry in
+# `sources.rs` is only a tripwire if the one adapter that mints under this
+# source goes through it.
+hummingbird-domain = { path = "../domain" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# `main.rs` only. Blocking by design: this is a one-shot process run once an
+# hour, so an async runtime would be pure ceremony — every poller here gives
+# the same reasoning.
+[dependencies.ureq]
+version = "3"
+default-features = false
+features = ["rustls", "json"]
+
+[[bin]]
+name = "uptime-probe"
+path = "src/bin/main.rs"

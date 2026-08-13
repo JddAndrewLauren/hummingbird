@@ -1,0 +1,23 @@
+[
+  {
+    "id": "authority",
+    "url": "https://hb.twinion.net/api/items",
+    "method": "GET",
+    "expect_status": 401,
+    "expected": "on"
+  },
+  {
+    "id": "web",
+    "url": "https://hb.twinion.net/",
+    "method": "GET",
+    "expect_status": 200,
+    "expected": "on"
+  },
+  {
+    "id": "runner",
+    "url": "https://hummingbird-runner.fly.dev/run",
+    "method": "POST",
+    "expect_status": 401,
+    "expected": "on"
+  }
+]

@@ -11,6 +11,7 @@ members = [
     "kimi-balance",
     "race-poll",
     "rules-engine",
+    "uptime-probe",
     "worker",
 ]
 

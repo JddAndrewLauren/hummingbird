@@ -266,6 +266,23 @@ pub const KIMI_BALANCE_V1: &str = "kimi-balance/v1";
 /// `alerts` row and carries no `key_recipe`.
 pub const GITHUB_HUMMINGBIRD_V1: &str = "github-hummingbird/v1";
 
+/// `uptime/v1`'s frozen namespace (#315, ADR-0017 decisions 2/3/4/6): two
+/// consumers share one literal — the registry entry below and
+/// `server/uptime-probe`, the out-of-process poller that mints one
+/// `context_snapshots` row per manifest-declared service under it, keyed by
+/// the service's own `id` — so a future retirement to `/v2` is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving. **One source spanning two platforms** (Cloudflare — the
+/// authority and the web origin — and Fly, the runner): ADR-0017 decision 2's
+/// deliberate refinement, since splitting by platform would need two
+/// `ingest` tokens minted for what is otherwise one credential-free binary
+/// issuing plain HTTP requests, and the poller itself makes no such
+/// distinction. **Snapshots only**: an unauthenticated reachability probe has
+/// nothing for an `alerts` row to ever mean — the pane derives its own band
+/// from the raw verdict at read time (`body.rs`'s own header) — so this
+/// source never mints an `alerts` row and carries no `key_recipe`.
+pub const UPTIME_V1: &str = "uptime/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -398,6 +415,20 @@ pub const REGISTRY: &[SourceEntry] = &[
     // question").
     SourceEntry {
         source: GITHUB_HUMMINGBIRD_V1,
+        shape: Shape::State,
+        writes: Writes::Snapshots,
+        key_recipe: None,
+        expires_at: Expiry::Never,
+        retired_as: None,
+    },
+    // The registry's third Snapshots-only entry (#315) — one row per
+    // manifest-declared service (`authority`, `web`, `runner`), keyed by the
+    // service's own `id` under this one source string. The sweeper carries
+    // no line in `services.json` and no row here (ADR-0017 decision 4): it
+    // never opens a listener, so no truthful `url`/`method`/`expect_status`
+    // triple exists for it.
+    SourceEntry {
+        source: UPTIME_V1,
         shape: Shape::State,
         writes: Writes::Snapshots,
         key_recipe: None,
@@ -665,6 +696,7 @@ mod tests {
             ),
             ("kimi-balance/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
             ("github-hummingbird/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
+            ("uptime/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
             ("item-threshold/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("healthchecks/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("home-assistant/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
@@ -809,6 +841,22 @@ mod tests {
     #[test]
     fn github_hummingbird_v1_is_registered_snapshot_only() {
         let entry = find(GITHUB_HUMMINGBIRD_V1).expect("github-hummingbird/v1 is registered");
+        assert!(!entry.writes_alerts());
+        assert!(entry.writes_snapshots());
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.key_recipe.is_none(), "no recipe to document");
+        assert!(!entry.is_retired());
+    }
+
+    /// `uptime/v1` (#315) is the registry's third live Snapshots-only entry
+    /// — pinned directly against `find` so a regression to `Alerts` or
+    /// `Both` silently re-adds an `alerts` write path this source has no
+    /// `source_key` recipe for. One source, many panes (one per
+    /// manifest-declared service, keyed by service id) — `github_hummingbird
+    /// _v1_is_registered_snapshot_only`'s own shape.
+    #[test]
+    fn uptime_v1_is_registered_snapshot_only() {
+        let entry = find(UPTIME_V1).expect("uptime/v1 is registered");
         assert!(!entry.writes_alerts());
         assert!(entry.writes_snapshots());
         assert_eq!(entry.shape, Shape::State);
