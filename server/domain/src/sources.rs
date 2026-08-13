@@ -235,6 +235,17 @@ pub const M365_CALENDAR_V1: &str = "m365-calendar/v1";
 /// poller rather than a source string that quietly keeps resolving.
 pub const RACE_SCHEDULE_V1: &str = "race-schedule/v1";
 
+/// `kimi-balance/v1`'s frozen namespace (#313, ADR-0017 decision 5): two
+/// consumers share one literal — the registry entry below and
+/// `server/kimi-balance`, the out-of-process poller that mints the one
+/// `context_snapshots` row under it every six hours — so a future retirement
+/// to `/v2` (e.g. once Moonshot ships a consumption endpoint) is a compile
+/// error at the poller rather than a source string that quietly keeps
+/// resolving. **Snapshots only**: there is no spend endpoint to alert on, so
+/// this source never mints an `alerts` row and carries no `key_recipe` — a
+/// snapshot's identity is `(source, key)`, authored by the poller directly.
+pub const KIMI_BALANCE_V1: &str = "kimi-balance/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -345,6 +356,20 @@ pub const REGISTRY: &[SourceEntry] = &[
              not (no source-owned field changes, so nothing restamps)",
         ),
         expires_at: Expiry::Always("the race's start time"),
+        retired_as: None,
+    },
+    // The registry's first live Snapshots-only entry (#313) — the case
+    // `a_snapshot_only_entry_is_representable_and_not_alert_writing` below
+    // exercised on a locally-built fixture before any real source needed it.
+    // Moonshot's balance endpoint reports remaining balance, never
+    // consumption (ADR-0017 decision 5), so there is nothing here for an
+    // `alerts` row to ever mean.
+    SourceEntry {
+        source: KIMI_BALANCE_V1,
+        shape: Shape::State,
+        writes: Writes::Snapshots,
+        key_recipe: None,
+        expires_at: Expiry::Never,
         retired_as: None,
     },
     SourceEntry {
@@ -606,6 +631,7 @@ mod tests {
                 Expiry::Always("the race's start time"),
                 None,
             ),
+            ("kimi-balance/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
             ("item-threshold/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("healthchecks/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("home-assistant/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
@@ -722,6 +748,20 @@ mod tests {
         assert!(entry.writes_snapshots());
         assert_eq!(entry.shape, Shape::Event, "a race start is an occurrence");
         assert_eq!(entry.expires_at, Expiry::Always("the race's start time"));
+    }
+
+    /// `kimi-balance/v1` (#313) is the registry's first real, live
+    /// Snapshots-only entry — pinned directly against `find` so a
+    /// regression to `Alerts` or `Both` silently re-adds an `alerts` write
+    /// path this source has no `source_key` recipe for.
+    #[test]
+    fn kimi_balance_v1_is_registered_snapshot_only() {
+        let entry = find(KIMI_BALANCE_V1).expect("kimi-balance/v1 is registered");
+        assert!(!entry.writes_alerts());
+        assert!(entry.writes_snapshots());
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.key_recipe.is_none(), "no recipe to document");
+        assert!(!entry.is_retired());
     }
 
     /// `item-threshold/v1` is the one live example of an alerts-only entry
