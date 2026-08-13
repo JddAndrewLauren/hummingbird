@@ -48,7 +48,7 @@ pub use sources::{
     item_threshold_v1_key, m365_calendar_v1_key, m365_mail_v1_key, photo_site_v1_key,
     race_schedule_v1_key, Expiry, Shape, SourceEntry, Writes, CITY_WASTE_V2,
     GITHUB_HUMMINGBIRD_V1, GMAIL_V1, GOOGLE_CALENDAR_V1, ITEM_THRESHOLD_V1, KIMI_BALANCE_V1,
-    M365_CALENDAR_V1, M365_MAIL_V1, RACE_SCHEDULE_V1, REGISTRY,
+    M365_CALENDAR_V1, M365_MAIL_V1, RACE_SCHEDULE_V1, REGISTRY, UPTIME_V1,
 };
 pub use step::{BlockedBy, Step};
 pub use token::{MintedToken, Scope, TokenInfo};

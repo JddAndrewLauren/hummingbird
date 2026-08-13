@@ -509,6 +509,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hummingbird-uptime-probe"
+version = "0.1.0"
+dependencies = [
+ "hummingbird-domain",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

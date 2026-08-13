@@ -5,6 +5,7 @@ import {
   BINDING_KEY as RACE_BINDING_KEY,
   SOURCE as RACE_SOURCE,
 } from "../screens/race-pane/race";
+import { SOURCE as UPTIME_SOURCE } from "../screens/uptime-pane/uptime";
 import { BINDING_KEY, SNAPSHOT_KEY, SOURCE } from "../screens/waste-pane/waste";
 import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 
@@ -270,6 +271,42 @@ function githubRead(nowMs: number): PaneReadDTO {
   };
 }
 
+/** One row per the three corrected `uptime/v1` services (ADR-0017 decision
+ * 4 over #310/#315's finding) — `authority` and `runner` both healthy at
+ * their declared refusal (401), `web` healthy at its declared 200. All
+ * `dormant`/agreement: the demo world's honest steady state, since
+ * `githubRead` already carries this region's non-dormant rows. */
+function uptimeRead(nowMs: number): PaneReadDTO {
+  function serviceSnapshot(key: string, expectStatus: number) {
+    return {
+      key,
+      fetchedAtMs: nowMs - 5 * 60_000,
+      envelope: {
+        kind: "ok" as const,
+        schema: UPTIME_SOURCE,
+        polledEveryMs: 3_600_000,
+        body: JSON.stringify({
+          expected: "on",
+          expect_status: expectStatus,
+          observed_status: expectStatus,
+          error: null,
+        }),
+      },
+      freshness: { kind: "age" as const, ageMs: 5 * 60_000, declaredCadenceMs: 3_600_000 },
+    };
+  }
+
+  return {
+    source: UPTIME_SOURCE,
+    snapshots: [
+      serviceSnapshot("authority", 401),
+      serviceSnapshot("web", 200),
+      serviceSnapshot("runner", 401),
+    ],
+    liveAlerts: [],
+  };
+}
+
 /** The demo world's answer to `QuestionInputs`, minus the clock the region
  * supplies itself. */
 export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs"> {
@@ -280,6 +317,7 @@ export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs">
       [RACE_SOURCE]: raceRead(nowMs),
       [KIMI_SOURCE]: kimiRead(nowMs),
       [GITHUB_SOURCE]: githubRead(nowMs),
+      [UPTIME_SOURCE]: uptimeRead(nowMs),
     },
     // The demo world mounts no calendar credential and no items — `?demo`
     // photographs the snapshot-lane panes; the weekend pane's own demo state (a

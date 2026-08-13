@@ -1,0 +1,90 @@
+# The uptime poller (#315, ADR-0017 decisions 2/3/4/6): once an hour it
+# issues one credential-free HTTP request per service declared in the
+# committed `server/uptime-probe/services.json` (the authority, the web
+# origin, the runner) and writes one `context_snapshots` row per service
+# under `uptime/v1`.
+#
+# **`schedule:` case, per the convention `city-waste.yml` established.**
+# hummingbird is public, so scheduled Actions runs are free, and this lane
+# is self-monitoring on the same posture every prior scheduled workflow here
+# gives: the pane bands its own answer stale at ~3h and then escalates
+# rather than trusting a poller that may itself be dead, so a stalled run is
+# visible within a few hours without anyone watching this workflow. This is
+# the **tenth** `schedule:` in the repo, counted directly against the
+# workflow files at the time this one was added (`city-waste.yml`,
+# `gmail-poll.yml`, `calendar-poll.yml`, `graph-mail-poll.yml`,
+# `graph-calendar-poll.yml`, `race-schedule-poll.yml`, `race-alert-poll.yml`,
+# `kimi-balance.yml`, `github-status.yml`, and this one) — see the repo rule
+# that a workflow header states its own count rather than copying one, since
+# two prior headers here (`city-waste.yml`, `kimi-balance.yml`) were each
+# found stating a wrong count of their own. The same overturn of issue #8's
+# ban applies verbatim — that ban was about a *private* repo's pooled
+# Actions minutes and $0 spending cap, neither of which exists here. It does
+# not compete with any live clock: this is the only thing that ever probes
+# these three services over HTTP.
+#
+# **Hourly, deliberately not faster** (ADR-0017 decision 6). Each probe
+# cold-boots the scale-to-zero runner (`runner/fly.toml:21`,
+# `min_machines_running = 0`); probing every fifteen minutes would cost it
+# 96 avoidable wake-ups a day to learn nothing new when nothing has changed.
+# This is the inversion decision 6 names outright — the most important
+# service (the one that answers this poller's own probe) gets the least
+# frequent probe. The whole workflow runs as one unit at this cadence; there
+# is no per-service interval anywhere in `services.json`.
+#
+# `server/uptime-probe/src/body.rs::POLLED_EVERY_MS` must match this
+# interval — it is what `Freshness` reads as the declared cadence, and
+# `server/uptime-probe/tests/contract.rs::polled_every_ms_is_one_hour` pins
+# the constant's own side.
+#
+# **The credential.** `UPTIME_PROBE_INGEST_TOKEN` is an `ingest`-scope token
+# bound to `uptime/v1`, minted from the operator's terminal against
+# `ADMIN_SECRET` — on `city-waste`'s own blast-radius reasoning, this token
+# reaches one route for one source and its worst-case abuse is a wrong
+# reading on this very pane. **No other credential is needed at all**: this
+# is the one poller in this whole design that holds no credential beyond its
+# own ingest token — every request it makes against `authority`, `web` and
+# `runner` is deliberately unauthenticated (ADR-0017 decision 3's "the right
+# refusal is the signal").
+name: uptime-probe
+
+on:
+  schedule:
+    - cron: "5 * * * *"
+  # A missed or dropped run, and the first run after the token is minted,
+  # otherwise have no trigger at all.
+  workflow_dispatch:
+
+# One poller at a time. Two overlapping runs would race on the same
+# `(source, key)` rows; the authority's own "an older `fetched_at` never
+# overwrites" rule makes that safe rather than corrupting, but there is no
+# reason to lean on it.
+concurrency:
+  group: uptime-probe
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # Three unauthenticated requests and three POSTs, behind a cached
+    # build. Anything slower than this is a hung fetch — including the
+    # runner's own cold boot, which this probe deliberately triggers.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match root `rust-toolchain.toml`, as every other workflow
+      # here is.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Probe the declared services
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          HB_INGEST_TOKEN: ${{ secrets.UPTIME_PROBE_INGEST_TOKEN }}
+        run: cargo run -q -p hummingbird-uptime-probe
