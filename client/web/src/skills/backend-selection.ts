@@ -28,13 +28,18 @@ export interface StorageLike {
  * safe default" rule `route-plan.ts`'s `planRoute` applies at routing time,
  * kept here too so a picker never renders a selection it cannot label.
  */
-export function readBackendSelection(storage: StorageLike, registry: BackendEntry[]): string {
+export function readBackendSelection(storage: StorageLike | undefined, registry: BackendEntry[]): string {
+  // No storage at all (a context without `localStorage`) reads the same as
+  // nothing stored — Auto. `rail-collapse.ts` takes its preference the same
+  // way, for the same reason.
+  if (!storage) return AUTO_SELECTION;
   const raw = storage.getItem(SELECTION_KEY);
   if (raw === null) return AUTO_SELECTION;
   if (raw === AUTO_SELECTION) return AUTO_SELECTION;
   return registry.some((entry) => entry.id === raw) ? raw : AUTO_SELECTION;
 }
 
-export function writeBackendSelection(storage: StorageLike, selection: string): void {
+export function writeBackendSelection(storage: StorageLike | undefined, selection: string): void {
+  if (!storage) return;
   storage.setItem(SELECTION_KEY, selection);
 }

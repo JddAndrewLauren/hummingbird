@@ -363,6 +363,164 @@ describe("runRouted", () => {
     }
   });
 
+  // A tier that ANSWERED with an error is not an unreachable tier. #307
+  // made the seam's decline a first-class outcome carrying a stamp, and a
+  // 400/413 is forwarded verbatim by the proxy — routing must treat both as
+  // this run's answer, not as a reason to memoize, reword or reroute.
+
+  const SEAM_DECLINE = '{"ok":false,"error":"That item already has live steps.","backend":"anthropic","model":"opus"}';
+
+  it("a seam decline is this run's terminal, verbatim and stamped, and never memoizes the tier dead", async () => {
+    const memo = memoStore();
+    const events = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: async () => ndjson(200, SEAM_DECLINE),
+      }),
+    );
+    // The stamp survives: the wire said anthropic/opus, so the event does
+    // too. `failure()` would have flattened both to null and taken the
+    // badge off every declined run.
+    expect(events).toEqual([
+      { kind: "started" },
+      { kind: "failed", error: "That item already has live steps.", backend: "anthropic", model: "opus" },
+    ]);
+    expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
+  });
+
+  it("a seam decline under Auto is the answer, never a fallthrough to the next tier", async () => {
+    const memo = memoStore();
+    const calledEndpoints: string[] = [];
+    const events = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD, HOME],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: async (input) => {
+          calledEndpoints.push(String(input));
+          return ndjson(200, SEAM_DECLINE);
+        },
+      }),
+    );
+    // Home is never tried: the seam's answer is the run's answer, and
+    // re-asking a second backend would re-run work #307 just declined.
+    expect(calledEndpoints).toEqual(["/a"]);
+    expect(events.at(-1)).toMatchObject({ kind: "failed", error: "That item already has live steps." });
+    expect(isFreshDead(memo.current, "home", 0)).toBe(false);
+  });
+
+  it("a pinned seam decline reaches the caller byte-identically, unprefixed", async () => {
+    const memo = memoStore();
+    const events = await collect(
+      runRouted("cloud", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD, HOME],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: async () => ndjson(200, SEAM_DECLINE),
+      }),
+    );
+    // NOT "Cloud runner did not answer: …" — it answered. `decline.ts`'s
+    // verbatim rule is the point, and the panel pins the same string.
+    expect(events.at(-1)).toEqual({
+      kind: "failed",
+      error: "That item already has live steps.",
+      backend: "anthropic",
+      model: "opus",
+    });
+    expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
+  });
+
+  it("a 400 forwarded verbatim by the proxy does not memoize the tier dead", async () => {
+    const memo = memoStore();
+    const events = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: async () => ndjson(400, '{"ok":false,"error":"grain must be a number","backend":"anthropic","model":null}'),
+      }),
+    );
+    expect(events.at(-1)).toEqual({
+      kind: "failed",
+      error: "grain must be a number",
+      backend: "anthropic",
+      model: null,
+    });
+    expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
+  });
+
+  it("a second tap inside the memo's TTL still reaches a backend that declined the first", async () => {
+    // The reviewer's repro: single entry, default Auto, 30s TTL. The first
+    // tap is declined by the seam; the user fixes the thing and taps again
+    // eight seconds later. Memoizing that decline as death would answer the
+    // second tap "No backend is currently reachable." with no request sent.
+    const memo = memoStore();
+    const calledEndpoints: string[] = [];
+    const deps = {
+      registry: [CLOUD],
+      memoStore: memo,
+      readToken: async () => "hb_token",
+    };
+    const first = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        ...deps,
+        now: () => 0,
+        fetch: async (input: RequestInfo | URL) => {
+          calledEndpoints.push(String(input));
+          return ndjson(200, SEAM_DECLINE);
+        },
+      }),
+    );
+    const second = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        ...deps,
+        now: () => 8_000,
+        fetch: async (input: RequestInfo | URL) => {
+          calledEndpoints.push(String(input));
+          return ndjson(200, '{"ok":true,"result":null,"backend":"anthropic","model":"opus"}');
+        },
+      }),
+    );
+    expect(calledEndpoints).toEqual(["/a", "/a"]);
+    expect(first.at(-1)).toMatchObject({ kind: "failed" });
+    expect(second.at(-1)).toMatchObject({ kind: "ok" });
+  });
+
+  it("a connect timeout that fires declines as unreachable and does memoize the tier dead", async () => {
+    // The positive direction of the connect-timeout fix: a sleeping host
+    // whose `fetch` settles only when aborted. Nothing else in the suite
+    // notices if the arming listener is dropped altogether, and this is
+    // also the case that must STILL mark dead — the classification above
+    // must not over-correct into never memoizing anything.
+    const memo = memoStore();
+    const events = await collect(
+      runRouted("cloud", () => ({ skill: "microtask", args: {} }), {
+        registry: [{ ...CLOUD, connectTimeoutMs: 20 }],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("The operation was aborted.", "AbortError")),
+              { once: true },
+            );
+          }),
+      }),
+    );
+    const last = events.at(-1);
+    expect(last).toMatchObject({ kind: "failed" });
+    expect((last as { error: string }).error).toContain("Cloud runner did not answer");
+    expect(isFreshDead(memo.current, "cloud", 0)).toBe(true);
+  });
+
   it("with no token stored it declines without any fetch, same as the unrouted seam", async () => {
     const memo = memoStore();
     let called = false;

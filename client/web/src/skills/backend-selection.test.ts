@@ -46,4 +46,14 @@ describe("backend-selection", () => {
     writeBackendSelection(storage, "cloud");
     expect(storage.dump()).toEqual({ "hb.backend-selection": "cloud" });
   });
+
+  /** A context with no `localStorage` at all — `useBackendSelection.ts`
+   * passes `undefined` there rather than evaluating a bare `localStorage`
+   * that throws, the same way `rail-collapse.ts` takes the rail
+   * preference. Reading answers the safe default; writing is a no-op,
+   * never an exception raised by changing a preference. */
+  it("reads Auto and writes nothing when there is no storage", () => {
+    expect(readBackendSelection(undefined, REGISTRY)).toBe("auto");
+    expect(() => writeBackendSelection(undefined, "cloud")).not.toThrow();
+  });
 });

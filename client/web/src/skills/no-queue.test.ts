@@ -27,6 +27,7 @@ import routeRunSource from "./route-run.ts?raw";
 import runSkillSource from "./run-skill.ts?raw";
 import runStateSource from "./run-state.ts?raw";
 import wiringSource from "../shell/useMicrotaskWiring.ts?raw";
+import backendSelectionHookSource from "../shell/useBackendSelection.ts?raw";
 import panelSource from "../components/domain/ItemDetailPanel.tsx?raw";
 
 const SKILL_MODULES: Array<[string, string]> = [
@@ -42,6 +43,19 @@ const SKILL_MODULES: Array<[string, string]> = [
   ["route-run.ts", routeRunSource],
   ["run-skill.ts", runSkillSource],
   ["run-state.ts", runStateSource],
+];
+
+/** The whole lane: `src/skills/` plus the two `src/shell/` hooks that are
+ * part of it. They cannot join `SKILL_MODULES` — the import-graph test
+ * above allows only `./` specifiers, and a hook necessarily imports
+ * `../skills/…` — but every *other* invariant here binds them equally. The
+ * selection hook is in the lane because it is where the picker's device
+ * preference is read and written; a queue reference or a timer there would
+ * be exactly as wrong as one in `route-run.ts`. */
+const LANE_MODULES: Array<[string, string]> = [
+  ...SKILL_MODULES,
+  ["useMicrotaskWiring.ts", wiringSource],
+  ["useBackendSelection.ts", backendSelectionHookSource],
 ];
 
 /** Comments discuss all of this at length; only code counts. */
@@ -81,13 +95,36 @@ describe("the skill lane cannot reach the sync engine", () => {
     expect(named.sort()).toEqual(["WorkerLike", "triggerSyncManual"]);
   });
 
+  it("the selection hook reaches neither the store nor the worker layer", () => {
+    // The picker's choice is a device preference (`backend-selection.ts`),
+    // never a synced fact. The wiring hook above has one sanctioned
+    // crossing; this one has none at all.
+    const imports = [...code(backendSelectionHookSource).matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
+    for (const specifier of imports) {
+      expect(
+        specifier.startsWith("../store/") || specifier.startsWith("../worker/"),
+        `useBackendSelection.ts imports ${specifier}`,
+      ).toBe(false);
+    }
+  });
+
   it("nothing in the lane starts a timer", () => {
     // ADR-0007's single 60s interval stays the only clock. An
     // `AbortController` is not a clock, which is why aborting on unmount is
     // allowed here and a `setTimeout` is not.
-    for (const [name, source] of [...SKILL_MODULES, ["useMicrotaskWiring.ts", wiringSource]] as Array<
-      [string, string]
-    >) {
+    //
+    // **`AbortSignal.timeout` is the one sanctioned exception**, and it is
+    // absent from the banned list deliberately rather than by oversight.
+    // #274 needs a per-attempt connect deadline (`route-run.ts`) so a
+    // sleeping home machine cannot make the tap hang; what ADR-0007 bans is
+    // a *cadence* — something that repeats, reschedules or polls. A
+    // one-shot deadline that arms once per attempt and is disarmed the
+    // moment `fetch` settles is none of those, and it starts no timer this
+    // code owns (the platform holds it, the same way an `AbortController`
+    // holds its abort). Reaching for `setTimeout`/`clearTimeout` to build
+    // the same thing by hand is still banned — that is a timer in the
+    // lane's own source, and this pin will catch it.
+    for (const [name, source] of LANE_MODULES) {
       const body = code(source);
       for (const banned of ["setInterval", "setTimeout", "requestAnimationFrame"]) {
         expect(body.includes(banned), `${name} calls ${banned}`).toBe(false);
@@ -96,9 +133,7 @@ describe("the skill lane cannot reach the sync engine", () => {
   });
 
   it("nothing in the lane touches the dead-letter journal or the pending overlay", () => {
-    for (const [name, source] of [...SKILL_MODULES, ["useMicrotaskWiring.ts", wiringSource]] as Array<
-      [string, string]
-    >) {
+    for (const [name, source] of LANE_MODULES) {
       const body = code(source);
       for (const banned of ["deadLetter", "requestQueueDepth", "coreStore"]) {
         expect(body.includes(banned), `${name} references ${banned}`).toBe(false);

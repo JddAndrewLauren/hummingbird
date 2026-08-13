@@ -64,7 +64,7 @@ function Harness({
     <>
       <span data-testid="phase">{run.phase}</span>
       {declinedFallback ? (
-        <button type="button" onClick={declinedFallback.onSwitch}>
+        <button type="button" onClick={() => declinedFallback.onSwitchAndRun({ itemId: "item-1" })}>
           switch to {declinedFallback.label}
         </button>
       ) : null}
@@ -311,11 +311,19 @@ describe("useMicrotaskWiring — #274's routing", () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/home-run");
   });
 
-  it("a dead pin offers a one-tap switch to the fallback, which only changes the selection", async () => {
+  it("a dead pin's one-tap switch retries against the NEW backend, not the pin it just left", async () => {
+    // The bug this pins: switching and re-running used to be two calls in
+    // one tick, and `onRun` is closed over the render's `selection` — so
+    // the retry re-attempted the dead pin (and, freshly memoized dead,
+    // declined instantly without sending anything). The selection prop here
+    // deliberately stays "cloud" for the whole test, exactly as it does in
+    // the tick before React re-renders with the new preference.
     const worker = fakeWorker();
-    const fetchImpl = vi.fn(async () => {
-      throw new Error("connection refused");
-    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === "/api/home-run"
+        ? ndjson('{"ok":true,"result":null,"backend":"home","model":"llama3"}')
+        : Promise.reject(new Error("connection refused")),
+    );
     const onSelectBackend = vi.fn();
     render(
       <Harness
@@ -332,11 +340,19 @@ describe("useMicrotaskWiring — #274's routing", () => {
     await settle();
 
     expect(phase()).toBe("declined");
-    const button = screen.getByText(/switch to home runner/i);
-    fireEvent.click(button);
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual(["/api/skills/run"]);
+
+    fireEvent.click(screen.getByText(/switch to home runner/i));
+    await settle();
+
+    // Both halves, and the second is the one that used to be wrong: the
+    // preference moved, AND the retry went to home.
     expect(onSelectBackend).toHaveBeenCalledWith("home");
-    // The switch alone issues no request — it only moves the selection.
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
+      "/api/skills/run",
+      "/api/home-run",
+    ]);
+    expect(phase()).toBe("done");
   });
 
   it("offers no fallback while pinned to the registry's only entry", async () => {

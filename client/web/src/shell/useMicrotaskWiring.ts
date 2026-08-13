@@ -53,9 +53,16 @@ export interface MicrotaskWiring {
   /** #274's one-tap offer beside a pinned decline. `null` whenever there is
    * nothing to offer: the run is not declined, the current selection is
    * Auto (nothing to fall back FROM — Auto already tried everything it
-   * could), or the registry has no other entry. Never an automatic retry —
-   * `onSwitch` only changes the selection; the caller re-issues the run. */
-  declinedFallback: { label: string; onSwitch: () => void } | null;
+   * could), or the registry has no other entry. Still never an *automatic*
+   * fallback — nothing here fires without the user pressing the button.
+   *
+   * **Switching and re-running are one call on purpose.** They cannot be
+   * two: `onRun` is a `useCallback` closed over the render's `selection`,
+   * so a caller doing `onSwitch(); onRun(request)` in one tick re-attempts
+   * the very pin that just declined — and, freshly memoized dead, gets an
+   * instant decline instead of the retry it asked for. Handing back one
+   * function makes that miswiring unexpressible. */
+  declinedFallback: { label: string; onSwitchAndRun: (request: MicrotaskRunRequest) => void } | null;
 }
 
 export interface MicrotaskWiringDeps {
@@ -118,8 +125,12 @@ export function useMicrotaskWiring(
     };
   }, []);
 
-  const onRun = useCallback(
-    (request: MicrotaskRunRequest) => {
+  // Takes the selection to route with as an argument rather than reading
+  // the closed-over one, so the fallback button can run as the backend it
+  // just switched to — in the same tick, before any re-render has handed
+  // this hook the new selection.
+  const startRun = useCallback(
+    (request: MicrotaskRunRequest, runAs: string) => {
       const itemId = request.itemId;
       if (inFlight.current.has(itemId)) return;
       const controller = new AbortController();
@@ -140,7 +151,7 @@ export function useMicrotaskWiring(
         let state: SkillRunState = IDLE;
         try {
           for await (const event of runRouted(
-            selection,
+            runAs,
             (entry) => microtaskRunBody({ ...request, model: entry.model ?? undefined }),
             { ...runDeps, registry, memoStore, now: Date.now },
           )) {
@@ -167,7 +178,12 @@ export function useMicrotaskWiring(
         if (state.phase === "done") triggerSyncManual(worker);
       })();
     },
-    [worker, deps.fetch, deps.tokenStore, selection, registry, memoStore],
+    [worker, deps.fetch, deps.tokenStore, registry, memoStore],
+  );
+
+  const onRun = useCallback(
+    (request: MicrotaskRunRequest) => startRun(request, selection),
+    [startRun, selection],
   );
 
   const run = (selectedItemId && runs[selectedItemId]) || IDLE;
@@ -181,8 +197,17 @@ export function useMicrotaskWiring(
     const fallback = fallbackEntry(registry, selection);
     const onSelectBackend = deps.onSelectBackend;
     if (fallback === null || onSelectBackend === undefined) return null;
-    return { label: fallback.label, onSwitch: () => onSelectBackend(fallback.id) };
-  }, [run, selection, registry, deps.onSelectBackend]);
+    return {
+      label: fallback.label,
+      onSwitchAndRun: (request: MicrotaskRunRequest) => {
+        // The preference change is device-local and takes effect on the
+        // next render; the run cannot wait for it, so it is told which
+        // backend to use outright.
+        onSelectBackend(fallback.id);
+        startRun(request, fallback.id);
+      },
+    };
+  }, [run, selection, registry, deps.onSelectBackend, startRun]);
 
   return { run, onRun, declinedFallback };
 }

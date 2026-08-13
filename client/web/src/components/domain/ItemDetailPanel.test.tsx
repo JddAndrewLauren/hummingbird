@@ -21,7 +21,7 @@ function panel(options: {
   run?: SkillRunState;
   onRun?: (request: { itemId: string; replace?: boolean; grain?: number }) => void;
   microtask?: boolean;
-  declinedFallback?: { label: string; onSwitch: () => void } | null;
+  declinedFallback?: { label: string; onSwitchAndRun: (request: { itemId: string }) => void } | null;
 } = {}) {
   const onRun = options.onRun ?? vi.fn();
   render(
@@ -196,6 +196,26 @@ describe("the outcome", () => {
     expect(screen.getByRole("alert").textContent).toBe(reason);
   });
 
+  /** Box 7: the stamp "always names the backend and model that actually
+   * answered" — a declined answer included, because comparing tiers is the
+   * whole point of the picker. Routing used to flatten every non-ok
+   * terminal's stamp to `null` on its way here, so this rendered nothing. */
+  it("renders the stamp on a decline the backend answered with", () => {
+    panel({
+      run: stateFrom([
+        STARTED,
+        {
+          kind: "failed",
+          error: "That item already has live steps.",
+          backend: "anthropic",
+          model: "opus",
+        },
+      ]),
+    });
+    expect(screen.getByText("anthropic · opus")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toBe("That item already has live steps.");
+  });
+
   it("the button is live again once a run has ended", () => {
     const onRun = panel({
       run: stateFrom([STARTED, { kind: "failed", error: "nope", backend: null, model: null }]),
@@ -217,18 +237,21 @@ describe("the outcome", () => {
  * one-tap offer is a button beside the decline, not an automatic retry. */
 describe("the pinned-backend decline (#274)", () => {
   it("offers a one-tap switch when the caller has a fallback to offer", () => {
-    const onSwitch = vi.fn();
+    const onSwitchAndRun = vi.fn();
     const onRun = panel({
       run: stateFrom([STARTED, { kind: "failed", error: "Cloud runner is not answering right now.", backend: null, model: null }]),
-      declinedFallback: { label: "Home runner", onSwitch },
+      declinedFallback: { label: "Home runner", onSwitchAndRun },
     });
 
     const button = screen.getByRole("button", { name: /switch to home runner/i });
     fireEvent.click(button);
 
-    expect(onSwitch).toHaveBeenCalledTimes(1);
-    // One tap does both: switches AND re-issues the same request.
-    expect(onRun).toHaveBeenCalledWith({ itemId: "item-1" });
+    // One call, carrying the request — switching and re-running are the
+    // caller's single operation, because doing them as two here would
+    // re-run against the selection this panel was rendered with, i.e. the
+    // pin that just declined.
+    expect(onSwitchAndRun).toHaveBeenCalledWith({ itemId: "item-1" });
+    expect(onRun).not.toHaveBeenCalled();
   });
 
   it("offers nothing when the caller has no fallback (this slice's single-entry registry)", () => {

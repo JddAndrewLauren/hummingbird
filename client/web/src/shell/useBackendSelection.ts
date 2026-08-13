@@ -13,7 +13,17 @@ export interface BackendSelectionControl {
   setSelection: (selection: string) => void;
 }
 
-export function useBackendSelection(storage: Storage = localStorage): BackendSelectionControl {
+/** The default is resolved lazily, not as a default parameter value: a bare
+ * `localStorage` in the signature is evaluated wherever this module is
+ * imported, which throws outright in a context that has none (SSR, a worker,
+ * a test environment without it). `App.tsx` guards the rail preference the
+ * same way. `backend-selection.ts` already treats `undefined` as "no stored
+ * preference" and answers Auto, and writing to it is a no-op. */
+function deviceStorage(): Storage | undefined {
+  return typeof localStorage === "undefined" ? undefined : localStorage;
+}
+
+export function useBackendSelection(storage: Storage | undefined = deviceStorage()): BackendSelectionControl {
   const [selection, setSelectionState] = useState<string>(() =>
     readBackendSelection(storage, BACKEND_REGISTRY),
   );

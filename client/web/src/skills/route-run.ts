@@ -13,6 +13,14 @@
 // same category as the unmount `AbortController` `useMicrotaskWiring.ts`
 // already uses, not a second interval against ADR-0007.
 //
+// **"Did not answer" and "answered with an error" are different things**,
+// and only the first is about reachability. A tier that sent a response —
+// a seam decline (#307), a 400, a 401 — has demonstrably been reached: it
+// is never memoized dead, never fallen through, and never reworded; its
+// terminal event reaches the caller exactly as the envelope wrote it,
+// stamp included. Only a `fetch` that rejected or timed out connecting is
+// evidence of unreachability, and only that memoizes a tier dead.
+//
 // **Exactly one `started` and one terminal event reach the caller**, same
 // contract as `runSkill` itself: a multi-tier fallback is invisible at that
 // level, narrated instead as `progress` lines in between.
@@ -74,7 +82,7 @@ export async function* runRouted(
     }
 
     const entry = step.entry;
-    const terminal = yield* attempt(entry, buildBody(entry), deps);
+    const { terminal, answered } = yield* attempt(entry, buildBody(entry), deps);
 
     if (terminal.kind === "ok") {
       deps.memoStore.set(markReachable(deps.memoStore.get(), entry.id, deps.now()));
@@ -82,9 +90,25 @@ export async function* runRouted(
       return;
     }
 
-    // `NO_TOKEN` is not evidence the backend is unreachable — `fetch` was
-    // never even called — so it must not memoize the entry as dead. Doing
-    // so would make the very next tap's plan all-skip (every entry
+    // **The tier answered — with an error, but it answered.** A 200 whose
+    // terminal line says `ok:false` is the seam declining, which #307 made a
+    // first-class outcome; a 400/413 is forwarded verbatim by the proxy the
+    // same way. None of that is evidence of unreachability, so it must not
+    // memoize the entry dead (a false decline would then block a legitimate
+    // retry for the memo's whole TTL, with no request sent at all), must not
+    // fall through to another tier, and must reach the caller EXACTLY as the
+    // envelope wrote it — its own prose (`decline.ts`: prefixing it here
+    // would be the same mistake in a different place) and its own stamp
+    // (which `failure()` below would discard, so a declined run would lose
+    // the badge naming who answered — and comparing tiers is the point).
+    if (answered) {
+      yield terminal;
+      return;
+    }
+
+    // `NO_TOKEN` is not evidence the backend is unreachable either — `fetch`
+    // was never even called — so it must not memoize the entry as dead.
+    // Doing so would make the very next tap's plan all-skip (every entry
     // memoized dead), which is exactly the stuck-forever bug below.
     if (terminal.error !== NO_TOKEN) {
       deps.memoStore.set(markDead(deps.memoStore.get(), entry.id, deps.now()));
@@ -114,16 +138,30 @@ export async function* runRouted(
   yield failure(NO_REACHABLE_BACKEND);
 }
 
+/** A run's last event: what `runSkill` narrows to once `started`,
+ * `progress` and `unreadable` are accounted for. */
+type TerminalEvent =
+  | { kind: "ok"; result: unknown; backend: string | null; model: string | null }
+  | { kind: "failed"; error: string; backend: string | null; model: string | null };
+
 /** One tier's attempt: `runSkill`'s own `started` is swallowed (this
  * generator already emitted its own), its `progress` lines are forwarded,
  * and its terminal event is returned to the caller rather than yielded
  * directly — the caller decides whether that terminal is *this run's*
- * terminal or a fallback trigger. */
+ * terminal or a fallback trigger.
+ *
+ * **`answered` is what makes that decision possible**, and it is observed
+ * rather than inferred: it is true once `deps.fetch` has resolved — the
+ * backend sent a response — and false when it rejected, timed out
+ * connecting, or was never called at all. Reading it off the terminal event
+ * instead is not possible and must not be attempted: a synthesized decline
+ * and a stamp-less envelope line are indistinguishable by shape, and
+ * matching on the prose is exactly what `decline.ts` forbids. */
 async function* attempt(
   entry: BackendEntry,
   body: unknown,
   deps: RouteRunDeps,
-): AsyncGenerator<SkillEvent, { kind: "ok"; result: unknown; backend: string | null; model: string | null } | { kind: "failed"; error: string; backend: string | null; model: string | null }> {
+): AsyncGenerator<SkillEvent, { terminal: TerminalEvent; answered: boolean }> {
   // Wraps `deps.fetch` so the connect timeout bounds only the wait for
   // `fetch` to settle. A real `fetch`'s `AbortSignal` stays tied to the
   // whole request, headers AND body — so a signal that is still armed when
@@ -139,6 +177,7 @@ async function* attempt(
   // `AbortSignal.timeout` owns its own platform timer; nothing here starts
   // one (ADR-0007 — the 60s sync interval stays the only clock in this
   // lane).
+  let answered = false;
   const connectBoundedFetch: typeof globalThis.fetch = async (input, init) => {
     const cancelController = new AbortController();
     const connectTimeoutSignal = AbortSignal.timeout(entry.connectTimeoutMs);
@@ -148,16 +187,19 @@ async function* attempt(
       ? AbortSignal.any([init.signal, cancelController.signal])
       : cancelController.signal;
     try {
-      return await deps.fetch(input, { ...init, signal });
+      const response = await deps.fetch(input, { ...init, signal });
+      // Set on the resolve path only — a rejected `fetch` leaves it false,
+      // and so does a `runSkill` that never calls `fetch` at all (no token).
+      // A body that later tears mid-stream does not unset it: the backend
+      // did answer, and the run is this tier's to finish or lose.
+      answered = true;
+      return response;
     } finally {
       connectTimeoutSignal.removeEventListener("abort", onConnectTimeout);
     }
   };
 
-  let terminal:
-    | { kind: "ok"; result: unknown; backend: string | null; model: string | null }
-    | { kind: "failed"; error: string; backend: string | null; model: string | null }
-    | null = null;
+  let terminal: TerminalEvent | null = null;
 
   for await (const event of runSkill(entry, body, {
     fetch: connectBoundedFetch,
@@ -177,7 +219,10 @@ async function* attempt(
     terminal = event;
   }
 
-  return terminal ?? { kind: "failed", error: NO_TERMINAL_LINE, backend: null, model: null };
+  return {
+    terminal: terminal ?? { kind: "failed", error: NO_TERMINAL_LINE, backend: null, model: null },
+    answered,
+  };
 }
 
 function failure(error: string): SkillEvent {

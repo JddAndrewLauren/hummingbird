@@ -52,11 +52,15 @@ export interface ItemDetailPanelProps {
     onRun: (request: MicrotaskRunRequest) => void;
     /** #274's pinned-decline affordance: set only while `run.phase` is
      * `"declined"` AND the current selection is a pin (never Auto) AND the
-     * registry has another entry to offer. `onSwitch` only changes the
-     * device-local selection — this panel is what re-issues the run, using
-     * the same request it built the first time, so one tap both switches
-     * and retries. */
-    declinedFallback?: { label: string; onSwitch: () => void } | null;
+     * registry has another entry to offer. One tap both switches and
+     * retries, but as a **single call** the caller owns: this panel hands
+     * over the request it built the first time and nothing else. Switching
+     * here and then calling `onRun` would retry against the selection this
+     * render closed over — the pin that just declined. */
+    declinedFallback?: {
+      label: string;
+      onSwitchAndRun: (request: MicrotaskRunRequest) => void;
+    } | null;
   };
 }
 
@@ -265,10 +269,7 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null, 
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => {
-                      microtask.declinedFallback?.onSwitch();
-                      microtask.onRun(runRequest);
-                    }}
+                    onClick={() => microtask.declinedFallback?.onSwitchAndRun(runRequest)}
                   >
                     Switch to {microtask.declinedFallback.label}
                   </Button>
