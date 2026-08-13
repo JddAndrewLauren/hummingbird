@@ -1,0 +1,96 @@
+# The GitHub workflow-health poller (#314, ADR-0017 decision 2): once a day
+# it reads this repo's own `.github/workflows/*.yml` for every scheduled
+# workflow, asks GitHub's own Actions API for each one's run history, and
+# writes one `context_snapshots` row per workflow under
+# `github-hummingbird/v1` — the tell for GitHub's 60-day auto-disable of an
+# inactive repo's scheduled workflows, which stops every cron here at once
+# with no visible gap at the services those workflows write to.
+#
+# **`schedule:` case, per the convention `city-waste.yml` established.**
+# hummingbird is public, so scheduled Actions runs are free, and this lane
+# is self-monitoring on the same posture every prior scheduled workflow here
+# gives: the pane bands its own answer stale at ~30h and then refuses to
+# answer at all, so a stalled poller is visible within a day and a half
+# without anyone watching this workflow. This is the **ninth** `schedule:`
+# in the repo, counted directly against the workflow files at the time this
+# one was added (`city-waste.yml`, `gmail-poll.yml`, `calendar-poll.yml`,
+# `graph-mail-poll.yml`, `graph-calendar-poll.yml`, `race-schedule-poll.yml`,
+# `race-alert-poll.yml`, `kimi-balance.yml`, and this one) — see the repo
+# rule that a workflow header states its own count rather than copying one,
+# since two prior headers here (`city-waste.yml`, `kimi-balance.yml`) were
+# each found stating a wrong count of their own. The same overturn of issue
+# #8's ban applies verbatim — that ban was about a *private* repo's pooled
+# Actions minutes and $0 spending cap, neither of which exists here. It does
+# not compete with any live clock: this is the only thing that ever polls
+# this repo's own run history.
+#
+# **This workflow watches every scheduled workflow, itself included** — it
+# has no special-case exclusion for its own file. It cannot detect its own
+# death (see `server/github-status/src/lib.rs`'s header for why: a dead
+# `github-status.yml` writes nothing, and nothing here can make it write
+# something about itself), but it can and does report its own recent
+# conclusions like any other workflow's, for whatever that is worth while it
+# is alive.
+#
+# `server/github-status/src/body.rs::POLLED_EVERY_MS` must match this
+# interval — it is what `Freshness` reads as the declared cadence, and
+# `server/github-status/tests/contract.rs::polled_every_ms_is_one_day` pins
+# the constant's own side.
+#
+# **The credential.** `GITHUB_STATUS_INGEST_TOKEN` is an `ingest`-scope
+# token bound to `github-hummingbird/v1`, minted from the operator's
+# terminal against `ADMIN_SECRET` — on `city-waste`'s own blast-radius
+# reasoning, this token reaches one route for one source and its worst-case
+# abuse is a wrong reading on this very pane. **No other credential is
+# needed**: reading this repo's own run history is covered by the automatic,
+# per-run `GITHUB_TOKEN` GitHub Actions already provides, scoped down to
+# read-only via `permissions:` below.
+name: github-status
+
+on:
+  schedule:
+    - cron: "15 6 * * *"
+  # A missed or dropped run, and the first run after the token is minted,
+  # otherwise have no trigger at all.
+  workflow_dispatch:
+
+# `GITHUB_TOKEN` needs nothing beyond reading this repo's own Actions run
+# history; every other permission defaults to none.
+permissions:
+  contents: read
+  actions: read
+
+# One poller at a time. Two overlapping runs would race on the same
+# `(source, key)` rows; the authority's own "an older `fetched_at` never
+# overwrites" rule makes that safe rather than corrupting, but there is no
+# reason to lean on it.
+concurrency:
+  group: github-status-poll
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # A directory scan, N GETs against GitHub's API and N POSTs, behind a
+    # cached build. Anything slower than this is a hung fetch.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match root `rust-toolchain.toml`, as every other workflow
+      # here is.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Poll this repo's own scheduled workflows
+        working-directory: server
+        env:
+          HB_BASE_URL: https://hb.twinion.net
+          HB_INGEST_TOKEN: ${{ secrets.GITHUB_STATUS_INGEST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: cargo run -q -p hummingbird-github-status

@@ -5,6 +5,7 @@ members = [
     "authority",
     "calendar-poll",
     "city-waste",
+    "github-status",
     "gmail-poll",
     "graph-poll",
     "kimi-balance",
