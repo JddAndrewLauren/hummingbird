@@ -1,0 +1,17 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "event": "workflow_dispatch",
+      "conclusion": "success",
+      "status": "completed",
+      "run_started_at": "2026-08-12T09:00:00Z"
+    },
+    {
+      "event": "schedule",
+      "conclusion": "failure",
+      "status": "completed",
+      "run_started_at": "2026-07-01T13:40:00Z"
+    }
+  ]
+}
