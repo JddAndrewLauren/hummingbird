@@ -1,0 +1,76 @@
+{
+  "title": "grill-me result",
+  "description": "One typed turn from the /grill-me runner op (#350) -- the next question, or the terminal proposal that ends the interview. Versioned beside SKILL.md (#41 decision 4). No $schema key: the CLI's --json-schema rejects the draft-2020-12 ref outright. `oneOf` keeps the two shapes exclusive so a model cannot answer with both or neither, and each branch's own `additionalProperties: false` keeps a question from carrying proposal fields or vice versa.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "question"],
+      "properties": {
+        "kind": { "enum": ["question"] },
+        "question": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["prompt", "recommendedAnswer", "choices"],
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The one thing being asked this turn -- never a restatement of everything asked so far."
+            },
+            "recommendedAnswer": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The answer the model itself would pick, offered as a default -- never invented busywork; the caller may still answer with free text instead of any choice."
+            },
+            "choices": {
+              "type": "array",
+              "description": "2-4 short options. The caller is never limited to these -- free text is always an allowed answer regardless of what is offered here.",
+              "minItems": 2,
+              "maxItems": 4,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "proposal"],
+      "properties": {
+        "kind": { "enum": ["proposal"] },
+        "proposal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["summary", "verdict", "patch"],
+          "properties": {
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "description": "What the interview settled, in the caller's own terms -- never a restatement of the raw transcript."
+            },
+            "verdict": {
+              "enum": ["resolved", "fog_remains"],
+              "description": "Whether the fog this item carried is resolved, or remains -- the caller decides what to do with either; this op writes nothing itself."
+            },
+            "patch": {
+              "type": "object",
+              "description": "Editable item-field suggestions arising from the interview. Every key optional -- a verdict of fog_remains commonly carries an empty patch.",
+              "additionalProperties": false,
+              "properties": {
+                "title": { "type": "string", "minLength": 1 },
+                "description": { "type": "string" },
+                "size": { "enum": ["quick", "short", "deep"] },
+                "energy": { "enum": ["low", "medium", "high"] },
+                "context": { "type": "string" },
+                "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
+                "deadline": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

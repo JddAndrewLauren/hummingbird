@@ -36,10 +36,11 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 | `runner/src/server.js` | The `POST /run` HTTP handler: auth, request shape validation, skill dispatch, NDJSON streaming. |
 | `runner/src/auth.js` | Constant-time bearer-token check. |
 | `runner/src/request.js` | `{skill, args}` body parsing/shape validation. |
-| `runner/src/skills-registry.js` | The closed map of runnable skill names -- `parse-capture` (#256), `next-up-hb` (#116) and `microtask` (#272). |
+| `runner/src/skills-registry.js` | The closed map of runnable skill names -- `parse-capture` (#256), `next-up-hb` (#116), `microtask` (#272) and `grill-me` (#350). |
 | `runner/src/skills/parse-capture.js` | That skill's arg validation and prompt-building. |
 | `runner/src/skills/next-up-hb.js` | The same, for `/next-up-hb`: the sweep payload arrives in `args` (context-blind -- no authority token here, no HTTP call), plus the `prepare` hook that ranks before the model runs. |
 | `runner/src/skills/microtask.js` | The same, for `/microtask`: `prepare` reads the item from the authority, `apply` writes the checklist back to it. The one op that holds a credential. |
+| `runner/src/skills/grill-me.js` | The same, for `/grill-me` (#350): `prepare` reads the item and resolves `ref`, same as `microtask`, but there is **no `apply`** -- this op writes nothing, ever. |
 | `runner/src/authority.js` | The client for the app-owned authority (`GET /api/sweep`, `POST /api/steps`, `PATCH /api/steps/:id`) and the only place a `device` token lives in this process. `fetch` injected. |
 | `runner/src/step-id.js` | The deterministic step id, digit for digit the same recipe as `microtask`'s `hb.sh` -- what keeps the two arms from minting two copies of one step. |
 | `runner/src/rank-bin.js` | Spawns the baked `next-up-rank` over the envelope on stdin. The one child process here that is not `claude`. |
@@ -53,6 +54,7 @@ decided in [#256](https://github.com/JddAndrewLauren/hummingbird/issues/256)
 | `.claude/skills/parse-capture/` | The skill itself: `SKILL.md` + `schema.json` (the versioned per-skill result schema `run-skill.js` passes to `--json-schema`). |
 | `.claude/skills/next-up-hb/` | `SKILL.md` + `schema.json` + `scripts/next-up.sh` (two verbs: `survey` fetches with the operator's credential, `rank` reads a prebuilt envelope on stdin -- the by-hand equivalent of `rank-bin.js`). |
 | `.claude/skills/microtask/` | `SKILL.md` + `schema.json` + `scripts/hb.sh` (the interactive arm's reads and writes -- inert in the image, since the hosted arm has no shell). |
+| `.claude/skills/grill-me/` | `SKILL.md` + `schema.json` -- hosted-runner arm only for this slice (#350); no interactive script, no client, no ADR. |
 | `client/next-up/` | The seam `/next-up-hb` is layered on: sweep payload in, `hummingbird_core::rank` candidates + health facts out. Its `next-up-rank` binary is built by the Dockerfile's Rust stage and baked in as `HB_NEXT_UP_BIN`. |
 | `runner/test/*.test.js` | `node --test`, run from `runner/`. Every module is unit-testable with an injected fake `spawn` (and, for the authority, a fake `fetch`) -- no real `claude` binary, no network, no credentials needed. |
 
@@ -123,8 +125,9 @@ and nothing is shelled out to — but an argv element that reads as a *flag*.
 relaxed.** The charset accepts `sonnet`, `claude-sonnet-4-5-20250929`,
 `kimi-k3` and Bedrock-style `us.anthropic.claude-…-v1:0`.
 
-Three ops ship today. The first two **write to nothing**; the third writes,
-and is the reason this process holds an authority credential at all:
+Four ops ship today. The first two **write to nothing**; the third writes,
+and is the reason this process holds an authority credential at all; the
+fourth reads that same credential but writes nothing either:
 
 - **`parse-capture`** (#256, 2026-08-10 decision): `{title, notes}`, #42's
   own minimal schema. The write-target question (Linear vs. the ADR-0008
@@ -208,6 +211,41 @@ and is the reason this process holds an authority credential at all:
     for the same reason `next-up-hb`'s ranker runs out of process, and the
     writes are made by `authority.js` from the args the model answered
     with.
+
+- **`grill-me`** (#350): the item-scoped interview, one typed question at a
+  time, ending in a proposal. `args` are `{ref, turns, model?}` -- `turns` is
+  the *whole conversation so far*, threaded by the caller on every request,
+  because **this op is stateless**: there is no session here and nothing
+  durable remembers a transcript between requests. Structurally the same
+  shape as `microtask`'s read half and nothing like its write half:
+
+  - `prepare` fetches `GET /api/sweep`, resolves `ref` the same way
+    `microtask` does, and declines -- before a model token is spent -- on an
+    unknown ref, a missing token, an unreachable authority, or a request at
+    or past the **turn cap** (`PROVISIONAL_TURN_CAP` in
+    `runner/src/skills/grill-me.js`; a placeholder until #351's live-run
+    measurement sets the real number, the same posture as #312's live-plan
+    decline for `microtask`).
+  - `prepare` also carries this item's **prior *applied* grill outcomes**
+    (`summary`, `verdict`, `patch` -- never a past transcript) into the
+    prompt, read defensively off an optional `sweep.grills`, which nothing
+    populates yet: today this is always `[]`, and the seam is positioned so
+    #353's real `grills` table starts flowing through unchanged code.
+  - There is **no `apply`**. This is the whole of the op's write posture:
+    it calls no write method on `authority.js`, ever, and a caller decides
+    what (if anything) to do with a proposal.
+  - The result is one of exactly two schema-enforced shapes (`oneOf` in
+    `.claude/skills/grill-me/schema.json`): `{kind: "question", question:
+    {prompt, recommendedAnswer, choices}}` (2-4 choices, and free text is
+    always still a valid answer regardless of what is offered) or
+    `{kind: "proposal", proposal: {summary, verdict, patch}}` (`verdict` is
+    `resolved` or `fog_remains`).
+
+  No interactive arm ships in this slice -- `.claude/skills/grill-me/` is
+  `SKILL.md` + `schema.json` only, and the hosted runner is the only way to
+  drive it (`POST /run`, or the equivalent `curl` in the smoke-test section
+  below). #349 is the plan this discharges the first slice of; #351 is the
+  live-run gate the rest of that plan is blocked behind.
 
 `/to-actions` uses the app-owned authority helpers in interactive sessions,
 but it is not a hosted runner operation. The retired `next-up-personal`
@@ -480,6 +518,23 @@ operator can close the provisioning gate #256's issue thread leaves open.
    cannot see the plan it is replacing and paraphrases it -- the count
    stays the same, the ids and wording rotate.
 
+   `grill-me` (#350) writes nothing, so its smoke test leaves nothing
+   behind. Thread the transcript by hand, one round per request -- the
+   first opens the interview with an empty `turns`:
+
+   ```sh
+   curl -sS https://hummingbird-runner.fly.dev/run \
+     -H "authorization: Bearer <token>" \
+     -H "content-type: application/json" \
+     -d '{"skill":"grill-me","args":{"ref":"HB-42","turns":[]}}'
+   ```
+
+   Expect NDJSON progress ending in
+   `{"ok":true,"skill":"grill-me","result":{"kind":"question","question":{...}}}`.
+   Answer it and re-send with that round appended to `turns` to get the next
+   turn, and so on until a `kind":"proposal"` result -- this is the whole of
+   #351's live-run gate, driven by hand rather than by a client.
+
 6. **Confirm the model stamp** (#273) against that same live run. Every
    terminal line above now carries `backend` and `model`; what needs
    confirming is which *step* of the precedence chain answered, because the
@@ -515,5 +570,12 @@ cd runner && node --test
 ```
 
 No network access, no `claude` binary, and no credentials are needed --
-every test injects a fake `spawn`, and the one op that talks to the
-authority injects a fake `fetch` the same way.
+every test injects a fake `spawn`, and the two ops that talk to the
+authority (`microtask`, `grill-me`) inject a fake `fetch` the same way.
+`runner/test/grill-me.test.js` covers arg validation (including a malformed
+prior turn threaded back by a caller), stateless turn reconstruction, the
+one-question-at-a-time and free-text-always-allowed rules, proposals,
+prior-outcome filtering (and that a transcript field never rides along),
+the turn-cap decline, and -- as its own anti-goal check, the same posture
+`microtask`'s write path earns from its own suite -- that no write method on
+`runner/src/authority.js` is ever reachable from this op.
