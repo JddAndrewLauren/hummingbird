@@ -63,7 +63,13 @@ async function openApp(page: Page, theme: (typeof THEMES)[number], demo: boolean
 }
 
 async function show(page: Page, nav: string) {
-  await page.getByRole("navigation").getByRole("button", { name: nav }).click();
+  // `exact`: since #304 the rail's wordmark is itself a way home, labelled
+  // "hummingbird — go to Now and refresh" — inside the same navigation
+  // landmark, so a substring match on "Now" resolves to two buttons and every
+  // Now-routed case fails in strict mode. Each nav item's name is its
+  // `aria-label`, which is exactly the label, so exact matching is right for
+  // all of them.
+  await page.getByRole("navigation").getByRole("button", { name: nav, exact: true }).click();
 }
 
 /** The Rules screen's own capture prep: open the first rule card's editor

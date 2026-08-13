@@ -413,3 +413,172 @@ describe("NowScreen — the surface filter (ADR-0017, #311)", () => {
     expect(screen.getByRole("button", { name: /which cans/i })).toBeTruthy();
   });
 });
+
+// Now's triage section: the same inbox the Triage screen renders, brought
+// under the frontier so a capture can be sorted without leaving the screen
+// you work from. What these cover is the *thread* — the section is rendered
+// from `RealFrontier`, so every one of these is about where it sits and when
+// it is there at all, which is precisely what typecheck cannot see.
+describe("NowScreen — the triage section", () => {
+  function fakeStorage(seed: Record<string, string> = {}) {
+    const entries = { ...seed };
+    return {
+      entries,
+      getItem: (key: string) => entries[key] ?? null,
+      setItem: (key: string, value: string) => {
+        entries[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete entries[key];
+      },
+    };
+  }
+
+  function renderWithTriage(
+    task: TaskState,
+    options: {
+      selectedItemId?: string | null;
+      storage?: ReturnType<typeof fakeStorage>;
+    } = {},
+  ) {
+    const onTriage = vi.fn();
+    const onCompleteTriage = vi.fn();
+    const storage = options.storage ?? fakeStorage();
+    render(
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={task}
+        nowMs={NOW_MS}
+        selectedItemId={options.selectedItemId ?? null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        onTriage={onTriage}
+        onCompleteTriage={onCompleteTriage}
+        storage={storage}
+      />,
+    );
+    return { onTriage, onCompleteTriage, storage };
+  }
+
+  const capture = (id: string, title: string, createdAt: number) =>
+    itemDTO({ id, title, stage: "triage", createdAt });
+
+  it("renders the inbox under the promoted items, never above them", () => {
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        projects: [projectDTO({ id: "p1", name: "Household" })],
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+      }),
+    );
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((node) => node.textContent);
+    expect(headings).toContain("No project");
+    const triageIndex = headings.findIndex((text) => text?.startsWith("Triage"));
+    expect(triageIndex).toBeGreaterThan(headings.indexOf("No project"));
+    expect(screen.getByText("1 unsorted")).toBeDefined();
+    expect(screen.getByText("Ring the plumber")).toBeDefined();
+  });
+
+  it("orders the captures oldest first, the same rule the Triage screen uses", () => {
+    renderWithTriage(
+      taskState({
+        triageInbox: [capture("c2", "Newer capture", 900), capture("c1", "Older capture", 100)],
+      }),
+    );
+    const titles = screen
+      .getAllByText(/capture$/)
+      .map((node) => node.textContent);
+    expect(titles).toEqual(["Older capture", "Newer capture"]);
+  });
+
+  it("is absent entirely when the inbox is empty — an empty inbox is good news, not a card", () => {
+    renderWithTriage(taskState({ frontier: [itemDTO({ id: "i1", stage: "ready" })] }));
+    expect(screen.queryByText(/unsorted/)).toBeNull();
+  });
+
+  it("still renders when nothing is promoted yet, beside the honest empty state", () => {
+    // The commonest state of a new device: captures swept in, nothing
+    // triaged. The early return this replaced showed "Nothing to start" and
+    // hid the one thing worth doing.
+    renderWithTriage(taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }));
+    expect(screen.getByText("Nothing to start")).toBeDefined();
+    expect(screen.getByText("Ring the plumber")).toBeDefined();
+  });
+
+  it("gives way to the item detail panel, so two editors are never open at once", () => {
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+      }),
+      { selectedItemId: "i1" },
+    );
+    expect(screen.getByRole("heading", { name: "Renew the passport" })).toBeDefined();
+    expect(screen.queryByText(/unsorted/)).toBeNull();
+  });
+
+  it("starts expanded, collapses on the header, and persists that to the injected storage", () => {
+    const storage = fakeStorage();
+    renderWithTriage(taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }), {
+      storage,
+    });
+
+    // Anchored: every row carries a "Triage" stage badge inside its own
+    // toggle button, so a bare /Triage/ matches the whole section.
+    const header = screen.getByRole("button", { name: /^Triage \d+ unsorted$/ });
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Ring the plumber")).toBeDefined();
+
+    fireEvent.click(header);
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Ring the plumber")).toBeNull();
+    // The count stays readable while collapsed — that is the whole point of
+    // capping the list rather than the section.
+    expect(screen.getByText("1 unsorted")).toBeDefined();
+    expect(storage.entries["hb.now.triage-collapsed"]).toBe("1");
+  });
+
+  it("opens collapsed when the device already said so", () => {
+    renderWithTriage(taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }), {
+      storage: fakeStorage({ "hb.now.triage-collapsed": "1" }),
+    });
+    expect(screen.queryByText("Ring the plumber")).toBeNull();
+  });
+
+  it("promotes through the same one-call mutation the Triage screen uses", () => {
+    const { onTriage } = renderWithTriage(
+      taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }),
+    );
+
+    // Expanding a row is a selection; the editor is one click away. Anchored
+    // on the row's own stage badge, so the mark-done checkmark beside it
+    // (named `Mark "Ring the plumber" done`) is never the match.
+    fireEvent.click(screen.getByRole("button", { name: /^Triage Ring the plumber/ }));
+    fireEvent.change(screen.getByLabelText("Size"), { target: { value: "quick" } });
+    fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
+
+    expect(onTriage).toHaveBeenCalledTimes(1);
+    expect(onTriage.mock.calls[0][0]).toBe("c1");
+    expect(onTriage.mock.calls[0][1]).toBe("ready");
+    expect(onTriage.mock.calls[0][2]).toMatchObject({ size: "quick" });
+  });
+
+  it("keeps one row open at a time", () => {
+    renderWithTriage(
+      taskState({
+        triageInbox: [capture("c1", "Older capture", 100), capture("c2", "Newer capture", 900)],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^Triage Older capture/ }));
+    expect(screen.getAllByLabelText("Title")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /^Triage Newer capture/ }));
+    expect(screen.getAllByLabelText("Title")).toHaveLength(1);
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Newer capture");
+  });
+});
