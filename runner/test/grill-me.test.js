@@ -250,8 +250,8 @@ test("pastOutcomes is empty when the sweep carries no grills field at all -- tod
 
 test("pastOutcomes filters to the named item only", () => {
   const grills = [
-    { item_id: ITEM.id, summary: "picked SFO", verdict: "resolved", patch: { context: "@errands" } },
-    { item_id: OTHER_ITEM.id, summary: "not this item", verdict: "resolved", patch: {} },
+    { item_id: ITEM.id, summary: "picked SFO", verdict: "resolved", applied_patch: { context: "@errands" } },
+    { item_id: OTHER_ITEM.id, summary: "not this item", verdict: "resolved", applied_patch: {} },
   ];
   assert.deepEqual(pastOutcomes(sweepFor({ grills }), ITEM.id), [
     { summary: "picked SFO", verdict: "resolved", patch: { context: "@errands" } },
@@ -264,7 +264,7 @@ test("pastOutcomes drops a transcript field even if a future row carries one -- 
       item_id: ITEM.id,
       summary: "picked SFO",
       verdict: "resolved",
-      patch: {},
+      applied_patch: {},
       transcript: [{ question: QUESTION, answer: "SFO" }],
     },
   ];
@@ -273,8 +273,34 @@ test("pastOutcomes drops a transcript field even if a future row carries one -- 
   assert.deepEqual(Object.keys(outcome).sort(), ["patch", "summary", "verdict"]);
 });
 
+// Pins the bug the reviewer of #390 caught: a row shaped exactly like
+// #353's specified columns (not the placeholder `patch` key this test file
+// used to use) must not silently yield `patch: undefined`. `model_proposal`
+// is present on the row, per #353, but is deliberately not lifted into a
+// past outcome for this slice.
+test("pastOutcomes maps #353's specified row shape -- applied_patch to patch, model_proposal omitted", () => {
+  const grills = [
+    {
+      id: "grill-1",
+      item_id: ITEM.id,
+      transcript: [{ question: QUESTION, answer: "SFO" }],
+      summary: "picked SFO",
+      verdict: "resolved",
+      model_proposal: { context: "@travel" },
+      applied_patch: { context: "@errands" },
+      resulting_stage: "done",
+      completed_at: "2026-08-12T00:00:00Z",
+      version: 1,
+    },
+  ];
+  const [outcome] = pastOutcomes(sweepFor({ grills }), ITEM.id);
+  assert.deepEqual(outcome, { summary: "picked SFO", verdict: "resolved", patch: { context: "@errands" } });
+  assert.equal(outcome.patch.context, "@errands");
+  assert.ok(!("model_proposal" in outcome));
+});
+
 test("prepare's prepared args carry priorOutcomes through to what buildPrompt sees", async () => {
-  const grills = [{ item_id: ITEM.id, summary: "picked SFO", verdict: "resolved", patch: {} }];
+  const grills = [{ item_id: ITEM.id, summary: "picked SFO", verdict: "resolved", applied_patch: {} }];
   const step = await grillMe.prepare(
     { ref: "HB-42", turns: [] },
     { authority: fakeAuthority({ sweep: { ok: true, sweep: sweepFor({ grills }) } }), onProgress: noProgress },

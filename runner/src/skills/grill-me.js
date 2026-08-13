@@ -35,11 +35,14 @@ import { resolveRef } from "./microtask.js";
  * never do** (#349's decision 3, read forward from a table that does not
  * exist yet). `pastOutcomes` reads an optional `sweep.grills` defensively
  * -- nothing in `server/domain` populates it today, so in production this
- * is always `[]`, and that is fine: the seam is positioned so that once
- * #353 lands, real rows start flowing through unchanged code. Whatever
- * shape a future entry carries, only `summary`, `verdict` and `patch` are
- * lifted out -- a `transcript` key, if one is ever there, is dropped on the
- * way through and never reaches the model.
+ * is always `[]`. The field mapping is written against #353's *specified*
+ * column list (`id, item_id, transcript, summary, verdict,
+ * model_proposal, applied_patch, resulting_stage, completed_at, version`)
+ * but is unverified until that slice actually lands -- only `summary`,
+ * `verdict` and `applied_patch` are lifted out (as `patch`), and
+ * `model_proposal` is deliberately left out of the prompt for this slice
+ * (see `pastOutcomes`'s own doc comment for why); a `transcript` key is
+ * dropped on the way through and never reaches the model.
  */
 
 /**
@@ -99,11 +102,23 @@ function isTurnShape(value) {
 /**
  * Prior *applied* grill outcomes for this item -- never a past transcript
  * (#349 decision 3). `sweep.grills` is optional and, today, never
- * populated (no route mints it yet); reading it defensively rather than
- * assuming its presence is what lets this code run unchanged once #353
- * adds it for real. Only the three named fields are lifted out of each
- * entry, so a `transcript` key some future row carries is dropped here,
- * on the one path a past outcome has into the prompt.
+ * populated (no route mints it yet). The field mapping below is written
+ * against #353's *specified* row columns (`id, item_id, transcript,
+ * summary, verdict, model_proposal, applied_patch, resulting_stage,
+ * completed_at, version`) and is unverified until that slice actually
+ * lands -- reading defensively rather than assuming the shape's presence
+ * is what lets this code have a chance of running unchanged once it does,
+ * but the mapping itself has not been checked against a real row.
+ *
+ * `applied_patch` is lifted out as `patch`; `model_proposal` is omitted
+ * on purpose for this slice -- #353 says "what was suggested and what was
+ * accepted are different facts, and a future run reads both", but this
+ * interview's prompt only needs what was actually applied to steer away
+ * from a repeat suggestion, not the model's original (possibly rejected)
+ * proposal. A future run that wants both facts reads `model_proposal`
+ * itself; this seam does not carry it. A `transcript` key some future row
+ * carries is dropped here too, on the one path a past outcome has into
+ * the prompt.
  *
  * @param {{grills?: Array<Record<string, unknown>>}} sweep
  * @param {string} itemId
@@ -113,7 +128,7 @@ export function pastOutcomes(sweep, itemId) {
   if (!Array.isArray(sweep.grills)) return [];
   return sweep.grills
     .filter((grill) => isObject(grill) && grill.item_id === itemId)
-    .map((grill) => ({ summary: grill.summary, verdict: grill.verdict, patch: grill.patch }));
+    .map((grill) => ({ summary: grill.summary, verdict: grill.verdict, patch: grill.applied_patch }));
 }
 
 export const grillMe = {

@@ -229,8 +229,10 @@ fourth reads that same credential but writes nothing either:
   - `prepare` also carries this item's **prior *applied* grill outcomes**
     (`summary`, `verdict`, `patch` -- never a past transcript) into the
     prompt, read defensively off an optional `sweep.grills`, which nothing
-    populates yet: today this is always `[]`, and the seam is positioned so
-    #353's real `grills` table starts flowing through unchanged code.
+    populates yet: today this is always `[]`. The mapping (`patch` from
+    `applied_patch`; `model_proposal` deliberately omitted) is written
+    against #353's *specified* row columns, unverified until that slice
+    actually lands.
   - There is **no `apply`**. This is the whole of the op's write posture:
     it calls no write method on `authority.js`, ever, and a caller decides
     what (if anything) to do with a proposal.
@@ -239,7 +241,15 @@ fourth reads that same credential but writes nothing either:
     {prompt, recommendedAnswer, choices}}` (2-4 choices, and free text is
     always still a valid answer regardless of what is offered) or
     `{kind: "proposal", proposal: {summary, verdict, patch}}` (`verdict` is
-    `resolved` or `fog_remains`).
+    `resolved` or `fog_remains`). This `oneOf` is unconfirmed against a
+    live `claude` invocation -- the same posture `run-skill.js`'s
+    `reportedModel` takes ("until it is run, treat this as unproven"): the
+    two shapes above are what the schema asks for, not yet what a real run
+    has been checked to answer with. If `oneOf` turns out unsupported, the
+    fallback is a flat object with a union-typed `kind` field carrying
+    both branches' properties as optional, the same shape family
+    `--json-schema` and `$schema` both turned out narrower than expected
+    for.
 
   No interactive arm ships in this slice -- `.claude/skills/grill-me/` is
   `SKILL.md` + `schema.json` only, and the hosted runner is the only way to
@@ -520,7 +530,9 @@ operator can close the provisioning gate #256's issue thread leaves open.
 
    `grill-me` (#350) writes nothing, so its smoke test leaves nothing
    behind. Thread the transcript by hand, one round per request -- the
-   first opens the interview with an empty `turns`:
+   first opens the interview with an empty `turns`. This is also the run
+   that confirms (or refutes) the schema's `oneOf`, still unproven as of
+   this writing:
 
    ```sh
    curl -sS https://hummingbird-runner.fly.dev/run \

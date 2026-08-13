@@ -1,6 +1,7 @@
 {
   "title": "grill-me result",
   "description": "One typed turn from the /grill-me runner op (#350) -- the next question, or the terminal proposal that ends the interview. Versioned beside SKILL.md (#41 decision 4). No $schema key: the CLI's --json-schema rejects the draft-2020-12 ref outright. `oneOf` keeps the two shapes exclusive so a model cannot answer with both or neither, and each branch's own `additionalProperties: false` keeps a question from carrying proposal fields or vice versa.",
+  "type": "object",
   "oneOf": [
     {
       "type": "object",

@@ -164,7 +164,9 @@ jobs:
                 && test -f /app/.claude/skills/next-up-hb/SKILL.md \
                 && test -f /app/.claude/skills/next-up-hb/schema.json \
                 && test -f /app/.claude/skills/microtask/SKILL.md \
-                && test -f /app/.claude/skills/microtask/schema.json'
+                && test -f /app/.claude/skills/microtask/schema.json \
+                && test -f /app/.claude/skills/grill-me/SKILL.md \
+                && test -f /app/.claude/skills/grill-me/schema.json'
 
       # `claude` is spawned by name from `main.js`; a base-image or npm
       # change that moved it off PATH would otherwise only show up in
