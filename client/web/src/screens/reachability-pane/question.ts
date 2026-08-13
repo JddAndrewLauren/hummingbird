@@ -4,6 +4,6 @@ import { placeholderQuestion } from "../questions/placeholder";
 // obliges", #316 — pure client work answering the surface split with no new
 // source, no new credential and no schema change: the one pane only the
 // device itself can answer). Replaced wholesale once #316 lands; see
-// `placeholder.ts`'s header for why this is a call, not a hand-shaped
+// `placeholder.tsx`'s header for why this is a call, not a hand-shaped
 // `QuestionDef` of its own.
 export const reachabilityQuestion = placeholderQuestion("This device", "reachability");

@@ -34,8 +34,10 @@ const SCREENS = [
   { name: "done", nav: "Done" },
   { name: "ledger", nav: "Ledger" },
   // #311/ADR-0017: the same `?demo` world drives the real Status region, so
-  // this photographs the honest first state — four gap panes, since no
-  // poller exists behind any of them yet.
+  // this photographs the honest first state — every registered Status
+  // question as a gap pane, since no poller exists behind any of them yet.
+  // Not permanent: #313 lands the first poller-backed, non-gap Status pane,
+  // and this capture will show that pane answered alongside the rest.
   { name: "status", nav: "Status" },
   { name: "settings", nav: "Settings" },
 ] as const;
