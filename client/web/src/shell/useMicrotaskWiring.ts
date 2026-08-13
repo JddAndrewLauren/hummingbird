@@ -50,10 +50,13 @@ export interface MicrotaskWiring {
    * item never renders under another. */
   run: SkillRunState;
   onRun: (request: MicrotaskRunRequest) => void;
-  /** #274's one-tap offer beside a pinned decline. `null` whenever there is
-   * nothing to offer: the run is not declined, the current selection is
-   * Auto (nothing to fall back FROM — Auto already tried everything it
-   * could), or the registry has no other entry. Still never an *automatic*
+  /** #274's one-tap offer beside a decline **that evidences an unreachable
+   * backend**. `null` whenever there is nothing to offer: the run is not
+   * declined, the current selection is Auto (nothing to fall back FROM —
+   * Auto already tried everything it could), the registry has no other
+   * entry, or the decline is not about reachability at all — no token was
+   * sent, or a backend *answered* (`run.answered`), in which case switching
+   * tiers changes nothing about what it said. Still never an *automatic*
    * fallback — nothing here fires without the user pressing the button.
    *
    * **Switching and re-running are one call on purpose.** They cannot be
@@ -194,15 +197,19 @@ export function useMicrotaskWiring(
     // whether the pinned backend itself is reachable, so offering "switch
     // to X" here would suggest a fix for a problem that was never observed.
     if (run.reason === NO_TOKEN) return null;
-    // A decline that NAMES a backend is one a backend answered — ADR-0018's
-    // rule, that a null stamp always means no lane named itself, read in the
-    // one direction it can be read. Switching tiers fixes nothing such a
-    // decline reports: "That item already has live steps." is true of every
-    // tier, because the guard is the seam's (#307), not the backend's. The
-    // offer is scoped to a backend that is *dead* — the same principle the
-    // NO_TOKEN case above states, applied to the other way a decline can
-    // arrive without evidencing unreachability.
-    if (run.backend !== null) return null;
+    // A decline a backend ANSWERED says nothing about reachability, so
+    // nothing may offer switching away from a backend on the strength of it:
+    // "That item already has live steps." is true of every tier, because the
+    // guard is the seam's (#307), not any backend's. Same principle as the
+    // NO_TOKEN case above, for the other way a decline arrives without
+    // evidencing unreachability.
+    //
+    // Read off the routed fact, never off the stamp: a 401 and a 403 are
+    // empty-bodied by design (ADR-0018) and so arrive unstamped, yet the
+    // backend plainly answered — and switching tiers cannot help, since
+    // every tier is reached through the same proxy with the same device
+    // token.
+    if (run.answered) return null;
     const fallback = fallbackEntry(registry, selection);
     const onSelectBackend = deps.onSelectBackend;
     if (fallback === null || onSelectBackend === undefined) return null;

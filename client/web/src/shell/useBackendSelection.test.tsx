@@ -45,4 +45,31 @@ describe("useBackendSelection", () => {
     expect(screen.getByTestId("selection").textContent).toBe("cloud");
     expect(storage.getItem("hb.backend-selection")).toBe("cloud");
   });
+
+  /** A context with no `localStorage` at all. The hook resolves its default
+   * lazily rather than evaluating a bare `localStorage` that throws on the
+   * way in — the same guard `App.tsx` puts on the rail preference — and
+   * changing the preference there must be a no-op, never an exception. */
+  it("renders Auto and survives a change when no storage is available", () => {
+    function NoStorageHarness() {
+      const { selection, setSelection } = useBackendSelection(undefined);
+      return (
+        <>
+          <span data-testid="selection">{selection}</span>
+          <button type="button" onClick={() => setSelection("cloud")}>
+            pin cloud
+          </button>
+        </>
+      );
+    }
+
+    render(<NoStorageHarness />);
+    expect(screen.getByTestId("selection").textContent).toBe("auto");
+
+    fireEvent.click(screen.getByText("pin cloud"));
+
+    // The choice still takes effect for this session; only persistence is
+    // lost, which is all a missing storage can cost.
+    expect(screen.getByTestId("selection").textContent).toBe("cloud");
+  });
 });

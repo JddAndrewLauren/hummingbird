@@ -219,7 +219,14 @@ describe("runRouted", () => {
     expect(called).toBe(false);
     expect(events).toEqual([
       { kind: "started" },
-      { kind: "failed", error: "Cloud runner is not answering right now. Try Home runner instead.", backend: null, model: null },
+      {
+        kind: "failed",
+        error: "Cloud runner is not answering right now. Try Home runner instead.",
+        backend: null,
+        model: null,
+        // Nothing was attempted at all — the memo declined the plan.
+        answered: false,
+      },
     ]);
   });
 
@@ -236,7 +243,13 @@ describe("runRouted", () => {
     );
     expect(events).toEqual([
       { kind: "started" },
-      { kind: "failed", error: "Cloud runner is not answering right now.", backend: null, model: null },
+      {
+        kind: "failed",
+        error: "Cloud runner is not answering right now.",
+        backend: null,
+        model: null,
+        answered: false,
+      },
     ]);
   });
 
@@ -331,7 +344,10 @@ describe("runRouted", () => {
         },
       }),
     );
-    expect(events).toEqual([{ kind: "started" }, { kind: "failed", error: NO_TOKEN, backend: null, model: null }]);
+    expect(events).toEqual([
+      { kind: "started" },
+      { kind: "failed", error: NO_TOKEN, backend: null, model: null, answered: false },
+    ]);
     expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
   });
 
@@ -386,7 +402,14 @@ describe("runRouted", () => {
     // badge off every declined run.
     expect(events).toEqual([
       { kind: "started" },
-      { kind: "failed", error: "That item already has live steps.", backend: "anthropic", model: "opus" },
+      {
+        kind: "failed",
+        error: "That item already has live steps.",
+        backend: "anthropic",
+        model: "opus",
+        // The whole point: the backend answered.
+        answered: true,
+      },
     ]);
     expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
   });
@@ -431,6 +454,7 @@ describe("runRouted", () => {
       error: "That item already has live steps.",
       backend: "anthropic",
       model: "opus",
+      answered: true,
     });
     expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
   });
@@ -451,7 +475,75 @@ describe("runRouted", () => {
       error: "grain must be a number",
       backend: "anthropic",
       model: null,
+      answered: true,
     });
+    expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
+  });
+
+  it("an empty-bodied 401 is an answered decline: no memo, no fallthrough, and it says so", async () => {
+    // 401/403 are empty-bodied by design (ADR-0018), so this arrives
+    // UNSTAMPED — the case a stamp-based reading of "did anyone answer?"
+    // gets wrong. The backend plainly answered, and every tier is reached
+    // through the same proxy with the same device token, so trying another
+    // one would just collect the same 401.
+    const memo = memoStore();
+    const calledEndpoints: string[] = [];
+    const events = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD, HOME],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: async (input) => {
+          calledEndpoints.push(String(input));
+          return new Response(null, { status: 401 });
+        },
+      }),
+    );
+    expect(calledEndpoints).toEqual(["/a"]);
+    expect(events.at(-1)).toEqual({
+      kind: "failed",
+      error: "Your device token was rejected. Re-enter it in Settings.",
+      backend: null,
+      model: null,
+      answered: true,
+    });
+    expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
+  });
+
+  it("a body that tears after the headers is this tier's run to lose, not the next tier's to retry", async () => {
+    // `fetch` resolved — the backend answered — and the stream then died
+    // mid-flight. Deliberately NOT a fallthrough: the runner writes the
+    // checklist to the authority, so the work may well have landed, and
+    // re-asking a second backend would duplicate it. Not a memo either:
+    // a tier that answered is not an unreachable tier. Both halves are
+    // load-bearing and neither was pinned before.
+    const memo = memoStore();
+    const calledEndpoints: string[] = [];
+    const events = await collect(
+      runRouted("auto", () => ({ skill: "microtask", args: {} }), {
+        registry: [CLOUD, HOME],
+        memoStore: memo,
+        now: () => 0,
+        readToken: async () => "hb_token",
+        fetch: async (input) => {
+          calledEndpoints.push(String(input));
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"type":"progress","message":"still running"}\n'));
+                controller.error(new Error("network error"));
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      }),
+    );
+    expect(calledEndpoints).toEqual(["/a"]);
+    const last = events.at(-1);
+    expect(last).toMatchObject({ kind: "failed", answered: true });
+    expect((last as { error: string }).error).toContain("Could not reach the server");
     expect(isFreshDead(memo.current, "cloud", 0)).toBe(false);
   });
 
@@ -537,6 +629,9 @@ describe("runRouted", () => {
       }),
     );
     expect(called).toBe(false);
-    expect(events).toEqual([{ kind: "started" }, { kind: "failed", error: NO_TOKEN, backend: null, model: null }]);
+    expect(events).toEqual([
+      { kind: "started" },
+      { kind: "failed", error: NO_TOKEN, backend: null, model: null, answered: false },
+    ]);
   });
 });
