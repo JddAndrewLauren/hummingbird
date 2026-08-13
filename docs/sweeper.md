@@ -50,7 +50,8 @@ skipped=… quarantined=… duration=…`.
 ### The adapter seam
 
 Each source implements `enumerate` / `derive_capture` / `source_key` / `ack`
-against the one shared engine, which owns everything load-bearing: the
+(plus `describe_ack`, which is only what the dry run narrates) against the one
+shared engine, which owns everything load-bearing: the
 create-first ordering, deterministic ids, transient-versus-terminal
 classification, quarantine, per-adapter counts, and the ping. An adapter's
 failure — even its own plumbing (token exchange, a missing capture label, a
@@ -185,7 +186,12 @@ thing. The `hummingbird/capture` label is the whole gesture:
   with the message id as a deterministic tiebreak. Oldest, not newest — a
   forward arriving between sweeps moves "newest" and must never move which id
   a thread mints, since an observer-dependent key is exactly what turns a
-  replay into a duplicate. The **id derivation is untouched**: the winner's
+  replay into a duplicate. A message whose `internalDate` cannot be read at all
+  sorts **last** — it never beats a message carrying a real timestamp, and a
+  thread of only such messages still collapses by the message-id tiebreak
+  rather than crashing. Gmail always supplies the field, so that is a guard
+  against a shape nobody has seen rather than an observed one.
+  The **id derivation is untouched**: the winner's
   message id is still what `deterministic_v4` hashes; there is no thread-keyed
   id and none is planned (ADR-0019 rejects it by name).
 - **Losing messages are acked without creating.** A thread's non-winning
@@ -228,6 +234,12 @@ every standing list (shopping, packing) into Triage. It stays a permanent
 debugging tool.
 
 Its `list id=<id> title='<title>'` lines are what seed `denylist.json`.
+
+Each item gets a `DRY-RUN would create …` line and a `DRY-RUN would ack …` line.
+The ack line names every mutation the ack would make, not just the one item's:
+for a collapsed Gmail thread it names the sibling messages it would unlabel too
+(`… and unlabel 2 collapsed message(s) in thread <id>: <id>, <id>`), because a
+dry run that mentioned only the winner under-narrated N−1 real mutations.
 
 ## Denylist
 
@@ -346,11 +358,25 @@ above — a collapsed message is normal operation, not something set aside for
 a human to look at. Each collapsed message also gets its own log line naming
 its thread and the winning message id.
 
+`collapsed=` counts the messages **actually unlabelled**, incremented as each
+one is, on the same line as that message's log line — so the count and those
+log lines can never disagree. That matters on the one path where they could: a
+sibling's unlabel raising partway through a thread. The thread stays atomic
+(the winner's create had already succeeded, and nothing is acked before it), the
+item is counted `failed=` and left for the next sweep, and the collapses that
+did happen are still reported rather than silently becoming `collapsed=0`
+beside log lines saying otherwise.
+
 **The ping URL is a bearer secret and is never logged.** Its path *is* the
 credential — anyone holding it can forge a success ping and silence the alarm —
 and sweeper stdout is the Fly log stream. The log lines say `healthcheck
 success ping sent` / `healthcheck fail ping sent`, and exception text is passed
-through `_redact()` before printing. A test asserts this. If it ever leaks,
+through `_redact()` before printing. A test asserts this.
+
+Each of those lines names the check it belongs to: `adapter=google-tasks` and
+`adapter=gmail` for the two capture adapters, and `check=authority` for the
+reachability check, which belongs to no adapter and no capture source and
+must not be logged as one. Both adapters' lines are unchanged. If it ever leaks,
 healthchecks.io cannot rotate a ping URL in place: create a replacement check
 and `flyctl secrets set HEALTHCHECK_URL=...`.
 
