@@ -1158,8 +1158,12 @@ describe("NowScreen — selection above the columns (#404)", () => {
       .find((node) => node.getAttribute("aria-current") === "true");
     expect(card).toBeDefined();
     expect(card?.textContent).toContain("Email the council");
-    // Visibly, not only programmatically: the accent fill, per ADR-0021.
-    expect(card?.style.background).toBe("var(--accent-quiet)");
+    // Visibly, not only programmatically. The mark is the accent BORDER, not a
+    // fill — the design system gives the answering card "an ember-tinted
+    // border, not a fill", so a fill here would be this surface disagreeing
+    // with every other card in the app.
+    expect(card?.style.border).toBe("1px solid var(--accent-quiet-border)");
+    expect(card?.style.background).not.toBe("var(--accent-quiet)");
     // And only the one card.
     expect(
       screen.getAllByRole("button").filter((n) => n.getAttribute("aria-current") === "true"),
@@ -1192,7 +1196,7 @@ describe("NowScreen — selection above the columns (#404)", () => {
     expect(screen.getByRole("button", { name: /^start$/i }).hasAttribute("disabled")).toBe(false);
   });
 
-  it("returns to the columns on close, with the axis and collapse state intact", () => {
+  it("returns to the columns on close, with the axis, collapse and filter state intact", () => {
     function fakeStorage(seed: Record<string, string> = {}) {
       const entries = { ...seed };
       return {
@@ -1226,6 +1230,17 @@ describe("NowScreen — selection above the columns (#404)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Project" }));
     fireEvent.click(screen.getByRole("button", { expanded: true, name: "No project" }));
 
+    // The filter is the third thing #404 names, and unlike the other two it is
+    // deliberately NOT persisted (#403) — it survives only because it is state
+    // in a component that must not remount. That is exactly why it is asserted
+    // here: a remount would lose it silently while the axis and collapse, being
+    // restored from storage, would still look right.
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "context @garden" }));
+    // Asserted through the count rather than the hidden card, because the
+    // collapsed column above already hides every card either way.
+    expect(screen.getByText("1 of 2 shown")).toBeDefined();
+
     const withSelection = (selected: string | null) => (
       <NowScreen
         demo={null}
@@ -1243,14 +1258,18 @@ describe("NowScreen — selection above the columns (#404)", () => {
     );
 
     view.rerender(withSelection("i1"));
-    // Open: the axis and the shut column are still what they were.
+    // Open: the axis, the shut column and the picked facet are all what they were.
     expect(screen.getByRole("button", { name: "Project", pressed: true })).toBeDefined();
     expect(screen.getByRole("button", { expanded: false, name: "No project" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "context @garden", pressed: true })).toBeDefined();
+    expect(screen.getByText("1 of 2 shown")).toBeDefined();
 
     view.rerender(withSelection(null));
     expect(screen.queryByRole("heading", { name: "Email the council" })).toBeNull();
     expect(screen.getByRole("button", { name: "Project", pressed: true })).toBeDefined();
     expect(screen.getByRole("button", { expanded: false, name: "No project" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "context @garden", pressed: true })).toBeDefined();
+    expect(screen.getByText("1 of 2 shown")).toBeDefined();
   });
 
   it("withholds \"Nothing to start\" while the panel is open", () => {

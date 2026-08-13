@@ -9,6 +9,7 @@
 // densities and affordances, not a variant flag on one.
 
 import { useState } from "react";
+import type { ButtonHTMLAttributes, CSSProperties } from "react";
 import { Badge } from "../components/core/Badge";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
@@ -147,8 +148,11 @@ function ItemCard({
         textAlign: "left",
         // The card stays marked while its item is the one open — the reader has
         // to be able to see where the thing they picked came from, and what it
-        // was sitting next to.
-        background: selected ? "var(--accent-quiet)" : "var(--surface-card)",
+        // was sitting next to. The mark is `accent`'s ember-tinted BORDER above
+        // and `aria-current`, deliberately not a fill: the design system's card
+        // rule is "the one card that is the answer on screen gets `accent` (an
+        // ember-tinted border), not a fill", and ADR-0021 asks only that the
+        // card "stays marked" without prescribing how.
       }}
     >
       {/* Urgency, as the card's leading edge. Deliberately an element inside
@@ -161,7 +165,7 @@ function ItemCard({
         style={{
           width: 3,
           flex: "0 0 auto",
-          borderRadius: 2,
+          borderRadius: "var(--radius-xs)",
           background: URGENCY_EDGE[urgency],
         }}
       />
@@ -238,6 +242,60 @@ function controlStyle(selected: boolean) {
   };
 }
 
+/** What a `controlStyle` control looks like under the pointer.
+ *
+ * A picked control is `quiet`-shaped, so it darkens one accent step; an
+ * unpicked one is ghost-shaped, so it takes `--surface-quiet` and firms its
+ * text. Both per the design system's hover contract. */
+function controlHoverStyle(selected: boolean) {
+  return selected
+    ? { background: "color-mix(in oklab, var(--accent-quiet) 70%, var(--accent) 12%)" }
+    : { background: "var(--surface-quiet)", color: "var(--text-primary)" };
+}
+
+/** A control that honours the design system's hover contract.
+ *
+ * These stay hand-rolled rather than becoming `components/core/Button`: every
+ * one of them is a *toggle* carrying `aria-pressed` or `aria-expanded`, and the
+ * column header is a full-width button inside an `h2` whose own font and left
+ * alignment the library's centred fixed-size skins do not fit. What they must
+ * not do is skip the hover state — "a hovered thing gets *more* solid, not
+ * less" — which every one of these controls was missing, and which is the only
+ * thing this wrapper adds. */
+function ControlButton({
+  baseStyle,
+  hoverStyle,
+  children,
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  baseStyle: CSSProperties;
+  hoverStyle: CSSProperties;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      {...rest}
+      type="button"
+      onMouseEnter={(event) => {
+        setHover(true);
+        rest.onMouseEnter?.(event);
+      }}
+      onMouseLeave={(event) => {
+        setHover(false);
+        rest.onMouseLeave?.(event);
+      }}
+      style={{
+        transition:
+          "background var(--dur-fast) var(--ease-flit), color var(--dur-fast) var(--ease-flit)",
+        ...baseStyle,
+        ...(hover ? hoverStyle : null),
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 const FACET_LABEL: Record<Facet, string> = {
   context: "context",
   size: "size",
@@ -265,9 +323,8 @@ function FacetRow({
         {FACET_LABEL[facet]}
       </span>
       {values.map((value) => (
-        <button
+        <ControlButton
           key={value}
-          type="button"
           aria-pressed={selected.has(value)}
           // The chip's visible text is the bare value, which does not say which
           // facet it belongs to — and on the `context` axis it collides exactly
@@ -276,15 +333,16 @@ function FacetRow({
           // distinguishable by ear as well as by eye.
           aria-label={`${FACET_LABEL[facet]} ${value}`}
           onClick={() => onToggle(value)}
-          style={{
+          baseStyle={{
             ...controlStyle(selected.has(value)),
             minHeight: "var(--row-height)",
             padding: "var(--space-2) var(--space-4)",
             borderRadius: "var(--radius-pill)",
           }}
+          hoverStyle={controlHoverStyle(selected.has(value))}
         >
           {value}
-        </button>
+        </ControlButton>
       ))}
     </div>
   );
@@ -410,35 +468,40 @@ export function FrontierColumns({
           group by
         </span>
         {FRONTIER_AXES.map((entry) => (
-          <button
+          <ControlButton
             key={entry}
-            type="button"
             aria-pressed={axis === entry}
             onClick={() => pickAxis(entry)}
-            style={controlStyle(axis === entry)}
+            baseStyle={controlStyle(axis === entry)}
+            hoverStyle={controlHoverStyle(axis === entry)}
           >
             {AXIS_LABEL[entry]}
-          </button>
+          </ControlButton>
         ))}
 
         {/* The axis switch is permanent chrome and the filter hides behind a
             button: filtering is the occasional gesture, so only one of the two
             earns permanent space. The button still carries its own count,
             because a filtered board that looks unfiltered is a lie. */}
-        <button
-          type="button"
+        <ControlButton
           aria-expanded={filtersOpen}
           onClick={() => setFiltersOpen(!filtersOpen)}
-          style={{ ...controlStyle(activeFacets > 0), marginLeft: "var(--space-4)" }}
+          baseStyle={{ ...controlStyle(activeFacets > 0), marginLeft: "var(--space-4)" }}
+          hoverStyle={controlHoverStyle(activeFacets > 0)}
         >
           <Icon name="search" size={14} />
           Filter
+          {/* The count's pill is `neutral`, not `brand`. A coloured pill here
+              would be the only one on the surface encoding neither stage, tier
+              nor urgency — against the design system's colour rule, and against
+              decision 2 above, which is the whole reason colour says one thing
+              here. */}
           {activeFacets > 0 ? (
-            <Badge mono tone="brand">
+            <Badge mono tone="neutral">
               {activeFacets}
             </Badge>
           ) : null}
-        </button>
+        </ControlButton>
         {/* Only when the panel is shut — open, the panel states the same count
             at the foot of the chips it belongs to. */}
         {activeFacets > 0 && !filtersOpen ? (
@@ -491,12 +554,13 @@ export function FrontierColumns({
               {`${shown.length} of ${ordered.length} shown`}
             </span>
             {activeFacets > 0 ? (
-              <button
-                type="button"
+              <ControlButton
                 onClick={() => setPicked(NO_FACETS)}
-                style={{
+                baseStyle={{
                   font: "var(--type-body-sm)",
                   minHeight: "var(--row-height)",
+                  padding: "0 var(--space-3)",
+                  borderRadius: "var(--radius-control)",
                   background: "none",
                   border: "none",
                   color: "var(--text-link)",
@@ -505,10 +569,11 @@ export function FrontierColumns({
                   alignItems: "center",
                   gap: "var(--space-2)",
                 }}
+                hoverStyle={{ background: "var(--surface-quiet)" }}
               >
                 <Icon name="x" size={14} />
                 Clear
-              </button>
+              </ControlButton>
             ) : null}
           </div>
         </Card>
@@ -520,7 +585,12 @@ export function FrontierColumns({
           <span key={urgency} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
             <span
               aria-hidden="true"
-              style={{ width: 3, height: 12, borderRadius: 2, background: URGENCY_EDGE[urgency] }}
+              style={{
+                width: 3,
+                height: 12,
+                borderRadius: "var(--radius-xs)",
+                background: URGENCY_EDGE[urgency],
+              }}
             />
             <span className="hb-meta">{URGENCY_LABEL[urgency]}</span>
           </span>
@@ -612,23 +682,27 @@ export function FrontierColumns({
                 }}
               >
                 <h2 style={{ margin: 0, flex: 1, minWidth: 0, font: "inherit" }}>
-                  <button
-                    type="button"
+                  <ControlButton
                     aria-expanded={!isCollapsed}
                     onClick={() => toggleCollapsed(key)}
-                    style={{
+                    baseStyle={{
                       display: "flex",
                       alignItems: "center",
                       gap: "var(--space-3)",
                       width: "100%",
                       minHeight: "var(--row-height)",
                       padding: "var(--space-2)",
+                      borderRadius: "var(--radius-control)",
                       background: "none",
                       border: "none",
                       textAlign: "left",
                       cursor: "pointer",
                       font: "var(--type-body-strong)",
                       color: isCollapsed ? "var(--text-secondary)" : "var(--text-primary)",
+                    }}
+                    hoverStyle={{
+                      background: "var(--surface-quiet)",
+                      color: "var(--text-primary)",
                     }}
                   >
                     <Icon
@@ -641,7 +715,7 @@ export function FrontierColumns({
                       }}
                     />
                     <span style={{ flex: 1, minWidth: 0 }}>{heading}</span>
-                  </button>
+                  </ControlButton>
                 </h2>
                 {/* The count stays readable while shut: a closed column must
                     still say how much is inside it. */}
@@ -667,8 +741,7 @@ export function FrontierColumns({
                   item completed) has `hidden === 0` and would otherwise keep a
                   "Show fewer" that changes nothing when clicked. */}
               {!isCollapsed && (hidden > 0 || (isOpen && column.items.length > COLUMN_CAP)) ? (
-                <button
-                  type="button"
+                <ControlButton
                   aria-expanded={isOpen}
                   // The visible text is deliberately terse, which leaves two
                   // columns hiding the same number of cards with two
@@ -679,19 +752,21 @@ export function FrontierColumns({
                     isOpen ? `Show fewer in ${heading}` : `Show ${hidden} more in ${heading}`
                   }
                   onClick={() => toggleExpanded(key)}
-                  style={{
+                  baseStyle={{
                     font: "var(--type-body-sm)",
                     minHeight: "var(--row-height)",
                     background: "none",
                     border: "none",
+                    borderRadius: "var(--radius-control)",
                     color: "var(--text-link)",
                     cursor: "pointer",
                     textAlign: "left",
                     padding: "0 var(--space-2)",
                   }}
+                  hoverStyle={{ background: "var(--surface-quiet)" }}
                 >
                   {isOpen ? "Show fewer" : `${hidden} more`}
-                </button>
+                </ControlButton>
               ) : null}
             </div>
           );

@@ -107,6 +107,12 @@ So the claim worth holding is the one that actually does work: **this surface
 adds no fourth meaning to colour.** The design system's rule needs no exception
 either way — which was the point.
 
+*Amended 2026-08-13 (#399): this decision's heading and its closing claim were
+narrowed from "colour encodes urgency, and nothing else" / "nothing else on the
+card is coloured" to the card's own colour, in the review round that also
+removed the selected card's accent fill. Rule 2 of `README.md` — a review round
+changing one paragraph has nowhere else to live.*
+
 **Why colour must say exactly one thing here, more than elsewhere.** Colour
 reads *across* whichever axis the columns are grouped by, and position reads
 *along* it: colour answers "how much claim does this have", position answers
