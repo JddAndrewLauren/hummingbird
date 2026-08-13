@@ -64,8 +64,8 @@ reviewable, for what is mechanically one feed polled once.
 **One deliberate refinement: the credential-free prober breaks its own
 rule.** `uptime/v1` (#315) spans both Cloudflare (the web origin, and the
 authority per [ADR-0008](0008-the-authority-is-an-app-owned-server.md):35 —
-a Worker plus a SQLite Durable Object) and Fly (the skill runner and the
-sweeper) under a single source, even though those are two platforms.
+a Worker plus a SQLite Durable Object) and Fly (the skill runner) under a
+single source, even though those are two platforms.
 Splitting it by platform would need two `ingest`-scoped
 tokens minted for what is otherwise one credential-free binary issuing
 plain HTTP requests — machinery bought for a distinction the poller itself
@@ -105,12 +105,40 @@ committed file (`server/uptime-probe/services.json`), not in a database
 row. Changing what a service is *supposed* to be doing is then a normal
 reviewable PR diff — the same "editing the file is the whole override
 gesture" posture CLAUDE.md already documents for `VERSION`. **Divergence
-from the manifest's stated intent is the only thing that lifts a band**,
-which is what lets a deliberately-off service (the sweeper, pending #123)
-read as `dormant` — quiet agreement — rather than as permanently red.
+from the manifest's stated intent is the only thing that lifts a band**: a
+service deliberately taken down — the runner suspended for a rebuild, say —
+is a one-line flip to `off` in a reviewed PR, and its pane reads `dormant`
+— quiet agreement — rather than sitting permanently red until it returns.
 
-**Rejected: a `settings` binding.** Whether the sweeper is *supposed* to be
-running right now is a fact about the deployment, not a per-device
+**`expected` has exactly one meaning: supposed to be answering HTTP at its
+declared `url` right now.** For every service in this axis that is the
+same fact as "supposed to be running", because reachability is precisely
+the health proxy decision 3 chose — and that equivalence is the membership
+test for the axis itself. A process for which the two facts come apart is
+not an `uptime/v1` subject.
+
+**The sweeper is that process, and it has no line in the manifest.** It is
+live (since the 2026-08-12 go-live; #123 is closed — `docs/sweeper.md`),
+yet it never opens a listener: its `fly.toml` deliberately carries no
+`[http_service]` or `[[services]]`, because either would let Fly's
+autostop machinery suspend a sweep mid-run. No truthful
+`url`/`method`/`expect_status` triple can be written for it, and neither
+`expected` value describes it — `"on"` paints a healthy service
+permanently red, `"off"` claims a running service is supposed to be down.
+Its liveness signal is healthchecks.io (`docs/sweeper.md`), which alerts
+after three missed sweeps. The manifest #315 ships therefore carries three
+services — authority, web origin, runner — all `expected: "on"`.
+
+**Rejected: a sweeper line with `expected: "off"` reread as "never
+HTTP-reachable".** It looks like a cheap tripwire on the no-listener
+invariant, but the pane it produces reads quiet agreement forever —
+including while the sweeper is dead — a second, weaker liveness signal
+sitting alongside the healthchecks.io alarm that actually pages. A status
+row that cannot go red when the thing it names breaks is worse than no
+row.
+
+**Rejected: a `settings` binding.** Whether a service is *supposed* to be
+serving right now is a fact about the deployment, not a per-device
 preference two devices of the same person could reasonably disagree about
 — and `settings` has no DELETE, so an expectation that later becomes
 irrelevant (a service retired, a migration finished) would accrete a key
@@ -145,12 +173,11 @@ rule exists to prevent.
 
 ## Decision 6 — Scale-to-zero inverts cadence
 
-Of the two Fly apps, only the skill runner scales to zero:
-`runner/fly.toml:21` sets `min_machines_running = 0` (root `fly.toml`, the
-sweeper, deliberately carries no such setting or `[http_service]` at
-all — `docs/sweeper.md` forbids it, so autostop can't suspend a sweep
-mid-run). No machine running is the runner's normal, healthy, idle state,
-and a 401 probe against it **cold-boots the machine**. The authority holds
+Of the two Fly apps, only the skill runner is probed at all — the sweeper
+has no listener and no manifest line (decision 4) — and the runner scales
+to zero: `runner/fly.toml:21` sets `min_machines_running = 0`. No machine
+running is the runner's normal, healthy, idle state, and a 401 probe
+against it **cold-boots the machine**. The authority holds
 no such setting to invert: per ADR-0008:35 it is a Cloudflare Worker plus a
 SQLite Durable Object, live on every request with no machine to sleep or
 wake.
@@ -159,7 +186,7 @@ This inverts the intuitive polling frequency **for the whole probe
 workflow**, not per service: probing every 15 minutes would cost the
 runner 96 avoidable wake-ups a day to learn nothing new when nothing has
 changed, so #315's workflow that carries every `uptime/v1` service —
-authority, web origin, runner, sweeper alike — runs **hourly as one unit**.
+authority, web origin, runner — runs **hourly as one unit**.
 
 **Fly machine state is not a health signal, and this is the rejected
 alternative recorded explicitly:** reading machine state via the Fly API
@@ -173,7 +200,9 @@ scale-to-zero correctly; platform machine state is actively wrong here.
 ## What this obliges
 
 - **CLAUDE.md's map table** gains a **Status screen** row pointing at
-  `client/web/src/screens/StatusScreen.tsx` (#311) and this ADR.
+  `client/web/src/screens/StatusScreen.tsx` (#311), with
+  `questions/contract.ts` (where `surface` is declared) and this ADR as
+  its read-first.
 - **ADR-0015** gains an amendment-pointer entry in its Status header, per
   [the pointer convention](README.md): the region it designed is now
   instantiated per surface, and its placement rules ("the ranked region
@@ -183,7 +212,10 @@ scale-to-zero correctly; platform machine state is actively wrong here.
   `StatusScreen` itself against decision 1, and is blocked on this ADR
   landing first.
 - **#313/#314/#315** each enrol one `server/domain/src/sources.rs` source
-  against decisions 2 and, for #315, 3/4/6.
+  against decisions 2 and, for #315, 3/4/6. #315's `services.json` ships
+  authority, web origin and runner, all `expected: "on"` — no sweeper line
+  (decision 4; its brief's `expected: "off"` predates the sweeper's
+  2026-08-12 go-live).
 - **#316** is pure client work answering decision 1's surface split with no
   new source, no new credential, and no schema change — the one pane only
   the device itself can answer.
