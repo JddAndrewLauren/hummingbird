@@ -12,6 +12,25 @@ the production online-parse path (#41 decision 4/6, #256) -- it writes to
 response; nothing here calls Linear, the owned authority, or any other
 write target. That question is deliberately deferred (#256).
 
+## Which lane this governs
+
+This skill governs the **unattended** dictated-capture lane only:
+phone/watch/speaker -> Gemini -> Google Tasks -> sweeper -> Triage, where no
+author is present when the text lands -- that absence is why the same
+discipline (drop nothing, infer nothing) is what this skill's bake-off arm
+applies below, mirroring the sweeper's own verbatim rule (see "What to do").
+
+A second, **attended** lane -- in-app dictation -- is planned but does not
+exist yet: it is #362's proposal, gated on the still-open probe #363, which
+explicitly contemplates the gate failing and the lane closing unbuilt. If it
+ships as designed, it would deliberately skip this skill -- the operator
+would be watching the transcript and editing it in place before submitting,
+so the human would be the parser there, and no skill would be invoked for
+that lane. The "same whether typed or dictated" rule in step 1 below is
+scoped to the unattended lane this skill actually governs; the planned
+attended lane, if and when #362 lands, would be a deliberate exception to
+that rule, not a violation of it.
+
 ## What to do
 
 Given the raw capture text as input:
@@ -19,8 +38,10 @@ Given the raw capture text as input:
 1. **Find the actionable line and use it verbatim as `title`.** Do not
    clean up, summarize, or rephrase it -- the sweeper's own rule
    (`docs/sweeper.md`) is "title verbatim, no cleanup, truncation, or
-   prefix," and this skill keeps the same discipline so a capture reads
-   the same whether it came in typed or dictated.
+   prefix," and this skill keeps the same discipline so an unattended
+   capture reads the same whether it came in typed or dictated -- see
+   "Which lane this governs" above for the planned attended-dictation
+   exception.
 2. **Everything else becomes `notes`.** If the whole capture is usable as
    the title with nothing left over, `notes` is an empty string -- never
    omitted, never null (the schema requires both keys).
