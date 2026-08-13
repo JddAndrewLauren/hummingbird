@@ -25,6 +25,7 @@ import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
 import { useItemActions } from "./shell/useItemActions";
 import { useTriageWiring } from "./shell/useTriageWiring";
+import { useBackendSelection } from "./shell/useBackendSelection";
 import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useMicrotaskWiring } from "./shell/useMicrotaskWiring";
@@ -100,6 +101,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     writeRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
   };
   const { preference, theme, setPreference } = useTheme();
+  // #274's picker choice: device-local, never synced (`useBackendSelection.ts`).
+  const { selection: backendSelection, setSelection: setBackendSelection } = useBackendSelection();
   const {
     handleConnectClick,
     handleCalendarSelectionChange,
@@ -125,7 +128,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // #273's microtask lane. Deliberately main-thread and outside the sync
   // engine entirely — see `useMicrotaskWiring.ts`'s header for why a
   // worker-hosted run would be #269's banned queue in all but name.
-  const microtaskWiring = useMicrotaskWiring(worker, selectedItemId);
+  // #274 threads the picker's own choice through, and gives the hook a way
+  // to move that same device-local selection when a pinned decline's
+  // fallback button is tapped.
+  const microtaskWiring = useMicrotaskWiring(worker, selectedItemId, backendSelection, {
+    onSelectBackend: setBackendSelection,
+  });
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
   const { setBinding: handleSetBinding } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
   const { createRule: handleCreateRule, patchRule: handlePatchRule } = useRulesWiring(
@@ -377,6 +385,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               calendar={calendar}
               themePreference={preference}
               onThemePreference={setPreference}
+              backendSelection={backendSelection}
+              onBackendSelection={setBackendSelection}
               onConnect={() => void handleConnectClick()}
               onSelectionChange={handleCalendarSelectionChange}
               onRefresh={handleRefreshClick}

@@ -8,7 +8,6 @@ import { Select } from "../forms/Select";
 import { availableActions } from "../../screens/item-actions";
 import { hasPriority, priorityLabel } from "../../screens/priority";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
-import { CLOUD_RUNNER_MODELS } from "../../skills/models";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
 import type { StepDTO, TaskActionName, TaskItemDTO } from "../../store/protocol";
@@ -48,7 +47,17 @@ export interface ItemDetailPanelProps {
    * demo detail view cannot issue a real request. (There is no demo path to
    * build today — `NowScreen` branches to `RealFrontier` only when demo is
    * off, so this panel is never mounted under `?demo`.) */
-  microtask?: { run: SkillRunState; onRun: (request: MicrotaskRunRequest) => void };
+  microtask?: {
+    run: SkillRunState;
+    onRun: (request: MicrotaskRunRequest) => void;
+    /** #274's pinned-decline affordance: set only while `run.phase` is
+     * `"declined"` AND the current selection is a pin (never Auto) AND the
+     * registry has another entry to offer. `onSwitch` only changes the
+     * device-local selection — this panel is what re-issues the run, using
+     * the same request it built the first time, so one tap both switches
+     * and retries. */
+    declinedFallback?: { label: string; onSwitch: () => void } | null;
+  };
 }
 
 /** SKILL.md's grain scale, as the select renders it. */
@@ -57,11 +66,6 @@ const GRAINS = [
   { value: "2", label: "Default grain" },
   { value: "3", label: "Fine" },
 ];
-
-/** Gated on the constant, not at the render site: a list trimmed to just
- * the default must silently offer nothing rather than a choice that isn't
- * one (`skills/models.ts`). */
-const HAS_MODEL_CHOICE = CLOUD_RUNNER_MODELS.length > 1;
 
 /** Item detail: description and Steps (issue #96), read-only from this
  * binding — S11 wires ticking a Step. Priority renders by its label, never
@@ -82,11 +86,16 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null, 
   // Local, and reset per item by the `key` on this element in
   // `RealFrontier`: a grain chosen for one item says nothing about the next.
   const [grain, setGrain] = useState("2");
-  const [model, setModel] = useState("");
   const run = microtask?.run ?? IDLE;
   const affordance = microtaskAffordance(steps);
   const running = isRunning(run);
   const stamp = stampLabel(run);
+  // Which backend answers is an app-level preference now (#274's picker,
+  // Settings) — never chosen here, and never varied per item or per skill.
+  const runRequest: MicrotaskRunRequest =
+    affordance.kind === "break"
+      ? { itemId: item.id }
+      : { itemId: item.id, replace: true, grain: Number(grain) };
 
   return (
     <Card
@@ -159,37 +168,20 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null, 
           {microtask ? (
             <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-4)", flexWrap: "wrap" }}>
               {affordance.kind === "rewrite" ? (
-                <>
-                  <Select
-                    label="Grain"
-                    size="sm"
-                    options={GRAINS}
-                    value={grain}
-                    onChange={(event) => setGrain(event.target.value)}
-                  />
-                  {HAS_MODEL_CHOICE ? (
-                    <Select
-                      label="Model"
-                      size="sm"
-                      options={CLOUD_RUNNER_MODELS}
-                      value={model}
-                      onChange={(event) => setModel(event.target.value)}
-                    />
-                  ) : null}
-                </>
+                <Select
+                  label="Grain"
+                  size="sm"
+                  options={GRAINS}
+                  value={grain}
+                  onChange={(event) => setGrain(event.target.value)}
+                />
               ) : null}
               <Button
                 variant="secondary"
                 size="sm"
                 iconLeft={affordance.kind === "break" ? "sparkles" : "rotate-ccw"}
                 loading={running}
-                onClick={() =>
-                  microtask.onRun(
-                    affordance.kind === "break"
-                      ? { itemId: item.id }
-                      : { itemId: item.id, replace: true, grain: Number(grain), model },
-                  )
-                }
+                onClick={() => microtask.onRun(runRequest)}
               >
                 {/* The count is what makes a rewrite's destructive half
                     legible without a confirm dialog. Not `variant="danger"`:
@@ -261,9 +253,27 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null, 
                 decline prose-only with no reason code precisely so nothing
                 string-matches it. */}
             {run.phase === "declined" ? (
-              <p role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
-                {run.reason}
-              </p>
+              <>
+                <p role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+                  {run.reason}
+                </p>
+                {/* #274: a pinned, dead backend is never silently rerouted —
+                    this is the one-tap offer, not an automatic fallback.
+                    Absent whenever the current selection is Auto (nothing to
+                    fall back FROM) or the registry has nothing else to try. */}
+                {microtask?.declinedFallback ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      microtask.declinedFallback?.onSwitch();
+                      microtask.onRun(runRequest);
+                    }}
+                  >
+                    Switch to {microtask.declinedFallback.label}
+                  </Button>
+                ) : null}
+              </>
             ) : null}
           </div>
         ) : null}

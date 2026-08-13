@@ -14,24 +14,32 @@
 // lanes must not touch.
 
 import { describe, expect, it } from "vitest";
+import backendRegistrySource from "./backend-registry.ts?raw";
+import backendSelectionSource from "./backend-selection.ts?raw";
 import declineSource from "./decline.ts?raw";
 import envelopeSource from "./envelope.ts?raw";
 import microtaskAffordanceSource from "./microtask-affordance.ts?raw";
 import microtaskArgsSource from "./microtask-args.ts?raw";
-import modelsSource from "./models.ts?raw";
 import ndjsonSource from "./ndjson.ts?raw";
+import reachabilityMemoSource from "./reachability-memo.ts?raw";
+import routePlanSource from "./route-plan.ts?raw";
+import routeRunSource from "./route-run.ts?raw";
 import runSkillSource from "./run-skill.ts?raw";
 import runStateSource from "./run-state.ts?raw";
 import wiringSource from "../shell/useMicrotaskWiring.ts?raw";
 import panelSource from "../components/domain/ItemDetailPanel.tsx?raw";
 
 const SKILL_MODULES: Array<[string, string]> = [
+  ["backend-registry.ts", backendRegistrySource],
+  ["backend-selection.ts", backendSelectionSource],
   ["decline.ts", declineSource],
   ["envelope.ts", envelopeSource],
   ["microtask-affordance.ts", microtaskAffordanceSource],
   ["microtask-args.ts", microtaskArgsSource],
-  ["models.ts", modelsSource],
   ["ndjson.ts", ndjsonSource],
+  ["reachability-memo.ts", reachabilityMemoSource],
+  ["route-plan.ts", routePlanSource],
+  ["route-run.ts", routeRunSource],
   ["run-skill.ts", runSkillSource],
   ["run-state.ts", runStateSource],
 ];
@@ -110,8 +118,11 @@ describe("the stamp is not hardcoded at the render site", () => {
     }
   });
 
-  it("the model list the panel offers is a constant it imports, deleted by #274", () => {
-    expect(code(panelSource)).toContain("CLOUD_RUNNER_MODELS");
-    expect(modelsSource).toContain("#274");
+  /** #274 deleted `skills/models.ts` and the panel's own model select along
+   * with it — which backend/model answers is an app-level preference now
+   * (`backend-registry.ts`, chosen in Settings), never a per-item control. */
+  it("the panel offers no model select of its own", () => {
+    expect(code(panelSource)).not.toContain("CLOUD_RUNNER_MODELS");
+    expect(code(panelSource)).not.toMatch(/label="Model"/);
   });
 });

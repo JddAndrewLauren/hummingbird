@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry, type BackendEntry } from "../skills/backend-registry";
 import { microtaskRunBody } from "../skills/microtask-args";
-import { runSkill, type RunSkillDeps, type SkillBackend } from "../skills/run-skill";
+import { EMPTY_MEMO, type ReachabilityMemo } from "../skills/reachability-memo";
+import { runRouted, type ReachabilityMemoStore } from "../skills/route-run";
+import type { RunSkillDeps } from "../skills/run-skill";
 import { IDLE, reduceRun, type SkillRunState } from "../skills/run-state";
 import { createIndexedDbTaskTokenStore, type TaskTokenStoreLike } from "../task/token-store";
 import { triggerSyncManual, type WorkerLike } from "../store/worker-client";
@@ -35,14 +38,10 @@ import { triggerSyncManual, type WorkerLike } from "../store/worker-client";
 // not. The in-flight lock below is an affordance — it keeps one person from
 // double-tapping one button — not the thing that protects a checklist.
 
-/** #274 replaces this one expression with a picker. */
-const CLOUD_RUNNER: SkillBackend = { id: "cloud", endpoint: "/api/skills/run" };
-
 export interface MicrotaskRunRequest {
   itemId: string;
   replace?: boolean;
   grain?: number;
-  model?: string;
 }
 
 export interface MicrotaskWiring {
@@ -50,19 +49,45 @@ export interface MicrotaskWiring {
    * item never renders under another. */
   run: SkillRunState;
   onRun: (request: MicrotaskRunRequest) => void;
+  /** #274's one-tap offer beside a pinned decline. `null` whenever there is
+   * nothing to offer: the run is not declined, the current selection is
+   * Auto (nothing to fall back FROM — Auto already tried everything it
+   * could), or the registry has no other entry. Never an automatic retry —
+   * `onSwitch` only changes the selection; the caller re-issues the run. */
+  declinedFallback: { label: string; onSwitch: () => void } | null;
 }
 
 export interface MicrotaskWiringDeps {
   fetch?: typeof globalThis.fetch;
   tokenStore?: TaskTokenStoreLike;
+  registry?: BackendEntry[];
+  /** Device-local, from `useBackendSelection.ts`'s `setSelection` — how the
+   * fallback button actually switches. Omitted (e.g. in a test with no
+   * picker wired up) simply means the fallback is never offered. */
+  onSelectBackend?: (backendId: string) => void;
 }
 
 export function useMicrotaskWiring(
   worker: WorkerLike,
   selectedItemId: string | null,
+  /** #274's picker choice — `AUTO_SELECTION` or a registered entry's id.
+   * Device-local (`useBackendSelection.ts`), never a synced fact, and this
+   * hook only ever reads it — the selection itself is owned one level up. */
+  selection: string = AUTO_SELECTION,
   deps: MicrotaskWiringDeps = {},
 ): MicrotaskWiring {
   const [runs, setRuns] = useState<Record<string, SkillRunState>>({});
+  const registry = deps.registry ?? BACKEND_REGISTRY;
+  // The reachability memo (#274): brief, in-memory, and scoped to this
+  // hook's own lifetime — never persisted, never read on a schedule. It is
+  // written only as the side effect of a real attempt inside `runRouted`.
+  const memo = useRef<ReachabilityMemo>(EMPTY_MEMO);
+  const memoStore: ReachabilityMemoStore = useRef<ReachabilityMemoStore>({
+    get: () => memo.current,
+    set: (next) => {
+      memo.current = next;
+    },
+  }).current;
   // **One controller per item**, not one for the hook. A single shared
   // controller would make starting a run on item B abort item A's — and A
   // would then be left reading "The run ended without an answer.", which is
@@ -113,7 +138,11 @@ export function useMicrotaskWiring(
         // loop ended, and the sync cycle below would never fire.
         let state: SkillRunState = IDLE;
         try {
-          for await (const event of runSkill(CLOUD_RUNNER, microtaskRunBody(request), runDeps)) {
+          for await (const event of runRouted(
+            selection,
+            (entry) => microtaskRunBody({ ...request, model: entry.model ?? undefined }),
+            { ...runDeps, registry, memoStore, now: Date.now },
+          )) {
             state = reduceRun(state, event);
             const next = state;
             setRuns((current) => ({ ...current, [itemId]: next }));
@@ -137,10 +166,20 @@ export function useMicrotaskWiring(
         if (state.phase === "done") triggerSyncManual(worker);
       })();
     },
-    [worker, deps.fetch, deps.tokenStore],
+    [worker, deps.fetch, deps.tokenStore, selection, registry, memoStore],
   );
 
-  return { run: (selectedItemId && runs[selectedItemId]) || IDLE, onRun };
+  const run = (selectedItemId && runs[selectedItemId]) || IDLE;
+
+  const declinedFallback = useMemo(() => {
+    if (run.phase !== "declined" || selection === AUTO_SELECTION) return null;
+    const fallback = fallbackEntry(registry, selection);
+    const onSelectBackend = deps.onSelectBackend;
+    if (fallback === null || onSelectBackend === undefined) return null;
+    return { label: fallback.label, onSwitch: () => onSelectBackend(fallback.id) };
+  }, [run, selection, registry, deps.onSelectBackend]);
+
+  return { run, onRun, declinedFallback };
 }
 
 let cachedStore: TaskTokenStoreLike | null = null;

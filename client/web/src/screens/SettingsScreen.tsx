@@ -8,6 +8,7 @@ import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
+import { AUTO_SELECTION, BACKEND_REGISTRY } from "../skills/backend-registry";
 import {
   bindingCopy,
   bindingDraftSeed,
@@ -39,6 +40,15 @@ const THEME_OPTIONS = [
   { value: "system", label: "Follow system" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
+];
+
+// #274's picker: Auto first (the sensible default, never a hidden fallback)
+// then every registered entry, in the same order Auto itself walks. This
+// slice registers only the cloud runner — #275/#276 lengthen the list by
+// registering theirs, never by changing this mapping.
+const BACKEND_OPTIONS = [
+  { value: AUTO_SELECTION, label: "Auto" },
+  ...BACKEND_REGISTRY.map((entry) => ({ value: entry.id, label: entry.label })),
 ];
 
 function isThemePreference(value: string): value is ThemePreference {
@@ -307,6 +317,10 @@ export interface SettingsScreenProps {
   calendar: CalendarState;
   themePreference: ThemePreference;
   onThemePreference: (preference: ThemePreference) => void;
+  /** #274's picker choice — `AUTO_SELECTION` or a registered entry's id,
+   * device-local and never synced (`useBackendSelection.ts`). */
+  backendSelection: string;
+  onBackendSelection: (selection: string) => void;
   onConnect: () => void;
   onSelectionChange: (selectedCalendarIds: string[]) => void;
   onRefresh: () => void;
@@ -338,6 +352,8 @@ export function SettingsScreen({
   calendar,
   themePreference,
   onThemePreference,
+  backendSelection,
+  onBackendSelection,
   onConnect,
   onSelectionChange,
   onRefresh,
@@ -460,6 +476,15 @@ export function SettingsScreen({
                   onThemePreference(event.target.value);
                 }
               }}
+            />
+            {/* #274: which backend a microtask run prefers. Auto is the
+                default and is itself a choice, not a fallback hidden behind
+                one — picking a concrete entry pins the run to it. */}
+            <Select
+              label="Microtask backend"
+              value={backendSelection}
+              options={BACKEND_OPTIONS}
+              onChange={(event) => onBackendSelection(event.target.value)}
             />
             {demo ? <Switch label="Show acked alerts" /> : null}
           </Card>

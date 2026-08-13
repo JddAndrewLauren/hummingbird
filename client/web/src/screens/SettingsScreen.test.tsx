@@ -46,11 +46,13 @@ interface SettingsOptions {
    * which is the pre-handshake `null` the store starts at. */
   coreId?: string | null;
   viewOrdinal?: number | null;
+  backendSelection?: string;
 }
 
 function renderSettings(options: SettingsOptions = {}) {
   const onSetBinding = vi.fn();
   const onSelectionChange = vi.fn();
+  const onBackendSelection = vi.fn();
   const tree = (current: SettingsOptions) => (
     <SettingsScreen
       demo={null}
@@ -62,6 +64,8 @@ function renderSettings(options: SettingsOptions = {}) {
       calendar={{ ...calendar, ...current.calendar }}
       themePreference="system"
       onThemePreference={vi.fn()}
+      backendSelection={current.backendSelection ?? "auto"}
+      onBackendSelection={onBackendSelection}
       onConnect={vi.fn()}
       onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
@@ -82,6 +86,7 @@ function renderSettings(options: SettingsOptions = {}) {
   return {
     onSetBinding,
     onSelectionChange,
+    onBackendSelection,
     pull: (next: SettingsOptions) => rerender(tree(next)),
   };
 }
@@ -341,5 +346,26 @@ describe("SettingsScreen — the calendar picker's locked Trips row (#121)", () 
       false,
     );
     expect(screen.queryByText(/Polled because it answers/)).toBeNull();
+  });
+});
+
+describe("SettingsScreen — the microtask backend picker (#274)", () => {
+  it("lists Auto plus every registered entry, defaulting to Auto", () => {
+    renderSettings();
+    const select = screen.getByLabelText("Microtask backend") as HTMLSelectElement;
+    expect(select.value).toBe("auto");
+    const optionLabels = Array.from(select.options).map((option) => option.textContent);
+    expect(optionLabels).toEqual(["Auto", "Cloud runner"]);
+  });
+
+  it("reflects a pinned selection", () => {
+    renderSettings({ backendSelection: "cloud" });
+    expect((screen.getByLabelText("Microtask backend") as HTMLSelectElement).value).toBe("cloud");
+  });
+
+  it("reports a change without deciding anything itself — the caller owns persistence", () => {
+    const { onBackendSelection } = renderSettings();
+    fireEvent.change(screen.getByLabelText("Microtask backend"), { target: { value: "cloud" } });
+    expect(onBackendSelection).toHaveBeenCalledWith("cloud");
   });
 });

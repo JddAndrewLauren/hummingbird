@@ -9,6 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "../test/component";
+import type { BackendEntry } from "../skills/backend-registry";
 import type { TaskTokenStoreLike } from "../task/token-store";
 import type { WorkerLike } from "../store/worker-client";
 import { useMicrotaskWiring } from "./useMicrotaskWiring";
@@ -41,19 +42,32 @@ function Harness({
   fetchImpl,
   store,
   selectedItemId = "item-1",
+  selection = "auto",
+  registry,
+  onSelectBackend,
 }: {
   worker: WorkerLike;
   fetchImpl: typeof globalThis.fetch;
   store: TaskTokenStoreLike;
   selectedItemId?: string;
+  selection?: string;
+  registry?: BackendEntry[];
+  onSelectBackend?: (id: string) => void;
 }) {
-  const { run, onRun } = useMicrotaskWiring(worker, selectedItemId, {
+  const { run, onRun, declinedFallback } = useMicrotaskWiring(worker, selectedItemId, selection, {
     fetch: fetchImpl,
     tokenStore: store,
+    registry,
+    onSelectBackend,
   });
   return (
     <>
       <span data-testid="phase">{run.phase}</span>
+      {declinedFallback ? (
+        <button type="button" onClick={declinedFallback.onSwitch}>
+          switch to {declinedFallback.label}
+        </button>
+      ) : null}
       {["item-1", "item-2"].map((itemId) => (
         <button key={itemId} type="button" aria-label={itemId} onClick={() => onRun({ itemId })}>
           run
@@ -245,5 +259,129 @@ describe("useMicrotaskWiring", () => {
     expect(phase()).toBe("done");
     // One cycle per completed run, neither lost to the other's abort.
     expect(manualSyncCount(worker)).toBe(2);
+  });
+});
+
+/** #274's picker: which entry a run actually attempts, and the affordance
+ * offered when a pin is dead. */
+describe("useMicrotaskWiring — #274's routing", () => {
+  const CLOUD: BackendEntry = { id: "cloud", label: "Cloud runner", model: null, endpoint: "/api/skills/run", connectTimeoutMs: 2500 };
+  const HOME: BackendEntry = { id: "home", label: "Home runner", model: "llama3", endpoint: "/api/home-run", connectTimeoutMs: 2500 };
+
+  it("Auto attempts the first registered entry's own endpoint", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async (_input: unknown) =>
+      ndjson('{"ok":true,"result":null,"backend":"anthropic","model":"opus"}'),
+    );
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="auto"
+        registry={[CLOUD, HOME]}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/skills/run");
+    expect(phase()).toBe("done");
+  });
+
+  it("a pin attempts only its own entry, using its endpoint", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async (_input: unknown) =>
+      ndjson('{"ok":true,"result":null,"backend":"home-runner","model":"llama3"}'),
+    );
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="home"
+        registry={[CLOUD, HOME]}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/home-run");
+  });
+
+  it("a dead pin offers a one-tap switch to the fallback, which only changes the selection", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    const onSelectBackend = vi.fn();
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="cloud"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={onSelectBackend}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    const button = screen.getByText(/switch to home runner/i);
+    fireEvent.click(button);
+    expect(onSelectBackend).toHaveBeenCalledWith("home");
+    // The switch alone issues no request — it only moves the selection.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers no fallback while pinned to the registry's only entry", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="cloud"
+        registry={[CLOUD]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
+  });
+
+  it("offers no fallback under Auto — nothing to fall back FROM", async () => {
+    const worker = fakeWorker();
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        store={tokenStore()}
+        selection="auto"
+        registry={[CLOUD, HOME]}
+        onSelectBackend={vi.fn()}
+      />,
+    );
+
+    tap();
+    await settle();
+
+    expect(phase()).toBe("declined");
+    expect(screen.queryByText(/switch to/i)).toBeNull();
   });
 });
