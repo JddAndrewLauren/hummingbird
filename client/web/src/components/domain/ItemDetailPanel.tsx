@@ -7,6 +7,7 @@ import { Checkbox } from "../forms/Checkbox";
 import { Select } from "../forms/Select";
 import { availableActions } from "../../screens/item-actions";
 import { hasPriority, priorityLabel } from "../../screens/priority";
+import { energyIcon, energyLabel, levelColor, sizeIcon, sizeLabel } from "../../screens/size-energy";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
@@ -118,8 +119,18 @@ export function ItemDetailPanel({ item, steps, onClose, onAct, actError = null, 
       <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
         <StageBadge stage={item.stage} />
         {hasPriority(item.priority) ? <Badge tone="brand">{priorityLabel(item.priority)}</Badge> : null}
-        {item.size ? <Badge mono>size:{item.size}</Badge> : null}
-        {item.energy ? <Badge mono>energy:{item.energy}</Badge> : null}
+        {/* Both always render, unlike the row's meta chips and unlike
+            `context` beside them. This is the one surface that describes a
+            single item in full, so "nobody has judged this yet" is a fact
+            worth showing — as the ghost glyph and an em dash, which is what
+            the unset variants exist for. It is a resting state, never a
+            warning: muted, same weight as the rest, nothing escalated. */}
+        <Badge mono icon={sizeIcon(item.size)} style={{ color: levelColor(item.size) }}>
+          size:{sizeLabel(item.size)}
+        </Badge>
+        <Badge mono icon={energyIcon(item.energy)} style={{ color: levelColor(item.energy) }}>
+          energy:{energyLabel(item.energy)}
+        </Badge>
         {item.context ? <Badge mono>{item.context}</Badge> : null}
       </div>
 

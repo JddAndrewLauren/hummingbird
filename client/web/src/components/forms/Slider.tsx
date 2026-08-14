@@ -1,10 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, HTMLAttributes } from "react";
+import { Icon, type IconName } from "../core/Icon";
 
 export interface SliderProps extends Omit<HTMLAttributes<HTMLDivElement>, "style" | "onChange"> {
   label: string;
   /** Discrete stop labels, left to right (e.g. ["low","medium","high"]). */
-  options?: string[];
+  options?: readonly string[];
+  /** One glyph per stop, aligned to `options` by index — the level's own
+   * icon, drawn beside its label at 13px (#446). Deliberately a per-stop
+   * list rather than a "size"/"energy" mode: this control knows about
+   * stops, not about which dimension it is editing, and teaching it the
+   * difference would put the capture form's vocabulary inside a form
+   * primitive. Omit it and the stops render as labels alone, exactly as
+   * before. */
+  optionIcons?: readonly IconName[];
+  /** Colour per stop, aligned the same way — applied to the glyph **and**
+   * its label together, never one without the other (design README,
+   * ICONOGRAPHY). Only the picked stop takes it; the rest stay muted, so
+   * the ramp reads as a choice and not as decoration. */
+  optionColors?: readonly string[];
   /** Index into options, or null for the unset state. */
   value?: number | null;
   onChange?: (value: number | null) => void;
@@ -16,7 +30,7 @@ export interface SliderProps extends Omit<HTMLAttributes<HTMLDivElement>, "style
 // Discrete slider for capture metadata (energy, size). Optional by design:
 // value null = not set, and staying unset is a fine outcome — stage, size
 // and dates are decided at mint time, not at capture.
-export function Slider({ label, options = [], value = null, onChange, optional = true, style = {}, ...rest }: SliderProps) {
+export function Slider({ label, options = [], optionIcons, optionColors, value = null, onChange, optional = true, style = {}, ...rest }: SliderProps) {
   const ref = useRef<HTMLDivElement>(null);
   const n = options.length;
   const set = (i: number | null) => onChange && onChange(i);
@@ -108,12 +122,23 @@ export function Slider({ label, options = [], value = null, onChange, optional =
         ) : null}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between" }}>
-        {options.map((o, i) => (
-          <button key={o} type="button" onClick={() => set(i)}
-            style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer",
-              font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase",
-              color: value === i ? "var(--text-brand)" : "var(--text-muted)" }}>{o}</button>
-        ))}
+        {options.map((o, i) => {
+          // The picked stop takes the level's ramp colour; an unpicked one
+          // stays muted whatever its level would be. Without a colour list
+          // this falls back to the brand/muted pair the control always had.
+          const picked = value === i;
+          const color = picked ? (optionColors?.[i] ?? "var(--text-brand)") : "var(--text-muted)";
+          return (
+            <button key={o} type="button" onClick={() => set(i)}
+              style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)",
+                border: "none", background: "transparent", padding: 0, cursor: "pointer",
+                font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase",
+                color }}>
+              {optionIcons?.[i] ? <Icon name={optionIcons[i]} size={13} /> : null}
+              {o}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

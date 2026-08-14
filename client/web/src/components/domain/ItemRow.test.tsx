@@ -75,4 +75,55 @@ describe("ItemRow — the meta chips", () => {
     render(<ItemRow title="An action" urgency="overdue" />);
     expect(screen.getByTitle("Overdue")).toBeDefined();
   });
+
+  // #446: rows carried size as a bare muted word and no energy at all. Both
+  // are now a glyph in the level's ramp colour and **no word** — the row
+  // annotates a title, and two spelled-out dimensions per line competed with
+  // it. The word survives on `ItemDetailPanel` only (ADR-0024).
+  it("draws size and energy as glyphs, with no word on the row", () => {
+    render(<ItemRow title="An action" size="normal" energy="high" />);
+    expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
+    expect(screen.queryByText(/LOW|MEDIUM|HIGH/)).toBeNull();
+    // Silent to the eye is not silent to a screen reader: the chip names
+    // itself, which is the whole licence for dropping the word. Asserted as a
+    // *role and name*, not a `title` attribute — a title on a generic span is
+    // announced inconsistently, so a passing `getByTitle` would have proved
+    // the tooltip and not the accessible name.
+    expect(screen.getByRole("img", { name: "Size: normal" })).toBeDefined();
+    expect(screen.getByRole("img", { name: "Energy: high" })).toBeDefined();
+  });
+
+  it("colours each glyph by its level, and draws the level's own ramp", () => {
+    render(<ItemRow title="An action" size="deep" energy="low" />);
+    // The chip is found by its accessible name now that it carries no text,
+    // and it is the element holding both the colour and the glyph — so
+    // reading colour here reads the one the icon inherits.
+    const size = screen.getByRole("img", { name: "Size: deep" });
+    const energy = screen.getByRole("img", { name: "Energy: low" });
+    expect(size.style.color).toBe("var(--urgency-now)");
+    expect(energy.style.color).toBe("var(--status-done-fg)");
+    // `not.toBeNull`, not `toBeDefined`: a missing glyph returns `null`,
+    // which *is* defined, so the weaker assertion passes on no icon at all.
+    const rings = size.querySelector("svg");
+    expect(rings).not.toBeNull();
+    // And the ramp itself, since it is opacity rather than colour and so
+    // survives every style assertion above: `deep` earns all three rings.
+    expect(Array.from(rings!.children, (el) => el.getAttribute("opacity"))).toEqual(["1", "1", "1"]);
+  });
+
+  // The row's documented contract for every optional chip: nothing to say,
+  // nothing rendered. The unset ghost glyph belongs on `ItemDetailPanel`,
+  // the one surface that describes a single item in full — a dense list is
+  // not the place to draw an unmade judgement on every line.
+  it("omits both entirely when the caller has nothing to say", () => {
+    render(<ItemRow title="An unjudged action" />);
+    expect(screen.queryByText("—")).toBeNull();
+    expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
+    expect(screen.queryByText(/LOW|MEDIUM|HIGH/)).toBeNull();
+    // Now that the chip is word-free, its accessible name is the only thing
+    // left to leak an unjudged dimension — and a ghost glyph here would be
+    // indistinguishable from `deep` without a word beside it.
+    expect(screen.queryByRole("img", { name: /^Size:/ })).toBeNull();
+    expect(screen.queryByRole("img", { name: /^Energy:/ })).toBeNull();
+  });
 });

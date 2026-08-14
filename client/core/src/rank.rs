@@ -40,7 +40,7 @@
 //!    priority.ts`'s `priorityRank`): 1..4 most-urgent-first, 0 last.
 //! 5. **Energy / size fit, plus the 30-minute nudge** — a candidate whose
 //!    `energy` matches the declared axis, or whose `size` **fits within**
-//!    the declared time (no larger — `Quick` fits a declared `Short`),
+//!    the declared time (no larger — `Quick` fits a declared `Normal`),
 //!    outranks one that does not; within an otherwise-tied group, a
 //!    `size: Quick` candidate is nudged ahead when [`next_start_ms`]
 //!    (calendar-masking aware, cancelled instances excluded) is within 30
@@ -113,7 +113,7 @@ pub enum ReasonCode {
     /// Step 5: `Item::energy` matches the declared [`Axes::energy`].
     EnergyMatch,
     /// Step 5: `Item::size` fits within the declared [`Axes::size`] — no
-    /// larger than the declared time (`Quick < Short < Deep`), not
+    /// larger than the declared time (`Quick < Normal < Deep`), not
     /// necessarily equal to it.
     SizeFits,
     /// Step 5: the 30-minute nudge, applied because this candidate is
@@ -235,21 +235,21 @@ fn energy_matches(item: &Item, axes: &Axes) -> bool {
     matches!((item.energy, axes.energy), (Some(a), Some(b)) if a == b)
 }
 
-/// The duration ordering behind [`size_fits`]: `Quick < Short < Deep`.
+/// The duration ordering behind [`size_fits`]: `Quick < Normal < Deep`.
 /// Local because `hummingbird_domain::Size` deliberately derives no `Ord` —
 /// how sizes compare is a consumer's ranking concern, not schema.
 fn size_duration_rank(size: Size) -> u8 {
     match size {
         Size::Quick => 0,
-        Size::Short => 1,
+        Size::Normal => 1,
         Size::Deep => 2,
     }
 }
 
 /// Step 5's size rule is a size that **fits** the declared time
 /// (SKILL.md's "a `size` that fits the declared time"), never exact
-/// equality: declare a short block and a `Quick` item fits it just as a
-/// `Short` one does, while a `Deep` one does not. Equality would invert
+/// equality: declare a normal-sized block and a `Quick` item fits it just as a
+/// `Normal` one does, while a `Deep` one does not. Equality would invert
 /// the skill's own worked example — the smaller item losing the fit to
 /// the exactly-matching one.
 fn size_fits(item: &Item, axes: &Axes) -> bool {
@@ -728,7 +728,7 @@ mod tests {
         };
 
         let axes = Axes {
-            size: Some(Size::Short), // "I have 30 minutes"
+            size: Some(Size::Normal), // "I have 30 minutes"
             ..Axes::default()
         };
         let now = now("2026-08-10T09:00", 0);
@@ -749,7 +749,7 @@ mod tests {
         };
         let medium = {
             let mut i = item("medium");
-            i.size = Some(Size::Short);
+            i.size = Some(Size::Normal);
             i.created_at = 100; // older, would otherwise win step 6
             i
         };
@@ -830,7 +830,7 @@ mod tests {
         };
         let older_non_quick = {
             let mut i = item("older");
-            i.size = Some(Size::Short);
+            i.size = Some(Size::Normal);
             i.created_at = 100;
             i
         };
@@ -879,7 +879,7 @@ mod tests {
         };
         let older_non_quick = {
             let mut i = item("older");
-            i.size = Some(Size::Short);
+            i.size = Some(Size::Normal);
             i.created_at = 100;
             i
         };
@@ -959,7 +959,7 @@ mod tests {
         };
         let older_non_quick = {
             let mut i = item("older");
-            i.size = Some(Size::Short);
+            i.size = Some(Size::Normal);
             i.created_at = 100;
             i
         };
@@ -1004,7 +1004,7 @@ mod tests {
         };
         let older_non_quick = {
             let mut i = item("older");
-            i.size = Some(Size::Short);
+            i.size = Some(Size::Normal);
             i.created_at = 100;
             i
         };

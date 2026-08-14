@@ -1,7 +1,9 @@
 //! Schema lifecycle: idempotent init, the full table set, and the additive
 //! growth path (1→2, then 2→3 for the notification lane, #131, then 3→4 for
 //! ADR-0015's `alerts.subject_key`, then 4→5 for `items.agent`, then 5→6
-//! for `grills`, #353).
+//! for `grills`, #353) — and then 6→7, the one growth that is not additive
+//! at all: the `short` → `normal` size rename (#446, ADR-0024), which
+//! rebuilds `items`.
 
 use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
@@ -558,6 +560,323 @@ fn init_schema_grows_a_schema_5_database_additively() {
     );
 }
 
+/// A genuine v6 store: a v5 one plus `grills` and its two indexes, which is
+/// how every real v6 store came to be. Its `items` still says `'short'` —
+/// that is the shape 6→7 has to find and rewrite.
+fn v6_store() -> RusqliteSql {
+    let sql = v5_store();
+    sql.exec(
+        "\
+CREATE TABLE IF NOT EXISTS grills (
+  id              TEXT PRIMARY KEY,
+  item_id         TEXT NOT NULL REFERENCES items(id),
+  transcript      TEXT NOT NULL,
+  summary         TEXT NOT NULL,
+  verdict         TEXT NOT NULL CHECK (verdict IN ('resolved','fog_remains')),
+  model_proposal  TEXT NOT NULL,
+  applied_patch   TEXT NOT NULL,
+  resulting_stage TEXT NOT NULL CHECK (resulting_stage IN
+                     ('triage','grilling','ready','in_progress','blocked','done')),
+  completed_at    INTEGER NOT NULL,
+  version         INTEGER NOT NULL
+)",
+        &[],
+    )
+    .expect("5→6's own table applies");
+    for index in [
+        "CREATE INDEX IF NOT EXISTS idx_grills_version ON grills(version)",
+        "CREATE INDEX IF NOT EXISTS idx_grills_item    ON grills(item_id)",
+    ] {
+        sql.exec(index, &[]).expect("5→6's own indexes apply");
+    }
+    sql.exec("UPDATE meta SET schema_version = 6 WHERE id = 1", &[])
+        .expect("v6 meta row seeds");
+    sql
+}
+
+/// The 6→7 rewrite (#446, ADR-0024): `short` → `normal` inside `items`'
+/// `CHECK` constraint and in the rows already stored under it. The first
+/// growth that is not additive — SQLite cannot alter a constraint, so
+/// `init_schema` rebuilds the table.
+///
+/// Four things have a wrong answer available, and this test is here for all
+/// four:
+///
+/// 1. **The stored row.** A `'short'` item must read `'normal'` afterwards;
+///    a `'quick'` one must be left exactly alone.
+/// 2. **The children.** `steps` and `blocked_by` hold foreign keys onto
+///    `items(id)`. The rebuild drops the parent table, so the rows are one
+///    mis-ordered statement away from disappearing — and the clauses one
+///    stray `RENAME` away from pointing at a scratch table.
+/// 3. **The DDL.** The rebuilt table must be **byte-identical** to a fresh
+///    one, indexes included. This is what rules out the textbook
+///    `CREATE … / DROP / RENAME`: `RENAME TO` rewrites the stored text to
+///    `CREATE TABLE "items"`, quoted and without `IF NOT EXISTS`, which
+///    passes a `CHECK`-constraint assertion and fails this one.
+/// 4. **The second boot.** `init_schema` runs on every Durable Object
+///    construction, so the rebuild has to see its own output and decline.
+#[test]
+fn init_schema_rewrites_a_schema_6_database_size_vocabulary() {
+    let migrated = v6_store();
+    assert_eq!(schema_version(&migrated), 6, "starts genuinely at v6");
+    assert!(
+        items_ddl(&migrated).contains("'short'"),
+        "the v6 fixture must still carry the old size vocabulary",
+    );
+
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+             VALUES ('i', 'compare three insurance quotes', 'ready', 'short', 0, 1000, 1000, 1, 0)",
+            &[],
+        )
+        .unwrap();
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+             VALUES ('q', 'take the bins out', 'ready', 'quick', 0, 1000, 1000, 1, 0)",
+            &[],
+        )
+        .unwrap();
+    migrated
+        .exec(
+            "INSERT INTO steps (id, item_id, body, done, position, version) \
+             VALUES ('s', 'i', 'open the comparison site', 0, 0, 1)",
+            &[],
+        )
+        .unwrap();
+    migrated
+        .exec(
+            "INSERT INTO blocked_by (item_id, blocker_id, version) VALUES ('i', 'q', 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated).expect("the rebuild succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    let sizes = migrated
+        .exec("SELECT id, size FROM items ORDER BY id", &[])
+        .unwrap();
+    assert_eq!(sizes.len(), 2, "both pre-rebuild rows survive");
+    assert_eq!(
+        sizes[0].get("size"),
+        Some(&SqlValue::Text("normal".to_string())),
+        "the 'short' row reads 'normal' — the rename reached the data, not just the constraint",
+    );
+    assert_eq!(
+        sizes[1].get("size"),
+        Some(&SqlValue::Text("quick".to_string())),
+        "an untouched value stays untouched",
+    );
+
+    let steps = migrated.exec("SELECT id, item_id FROM steps", &[]).unwrap();
+    assert_eq!(steps.len(), 1, "the child step survives the parent's rebuild");
+    assert_eq!(steps[0].get("item_id"), Some(&SqlValue::Text("i".to_string())));
+    let edges = migrated
+        .exec("SELECT item_id, blocker_id FROM blocked_by", &[])
+        .unwrap();
+    assert_eq!(edges.len(), 1, "the blocked_by edge survives the parent's rebuild");
+    assert!(
+        schema_ddl(&migrated)
+            .iter()
+            .any(|(name, ddl)| name == "steps" && ddl.contains("REFERENCES items(id)")),
+        "the children still reference `items` by its own name — nothing was renamed out from \
+         under them",
+    );
+
+    // The new constraint actually binds, in both directions.
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+             VALUES ('n', 'a normal-sized thing', 'ready', 'normal', 0, 1000, 1000, 1, 0)",
+            &[],
+        )
+        .expect("'normal' is accepted by the rebuilt CHECK");
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+             VALUES ('o', 'an old-vocabulary thing', 'ready', 'short', 0, 1000, 1000, 1, 0)",
+            &[],
+        )
+        .expect_err("'short' is no longer a legal size");
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a rebuilt v6 store and a fresh store hold byte-identical DDL — which is why the \
+         rebuild recreates `items` from CREATE_ITEMS rather than renaming a temp table into \
+         place, and why the index loop runs after it",
+    );
+}
+
+/// The rebuild sees its own output and declines — `init_schema` runs on
+/// every Durable Object construction, and a second rebuild would copy the
+/// table for nothing at best.
+#[test]
+fn the_size_rebuild_is_idempotent() {
+    let migrated = v6_store();
+    init_schema(&migrated).expect("first rebuild succeeds");
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+             VALUES ('i', 'written between the two boots', 'ready', 'normal', 0, 1000, 1000, 1, 0)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated).expect("second init is a no-op, not a second rebuild");
+
+    let rows = migrated.exec("SELECT id FROM items", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the row written after the rebuild survives the next boot");
+    assert!(
+        migrated
+            .exec(
+                "SELECT name FROM sqlite_master WHERE name = 'items_size_rebuild'",
+                &[],
+            )
+            .unwrap()
+            .is_empty(),
+        "the scratch table is not left behind",
+    );
+}
+
+/// Seed a v6 store with the two items, the step and the edge the rebuild
+/// tests all need, so the interruption tests below differ only in *where*
+/// they cut the sequence.
+fn v6_store_with_rows() -> RusqliteSql {
+    let sql = v6_store();
+    sql.exec(
+        "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+         VALUES ('i', 'compare three insurance quotes', 'ready', 'short', 0, 1000, 1000, 1, 0)",
+        &[],
+    )
+    .unwrap();
+    sql.exec(
+        "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+         VALUES ('q', 'take the bins out', 'ready', 'quick', 0, 1000, 1000, 1, 0)",
+        &[],
+    )
+    .unwrap();
+    sql.exec(
+        "INSERT INTO steps (id, item_id, body, done, position, version) \
+         VALUES ('s', 'i', 'open the comparison site', 0, 0, 1)",
+        &[],
+    )
+    .unwrap();
+    sql.exec(
+        "INSERT INTO blocked_by (item_id, blocker_id, version) VALUES ('i', 'q', 1)",
+        &[],
+    )
+    .unwrap();
+    sql
+}
+
+/// No stash table and no scratch table anywhere — the state a store must be
+/// left in whether the rebuild ran, recovered, or declined.
+fn assert_no_rebuild_residue(sql: &dyn Sql) {
+    for name in ["items_size_rebuild", "steps_fk_stash", "blocked_by_fk_stash", "grills_fk_stash"] {
+        assert!(
+            sql.exec("SELECT name FROM sqlite_master WHERE name = ?", &[SqlValue::Text(name.to_string())])
+                .unwrap()
+                .is_empty(),
+            "`{name}` was left behind",
+        );
+    }
+}
+
+/// **An attempt that died with the children stood aside and the parent not
+/// yet rebuilt.** This is the window the rebuild cannot close with a
+/// transaction — the `Sql` seam is one statement at a time and the Durable
+/// Object takes no `BEGIN` — so it is closed by being resumable instead, and
+/// this test is the proof rather than the claim.
+///
+/// The cut is placed to catch the failure that actually loses data: the next
+/// boot sees `items` still saying `'short'`, runs the rebuild from the top,
+/// and would empty the children a second time — over stash tables it had
+/// already created. Without recovery that is a `steps_fk_stash already
+/// exists` error at best and the permanent loss of every child row at worst.
+///
+/// `blocked_by` is deliberately left *un*-emptied: an attempt can also die
+/// between a child's copy and its `DELETE`, leaving the rows in both places,
+/// and the restore has to converge on that rather than fail on its own
+/// duplicates. That is what `INSERT OR IGNORE` is for.
+#[test]
+fn the_size_rebuild_resumes_after_dying_before_the_parent() {
+    let migrated = v6_store_with_rows();
+    for child in ["steps", "blocked_by", "grills"] {
+        migrated
+            .exec(&format!("CREATE TABLE {child}_fk_stash AS SELECT * FROM {child}"), &[])
+            .unwrap();
+    }
+    // `steps` got its DELETE; `blocked_by` and `grills` did not.
+    migrated.exec("DELETE FROM steps", &[]).unwrap();
+    // And a scratch table, half-filled, from the same dead attempt.
+    migrated
+        .exec("CREATE TABLE items_size_rebuild AS SELECT * FROM items WHERE id = 'q'", &[])
+        .unwrap();
+
+    init_schema(&migrated).expect("the next boot resumes rather than failing on its own leftovers");
+
+    let sizes = migrated.exec("SELECT id, size FROM items ORDER BY id", &[]).unwrap();
+    assert_eq!(sizes.len(), 2, "the stale scratch copy did not duplicate a row back in");
+    assert_eq!(
+        sizes[0].get("size"),
+        Some(&SqlValue::Text("normal".to_string())),
+        "the interrupted rename still completed",
+    );
+    let steps = migrated.exec("SELECT id FROM steps", &[]).unwrap();
+    assert_eq!(steps.len(), 1, "the step the dead attempt had deleted is back");
+    let edges = migrated.exec("SELECT item_id FROM blocked_by", &[]).unwrap();
+    assert_eq!(edges.len(), 1, "the edge that was in both places did not double");
+    assert_no_rebuild_residue(&migrated);
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&RusqliteSql::new()),
+        "a resumed store lands on the same byte-identical DDL as a fresh one",
+    );
+}
+
+/// **An attempt that died after the parent got across.** The dangerous half:
+/// `items` now says `'normal'`, so the DDL guard would decline — and a guard
+/// that declines while the rows are still in the scratch table and the
+/// children still emptied loses all of it *permanently*, on every boot after.
+/// Recovery therefore runs before the guard's early return, parent rows
+/// first, then the children that reference them.
+#[test]
+fn the_size_rebuild_resumes_after_dying_after_the_parent() {
+    let migrated = v6_store_with_rows();
+    init_schema(&migrated).expect("the rebuild succeeds");
+
+    // Wind the store back to the moment between the parent's reinsert and
+    // the children's: rows in the scratch table, `items` empty, children
+    // stashed and emptied. `items` already carries the new DDL.
+    for child in ["steps", "blocked_by", "grills"] {
+        migrated
+            .exec(&format!("CREATE TABLE {child}_fk_stash AS SELECT * FROM {child}"), &[])
+            .unwrap();
+        migrated.exec(&format!("DELETE FROM {child}"), &[]).unwrap();
+    }
+    migrated
+        .exec("CREATE TABLE items_size_rebuild AS SELECT * FROM items", &[])
+        .unwrap();
+    migrated.exec("DELETE FROM items", &[]).unwrap();
+
+    init_schema(&migrated).expect("the boot recovers instead of declining on the new DDL");
+
+    let sizes = migrated.exec("SELECT id, size FROM items ORDER BY id", &[]).unwrap();
+    assert_eq!(sizes.len(), 2, "the rows waiting in the scratch table were drained back in");
+    assert_eq!(sizes[0].get("size"), Some(&SqlValue::Text("normal".to_string())));
+    assert_eq!(
+        migrated.exec("SELECT id FROM steps", &[]).unwrap().len(),
+        1,
+        "the child rows came back after their parents, not instead of them",
+    );
+    assert_eq!(migrated.exec("SELECT item_id FROM blocked_by", &[]).unwrap().len(), 1);
+    assert_no_rebuild_residue(&migrated);
+}
+
 /// Running `init_schema` twice over a grown store must not attempt either
 /// `ALTER` again — a duplicate column is a hard SQLite error, and
 /// `init_schema` runs on every Durable Object construction.
@@ -622,6 +941,16 @@ fn schema_ddl(sql: &dyn Sql) -> Vec<(String, String)> {
         )
     })
     .collect()
+}
+
+/// `items`' own stored `CREATE` statement — the size vocabulary lives in
+/// its `CHECK`, which no column-level helper can see.
+fn items_ddl(sql: &dyn Sql) -> String {
+    schema_ddl(sql)
+        .into_iter()
+        .find(|(name, _)| name == "items")
+        .expect("`items` is in sqlite_master")
+        .1
 }
 
 /// One table's column names, in declaration order. `PRAGMA table_info` is

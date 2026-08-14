@@ -24,8 +24,9 @@ export type Facet = "context" | "size" | "energy" | "urgency";
 export const FACETS: readonly Facet[] = ["context", "size", "energy", "urgency"];
 
 /** The schema's own vocabularies (`server/authority/src/schema.rs`):
- * `size IN ('quick','short','deep')`, `energy IN ('low','medium','high')`. */
-export const SIZES: readonly string[] = ["quick", "short", "deep"];
+ * `size IN ('quick','normal','deep')` (schema 7, ADR-0024 — the middle one
+ * was `short` before it), `energy IN ('low','medium','high')`. */
+export const SIZES: readonly string[] = ["quick", "normal", "deep"];
 export const ENERGIES: readonly string[] = ["low", "medium", "high"];
 
 /** `calm` is absent: it is the default, and a facet for "nothing pressing" is

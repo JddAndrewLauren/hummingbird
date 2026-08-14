@@ -52,7 +52,7 @@
       "title": "Renew the domain",
       "description": null,
       "stage": "ready",
-      "size": "short",
+      "size": "normal",
       "energy": "medium",
       "context": "@computer",
       "priority": 2,

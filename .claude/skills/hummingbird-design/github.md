@@ -115,3 +115,18 @@ above, or view on claude.ai/design):
 App consumption: `tokens/` + `styles.css` are copied to
 `client/web/src/design/` (see repo CLAUDE.md). When the design project
 changes, re-pull here first, then re-copy into the app.
+
+## Pending push: the size scale is `quick / normal / deep` after all
+
+**Owed to the design project, not yet pushed** (#446, 2026-08-14).
+`README.md:242` describes `Slider`'s size scale as `quick / short / deep`,
+and the entry above records that being corrected *to* that spelling
+deliberately, because it was the schema's word at the time. ADR-0024 reverses
+it: the middle size is `normal` everywhere now, including the DDL — the
+glossary was the thing that was wrong, and the slider's original display word
+was right.
+
+Not edited here. The mirror is a copy of the upstream project and a local
+edit would be undone by the next re-pull, so the correction has to be made in
+the design project itself and pulled back. Until it is, `README.md:242` is
+known-stale in exactly one line.

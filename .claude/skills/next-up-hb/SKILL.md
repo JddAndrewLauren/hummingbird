@@ -38,7 +38,7 @@ reading the fog, and writing the answer.
 
 ```
 .claude/skills/next-up-hb/scripts/next-up.sh survey \
-  [--context @computer] [--energy low|medium|high] [--size quick|short|deep] \
+  [--context @computer] [--energy low|medium|high] [--size quick|normal|deep] \
   [--agent] [--calendar <file>]
 ```
 
@@ -96,7 +96,7 @@ all three is fine and common — rank everything that qualifies.
 - **Filter args**, any subset in any order: `office low 30m`, `@computer quick`, `high`.
   Contexts match with or without the `@`. Time is either a duration (`30m`, `2h`,
   `15 min`) or a size word; map a duration onto the nearest size — ≲15 min → `quick`, up
-  to about an hour → `short`, beyond that → `deep`. Also **`agent`**, meaning "only what I
+  to about an hour → `normal`, beyond that → `deep`. Also **`agent`**, meaning "only what I
   could hand off" — that is `--agent`, the fourth axis, not one of the three.
 - **Free text** ("I've got twenty minutes and no brain") is a fast path: read it into the
   same three axes and proceed. Don't interrogate.
@@ -104,7 +104,7 @@ all three is fine and common — rank everything that qualifies.
   prompt, each axis skippable ("anywhere" / "either" / "any"). One prompt, three axes if
   the harness allows it; plain text if it doesn't.
 
-`--energy` is `low|medium|high` and `--size` is `quick|short|deep` — the owned schema's own
+`--energy` is `low|medium|high` and `--size` is `quick|normal|deep` — the owned schema's own
 spellings, which the script rejects anything else for.
 
 **No standalone GUI.** Deferred to v2 behind the dashboard tripwire — don't smuggle one in.

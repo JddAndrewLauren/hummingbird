@@ -861,7 +861,7 @@ mod wasm_bindings {
         /// Captures a new item. Resolves to JSON:
         /// `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
         /// `size`/`energy` (#208) are the wire's snake_case vocabulary names
-        /// (`"quick"`/`"short"`/`"deep"`, `"low"`/`"medium"`/`"high"`),
+        /// (`"quick"`/`"normal"`/`"deep"`, `"low"`/`"medium"`/`"high"`),
         /// resolved by name — never a raw id — on the way in; `context`
         /// carries straight through. Each defaults to absent, so a caller
         /// that never sets them still produces a capture with all three

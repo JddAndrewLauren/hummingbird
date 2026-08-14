@@ -8,6 +8,7 @@ import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Textarea } from "../components/forms/Textarea";
 import { relativeAge } from "../shell/sync-status";
+import { energyIcon, levelColor, sizeIcon } from "./size-energy";
 import type { ProjectDTO, TaskItemDTO, TriageDestinationName } from "../store/protocol";
 import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
@@ -29,7 +30,7 @@ const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiti
 const SIZES: Array<{ value: TriageDraft["size"]; label: string }> = [
   { value: "", label: "Not set" },
   { value: "quick", label: "Quick" },
-  { value: "short", label: "Short" },
+  { value: "normal", label: "Normal" },
   { value: "deep", label: "Deep" },
 ];
 
@@ -320,15 +321,32 @@ export function TriageRow({
               onChange={(event) => set("priority", event.target.value)}
               options={PRIORITY_OPTIONS}
             />
+            {/* The glyph sits beside the field's *label*, showing the draft's
+                current level, and not inside the option list: a native
+                `<option>` renders text only — an SVG in one is dropped, and
+                the whole point of the family is that the level is visible
+                before the menu is opened. An untouched draft ("" — not set)
+                gets the ghost variant, which is the resting state, not a
+                prompt to choose. */}
             <Select
-              label="Size"
+              label={
+                <>
+                  <Icon name={sizeIcon(draft.size || null)} size={13} style={{ color: levelColor(draft.size || null) }} />
+                  Size
+                </>
+              }
               size="sm"
               value={draft.size}
               onChange={(event) => set("size", event.target.value)}
               options={SIZES}
             />
             <Select
-              label="Energy"
+              label={
+                <>
+                  <Icon name={energyIcon(draft.energy || null)} size={13} style={{ color: levelColor(draft.energy || null) }} />
+                  Energy
+                </>
+              }
               size="sm"
               value={draft.energy}
               onChange={(event) => set("energy", event.target.value)}

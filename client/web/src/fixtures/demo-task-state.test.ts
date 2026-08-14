@@ -42,7 +42,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
       "(none)": 13,
       deep: 8,
       quick: 4,
-      short: 4,
+      normal: 4,
     });
     expect(tally(board.map((i) => i.energy))).toEqual({
       "(none)": 17,

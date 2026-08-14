@@ -29,7 +29,7 @@
 
 /** The owned schema's own spellings -- `hummingbird_domain::{Energy, Size}`. */
 const ENERGIES = ["low", "medium", "high"];
-const SIZES = ["quick", "short", "deep"];
+const SIZES = ["quick", "normal", "deep"];
 
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);

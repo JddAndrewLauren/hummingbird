@@ -3,7 +3,7 @@
 # #10's delegation protocol needs (#115/#291).
 #
 # Usage: next-up.sh survey [--context X] [--energy low|medium|high]
-#                          [--size quick|short|deep] [--agent]
+#                          [--size quick|normal|deep] [--agent]
 #                          [--calendar <file>]
 #                          [--now-local YYYY-MM-DDTHH:MM] [--now-epoch-ms N]
 #        next-up.sh rank                 # a prebuilt envelope on stdin
@@ -219,7 +219,7 @@ case "$cmd" in
       esac
     done
     [[ -z "$energy" || "$energy" =~ ^(low|medium|high)$ ]] || die "--energy must be low, medium or high"
-    [[ -z "$size" || "$size" =~ ^(quick|short|deep)$ ]] || die "--size must be quick, short or deep"
+    [[ -z "$size" || "$size" =~ ^(quick|normal|deep)$ ]] || die "--size must be quick, normal or deep"
     [[ -z "$calendar_file" || -f "$calendar_file" ]] || die "no calendar context file at $calendar_file"
 
     sweep=$(fetch_sweep)
@@ -357,7 +357,7 @@ case "$cmd" in
   *)
     cat >&2 <<'USAGE'
 usage: next-up.sh survey [--context X] [--energy low|medium|high]
-                         [--size quick|short|deep] [--agent] [--calendar <file>]
+                         [--size quick|normal|deep] [--agent] [--calendar <file>]
        next-up.sh rank
        next-up.sh get <ref>
        next-up.sh move <ref> <triage|grilling|ready|in_progress|blocked>

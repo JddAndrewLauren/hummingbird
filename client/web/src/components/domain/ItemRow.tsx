@@ -3,6 +3,8 @@ import type { CSSProperties, HTMLAttributes } from "react";
 import { Icon } from "../core/Icon";
 import { MarkDoneButton } from "./MarkDoneButton";
 import { hasPriority, priorityLabel } from "../../screens/priority";
+import { energyIcon, energyTitle, levelColor, sizeIcon, sizeTitle } from "../../screens/size-energy";
+import type { TaskItemDTO } from "../../store/protocol";
 import { StageBadge } from "./StageBadge";
 import type { Stage } from "./StageBadge";
 
@@ -15,8 +17,21 @@ export interface ItemRowProps extends Omit<HTMLAttributes<HTMLDivElement>, "styl
   deadline?: string;
   /** Do-date the human chose. Rendered with a calendar glyph, always muted. */
   scheduled?: string;
-  /** Size label: quick · normal · deep. */
-  size?: string;
+  /** The item's own `size` (`quick` / `normal` / `deep`), rendered as a
+   * depth-ring glyph in the level's ramp colour (`screens/size-energy.ts`)
+   * and no word — the level is in the glyph, and the name is carried by
+   * `aria-label` and `title` instead. Absent means the caller has nothing
+   * to say — this row omits it entirely rather than drawing the unset
+   * ghost, the same contract `priority`, `steps` and `blockedBy` follow.
+   * The full-item surface that *does* draw absence, with words, is
+   * `ItemDetailPanel`. */
+  size?: TaskItemDTO["size"];
+  /** The item's own `energy` (`low` / `medium` / `high`), drawn beside size
+   * in the same treatment (#446). Rows carried no energy at all before
+   * that — it rendered in exactly one place, the detail panel — which is
+   * what made the two dimensions feel like different kinds of fact when
+   * they are one kind. */
+  energy?: TaskItemDTO["energy"];
   /** The owned schema's raw `items.priority` wire value (0..4, ADR-0009) —
    * rendered by its label (`priorityLabel`), never the raw number, which is
    * inverted and holed (issue #108). Omitted entirely at "No priority"
@@ -46,7 +61,7 @@ const URGENCY: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "va
 // the stored enum is not what a reader wants hovering a coloured dot.
 const URGENCY_LABEL: Record<"calm" | "soon" | "now" | "overdue", string> = { calm: "Calm", soon: "Due soon", now: "Due now", overdue: "Overdue" };
 
-export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, priority, blockedBy, steps, pending = false, selected = false, onComplete, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
+export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, energy, priority, blockedBy, steps, pending = false, selected = false, onComplete, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }: ItemRowProps) {
   const [hover, setHover] = useState(false);
   // No onClick, no affordance: a row that does nothing must not take focus,
   // announce itself as a button, or claim a pointer.
@@ -113,7 +128,22 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
           <Icon name="link" size={13} />{blockedBy}
         </span>
       ) : null}
-      {size ? <span style={{ font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-muted)" }}>{size}</span> : null}
+      {/* Glyph only, no word (#446): the row annotates a title, and two
+          spelled-out dimensions per line competed with it. That makes the
+          chip's name load-bearing, so it is given twice — `aria-label` under
+          `role="img"` for assistive tech, `title` for the hover tooltip. A
+          bare `title` is not an accessible name on a generic span; the glyph
+          inside stays `aria-hidden` so there is exactly one named node. */}
+      {size ? (
+        <span role="img" aria-label={sizeTitle(size)} title={sizeTitle(size)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(size) }}>
+          <Icon name={sizeIcon(size)} size={13} />
+        </span>
+      ) : null}
+      {energy ? (
+        <span role="img" aria-label={energyTitle(energy)} title={energyTitle(energy)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(energy) }}>
+          <Icon name={energyIcon(energy)} size={13} />
+        </span>
+      ) : null}
       {priority !== undefined && hasPriority(priority) ? (
         <span style={{ font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-brand)" }}>{priorityLabel(priority)}</span>
       ) : null}
