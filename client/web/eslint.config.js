@@ -59,4 +59,10 @@ export default tseslint.config(
     files: ["csp-worker/**/*.ts", "*.config.ts", "*.config.js"],
     languageOptions: { globals: { ...globals.node } },
   },
+  {
+    // Build-time checks that run under node, never in a browser
+    // (`scripts/assert-no-fixtures.mjs` reads `dist/` after `vite build`).
+    files: ["scripts/**/*.mjs", "scripts/**/*.js"],
+    languageOptions: { globals: { ...globals.node } },
+  },
 );

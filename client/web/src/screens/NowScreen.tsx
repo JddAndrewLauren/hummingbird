@@ -26,6 +26,7 @@ import { Aside, Column, Section, TwoColumn } from "./layout";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
+import { strandedTriageFailure } from "./triage-failure";
 import { TriageRow } from "./TriageRow";
 
 export interface NowScreenProps {
@@ -172,6 +173,19 @@ function RealFrontier({
     ? (task.triageInbox.find((item) => item.id === selectedItemId) ?? null)
     : null;
 
+  // #418. `TriageRow` renders its own failure outside its expanded block so a
+  // late result still lands on a collapsed row — true on Triage, where the
+  // rows stay mounted in a list, and false here from the moment the row became
+  // the slot: closing the slot unmounts it outright. This is where the failure
+  // goes when there is no row left to wear it. `strandedTriageFailure` is
+  // silent while the failing capture IS the open one, so the two surfaces
+  // never both speak for one result.
+  const strandedTriage = strandedTriageFailure(
+    task.lastTriage,
+    selectedCapture?.id ?? null,
+    task.triageInbox,
+  );
+
   // S11/#109's item detail panel must stay open (reviewer finding on PR
   // #207) even after an act moves the item somewhere neither `frontier`
   // nor `blocked` lists — `"block"` sets `Stage::Blocked`, which is outside
@@ -240,6 +254,27 @@ function RealFrontier({
 
   return (
     <>
+      {/* Above the slot, not inside it: this line exists precisely for the
+          renders where the slot is empty. Text and nothing else — ADR-0021
+          decision 2 keeps colour on a card meaning urgency and nothing else,
+          so a failure states itself in words, which is the same accessibility
+          argument the cards already make for urgency. `role="alert"`, like
+          every other danger paragraph in this app: it appears with no other
+          change on the page, so colour alone would never reach a screen
+          reader. */}
+      {strandedTriage ? (
+        <p
+          role="alert"
+          style={{
+            font: "var(--type-body-sm)",
+            color: "var(--status-danger-fg)",
+            margin: 0,
+          }}
+        >
+          {strandedTriage}
+        </p>
+      ) : null}
+
       {/* #404 / ADR-0021 decision 7: the selected item expands ABOVE the
           columns, which stay standing under it — this used to be an early
           `return` of the panel *instead of* the frontier, so picking one action

@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "visual": "playwright test",
-    "wrangler:dev": "pnpm run build && wrangler dev"
+    "wrangler:dev": "pnpm run build && wrangler dev",
+    "assert-no-fixtures": "node scripts/assert-no-fixtures.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.30.0",

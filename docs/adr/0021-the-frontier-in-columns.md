@@ -344,6 +344,40 @@ code would trade a documented coverage gap for an undocumented behavioural one.
 If it is ever done it is a decided change with its reasoning written down, not
 a side effect of wanting a picture.
 
+*Amended 2026-08-13 (#420): the gap is closed, and the rejection above still
+stands — this is the decided change it asked for, not the entangling it
+refused. `?demo` keeps its exact present meaning and still never mounts
+`RealFrontier`. What is added is a **second, mutually exclusive demo world**,
+`?demo=board`, which seeds a real `TaskState` — the shape the sync engine
+publishes — and returns `null` for `DemoData`. A null `demo` prop is precisely
+what makes `NowScreen` take its `RealFrontier` branch, so the two paths stay as
+separate as this decision wanted them: nothing is widened, and no production
+component learns that a fixture exists.*
+
+*Why a seeded state rather than richer kit fixtures: `DemoItem` carries no
+`context` and no `energy`, having been written before either was an axis, so
+the kit world could not express this decision's own grouping in principle.*
+
+*The fixture (`client/web/src/fixtures/demo-task-state.ts`) mirrors
+**production's measured shape and none of its content** — 29 board cards, the
+context/size/energy/source spreads read once from `GET /api/changes?since=0` on
+2026-08-13, no projects, no blocked edges, priority flat at zero. Mirroring the
+awkward parts is the point, and photographing them turned three of this ADR's
+own decisions into findings worth their own issues: **grouping by Project
+yields exactly one column**, because production has no projects at all
+(decision 1 licenses four axes; one of them currently does nothing);
+**the no-value bucket is the biggest column on every axis**, which decision 1
+pins always-last, so the largest column sits past the fold; and **`n more` is
+the normal case rather than an edge one**, two context columns being over
+`COLUMN_CAP` on day one. Two documented departures keep the gate covering
+states production is not in today: three deadlines, one per urgency band, so
+decision 2's colour ladder is photographed at all, and a seeded `lastTriage`
+failure so #418's alert is too.*
+
+*What this does not change: the disposition above still holds for everything a
+photograph cannot decide. The board world is read-only — no mutation is rewired
+to it — so it is a camera, not a second writable app.*
+
 ## Consequences
 
 - `screens/frontier-groups.ts` and its test are deleted with the project
@@ -385,6 +419,36 @@ a side effect of wanting a picture.
   — sorting it is the doing — and stacking the captures outside the axis meant
   the one thing the board could not tell you was which of them belonged to the
   context you are actually in.*
+
+  *Amended 2026-08-13 (#418): the amendment above cost a **failure** its home,
+  and Now grows one line to give it back. `TriageRow` renders its failure
+  outside its expanded block precisely so a late result still lands on a
+  collapsed row — true where the rows stand in a list, false the moment the row
+  became the slot, because closing the slot unmounts the component. So a triage
+  that failed after the reader closed the panel was displayed nowhere: the
+  capture returned to the board (correctly — a failed triage leaves the item in
+  `triageInbox`) saying nothing. Now states it itself, above the columns, as a
+  `role="alert"` paragraph **naming the capture**, and stays silent while that
+  capture is the open one so the two surfaces never both speak for one result.
+  Both sentences come from one pure module, `screens/triage-failure.ts`.*
+
+  *Three shapes were on the table and two are rejected here, because they are
+  the expensive knowledge. **On the card** — error text under the failing
+  capture's title — is the most precise about where a failure belongs, and it
+  loses to this decision's own furniture: a column caps at six cards, so a
+  capture behind `n more` would wear a message nobody can see, which is the
+  original bug one layer down. (Decision 2 rules out saying it in colour
+  instead: what a card's colour encodes is urgency and nothing else.)
+  **Holding the slot open on failure** is the smallest change and the closest to
+  the old behaviour, and it takes the panel away from the reader at the exact
+  moment they asked to close it — a surface whose decision 7 is "selecting a
+  card is not a takeover" should not answer a failed write with one.*
+
+  *What this does not do is fix the general case. `TaskState.lastTriage` holds
+  the most recent result and not a map, so exactly one failure exists at a time
+  and this line is honest about precisely that. A per-item error surface — for
+  triage or for `lastAct`, which has the same shape and the same limit — is a
+  store change, and a bigger decision than the bug that prompted this one.*
 - `CONTEXT.md` gains **Size**, **Energy** and the item's **Context**. All three
   existed only inside other definitions and in ADR-0009's DDL; this decision
   makes all three UI vocabulary, and the glossary adjudicates design questions.

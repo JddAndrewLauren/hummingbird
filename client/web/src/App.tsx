@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { demoData } from "./fixtures/demo";
+import { demoData, demoTaskState } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
@@ -79,7 +79,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const viewOrdinal = useStore((state) => state.viewOrdinal);
   const error = useStore((state) => state.error);
   const calendar = useStore((state) => state.calendar);
-  const task = useStore((state) => state.task);
+  const liveTask = useStore((state) => state.task);
 
   // A lazy initializer rather than a ref: reading `ref.current` during render
   // is what React's rules forbid, and this needs to be constructed exactly
@@ -89,6 +89,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // Lazy initializer, not a ref: `demoData()` returns null in production, and
   // `ref.current ??= …` would re-run it on every render forever.
   const [demo] = useState(demoData);
+
+  // The board world (#420), same lazy-initializer reason. Read-only by
+  // construction: it substitutes for the published state the sync engine would
+  // have sent, and no mutation is rewired to it — the point is photographing
+  // and eyeballing the real render path at production's density, not a second
+  // writable world. A capture typed into the popover still goes to the worker,
+  // which knows nothing of these fixture ids; `demo`'s own fixture-queue arm
+  // does not apply here because `demoData()` is null in this mode.
+  const [demoTask] = useState(demoTaskState);
+  const task = demoTask ?? liveTask;
 
   const [screen, setScreen] = useState<Screen>("now");
   // Device-local view preference, same storage guard `NowScreen`'s ranked

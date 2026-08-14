@@ -13,6 +13,7 @@ import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { canMarkDone } from "./item-actions";
 import { PRIORITY_OPTIONS } from "./priority";
+import { triageFailureFor } from "./triage-failure";
 import {
   buildTriageEdits,
   effectiveDraft,
@@ -121,13 +122,9 @@ export function TriageRow({
     }
   }
 
-  // Matched by item id, same broadcast-recognition contract `NowScreen.tsx`'s
-  // `actError` uses for `lastAct` — a failure belongs to whichever item it
-  // names, never to "whichever row is open".
-  const triageError =
-    lastTriage && lastTriage.itemId === item.id && lastTriage.kind !== "ok"
-      ? (lastTriage.error ?? "That triage didn't apply.")
-      : null;
+  // Matched by item id — see `triage-failure.ts`, which owns this and the
+  // sentence Now says when no row is mounted to say it (#418).
+  const triageError = triageFailureFor(lastTriage, item.id);
 
   function promote(destination: TriageDestinationName): void {
     if (!onTriage || blocked) {
@@ -231,7 +228,15 @@ export function TriageRow({
           and it must still be on screen when the result lands after the reader
           has collapsed the row. `role="alert"`: the paragraph appears with no
           other change on the page, so colour alone would never reach a screen
-          reader. */}
+          reader.
+
+          That reasoning covers this row on **Triage**, where the rows stand in
+          a list and collapsing one leaves it mounted. It never covered Now,
+          where the row is the slot and closing it unmounts this component
+          entirely — so the failure had nowhere to land at all. Now says it
+          itself in that case (`triage-failure.ts`'s `strandedTriageFailure`,
+          #418); this paragraph keeps the failure on the item wherever the row
+          survives, and the two are mutually exclusive by construction. */}
       {triageError ? (
         <p
           role="alert"
