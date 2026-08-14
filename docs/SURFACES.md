@@ -148,6 +148,33 @@ with `RealFrontier` to photograph them is rejected there, not merely skipped:
 that branch exists to keep the two apart, so widening it would trade a
 documented coverage gap for an undocumented behavioural one.
 
+**The capture popover's dictation microphone (#379) is unphotographed, and no
+capture will ever contain it.** It renders only where local speech recognition
+has been *confirmed* — `available({langs:["en-US"], processLocally: true})`
+answering `"available"` (ADR-0022) — which is a browser with the on-device pack
+installed. The gate's Chromium has no such pack, so the popover photographs
+exactly as it did before this slice, and that is the correct output rather than
+a missing state: ADR-0022's `unsupported` and `setup-required` arms both render
+nothing at all. The cover is `screens/CaptureBox.dictation.test.tsx` (the seam
+mocked wholesale, which is the only way any gate here reaches the listening
+state), `speech/local-dictation.test.ts` and
+`screens/capture-dictation.test.ts`. **The gate deletes the speech
+constructor before the app loads** (`openApp`'s second init script), and that is
+not tidiness: headless Chromium 151.0.7922.34 **crashes the renderer** when
+`SpeechRecognition.available()` is called, so mounting the capture box killed
+the tab and all eight capture-popover cases failed on the click that opens it.
+Measured both ways in the same build — headless crashes, `headless: false`
+returns `"downloadable"`. Deleting it changes no pixel, since the gate's browser
+has no language pack and ADR-0022 renders nothing for either non-`ready` arm. A
+renderer crash is not catchable from the page that provokes it, which is why the
+defence is in the harness and not a `navigator.webdriver` check in product
+code.
+
+The microphone's idle and listening
+appearance is reviewed by hand on the desk Chrome, which is the only browser
+this repo has measured it on and — until the phone is probed — the only one it
+is known to appear in at all.
+
 **Since #420 the columns, the captures among them and #418's stranded-write
 alerts ARE photographed** (both of them — the board fixture seeds a failed
 triage and a failed act, and `surfaces.spec.ts` asserts the count rather than

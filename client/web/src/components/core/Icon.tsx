@@ -22,6 +22,7 @@ import {
   Link,
   ListChecks,
   LoaderCircle,
+  Mic,
   Moon,
   Play,
   Plus,
@@ -68,6 +69,11 @@ export const ICON_MAP = {
   link: Link,
   "list-checks": ListChecks,
   "loader-circle": LoaderCircle,
+  // The capture box's dictation control (#379). One glyph for both states:
+  // listening is `IconButton`'s `active` (the design system's own toggled-on
+  // treatment — ember tint plus brand foreground), not a second icon.
+  // `mic-off` would say "muted", which is not what stopping means.
+  mic: Mic,
   moon: Moon,
   play: Play,
   plus: Plus,
