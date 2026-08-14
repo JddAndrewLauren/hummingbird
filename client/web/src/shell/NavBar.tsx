@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Badge } from "../components/core/Badge";
 import { Icon, type IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
@@ -18,6 +18,10 @@ export interface NavBarProps {
   statusLabel: string;
   theme: ResolvedTheme;
   onToggleTheme: () => void;
+  /** Whether the More sheet is open. Controlled by the shell rather than held
+   * here — `escape-claimants.ts` explains why the state had to leave. */
+  sheetOpen: boolean;
+  onSheetOpen: (open: boolean) => void;
 }
 
 /** The phone form of the nav rail: four screens on a bar, the rest behind a
@@ -46,7 +50,14 @@ export interface NavBarProps {
  *
  * The rail's collapse toggle has no counterpart here and `rail-collapse.ts` is
  * simply unread on a phone. Coupling that stored preference to the media query
- * would make the desktop toggle behave unpredictably after a window resize. */
+ * would make the desktop toggle behave unpredictably after a window resize.
+ *
+ * **The sheet is open or shut at the shell's word, not its own.** This used to
+ * be `useState` here plus a document `keydown` for Escape, and that is exactly
+ * how one Escape came to close both this and an item panel: two document
+ * listeners, neither able to see the other. `escape-claimants.ts` carries the
+ * argument; what is left here is that the sheet closes when it is told to, by
+ * whichever of the four ways out was taken. */
 export function NavBar({
   screen,
   onScreen,
@@ -54,30 +65,14 @@ export function NavBar({
   statusLabel,
   theme,
   onToggleTheme,
+  sheetOpen,
+  onSheetOpen,
 }: NavBarProps) {
-  const [sheetOpen, setSheetOpen] = useState(false);
   const overflowActive = isOverflowScreen(screen);
-
-  // Escape closes the sheet — bound to the document, not the sheet's markup,
-  // for `CapturePopover`'s reason: an Escape must still close this if focus
-  // has left the panel, and a handler on the markup only sees what bubbles
-  // out of it.
-  useEffect(() => {
-    if (!sheetOpen) {
-      return;
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setSheetOpen(false);
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [sheetOpen]);
 
   function go(next: Screen) {
     onScreen(next);
-    setSheetOpen(false);
+    onSheetOpen(false);
   }
 
   return (
@@ -115,7 +110,7 @@ export function NavBar({
           icon="ellipsis"
           active={overflowActive}
           expanded={sheetOpen}
-          onClick={() => setSheetOpen((open) => !open)}
+          onClick={() => onSheetOpen(!sheetOpen)}
         />
       </nav>
 
@@ -127,7 +122,7 @@ export function NavBar({
           theme={theme}
           onToggleTheme={onToggleTheme}
           onScreen={go}
-          onClose={() => setSheetOpen(false)}
+          onClose={() => onSheetOpen(false)}
         />
       ) : null}
     </>
@@ -253,9 +248,10 @@ function MoreSheet({
   // re-rendered the bar out from under the node we saved.
   //
   // No focus trap, deliberately, and for the same reason `CapturePopover`
-  // has none: Escape is bound to the document (above), so tabbing out of the
-  // panel does not strand anyone — the sheet still closes and still hands
-  // focus back. A trap here would be a second idiom for the same job.
+  // has none: the shell's one document listener owns Escape
+  // (`escape-claimants.ts`), so tabbing out of the panel does not strand
+  // anyone — the sheet still closes and still hands focus back. A trap here
+  // would be a second idiom for the same job.
   useEffect(() => {
     restoreTo.current = document.activeElement;
     panelRef.current?.focus();

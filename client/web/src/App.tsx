@@ -10,7 +10,8 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
-import { closesItemDetail, isCaptureHotkey } from "./shell/capture-hotkey";
+import { isCaptureHotkey } from "./shell/capture-hotkey";
+import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
 import { NavBar } from "./shell/NavBar";
@@ -196,6 +197,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // Triage-screen version was a counter and not a boolean.
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureFocusRequestId, setCaptureFocusRequestId] = useState(0);
+  // The phone nav's More sheet. Held here rather than in `NavBar` because it
+  // is one of three things an Escape can mean, and only a place that can see
+  // all three can order them (`escape-claimants.ts`). It is read as
+  // `isPhone && navSheetOpen` everywhere below: `NavBar` is only mounted on a
+  // phone, so a stale `true` left over from a narrow window would otherwise
+  // hand the desktop's Escape to a sheet that is not on screen.
+  const [navSheetOpen, setNavSheetOpen] = useState(false);
   const requestCapture = () => {
     setCaptureOpen(true);
     setCaptureFocusRequestId((id) => id + 1);
@@ -254,42 +262,37 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         return;
       }
 
-      // Escape closes the open item detail — the same shell-level listener,
-      // for the same reason: the panel is not focused once the reader has
-      // clicked into the board behind it, and a handler on its own markup
-      // only sees what bubbles out of it.
+      // Escape closes exactly one open overlay — the shallowest — and this is
+      // the only place in the app that decides which. Every claimant's flag is
+      // shell state, so the ordering is a lookup rather than a negotiation
+      // between listeners that cannot see each other; `escape-claimants.ts`
+      // holds the order and the argument, and the closer map below is a
+      // `Record` over it, so a new claimant cannot be silently forgotten here.
       //
-      // It is the LAST claimant, deliberately: `CapturePopover` sits over the
-      // detail panel and owns Escape while it is open, so the shallowest open
-      // thing must be what closes — otherwise one Escape shuts the popover
-      // AND the panel underneath it, and the reader loses something they
-      // never asked to close. The guard reads `captureOpen` rather than the
-      // event, because one document listener cannot see another's intent.
-      //
-      // `NavBar`'s phone sheet owns Escape the same way and is **not** guarded
-      // here, because its open state lives inside that component and reaching
-      // it would mean lifting sheet state into the shell for one keystroke.
-      // The cost is bounded and stated rather than hidden: on a phone, with a
-      // hardware keyboard, with both the sheet and an item open, one Escape
-      // closes both. Lift the state if that stops being hypothetical.
-      //
-      // The Grill takeover is not in the chain: it owns no Escape at all
-      // (`GrillTakeover.tsx` — leaving an interview is a deliberate Back),
-      // and it replaces the centre column rather than covering the panel.
-      if (
-        closesItemDetail({
-          key: event.key,
-          isComposing: event.isComposing,
-          captureOpen,
-          itemDetailOpen: selectedItemId !== null,
-        })
-      ) {
-        handleCloseItemDetail();
+      // Still bound to the document, not to any overlay's markup: an Escape
+      // must close the popover when focus has tabbed out of its card, and the
+      // detail panel once the reader has clicked into the board behind it.
+      const claimant = escapeClaimant({
+        key: event.key,
+        isComposing: event.isComposing,
+        open: {
+          capture: captureOpen,
+          navSheet: isPhone && navSheetOpen,
+          itemDetail: selectedItemId !== null,
+        },
+      });
+      if (claimant) {
+        const close: Record<EscapeClaimant, () => void> = {
+          capture: () => setCaptureOpen(false),
+          navSheet: () => setNavSheetOpen(false),
+          itemDetail: handleCloseItemDetail,
+        };
+        close[claimant]();
       }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [captureOpen, selectedItemId, handleCloseItemDetail]);
+  }, [captureOpen, isPhone, navSheetOpen, selectedItemId, handleCloseItemDetail]);
   const { act: handleAct } = useItemActions(worker);
   const { triage: handleTriage } = useTriageWiring(worker);
   // #355/ADR-0023's Grill takeover — the Triage screen's own composition of
@@ -511,6 +514,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           statusLabel={coreStatusLabel(status, apiVersion)}
           theme={theme}
           onToggleTheme={() => setPreference(toggledPreference(theme))}
+          sheetOpen={navSheetOpen}
+          onSheetOpen={setNavSheetOpen}
         />
       ) : null}
 
