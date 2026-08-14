@@ -27,6 +27,35 @@ date: 2026-08-09T20:05:16Z
 
 ## Last push (mirror -> design project)
 
+date: 2026-08-13
+direction: this mirror was the source; 2 files written to the design project
+
+Terminology corrections made in the repo (docs-only slices) and pushed up so
+the mirror and the design project do not fork — a re-pull would otherwise have
+reverted them and reintroduced the retired term "Due date":
+
+- `README.md` -> `readme.md` (from #400, commit `107c605`) — three changes in
+  one file: the "domain words are exact" roster drops "Due date" for
+  **Deadline** and gains **Size**, **Energy** and **Context** (the three axes
+  ADR-0021 turned into on-screen controls); the `flag` icon gloss reads
+  "deadline"; and `Slider`'s size scale is corrected to
+  `quick / short / deep` per the schema (it read `quick / normal / deep`).
+  The size-scale fix is not terminology but rides along in the same file.
+- `components/forms/Input.prompt.md` (from #408, in batch PR #433) — the
+  example field is `label="Deadline"` with error copy "Leave blank if nothing
+  breaks."; the old "Due dates are deadlines" phrasing was redundant once the
+  label was renamed.
+
+Both remote files were byte-identical to their pre-edit repo versions before
+the write, so nothing authored in the design project was overwritten.
+
+Not part of this push, and not a fork: `components/domain/ItemRow.prompt.md`
+still says "Due dates take colour from urgency". That line predates the
+2026-08-09 push, so the mirror and the design project agree on it — it needs
+an in-repo fix (#436) before there is anything to push.
+
+### Previous push
+
 date: 2026-08-09
 direction: this mirror was the source; 23 files written to the design project
 
