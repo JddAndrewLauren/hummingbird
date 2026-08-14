@@ -20,10 +20,13 @@ import { defineConfig } from "@playwright/test";
 // deliberately not run by `pnpm dev`/`pnpm test`, so nobody pays for a
 // browser download they did not ask for.
 //
-// The widths come from the design system's fixed layout constants (a 236px
-// nav rail, a 320px context panel, a 380px minimum content column) and from
-// `screens/layout.tsx`'s `TwoColumn`, which wraps rather than using a media
-// query. See `docs/SURFACES.md` for the surface-by-surface matrix.
+// The three desktop widths come from the design system's fixed layout
+// constants (a 236px nav rail, a 320px context panel, a 380px minimum
+// content column) and from `screens/layout.tsx`'s `TwoColumn`, which wraps
+// rather than using a media query. The fourth, `phone`, is the one width
+// where that stops being the whole story: below `PHONE_MAX_WIDTH_PX`
+// (`src/shell/breakpoints.ts`) the app does use a media query, and the rail
+// is a bottom bar. See `docs/SURFACES.md` for the surface-by-surface matrix.
 export default defineConfig({
   testDir: "./visual",
   outputDir: "./visual/.output",
@@ -47,6 +50,20 @@ export default defineConfig({
     { name: "boundary", use: { viewport: { width: 1024, height: 900 } } },
     // 768: the panel has wrapped below the column.
     { name: "narrow", use: { viewport: { width: 768, height: 1000 } } },
+    // 390x844: an iPhone in portrait, the surface this app is installed on.
+    // `isMobile`/`hasTouch` are what make `matchMedia`'s phone branch and the
+    // touch affordances real — a bare 390px viewport in a desktop context
+    // would exercise the width and none of the behaviour. Chromium-only,
+    // matching the sole browser configured above.
+    {
+      name: "phone",
+      use: {
+        viewport: { width: 390, height: 844 },
+        deviceScaleFactor: 3,
+        isMobile: true,
+        hasTouch: true,
+      },
+    },
   ],
   webServer: {
     // `pnpm dev` builds the wasm core first, which the SharedWorker needs.
