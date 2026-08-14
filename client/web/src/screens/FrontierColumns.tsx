@@ -42,6 +42,7 @@ import {
 } from "./frontier-prefs";
 import { canMarkDone } from "./item-actions";
 import { hasPriority, priorityLabel } from "./priority";
+import { energyIcon, energyLabel, levelColor, sizeIcon, sizeLabel } from "./size-energy";
 import type { StorageLike } from "./storage";
 import { computeUrgency, type Urgency } from "./urgency";
 import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
@@ -203,7 +204,25 @@ function ItemCard({
               for colour — stage is one of the three things the design system
               lets a coloured pill encode. */}
           {item.stage === "ready" ? null : <StageBadge stage={item.stage} />}
-          {item.size ? <Badge mono>{item.size}</Badge> : null}
+          {/* The level ramp, on the surface ADR-0021 decision 2 reserved for
+              urgency. ADR-0024 narrows that: the *card's own* colour still
+              means urgency and nothing else, and these badges are `ItemRow`'s
+              vocabulary inherited unchanged — the same way `StageBadge` and
+              the priority label already arrive here carrying their own
+              colour. The honest cost, accepted: an amber mark on a card can
+              now mean "due soon" (the leading edge) or "normal size" (this
+              badge). Absent stays absent — a dense column is not the place to
+              draw an unjudged dimension; `ItemDetailPanel` is. */}
+          {item.size ? (
+            <Badge mono icon={sizeIcon(item.size)} style={{ color: levelColor(item.size) }}>
+              {sizeLabel(item.size)}
+            </Badge>
+          ) : null}
+          {item.energy ? (
+            <Badge mono icon={energyIcon(item.energy)} style={{ color: levelColor(item.energy) }}>
+              {energyLabel(item.energy)}
+            </Badge>
+          ) : null}
           {hasPriority(item.priority) ? (
             <span className="hb-meta" style={{ color: "var(--text-brand)" }}>
               {priorityLabel(item.priority)}

@@ -81,7 +81,7 @@ real sequencing.
   write is in that one preview.
 - Proposed axes: `context` (`@home`, `@computer`, …) is usually inferrable; `size` and
   `energy` are guesses the human corrects — say so in the preview. The spellings are
-  `quick`/`short`/`deep` and `low`/`medium`/`high` (REFERENCE.md; both changed from the
+  `quick`/`normal`/`deep` and `low`/`medium`/`high` (REFERENCE.md; both changed from the
   Linear vocabulary).
 - All minted actions land in **`ready`**. **Never propose `agent` by default** — the
   delegation axis is deliberate, and `/next-up-hb` is where a marked item gets handed off.

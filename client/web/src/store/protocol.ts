@@ -230,7 +230,7 @@ export interface TriageEdits {
   title?: string;
   description?: string | null;
   projectId?: string | null;
-  size?: "quick" | "short" | "deep" | null;
+  size?: "quick" | "normal" | "deep" | null;
   energy?: "low" | "medium" | "high" | null;
   context?: string | null;
   /** 0..=4, in `items.priority`'s own encoding (`screens/priority.ts` owns
@@ -273,7 +273,7 @@ export interface TaskItemDTO {
   title: string;
   description: string | null;
   stage: TaskStageName;
-  size: "quick" | "short" | "deep" | null;
+  size: "quick" | "normal" | "deep" | null;
   energy: "low" | "medium" | "high" | null;
   context: string | null;
   priority: number;
@@ -610,7 +610,7 @@ export type TaskWorkerRequest =
       seed: string;
       title: string;
       stage: TaskStageName;
-      size: "quick" | "short" | "deep" | null;
+      size: "quick" | "normal" | "deep" | null;
       energy: "low" | "medium" | "high" | null;
       context: string | null;
       nowMs: number;

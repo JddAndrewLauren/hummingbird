@@ -43,7 +43,18 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// `CREATE TABLE IF NOT EXISTS` grows for free — not another
 /// [`add_missing_columns`] arm; nothing about an existing table's shape
 /// changes.
-pub const SCHEMA_VERSION: i64 = 6;
+///
+/// 7 renames the middle size `short` → `normal` (ADR-0024, #446), and is the
+/// **first growth that is not additive at all**. Every bump before it either
+/// added a table (free) or added a column (an `ALTER`); this one changes an
+/// existing column's `CHECK` constraint and the values already stored under
+/// it, and SQLite cannot alter a constraint in place. So
+/// [`add_missing_columns`] is joined by [`rebuild_items_for_size_vocabulary`]
+/// — a table rebuild — and `init_schema`'s single create loop splits in two
+/// so the indexes are laid down after it. Re-freezing was not available
+/// (live since #237) and neither was a display-only rename: the word is the
+/// wire value, so it had to reach the DDL.
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -115,7 +126,7 @@ CREATE TABLE IF NOT EXISTS items (
   description TEXT,
   stage       TEXT NOT NULL CHECK (stage IN
                 ('triage','grilling','ready','in_progress','blocked','done')),
-  size        TEXT CHECK (size IN ('quick','short','deep')),
+  size        TEXT CHECK (size IN ('quick','normal','deep')),
   energy      TEXT CHECK (energy IN ('low','medium','high')),
   context     TEXT,
   priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
@@ -344,11 +355,22 @@ const CREATE_TABLES: [&str; 15] = [
 /// as-is, and `schema_version` moves forward. Columns added to a table that
 /// already exists are the one growth `CREATE TABLE IF NOT EXISTS` cannot
 /// do; [`add_missing_columns`] runs after the create loop for those.
+///
+/// The tables and the indexes are two loops rather than one chained pass,
+/// and the order between them is load-bearing:
+/// [`rebuild_items_for_size_vocabulary`] drops and recreates `items`, which
+/// takes every index on it down with the table. Creating the indexes after
+/// the rebuild is what puts them back — and it costs a fresh store nothing,
+/// because there the rebuild is a no-op.
 pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
-    for ddl in CREATE_TABLES.iter().chain(CREATE_INDEXES.iter()) {
+    for ddl in CREATE_TABLES.iter() {
         sql.exec(ddl, &[])?;
     }
     add_missing_columns(sql)?;
+    rebuild_items_for_size_vocabulary(sql)?;
+    for ddl in CREATE_INDEXES.iter() {
+        sql.exec(ddl, &[])?;
+    }
     sql.exec(
         "INSERT OR IGNORE INTO meta (id, version, schema_version) VALUES (1, 0, ?)",
         &[SqlValue::Integer(SCHEMA_VERSION)],
@@ -386,6 +408,146 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     }
     if !column_exists(sql, "items", "agent")? {
         sql.exec("ALTER TABLE items ADD COLUMN agent INTEGER NOT NULL DEFAULT 0", &[])?;
+    }
+    Ok(())
+}
+
+/// The 6→7 rename of the middle size, `short` → `normal` (ADR-0024, #446).
+///
+/// A `CHECK` constraint cannot be altered in place, so the only way to
+/// change `items`' size vocabulary is to rebuild the table. Everything about
+/// the sequence below is chosen against a trap:
+///
+/// **Why a scratch table and then `CREATE_ITEMS` again, rather than the
+/// textbook `CREATE items_new … / DROP items / ALTER TABLE items_new RENAME
+/// TO items`.** `RENAME TO` rewrites the stored DDL: the rebuilt table would
+/// come out as `CREATE TABLE "items" (…)` — the name quoted, `IF NOT EXISTS`
+/// gone — and that is not the text a fresh store holds. Three growth tests
+/// assert a migrated store and a fresh one carry **byte-identical**
+/// `sqlite_master.sql`, and that invariant is worth more than one table
+/// copy: it is the thing that catches a migration which produces a
+/// nearly-right shape. Recreating from [`CREATE_ITEMS`] itself cannot drift
+/// from the fresh path, because it *is* the fresh path.
+///
+/// **Why the parent is never renamed out of the way.** `steps.item_id`,
+/// `blocked_by.{item_id,blocker_id}` and `grills.item_id` all say
+/// `REFERENCES items(id)`. `ALTER TABLE items RENAME TO …` rewrites exactly
+/// those clauses to follow the table, and leaves them pointing at the
+/// scratch name afterwards; dropping and recreating `items` under its own
+/// name leaves every child clause correct and untouched. Verified, not
+/// assumed — the growth test asserts the children still name `items`.
+///
+/// **Why the children are stashed, rather than a pragma.** With foreign-key
+/// enforcement on, `DROP TABLE items` performs an implicit delete of every
+/// parent row and fails on the first child that still references one. Two
+/// mitigations were measured and rejected:
+///
+/// - `PRAGMA defer_foreign_keys = ON` only holds for the duration of one
+///   transaction, and there is no transaction to attach it to here: the
+///   `Sql` seam is one statement at a time, and the Durable Object's SQL
+///   storage does not accept an explicit `BEGIN` (atomicity comes instead
+///   from `init_schema` running in one event-loop turn at construction,
+///   which the DO's write coalescing already makes atomic — see `sql.rs`).
+/// - `PRAGMA foreign_keys = OFF` would work on rusqlite but is connection
+///   state this function has no business mutating, and the DO's pragma
+///   allowance is narrow enough that `column_exists` already avoids
+///   `PRAGMA table_info` over it.
+///
+/// So the sequence stands the children aside instead — copy out, empty,
+/// rebuild the parent, put back. It needs no pragma, no transaction and no
+/// assumption about enforcement, which means it is correct whether the DO
+/// enforces foreign keys or not. That posture is recorded as unverified in
+/// the test rig (`rig.rs`), and the rig turns enforcement **on**, so the
+/// growth test exercises the strict case — the harder of the two.
+///
+/// Runs **after** [`add_missing_columns`] for the same reason that function
+/// runs after the create loop: by this point `items` certainly exists and
+/// certainly has every column, whatever shape the store started in, so the
+/// explicit column list below is the true one. The guard is the stored DDL,
+/// not `schema_version` — a fresh store's `items` already names `normal`
+/// and is skipped, which is what makes this a no-op on every store but the
+/// handful that predate the rename.
+fn rebuild_items_for_size_vocabulary(sql: &dyn Sql) -> Result<(), SqlError> {
+    let rows = sql.exec(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'",
+        &[],
+    )?;
+    let Some(ddl) = rows.first().and_then(|row| row.get("sql")).and_then(|v| v.as_text()) else {
+        return Err(SqlError {
+            message: "`items` is missing from sqlite_master after the create loop".to_string(),
+        });
+    };
+    if ddl.contains("'normal'") {
+        return Ok(());
+    }
+
+    // Spelled out in both the INSERT and the SELECT rather than `SELECT *`:
+    // `agent` reached this table by ADD COLUMN, so its position is an
+    // accident of migration history and a positional copy would inherit it.
+    const COLUMNS: &str = "id, seq, title, description, stage, size, energy, context, \
+                           priority, project_id, project_pos, deadline, scheduled_date, \
+                           source, source_key, source_url, archived_at, created_at, \
+                           updated_at, version, agent";
+
+    // No constraints on the scratch table: it holds the rows for two
+    // statements and every one of them has already satisfied the real
+    // table's constraints once.
+    sql.exec(
+        "CREATE TABLE items_size_rebuild (\
+           id TEXT, seq INTEGER, title TEXT, description TEXT, stage TEXT, size TEXT, \
+           energy TEXT, context TEXT, priority INTEGER, project_id TEXT, project_pos INTEGER, \
+           deadline TEXT, scheduled_date TEXT, source TEXT, source_key TEXT, source_url TEXT, \
+           archived_at INTEGER, created_at INTEGER, updated_at INTEGER, version INTEGER, \
+           agent INTEGER)",
+        &[],
+    )?;
+    // The same list, with the rename applied in place of `size`. The two
+    // are written out separately rather than derived from one another: a
+    // textual substitution over the column list would be one typo away from
+    // silently copying a column into the wrong position.
+    const SELECT_RENAMING_SIZE: &str =
+        "id, seq, title, description, stage, \
+         CASE WHEN size = 'short' THEN 'normal' ELSE size END, \
+         energy, context, priority, project_id, project_pos, deadline, scheduled_date, \
+         source, source_key, source_url, archived_at, created_at, updated_at, version, agent";
+
+    sql.exec(
+        &format!(
+            "INSERT INTO items_size_rebuild ({COLUMNS}) SELECT {SELECT_RENAMING_SIZE} FROM items"
+        ),
+        &[],
+    )?;
+
+    // Every table with a foreign key onto `items(id)`. `CREATE TABLE … AS
+    // SELECT *` is safe for these in a way it is not for `items` above:
+    // both sides of the round trip are the same live table, so a positional
+    // copy cannot land a column in the wrong place, and the shapes are not
+    // being changed — only stood aside.
+    const CHILDREN: [&str; 3] = ["steps", "blocked_by", "grills"];
+    for child in CHILDREN {
+        sql.exec(
+            &format!("CREATE TABLE {child}_fk_stash AS SELECT * FROM {child}"),
+            &[],
+        )?;
+        sql.exec(&format!("DELETE FROM {child}"), &[])?;
+    }
+
+    sql.exec("DROP TABLE items", &[])?;
+    sql.exec(CREATE_ITEMS, &[])?;
+    sql.exec(
+        &format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM items_size_rebuild"),
+        &[],
+    )?;
+    sql.exec("DROP TABLE items_size_rebuild", &[])?;
+
+    // Back after the parent, never before it — this is the half of the
+    // stash that foreign-key enforcement is actually checking.
+    for child in CHILDREN {
+        sql.exec(
+            &format!("INSERT INTO {child} SELECT * FROM {child}_fk_stash"),
+            &[],
+        )?;
+        sql.exec(&format!("DROP TABLE {child}_fk_stash"), &[])?;
     }
     Ok(())
 }

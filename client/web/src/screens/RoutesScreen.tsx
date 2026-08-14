@@ -86,6 +86,7 @@ export function RoutesScreen({ demo }: RoutesScreenProps) {
                 deadline={item.deadline}
                 scheduled={item.scheduled}
                 size={item.size}
+                energy={item.energy}
                 steps={item.steps}
                 blockedBy={item.blockedBy}
               />

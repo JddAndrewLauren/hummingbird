@@ -1,6 +1,12 @@
 # ADR-0021: The frontier in columns — a switchable grouping axis, and urgency as the only colour
 
-**Status:** accepted · 2026-08-13
+**Status:** accepted · 2026-08-13 · **amended 2026-08-14 by
+[ADR-0024](0024-the-size-vocabulary-and-the-level-ramp.md):** decision 2's
+"urgency and nothing else" is narrowed to the *card's own* colour — size and
+energy badges now render on frontier cards carrying a level ramp that reuses
+the urgency tokens, so an amber mark on a card can mean "due soon" or "normal
+size" depending on which element wears it. Decision 1's `size` vocabulary is
+also renamed (`short` → `normal`).
 **Context:** #400, the first slice of the #399 batch that also carries #401
 (Now's aside label), #402 (the columns themselves), #403 (their controls), #404
 (selection above them) and #405 (deleting the prototype). Docs only — no code,

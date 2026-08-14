@@ -23,6 +23,7 @@ import { blockedReasonLabel } from "./blocked-reason";
 import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+import { energyIcon, energyLabel, levelColor, sizeIcon, sizeLabel } from "./size-energy";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
@@ -428,7 +429,8 @@ function RealFrontier({
                 <ItemRow
                   title={entry.item.title}
                   stage={entry.item.stage}
-                  size={entry.item.size ?? undefined}
+                  size={entry.item.size}
+                  energy={entry.item.energy}
                   priority={entry.item.priority}
                   pending={entry.item.pending}
                   onComplete={
@@ -506,7 +508,16 @@ export function NowScreen({
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
                   <StageBadge stage={top.stage} />
-                  {top.size ? <Badge mono>size:{top.size}</Badge> : null}
+                  {top.size ? (
+                    <Badge mono icon={sizeIcon(top.size)} style={{ color: levelColor(top.size) }}>
+                      size:{sizeLabel(top.size)}
+                    </Badge>
+                  ) : null}
+                  {top.energy ? (
+                    <Badge mono icon={energyIcon(top.energy)} style={{ color: levelColor(top.energy) }}>
+                      energy:{energyLabel(top.energy)}
+                    </Badge>
+                  ) : null}
                   <Badge mono tone="brand">
                     {top.id}
                   </Badge>
@@ -544,6 +555,7 @@ export function NowScreen({
                     deadline={item.deadline}
                     scheduled={item.scheduled}
                     size={item.size}
+                    energy={item.energy}
                     steps={item.steps}
                     blockedBy={item.blockedBy}
                     onClick={() => onScreen("routes")}

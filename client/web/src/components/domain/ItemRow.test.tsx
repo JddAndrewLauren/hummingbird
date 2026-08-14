@@ -75,4 +75,36 @@ describe("ItemRow — the meta chips", () => {
     render(<ItemRow title="An action" urgency="overdue" />);
     expect(screen.getByTitle("Overdue")).toBeDefined();
   });
+
+  // #446: rows carried size as a bare muted word and no energy at all. Both
+  // are now glyph + word in the level's ramp colour.
+  it("renders size and energy as their own uppercase words", () => {
+    render(<ItemRow title="An action" size="normal" energy="high" />);
+    expect(screen.getByText("NORMAL")).toBeDefined();
+    expect(screen.getByText("HIGH")).toBeDefined();
+  });
+
+  it("colours each of them by its level, icon and label together", () => {
+    render(<ItemRow title="An action" size="deep" energy="low" />);
+    // The match lands on the chip itself — the span wrapping both the glyph
+    // and the word — because the glyph contributes no text. So reading the
+    // colour here reads the one the icon inherits too, which is the rule
+    // being asserted: never a colour on one without the other.
+    const size = screen.getByText("DEEP");
+    const energy = screen.getByText("LOW");
+    expect(size.style.color).toBe("var(--urgency-now)");
+    expect(energy.style.color).toBe("var(--status-done-fg)");
+    expect(size.querySelector("svg")).toBeDefined();
+  });
+
+  // The row's documented contract for every optional chip: nothing to say,
+  // nothing rendered. The unset ghost glyph belongs on `ItemDetailPanel`,
+  // the one surface that describes a single item in full — a dense list is
+  // not the place to draw an unmade judgement on every line.
+  it("omits both entirely when the caller has nothing to say", () => {
+    render(<ItemRow title="An unjudged action" />);
+    expect(screen.queryByText("—")).toBeNull();
+    expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
+    expect(screen.queryByText(/LOW|MEDIUM|HIGH/)).toBeNull();
+  });
 });

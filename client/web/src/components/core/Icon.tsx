@@ -39,6 +39,16 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import {
+  EnergyHigh,
+  EnergyLow,
+  EnergyMedium,
+  EnergyUnset,
+  SizeDeep,
+  SizeNormal,
+  SizeQuick,
+  SizeUnset,
+} from "./custom-glyphs";
 
 // Lucide is the icon set (design README, ICONOGRAPHY) — but via the
 // `lucide-react` package, not the design system's CDN `window.lucide`
@@ -89,6 +99,18 @@ export const ICON_MAP = {
   sun: Sun,
   x: X,
   zap: Zap,
+  // The two families Lucide has no glyph for, drawn in `custom-glyphs.tsx`
+  // (#446, ADR-0024). They are ordinary entries here because they take the
+  // same props Lucide's do — the level is in the glyph, the colour comes
+  // from `screens/size-energy.ts`, and `Icon` itself learns nothing.
+  "size-unset": SizeUnset,
+  "size-quick": SizeQuick,
+  "size-normal": SizeNormal,
+  "size-deep": SizeDeep,
+  "energy-unset": EnergyUnset,
+  "energy-low": EnergyLow,
+  "energy-medium": EnergyMedium,
+  "energy-high": EnergyHigh,
 } as const;
 
 export type IconName = keyof typeof ICON_MAP;

@@ -36,7 +36,7 @@ export type { TriageEdits } from "./protocol";
  * its own fields. `screens/capture-meta.ts`'s `resolveCaptureFields` is
  * what turns the capture box's live controls into this shape. */
 export interface CaptureFields {
-  size?: "quick" | "short" | "deep" | null;
+  size?: "quick" | "normal" | "deep" | null;
   energy?: "low" | "medium" | "high" | null;
   context?: string | null;
 }

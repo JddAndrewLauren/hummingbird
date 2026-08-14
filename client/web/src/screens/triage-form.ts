@@ -29,7 +29,7 @@ export interface TriageDraft {
   title: string;
   description: string;
   projectId: string;
-  size: "quick" | "short" | "deep" | "";
+  size: "quick" | "normal" | "deep" | "";
   energy: "low" | "medium" | "high" | "";
   context: string;
   priority: string;

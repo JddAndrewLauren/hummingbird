@@ -29,7 +29,12 @@ by [ADR-0023](0023-the-grill-interview-is-a-native-typed-turn-contract.md):**
 Grill interviews land as an immutable `grills` table, one row per completed
 interview, keyed to the item it interviewed — a first-class record this
 ADR's schema section did not anticipate; DDL and the `resulting_stage`
-storage decision are #353's, not this ADR's.
+storage decision are #353's, not this ADR's. · **amended 2026-08-14 by
+[ADR-0024](0024-the-size-vocabulary-and-the-level-ramp.md):** the middle
+`size` value is renamed `short` → `normal` in the DDL's `CHECK` constraint
+and in every row already stored under it, `SCHEMA_VERSION` 6 → 7 — the first
+growth here that is not additive at all, and so the first to rebuild a table
+rather than add to one.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only. The
 dated notes in the body below are the convention's exception — amendments

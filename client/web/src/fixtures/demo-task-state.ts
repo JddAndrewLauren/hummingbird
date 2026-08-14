@@ -16,7 +16,7 @@
 //
 //   board cards      29  (12 frontier + 17 unsorted captures)
 //   by context       no context 12 · @computer 8 · @errands 4 · @phone 3 · @home 2
-//   by size          no size 13 · deep 8 · quick 4 · short 4
+//   by size          no size 13 · deep 8 · quick 4 · normal 4
 //   by energy        no energy 17 · high 5 · medium 4 · low 3
 //   by source        typed 21 · gmail/v1 7 · google-tasks/v1 1
 //   projects          0        blocked_by  0        priority  all 0
@@ -145,7 +145,7 @@ const FRONTIER_SEEDS: Seed[] = [
     stage: "ready",
     agoMs: 3 * DAY,
     context: "@computer",
-    size: "short",
+    size: "normal",
     energy: "medium",
     // Band 1 of 3: overdue.
     deadlineInMs: -6 * HOUR,
@@ -178,7 +178,7 @@ const FRONTIER_SEEDS: Seed[] = [
     stage: "ready",
     agoMs: 6 * DAY,
     context: "@errands",
-    size: "short",
+    size: "normal",
     energy: "medium",
     scheduledInMs: 2 * DAY,
   },
@@ -240,7 +240,7 @@ const FRONTIER_SEEDS: Seed[] = [
     title: "Update the household inventory spreadsheet",
     stage: "in_progress",
     agoMs: 30 * DAY,
-    size: "short",
+    size: "normal",
     energy: "medium",
     description: "Started before the holiday and abandoned about a third of the way down.",
   },
@@ -365,7 +365,7 @@ const TRIAGE_SEEDS: Seed[] = [
     stage: "triage",
     agoMs: 16 * DAY,
     context: "@phone",
-    size: "short",
+    size: "normal",
   },
 ];
 

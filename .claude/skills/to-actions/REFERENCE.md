@@ -44,7 +44,7 @@ anything else with a 400.
   `blocked` (external waits only), `done`.
   **There is no Backlog, no Canceled and no Duplicate stage.** Cancelling is
   `archived_at`, which is what `Core::act`'s own cancel sets.
-- **`size`**: `quick`, `short`, `deep`. (Not `medium` — that was Linear's word.)
+- **`size`**: `quick`, `normal`, `deep`. (Not `medium` — that was Linear's word.)
 - **`energy`**: `low`, `medium`, `high`. (`medium` is new; there were two.)
 - **`context`**: free text, by convention `@home`, `@office`, `@computer`,
   `@calls`, `@errands`, `@out`. Not a closed vocabulary and not a label — one

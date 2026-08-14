@@ -42,27 +42,43 @@ impl Stage {
     }
 }
 
-/// How long an item takes, GTD-style.
+/// How long an item takes, GTD-style: `quick`, `normal`, `deep`
+/// (ADR-0024, #446 — the middle one was spelled `short` until schema 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Size {
     Quick,
-    Short,
+    /// `short` is the pre-schema-7 wire spelling, and it is accepted on the
+    /// way in — here and in [`Size::parse`] — for as long as a device can
+    /// still be holding one. The client sync engine persists its outbound
+    /// queue (`client/core/src/sync/`), so a `CreateItem` or `ItemPatch`
+    /// minted before the deploy can drain after it; without the alias those
+    /// writes land in the dead-letter journal rather than the store. It is
+    /// an inbound alias only — `as_str` emits `normal` and nothing writes
+    /// the old word.
+    #[serde(alias = "short")]
+    Normal,
     Deep,
 }
 
 impl Size {
-    pub const ALL: [Size; 3] = [Size::Quick, Size::Short, Size::Deep];
+    pub const ALL: [Size; 3] = [Size::Quick, Size::Normal, Size::Deep];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Size::Quick => "quick",
-            Size::Short => "short",
+            Size::Normal => "normal",
             Size::Deep => "deep",
         }
     }
 
     pub fn parse(s: &str) -> Option<Size> {
+        // The legacy spelling, for the same drained-queue reason as the
+        // `serde` alias above. `as_str` never produces it, so this is the
+        // only place the old word survives outside a migration.
+        if s == "short" {
+            return Some(Size::Normal);
+        }
         Size::ALL.into_iter().find(|v| v.as_str() == s)
     }
 }
@@ -170,6 +186,28 @@ mod tests {
             assert_eq!(Energy::parse(energy.as_str()), Some(energy));
         }
         assert_eq!(Stage::parse("backlog"), None);
+    }
+
+    /// The pre-schema-7 spelling of the middle size is accepted inbound and
+    /// never produced outbound (ADR-0024, #446). A device that queued a
+    /// write before the rename deploy drains it afterwards, and this is the
+    /// only thing standing between that write and the dead-letter journal.
+    #[test]
+    fn the_legacy_short_size_is_accepted_inbound_and_never_written_back() {
+        assert_eq!(Size::parse("short"), Some(Size::Normal));
+        assert_eq!(
+            serde_json::from_str::<Size>("\"short\"").unwrap(),
+            Size::Normal,
+        );
+        assert_eq!(
+            serde_json::to_string(&Size::Normal).unwrap(),
+            "\"normal\"",
+            "outbound is always the new word — the alias is one-way",
+        );
+        assert!(
+            !Size::ALL.iter().any(|s| s.as_str() == "short"),
+            "`short` is not a size any more, only a spelling that used to be one",
+        );
     }
 
     #[test]
