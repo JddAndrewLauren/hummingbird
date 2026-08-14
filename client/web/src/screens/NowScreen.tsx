@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
+import { Icon } from "../components/core/Icon";
 import { ItemDetailPanel } from "../components/domain/ItemDetailPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
@@ -20,9 +21,11 @@ import type {
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
+import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
 import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
+import { readAsideCollapsed, writeAsideCollapsed } from "./questions/aside-prefs";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
@@ -478,6 +481,12 @@ export function NowScreen({
   // screen without the prop) on exactly the storage it had before.
   const resolvedStorage =
     storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
+  // Read once at mount, like every other view preference on this screen: the
+  // stored value seeds the state and the state is the truth from then on, so a
+  // toggle never waits on a storage round-trip.
+  const [asideCollapsed, setAsideCollapsed] = useState(() =>
+    readAsideCollapsed(resolvedStorage),
+  );
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
   // would let a reordered fixture describe the wrong action.
@@ -572,6 +581,38 @@ export function NowScreen({
       </Column>
 
       <Aside label="Standing questions">
+        {/* The section's own header, and its collapse control (#404's column
+            headers are the same gesture, through the same `ControlButton`).
+            The aside carried only an aria label before this, so the heading is
+            new: a landmark named for screen readers and unnamed on screen is a
+            panel whose contents you have to infer.
+
+            Collapsing persists per device (`aside-prefs.ts`), like the
+            frontier's own axis and collapsed columns. */}
+        <h2 style={{ margin: 0, font: "inherit" }}>
+          <ControlButton
+            aria-expanded={!asideCollapsed}
+            onClick={() => {
+              const next = !asideCollapsed;
+              setAsideCollapsed(next);
+              writeAsideCollapsed(resolvedStorage, next);
+            }}
+            baseStyle={sectionToggleStyle(asideCollapsed)}
+            hoverStyle={SECTION_TOGGLE_HOVER}
+          >
+            <Icon
+              name="chevron-down"
+              size={14}
+              style={{
+                color: "var(--text-muted)",
+                transform: asideCollapsed ? "rotate(-90deg)" : "none",
+                transition: "transform var(--dur-fast) var(--ease-flit)",
+              }}
+            />
+            <span style={{ flex: 1, minWidth: 0 }}>Standing questions</span>
+          </ControlButton>
+        </h2>
+
         {/* ADR-0015's ranked region replaces everything that used to be in
             here — the context tile, the demo standing-question card and the
             snapshot tiles — and it is the same component in both modes: only
@@ -584,19 +625,21 @@ export function NowScreen({
             axis in the centre column — otherwise the screen says "Context"
             twice, meaning an item's `@computer` on one side and context
             *sources* on the other. */}
-        <RankedRegion
-          surface="now"
-          inputs={
-            demo
-              ? demoQuestionInputs(nowMs)
-              : realQuestionInputs(task, calendarReads, calendarConnected)
-          }
-          nowMs={nowMs}
-          syncOutcomeSeq={task.syncOutcomeSeq}
-          storage={resolvedStorage}
-          onScreen={onScreen}
-          onSetScheduledDate={demo ? undefined : onSetScheduledDate}
-        />
+        {asideCollapsed ? null : (
+          <RankedRegion
+            surface="now"
+            inputs={
+              demo
+                ? demoQuestionInputs(nowMs)
+                : realQuestionInputs(task, calendarReads, calendarConnected)
+            }
+            nowMs={nowMs}
+            syncOutcomeSeq={task.syncOutcomeSeq}
+            storage={resolvedStorage}
+            onScreen={onScreen}
+            onSetScheduledDate={demo ? undefined : onSetScheduledDate}
+          />
+        )}
       </Aside>
     </TwoColumn>
   );

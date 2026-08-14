@@ -120,7 +120,14 @@
    every screen that has one (Now, Settings, Alerts, Routes).
 
    All three of those properties are undone on the phone form below, where the
-   panel is stacked in the flow and none of them is true any more. */
+   panel is stacked in the flow and none of them is true any more.
+
+   The tint is `--surface-quiet` — the design system's "where a surface needs to
+   recede" 4% wash, and explicitly not a card fill: the panel holds cards of its
+   own, and painting it card-coloured would flatten the two elevations into one.
+   It is what makes the panel read as a *region* beside the centre column rather
+   than as more of the same column, which is what the standing questions need to
+   be legible at a glance. */
 .hb-aside {
   width: var(--panel-width);
   flex: 0 0 auto;
@@ -132,6 +139,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+  background: var(--surface-quiet);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
 }
 
 /** A single-column surface capped at the content measure. */
