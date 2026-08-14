@@ -91,6 +91,17 @@ export interface CaptureBoxProps {
    * is the only thing the popover is for. Optional: a surface that cannot be
    * dismissed passes nothing and no control renders. */
   onClose?: () => void;
+  /** Bumped by the shell (through `CapturePopover`) whenever an Escape while
+   * dictating should cancel the session in place rather than close the
+   * popover (#380) — the same "bumped counter" idiom `focusRequestId` already
+   * uses, for the same reason: a plain boolean can't tell a second request
+   * from a no-op. A bump while no session is live does nothing. */
+  cancelDictationRequestId?: number;
+  /** Reports every change in whether a dictation session is live, so the
+   * shell's single Escape handler (`App.tsx`) can decide whether an Escape
+   * means "cancel the dictation" or "close the popover" — see
+   * `cancelDictationRequestId` above. */
+  onDictatingChange?: (dictating: boolean) => void;
 }
 
 /** The resting capability, and the arm a browser without the API keeps
@@ -162,6 +173,8 @@ export function CaptureBox({
   focusRequestId,
   lastCapture,
   onClose,
+  cancelDictationRequestId,
+  onDictatingChange,
 }: CaptureBoxProps) {
   const [draft, setDraft] = useState("");
   const [meta, setMeta] = useState(EMPTY_CAPTURE_META);
@@ -198,6 +211,12 @@ export function CaptureBox({
   const [listening, setListening] = useState(false);
   const [dictationError, setDictationError] = useState<string | null>(null);
   const sessionRef = useRef<DictationSession | null>(null);
+  // The halves frozen at session start, held here too (alongside the local
+  // `frozen` `startDictation` closes over for its own splices) so a cancel
+  // arriving from outside — the shell's Escape branch — can restore from the
+  // very same halves. Not a second saved copy of the draft: it's the one
+  // `spliceTranscript` already reads, cleared once a session ends any way.
+  const frozenRef = useRef<FrozenDraft | null>(null);
   // Bumped by everything that ends a session, BEFORE the recognizer is
   // touched, so a result or an error still in flight is inert by the time it
   // lands. Teardown is keyed on session identity instead (see `endSession`),
@@ -249,6 +268,7 @@ export function CaptureBox({
       field?.selectionStart ?? null,
       field?.selectionEnd ?? null,
     );
+    frozenRef.current = frozen;
     setDictationError(null);
     const generation = generationRef.current + 1;
     generationRef.current = generation;
@@ -292,6 +312,53 @@ export function CaptureBox({
     // stop the session.
     field?.focus();
   }
+
+  // Escape while dictating (#380): abort the session — same `endSession`
+  // path backgrounding takes, so the generation token already makes a
+  // trailing callback inert — then put the draft back exactly as it stood
+  // the instant dictation started. "Exactly" is not a copy: `spliceTranscript`
+  // with an empty transcript is the same total function every transcript
+  // splices through, so the restored string and caret are derived from the
+  // frozen halves, not a second recollection of them that could drift.
+  //
+  // Guarded on `sessionRef`, not the `listening` state, for the same reason
+  // `endSession` itself reads only refs: a stray bump (the shell's second
+  // Escape, once the popover has already closed) must be inert the instant
+  // it runs, not once a render has caught up.
+  function cancelDictation(): void {
+    if (!sessionRef.current) {
+      return;
+    }
+    const frozen = frozenRef.current;
+    endSession("abort");
+    if (frozen) {
+      const restored = spliceTranscript(frozen, "");
+      setDraft(restored.value);
+      pendingCaretRef.current = restored.caret;
+    }
+    frozenRef.current = null;
+  }
+
+  // The shell's ask to cancel in place, forwarded down through
+  // `CapturePopover` as a bumped counter — see `cancelDictationRequestId`'s
+  // own doc for why a counter rather than a boolean. Runs on mount too (the
+  // id starts at a fixed value), which is exactly `cancelDictation`'s own
+  // `sessionRef` guard's job: nothing is live yet, so it is inert. Deliberately
+  // keyed on the id alone, the same idiom `focusRequestId`'s effect above
+  // uses: `cancelDictation` is a new closure every render but reads nothing
+  // that isn't already re-read from refs and props on each call, so
+  // re-running it on every render would be churn with no reader.
+  useEffect(() => {
+    cancelDictation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cancelDictationRequestId]);
+
+  // Tells the shell whether a session is live, so its single Escape handler
+  // can branch between "cancel the dictation" and "close the popover"
+  // (`App.tsx`). Fires on every `listening` transition, mount included.
+  useEffect(() => {
+    onDictatingChange?.(listening);
+  }, [listening, onDictatingChange]);
 
   // Backgrounding cancels — see this component's header for why, and for what
   // that does and does not lose. Bound only while listening, so a page hidden
