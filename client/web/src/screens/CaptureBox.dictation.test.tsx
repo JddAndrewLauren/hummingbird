@@ -415,6 +415,32 @@ describe("CaptureBox — dictation", () => {
     expect(field().value).toBe("");
   });
 
+  it("keeps a voice-produced title after a failed capture, exactly as it keeps a typed one (#222, #382)", async () => {
+    const { onSubmit, view } = renderBox();
+    await startListening();
+    hear("call the vet");
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
+
+    view.rerender(
+      <CaptureBox
+        onSubmit={onSubmit}
+        projects={[]}
+        demo={false}
+        focusRequestId={1}
+        lastCapture={{ kind: "failed", seed: "seed-1", id: null, error: "Offline." }}
+      />,
+    );
+
+    // #222's rule does not know or care that this title was dictated rather
+    // than typed — the failure path reads the same `draft` state either way.
+    expect(field().value).toBe("call the vet");
+    expect(screen.getByRole("alert").textContent).toBe("Offline.");
+    expect(field().readOnly).toBe(false);
+    // Retryable: the mic is back and the draft can still be submitted.
+    expect(mic()).toBeTruthy();
+  });
+
   it("leaves the metadata controls alone across a session", async () => {
     const { onSubmit } = renderBox();
     await settleProbe();
