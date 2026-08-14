@@ -23,7 +23,7 @@ one because reversing it is not a small change: see "What reversing it would
 cost" below.
 
 **Note (#394, 2026-08-13): two `DELETE` routes do exist, and neither
-contradicts this.** `DELETE /admin/tokens/{id}` (`admin_tokens::revoke`) and
+contradicts this.** `DELETE /api/admin/tokens/{id}` (`admin_tokens::revoke`) and
 `DELETE /api/push_targets/{id}` (`push_targets::revoke`), both in
 `handlers/mod.rs`, sit on `tokens` and `push_targets` — neither is a synced
 table — and neither handler erases a row: each sets `revoked_at` and is
