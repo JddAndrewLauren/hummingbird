@@ -579,6 +579,7 @@ mod tests {
             context_snapshots: vec![],
             settings: vec![],
             rules: vec![],
+            grills: vec![],
         }
     }
 

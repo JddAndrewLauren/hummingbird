@@ -8,6 +8,7 @@ mod auth;
 mod blocked_by;
 mod changes;
 mod fog;
+mod grills;
 mod items;
 mod projects;
 pub(crate) mod push_targets;
@@ -25,6 +26,7 @@ pub(crate) use alerts::find_by_identity as find_alert_by_identity;
 pub(crate) use alerts::find_live_by_source as find_live_alerts_by_source;
 pub(crate) use alerts::resolve as resolve_alert;
 pub(crate) use alerts::upsert as upsert_alert;
+pub(crate) use grills::grill_without_transcript_from_row;
 pub(crate) use items::item_from_row;
 pub(crate) use rules::load_enabled as load_enabled_rules;
 pub(crate) use rules::rule_from_row;
@@ -158,6 +160,8 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("DELETE", ["push_targets", id]) if !id.is_empty() => {
             push_targets::revoke(id, now_ms, sql)
         }
+        ("POST", ["grills"]) => grills::create(req.body, now_ms, sql),
+        ("GET", ["grills", id]) if !id.is_empty() => grills::get(id, sql),
         ("GET", ["settings", key]) if !key.is_empty() => settings::get(key, sql),
         ("GET", ["rules"]) => rules::list(principal.source.as_deref(), sql),
         ("GET", ["snapshots"]) => {
@@ -175,12 +179,12 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         (
             _,
             ["items" | "projects" | "fog" | "steps" | "blocked_by" | "alerts" | "rules"
-                | "push_targets" | "snapshots" | "changes" | "sweep"],
+                | "push_targets" | "snapshots" | "changes" | "sweep" | "grills"],
         ) => Ok(method_not_allowed()),
         (
             _,
             ["items" | "projects" | "routes" | "fog" | "steps" | "settings" | "alerts" | "rules"
-                | "push_targets", id],
+                | "push_targets" | "grills", id],
         ) if !id.is_empty() =>
         {
             Ok(method_not_allowed())

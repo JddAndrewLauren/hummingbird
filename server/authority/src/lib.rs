@@ -57,14 +57,27 @@ mod tests {
     /// CHECK literals — the equivalence every write and read leans on.
     #[test]
     fn enum_strings_appear_in_the_ddl() {
-        use crate::schema::{CREATE_ITEMS, CREATE_PUSH_TARGETS, CREATE_RULES, CREATE_TOKENS};
-        use hummingbird_domain::{Energy, Platform, Scope, Size, Stage, Tier};
+        use crate::schema::{CREATE_GRILLS, CREATE_ITEMS, CREATE_PUSH_TARGETS, CREATE_RULES, CREATE_TOKENS};
+        use hummingbird_domain::{Energy, GrillVerdict, Platform, Scope, Size, Stage, Tier};
 
         for stage in Stage::ALL {
             assert!(
                 CREATE_ITEMS.contains(&format!("'{}'", stage.as_str())),
                 "stage `{}` missing from the items DDL CHECK",
                 stage.as_str(),
+            );
+            assert!(
+                CREATE_GRILLS.contains(&format!("'{}'", stage.as_str())),
+                "stage `{}` missing from the grills.resulting_stage DDL CHECK",
+                stage.as_str(),
+            );
+        }
+        for verdict in [GrillVerdict::Resolved, GrillVerdict::FogRemains] {
+            let wire = serde_json::to_string(&verdict).unwrap();
+            let wire = wire.trim_matches('"');
+            assert!(
+                CREATE_GRILLS.contains(&format!("'{wire}'")),
+                "verdict `{wire}` missing from the grills DDL CHECK",
             );
         }
         for size in Size::ALL {

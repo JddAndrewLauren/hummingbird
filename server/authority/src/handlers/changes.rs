@@ -16,6 +16,13 @@
 //! stamp that settled it is older than the horizon. The row itself is never
 //! deleted — this is a limit on what is transmitted, never on what is kept.
 //!
+//! A sixth table's columns appear only *partially* too, but along a
+//! different axis: `grills` rides every sweep in full **except**
+//! `transcript` (ADR-0023 decision 4, #353) — every row, at any age, minus
+//! one column, never the reverse of `alerts`' every-column-minus-some-rows
+//! narrowing. [`pull_grills_without_transcript`] is its own query rather
+//! than the generic [`pull`] for exactly that reason.
+//!
 //! [`ChangesResponse`]: hummingbird_domain::ChangesResponse
 
 use hummingbird_domain::{settled_at, ChangesResponse};
@@ -93,8 +100,31 @@ fn changes_since(since: i64, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, 
         )?,
         settings: pull(sql, since, "settings", "key", super::settings::setting_from_row)?,
         rules: pull(sql, since, "rules", "id", super::rules::rule_from_row)?,
+        grills: pull_grills_without_transcript(sql, since)?,
     };
     Ok(json(200, &response))
+}
+
+/// `grills`' own pull, deliberately not routed through the generic
+/// [`pull`] helper: `pull` issues `SELECT * FROM {table}`, which would read
+/// `transcript` out of SQLite on every sweep even though nothing downstream
+/// serializes it. Naming every column but `transcript` here means the
+/// sweep and delta paths never load the column at all — the anti-goal
+/// (#353: "the easiest thing to regress") held by the query text itself,
+/// not only by [`GrillWithoutTranscript`] lacking the field.
+fn pull_grills_without_transcript(
+    sql: &dyn Sql,
+    since: i64,
+) -> Result<Vec<hummingbird_domain::GrillWithoutTranscript>, SqlError> {
+    sql.exec(
+        "SELECT id, item_id, summary, verdict, model_proposal, applied_patch, \
+         resulting_stage, completed_at, version FROM grills \
+         WHERE version > ? ORDER BY version, id",
+        &[SqlValue::Integer(since)],
+    )?
+    .iter()
+    .map(super::grill_without_transcript_from_row)
+    .collect()
 }
 
 fn pull<T>(

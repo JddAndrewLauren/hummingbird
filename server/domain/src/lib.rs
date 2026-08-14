@@ -14,6 +14,7 @@ mod api;
 mod context;
 mod deadline;
 mod event;
+mod grill;
 mod item;
 mod live;
 mod project;
@@ -25,9 +26,9 @@ mod token;
 
 pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, ChangesResponse, ConflictResponse,
-    CreateBlockedBy, CreateFog, CreateItem, CreateProject, CreatePushTarget, CreateRule,
-    CreateStep, FogPatch, ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch, RulePatch,
-    SnapshotIngest, StepPatch, VERSION_CONFLICT,
+    CreateBlockedBy, CreateFog, CreateGrill, CreateItem, CreateProject, CreatePushTarget,
+    CreateRule, CreateStep, FogPatch, ItemPatch, MintToken, ProjectPatch, PutSetting, RoutePatch,
+    RulePatch, SnapshotIngest, StepPatch, VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
 pub use deadline::{
@@ -37,6 +38,7 @@ pub use event::{
     core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
 };
+pub use grill::{resulting_stage, Grill, GrillOnDoneItem, GrillVerdict, GrillWithoutTranscript};
 pub use item::{Energy, Item, Size, Stage};
 pub use live::{is_live, settled_at};
 pub use project::{Fog, Project, Route};

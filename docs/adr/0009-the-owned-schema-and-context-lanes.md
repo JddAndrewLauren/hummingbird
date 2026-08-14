@@ -24,7 +24,12 @@ human-owned column. · **amended 2026-08-10 by
 [ADR-0015](0015-the-standing-question-read-contract.md):**
 `context_snapshots.payload` gains a common envelope (`schema`,
 `polled_every_ms`, `body`) — enveloped outside, source-shaped inside; and
-`alerts` gains `subject_key`, `SCHEMA_VERSION` 3 → 4.
+`alerts` gains `subject_key`, `SCHEMA_VERSION` 3 → 4. · **amended 2026-08-13
+by [ADR-0023](0023-the-grill-interview-is-a-native-typed-turn-contract.md):**
+Grill interviews land as an immutable `grills` table, one row per completed
+interview, keyed to the item it interviewed — a first-class record this
+ADR's schema section did not anticipate; DDL and the `resulting_stage`
+storage decision are #353's, not this ADR's.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only. The
 dated notes in the body below are the convention's exception — amendments
