@@ -127,16 +127,18 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
         </span>
       ) : null}
       {/* Glyph only, no word (#446): the row annotates a title, and two
-          spelled-out dimensions per line competed with it. `title` is what
-          keeps the mark answerable — the same pattern `pending` above uses,
-          and the reason `sizeLabel` is not called here. */}
+          spelled-out dimensions per line competed with it. That makes the
+          chip's name load-bearing, so it is given twice — `aria-label` under
+          `role="img"` for assistive tech, `title` for the hover tooltip. A
+          bare `title` is not an accessible name on a generic span; the glyph
+          inside stays `aria-hidden` so there is exactly one named node. */}
       {size ? (
-        <span title={sizeTitle(size)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(size) }}>
+        <span role="img" aria-label={sizeTitle(size)} title={sizeTitle(size)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(size) }}>
           <Icon name={sizeIcon(size)} size={13} />
         </span>
       ) : null}
       {energy ? (
-        <span title={energyTitle(energy)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(energy) }}>
+        <span role="img" aria-label={energyTitle(energy)} title={energyTitle(energy)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(energy) }}>
           <Icon name={energyIcon(energy)} size={13} />
         </span>
       ) : null}

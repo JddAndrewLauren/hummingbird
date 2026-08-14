@@ -217,6 +217,8 @@ function ItemCard({
             <Badge
               mono
               icon={sizeIcon(item.size)}
+              role="img"
+              aria-label={sizeTitle(item.size)}
               title={sizeTitle(item.size)}
               style={{ color: levelColor(item.size) }}
             />
@@ -225,6 +227,8 @@ function ItemCard({
             <Badge
               mono
               icon={energyIcon(item.energy)}
+              role="img"
+              aria-label={energyTitle(item.energy)}
               title={energyTitle(item.energy)}
               style={{ color: levelColor(item.energy) }}
             />

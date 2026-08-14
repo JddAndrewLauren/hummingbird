@@ -33,12 +33,14 @@ export function StageBadge({ stage = "triage", compact = false, style = {}, ...r
   }
   // A glyph replaces the dot *and* the word rather than joining them — the
   // dot exists to carry the stage colour where there is no other mark, and a
-  // coloured glyph already does that. `title` is what keeps the pill
-  // answerable once its word is gone, the same contract the size and energy
-  // chips take (#446, ADR-0024).
+  // coloured glyph already does that. Losing the word makes the pill's name
+  // load-bearing, so it is given twice: `aria-label` under `role="img"` for
+  // assistive tech, `title` for the hover tooltip. Same contract the size and
+  // energy chips take (#446, ADR-0024), and for the same reason — a `title`
+  // on a generic span is not reliably an accessible name.
   if (s.icon) {
     return (
-      <span title={s.label} style={{
+      <span role="img" aria-label={s.label} title={s.label} style={{
         display: "inline-flex", alignItems: "center", justifyContent: "center", height: 22,
         padding: "0 var(--space-3)", color: s.fg, background: s.bg,
         borderRadius: "var(--radius-pill)", flex: "0 0 auto", ...style,

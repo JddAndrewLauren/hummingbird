@@ -9,12 +9,17 @@
 // this way it is unit-testable without a DOM. The drawing itself is
 // `components/core/custom-glyphs.tsx`; `Icon` is what puts the two together.
 //
-// **The word is the detail panel's alone.** Everywhere else — the row, the
-// frontier card, the top-pick card, the capture sliders — the glyph stands
-// on its own. Two spelled-out dimensions per line was a lot of shouting for
-// two facts that a mark can carry, and on a dense list the words competed
-// with the titles they were meant to annotate. `sizeLabel`/`energyLabel`
-// survive for the one surface that describes a single item in full.
+// **Three surfaces draw the glyph alone**: the row, the frontier card and
+// the top-pick card. Two spelled-out dimensions per line was a lot of
+// shouting for two facts that a mark can carry, and on a dense list the
+// words competed with the titles they were meant to annotate.
+//
+// The two surfaces that keep their words are the two where a word earns its
+// space. `ItemDetailPanel` describes a single item in full, and is the only
+// place `sizeLabel`/`energyLabel` are still called. The **capture sliders**
+// keep a word per stop — those are choices being chosen, not an item being
+// annotated, and three unlabelled targets would be a guessing game — so
+// there the glyph sits *beside* its word, coloured with it.
 //
 // **A label-free glyph carries a `title` instead**, from `sizeTitle` /
 // `energyTitle` below: a bare mark still has to answer "what are you" to a
@@ -121,10 +126,13 @@ export function energyLabel(energy: Energy): string {
   return energy ? energy.toUpperCase() : "—";
 }
 
-/** The accessible name for a glyph drawn **without** its word, which is
- * every surface but the detail panel. A bare mark has to say what it is to
- * something other than the eye: this is what goes on the chip's `title`, so
- * it is the hover tooltip and the accessible name at once.
+/** The accessible name for a glyph drawn **without** its word — the row, the
+ * frontier card and the top-pick card. A bare mark has to say what it is to
+ * something other than the eye, so the chip carries this string twice: as
+ * `aria-label` under `role="img"`, which is the part assistive tech is
+ * guaranteed to read, and as `title`, which is the hover tooltip for a reader
+ * who has not learned the ramp. A `title` alone will not do it — on a
+ * generic span it is announced inconsistently or not at all.
  *
  * Sentence case, not the label's uppercase — this is read aloud or shown as
  * a tooltip, and neither wants shouting. It stays a total function so the

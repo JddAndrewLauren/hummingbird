@@ -512,6 +512,8 @@ export function NowScreen({
                     <Badge
                       mono
                       icon={sizeIcon(top.size)}
+                      role="img"
+                      aria-label={sizeTitle(top.size)}
                       title={sizeTitle(top.size)}
                       style={{ color: levelColor(top.size) }}
                     />
@@ -520,6 +522,8 @@ export function NowScreen({
                     <Badge
                       mono
                       icon={energyIcon(top.energy)}
+                      role="img"
+                      aria-label={energyTitle(top.energy)}
                       title={energyTitle(top.energy)}
                       style={{ color: levelColor(top.energy) }}
                     />

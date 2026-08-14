@@ -41,8 +41,12 @@ export function Badge({ tone = "neutral", icon, dot = false, mono = false, style
       {icon ? <Icon name={icon} size={13} /> : null}
       {/* Not an unconditional span: empty, it still takes the flex `gap`
           above and the pill wears a blank column of padding on its right.
-          An icon-only badge has to sit symmetrically around its glyph. */}
-      {children === undefined || children === null ? null : (
+          An icon-only badge has to sit symmetrically around its glyph.
+          The test mirrors what React itself declines to render — `false` and
+          `true` included, so the common `{cond && "label"}` idiom collapses
+          the span instead of leaving an empty one. `0` is a real label and
+          must survive, which is why this is not a truthiness check. */}
+      {children === undefined || children === null || typeof children === "boolean" ? null : (
         <span style={{ display: "inline-block" }}>{children}</span>
       )}
     </span>

@@ -91,21 +91,28 @@ ramp that reuses tokens the system already has: `--text-muted`,
 **position on the scale**, not by name, which is what lets one table serve
 both dimensions instead of two that can drift.
 
-**The word belongs to `ItemDetailPanel` alone.** Every other surface — the
-row, the frontier card, the top-pick card, the capture sliders — draws the
-glyph with no text. Two spelled-out dimensions per line is a lot of shouting
+**Three surfaces draw the glyph with no word**: the row, the frontier card and
+the top-pick card. Two spelled-out dimensions per line is a lot of shouting
 for two facts a mark can carry, and on a dense list the uppercase words
-competed with the titles they were there to annotate. The detail panel keeps
-both words because it is the surface with room to be explicit, and it is also
-the only one that draws the unset state (below) — which matters, because
-`size-unset` and `size-deep` are the same three rings and are told apart by
-opacity alone. A word-free glyph is therefore only ever a *judged* glyph.
+competed with the titles they were there to annotate.
 
-**A word-free glyph carries a `title`.** `sizeTitle`/`energyTitle` give the
-chip its tooltip and its accessible name in one, so a bare mark still answers
-"what are you" to a screen reader and to a reader who has not learned the ramp
-yet. This is `IconButton`'s required `label` applied to a non-control: the
-system already holds that a label-less glyph must name itself.
+Two surfaces keep their words, each for its own reason. `ItemDetailPanel` has
+the room to be explicit, and it is also the only surface that draws the unset
+state (below) — which matters, because `size-unset` and `size-deep` are the
+same three rings, told apart by opacity alone. A word-free glyph is therefore
+only ever a *judged* glyph. The **capture sliders** keep a word per stop
+because there the value is being chosen rather than reported, and three
+unlabelled targets would be a guessing game; the glyph sits beside its word
+and shares its colour, which is the case the ICONOGRAPHY rule below is about.
+
+**A word-free glyph names itself twice.** `sizeTitle`/`energyTitle` supply one
+string that the chip carries as both `aria-label` under `role="img"` and
+`title`: the first is what assistive tech is guaranteed to announce, the
+second is the hover tooltip for a reader who has not learned the ramp. A
+`title` alone is not enough — on a generic span it is announced inconsistently
+or not at all, so the tooltip that reads like an accessible name is not one.
+This is `IconButton`'s required `label` applied to a non-control: the system
+already holds that a label-less glyph must name itself.
 
 **Icon and label share a colour wherever both exist.** The design system's
 rule (README, ICONOGRAPHY: icons never carry colour independently of their

@@ -85,9 +85,12 @@ describe("ItemRow — the meta chips", () => {
     expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
     expect(screen.queryByText(/LOW|MEDIUM|HIGH/)).toBeNull();
     // Silent to the eye is not silent to a screen reader: the chip names
-    // itself, which is the whole licence for dropping the word.
-    expect(screen.getByTitle("Size: normal")).toBeDefined();
-    expect(screen.getByTitle("Energy: high")).toBeDefined();
+    // itself, which is the whole licence for dropping the word. Asserted as a
+    // *role and name*, not a `title` attribute — a title on a generic span is
+    // announced inconsistently, so a passing `getByTitle` would have proved
+    // the tooltip and not the accessible name.
+    expect(screen.getByRole("img", { name: "Size: normal" })).toBeDefined();
+    expect(screen.getByRole("img", { name: "Energy: high" })).toBeDefined();
   });
 
   it("colours each glyph by its level, and draws the level's own ramp", () => {
@@ -95,8 +98,8 @@ describe("ItemRow — the meta chips", () => {
     // The chip is found by its accessible name now that it carries no text,
     // and it is the element holding both the colour and the glyph — so
     // reading colour here reads the one the icon inherits.
-    const size = screen.getByTitle("Size: deep");
-    const energy = screen.getByTitle("Energy: low");
+    const size = screen.getByRole("img", { name: "Size: deep" });
+    const energy = screen.getByRole("img", { name: "Energy: low" });
     expect(size.style.color).toBe("var(--urgency-now)");
     expect(energy.style.color).toBe("var(--status-done-fg)");
     // `not.toBeNull`, not `toBeDefined`: a missing glyph returns `null`,
@@ -117,10 +120,10 @@ describe("ItemRow — the meta chips", () => {
     expect(screen.queryByText("—")).toBeNull();
     expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
     expect(screen.queryByText(/LOW|MEDIUM|HIGH/)).toBeNull();
-    // Now that the chip is word-free, its title is the only thing left to
-    // leak an unjudged dimension — and a ghost glyph here would be
+    // Now that the chip is word-free, its accessible name is the only thing
+    // left to leak an unjudged dimension — and a ghost glyph here would be
     // indistinguishable from `deep` without a word beside it.
-    expect(screen.queryByTitle(/^Size:/)).toBeNull();
-    expect(screen.queryByTitle(/^Energy:/)).toBeNull();
+    expect(screen.queryByRole("img", { name: /^Size:/ })).toBeNull();
+    expect(screen.queryByRole("img", { name: /^Energy:/ })).toBeNull();
   });
 });
