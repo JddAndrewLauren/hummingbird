@@ -464,6 +464,26 @@ export function CaptureBox({
     }
   }
 
+  // #367: a successful result can land while a session for the NEXT capture
+  // is still live — the clear-on-ok block above just rewrote `draft` out
+  // from under the halves that session froze at its own start, so a further
+  // transcript would splice onto stale halves and resurrect the capture just
+  // submitted. An effect, not the render-phase block above: ending a session
+  // touches refs, and the render phase may only set state. Ended
+  // unconditionally on session presence, not the generation token — the
+  // token defeats a late *callback*, and this session is still genuinely
+  // live, just holding a snapshot that has quietly gone stale. `endSession`
+  // tears the recognizer down the same way backgrounding does; there is no
+  // restore here (unlike `cancelDictation`) because the clear-on-ok state
+  // above is already the correct end state — a later `cancelDictation`
+  // (guarded on `sessionRef`) finds nothing left to restore.
+  useEffect(() => {
+    if (lastCapture?.kind === "ok" && sessionRef.current) {
+      endSession("abort");
+      frozenRef.current = null;
+    }
+  }, [lastCapture]);
+
   // Reviewer finding on issue #222: `TaskState.lastCapture` was written on
   // every `captureResult` and read by nothing, so a failed capture left the
   // reader with no signal at all. A capture has no pre-existing item to key
