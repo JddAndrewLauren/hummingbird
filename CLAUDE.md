@@ -33,7 +33,7 @@ grepping it.
 | Evaluated-stream pollers | `server/{gmail-poll,calendar-poll,graph-poll}/` | each `src/lib.rs`, ADR-0011 |
 | The race lane (2 binaries) | `server/race-poll/` | `src/lib.rs` |
 | The client sync engine | `client/core/src/sync/` | `sync/mod.rs`, then `sync/cycle.rs`, ADR-0007/0008 |
-| The one client API | `client/core/src/lib.rs` | its `Core` docs — six mutation entry points |
+| The one client API | `client/core/src/lib.rs` | its `Core` docs — seven mutation entry points |
 | Ranking / freshness / panes / bindings | `client/core/src/{rank,freshness,pane,bindings}.rs` | each header; ADR-0015 for the Rust/TS carve-out |
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |

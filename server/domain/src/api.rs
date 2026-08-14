@@ -224,16 +224,32 @@ pub struct CreateStep {
 /// exception for a source that knows an event's time better than the
 /// server clock. A Grill's completion has no such external clock; it
 /// completes exactly when this request lands.
+///
+/// **#354's atomic-completion fields.** `expected_version` is the target
+/// item's CAS token — the same contract as every other patch DTO — so this
+/// create can also carry the item mutation ADR-0023 promises ("the Grill
+/// record is created, the reviewed item patch is applied, and the stage
+/// moves — all together, or not at all"). There is no generic item-field
+/// patch here: the only item mutation a Grill completion ever makes is the
+/// verdict→stage move (`hummingbird_domain::resulting_stage`, never
+/// re-derived) and, gated by `delete_unticked_plan`, soft-deleting the
+/// item's still-unticked Plan. `delete_unticked_plan` defaults to `false`
+/// (old callers, and every existing fixture, still deserialize) — the
+/// **Replace** glossary entry's explicit-gesture rule: absent the flag,
+/// steps are never touched, ticked or not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateGrill {
     pub id: String,
     pub item_id: String,
+    pub expected_version: i64,
     pub transcript: String,
     pub summary: String,
     pub verdict: GrillVerdict,
     pub model_proposal: String,
     pub applied_patch: String,
+    #[serde(default)]
+    pub delete_unticked_plan: bool,
 }
 
 /// `PATCH /api/steps/:id` body. Ticking a Step is `{expected_version,
@@ -717,21 +733,45 @@ mod tests {
         use crate::grill::GrillVerdict;
 
         let body = r#"{
-            "id": "g-1", "item_id": "a-1", "transcript": "t", "summary": "s",
+            "id": "g-1", "item_id": "a-1", "expected_version": 1, "transcript": "t", "summary": "s",
             "verdict": "resolved", "model_proposal": "p", "applied_patch": "p"
         }"#;
         let create: CreateGrill = serde_json::from_str(body).unwrap();
         assert_eq!(create.verdict, GrillVerdict::Resolved);
+        assert!(!create.delete_unticked_plan, "defaults to false");
 
         assert!(
             serde_json::from_str::<CreateGrill>(
-                r#"{"id": "g", "item_id": "a", "transcript": "t", "summary": "s",
+                r#"{"id": "g", "item_id": "a", "expected_version": 1, "transcript": "t", "summary": "s",
                     "verdict": "resolved", "model_proposal": "p", "applied_patch": "p",
                     "resulting_stage": "ready"}"#
             )
             .is_err(),
             "resulting_stage is server-computed, never caller-supplied",
         );
+    }
+
+    /// #354: the CAS token that lets a completion's item mutation rebase
+    /// like every other patch DTO — and the explicit plan-deletion gesture,
+    /// which old bytes (pre-#354) still deserialize into `false`.
+    #[test]
+    fn create_grill_expected_version_is_required_and_delete_unticked_plan_defaults_false() {
+        assert!(
+            serde_json::from_str::<CreateGrill>(
+                r#"{"id": "g", "item_id": "a", "transcript": "t", "summary": "s",
+                    "verdict": "resolved", "model_proposal": "p", "applied_patch": "p"}"#
+            )
+            .is_err(),
+            "expected_version has no default — a completion always names the item's CAS token",
+        );
+
+        let with_flag: CreateGrill = serde_json::from_str(
+            r#"{"id": "g", "item_id": "a", "expected_version": 3, "transcript": "t", "summary": "s",
+                "verdict": "resolved", "model_proposal": "p", "applied_patch": "p",
+                "delete_unticked_plan": true}"#,
+        )
+        .unwrap();
+        assert!(with_flag.delete_unticked_plan);
     }
 
     /// The acceptance criterion: `rules` participates in the delta pull like

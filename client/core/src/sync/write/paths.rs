@@ -67,6 +67,15 @@ pub fn rule(id: &str) -> String {
     format!("/api/rules/{id}")
 }
 
+/// `POST /api/grills` (#354, ADR-0023) — the one atomic Grill-completion
+/// route. No by-id constructor here: unlike every other entity in this
+/// vocabulary, a Grill has no client-issued PATCH (ADR-0023 decision 2: it
+/// is immutable once written), so there is nothing for a second path
+/// helper to name.
+pub fn grills() -> String {
+    "/api/grills".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +100,7 @@ mod tests {
             setting("x"),
             rules(),
             rule("x"),
+            grills(),
         ];
         for path in paths {
             assert!(path.starts_with("/api/"));
