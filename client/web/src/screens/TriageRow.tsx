@@ -330,7 +330,7 @@ export function TriageRow({
               ]}
             />
             <Input
-              label="Due date"
+              label="Deadline"
               size="sm"
               value={draft.deadline}
               placeholder="YYYY-MM-DD"
