@@ -102,6 +102,22 @@ describe("csp-worker", () => {
     );
   });
 
+  it("adds no speech-related origin to connect-src for on-device dictation (#379/#382)", () => {
+    // On-device recognition issues no fetch from the page, so the policy
+    // needs no new connect-src grant for it -- but that is true only while
+    // local processing is REQUIRED rather than preferred (ADR-0022 Decision
+    // 1), and the cloud fallback a browser might otherwise take is entirely
+    // browser-internal, so CSP itself would never catch a relaxation of that
+    // guarantee on its own. This pins the one thing CSP CAN catch: nobody
+    // has added a speech-recognition origin (Google's cloud endpoint or any
+    // other) to connect-src as a "just in case" grant.
+    const connectSrc = CONTENT_SECURITY_POLICY.split("; ").find((directive) =>
+      directive.startsWith("connect-src "),
+    );
+    expect(connectSrc).not.toMatch(/speech/i);
+    expect(connectSrc).toBe("connect-src 'self' https://www.googleapis.com https://accounts.google.com");
+  });
+
   it("does not admit any Google origin beyond what GIS and the calendar fetch require", () => {
     // Pins the policy to exactly the two Google hosts this feature needs --
     // no wildcards, no broader googleapis.com/google.com grant.
