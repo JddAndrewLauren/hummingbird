@@ -21,14 +21,16 @@ discipline (drop nothing, infer nothing) is what this skill's bake-off arm
 applies below, mirroring the sweeper's own verbatim rule (see "What to do").
 
 A second, **attended** lane -- in-app dictation -- is planned but does not
-exist yet: it is #362's proposal, gated on the still-open probe #363, which
-explicitly contemplates the gate failing and the lane closing unbuilt. If it
+exist yet: it is #377's proposal (which superseded #362), gated on the probe
+#378, which explicitly contemplated the gate failing and the lane closing
+unbuilt. That gate passed on the desk browser -- see ADR-0022, which
+constrains the lane to client-local recognition only. If it
 ships as designed, it would deliberately skip this skill -- the operator
 would be watching the transcript and editing it in place before submitting,
 so the human would be the parser there, and no skill would be invoked for
 that lane. The "same whether typed or dictated" rule in step 1 below is
 scoped to the unattended lane this skill actually governs; the planned
-attended lane, if and when #362 lands, would be a deliberate exception to
+attended lane, if and when #377 lands, would be a deliberate exception to
 that rule, not a violation of it.
 
 ## What to do
