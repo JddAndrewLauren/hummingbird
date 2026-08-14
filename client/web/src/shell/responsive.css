@@ -169,6 +169,25 @@
   white-space: nowrap;
 }
 
+/* ---- The capture box's disclosure --------------------------------------- */
+
+/* `CaptureBox`'s "More details" toggle rides at the right-hand end of the
+   Energy/Size/Context row rather than on a line of its own underneath, which
+   spent a whole line of vertical space on one short label.
+
+   The padding is what drops it onto the Context select's own line: past that
+   field's label (`--size-body-sm` at 1.2, plus the `--space-3` gap `Select`
+   puts under it), then 1px to centre the 34px button against the 36px
+   control. Derived from the tokens `Select` lays itself out with rather than
+   measured, so a type or spacing change moves both together.
+
+   Here rather than inline because the phone form below has to override it,
+   and at equal importance nothing in a stylesheet outranks an element's own
+   `style` attribute — see this file's header. */
+.hb-capture-details-toggle {
+  padding-top: calc(var(--size-body-sm) * 1.2 + var(--space-3) + 1px);
+}
+
 /* ---- The phone form ----------------------------------------------------- */
 
 @media (max-width: 640px) {
@@ -230,6 +249,18 @@
     flex: 1 0 calc(100% - 6px - var(--space-5));
     overflow: visible;
     white-space: normal;
+  }
+
+  /* At 390px the three fields stack into one column, so Context is the last
+     row and a toggle held level with the *first* row sits marooned beside the
+     Energy slider's track, reading as that slider's own control. Pinned to
+     the foot of the stack it lands beside Context again, which is where it
+     means what it says; 1px centres the 34px button on the 36px select, the
+     same sum the desktop rule makes with padding above instead of below. */
+  .hb-capture-details-toggle {
+    align-self: flex-end;
+    padding-top: 0;
+    padding-bottom: 1px;
   }
 }
 

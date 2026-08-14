@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Card } from "../components/core/Card";
-import { IconButton } from "../components/core/IconButton";
 import { CaptureBox } from "../screens/CaptureBox";
 import type { CaptureDestination } from "../screens/capture-destination";
 import type { ProjectDTO } from "../store/protocol";
@@ -205,20 +204,22 @@ export function CapturePopover({
           padding="var(--space-6)"
           style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
         >
-          {/* No heading. The card holds one field with a placeholder asking
-              the question, and a "New" above it named the popover rather than
-              telling the reader anything they could not see. The dialog keeps
-              its `aria-label` — that is where the name belongs for anyone who
-              cannot see the card at all — and the close control stays. */}
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <IconButton icon="x" label="Close" onClick={onClose} />
-          </div>
+          {/* No heading, and no chrome row above the field either. The card
+              holds one field with a placeholder asking the question, and a
+              "New" above it named the popover rather than telling the reader
+              anything they could not see. The dialog keeps its `aria-label` —
+              that is where the name belongs for anyone who cannot see the card
+              at all — and the close control stays, but inside the field's own
+              trailing slot: a row carrying nothing but an X was taller than
+              the field it sat over, and the field is what the popover is for.
+              `CaptureBox` draws it, which is why `onClose` goes down. */}
           <CaptureBox
             onSubmit={onSubmit}
             projects={projects}
             demo={demo}
             focusRequestId={focusRequestId}
             lastCapture={lastCapture}
+            onClose={onClose}
           />
         </Card>
       </div>

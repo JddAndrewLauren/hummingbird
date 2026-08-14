@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/core/Button";
-import { Icon } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
 import { DeadlineField } from "../components/forms/DeadlineField";
 import { Select } from "../components/forms/Select";
@@ -76,6 +75,13 @@ export interface CaptureBoxProps {
    * clear-on-ok rule below and the failure paragraph read. `null` until the
    * first capture resolves. */
   lastCapture: TaskCaptureResult | null;
+  /** Dismisses whatever surface the box is mounted on, drawn in the field's
+   * trailing slot beside the microphone. The close control lives here rather
+   * than on the surface because a row holding nothing but an X cost more
+   * vertical space above the field than the field itself uses, and the field
+   * is the only thing the popover is for. Optional: a surface that cannot be
+   * dismissed passes nothing and no control renders. */
+  onClose?: () => void;
 }
 
 /** The resting capability, and the arm a browser without the API keeps
@@ -146,6 +152,7 @@ export function CaptureBox({
   demo,
   focusRequestId,
   lastCapture,
+  onClose,
 }: CaptureBoxProps) {
   const [draft, setDraft] = useState("");
   const [meta, setMeta] = useState(EMPTY_CAPTURE_META);
@@ -435,19 +442,29 @@ export function CaptureBox({
           // Makes a stale frozen draft unrepresentable rather than handled —
           // see the header. It does NOT deliver the Enter contract below.
           readOnly={listening}
+          // Both controls ride inside the field's own box, pinned right, in
+          // the order the hand reaches for them: dictate belongs to the draft,
+          // close belongs to the surface. `sm` (28px) is the size that clears
+          // the `md` field's 36px interior.
           trailing={
-            canDictate ? (
-              <IconButton
-                size="sm"
-                icon="mic"
-                // The design system's own toggled-on treatment (ember tint,
-                // brand foreground) — and the label changes with it, so the
-                // state is not carried by colour alone.
-                active={listening}
-                label={listening ? "Stop dictating" : "Dictate"}
-                onClick={() => (listening ? endSession("stop") : startDictation())}
-              />
-            ) : undefined
+            <>
+              {canDictate ? (
+                <IconButton
+                  size="sm"
+                  icon="mic"
+                  // The design system's own toggled-on treatment (ember tint,
+                  // brand foreground) — and the label changes with it, so the
+                  // state is not carried by colour alone.
+                  active={listening}
+                  label={listening ? "Stop dictating" : "Dictate"}
+                  onClick={() => (listening ? endSession("stop") : startDictation())}
+                />
+              ) : null}
+              {/* An X inside a text field usually means "clear the text", so
+                  the name has to do the disambiguating that the glyph cannot:
+                  `label` is both the accessible name and the hover tooltip. */}
+              {onClose ? <IconButton size="sm" icon="x" label="Close" onClick={onClose} /> : null}
+            </>
           }
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -497,59 +514,84 @@ export function CaptureBox({
           />
         </div>
       </div>
-      <div
-        style={{
-          display: "grid",
-          // `repeat(3, 1fr)` forced three columns at every width, so on a
-          // phone each held ~110px and its contents spilled sideways.
-          // `auto-fit` drops to two and then one as the room runs out; the
-          // inner `min()` keeps the 160px track from being a floor of its own.
-          gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
-          gap: "var(--space-7)",
-          alignItems: "start",
-        }}
-      >
-        <Slider
-          label="Energy"
-          options={CAPTURE_ENERGY_STOPS}
-          value={meta.energy}
-          onChange={(energy) => setMeta({ ...meta, energy })}
-        />
-        <Slider
-          label="Size"
-          options={CAPTURE_SIZE_STOPS}
-          value={meta.size}
-          onChange={(size) => setMeta({ ...meta, size })}
-        />
-        <Select
-          label="Context"
-          value={meta.context}
-          onChange={(event) => setMeta({ ...meta, context: event.target.value })}
-          options={CONTEXT_OPTIONS}
-        />
-      </div>
-      {/* Everything a mint would ask, behind one button. The sentence that
-          used to sit here said dates were "decided at mint time"; they can be
-          decided here now, and the disclosure says so better than a caption
-          could. Shut by default and shut again after each capture — see
-          `detailsOpen`. */}
-      <div>
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-expanded={detailsOpen}
-          onClick={() => setDetailsOpen(!detailsOpen)}
+      {/* The three optional fields and the disclosure share one row. The
+          toggle used to sit on a row of its own underneath, which spent a
+          whole line of vertical space on one short label; pinned to the right
+          of Context it costs none. */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-5)" }}>
+        <div
+          style={{
+            // `min-width: 0` so the grid may shrink inside the flex row rather
+            // than pushing the toggle off the card's right edge.
+            flex: 1,
+            minWidth: 0,
+            display: "grid",
+            // `repeat(3, 1fr)` forced three columns at every width, so on a
+            // phone each held ~110px and its contents spilled sideways.
+            // `auto-fit` drops to two and then one as the room runs out; the
+            // inner `min()` keeps the 160px track from being a floor of its own.
+            gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
+            gap: "var(--space-7)",
+            alignItems: "start",
+          }}
         >
-          <Icon
-            name="chevron-down"
-            size={14}
+          <Slider
+            label="Energy"
+            options={CAPTURE_ENERGY_STOPS}
+            value={meta.energy}
+            onChange={(energy) => setMeta({ ...meta, energy })}
+          />
+          <Slider
+            label="Size"
+            options={CAPTURE_SIZE_STOPS}
+            value={meta.size}
+            onChange={(size) => setMeta({ ...meta, size })}
+          />
+          <Select
+            label="Context"
+            value={meta.context}
+            onChange={(event) => setMeta({ ...meta, context: event.target.value })}
+            options={CONTEXT_OPTIONS}
+          />
+        </div>
+        {/* Everything a mint would ask, behind one control. The sentence that
+            used to sit here said dates were "decided at mint time"; they can
+            be decided here now, and the disclosure says so better than a
+            caption could. Shut by default and shut again after each capture —
+            see `detailsOpen`.
+
+            The words "More details" are gone from the screen and the glyph
+            carries them alone; `label` is both the accessible name and the
+            hover tooltip, so nothing about what this opens is unreachable.
+            The direction is the state, and it stays a rotated `chevron-down`
+            rather than a `chevron-right` — one more glyph in `ICON_MAP` is an
+            extension of the brand's named vocabulary, and this branch already
+            declined to make one of those unasked. */}
+        {/* A class, not an inline object: the padding that holds this level
+            with the Context select has to be undone at 390px, where the three
+            fields stack, and nothing in a stylesheet outranks a `style`
+            attribute. Both forms live in `shell/responsive.css`. */}
+        <div className="hb-capture-details-toggle">
+          {/* The rotation rides on this span, not on `IconButton`'s `style`:
+              that prop is spread last over the button's own `transform`, so
+              writing one here would silently cost the press scale. Rotating
+              the whole square box is indistinguishable from rotating the
+              glyph inside it, and the press animation survives. */}
+          <span
             style={{
+              display: "inline-flex",
               transform: detailsOpen ? "none" : "rotate(-90deg)",
               transition: "transform var(--dur-fast) var(--ease-flit)",
             }}
-          />
-          More details
-        </Button>
+          >
+            <IconButton
+              icon="chevron-down"
+              label="More details"
+              aria-expanded={detailsOpen}
+              onClick={() => setDetailsOpen(!detailsOpen)}
+            />
+          </span>
+        </div>
       </div>
       {detailsOpen ? (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
