@@ -49,10 +49,10 @@ reverted them and reintroduced the retired term "Due date":
 Both remote files were byte-identical to their pre-edit repo versions before
 the write, so nothing authored in the design project was overwritten.
 
-Still forked, and *not* part of this push:
-`components/domain/ItemRow.prompt.md` still says "Due dates take colour from
-urgency". That line predates the 2026-08-09 push, so the mirror and the design
-project agree on it — it needs an in-repo fix before there is anything to push.
+Not part of this push, and not a fork: `components/domain/ItemRow.prompt.md`
+still says "Due dates take colour from urgency". That line predates the
+2026-08-09 push, so the mirror and the design project agree on it — it needs
+an in-repo fix (#436) before there is anything to push.
 
 ### Previous push
 
