@@ -8,20 +8,17 @@ import { Checkbox } from "../components/forms/Checkbox";
 import type { DemoData } from "../fixtures/demo";
 import { Aside, Column, TwoColumn } from "./layout";
 
-const DEMO_STEPS = [
-  { text: "Open the fixture generator script", done: true },
-  { text: "Regenerate the Gmail fixture set", done: true },
-  { text: "Run the adapter tests once", done: true },
-  { text: "Delete the two dead label cases", done: false },
-  { text: "Re-read the sweeper doc's invariants", done: false },
-];
-
 export interface RoutesScreenProps {
   demo: DemoData | null;
 }
 
 export function RoutesScreen({ demo }: RoutesScreenProps) {
-  const [steps, setSteps] = useState(DEMO_STEPS);
+  // Lazy initializer, and read before the `!demo` return because hooks cannot
+  // sit behind it. The checklist comes from `demo.route` rather than a literal
+  // in this file: a module-level fixture in a screen is outside the
+  // dead-branch gate, and this one shipped to production until
+  // `assert-no-fixtures` learned to look for it.
+  const [steps, setSteps] = useState(() => demo?.route.steps ?? []);
 
   if (!demo) {
     return (

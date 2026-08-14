@@ -16,8 +16,16 @@
 //
 // Adding a fixture? Add a sentinel from it below. A string is enough — pick one
 // that could not plausibly appear in real UI copy.
+//
+// A sentinel that matches nothing in `src/` is a FAILURE here, not a harmless
+// spare. The needle for `demo-questions.ts` was the literal `"demo-questions"`
+// — a filename, which appears nowhere in the file it was supposed to guard —
+// so that fixture shipped in the production bundle while this script reported
+// ok. A gate that cannot detect its own vacuity goes stale the first time a
+// fixture is renamed, and reports success for as long as nobody checks by
+// hand. So the sentinels are checked against the source too.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** One distinctive string per fixture module. Not exhaustive by design: if the
@@ -31,10 +39,14 @@ const SENTINELS = [
   { fixture: "demo-task-state.ts", needle: "Fit the new tap washer" },
   { fixture: "demo-task-state.ts", needle: "the authority refused that edit" },
   // fixtures/demo-questions.ts — the standing-question world.
-  { fixture: "demo-questions.ts", needle: "demo-questions" },
+  { fixture: "demo-questions.ts", needle: "example.gov/waste/collection-day" },
+  // fixtures/demo-data.ts again — the route checklist, which lived in
+  // RoutesScreen.tsx as a module-level literal until it was moved here.
+  { fixture: "demo-data.ts", needle: "Regenerate the Gmail fixture set" },
 ];
 
 const DIST = new URL("../dist/", import.meta.url).pathname;
+const FIXTURES = new URL("../src/fixtures/", import.meta.url).pathname;
 
 function* files(dir) {
   for (const entry of readdirSync(dir)) {
@@ -50,7 +62,26 @@ function* files(dir) {
 let failed = false;
 let scanned = 0;
 
-for (const path of files(DIST)) {
+// Every needle must still occur in the module it claims to come from. Checking
+// against the named file rather than all of `src/` is the stronger question:
+// it also catches a needle that survived a move to somewhere this script is not
+// guarding.
+for (const { fixture, needle } of SENTINELS) {
+  const source = readFileSync(join(FIXTURES, fixture), "utf8");
+  if (!source.includes(needle)) {
+    failed = true;
+    console.error(
+      `FAIL sentinel ${JSON.stringify(needle)} does not occur in src/fixtures/${fixture}.\n` +
+        `     It can never match, so this script has been reporting ok without\n` +
+        `     guarding that fixture. Pick a string the module actually contains.`,
+    );
+  }
+}
+
+// `existsSync` rather than letting `files()` throw: without it a missing build
+// is an ENOENT stack trace, and the "run `pnpm build` first" message below —
+// the one thing that tells you what to do — is unreachable.
+for (const path of existsSync(DIST) ? files(DIST) : []) {
   scanned += 1;
   const text = readFileSync(path, "utf8");
   for (const { fixture, needle } of SENTINELS) {
@@ -77,4 +108,6 @@ if (failed) {
   process.exit(1);
 }
 
-console.log(`ok — ${scanned} built files carry no demo fixture`);
+console.log(
+  `ok — ${SENTINELS.length} live sentinels, ${scanned} built files carry no demo fixture`,
+);

@@ -1,5 +1,4 @@
-import type { DemoData } from "../fixtures/demo";
-import { demoQuestionInputs } from "../fixtures/demo-questions";
+import { demoQuestions } from "../fixtures/demo";
 import type { Screen } from "../shell/screens";
 import type { CalendarReadDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -20,7 +19,6 @@ import { RankedRegion } from "./questions/RankedRegion";
 // can drift from it.
 
 export interface StatusScreenProps {
-  demo: DemoData | null;
   onScreen: (screen: Screen) => void;
   task: TaskState;
   /** The one clock this screen gets — `App.tsx`'s `useSyncWiring` tick,
@@ -31,7 +29,6 @@ export interface StatusScreenProps {
 }
 
 export function StatusScreen({
-  demo,
   onScreen,
   task,
   nowMs,
@@ -43,9 +40,7 @@ export function StatusScreen({
       <RankedRegion
         surface="status"
         inputs={
-          demo
-            ? demoQuestionInputs(nowMs)
-            : realQuestionInputs(task, calendarReads, calendarConnected)
+          demoQuestions(nowMs) ?? realQuestionInputs(task, calendarReads, calendarConnected)
         }
         nowMs={nowMs}
         syncOutcomeSeq={task.syncOutcomeSeq}

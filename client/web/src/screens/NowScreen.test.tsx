@@ -556,22 +556,34 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
 
   it("renders the same region in demo mode, from the demo fixture", () => {
     // `?demo` photographs the REAL shell: same component, different inputs.
-    render(
-      <NowScreen
-        demo={DEMO_DATA}
-        onScreen={() => {}}
-        task={taskState()}
-        nowMs={NOW_MS}
-        selectedItemId={null}
-        onOpenItem={() => {}}
-        onCloseItemDetail={() => {}}
-        onAct={() => {}}
-        calendarReads={{}}
-        calendarConnected={false}
-      />,
-    );
+    //
+    // The URL is set, not just the prop, because the region's fixture inputs
+    // come through `demoQuestions()` — the same `import.meta.env.DEV` gate
+    // `demoData()` uses, and the reason `demo-questions.ts` no longer ships in
+    // the production bundle. Reading the prop instead would be testing a
+    // stand-in for the gate rather than the gate.
+    const original = window.location.search;
+    window.history.replaceState(null, "", "/?demo");
+    try {
+      render(
+        <NowScreen
+          demo={DEMO_DATA}
+          onScreen={() => {}}
+          task={taskState()}
+          nowMs={NOW_MS}
+          selectedItemId={null}
+          onOpenItem={() => {}}
+          onCloseItemDetail={() => {}}
+          onAct={() => {}}
+          calendarReads={{}}
+          calendarConnected={false}
+        />,
+      );
 
-    expect(screen.getByText("Trash Tonight")).toBeTruthy();
+      expect(screen.getByText("Trash Tonight")).toBeTruthy();
+    } finally {
+      window.history.replaceState(null, "", `/${original}`);
+    }
   });
 
   // #401 / ADR-0021 decision 6. The landmark was called `Context` long after
