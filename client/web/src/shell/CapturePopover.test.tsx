@@ -75,6 +75,30 @@ describe("CapturePopover — the overlay", () => {
     expect(document.activeElement).toBe(field());
   });
 
+  // #380: the popover holds no dictation state of its own, only plumbing —
+  // `CaptureBox` is mounted here with no speech API (this file's header),
+  // which is the resting "not dictating" arm, so the only thing provable at
+  // this level is that the report actually reaches through. The cancel and
+  // restore mechanics themselves are `CaptureBox.dictation.test.tsx`'s, with
+  // the seam mocked, exactly where that file's own header says it must live.
+  it("forwards CaptureBox's dictating report straight through, with no opinion of its own", () => {
+    const onDictatingChange = vi.fn();
+    render(
+      <CapturePopover
+        open={true}
+        focusRequestId={1}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        projects={[]}
+        demo={false}
+        lastCapture={null}
+        cancelDictationRequestId={0}
+        onDictatingChange={onDictatingChange}
+      />,
+    );
+    expect(onDictatingChange).toHaveBeenCalledWith(false);
+  });
+
   it("closes on the close button and on the scrim, and claims no key of its own", () => {
     // Escape is the shell's now (`escape-claimants.ts`) — this popover is its
     // shallowest claimant, but it binds nothing itself, so a stray keydown

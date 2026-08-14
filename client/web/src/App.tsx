@@ -197,6 +197,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // Triage-screen version was a counter and not a boolean.
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureFocusRequestId, setCaptureFocusRequestId] = useState(0);
+  // Whether `CaptureBox` currently has a live dictation session, reported up
+  // through `CapturePopover`, and the bumped counter that asks it to cancel
+  // one in place (#380) — see the Escape branch below and
+  // `CapturePopover.tsx`'s own doc on why this is plumbing, not state this
+  // component has any opinion about.
+  const [captureDictating, setCaptureDictating] = useState(false);
+  const [cancelDictationRequestId, setCancelDictationRequestId] = useState(0);
   // The phone nav's More sheet. Held here rather than in `NavBar` because it
   // is one of three things an Escape can mean, and only a place that can see
   // all three can order them (`escape-claimants.ts`). It is read as
@@ -283,7 +290,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       });
       if (claimant) {
         const close: Record<EscapeClaimant, () => void> = {
-          capture: () => setCaptureOpen(false),
+          // #380: while the box is dictating, this Escape is not a close —
+          // it undoes the dictation and leaves the popover open. The next
+          // Escape sees `captureDictating` false (`CaptureBox` reports it the
+          // instant the session ends) and closes as it always did — still
+          // one owner, still no second listener, just a branch on a fact
+          // only `CaptureBox` has.
+          capture: () =>
+            captureDictating
+              ? setCancelDictationRequestId((id) => id + 1)
+              : setCaptureOpen(false),
           navSheet: () => setNavSheetOpen(false),
           itemDetail: handleCloseItemDetail,
         };
@@ -292,7 +308,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [captureOpen, isPhone, navSheetOpen, selectedItemId, handleCloseItemDetail]);
+  }, [
+    captureOpen,
+    captureDictating,
+    isPhone,
+    navSheetOpen,
+    selectedItemId,
+    handleCloseItemDetail,
+  ]);
   const { act: handleAct } = useItemActions(worker);
   const { triage: handleTriage } = useTriageWiring(worker);
   // #355/ADR-0023's Grill takeover — the Triage screen's own composition of
@@ -530,6 +553,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         projects={demo ? [] : task.projects}
         demo={demo !== null}
         lastCapture={demo ? null : task.lastCapture}
+        cancelDictationRequestId={cancelDictationRequestId}
+        onDictatingChange={setCaptureDictating}
       />
     </div>
   );

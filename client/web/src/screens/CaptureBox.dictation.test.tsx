@@ -75,8 +75,9 @@ const NO_FIELDS = {
   scheduledDate: null,
 };
 
-function renderBox() {
+function renderBox(options: { onDictatingChange?: (dictating: boolean) => void } = {}) {
   const onSubmit = vi.fn();
+  const onDictatingChange = options.onDictatingChange ?? vi.fn();
   const view = render(
     <CaptureBox
       onSubmit={onSubmit}
@@ -84,9 +85,23 @@ function renderBox() {
       demo={false}
       focusRequestId={1}
       lastCapture={null}
+      cancelDictationRequestId={0}
+      onDictatingChange={onDictatingChange}
     />,
   );
-  return { onSubmit, view };
+  const bumpCancel = (id: number) =>
+    view.rerender(
+      <CaptureBox
+        onSubmit={onSubmit}
+        projects={[]}
+        demo={false}
+        focusRequestId={1}
+        lastCapture={null}
+        cancelDictationRequestId={id}
+        onDictatingChange={onDictatingChange}
+      />,
+    );
+  return { onSubmit, view, onDictatingChange, bumpCancel };
 }
 
 function field(): HTMLInputElement {
@@ -333,5 +348,87 @@ describe("CaptureBox — dictation", () => {
       ...NO_FIELDS,
       context: "@phone",
     });
+  });
+});
+
+// #380: Escape while dictating cancels the session in place. The shell (not
+// this box) decides that an Escape means "cancel" rather than "close" — see
+// `App.tsx` — and asks by bumping `cancelDictationRequestId`, the same
+// "bumped counter" idiom `focusRequestId` already uses. What belongs here is
+// only what the restore actually does: byte-exact, from the same frozen
+// halves the splice reads (`capture-dictation.ts`), and a session ended
+// exactly the way backgrounding already ends one.
+describe("CaptureBox — cancelling a dictation session", () => {
+  it("restores the pre-session draft and caret exactly, and releases the microphone", async () => {
+    const { bumpCancel } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call today" } });
+    act(() => {
+      field().setSelectionRange(5, 5);
+    });
+    fireEvent.click(mic());
+    hear("the vet");
+    expect(field().value).toBe("call the vet today");
+
+    bumpCancel(1);
+
+    expect(seam.aborts).toBe(1);
+    expect(field().value).toBe("call today");
+    expect(field().selectionStart).toBe(5);
+    expect(field().readOnly).toBe(false);
+    expect(mic()).toBeTruthy();
+  });
+
+  it("restores a selection's words, byte-for-byte, and re-selects the same range", async () => {
+    // The reviewer's exact case on #380: starting dictation with "the vet"
+    // selected in "call the vet today" must not delete those words on cancel.
+    const { bumpCancel } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call the vet today" } });
+    act(() => {
+      field().setSelectionRange(5, 12);
+    });
+    fireEvent.click(mic());
+    hear("the dentist");
+    expect(field().value).toBe("call the dentist today");
+
+    bumpCancel(1);
+
+    expect(field().value).toBe("call the vet today");
+    expect(field().selectionStart).toBe(5);
+    expect(field().selectionEnd).toBe(12);
+  });
+
+  it("does nothing when bumped while no session is live", async () => {
+    const { bumpCancel } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call the vet" } });
+    bumpCancel(1);
+    expect(seam.aborts).toBe(0);
+    expect(field().value).toBe("call the vet");
+  });
+
+  it("ignores a callback that arrives after a cancel", async () => {
+    const { bumpCancel } = renderBox();
+    await startListening();
+    hear("call the vet");
+    bumpCancel(1);
+    hear("something else entirely");
+    act(() => {
+      seam.handlers?.onError({ code: "network", message: "late error" });
+    });
+    expect(field().value).toBe("");
+    expect(screen.queryByText("late error")).toBeNull();
+  });
+
+  it("reports whether it is dictating, for the shell's Escape handler", async () => {
+    const onDictatingChange = vi.fn();
+    renderBox({ onDictatingChange });
+    await settleProbe();
+    expect(onDictatingChange).toHaveBeenLastCalledWith(false);
+    fireEvent.click(mic());
+    expect(onDictatingChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(stopMic());
+    expect(onDictatingChange).toHaveBeenLastCalledWith(false);
   });
 });
