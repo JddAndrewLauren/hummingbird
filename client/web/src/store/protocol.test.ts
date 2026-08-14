@@ -83,6 +83,8 @@ describe("protocol round-trips", () => {
           message: null,
           fields: [{ field: "title", local: "buy oat milk", server: "someone else's" }],
           atMs: 5_000,
+          entity: "items",
+          entityId: "a-1",
         },
         {
           id: "item-2",
@@ -90,6 +92,8 @@ describe("protocol round-trips", () => {
           message: "validation",
           fields: [],
           atMs: 6_000,
+          entity: "settings",
+          entityId: "theme",
         },
         // #163's third reason. `map_dead_letter` mints it in Rust and it
         // crosses a JSON boundary, so nothing but a case like this holds
@@ -100,6 +104,10 @@ describe("protocol round-trips", () => {
           message: null,
           fields: [],
           atMs: 7_000,
+          // A create whose body carried no client-minted id names no row —
+          // `null` is a real answer and must survive the round trip.
+          entity: "items",
+          entityId: null,
         },
       ],
     },

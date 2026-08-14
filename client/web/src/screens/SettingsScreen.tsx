@@ -29,11 +29,12 @@ import {
   syncStatusTone,
   syncStatusToneWord,
 } from "../shell/sync-status";
-import type { BindingDTO, DeadLetterEntryDTO } from "../store/protocol";
+import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenSubmitOutcome } from "../task/token";
 import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
+import { deadLetterSubject } from "./dead-letter-subject";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 
 const THEME_OPTIONS = [
@@ -259,7 +260,13 @@ function BindingRow({
  * components, none of them tabular), so this renders as a bordered list of
  * rows in the mono meta style the rest of the app already uses for computed
  * values, the same idiom `TriageScreen.tsx`'s capture rows use. */
-function DeadLetterRow({ entry }: { entry: DeadLetterEntryDTO }) {
+function DeadLetterRow({
+  entry,
+  ledger,
+}: {
+  entry: DeadLetterEntryDTO;
+  ledger: readonly LedgerRowDTO[] | null;
+}) {
   return (
     <div
       style={{
@@ -271,9 +278,17 @@ function DeadLetterRow({ entry }: { entry: DeadLetterEntryDTO }) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span className="hb-meta">{entry.id}</span>
+        {/* What the abandoned change was ABOUT, in body type — the queue
+            entry's own id stays in the mono meta style beside it, because it
+            is machine material and this is not. Until the entry carried its
+            subject, this row led with that id and a person had no way to tell
+            which of their edits had been given up on. */}
+        <span style={{ font: "var(--type-body-sm)", color: "var(--text-primary)" }}>
+          {deadLetterSubject(entry, ledger)}
+        </span>
         <span className="hb-meta">{new Date(entry.atMs).toISOString()}</span>
       </div>
+      <span className="hb-meta">{entry.id}</span>
       {entry.reason === "permanent" ? (
         <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
           {entry.message ?? "Rejected — no further detail."}
@@ -677,7 +692,11 @@ export function SettingsScreen({
                 <span className="hb-meta">{deadLetterHeading(task.deadLetters.length)}</span>
                 <Card padding="var(--space-5)">
                   {task.deadLetters.map((entry) => (
-                    <DeadLetterRow key={`${entry.id}-${entry.atMs}`} entry={entry} />
+                    <DeadLetterRow
+                      key={`${entry.id}-${entry.atMs}`}
+                      entry={entry}
+                      ledger={task.ledger}
+                    />
                   ))}
                 </Card>
               </>

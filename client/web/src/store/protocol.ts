@@ -528,6 +528,21 @@ export interface DeadLetterEntryDTO {
   message: string | null;
   fields: DeadLetterFieldDTO[];
   atMs: number;
+  /** Which entity of ADR-0009's write vocabulary the abandoned change was
+   * about, as the path segment itself — `"items"`, `"steps"`, `"settings"`,
+   * never a display word. Derived in the core from the queued intent
+   * (`MutationIntent::subject`), so an entry queued before this field existed
+   * still answers. */
+  entity: string;
+  /** Which row of that entity, when the intent named one. `null` is a real
+   * answer — a create whose body carried no client-minted id, or a collection
+   * path — and the surface says less rather than inventing a name, the same
+   * discipline `screens/write-failure.ts` keeps for a title it cannot find.
+   *
+   * Distinct from `id` above, which is the QUEUE ENTRY's id: that names the
+   * attempt, this names the thing the attempt was about. Until #418's session
+   * added this, "1 edit didn't apply" could not say whose edit. */
+  entityId: string | null;
 }
 
 /** What one `Core::run` cycle resolved to — the stable string names

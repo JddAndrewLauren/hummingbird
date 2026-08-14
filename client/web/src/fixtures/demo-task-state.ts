@@ -36,11 +36,14 @@
 //      card `calm` and the urgency ladder — the card's only licensed colour
 //      (ADR-0021 decision 2) — would go unphotographed. Three items carry
 //      deadlines here, one per band: overdue, now, soon.
-//   2. `lastTriage` is seeded with a FAILURE, so #418's alert renders. It is
-//      the one thing on this board that is always on screen and would not
-//      normally be; without it the line that fix added is invisible to the
-//      gate exactly as the columns were. Expect it when eyeballing
-//      `?demo=board` by hand — it is the fixture, not a real fault.
+//   2. `lastTriage` AND `lastAct` are each seeded with a FAILURE, so both of
+//      Now's stranded-write alerts render (#418 and its twin). They are the
+//      only things on this board always on screen that would not normally be;
+//      without them the lines those fixes added are invisible to the gate
+//      exactly as the columns were, and seeding just one would photograph a
+//      surface that looks like it has a single failure slot when it has one
+//      per mutation kind. Expect both when eyeballing `?demo=board` by hand —
+//      they are the fixture, not a real fault.
 //
 // Dev-only, gated twice, same as the kit world — see `demo.ts`.
 //
@@ -398,7 +401,19 @@ export function buildDemoTaskState(): TaskState {
     paneReads: {},
     pending: {},
     lastCapture: null,
-    lastAct: null,
+    // The same departure, on the other mutation: an act failure that outlived
+    // its detail panel is #418's twin, and it renders the SECOND of Now's two
+    // alert lines. Both are seeded because the pair is the thing worth
+    // photographing — one line per result the store holds, never one slot they
+    // take turns in — and because a stranded act failure is otherwise reachable
+    // only by closing the panel at the right moment.
+    lastAct: {
+      seed: "demo-board-act-1",
+      itemId: "b-f1",
+      action: "complete",
+      kind: "failed",
+      error: "the authority refused that edit",
+    },
     // Departure 2 in the header: this is what makes #418's alert render, and it
     // names a capture that is genuinely on the board so the alert can find its
     // title. Not a fault — the fixture.

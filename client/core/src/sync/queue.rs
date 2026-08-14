@@ -165,6 +165,68 @@ impl MutationIntent {
             MutationIntent::Patch { path, .. } => path,
         }
     }
+
+    /// What this mutation is *about*: which entity of ADR-0009's write
+    /// vocabulary, and which row of it.
+    ///
+    /// Derived from the path (and, for a create, the client-supplied id the
+    /// body already carries) rather than stored alongside it — the same
+    /// discipline [`MutationIntent::touched_fields`] keeps, and for the same
+    /// reason: a stored copy can disagree with what is actually sent, and a
+    /// derived one cannot. It also means every entry already durable in a
+    /// queue snapshot answers this, with no schema bump
+    /// ([`QUEUE_SCHEMA_VERSION`]) and no migration.
+    ///
+    /// Why it exists: a dead-lettered entry is surfaced to a human ("1 edit
+    /// didn't apply"), and that affordance could not say *which* item the
+    /// abandoned change was about — the journal carried a queue-entry id and
+    /// nothing else. Naming the subject is what makes the dead-letter journal
+    /// re-appliable by hand, which is the whole point of keeping it
+    /// (`CONTEXT.md`: the change's effect is abandoned, the words are not).
+    pub fn subject(&self) -> MutationSubject {
+        let trimmed = self
+            .path()
+            .strip_prefix("/api/")
+            .unwrap_or(self.path())
+            .trim_matches('/');
+        let (entity, rest) = match trimmed.split_once('/') {
+            Some((entity, rest)) => (entity, Some(rest)),
+            None => (trimmed, None),
+        };
+        let id = match self {
+            // A create's path names no row — the id is the one the client
+            // itself minted into the body (`write::deterministic_id`, which
+            // is what makes a replayed create idempotent).
+            MutationIntent::Create { body, .. } => body
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| rest.map(str::to_string)),
+            // Everything after the entity segment, joined as it stands: a
+            // `blocked_by` edge is identified by the PAIR (`/api/blocked_by/
+            // <item>/<blocker>`), so taking only the first segment would name
+            // half an identity and read as if it were the whole one.
+            MutationIntent::Patch { .. } => rest.map(str::to_string),
+        };
+        MutationSubject {
+            entity: entity.to_string(),
+            id: id.filter(|id| !id.is_empty()),
+        }
+    }
+}
+
+/// Which entity, and which row of it, one [`MutationIntent`] is about — see
+/// [`MutationIntent::subject`].
+///
+/// `entity` is the path segment verbatim (`"items"`, `"steps"`,
+/// `"settings"`, …), never a prettified display word: this is computed
+/// material, and the surface that shows it decides how to say it, the same
+/// split every `screens/*` module keeps. `id` is `None` when the intent
+/// genuinely names no single row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutationSubject {
+    pub entity: String,
+    pub id: Option<String>,
 }
 
 /// One queued entry: an intent, plus an id for tracking and logging (not
@@ -495,6 +557,89 @@ mod tests {
                 patch_fields: json!({"title": "buy oat milk"}),
                 rebase_fields: None,
             },
+        }
+    }
+
+    // ------------------------------------------------ what a mutation is about
+
+    /// The dead-letter journal's "which item didn't apply" material, derived
+    /// from what the entry already holds — so an entry durably queued before
+    /// this method existed answers it too.
+    #[test]
+    fn a_patch_names_the_entity_and_the_row_from_its_path() {
+        let subject = patch_entry("m-1", "a-1", 3).intent.subject();
+        assert_eq!(subject.entity, "items");
+        assert_eq!(subject.id.as_deref(), Some("a-1"));
+    }
+
+    #[test]
+    fn a_create_names_the_row_from_the_id_the_client_minted() {
+        // The path is the collection (`/api/items`), so the id can only come
+        // from the body — the same deterministic id that makes a replayed
+        // create idempotent.
+        let subject = create_entry("m-1", "a-1").intent.subject();
+        assert_eq!(subject.entity, "items");
+        assert_eq!(subject.id.as_deref(), Some("a-1"));
+    }
+
+    #[test]
+    fn a_create_with_no_id_in_its_body_names_no_row_rather_than_inventing_one() {
+        let intent = MutationIntent::Create {
+            path: "/api/fog".to_string(),
+            body: json!({"note": "unclear"}),
+        };
+        let subject = intent.subject();
+        assert_eq!(subject.entity, "fog");
+        assert_eq!(subject.id, None);
+    }
+
+    /// A `blocked_by` edge is identified by the pair, so the whole tail is
+    /// the id — naming only `item` would read as a complete identity while
+    /// being half of one.
+    #[test]
+    fn a_composite_identity_stays_whole() {
+        let intent = MutationIntent::Patch {
+            path: "/api/blocked_by/a-1/a-2".to_string(),
+            method: HttpMethod::Patch,
+            base: json!({}),
+            base_updated_at: 1_000,
+            patch_fields: json!({}),
+            rebase_fields: None,
+        };
+        let subject = intent.subject();
+        assert_eq!(subject.entity, "blocked_by");
+        assert_eq!(subject.id.as_deref(), Some("a-1/a-2"));
+    }
+
+    /// Every entity in the write vocabulary answers, not just items — the
+    /// journal is generic over ADR-0009's whole write surface and a subject
+    /// that only worked for one entity would silently name nothing for the
+    /// rest.
+    #[test]
+    fn every_path_in_the_write_vocabulary_yields_a_subject() {
+        use crate::sync::write::paths;
+        let cases = [
+            (paths::item("a-1"), "items", Some("a-1")),
+            (paths::step("s-1"), "steps", Some("s-1")),
+            (paths::project("p-1"), "projects", Some("p-1")),
+            (paths::route("p-1"), "routes", Some("p-1")),
+            (paths::fog_item("a-1"), "fog", Some("a-1")),
+            (paths::setting("theme"), "settings", Some("theme")),
+            (paths::rule("r-1"), "rules", Some("r-1")),
+            (paths::items(), "items", None),
+        ];
+        for (path, entity, id) in cases {
+            let intent = MutationIntent::Patch {
+                path: path.clone(),
+                method: HttpMethod::Patch,
+                base: json!({}),
+                base_updated_at: 1_000,
+                patch_fields: json!({}),
+                rebase_fields: None,
+            };
+            let subject = intent.subject();
+            assert_eq!(subject.entity, entity, "entity for {path}");
+            assert_eq!(subject.id.as_deref(), id, "id for {path}");
         }
     }
 
@@ -902,5 +1047,38 @@ mod tests {
             "a schema-version bump must load the old entry, never silently empty the queue"
         );
         assert!(restored.dead_letters().is_empty());
+    }
+
+    /// The claim [`MutationIntent::subject`] rests on: it needed no schema
+    /// bump and no migration because it reads what the entry *already* holds.
+    /// That is only true if an entry written before the method existed still
+    /// answers, so the round trip is asserted rather than argued — a stored
+    /// subject field would have failed exactly here.
+    #[test]
+    fn an_entry_durable_before_subject_existed_still_names_what_it_was_about() {
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(create_entry("m-1", "a-1"));
+        queue.enqueue(patch_entry("m-2", "a-2", 3));
+
+        // Bytes as any earlier build would have written them — nothing in the
+        // payload was added for this method's sake.
+        let bytes = serde_json::to_vec(&queue).unwrap();
+        let restored: OutboundQueue = serde_json::from_slice(&bytes).unwrap();
+
+        let subjects: Vec<(String, Option<String>)> = restored
+            .entries()
+            .map(|entry| {
+                let subject = entry.intent.subject();
+                (subject.entity, subject.id)
+            })
+            .collect();
+        assert_eq!(
+            subjects,
+            vec![
+                ("items".to_string(), Some("a-1".to_string())),
+                ("items".to_string(), Some("a-2".to_string())),
+            ],
+            "a reloaded queue must name each entry's subject, create and patch alike"
+        );
     }
 }

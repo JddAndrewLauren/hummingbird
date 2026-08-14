@@ -981,6 +981,110 @@ describe("NowScreen — the captures in the columns", () => {
 
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  // #418's twin. `ItemDetailPanel`'s `actError` renders only while the panel is
+  // open, so an act that failed after the reader closed it was displayed
+  // nowhere — the same defect on the other mutation, and the one this session
+  // fixed alongside the general question of whether the store should hold more
+  // than one failure at a time (it holds one per KIND, which is what these two
+  // lines are honest about).
+  const failedAct = (itemId: string, error: string | null = "409 conflict") => ({
+    seed: "s2",
+    itemId,
+    action: "complete" as const,
+    kind: "failed" as const,
+    error,
+  });
+
+  it("states a failed act above the columns when no panel is open to wear it", () => {
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        lastAct: failedAct("i1"),
+      }),
+    );
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe(
+      'That action didn\'t apply to "Renew the passport" — 409 conflict',
+    );
+  });
+
+  it("does not double the failure while the failing item's panel is open", () => {
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        lastAct: failedAct("i1"),
+      }),
+      { selectedItemId: "i1" },
+    );
+
+    // `ItemDetailPanel`'s own paragraph, and only that one.
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe("409 conflict");
+  });
+
+  it("survives the panel closing — the failure outlives the panel that issued it", () => {
+    const task = taskState({
+      frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+      lastAct: failedAct("i1"),
+    });
+    const { rerender } = renderNow(task, "i1");
+    expect(screen.getByRole("alert").textContent).toBe("409 conflict");
+
+    rerender(null);
+    expect(screen.getByRole("alert").textContent).toBe(
+      'That action didn\'t apply to "Renew the passport" — 409 conflict',
+    );
+  });
+
+  it("speaks for a failed act on the OPEN capture, whose row says nothing about acts", () => {
+    // A capture in the slot gets `TriageRow`, not `ItemDetailPanel` — and
+    // `TriageRow`'s checkmark issues an act. Nothing there renders an act
+    // failure, so suppressing this line for the open capture would strand it.
+    renderWithTriage(
+      taskState({
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+        lastAct: failedAct("c1"),
+      }),
+      { selectedItemId: "c1" },
+    );
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe(
+      'That action didn\'t apply to "Ring the plumber" — 409 conflict',
+    );
+  });
+
+  it("states both failures at once — they are separate results, not one slot", () => {
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+        lastTriage: failedTriage("c1"),
+        lastAct: failedAct("i1"),
+      }),
+    );
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0].textContent).toContain("Ring the plumber");
+    expect(alerts[1].textContent).toContain("Renew the passport");
+  });
+
+  it("says nothing about an act that worked", () => {
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        lastAct: { seed: "s2", itemId: "i1", action: "complete", kind: "ok", error: null },
+      }),
+    );
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });
 
 // #403's controls, tested through the mounted screen because what they are

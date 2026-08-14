@@ -13,7 +13,7 @@ import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { canMarkDone } from "./item-actions";
 import { PRIORITY_OPTIONS } from "./priority";
-import { triageFailureFor } from "./triage-failure";
+import { triageFailureFor } from "./write-failure";
 import {
   buildTriageEdits,
   effectiveDraft,
@@ -122,7 +122,7 @@ export function TriageRow({
     }
   }
 
-  // Matched by item id — see `triage-failure.ts`, which owns this and the
+  // Matched by item id — see `write-failure.ts`, which owns this and the
   // sentence Now says when no row is mounted to say it (#418).
   const triageError = triageFailureFor(lastTriage, item.id);
 
@@ -234,7 +234,7 @@ export function TriageRow({
           a list and collapsing one leaves it mounted. It never covered Now,
           where the row is the slot and closing it unmounts this component
           entirely — so the failure had nowhere to land at all. Now says it
-          itself in that case (`triage-failure.ts`'s `strandedTriageFailure`,
+          itself in that case (`write-failure.ts`'s `strandedTriageFailure`,
           #418); this paragraph keeps the failure on the item wherever the row
           survives, and the two are mutually exclusive by construction. */}
       {triageError ? (

@@ -159,10 +159,20 @@ for (const theme of THEMES) {
       await openApp(page, theme, "board");
       await show(page, "Now");
       // The board is up (a column heading the fixture guarantees) and the
-      // alert with it — waiting on both is what stops a capture of a
+      // alerts with it — waiting on both is what stops a capture of a
       // half-rendered screen.
+      //
+      // Two alerts, not one: Now says a stranded triage failure and a stranded
+      // act failure on separate lines, because the store holds one result per
+      // mutation KIND rather than one failure slot they take turns in, and the
+      // board fixture seeds both. A `getByRole("alert")` here would be strict-
+      // mode ambiguous — which is how this gate caught the second line
+      // arriving, and worth keeping counted rather than loosened to `.first()`.
       await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
-      await expect(page.getByRole("alert")).toBeVisible();
+      const alerts = page.getByRole("alert");
+      await expect(alerts).toHaveCount(2);
+      await expect(alerts.first()).toBeVisible();
+      await expect(alerts.last()).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/now-columns-${testInfo.project.name}-${theme}.png`,

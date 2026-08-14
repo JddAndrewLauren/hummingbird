@@ -399,6 +399,8 @@ interface RawDeadLetterEntry {
   message: string | null;
   fields: RawDeadLetterField[];
   at_ms: number;
+  entity: string;
+  entity_id: string | null;
 }
 
 interface RawDeadLettersResponse {
@@ -561,6 +563,8 @@ function mapDeadLetters(raw: RawDeadLetterEntry[]): DeadLetterEntryDTO[] {
       server: field.server,
     })),
     atMs: entry.at_ms,
+    entity: entry.entity,
+    entityId: entry.entity_id,
   }));
 }
 

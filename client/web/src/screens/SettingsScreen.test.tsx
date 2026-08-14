@@ -21,8 +21,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../shell/useCalendarWiring", () => ({ GOOGLE_CLIENT_ID: "test-client-id" }));
 
 import { SettingsScreen } from "./SettingsScreen";
-import { bindingDTO, fireEvent, render, screen, taskState } from "../test/component";
-import type { BindingDTO } from "../store/protocol";
+import { bindingDTO, fireEvent, itemDTO, render, screen, taskState } from "../test/component";
+import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 
 const calendar: CalendarState = {
@@ -367,5 +367,54 @@ describe("SettingsScreen — the microtask backend picker (#274)", () => {
     const { onBackendSelection } = renderSettings();
     fireEvent.change(screen.getByLabelText("Microtask backend"), { target: { value: "cloud" } });
     expect(onBackendSelection).toHaveBeenCalledWith("cloud");
+  });
+});
+
+describe("SettingsScreen — the dead-letter journal", () => {
+  const entry = (overrides: Partial<DeadLetterEntryDTO> = {}): DeadLetterEntryDTO => ({
+    id: "q-1",
+    reason: "permanent",
+    message: "validation",
+    fields: [],
+    atMs: 5_000,
+    entity: "items",
+    entityId: "a-1",
+    ...overrides,
+  });
+
+  const ledgerRow = (id: string, title: string): LedgerRowDTO => ({
+    ...itemDTO({ id, title, stage: "ready" }),
+    absentSinceMs: null,
+    deadLettered: true,
+    hasLiveAlert: false,
+  });
+
+  // The thread this file exists to mount: the naming rule itself is unit-tested
+  // in `dead-letter-subject.test.ts`, and what no node test can see is whether
+  // the row actually calls it with the ledger the screen holds.
+  it("names the item an abandoned change was about, not just the queue entry", () => {
+    renderSettings({
+      task: {
+        deadLetters: [entry()],
+        ledger: [ledgerRow("a-1", "Ring the plumber")],
+      },
+    });
+
+    expect(screen.getByText('item "Ring the plumber"')).toBeDefined();
+    // The queue entry's own id stays on the row — it names the attempt, which
+    // is still what a person quotes when asking why it was abandoned.
+    expect(screen.getByText("q-1")).toBeDefined();
+  });
+
+  it("falls back to the id rather than nothing when the ledger cannot name it", () => {
+    renderSettings({ task: { deadLetters: [entry({ entityId: "a-9" })] } });
+    expect(screen.getByText("item a-9")).toBeDefined();
+  });
+
+  it("says the entity alone when the change named no row", () => {
+    renderSettings({
+      task: { deadLetters: [entry({ entity: "settings", entityId: null })] },
+    });
+    expect(screen.getByText("setting")).toBeDefined();
   });
 });

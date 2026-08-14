@@ -449,6 +449,46 @@ to it — so it is a camera, not a second writable app.*
   and this line is honest about precisely that. A per-item error surface — for
   triage or for `lastAct`, which has the same shape and the same limit — is a
   store change, and a bigger decision than the bug that prompted this one.*
+
+  *Amended 2026-08-13 (the general case, taken up): **the store does not grow a
+  map, and Now grows a second line instead.** `lastTriage`/`lastAct` were read
+  above as "the most recent result, so failures are lost" — they are not lost,
+  because they are not that lane. Both are posted synchronously, one per
+  request, off the task host's own serial queue (`worker/task-worker.ts`), and
+  a `"failed"` there means the mutation never reached the outbound queue at
+  all. Nothing about a sync cycle writes either field. So "one at a time, per
+  kind" is what is actually true of them, and a `Record<itemId, result>` would
+  have been a map with at most one live key, plus an eviction problem
+  (`deadLetters`' own, which "only ever grows") bought for nothing.*
+
+  *The lane that genuinely holds many failures at once is the **dead-letter
+  journal** — where a write the authority rejected lands, several per drained
+  cycle. Merging the two was considered and rejected: `CONTEXT.md` distinguishes
+  them, and rightly. "Your write never queued" and "the change's effect is
+  abandoned" are different facts, need different words, and only one of them is
+  re-appliable by hand.*
+
+  *So this decision is two small ones. **On Now:** `lastAct` gets exactly the
+  treatment `lastTriage` got here — a second `role="alert"` line above the
+  columns, naming its item. It is a second line and not a second use of the
+  first, because the two results coexist in the store and a shared slot would
+  make one failure hide the other. Both sentences now come from one pure
+  module, `screens/write-failure.ts` (renamed from `triage-failure.ts`, which
+  this amendment's parent named; one algorithm, the subject as its parameter).
+  The act line stays silent while the failing item's `ItemDetailPanel` is open
+  — that panel's `actError` owns the message then — but **not** while the
+  failing item is an open capture, because a capture in the slot gets
+  `TriageRow`, whose checkmark issues an act and which renders no act failure at
+  all. That was a third stranding, found by asking which editor actually wears
+  each result.*
+
+  *Meanwhile the dead-letter journal could not say **which** item an abandoned
+  change was about: its entries carried the queue entry's id, which names the
+  attempt. `MutationIntent::subject` (derived from the queued intent, so every
+  already-durable entry answers it with no schema bump) now carries the entity
+  and row onto `DeadLetterEntryDTO`, and Settings names the item by title.
+  `Core::ledger`'s own badge derivation was re-expressed in terms of it rather
+  than keeping a second reading of the same question.*
 - `CONTEXT.md` gains **Size**, **Energy** and the item's **Context**. All three
   existed only inside other definitions and in ADR-0009's DDL; this decision
   makes all three UI vocabulary, and the glossary adjudicates design questions.
