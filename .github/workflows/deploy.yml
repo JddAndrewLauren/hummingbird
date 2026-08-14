@@ -25,6 +25,16 @@ on:
       - "scripts/**"
       - "tests/**"
       - ".github/workflows/deploy.yml"
+  pull_request:
+    paths:
+      - "sweep.py"
+      - "denylist.json"
+      - "crontab"
+      - "Dockerfile"
+      - "fly.toml"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/deploy.yml"
 
 jobs:
   test:
@@ -44,11 +54,11 @@ jobs:
       # assert-don't-skip both match `runner.yml`'s step, which covers
       # `runner/scripts/` the same way for the same reason.
       #
-      # Note this job only runs on push to `main` (see the triggers above), so
-      # this lints after the merge rather than gating the PR. Giving it PR-time
-      # teeth means adding a `pull_request` trigger and guarding the deploy job
-      # on `github.event_name == 'push'` — worth doing, deliberately not folded
-      # into the change that added this step.
+      # This job runs on both push to `main` and `pull_request` (see the
+      # triggers above), so a broken `sweep.py`/`tests/`/`scripts/*.sh` change
+      # gets a red check on its PR rather than a red deploy after the merge
+      # (#396). The `deploy` job below is guarded to push-only so the
+      # `pull_request` run only ever reaches this test job.
       - name: shellcheck (scripts)
         run: |
           command -v shellcheck
@@ -56,6 +66,14 @@ jobs:
 
   deploy:
     needs: test
+    # `pull_request` now runs `test` above (#396), and this guard is what
+    # stops that run from also shipping an unmerged branch to Fly.
+    # deploy-client.yml and deploy-server.yml guard the same way on
+    # `github.ref == 'refs/heads/main'` instead, because they also accept a
+    # `workflow_dispatch` from any ref; this workflow has no dispatch trigger
+    # and its `push` is already branch-locked to `main`, so `event_name` alone
+    # is the narrower, sufficient check.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-hummingbird-sweeper
