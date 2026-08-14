@@ -726,6 +726,30 @@ describe("NowScreen — the captures in the columns", () => {
     return { onTriage, onAct, storage };
   }
 
+  /** `renderWithTriage`'s twin for the one thing it cannot express: changing
+   * the selection *without* remounting, which is what closing the slot is. */
+  function renderNow(task: TaskState, selectedItemId: string | null) {
+    const storage = fakeStorage();
+    const screenFor = (selected: string | null) => (
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={task}
+        nowMs={NOW_MS}
+        selectedItemId={selected}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        onTriage={() => {}}
+        storage={storage}
+      />
+    );
+    const view = render(screenFor(selectedItemId));
+    return { rerender: (next: string | null) => view.rerender(screenFor(next)) };
+  }
+
   const capture = (id: string, title: string, createdAt: number, context: string | null = null) =>
     itemDTO({ id, title, stage: "triage", createdAt, context });
 
@@ -873,6 +897,89 @@ describe("NowScreen — the captures in the columns", () => {
 
     fireEvent.click(screen.getByRole("button", { name: 'Mark "Ring the plumber" done' }));
     expect(onAct).toHaveBeenCalledWith("c1", "complete");
+  });
+
+  // #418. On Triage the rows stay mounted in a list, so a late failure always
+  // has its row to land in. Here the row IS the slot: closing it unmounts
+  // `TriageRow`, and a result broadcast afterwards had nowhere to go — the
+  // capture came back to the board saying nothing had gone wrong. The screen
+  // says it instead, and names the item.
+  const failedTriage = (itemId: string, error: string | null = "409 conflict") => ({
+    seed: "s1",
+    itemId,
+    kind: "failed" as const,
+    error,
+  });
+
+  it("states a failed triage above the columns when no row is open to wear it", () => {
+    renderWithTriage(
+      taskState({
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+        lastTriage: failedTriage("c1"),
+      }),
+    );
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe('Triage didn\'t apply to "Ring the plumber" — 409 conflict');
+    // The capture is back on the board, which is the state the alert explains.
+    expect(card("Ring the plumber")).toBeDefined();
+  });
+
+  it("states it while a DIFFERENT capture is open, keeping the failure with its own item", () => {
+    renderWithTriage(
+      taskState({
+        triageInbox: [capture("c1", "Ring the plumber", 500), capture("c2", "Book the MOT", 400)],
+        lastTriage: failedTriage("c1"),
+      }),
+      { selectedItemId: "c2" },
+    );
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toContain("Ring the plumber");
+  });
+
+  it("does not double the failure onto the screen while the failing capture is open", () => {
+    renderWithTriage(
+      taskState({
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+        lastTriage: failedTriage("c1"),
+      }),
+      { selectedItemId: "c1" },
+    );
+
+    // `TriageRow`'s own paragraph, and only that one.
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe("409 conflict");
+  });
+
+  it("survives the slot closing — the failure outlives the row that issued it", () => {
+    const task = taskState({
+      triageInbox: [capture("c1", "Ring the plumber", 500)],
+      lastTriage: failedTriage("c1"),
+    });
+    const { rerender } = renderNow(task, "c1");
+    expect(screen.getByRole("alert").textContent).toBe("409 conflict");
+
+    // The reader closes the panel. The result is still the last thing that
+    // happened, so it must still be on screen.
+    rerender(null);
+    expect(screen.getByRole("alert").textContent).toBe(
+      'Triage didn\'t apply to "Ring the plumber" — 409 conflict',
+    );
+  });
+
+  it("says nothing about a triage that worked", () => {
+    renderWithTriage(
+      taskState({
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+        lastTriage: { seed: "s1", itemId: "c1", kind: "ok", error: null },
+      }),
+    );
+
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 

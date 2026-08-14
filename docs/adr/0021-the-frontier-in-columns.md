@@ -385,6 +385,36 @@ a side effect of wanting a picture.
   — sorting it is the doing — and stacking the captures outside the axis meant
   the one thing the board could not tell you was which of them belonged to the
   context you are actually in.*
+
+  *Amended 2026-08-13 (#418): the amendment above cost a **failure** its home,
+  and Now grows one line to give it back. `TriageRow` renders its failure
+  outside its expanded block precisely so a late result still lands on a
+  collapsed row — true where the rows stand in a list, false the moment the row
+  became the slot, because closing the slot unmounts the component. So a triage
+  that failed after the reader closed the panel was displayed nowhere: the
+  capture returned to the board (correctly — a failed triage leaves the item in
+  `triageInbox`) saying nothing. Now states it itself, above the columns, as a
+  `role="alert"` paragraph **naming the capture**, and stays silent while that
+  capture is the open one so the two surfaces never both speak for one result.
+  Both sentences come from one pure module, `screens/triage-failure.ts`.*
+
+  *Three shapes were on the table and two are rejected here, because they are
+  the expensive knowledge. **On the card** — error text under the failing
+  capture's title — is the most precise about where a failure belongs, and it
+  loses to this decision's own furniture: a column caps at six cards, so a
+  capture behind `n more` would wear a message nobody can see, which is the
+  original bug one layer down. (Decision 2 rules out saying it in colour
+  instead: what a card's colour encodes is urgency and nothing else.)
+  **Holding the slot open on failure** is the smallest change and the closest to
+  the old behaviour, and it takes the panel away from the reader at the exact
+  moment they asked to close it — a surface whose decision 7 is "selecting a
+  card is not a takeover" should not answer a failed write with one.*
+
+  *What this does not do is fix the general case. `TaskState.lastTriage` holds
+  the most recent result and not a map, so exactly one failure exists at a time
+  and this line is honest about precisely that. A per-item error surface — for
+  triage or for `lastAct`, which has the same shape and the same limit — is a
+  store change, and a bigger decision than the bug that prompted this one.*
 - `CONTEXT.md` gains **Size**, **Energy** and the item's **Context**. All three
   existed only inside other definitions and in ADR-0009's DDL; this decision
   makes all three UI vocabulary, and the glossary adjudicates design questions.
