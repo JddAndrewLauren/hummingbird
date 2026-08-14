@@ -460,6 +460,36 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
 /// the test rig (`rig.rs`), and the rig turns enforcement **on**, so the
 /// growth test exercises the strict case — the harder of the two.
 ///
+/// **Why the function starts by recovering, and why that is the whole
+/// atomicity story.** Between `DELETE FROM steps` and the matching
+/// `INSERT … FROM steps_fk_stash` the only copy of a child row is the stash,
+/// and between `DROP TABLE items` and the reinsert the only copy of a parent
+/// row is [`ITEMS_SCRATCH`] — a window neither a transaction nor a pragma is
+/// available to close. `sql.rs` notes that a whole event-loop turn is atomic
+/// under the DO's write coalescing, but that covers a turn that *completes*:
+/// a `SqlError` returned through `?` mid-sequence is an ordinary early
+/// return, not a discarded turn, and the native rusqlite path this function
+/// is tested on has no coalescing at all. So the window is closed from the
+/// other end — every intermediate state is made **resumable**, and
+/// `init_schema` runs on every construction, so the next boot is the retry:
+///
+/// - `items` still says `'short'` — the live table is the truth, so a
+///   scratch copy is stale and dropped, while the child stashes may be the
+///   only copy of rows a dead attempt deleted, so they are restored. Then
+///   the rebuild runs from the top.
+/// - `items` already says `'normal'` — the parent is across. Any scratch
+///   rows are drained into it (the create loop will have recreated `items`
+///   empty if the attempt died between the `DROP` and the `CREATE`), then
+///   the children, then the guard's early return.
+///
+/// The restores are `INSERT OR IGNORE`, so an attempt that died between a
+/// copy and its `DELETE` — leaving the rows in both places — converges
+/// instead of failing on its own duplicates. Every table involved has a
+/// primary key, so the ignored rows are the rows themselves. Nothing here is
+/// reachable on a store that has already been through the rename once: with
+/// no stash and no scratch table present, recovery is three `sqlite_master`
+/// reads and the guard.
+///
 /// Runs **after** [`add_missing_columns`] for the same reason that function
 /// runs after the create loop: by this point `items` certainly exists and
 /// certainly has every column, whatever shape the store started in, so the
@@ -477,28 +507,46 @@ fn rebuild_items_for_size_vocabulary(sql: &dyn Sql) -> Result<(), SqlError> {
             message: "`items` is missing from sqlite_master after the create loop".to_string(),
         });
     };
+
     if ddl.contains("'normal'") {
+        // The rename is done, or an earlier attempt died after getting the
+        // parent across. Parent rows first, then the children that reference
+        // them — the same order the rebuild itself uses, and for the same
+        // reason. On a store long past the rename both are no-ops.
+        if table_exists(sql, ITEMS_SCRATCH)? {
+            sql.exec(
+                &format!(
+                    "INSERT OR IGNORE INTO items ({ITEMS_COLUMNS}) \
+                     SELECT {ITEMS_COLUMNS} FROM {ITEMS_SCRATCH}"
+                ),
+                &[],
+            )?;
+            sql.exec(&format!("DROP TABLE {ITEMS_SCRATCH}"), &[])?;
+        }
+        restore_fk_stashes(sql)?;
         return Ok(());
     }
 
-    // Spelled out in both the INSERT and the SELECT rather than `SELECT *`:
-    // `agent` reached this table by ADD COLUMN, so its position is an
-    // accident of migration history and a positional copy would inherit it.
-    const COLUMNS: &str = "id, seq, title, description, stage, size, energy, context, \
-                           priority, project_id, project_pos, deadline, scheduled_date, \
-                           source, source_key, source_url, archived_at, created_at, \
-                           updated_at, version, agent";
+    // `items` still holds the old vocabulary, so it also still holds the
+    // authoritative rows: a scratch table left behind is a stale copy of
+    // them and goes. The child stashes are the opposite case — they may be
+    // the only surviving copy — so they are put back before the rebuild
+    // empties them again.
+    sql.exec(&format!("DROP TABLE IF EXISTS {ITEMS_SCRATCH}"), &[])?;
+    restore_fk_stashes(sql)?;
 
     // No constraints on the scratch table: it holds the rows for two
     // statements and every one of them has already satisfied the real
     // table's constraints once.
     sql.exec(
-        "CREATE TABLE items_size_rebuild (\
+        &format!(
+            "CREATE TABLE {ITEMS_SCRATCH} (\
            id TEXT, seq INTEGER, title TEXT, description TEXT, stage TEXT, size TEXT, \
            energy TEXT, context TEXT, priority INTEGER, project_id TEXT, project_pos INTEGER, \
            deadline TEXT, scheduled_date TEXT, source TEXT, source_key TEXT, source_url TEXT, \
            archived_at INTEGER, created_at INTEGER, updated_at INTEGER, version INTEGER, \
-           agent INTEGER)",
+           agent INTEGER)"
+        ),
         &[],
     )?;
     // The same list, with the rename applied in place of `size`. The two
@@ -513,18 +561,17 @@ fn rebuild_items_for_size_vocabulary(sql: &dyn Sql) -> Result<(), SqlError> {
 
     sql.exec(
         &format!(
-            "INSERT INTO items_size_rebuild ({COLUMNS}) SELECT {SELECT_RENAMING_SIZE} FROM items"
+            "INSERT INTO {ITEMS_SCRATCH} ({ITEMS_COLUMNS}) \
+             SELECT {SELECT_RENAMING_SIZE} FROM items"
         ),
         &[],
     )?;
 
-    // Every table with a foreign key onto `items(id)`. `CREATE TABLE … AS
-    // SELECT *` is safe for these in a way it is not for `items` above:
-    // both sides of the round trip are the same live table, so a positional
-    // copy cannot land a column in the wrong place, and the shapes are not
-    // being changed — only stood aside.
-    const CHILDREN: [&str; 3] = ["steps", "blocked_by", "grills"];
-    for child in CHILDREN {
+    // `CREATE TABLE … AS SELECT *` is safe for the children in a way it is
+    // not for `items` above: both sides of the round trip are the same live
+    // table, so a positional copy cannot land a column in the wrong place,
+    // and the shapes are not being changed — only stood aside.
+    for child in FK_CHILDREN {
         sql.exec(
             &format!("CREATE TABLE {child}_fk_stash AS SELECT * FROM {child}"),
             &[],
@@ -535,21 +582,72 @@ fn rebuild_items_for_size_vocabulary(sql: &dyn Sql) -> Result<(), SqlError> {
     sql.exec("DROP TABLE items", &[])?;
     sql.exec(CREATE_ITEMS, &[])?;
     sql.exec(
-        &format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM items_size_rebuild"),
+        &format!(
+            "INSERT INTO items ({ITEMS_COLUMNS}) \
+             SELECT {ITEMS_COLUMNS} FROM {ITEMS_SCRATCH}"
+        ),
         &[],
     )?;
-    sql.exec("DROP TABLE items_size_rebuild", &[])?;
+    sql.exec(&format!("DROP TABLE {ITEMS_SCRATCH}"), &[])?;
 
     // Back after the parent, never before it — this is the half of the
     // stash that foreign-key enforcement is actually checking.
-    for child in CHILDREN {
+    restore_fk_stashes(sql)
+}
+
+/// The tables carrying a foreign key onto `items(id)`, which is what makes
+/// them the tables a rebuild of `items` has to stand aside.
+const FK_CHILDREN: [&str; 3] = ["steps", "blocked_by", "grills"];
+
+/// Where `items`' rows wait while the table underneath them is replaced.
+const ITEMS_SCRATCH: &str = "items_size_rebuild";
+
+/// `items`' columns, spelled out rather than left to `SELECT *`: `agent`
+/// reached the table by `ADD COLUMN`, so its position is an accident of
+/// migration history and a positional copy would inherit it.
+const ITEMS_COLUMNS: &str = "id, seq, title, description, stage, size, energy, context, \
+                             priority, project_id, project_pos, deadline, scheduled_date, \
+                             source, source_key, source_url, archived_at, created_at, \
+                             updated_at, version, agent";
+
+/// Put every stashed child table back and drop the stash — both the closing
+/// half of [`rebuild_items_for_size_vocabulary`] and, on a boot after an
+/// interrupted one, its recovery step. Callers must have `items` populated
+/// first: these are the referencing side.
+///
+/// `INSERT OR IGNORE`, because the recovery caller may find rows already in
+/// place — an attempt that died between a child's copy and its `DELETE` left
+/// them in both. `steps` and `grills` are keyed on `id` and `blocked_by` on
+/// `(item_id, blocker_id)`, so the ignored rows are those same rows and not
+/// a silently dropped edit.
+///
+/// Missing stash tables are skipped, not an error: the ordinary path is a
+/// store that has no stash because nothing was ever interrupted.
+fn restore_fk_stashes(sql: &dyn Sql) -> Result<(), SqlError> {
+    for child in FK_CHILDREN {
+        let stash = format!("{child}_fk_stash");
+        if !table_exists(sql, &stash)? {
+            continue;
+        }
         sql.exec(
-            &format!("INSERT INTO {child} SELECT * FROM {child}_fk_stash"),
+            &format!("INSERT OR IGNORE INTO {child} SELECT * FROM {stash}"),
             &[],
         )?;
-        sql.exec(&format!("DROP TABLE {child}_fk_stash"), &[])?;
+        sql.exec(&format!("DROP TABLE {stash}"), &[])?;
     }
     Ok(())
+}
+
+/// Whether `table` exists, read from `sqlite_master` for the same reason
+/// [`column_exists`] reads its DDL there: the Durable Object's SQL storage
+/// permits only a narrow set of pragmas, and a plain `SELECT` is the
+/// portable question.
+fn table_exists(sql: &dyn Sql, table: &str) -> Result<bool, SqlError> {
+    let rows = sql.exec(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        &[SqlValue::Text(table.to_string())],
+    )?;
+    Ok(!rows.is_empty())
 }
 
 /// Whether one table's stored DDL declares `column`.

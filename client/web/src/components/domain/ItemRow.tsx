@@ -18,11 +18,13 @@ export interface ItemRowProps extends Omit<HTMLAttributes<HTMLDivElement>, "styl
   /** Do-date the human chose. Rendered with a calendar glyph, always muted. */
   scheduled?: string;
   /** The item's own `size` (`quick` / `normal` / `deep`), rendered as a
-   * depth-ring glyph and its uppercase word, both in the level's ramp
-   * colour (`screens/size-energy.ts`). Absent means the caller has nothing
+   * depth-ring glyph in the level's ramp colour (`screens/size-energy.ts`)
+   * and no word — the level is in the glyph, and the name is carried by
+   * `aria-label` and `title` instead. Absent means the caller has nothing
    * to say — this row omits it entirely rather than drawing the unset
    * ghost, the same contract `priority`, `steps` and `blockedBy` follow.
-   * The full-item surface that *does* draw absence is `ItemDetailPanel`. */
+   * The full-item surface that *does* draw absence, with words, is
+   * `ItemDetailPanel`. */
   size?: TaskItemDTO["size"];
   /** The item's own `energy` (`low` / `medium` / `high`), drawn beside size
    * in the same treatment (#446). Rows carried no energy at all before

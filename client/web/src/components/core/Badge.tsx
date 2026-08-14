@@ -9,7 +9,7 @@ export interface BadgeProps extends Omit<HTMLAttributes<HTMLSpanElement>, "style
   icon?: IconName;
   /** Leading status dot instead of an icon. */
   dot?: boolean;
-  /** Space Mono, uppercase, tracked — for codes and counts (SIZE:DEEP, 12M AGO). */
+  /** Space Mono, uppercase, tracked — for codes and counts (12M AGO, 3 ACTIONS). */
   mono?: boolean;
   style?: CSSProperties;
   children?: ReactNode;

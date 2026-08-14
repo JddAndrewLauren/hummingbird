@@ -116,11 +116,14 @@ export const ICON_MAP = {
 export type IconName = keyof typeof ICON_MAP;
 
 export interface IconProps extends HTMLAttributes<HTMLSpanElement> {
-  /** Lucide icon name, kebab-case (e.g. "inbox", "bell"). */
+  /** A key of `ICON_MAP`, kebab-case (e.g. "inbox", "bell") — a Lucide glyph,
+   * or one of the eight size/energy glyphs `custom-glyphs.tsx` draws. */
   name: IconName;
   /** Rendered box in px. 16 inline, 18 default, 20 in toolbars, 24 on touch. */
   size?: number;
-  /** Lucide stroke width. 1.75 is the Hummingbird default. */
+  /** Stroke width for the Lucide glyphs; 1.75 is the Hummingbird default.
+   * The size/energy glyphs accept it and ignore it — their ramp is drawn at
+   * a fixed weight, and `custom-glyphs.tsx`'s header says why. */
   strokeWidth?: number;
   color?: string;
   /** Supply only for a standalone, meaningful icon; otherwise it stays aria-hidden. */

@@ -159,7 +159,9 @@ the surfaces disagree about what silence means:
 
 **No colour is added to the system**, and the visual gate needs no change:
 per `docs/SURFACES.md` the visual spec asserts that tokens *resolve*, never
-that they equal a hex, and all seven tokens already exist at both themes.
+that they equal a hex, and all four ramp tokens — `--text-muted`,
+`--status-done-fg`, `--urgency-soon`, `--urgency-now` — already exist at both
+themes.
 
 ## What this does not decide
 

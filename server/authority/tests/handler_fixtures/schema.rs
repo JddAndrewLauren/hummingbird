@@ -742,6 +742,141 @@ fn the_size_rebuild_is_idempotent() {
     );
 }
 
+/// Seed a v6 store with the two items, the step and the edge the rebuild
+/// tests all need, so the interruption tests below differ only in *where*
+/// they cut the sequence.
+fn v6_store_with_rows() -> RusqliteSql {
+    let sql = v6_store();
+    sql.exec(
+        "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+         VALUES ('i', 'compare three insurance quotes', 'ready', 'short', 0, 1000, 1000, 1, 0)",
+        &[],
+    )
+    .unwrap();
+    sql.exec(
+        "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
+         VALUES ('q', 'take the bins out', 'ready', 'quick', 0, 1000, 1000, 1, 0)",
+        &[],
+    )
+    .unwrap();
+    sql.exec(
+        "INSERT INTO steps (id, item_id, body, done, position, version) \
+         VALUES ('s', 'i', 'open the comparison site', 0, 0, 1)",
+        &[],
+    )
+    .unwrap();
+    sql.exec(
+        "INSERT INTO blocked_by (item_id, blocker_id, version) VALUES ('i', 'q', 1)",
+        &[],
+    )
+    .unwrap();
+    sql
+}
+
+/// No stash table and no scratch table anywhere — the state a store must be
+/// left in whether the rebuild ran, recovered, or declined.
+fn assert_no_rebuild_residue(sql: &dyn Sql) {
+    for name in ["items_size_rebuild", "steps_fk_stash", "blocked_by_fk_stash", "grills_fk_stash"] {
+        assert!(
+            sql.exec("SELECT name FROM sqlite_master WHERE name = ?", &[SqlValue::Text(name.to_string())])
+                .unwrap()
+                .is_empty(),
+            "`{name}` was left behind",
+        );
+    }
+}
+
+/// **An attempt that died with the children stood aside and the parent not
+/// yet rebuilt.** This is the window the rebuild cannot close with a
+/// transaction — the `Sql` seam is one statement at a time and the Durable
+/// Object takes no `BEGIN` — so it is closed by being resumable instead, and
+/// this test is the proof rather than the claim.
+///
+/// The cut is placed to catch the failure that actually loses data: the next
+/// boot sees `items` still saying `'short'`, runs the rebuild from the top,
+/// and would empty the children a second time — over stash tables it had
+/// already created. Without recovery that is a `steps_fk_stash already
+/// exists` error at best and the permanent loss of every child row at worst.
+///
+/// `blocked_by` is deliberately left *un*-emptied: an attempt can also die
+/// between a child's copy and its `DELETE`, leaving the rows in both places,
+/// and the restore has to converge on that rather than fail on its own
+/// duplicates. That is what `INSERT OR IGNORE` is for.
+#[test]
+fn the_size_rebuild_resumes_after_dying_before_the_parent() {
+    let migrated = v6_store_with_rows();
+    for child in ["steps", "blocked_by", "grills"] {
+        migrated
+            .exec(&format!("CREATE TABLE {child}_fk_stash AS SELECT * FROM {child}"), &[])
+            .unwrap();
+    }
+    // `steps` got its DELETE; `blocked_by` and `grills` did not.
+    migrated.exec("DELETE FROM steps", &[]).unwrap();
+    // And a scratch table, half-filled, from the same dead attempt.
+    migrated
+        .exec("CREATE TABLE items_size_rebuild AS SELECT * FROM items WHERE id = 'q'", &[])
+        .unwrap();
+
+    init_schema(&migrated).expect("the next boot resumes rather than failing on its own leftovers");
+
+    let sizes = migrated.exec("SELECT id, size FROM items ORDER BY id", &[]).unwrap();
+    assert_eq!(sizes.len(), 2, "the stale scratch copy did not duplicate a row back in");
+    assert_eq!(
+        sizes[0].get("size"),
+        Some(&SqlValue::Text("normal".to_string())),
+        "the interrupted rename still completed",
+    );
+    let steps = migrated.exec("SELECT id FROM steps", &[]).unwrap();
+    assert_eq!(steps.len(), 1, "the step the dead attempt had deleted is back");
+    let edges = migrated.exec("SELECT item_id FROM blocked_by", &[]).unwrap();
+    assert_eq!(edges.len(), 1, "the edge that was in both places did not double");
+    assert_no_rebuild_residue(&migrated);
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&RusqliteSql::new()),
+        "a resumed store lands on the same byte-identical DDL as a fresh one",
+    );
+}
+
+/// **An attempt that died after the parent got across.** The dangerous half:
+/// `items` now says `'normal'`, so the DDL guard would decline — and a guard
+/// that declines while the rows are still in the scratch table and the
+/// children still emptied loses all of it *permanently*, on every boot after.
+/// Recovery therefore runs before the guard's early return, parent rows
+/// first, then the children that reference them.
+#[test]
+fn the_size_rebuild_resumes_after_dying_after_the_parent() {
+    let migrated = v6_store_with_rows();
+    init_schema(&migrated).expect("the rebuild succeeds");
+
+    // Wind the store back to the moment between the parent's reinsert and
+    // the children's: rows in the scratch table, `items` empty, children
+    // stashed and emptied. `items` already carries the new DDL.
+    for child in ["steps", "blocked_by", "grills"] {
+        migrated
+            .exec(&format!("CREATE TABLE {child}_fk_stash AS SELECT * FROM {child}"), &[])
+            .unwrap();
+        migrated.exec(&format!("DELETE FROM {child}"), &[]).unwrap();
+    }
+    migrated
+        .exec("CREATE TABLE items_size_rebuild AS SELECT * FROM items", &[])
+        .unwrap();
+    migrated.exec("DELETE FROM items", &[]).unwrap();
+
+    init_schema(&migrated).expect("the boot recovers instead of declining on the new DDL");
+
+    let sizes = migrated.exec("SELECT id, size FROM items ORDER BY id", &[]).unwrap();
+    assert_eq!(sizes.len(), 2, "the rows waiting in the scratch table were drained back in");
+    assert_eq!(sizes[0].get("size"), Some(&SqlValue::Text("normal".to_string())));
+    assert_eq!(
+        migrated.exec("SELECT id FROM steps", &[]).unwrap().len(),
+        1,
+        "the child rows came back after their parents, not instead of them",
+    );
+    assert_eq!(migrated.exec("SELECT item_id FROM blocked_by", &[]).unwrap().len(), 1);
+    assert_no_rebuild_residue(&migrated);
+}
+
 /// Running `init_schema` twice over a grown store must not attempt either
 /// `ALTER` again — a duplicate column is a hard SQLite error, and
 /// `init_schema` runs on every Durable Object construction.
