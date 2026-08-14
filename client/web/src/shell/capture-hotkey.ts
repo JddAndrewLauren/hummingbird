@@ -46,3 +46,37 @@ export function isCaptureHotkey(input: CaptureHotkeyInput): boolean {
   }
   return input.key.toLowerCase() === "c";
 }
+
+/** Whether this keystroke should close the open item detail (#404's Escape).
+ *
+ * Same DOM-free split as the hotkey above, and a second reader for the same
+ * listener. The interesting part is `captureOpen`: `CapturePopover` binds its
+ * own document listener and owns Escape while it is open, and it sits *over*
+ * the detail panel — so one Escape must close the shallowest open thing only,
+ * never both. One document listener cannot see another's intent, so the rule
+ * is written against the state instead.
+ *
+ * `isComposing` for the same reason it holds off the hotkey: an Escape that
+ * cancels an IME composition belongs to the composition.
+ *
+ * `targetIsEditable` is deliberately NOT consulted. Escape is not a character;
+ * a reader who has just typed in the panel's Edit fields and presses Escape
+ * means the panel, and no editable control here treats Escape as its own.
+ */
+export interface ItemDetailEscapeInput {
+  key: string;
+  isComposing: boolean;
+  /** Whether the capture popover is open, and therefore owns this Escape. */
+  captureOpen: boolean;
+  /** Whether any item detail is open to close. */
+  itemDetailOpen: boolean;
+}
+
+export function closesItemDetail(input: ItemDetailEscapeInput): boolean {
+  return (
+    input.key === "Escape" &&
+    !input.isComposing &&
+    !input.captureOpen &&
+    input.itemDetailOpen
+  );
+}

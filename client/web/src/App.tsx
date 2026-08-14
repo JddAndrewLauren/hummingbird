@@ -10,7 +10,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
-import { isCaptureHotkey } from "./shell/capture-hotkey";
+import { closesItemDetail, isCaptureHotkey } from "./shell/capture-hotkey";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
 import { NavBar } from "./shell/NavBar";
@@ -238,11 +238,45 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       ) {
         event.preventDefault();
         requestCapture();
+        return;
+      }
+
+      // Escape closes the open item detail — the same shell-level listener,
+      // for the same reason: the panel is not focused once the reader has
+      // clicked into the board behind it, and a handler on its own markup
+      // only sees what bubbles out of it.
+      //
+      // It is the LAST claimant, deliberately: `CapturePopover` sits over the
+      // detail panel and owns Escape while it is open, so the shallowest open
+      // thing must be what closes — otherwise one Escape shuts the popover
+      // AND the panel underneath it, and the reader loses something they
+      // never asked to close. The guard reads `captureOpen` rather than the
+      // event, because one document listener cannot see another's intent.
+      //
+      // `NavBar`'s phone sheet owns Escape the same way and is **not** guarded
+      // here, because its open state lives inside that component and reaching
+      // it would mean lifting sheet state into the shell for one keystroke.
+      // The cost is bounded and stated rather than hidden: on a phone, with a
+      // hardware keyboard, with both the sheet and an item open, one Escape
+      // closes both. Lift the state if that stops being hypothetical.
+      //
+      // The Grill takeover is not in the chain: it owns no Escape at all
+      // (`GrillTakeover.tsx` — leaving an interview is a deliberate Back),
+      // and it replaces the centre column rather than covering the panel.
+      if (
+        closesItemDetail({
+          key: event.key,
+          isComposing: event.isComposing,
+          captureOpen,
+          itemDetailOpen: selectedItemId !== null,
+        })
+      ) {
+        handleCloseItemDetail();
       }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [captureOpen, selectedItemId, handleCloseItemDetail]);
   const { act: handleAct } = useItemActions(worker);
   const { triage: handleTriage } = useTriageWiring(worker);
   // #355/ADR-0023's Grill takeover — the Triage screen's own composition of

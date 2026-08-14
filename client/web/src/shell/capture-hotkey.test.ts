@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCaptureHotkey } from "./capture-hotkey";
+import { closesItemDetail, isCaptureHotkey } from "./capture-hotkey";
 
 function keyEvent(overrides: Partial<Parameters<typeof isCaptureHotkey>[0]> = {}) {
   return {
@@ -39,5 +39,39 @@ describe("isCaptureHotkey", () => {
 
   it("never fires mid IME composition — a composing 'c' keydown is not a real 'c'", () => {
     expect(isCaptureHotkey(keyEvent({ isComposing: true }))).toBe(false);
+  });
+});
+
+describe("closesItemDetail", () => {
+  const escape = {
+    key: "Escape",
+    isComposing: false,
+    captureOpen: false,
+    itemDetailOpen: true,
+  };
+
+  it("closes the open item detail", () => {
+    expect(closesItemDetail(escape)).toBe(true);
+  });
+
+  it("does nothing when nothing is open to close", () => {
+    expect(closesItemDetail({ ...escape, itemDetailOpen: false })).toBe(false);
+  });
+
+  it("yields to the capture popover, which sits over the panel", () => {
+    // One Escape closes the shallowest open thing. Without this, dismissing
+    // the popover would also take away the panel underneath it — something
+    // the reader never asked to close.
+    expect(closesItemDetail({ ...escape, captureOpen: true })).toBe(false);
+  });
+
+  it("leaves an IME composition's Escape to the composition", () => {
+    expect(closesItemDetail({ ...escape, isComposing: true })).toBe(false);
+  });
+
+  it("ignores every other key", () => {
+    for (const key of ["Enter", "c", "Esc", "escape", " "]) {
+      expect(closesItemDetail({ ...escape, key })).toBe(false);
+    }
   });
 });

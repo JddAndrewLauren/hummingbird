@@ -8,7 +8,7 @@
 // `src/test/component.tsx`'s header exists for.
 
 import { describe, expect, it, vi } from "vitest";
-import { render } from "../test/component";
+import { fireEvent, render, screen } from "../test/component";
 import type { WorkerLike } from "../store/worker-client";
 import { useItemDetailWiring } from "./useItemDetailWiring";
 
@@ -51,6 +51,51 @@ describe("useItemDetailWiring", () => {
     // A re-render on the same cycle asks for nothing further.
     rerender(<Harness worker={worker} syncOutcomeSeq={1} />);
     expect(stepRequests(worker)).toHaveLength(2);
+  });
+
+  it("opening the item already open closes it — the card is the toggle", () => {
+    // The gesture a reader tries first to put an expanded card away, and the
+    // one the triage rows have always had.
+    const worker = fakeWorker();
+    function Toggle() {
+      const { selectedItemId, openItem } = useItemDetailWiring(worker, 0);
+      return (
+        <button type="button" onClick={() => openItem("item-1")}>
+          {selectedItemId ?? "none"}
+        </button>
+      );
+    }
+    render(<Toggle />);
+    const button = () => screen.getByRole("button");
+
+    expect(button().textContent).toBe("none");
+    fireEvent.click(button());
+    expect(button().textContent).toBe("item-1");
+    fireEvent.click(button());
+    expect(button().textContent).toBe("none");
+  });
+
+  it("opening a different item switches rather than closing", () => {
+    const worker = fakeWorker();
+    function Two() {
+      const { selectedItemId, openItem } = useItemDetailWiring(worker, 0);
+      return (
+        <>
+          <button type="button" onClick={() => openItem("item-1")}>
+            one
+          </button>
+          <button type="button" onClick={() => openItem("item-2")}>
+            two
+          </button>
+          <span>{selectedItemId ?? "none"}</span>
+        </>
+      );
+    }
+    render(<Two />);
+
+    fireEvent.click(screen.getByRole("button", { name: "one" }));
+    fireEvent.click(screen.getByRole("button", { name: "two" }));
+    expect(screen.getByText("item-2")).toBeTruthy();
   });
 
   it("no item open means no steps request, however many cycles pass", () => {
