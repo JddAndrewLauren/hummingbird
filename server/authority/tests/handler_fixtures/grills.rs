@@ -2,11 +2,13 @@
 //! immutable per-item Grill attachment, and the two anti-goals — no
 //! transcript on the sweep/delta wire, and no new `auth::permitted` arm.
 //!
-//! `#354` fixtures live in this same file: the atomic completion mutation
-//! (record + item stage + optional plan soft-delete, one transaction), its
+//! `#354` fixtures live in this same file: the completion mutation (the
+//! Grill record, the item's stage, and an optional plan soft-delete), its
 //! CAS conflict, its plan-deletion flag, and the anti-goal tests the issue
-//! names directly — no partial write on a mid-transaction failure, and
-//! Record (ticked steps) never touched either way.
+//! names directly — no write statement issued until every fallible check
+//! has resolved (see `grills.rs`'s own module doc for why there is no
+//! explicit transaction), and Record (ticked steps) never touched either
+//! way.
 
 use hummingbird_authority::{Row, SqlValue};
 use hummingbird_domain::{ChangesResponse, Grill, Stage};
@@ -405,48 +407,71 @@ fn replaying_the_completion_touches_nothing_a_second_time() {
     assert_eq!(step_row(&sql, "s-1"), step_after_first, "no second touch on the step");
 }
 
-/// The atomicity anti-goal: a failure partway through the write burst
-/// leaves nothing behind — no grill row, no item stage change, no step
-/// soft-delete, no version bump.
+/// The atomicity property this handler actually delivers (see its module
+/// doc for why an explicit transaction is not available on this platform):
+/// every fallible check — unknown item, a Done item, a stale
+/// `expected_version` — resolves before a single `INSERT`/`UPDATE`
+/// statement is ever issued. Pinned directly against the statement log
+/// (`RecordingSql`), not inferred from the response status: a business-
+/// logic rejection is the *only* reachable partial-application risk this
+/// handler can rule out, and this proves it rules it out for real.
 #[test]
-fn create_grill_no_partial_write_on_mid_transaction_failure() {
+fn no_write_statement_is_issued_until_every_fallible_check_has_resolved() {
     let sql = RusqliteSql::new();
     seed_item(&sql, "a-1"); // v1, triage
     seed_step(&sql, "s-1", "a-1", 1);
-    let item_before = sql
-        .exec("SELECT * FROM items WHERE id = 'a-1'", &[])
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
-    let step_before = step_row(&sql, "s-1");
-    let version_before = meta_version(&sql);
 
-    // Fail exactly the item stage UPDATE — after the grill INSERT already
-    // ran, before the step soft-delete and the meta bump.
-    let failing = FailingSql {
-        inner: &sql,
-        fail_marker: "UPDATE items",
-    };
+    for (body, why) in [
+        (
+            r#"{"id": "g-1", "item_id": "ghost", "expected_version": 1, "transcript": "t",
+                "summary": "s", "verdict": "resolved", "model_proposal": "p", "applied_patch": "p"}"#,
+            "unknown item",
+        ),
+        (
+            r#"{"id": "g-1", "item_id": "a-1", "expected_version": 999, "transcript": "t",
+                "summary": "s", "verdict": "resolved", "model_proposal": "p", "applied_patch": "p"}"#,
+            "stale expected_version",
+        ),
+    ] {
+        let recording = RecordingSql::new(&sql);
+        let resp = post_grill(&recording, body, 0);
+        assert!(resp.status == 400 || resp.status == 409, "{why}: {}", resp.body);
+        let writes: Vec<String> = recording
+            .statements
+            .borrow()
+            .iter()
+            .filter(|s| s.starts_with("INSERT INTO grills") || s.starts_with("UPDATE items") || s.starts_with("UPDATE steps") || s.starts_with("UPDATE meta"))
+            .cloned()
+            .collect();
+        assert!(writes.is_empty(), "{why}: expected no write statements, got {writes:?}");
+    }
+
+    // The Done-item rejection is a third fallible check, gated on the
+    // item's own live stage rather than the request body, so it is
+    // exercised as its own case with its own seed.
+    let a2_v1 = seed_item(&sql, "a-2");
+    let done_resp = patch(&sql, "a-2", &format!(r#"{{"expected_version": {a2_v1}, "stage": "done"}}"#), 0);
+    assert_eq!(done_resp.status, 200, "{}", done_resp.body);
+    let a2_done: hummingbird_domain::Item = body_as(&done_resp);
+    let recording = RecordingSql::new(&sql);
     let resp = post_grill(
-        &failing,
-        r#"{"id": "g-1", "item_id": "a-1", "expected_version": 1, "transcript": "t", "summary": "s",
-            "verdict": "resolved", "model_proposal": "p", "applied_patch": "p",
-            "delete_unticked_plan": true}"#,
+        &recording,
+        &format!(
+            r#"{{"id": "g-2", "item_id": "a-2", "expected_version": {}, "transcript": "t", "summary": "s",
+                "verdict": "resolved", "model_proposal": "p", "applied_patch": "p"}}"#,
+            a2_done.version,
+        ),
         0,
     );
-    assert_eq!(resp.status, 500, "the injected fault surfaces as a 500, not a swallowed error");
-
-    assert_eq!(get_grill(&sql, "g-1").status, 404, "no grill record was left behind");
-    let item_after = sql
-        .exec("SELECT * FROM items WHERE id = 'a-1'", &[])
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
-    assert_eq!(item_after, item_before, "the item row must be exactly as it was");
-    assert_eq!(step_row(&sql, "s-1"), step_before, "the step row must be exactly as it was");
-    assert_eq!(meta_version(&sql), version_before, "no version bump from a rolled-back write");
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    let writes: Vec<String> = recording
+        .statements
+        .borrow()
+        .iter()
+        .filter(|s| s.starts_with("INSERT INTO grills") || s.starts_with("UPDATE items") || s.starts_with("UPDATE steps") || s.starts_with("UPDATE meta"))
+        .cloned()
+        .collect();
+    assert!(writes.is_empty(), "done item: expected no write statements, got {writes:?}");
 }
 
 /// Small local shim so this file doesn't need to import `RowReader` from

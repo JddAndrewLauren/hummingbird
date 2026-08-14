@@ -17,24 +17,52 @@
 //! `authority/tests/handler_fixtures/grills.rs` for the fixture that pins
 //! this instead of a dedicated match arm (ADR-0018's precedent, verbatim).
 //!
-//! **#354: the atomic completion mutation, and why this is the one handler
-//! with an explicit transaction.** Every other multi-row write in this
-//! crate (a project born with its Route, an item born with a `seq`) is
-//! atomic "for free" — the DO is single-threaded and every statement in the
-//! burst is already known to succeed before the burst starts, so there is
-//! no reachable failure between them (`sql.rs`'s own module doc). [`create`]
-//! is different: applying a completed Grill can genuinely touch three
-//! tables (`grills`, `items`, `steps`) in one request, and the caller-facing
-//! contract (ADR-0023, this issue) is that a mid-write failure must leave
-//! *nothing* behind, not "whatever committed before the fault." So this is
-//! the one place in the crate that brackets its writes in an explicit
-//! `BEGIN`/`COMMIT`, rolling back on any error — see
-//! `create_grill_no_partial_write_on_mid_transaction_failure` for the
-//! anti-goal this exists to satisfy. Every fallible *validation* (unknown
-//! item, a Done item, a stale `expected_version`) still runs before the
-//! transaction opens at all, exactly like every other handler here — the
-//! transaction is a backstop against a genuine backend fault, not a
-//! substitute for validating first.
+//! **#354: the atomic completion mutation follows exactly the model
+//! `sql.rs`'s own module doc records — no exception for this handler.**
+//! [`create`] can genuinely touch three tables (`grills`, `items`, `steps`)
+//! in one request, so every fallible check (unknown item, a Done item, a
+//! stale `expected_version`) is resolved *before* [`write_completion`] runs
+//! a single `exec` — the same "no reachable failure between statements"
+//! discipline every other multi-row write in this crate already relies on
+//! (a project born with its Route, an item born with a `seq`). That
+//! discipline, plus the DO's single-threaded write coalescing, is this
+//! crate's whole atomicity story; this handler adds nothing to it and
+//! claims nothing beyond it.
+//!
+//! **An earlier version of this handler wrapped [`write_completion`] in an
+//! explicit `BEGIN`/`COMMIT`/`ROLLBACK`, issued as raw SQL through
+//! [`Sql::exec`]. That was wrong and has been removed.** Verified against a
+//! real SQLite-backed Durable Object (`wrangler dev`, not just the
+//! rusqlite-backed fixture rig): `SqlStorage::exec` rejects a `BEGIN`
+//! statement outright —
+//!
+//! ```text
+//! Error: To execute a transaction, please use the state.storage.transaction()
+//! or state.storage.transactionSync() APIs instead of the SQL BEGIN
+//! TRANSACTION or SAVEPOINT statements. The JavaScript API is safer because
+//! it will automatically roll back on exceptions, and because it interacts
+//! correctly with Durable Objects' automatic atomic write coalescing.
+//! ```
+//!
+//! — which every fixture test, the wasm32 build check, and CI all stayed
+//! green against, because none of them exercise the real Durable Object
+//! backend (`server/worker` has no test harness — this is exactly the class
+//! of bug that fact warns about). `state.storage().transactionSync(...)` is
+//! not a substitute available here: `worker` 0.8.5 (the latest published
+//! version as of this writing) binds no `transactionSync` at all — neither
+//! on `worker::Storage`/`worker_sys::DurableObjectStorage` nor anywhere
+//! else — and reaching it would mean either an unsafe, layout-dependent
+//! transmute of a private wrapper field (`worker::durable::State`/`Storage`
+//! expose no accessor to their inner `js_sys`-derived value) or a hand
+//! -rolled JS reflection call with no test harness to catch a future
+//! breakage — precisely the fragile, untested-shim risk CLAUDE.md's "the
+//! wasm32 worker build stays thin" rule exists to keep out of
+//! `server/worker`. So there is no transaction primitive here at all, by
+//! design, same as every other handler in this crate: a genuine platform
+//! I/O fault between two of [`write_completion`]'s statements is an
+//! accepted, undifferentiated risk this handler does not try to cover,
+//! identical to the risk a project-plus-Route create or an item-plus-`seq`
+//! create already carries.
 
 use hummingbird_domain::{CreateGrill, Grill, GrillVerdict, Item, resulting_stage};
 
@@ -95,26 +123,14 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         version,
     };
 
-    sql.exec("BEGIN", &[])?;
-    let write = write_completion(sql, &grill, &item, resulting, &unticked_step_ids, now_ms, version);
-    match write {
-        Ok(()) => {
-            sql.exec("COMMIT", &[])?;
-        }
-        Err(e) => {
-            // Best-effort: if the connection itself is gone the ROLLBACK
-            // will fail too, but there is nothing further to do — the
-            // original error is what the caller needs to see.
-            let _ = sql.exec("ROLLBACK", &[]);
-            return Err(e);
-        }
-    }
+    write_completion(sql, &grill, &item, resulting, &unticked_step_ids, now_ms, version)?;
 
     Ok(json(201, &grill))
 }
 
-/// The write burst a completed Grill applies, bracketed by [`create`]'s own
-/// `BEGIN`/`COMMIT`/`ROLLBACK` — never called outside that transaction.
+/// The write burst a completed Grill applies. No transaction wraps this —
+/// see the module doc for why none is available — so every statement here
+/// runs only once every fallible check in [`create`] has already resolved.
 /// The item row is only touched when the stage actually changes (same
 /// "no settable field changed, no write" discipline as `items::patch`);
 /// `unticked_step_ids` is already empty when `delete_unticked_plan` was

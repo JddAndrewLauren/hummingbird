@@ -1299,10 +1299,9 @@ mod tests {
     /// path every other variant already takes.
     #[tokio::test]
     async fn a_dead_lettered_completion_still_carries_the_full_reviewed_session() {
-        let conflict_body =
-            r#"{"error":"version_conflict","current":{"id":"a-1","stage":"grilling","version":2}}"#;
+        // A 400 (Permanent) — never a 409 — so this exercises the plain
+        // dead-letter path, not the rebase loop.
         let transport = ScriptedTransport::new(vec![ok(400, r#"{"error":"validation","message":"item is done"}"#)]);
-        let _ = conflict_body; // not used on this path — a 400 is Permanent, never a 409.
         let mut queue = OutboundQueue::new();
         queue.enqueue(complete_grill_entry("m-1", "g-1", "a-1", 1));
 
