@@ -280,7 +280,10 @@ export function TriageRow({
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              // The inner `min()` matters once the container is itself under
+              // 160px: `auto-fit` cannot drop below one track, and that one
+              // track would otherwise hold its 160px and overflow.
+              gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
               gap: "var(--space-4)",
               alignItems: "start",
             }}

@@ -300,7 +300,11 @@ function DeadLetterRow({
               key={field.field}
               style={{
                 display: "grid",
-                gridTemplateColumns: "auto 1fr 1fr",
+                // `minmax(0, 1fr)`, not a bare `1fr`: a `1fr` track is
+                // min-content-floored, and these two hold `JSON.stringify`
+                // output that has no wrap opportunity — one long value pushed
+                // the row wider than the page rather than wrapping in place.
+                gridTemplateColumns: "auto minmax(0, 1fr) minmax(0, 1fr)",
                 gap: "var(--space-4)",
                 alignItems: "baseline",
               }}

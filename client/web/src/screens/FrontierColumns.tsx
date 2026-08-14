@@ -685,7 +685,9 @@ export function FrontierColumns({
                     }
                   : {
                       flex: "1 1 240px",
-                      minWidth: 240,
+                      // See `layout.tsx`'s `Column`: a fixed minimum is an
+                      // overflow below its own value, not a floor.
+                      minWidth: "min(240px, 100%)",
                       // Wide enough that a narrow window — where only one column
                       // fits beside the aside — fills its width instead of
                       // stranding a strip of empty page.

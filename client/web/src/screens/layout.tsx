@@ -25,7 +25,12 @@ export function Column({ children }: { children: ReactNode }) {
     <div
       style={{
         flex: 1,
-        minWidth: 380,
+        // `min()` rather than a bare 380: a fixed minimum cannot be honoured
+        // below 380px of container, so the column overflowed the page
+        // horizontally instead of shrinking. Desktop behaviour is unchanged —
+        // at every width the three existing visual projects cover, the
+        // container already exceeds 380, so this resolves to 380px exactly.
+        minWidth: "min(380px, 100%)",
         display: "flex",
         flexDirection: "column",
         gap: "var(--space-7)",
