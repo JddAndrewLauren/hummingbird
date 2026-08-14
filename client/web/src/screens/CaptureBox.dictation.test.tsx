@@ -342,7 +342,7 @@ describe("CaptureBox — dictation", () => {
     // The clear-on-ok rule rewrites `draft` to "" regardless, so the session's
     // frozen halves (built from whatever the field said before that clear)
     // would resurrect that text if a later transcript spliced onto them.
-    const { onSubmit, view, onDictatingChange } = renderBox();
+    const { onSubmit, view, onDictatingChange, bumpCancel } = renderBox();
     await settleProbe();
     // A draft already sitting in the field when the NEXT session starts — if
     // the snapshot were wrongly restored instead of dropped, this is what
@@ -373,6 +373,11 @@ describe("CaptureBox — dictation", () => {
     // ...and a transcript still arriving from the dead recognizer changes
     // nothing at all.
     hear("something else entirely");
+    expect(field().value).toBe("");
+    // A cancel afterwards restores nothing either: `frozenRef` was dropped
+    // alongside the session, so there is nothing left for `cancelDictation`
+    // to restore from.
+    bumpCancel(1);
     expect(field().value).toBe("");
   });
 

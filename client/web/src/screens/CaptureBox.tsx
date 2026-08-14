@@ -164,6 +164,15 @@ const NO_DICTATION: DictationCapability = {
  * started rather than leaving the last splice in place — that is the whole
  * point of an explicit cancel, as opposed to backgrounding's silent one.
  *
+ * A fifth ending, #367: a capture result landing `"ok"` while the NEXT
+ * capture's dictation session is still live ends that session too, because
+ * the render-phase clear-on-ok block already emptied the draft the session's
+ * frozen halves were keyed to — a further transcript would splice onto those
+ * stale halves and resurrect the capture just submitted. This one neither
+ * finalizes nor restores: it just tears the session down (`endSession`,
+ * same as backgrounding) and drops `frozenRef`, because the clear-on-ok
+ * block's state is already correct.
+ *
  * Two guards are load-bearing rather than hygiene. The generation token means
  * a callback from an ended session changes nothing. And the unmount cleanup
  * aborting the session is the only thing that releases the microphone when the
@@ -219,7 +228,11 @@ export function CaptureBox({
   // `frozen` `startDictation` closes over for its own splices) so a cancel
   // arriving from outside — the shell's Escape branch — can restore from the
   // very same halves. Not a second saved copy of the draft: it's the one
-  // `spliceTranscript` already reads. Only `cancelDictation` clears it — every
+  // `spliceTranscript` already reads. Only two things clear it:
+  // `cancelDictation`, which restores from it first, and the #367 clear-on-ok
+  // effect below, which ends a still-live session out from under a capture
+  // that just landed and clears it WITHOUT restoring, because the clear-on-ok
+  // render-phase block already put the draft in its correct end state. Every
   // other way a session ends (stop, an error, backgrounding, unmount) leaves
   // whatever the recognizer last spliced in place, so there is nothing to
   // restore and nothing to clear.
@@ -476,9 +489,18 @@ export function CaptureBox({
   // tears the recognizer down the same way backgrounding does; there is no
   // restore here (unlike `cancelDictation`) because the clear-on-ok state
   // above is already the correct end state — a later `cancelDictation`
-  // (guarded on `sessionRef`) finds nothing left to restore.
+  // (guarded on `sessionRef`) finds nothing left to restore. Keyed on the
+  // seed, same as the render-phase block, not `lastCapture` identity: a
+  // replayed broadcast of a seed already handled must not kill a live
+  // next-capture session that was started after it.
+  const endedCaptureSeedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (lastCapture?.kind === "ok" && sessionRef.current) {
+    if (
+      lastCapture?.kind === "ok" &&
+      lastCapture.seed !== endedCaptureSeedRef.current &&
+      sessionRef.current
+    ) {
+      endedCaptureSeedRef.current = lastCapture.seed;
       endSession("abort");
       frozenRef.current = null;
     }
