@@ -413,7 +413,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {screen === "status" && (
             <StatusScreen
-              demo={demo}
               onScreen={setScreen}
               task={task}
               nowMs={syncNowMs}

@@ -62,11 +62,22 @@ export interface DemoFog {
   note: string;
 }
 
+export interface DemoStep {
+  text: string;
+  done: boolean;
+}
+
 export interface DemoRoute {
   project: string;
   destination: string;
   fog: DemoFog[];
   actions: string[];
+  /** The aside's checklist. Lives here rather than in `RoutesScreen` because
+   * a module-level fixture literal in a screen is not behind the dead-branch
+   * gate at all — that one shipped to production until `assert-no-fixtures`
+   * grew a sentinel for it. Fixtures reach a screen through `demoData()` or
+   * they reach a real device. */
+  steps: DemoStep[];
 }
 
 export interface DemoRule {
@@ -140,6 +151,13 @@ export const DEMO_DATA: DemoData = {
       },
     ],
     actions: ["ION-142", "ION-151", "ION-160"],
+    steps: [
+      { text: "Open the fixture generator script", done: true },
+      { text: "Regenerate the Gmail fixture set", done: true },
+      { text: "Run the adapter tests once", done: true },
+      { text: "Delete the two dead label cases", done: false },
+      { text: "Re-read the sweeper doc's invariants", done: false },
+    ],
   },
   bindings: [
     { key: "race-series", known: true, pending: false, value: { state: "text", text: "hyrox-uk" } },

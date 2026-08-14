@@ -7,8 +7,7 @@ import { ItemDetailPanel } from "../components/domain/ItemDetailPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
-import type { DemoData } from "../fixtures/demo";
-import { demoQuestionInputs } from "../fixtures/demo-questions";
+import { type DemoData, demoQuestions } from "../fixtures/demo";
 import type { Screen } from "../shell/screens";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
 import type {
@@ -609,9 +608,7 @@ export function NowScreen({
         <RankedRegion
           surface="now"
           inputs={
-            demo
-              ? demoQuestionInputs(nowMs)
-              : realQuestionInputs(task, calendarReads, calendarConnected)
+            demoQuestions(nowMs) ?? realQuestionInputs(task, calendarReads, calendarConnected)
           }
           nowMs={nowMs}
           syncOutcomeSeq={task.syncOutcomeSeq}

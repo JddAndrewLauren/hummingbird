@@ -42,7 +42,6 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
   it("renders the answered pane open, not the never-polled placeholder gap", () => {
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: read() } })}
         nowMs={NOW_MS}
@@ -63,7 +62,6 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
   it("shows the voucher/cash split, flagging the negative cash position", () => {
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: read() } })}
         nowMs={NOW_MS}
@@ -80,7 +78,6 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
   it("still renders the never-polled gap honestly when no snapshot has landed", () => {
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState()}
         nowMs={NOW_MS}

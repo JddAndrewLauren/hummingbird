@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEMO_DATA } from "./demo-data";
-import { demoData, demoTaskState } from "./demo";
+import { demoData, demoQuestions, demoTaskState } from "./demo";
+
+/** The region's fixtures are clock-relative (`wasteRead` computes "tomorrow at
+ * the address"), so the accessor takes a clock. Any fixed instant will do
+ * here — these cases are about the gate, not the reading. */
+const NOW_MS = Date.UTC(2026, 7, 14, 12, 0, 0);
 
 // `demoData()` reads `window.location.search`, and the test environment is
 // node (vitest.config.ts) — there is no DOM to read it from. Stubbing the
@@ -51,6 +56,35 @@ describe("demoData", () => {
     // The null `demo` prop is exactly what makes `NowScreen` take its
     // `RealFrontier` branch, which is the point of the board world.
     expect(demoData()).toBeNull();
+  });
+});
+
+describe("demoQuestions", () => {
+  // This accessor exists because `NowScreen` and `StatusScreen` used to import
+  // `demoQuestionInputs` and call it behind their `demo` prop — a React state
+  // value Rollup cannot fold — so the fixture shipped in the production
+  // bundle. These cases pin the gate; `scripts/assert-no-fixtures.mjs` is what
+  // proves the artifact, since only the artifact can answer that.
+  it("returns nothing in a production build even when the URL asks for it", () => {
+    vi.stubEnv("DEV", false);
+    withSearch("?demo");
+    expect(demoQuestions(NOW_MS)).toBeNull();
+  });
+
+  it("serves the fixture inputs for ?demo in development", () => {
+    vi.stubEnv("DEV", true);
+    withSearch("?demo");
+    const inputs = demoQuestions(NOW_MS);
+    expect(inputs).not.toBeNull();
+    expect(inputs?.bindings).not.toHaveLength(0);
+  });
+
+  it("stands down without ?demo, and for the board world, exactly as demoData does", () => {
+    vi.stubEnv("DEV", true);
+    withSearch("");
+    expect(demoQuestions(NOW_MS)).toBeNull();
+    withSearch("?demo=board");
+    expect(demoQuestions(NOW_MS)).toBeNull();
   });
 });
 

@@ -43,7 +43,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
   it("renders the never-polled gap when nothing has been read yet", () => {
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState()}
         nowMs={NOW_MS}
@@ -63,7 +62,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
@@ -87,7 +85,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
@@ -112,7 +109,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
@@ -135,7 +131,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
@@ -158,7 +153,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
@@ -189,7 +183,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
@@ -215,7 +208,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
@@ -235,7 +227,6 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}

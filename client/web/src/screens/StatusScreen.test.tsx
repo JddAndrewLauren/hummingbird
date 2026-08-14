@@ -30,7 +30,6 @@ describe("StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState()}
         nowMs={NOW_MS}
@@ -65,7 +64,6 @@ describe("StatusScreen", () => {
 
     render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState()}
         nowMs={NOW_MS}
@@ -93,7 +91,6 @@ describe("StatusScreen", () => {
     const recentAtMs = NOW_MS - 60_000;
     const { rerender } = render(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({
           lastSyncOutcome: completed,
@@ -111,7 +108,6 @@ describe("StatusScreen", () => {
 
     rerender(
       <StatusScreen
-        demo={null}
         onScreen={() => {}}
         task={taskState({
           lastSyncOutcome: { ...completed, kind: "pull_failed" },
