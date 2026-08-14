@@ -285,6 +285,29 @@ describe("CaptureBox — dictation", () => {
     expect(field().value).toBe("");
   });
 
+  it("clears a dictation error when a capture succeeds, so it cannot outlive its draft", async () => {
+    const { onSubmit, view } = renderBox();
+    await startListening();
+    act(() => {
+      seam.handlers?.onError({ code: "no-speech", message: "Nothing was heard." });
+      seam.handlers?.onEnd();
+    });
+    fireEvent.change(field(), { target: { value: "call the vet" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
+    expect(screen.getByRole("alert").textContent).toBe("Nothing was heard.");
+    view.rerender(
+      <CaptureBox
+        onSubmit={onSubmit}
+        demo={false}
+        focusRequestId={1}
+        lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
+      />,
+    );
+    // The box is empty again, and wears no report of a session two captures ago.
+    expect(field().value).toBe("");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("leaves the metadata controls alone across a session", async () => {
     const { onSubmit } = renderBox();
     await settleProbe();

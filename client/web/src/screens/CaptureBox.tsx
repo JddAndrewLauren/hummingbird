@@ -325,6 +325,11 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
     if (lastCapture.kind === "ok") {
       setDraft("");
       setMeta(EMPTY_CAPTURE_META);
+      // The dictation failure goes with the draft it happened to. Left
+      // standing, a "Nothing was heard." would sit under a freshly emptied box
+      // describing a session two captures ago — the same stale-report failure
+      // `!demo` guards `captureError` against.
+      setDictationError(null);
       if (inFlight) {
         setLast(inFlight);
         setInFlight(null);

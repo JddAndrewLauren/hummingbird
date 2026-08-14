@@ -28,6 +28,15 @@
 // `install()` is deliberately absent: installing the on-device pack belongs to
 // #381, and ADR-0022 measured that it throws unless it is called from a real
 // user gesture. Nothing here calls it.
+//
+// **`quality` is left at its default, and the default is `"command"`** (one of
+// four instance members ADR-0022 measured: `processLocally`, `phrases`,
+// `unspokenPunctuation`, `quality`). `"command"` is short-utterance tuning, so
+// it is plausibly what decides how eagerly a session ends — which makes it the
+// first knob to reach for if #397 finds the session boundaries wrong for
+// dictating a sentence rather than issuing a command. Left alone here on
+// purpose: a tracer bullet should not tune a parameter before anyone has
+// listened to what the default sounds like.
 
 /** Whether local dictation can be offered, in the three arms ADR-0022
  * Decision 2 requires — a gap is not an absence:
@@ -287,6 +296,13 @@ export function startLocalDictation(handlers: DictationHandlers): DictationSessi
     // codes end the session and some do not, and "exactly once, always last"
     // is only guaranteeable if this module owns the ending.
     end();
+    // And the microphone is released here, not left to the browser. `end()`
+    // detaches the handlers and makes `stop()`/`abort()` early-return, so an
+    // error code that does NOT end the underlying session would otherwise
+    // leave the recognizer live with nothing able to stop it — a hot
+    // microphone behind a UI that has already said the session ended. Safe
+    // when the session did end: `abort()` on a finished recognizer is a no-op.
+    recognition.abort();
   };
   recognition.onend = () => {
     // The silence-timeout path arrives here with no error and no stop() call.
@@ -294,10 +310,8 @@ export function startLocalDictation(handlers: DictationHandlers): DictationSessi
   };
 
   // Every one of these is set BEFORE `start()`. `processLocally` first,
-  // because it is the guarantee and the rest is tuning. `quality` is left at
-  // its `"command"` default (ADR-0022 Decision 5) — short-utterance tuning,
-  // plausibly relevant to how eagerly a session ends, and the first knob to
-  // reach for if #397 finds the session boundaries wrong.
+  // because it is the guarantee and the rest is tuning; `quality` is not set at
+  // all, for the reason in the module header.
   recognition.processLocally = true;
   recognition.lang = DICTATION_LANG;
   recognition.interimResults = true;

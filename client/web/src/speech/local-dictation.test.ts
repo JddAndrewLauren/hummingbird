@@ -305,6 +305,34 @@ describe("startLocalDictation — the session", () => {
     expect(record.ends).toBe(1);
   });
 
+  it("releases the microphone on the error path rather than trusting the browser to", () => {
+    // `end()` detaches the handlers and makes stop()/abort() early-return, so
+    // an error code that does not end the underlying session would otherwise
+    // leave a live recognizer nothing can stop — a hot microphone behind a UI
+    // that has already said the session ended.
+    const made = installRecognizer({});
+    const session = startLocalDictation(handlers());
+    made[0].onerror?.({ error: "network" });
+    expect(made[0].aborted).toBe(1);
+    // And the caller's own stop is still inert, which is why the line above has
+    // to be the seam's job.
+    session.stop();
+    expect(made[0].stopped).toBe(0);
+  });
+
+  it("does not re-append a final result the browser delivers twice", () => {
+    // Chrome advances `resultIndex` past a final result, so this should not
+    // arise — but `committed` accumulates, so a browser that re-sent one would
+    // double the words rather than degrade. Pinned because the assumption is
+    // invisible in the code that relies on it.
+    const made = installRecognizer({});
+    const record = handlers();
+    startLocalDictation(record);
+    made[0].emit(0, [finalResult("Call the vet.")]);
+    made[0].emit(1, [interimResult("about")]);
+    expect(record.transcripts.at(-1)).toBe("Call the vet. about");
+  });
+
   it("fires onEnd on the silence timeout — an onend with no error and no stop", () => {
     const made = installRecognizer({});
     const record = handlers();

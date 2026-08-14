@@ -145,7 +145,19 @@ a missing state: ADR-0022's `unsupported` and `setup-required` arms both render
 nothing at all. The cover is `screens/CaptureBox.dictation.test.tsx` (the seam
 mocked wholesale, which is the only way any gate here reaches the listening
 state), `speech/local-dictation.test.ts` and
-`screens/capture-dictation.test.ts`; the microphone's idle and listening
+`screens/capture-dictation.test.ts`. **The gate deletes the speech
+constructor before the app loads** (`openApp`'s second init script), and that is
+not tidiness: headless Chromium 151.0.7922.34 **crashes the renderer** when
+`SpeechRecognition.available()` is called, so mounting the capture box killed
+the tab and all eight capture-popover cases failed on the click that opens it.
+Measured both ways in the same build — headless crashes, `headless: false`
+returns `"downloadable"`. Deleting it changes no pixel, since the gate's browser
+has no language pack and ADR-0022 renders nothing for either non-`ready` arm. A
+renderer crash is not catchable from the page that provokes it, which is why the
+defence is in the harness and not a `navigator.webdriver` check in product
+code.
+
+The microphone's idle and listening
 appearance is reviewed by hand on the desk Chrome, which is the only browser
 this repo has measured it on and — until the phone is probed — the only one it
 is known to appear in at all.
