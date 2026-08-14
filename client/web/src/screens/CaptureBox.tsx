@@ -17,9 +17,8 @@ import type { CaptureFields } from "../store/worker-client";
 import { freezeDraft, spliceTranscript, type FrozenDraft } from "./capture-dictation";
 import { EMPTY_CAPTURE_META, resolveCaptureFields } from "./capture-meta";
 import { canSubmitCapture } from "./capture-validation";
+import { CONTEXT_OPTIONS } from "./field-vocabulary";
 import type { CaptureDestination } from "./capture-destination";
-
-const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiting"];
 
 /** The capture box's Energy/Size `Slider` stops, left to right — the display
  * labels, which are NOT always the domain vocabulary ("normal" is the middle
@@ -478,10 +477,7 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
           label="Context"
           value={meta.context}
           onChange={(event) => setMeta({ ...meta, context: event.target.value })}
-          options={[
-            { value: "", label: "Not set" },
-            ...CONTEXTS.map((context) => ({ value: context, label: context })),
-          ]}
+          options={CONTEXT_OPTIONS}
         />
       </div>
       {/* One string, not a ternary: #208 made the capture box's

@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
@@ -11,34 +10,12 @@ import { relativeAge } from "../shell/sync-status";
 import type { ProjectDTO, TaskItemDTO, TriageDestinationName } from "../store/protocol";
 import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
+import { CONTEXT_OPTIONS, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
 import { canGrill, canMarkDone } from "./item-actions";
 import { PRIORITY_OPTIONS } from "./priority";
+import { useItemDraft } from "./useItemDraft";
 import { triageFailureFor } from "./write-failure";
-import {
-  buildTriageEdits,
-  effectiveDraft,
-  triageDraftProblems,
-  type TriageDraft,
-} from "./triage-form";
-
-/** The free-vocabulary contexts the forms offer. Free vocab in the schema
- * (`items.context`), a fixed list here: this is a personal system and these are
- * the places its owner actually works. */
-const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiting"];
-
-const SIZES: Array<{ value: TriageDraft["size"]; label: string }> = [
-  { value: "", label: "Not set" },
-  { value: "quick", label: "Quick" },
-  { value: "short", label: "Short" },
-  { value: "deep", label: "Deep" },
-];
-
-const ENERGIES: Array<{ value: TriageDraft["energy"]; label: string }> = [
-  { value: "", label: "Not set" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
+import { buildTriageEdits } from "./triage-form";
 
 /** The DOM id a row's own "Grill me" button carries (#355, ADR-0023) — so
  * `TriageScreen` can find and re-focus it on Back after the takeover
@@ -60,7 +37,11 @@ export interface TriageRowProps {
   /** S13/#111's triage mutation. Absent for a render with no worker behind it
    * (demo mode), in which case the row is readable and never expands into an
    * editor that could not send anything. */
-  onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  onTriage?: (
+    itemId: string,
+    destination: TriageDestinationName | null,
+    edits: TriageEdits,
+  ) => void;
   /** The one-click "mark done" checkmark — `Core::act`'s `complete`, NOT a
    * triage: a capture that turned out already finished skips the editor
    * entirely. Absent in demo mode, same as `onTriage`. This is the recorded
@@ -107,35 +88,11 @@ export function TriageRow({
   onGrillMe,
   lastTriage,
 }: TriageRowProps) {
-  // Only what the person has typed is state — see `effectiveDraft`'s doc for
-  // why the rest is derived per render rather than seeded once.
-  const [touched, setTouched] = useState<Partial<TriageDraft>>({});
-  const draft = effectiveDraft(item, touched);
-  const problems = triageDraftProblems(draft);
-  const blocked = Object.keys(problems).length > 0;
+  // The editing state, and #222's clear-on-ok, both in `useItemDraft` — the
+  // same hook Now's item detail edits through, so the two editors cannot
+  // drift on when a draft survives.
+  const { draft, problems, blocked, set } = useItemDraft(item, lastTriage);
   const editorId = `triage-editor-${item.id}`;
-
-  function set(field: keyof TriageDraft, value: string): void {
-    setTouched((current) => ({ ...current, [field]: value }));
-  }
-
-  // Reviewer finding on issue #222 (the capture/triage twin of PR #207's
-  // act-failure defect): the typing used to clear the instant Promote was
-  // clicked, optimistically, so a failed write lost the reader's edits AND
-  // said nothing about the failure. It now stays put — `promote` below only
-  // ever sends the mutation — and clears here, once and only once a result
-  // actually reports `"ok"` for THIS item. The React-docs "adjusting state
-  // when a prop changes" pattern, guarded on the result's own `seed` so a
-  // broadcast already observed is never reprocessed, and keyed by the itemId
-  // the result carries — a success on another row's item cannot wipe this
-  // row's still-in-flight edits.
-  const [processedTriageSeed, setProcessedTriageSeed] = useState<string | null>(null);
-  if (lastTriage && lastTriage.seed !== processedTriageSeed) {
-    setProcessedTriageSeed(lastTriage.seed);
-    if (lastTriage.kind === "ok" && lastTriage.itemId === item.id) {
-      setTouched({});
-    }
-  }
 
   // Matched by item id — see `write-failure.ts`, which owns this and the
   // sentence Now says when no row is mounted to say it (#418).
@@ -325,24 +282,21 @@ export function TriageRow({
               size="sm"
               value={draft.size}
               onChange={(event) => set("size", event.target.value)}
-              options={SIZES}
+              options={SIZE_OPTIONS}
             />
             <Select
               label="Energy"
               size="sm"
               value={draft.energy}
               onChange={(event) => set("energy", event.target.value)}
-              options={ENERGIES}
+              options={ENERGY_OPTIONS}
             />
             <Select
               label="Context"
               size="sm"
               value={draft.context}
               onChange={(event) => set("context", event.target.value)}
-              options={[
-                { value: "", label: "Not set" },
-                ...CONTEXTS.map((context) => ({ value: context, label: context })),
-              ]}
+              options={CONTEXT_OPTIONS}
             />
             <Input
               label="Deadline"

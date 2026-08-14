@@ -71,7 +71,11 @@ export interface NowScreenProps {
    * own columns — `shell/useTriageWiring.ts`'s `triage`, the SAME callback the
    * Triage screen gets. Now is a second view of one inbox, never a second entry
    * point into it. `undefined` in demo mode. */
-  onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  onTriage?: (
+    itemId: string,
+    destination: TriageDestinationName | null,
+    edits: TriageEdits,
+  ) => void;
   /** Injected storage for this screen's device-local view preferences —
    * resolved once here rather than read in each consumer: `RankedRegion`'s pane
    * overrides, and (#403) the frontier's grouping axis and collapsed columns.
