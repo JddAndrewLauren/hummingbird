@@ -379,6 +379,26 @@ describe("CaptureBox — cancelling a dictation session", () => {
     expect(mic()).toBeTruthy();
   });
 
+  it("restores a selection's words, byte-for-byte, and re-selects the same range", async () => {
+    // The reviewer's exact case on #380: starting dictation with "the vet"
+    // selected in "call the vet today" must not delete those words on cancel.
+    const { bumpCancel } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call the vet today" } });
+    act(() => {
+      field().setSelectionRange(5, 12);
+    });
+    fireEvent.click(mic());
+    hear("the dentist");
+    expect(field().value).toBe("call the dentist today");
+
+    bumpCancel(1);
+
+    expect(field().value).toBe("call the vet today");
+    expect(field().selectionStart).toBe(5);
+    expect(field().selectionEnd).toBe(12);
+  });
+
   it("does nothing when bumped while no session is live", async () => {
     const { bumpCancel } = renderBox();
     await settleProbe();
