@@ -31,6 +31,30 @@ export const SCREENS: readonly Screen[] = [
   "settings",
 ] as const;
 
+/** Each screen's name in a navigation control, and its accessible name in
+ * either nav form. Being a `Record<Screen, …>` it cannot silently miss one.
+ *
+ * Here rather than inside a nav component because there are two of them now —
+ * `NavRail` on a desktop and `NavBar` on a phone — and a label that differed
+ * between them would be one surface with two names. The *order* is `SCREENS`
+ * above; this record only says what each one is called.
+ *
+ * The glyphs are `screen-icons.ts`, separately, so that this module stays free
+ * of any import from `components/` — the visual gate's spec reads these labels
+ * to drive the phone's More sheet, and it compiles under `tsconfig.node.json`,
+ * which has no JSX. */
+export const SCREEN_LABELS: Record<Screen, string> = {
+  now: "Now",
+  triage: "Triage",
+  routes: "Routes",
+  alerts: "Alerts",
+  rules: "Rules",
+  done: "Done",
+  ledger: "Ledger",
+  status: "Status",
+  settings: "Settings",
+};
+
 /** The `<h1>` per screen. "Now" is the nav label; the header asks the
  * question the screen answers. */
 export const SCREEN_TITLES: Record<Screen, string> = {

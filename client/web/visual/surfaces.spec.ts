@@ -1,10 +1,19 @@
 import { expect, test, type Page } from "@playwright/test";
+import { NAV_BAR_OVERFLOW } from "../src/shell/nav-bar";
+import { SCREEN_LABELS } from "../src/shell/screens";
 
 // The visual gate's one spec. Two jobs, deliberately separated:
 //
 // 1. CAPTURE. Write a PNG per screen x width x theme into `visual/.captures/`
 //    for a human to review for clipping, overlap, broken wrapping and
-//    sticky/scroll glitches. There is no committed golden and no pixel diff:
+//    sticky/scroll glitches. Viewport-sized, not `fullPage`: the shell is
+//    `height: 100dvh; overflow: hidden` (`.hb-shell`), so the document is
+//    exactly one viewport tall on every project and `fullPage` can only add
+//    what is not really there. Under the phone project's `isMobile` emulation
+//    it did exactly that — Chromium reported a 1048px content height for an
+//    844px page whose body, shell and window all measured 844, and every
+//    long-screen capture carried 200px of dead space below the nav bar.
+//    There is no committed golden and no pixel diff:
 //    this project has no baseline history, and a pixel-diff gate with nobody to
 //    arbitrate it produces noise, not findings. The captures are the
 //    deliverable; `/wrapup`'s visual phase reads them.
@@ -77,7 +86,21 @@ async function openApp(page: Page, theme: (typeof THEMES)[number], world: World)
   await page.evaluate(() => document.fonts.ready);
 }
 
-async function show(page: Page, nav: string) {
+/** The five screens the phone's bottom bar cannot hold, by their nav name.
+ * Imported from the app's own partition rather than restated here, so the
+ * spec cannot drift from what the bar actually shows: add a screen and it
+ * lands in the sheet in both places at once, or in neither. */
+const PHONE_OVERFLOW_NAV = new Set(NAV_BAR_OVERFLOW.map((screen) => SCREEN_LABELS[screen]));
+
+async function show(page: Page, nav: string, projectName: string) {
+  // On the phone project five of the nine screens live behind "More"
+  // (`src/shell/nav-bar.ts`) and are not in the DOM until the sheet is open.
+  // The other three projects take the untouched path — they render the rail,
+  // where every screen is one click.
+  if (projectName === "phone" && PHONE_OVERFLOW_NAV.has(nav)) {
+    await page.getByRole("navigation").getByRole("button", { name: "More", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "More surfaces" })).toBeVisible();
+  }
   // `exact`: since #304 the rail's wordmark is itself a way home, labelled
   // "hummingbird — go to Now and refresh" — inside the same navigation
   // landmark, so a substring match on "Now" resolves to two buttons and every
@@ -98,10 +121,21 @@ async function openFirstRuleEditor(page: Page) {
   await page.getByRole("button", { name: "Backtest" }).first().click();
 }
 
-/** No horizontal overflow at any width. The layout wraps rather than using
- * media queries (`screens/layout.tsx`), so an element that refuses to shrink
- * shows up here and nowhere else — a real clipping bug, machine-decidable
- * without a golden. One pixel of slack for sub-pixel rounding. */
+/** No horizontal overflow at any width — and be clear about how little that
+ * proves. `App.tsx`'s root is `overflow: hidden`, so content wider than the
+ * shell is CLIPPED rather than extending `documentElement.scrollWidth`: this
+ * assertion mostly measures the thing that cannot happen. It caught the rules
+ * editor's 137px, which escaped the clip anyway, so it is not useless — but
+ * "90 screens pass" means "90 screens do not scroll sideways", NOT "90 screens
+ * are usable at 390px". A row whose title ellipsises to two characters passes
+ * this and is unreadable; that is why `ItemRow` wraps on the phone form
+ * (`responsive.css`) on the strength of a human reading the captures, not of
+ * this returning 0.
+ *
+ * There is a stronger assertion available — compare each scroll container's
+ * own `scrollWidth` against its `clientWidth` — and it is deliberately not
+ * written yet: it wants its own pass over which containers are legitimately
+ * scrollable. One pixel of slack for sub-pixel rounding. */
 async function expectNoHorizontalOverflow(page: Page) {
   const overflow = await page.evaluate(() => {
     const doc = document.documentElement;
@@ -115,7 +149,7 @@ for (const theme of THEMES) {
     for (const screen of SCREENS) {
       test(`${screen.name} renders and captures`, async ({ page }, testInfo) => {
         await openApp(page, theme, "kit");
-        await show(page, screen.nav);
+        await show(page, screen.nav, testInfo.project.name);
         if (screen.name === "rules") {
           await openFirstRuleEditor(page);
         }
@@ -133,7 +167,7 @@ for (const theme of THEMES) {
         }
         await page.screenshot({
           path: `visual/.captures/${screen.name}-${testInfo.project.name}-${theme}.png`,
-          fullPage: true,
+          fullPage: false,
         });
       });
     }
@@ -144,13 +178,13 @@ for (const theme of THEMES) {
       // over Now, the widest thing behind it — a scrim that fails to cover, or
       // a card that overflows the 768 width, shows up here and nowhere else.
       await openApp(page, theme, "kit");
-      await show(page, "Now");
+      await show(page, "Now", testInfo.project.name);
       await page.getByRole("button", { name: "New" }).click();
       await expect(page.getByRole("dialog")).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/capture-popover-${testInfo.project.name}-${theme}.png`,
-        fullPage: true,
+        fullPage: false,
       });
     });
 
@@ -195,12 +229,12 @@ for (const theme of THEMES) {
       // No `?demo`: the honest empty states, which are what a new device
       // actually shows and which no fixture screen ever exercises.
       await openApp(page, theme, null);
-      await show(page, "Now");
+      await show(page, "Now", testInfo.project.name);
       await expect(page.getByText("Nothing to start")).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/now-empty-${testInfo.project.name}-${theme}.png`,
-        fullPage: true,
+        fullPage: false,
       });
     });
   });

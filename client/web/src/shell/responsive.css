@@ -122,6 +122,23 @@
   gap: var(--space-7);
 }
 
+/* ---- The item row ------------------------------------------------------- */
+
+/* `ItemRow` puts the title and up to six meta chips on one line, and the
+   title is the only one of them that can shrink — so at 390px it is what
+   gives, down to "O…" and "Draft t…" while the badges stay whole. This is
+   the clipping the visual gate cannot see: `expectNoHorizontalOverflow`
+   measures the document, and an ellipsis is the row shrinking *correctly*
+   as far as the document is concerned. */
+.hb-item-row-title {
+  flex: 1;
+  min-width: 0;
+  font: var(--type-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---- The phone form ----------------------------------------------------- */
 
 @media (max-width: 640px) {
@@ -162,6 +179,27 @@
     position: static;
     max-height: none;
     overflow: visible;
+  }
+
+  /* Two lines instead of one: the title takes the first, the meta chips and
+     the mark-done control wrap onto the second. `flex: 1 0 100%` on the title
+     is what forces the break — no grouping element is needed, and the row's
+     markup is unchanged. Wrapping rather than clipping is the point: a title
+     is the only part of a row that cannot be guessed from context. */
+  .hb-item-row {
+    flex-wrap: wrap;
+    row-gap: var(--space-3);
+  }
+
+  /* The basis is the rest of the first line, not the whole of it: the 6px
+     urgency dot and the row's `--space-5` gap precede the title, and a flat
+     `100%` pushes the title to a line of its own and leaves the dot stranded
+     alone above it. Filling exactly what remains keeps dot and title together
+     and still leaves no room for a meta chip, which is what forces the wrap. */
+  .hb-item-row-title {
+    flex: 1 0 calc(100% - 6px - var(--space-5));
+    overflow: visible;
+    white-space: normal;
   }
 }
 
