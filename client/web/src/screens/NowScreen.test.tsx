@@ -778,7 +778,9 @@ describe("NowScreen — the captures in the columns", () => {
       }),
     );
 
-    expect(card("Ring the plumber").textContent).toContain("Triage");
+    // The triage stage draws as a word-free `inbox` glyph, so its `title` is
+    // where the stage is now legible — the pill's text is empty by design.
+    expect(card("Ring the plumber").querySelector('[title="Triage"]')).not.toBeNull();
     // And the section that used to hold it is gone entirely — no header, no
     // count, no second place to look for the same inbox.
     expect(screen.queryByText(/unsorted/)).toBeNull();
