@@ -1292,6 +1292,14 @@ impl TaskHostCore {
     /// array — both rejected here, before [`Core::complete_grill`] is ever
     /// called, the same "reject before the seam" discipline
     /// [`TaskHostCore::capture`]/[`TaskHostCore::triage`] use.
+    ///
+    /// The completion's own fields arrive as separate scalars rather than one
+    /// JSON payload (`triage`'s `edits` shape) because every one of them is a
+    /// required scalar the review card always sends — there is no
+    /// "untouched vs. cleared" distinction here for a patch object to carry —
+    /// so the argument count is the wasm boundary's, not a grouping this side
+    /// declined to make.
+    #[allow(clippy::too_many_arguments)]
     pub async fn complete_grill(
         &mut self,
         seed: &str,

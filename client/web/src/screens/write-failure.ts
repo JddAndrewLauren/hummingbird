@@ -110,15 +110,29 @@ export function actFailureFor(
   return failureFor(result, itemId, ACT_FALLBACK);
 }
 
-/** The Grill-completion failure belonging to one item, matched by the id
- * the result itself carries — the review card's `triageFailureFor` twin.
+/** The Grill-completion failure belonging to one **confirm**, matched by the
+ * `seed` that confirm minted — the review card's `triageFailureFor` twin, but
+ * scoped one level tighter than by item.
+ *
+ * By item would be wrong here in a way it is not for triage. `lastGrillCompletion`
+ * holds only the most recent result, and a Grill session is *re-openable on the
+ * same item*: a confirm refused with `"needs_re_review"` leaves the item exactly
+ * where it was, in Triage, so the next thing the reader does is grill it again —
+ * and an item-matched read would greet that fresh interview with the previous
+ * session's failure, attached to a proposal it does not describe. The seed names
+ * one request, so a stale result simply does not match. `seed` is `null` when
+ * this session has no confirm outstanding, which no result can match either.
+ *
  * `"needs_re_review"` and every other non-`"ok"` kind read the same: the
  * server's own words, or the fallback sentence. */
 export function grillCompletionFailureFor(
   result: TaskGrillCompletionResult | null | undefined,
-  itemId: string,
+  seed: string | null,
 ): string | null {
-  return failureFor(result, itemId, GRILL_COMPLETION_FALLBACK);
+  if (!result || seed === null || result.seed !== seed || result.kind === "ok") {
+    return null;
+  }
+  return result.error ?? GRILL_COMPLETION_FALLBACK;
 }
 
 /** A triage failure with no `TriageRow` left to wear it — see

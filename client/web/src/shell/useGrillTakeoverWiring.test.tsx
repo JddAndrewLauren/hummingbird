@@ -4,7 +4,22 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "../test/component";
 import type { WorkerLike } from "../store/worker-client";
 import type { StepDTO } from "../store/protocol";
+import type { TaskGrillCompletionResult } from "../store/store";
+import { grillCompletionFailureFor } from "../screens/write-failure";
 import { useGrillTakeoverWiring } from "./useGrillTakeoverWiring";
+
+/** The `completeGrillResult` broadcast for whichever seed the harness's
+ * confirm just minted — read back off the worker message rather than
+ * recomputed, so a test can never assert against a seed the hook did not
+ * actually send. */
+function resultFor(
+  worker: { postMessage: ReturnType<typeof vi.fn> },
+  kind: TaskGrillCompletionResult["kind"],
+  error: string | null = null,
+): TaskGrillCompletionResult {
+  const sent = worker.postMessage.mock.calls.find(([m]) => m.type === "completeGrill")?.[0];
+  return { seed: sent.seed, itemId: sent.itemId, kind, grillId: null, error };
+}
 
 function fakeWorker(): WorkerLike & { postMessage: ReturnType<typeof vi.fn> } {
   return { onmessage: null, postMessage: vi.fn() };
@@ -43,26 +58,31 @@ function Harness({
   worker,
   fetchImpl,
   stepsByItem,
+  lastGrillCompletion = null,
 }: {
   worker: WorkerLike;
   fetchImpl: typeof globalThis.fetch;
   stepsByItem: Record<string, StepDTO[]>;
+  lastGrillCompletion?: TaskGrillCompletionResult | null;
 }) {
-  const { openItemId, sessionSteps, open, back, confirm, turn } = useGrillTakeoverWiring(worker, stepsByItem, {
-    fetch: fetchImpl,
-    tokenStore: {
-      read: async () => ({ token: "hb_device_token", enteredAtMs: 1_000 }),
-      write: async () => {},
-      clear: async () => {},
-    },
-  });
+  const { openItemId, sessionSteps, open, back, confirm, keepGrilling, confirmSeed, turn } =
+    useGrillTakeoverWiring(worker, stepsByItem, lastGrillCompletion, {
+      fetch: fetchImpl,
+      tokenStore: {
+        read: async () => ({ token: "hb_device_token", enteredAtMs: 1_000 }),
+        write: async () => {},
+        clear: async () => {},
+      },
+    });
   return (
     <>
       <span data-testid="open">{openItemId ?? "none"}</span>
       <span data-testid="phase">{turn.phase}</span>
       <span data-testid="session-steps">{sessionSteps === null ? "null" : JSON.stringify(sessionSteps)}</span>
+      <span data-testid="confirm-seed">{confirmSeed ?? "none"}</span>
       <button type="button" onClick={() => open("item-1")}>open</button>
       <button type="button" onClick={back}>back</button>
+      <button type="button" onClick={keepGrilling}>keep-grilling</button>
       <button
         type="button"
         onClick={() =>
@@ -180,7 +200,7 @@ describe("useGrillTakeoverWiring", () => {
     expect(completeGrillCall?.[0]?.sessionSteps).toEqual(frozen);
   });
 
-  it("confirm is a no-op until the snapshot lands, and closes the takeover on submit", async () => {
+  it("confirm is a no-op until the snapshot lands", async () => {
     const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
     const worker = fakeWorker();
     render(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />);
@@ -209,8 +229,10 @@ describe("useGrillTakeoverWiring", () => {
     fireEvent.click(screen.getByText("confirm"));
 
     expect(worker.postMessage.mock.calls.filter(([m]) => m.type === "completeGrill")).toHaveLength(1);
-    // Optimistic close — the takeover no longer holds this session open.
-    expect(screen.getByTestId("open").textContent).toBe("none");
+    // The takeover is still up: nothing has answered yet, and the close
+    // waits for an `"ok"`. The second click was stopped by the lock, not by
+    // the button going away.
+    expect(screen.getByTestId("open").textContent).toBe("item-1");
   });
 
   /** The real regression: two calls inside the SAME synchronous handler,
@@ -233,5 +255,182 @@ describe("useGrillTakeoverWiring", () => {
     fireEvent.click(screen.getByText("confirm-twice"));
 
     expect(worker.postMessage.mock.calls.filter(([m]) => m.type === "completeGrill")).toHaveLength(1);
+  });
+
+  /** ROUND 2's blocker: `Core::complete_grill` refuses to enqueue at all on
+   * a drift (`needs_re_review`, #354's guard), and that refusal has nowhere
+   * to be seen if the takeover has already torn itself down. The takeover
+   * must still be standing — transcript and all — when the refusal lands. */
+  it("a refused confirm leaves the takeover open, with the refusal named against this confirm's seed", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    rerender(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{ "item-1": [] }} />);
+    fireEvent.click(screen.getByText("confirm"));
+
+    const seed = screen.getByTestId("confirm-seed").textContent;
+    expect(seed).not.toBe("none");
+
+    const refusal = resultFor(worker, "needs_re_review", "unticked steps changed since this review was last shown");
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={refusal}
+      />,
+    );
+
+    // Still open, still on the proposal — the review the guard exists to
+    // force is there to be re-read.
+    expect(screen.getByTestId("open").textContent).toBe("item-1");
+    expect(screen.getByTestId("phase").textContent).toBe("proposal");
+    // And the seed survives, which is what keeps the message on screen.
+    expect(screen.getByTestId("confirm-seed").textContent).toBe(seed);
+    expect(grillCompletionFailureFor(refusal, seed)).toBe(
+      "unticked steps changed since this review was last shown",
+    );
+  });
+
+  it("a refused confirm releases the lock, so the same session can confirm again", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    rerender(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{ "item-1": [] }} />);
+    fireEvent.click(screen.getByText("confirm"));
+
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={resultFor(worker, "failed", "network")}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("confirm"));
+    expect(worker.postMessage.mock.calls.filter(([m]) => m.type === "completeGrill")).toHaveLength(2);
+  });
+
+  it("an ok confirm closes the takeover and discards the turn state", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    rerender(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{ "item-1": [] }} />);
+    fireEvent.click(screen.getByText("confirm"));
+    expect(screen.getByTestId("open").textContent).toBe("item-1");
+
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={resultFor(worker, "ok")}
+      />,
+    );
+
+    expect(screen.getByTestId("open").textContent).toBe("none");
+    expect(screen.getByTestId("phase").textContent).toBe("idle");
+    expect(screen.getByTestId("session-steps").textContent).toBe("null");
+  });
+
+  /** A result for somebody ELSE's confirm must not close this session's
+   * takeover — `lastGrillCompletion` holds one slot for the whole app. */
+  it("a completion result for another seed is ignored", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    rerender(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{ "item-1": [] }} />);
+    fireEvent.click(screen.getByText("confirm"));
+
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={{ seed: "someone-else", itemId: "item-1", kind: "ok", grillId: "g-9", error: null }}
+      />,
+    );
+
+    expect(screen.getByTestId("open").textContent).toBe("item-1");
+  });
+
+  /** The stale-error facet the round-2 verdict named: a failure must not
+   * follow the item into the NEXT session, whose proposal it does not
+   * describe. */
+  it("re-opening the same item drops the previous session's confirm seed", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    rerender(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{ "item-1": [] }} />);
+    fireEvent.click(screen.getByText("confirm"));
+
+    const stale = resultFor(worker, "needs_re_review", "unticked steps changed");
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={stale}
+      />,
+    );
+    expect(screen.getByTestId("confirm-seed").textContent).toBe(stale.seed);
+
+    // Back out and grill the same item again: the failure is last session's.
+    fireEvent.click(screen.getByText("back"));
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+
+    expect(screen.getByTestId("confirm-seed").textContent).toBe("none");
+    expect(grillCompletionFailureFor(stale, null)).toBeNull();
+  });
+
+  it("keep grilling clears a failed confirm's error along with its proposal", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    rerender(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{ "item-1": [] }} />);
+    fireEvent.click(screen.getByText("confirm"));
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={resultFor(worker, "needs_re_review", "unticked steps changed")}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("keep-grilling"));
+    expect(screen.getByTestId("confirm-seed").textContent).toBe("none");
   });
 });

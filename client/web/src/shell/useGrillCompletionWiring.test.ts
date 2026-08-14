@@ -19,11 +19,11 @@ describe("mintGrillCompletionSeed", () => {
 });
 
 describe("useGrillCompletionWiring", () => {
-  it("posts a completeGrill message carrying every field", () => {
+  it("posts a completeGrill message carrying every field, and returns the seed it sent", () => {
     const worker: WorkerLike = { onmessage: null, postMessage: vi.fn() };
     const { completeGrill } = useGrillCompletionWiring(worker);
 
-    completeGrill(
+    const seed = completeGrill(
       "item-1",
       [],
       {
@@ -51,5 +51,9 @@ describe("useGrillCompletionWiring", () => {
     });
     expect(typeof message.seed).toBe("string");
     expect(typeof message.nowMs).toBe("number");
+    // The caller matches the answering broadcast on exactly this — a
+    // returned seed that differed from the sent one would leave the takeover
+    // waiting on an answer that never comes.
+    expect(seed).toBe(message.seed);
   });
 });

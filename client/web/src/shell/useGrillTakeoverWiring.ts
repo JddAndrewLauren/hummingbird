@@ -1,8 +1,9 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GrillTurn } from "../skills/grill-args";
 import type { GrillTurnState } from "../skills/grill-turn-state";
 import type { TaskTokenStoreLike } from "../task/token-store";
 import type { StepDTO } from "../store/protocol";
+import type { TaskGrillCompletionResult } from "../store/store";
 import { requestSteps, type GrillCompletion, type WorkerLike } from "../store/worker-client";
 import { useGrillCompletionWiring } from "./useGrillCompletionWiring";
 import { useGrillWiring } from "./useGrillWiring";
@@ -30,6 +31,24 @@ import { useGrillWiring } from "./useGrillWiring";
 // answer into `sessionSteps` state, and never reads `stepsByItem` again
 // for the rest of the session — `back()` is the only thing that clears it,
 // exactly the way it clears the turn lane's own state.
+//
+// **Confirm closes the takeover on the authority's `"ok"`, never
+// optimistically.** Every other mutation in this app closes its editor the
+// moment it enqueues, because for those an enqueue really is the whole
+// answer. `Core::complete_grill` is the exception: it can *refuse to
+// enqueue at all*, synchronously (`client/core/src/lib.rs` —
+// `NeedsReReview` when the item's unticked Steps drifted from this
+// session's snapshot, plus `ItemNotFound`/`ItemDone`), and #354's whole
+// reason for that guard is to send the reader BACK to this review with the
+// drift in mind. An optimistic close would tear the takeover, the turn
+// state and the transcript down before that refusal arrived, so the guard
+// would fire into an empty room: the item silently stays in Triage, the
+// transcript it wanted re-reviewed is gone, and nothing on screen says so.
+// So the takeover stays up until the matching `completeGrillResult` says
+// `"ok"`, and a non-ok answer releases the `confirming` lock and leaves the
+// review card — transcript, edits and all — standing to be re-reviewed.
+// The double-click line is held by `confirming` (synchronous, below) and
+// the button's own `disabled`, not by the unmount.
 export interface GrillTakeoverWiring {
   /** The item the takeover is open over, or `null` when it is closed —
    * Triage renders its ordinary list exactly when this is `null`. */
@@ -59,8 +78,16 @@ export interface GrillTakeoverWiring {
    * A no-op while the snapshot has not landed yet, or while a previous
    * Confirm for this same session is already in flight (the synchronous
    * lock a double click needs — `Core::complete_grill` mints a brand-new
-   * Grill id per call, so two enqueued calls would mint two Grills). */
+   * Grill id per call, so two enqueued calls would mint two Grills).
+   *
+   * Does NOT close the takeover: see this module's own note on why the
+   * close waits for an `"ok"`. */
   confirm: (completion: GrillCompletion) => void;
+  /** The `seed` of the Confirm this session currently has outstanding, or
+   * `null` when it has none. The screen scopes the review card's error to
+   * it (`write-failure.ts`'s `grillCompletionFailureFor`) so a failure only
+   * ever speaks for the confirm that produced it. */
+  confirmSeed: string | null;
 }
 
 export interface GrillTakeoverWiringDeps {
@@ -73,10 +100,14 @@ export function useGrillTakeoverWiring(
   /** `TaskState.stepsByItem` — read here only to notice the one fresh
    * answer each session waits for; never re-read afterward. */
   stepsByItem: Record<string, StepDTO[]>,
+  /** `TaskState.lastGrillCompletion` — the broadcast this hook waits on to
+   * decide whether a Confirm may close the takeover. */
+  lastGrillCompletion: TaskGrillCompletionResult | null,
   deps: GrillTakeoverWiringDeps = {},
 ): GrillTakeoverWiring {
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [sessionSteps, setSessionSteps] = useState<StepDTO[] | null>(null);
+  const [confirmSeed, setConfirmSeed] = useState<string | null>(null);
   // Whatever `stepsByItem` already held for this item the moment `open()`
   // was called — the value a fresh answer must differ from (by reference;
   // `worker-client.ts` always installs a new array on a real answer, so a
@@ -113,6 +144,12 @@ export function useGrillTakeoverWiring(
       setPriorSteps(stepsByItem[itemId]);
       setOpenItemId(itemId);
       setSessionSteps(null);
+      // A fresh session owes nothing to the last one's confirm: dropping the
+      // seed here is what stops a previous session's failure — still sitting
+      // in `lastGrillCompletion`, which only ever holds the most recent
+      // result — from being rendered against this session's new proposal,
+      // which it does not describe.
+      setConfirmSeed(null);
       confirming.current.delete(itemId);
       requestSteps(worker, itemId);
       grillWiring.onAsk(itemId, itemId);
@@ -126,9 +163,16 @@ export function useGrillTakeoverWiring(
   );
 
   const back = useCallback(() => {
-    if (openItemId !== null) grillWiring.onDiscard(openItemId);
+    if (openItemId !== null) {
+      grillWiring.onDiscard(openItemId);
+      confirming.current.delete(openItemId);
+    }
     setOpenItemId(null);
     setSessionSteps(null);
+    // Leaving deliberately abandons whatever confirm was outstanding: a
+    // later answer for it has no review card left to speak to, and keeping
+    // the seed would only arm the stale error the next session opens with.
+    setConfirmSeed(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openItemId, grillWiring.onDiscard]);
 
@@ -141,7 +185,13 @@ export function useGrillTakeoverWiring(
   );
 
   const keepGrilling = useCallback(() => {
-    if (openItemId !== null) grillWiring.onKeepGrilling(openItemId, openItemId);
+    if (openItemId === null) return;
+    grillWiring.onKeepGrilling(openItemId, openItemId);
+    // Another round supersedes the proposal a failed confirm was made
+    // against, so its error stops describing anything on screen — the same
+    // reseeding the review card does to its own editable fields when a new
+    // proposal arrives.
+    setConfirmSeed(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openItemId, grillWiring.onKeepGrilling]);
 
@@ -155,23 +205,50 @@ export function useGrillTakeoverWiring(
       if (openItemId === null || sessionSteps === null) return;
       if (confirming.current.has(openItemId)) return;
       confirming.current.add(openItemId);
-      completeGrill(openItemId, sessionSteps, completion);
-      // Optimistic close, same posture as every other mutation in this
-      // app: `Core::complete_grill`'s enqueue is synchronous and durable
-      // (it does not wait on a network round trip to be real), so there is
-      // nothing left for this takeover to hold open for — the item's new
-      // stage shows up through the ordinary `triageInbox`/`frontier`
-      // re-read the `completeGrillResult` broadcast already triggers.
-      // Closing here is also what makes a double click physically
-      // impossible a second way: the Confirm button this session owned is
-      // gone once `openItemId` is `null`.
-      grillWiring.onDiscard(openItemId);
-      setOpenItemId(null);
-      setSessionSteps(null);
+      // The takeover stays up until this seed's own answer says `"ok"` —
+      // see the module note. Recording the seed is what makes that answer
+      // recognisable as this confirm's, rather than "the most recent
+      // completion result, whoever it belongs to".
+      setConfirmSeed(completeGrill(openItemId, sessionSteps, completion));
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [openItemId, sessionSteps, completeGrill, grillWiring.onDiscard],
+    [openItemId, sessionSteps, completeGrill],
   );
+
+  // This session's confirm, answered — `null` until the broadcast carrying
+  // THIS seed lands. `lastGrillCompletion` holds one slot for the whole app,
+  // so the seed comparison is the whole of "is this mine".
+  const confirmAnswer =
+    confirmSeed !== null && lastGrillCompletion?.seed === confirmSeed ? lastGrillCompletion : null;
+
+  // An `"ok"` is the only thing that closes the takeover. Every other kind
+  // leaves it standing, so the review card renders the refusal over the very
+  // transcript the reader now has to re-review — the module note above says
+  // why that is the whole point.
+  //
+  // The same "adjusting state when a prop changes" pattern as `sessionSteps`
+  // above (`NowScreen.tsx`'s own precedent, and its reasoning): a `setState`
+  // during render, guarded against state, because `react-hooks/refs` forbids
+  // touching a ref during render and `react-hooks/set-state-in-effect`
+  // forbids the `useEffect` spelling of exactly this adjustment.
+  if (confirmAnswer?.kind === "ok" && openItemId !== null) {
+    setOpenItemId(null);
+    setSessionSteps(null);
+  }
+
+  // The imperative half of the same answer, which a render may not do:
+  // releasing the synchronous lock (a ref write) and discarding the turn
+  // lane's state. `confirmSeed` deliberately survives BOTH outcomes here —
+  // on a failure because it is what keeps the message on the card, and on an
+  // `"ok"` because nothing renders it once the takeover is closed, while
+  // clearing it during render would retract `confirmAnswer` before this
+  // effect ever ran. `open`, `back` and `keepGrilling` drop it, each for its
+  // own reason above.
+  const discardOnDone = grillWiring.onDiscard;
+  useEffect(() => {
+    if (confirmAnswer === null) return;
+    confirming.current.delete(confirmAnswer.itemId);
+    if (confirmAnswer.kind === "ok") discardOnDone(confirmAnswer.itemId);
+  }, [confirmAnswer, discardOnDone]);
 
   return {
     openItemId,
@@ -184,5 +261,6 @@ export function useGrillTakeoverWiring(
     keepGrilling,
     retry,
     confirm,
+    confirmSeed,
   };
 }

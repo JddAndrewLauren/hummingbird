@@ -68,29 +68,36 @@ const grillResult = (overrides: Partial<TaskGrillCompletionResult> = {}): TaskGr
 });
 
 describe("grillCompletionFailureFor", () => {
-  it("states the server's own words for the item the result names", () => {
-    expect(grillCompletionFailureFor(grillResult(), "c1")).toBe("409 conflict");
+  it("states the server's own words for the confirm whose seed it carries", () => {
+    expect(grillCompletionFailureFor(grillResult(), "s1")).toBe("409 conflict");
   });
 
   it("falls back to a sentence when the failure carried no message", () => {
-    expect(grillCompletionFailureFor(grillResult({ error: null }), "c1")).toBe("That Grill didn't apply.");
+    expect(grillCompletionFailureFor(grillResult({ error: null }), "s1")).toBe("That Grill didn't apply.");
   });
 
-  it("is silent for every other item — a failure belongs to the one it names", () => {
-    expect(grillCompletionFailureFor(grillResult(), "c2")).toBeNull();
+  /** The stale-error facet: an item can be grilled again, and the previous
+   * session's refusal describes a proposal that is no longer on screen. The
+   * seed is what tells the two apart — matching by item could not. */
+  it("is silent for another confirm's seed, even on the same item", () => {
+    expect(grillCompletionFailureFor(grillResult({ itemId: "c1" }), "s2")).toBeNull();
+  });
+
+  it("is silent when this session has no confirm outstanding", () => {
+    expect(grillCompletionFailureFor(grillResult(), null)).toBeNull();
   });
 
   it("is silent for a success, and before any result has arrived", () => {
-    expect(grillCompletionFailureFor(grillResult({ kind: "ok", error: null }), "c1")).toBeNull();
-    expect(grillCompletionFailureFor(null, "c1")).toBeNull();
-    expect(grillCompletionFailureFor(undefined, "c1")).toBeNull();
+    expect(grillCompletionFailureFor(grillResult({ kind: "ok", error: null }), "s1")).toBeNull();
+    expect(grillCompletionFailureFor(null, "s1")).toBeNull();
+    expect(grillCompletionFailureFor(undefined, "s1")).toBeNull();
   });
 
   it("reports needs_re_review — the stale-Confirm cue — as a failure too", () => {
     expect(
       grillCompletionFailureFor(
         grillResult({ kind: "needs_re_review", error: "unticked steps changed since this review was last shown" }),
-        "c1",
+        "s1",
       ),
     ).toBe("unticked steps changed since this review was last shown");
   });

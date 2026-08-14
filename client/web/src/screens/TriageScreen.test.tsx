@@ -397,6 +397,7 @@ describe("TriageScreen — the Grill takeover", () => {
       keepGrilling: vi.fn(),
       retry: vi.fn(),
       confirm: vi.fn(),
+      confirmSeed: null,
       ...overrides,
     };
   }
@@ -479,5 +480,52 @@ describe("TriageScreen — the Grill takeover", () => {
     rerender(<TriageScreen demo={null} task={task} onTriage={vi.fn()} nowMs={NOW} grill={grill} />);
 
     expect(document.activeElement?.textContent).toContain("Grill me");
+  });
+
+  /** The refusal has to reach the review card that is still standing behind
+   * it — the round-2 blocker's user-visible half — and only when it belongs
+   * to the confirm this session actually made. */
+  it("renders the refusal of THIS session's confirm on the review card, and no other", () => {
+    const proposalTurn = {
+      phase: "proposal" as const,
+      messages: [],
+      proposal: { summary: "s", verdict: "resolved" as const, patch: {} },
+      backend: null,
+      model: null,
+    };
+    const task = taskState({
+      triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })],
+      lastGrillCompletion: {
+        seed: "i1:complete-grill:1000",
+        itemId: "i1",
+        kind: "needs_re_review",
+        grillId: null,
+        error: "unticked steps changed since this review was last shown",
+      },
+    });
+
+    const { rerender } = render(
+      <TriageScreen
+        demo={null}
+        task={task}
+        onTriage={vi.fn()}
+        nowMs={NOW}
+        grill={fakeGrill({ openItemId: "i1", turn: proposalTurn, confirmSeed: "i1:complete-grill:1000" })}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("unticked steps changed");
+
+    // A fresh session on the same item: the identical result is now some
+    // previous confirm's, and must not be worn by this proposal.
+    rerender(
+      <TriageScreen
+        demo={null}
+        task={task}
+        onTriage={vi.fn()}
+        nowMs={NOW}
+        grill={fakeGrill({ openItemId: "i1", turn: proposalTurn, confirmSeed: null })}
+      />,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

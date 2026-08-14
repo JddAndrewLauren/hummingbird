@@ -121,7 +121,7 @@ export function TriageScreen({
           onRetry={grill.retry}
           onConfirm={grill.confirm}
           onBack={handleGrillBack}
-          completionError={grillCompletionFailureFor(task.lastGrillCompletion, openItem.id)}
+          completionError={grillCompletionFailureFor(task.lastGrillCompletion, grill.confirmSeed)}
         />
       </SingleColumn>
     );
