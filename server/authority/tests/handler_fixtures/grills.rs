@@ -270,9 +270,7 @@ fn completing_a_grill_moves_the_items_own_stage_column() {
     );
     assert_eq!(resp.status, 201, "{}", resp.body);
 
-    let item_resp = req(&sql, "GET", "/api/items/a-1", None, None, 0);
-    // No direct GET /api/items/:id route exists; read through changes.
-    let _ = item_resp;
+    // No direct GET /api/items/:id route exists; read the item through changes.
     let parsed: ChangesResponse = body_as(&changes(&sql, "since=0"));
     let item = parsed.items.iter().find(|i| i.id == "a-1").expect("item present");
     assert_eq!(item.stage, Stage::Ready, "triage + resolved moves the item to ready");
