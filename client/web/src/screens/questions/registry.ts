@@ -49,8 +49,8 @@ function questionsFor(surface: Surface): StandingQuestion[] {
 /** Every `context_snapshots` source one surface's registered questions must
  * request a pane read for — the union over that surface's questions,
  * deduplicated, in declared order. A question that reads no snapshot lane
- * (the calendar-lane ones, #117/#121/#122, and every never-polled infra
- * placeholder, #311) contributes nothing here and is not special-cased. */
+ * (the calendar-lane ones, #117/#121/#122, and client-only reachability,
+ * #316) contributes nothing here and is not special-cased. */
 export function requiredSources(surface: Surface): string[] {
   const sources: string[] = [];
   for (const question of questionsFor(surface)) {

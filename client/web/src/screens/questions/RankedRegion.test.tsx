@@ -5,6 +5,7 @@ import { BINDING_KEY, SOURCE } from "../waste-pane/waste";
 import type { BindingDTO, PaneReadDTO } from "../../store/protocol";
 import { fireEvent, paneReadDTO, paneSnapshotDTO, render, screen, wasteBody } from "../../test/component";
 import type { StorageLike } from "./collapse";
+import { EMPTY_QUESTION_SYNC } from "./contract";
 import { RankedRegion } from "./RankedRegion";
 
 // The wiring gate for #245's region. Every piece below is separately
@@ -69,7 +70,7 @@ describe("RankedRegion", () => {
     render(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -87,7 +88,7 @@ describe("RankedRegion", () => {
     render(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -109,7 +110,7 @@ describe("RankedRegion", () => {
     const view = render(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -121,7 +122,7 @@ describe("RankedRegion", () => {
     view.rerender(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -136,7 +137,7 @@ describe("RankedRegion", () => {
     const view = render(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(4), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -147,7 +148,7 @@ describe("RankedRegion", () => {
     view.rerender(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={1}
         onScreen={() => {}}
@@ -171,7 +172,7 @@ describe("RankedRegion", () => {
     const view = render(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -184,7 +185,7 @@ describe("RankedRegion", () => {
     view.rerender(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: true, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: true, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -198,7 +199,7 @@ describe("RankedRegion", () => {
     const storage = fakeStorage();
     const props = {
       surface: "now" as const,
-      inputs: { bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] },
+      inputs: { sync: EMPTY_QUESTION_SYNC, bindings: bound(), paneReads: readAt(1), calendarReads: {}, calendarConnected: false, items: [] },
       nowMs: NOW,
       syncOutcomeSeq: 0,
       storage,
@@ -232,7 +233,7 @@ describe("RankedRegion", () => {
     render(
       <RankedRegion
         surface="status"
-        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         storage={storage}
@@ -240,7 +241,7 @@ describe("RankedRegion", () => {
       />,
     );
 
-    // Toggle a Status pane (a placeholder, dormant/collapsed by default).
+    // Toggle a dormant Status gap, collapsed by default.
     fireEvent.click(screen.getByRole("button", { name: /kimi balance/i }));
 
     // Now's stored map is intact, untouched by the Status write.
@@ -255,6 +256,7 @@ describe("RankedRegion", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: bound(),
           paneReads: {
             [SOURCE]: paneReadDTO({
@@ -280,7 +282,7 @@ describe("RankedRegion", () => {
     render(
       <RankedRegion
         surface="now"
-        inputs={{ bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
+        inputs={{ sync: EMPTY_QUESTION_SYNC, bindings: null, paneReads: {}, calendarReads: {}, calendarConnected: false, items: [] }}
         nowMs={NOW}
         syncOutcomeSeq={0}
         onScreen={() => {}}
@@ -300,6 +302,7 @@ describe("RankedRegion", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [{ key: BINDING_KEY, known: true, pending: false, value: { state: "other", raw: "7" } }],
           paneReads: {},
           calendarReads: {}, calendarConnected: false, items: [],
@@ -331,6 +334,7 @@ describe("RankedRegion", () => {
         // own unset binding still says it too (#119), so assertions target
         // the waste question by name rather than by the shared headline.
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [
             {
               key: "trips-calendar",

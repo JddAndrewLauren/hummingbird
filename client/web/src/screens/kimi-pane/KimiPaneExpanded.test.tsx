@@ -54,9 +54,8 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
     const kimiButton = screen.getByRole("button", { name: /kimi balance/i });
     // The expanded pane's own headline — never the collapsed row's banded
     // sentence, since this pane is not collapsed here. Asserted on the
-    // Kimi row's own button, not on the whole screen: the other,
-    // still-unpolled infra placeholders (#314-#316) legitimately still say
-    // "No answer yet", and only the Kimi row itself must not.
+    // Kimi row's own button, not on the whole screen: other status questions
+    // can legitimately still be gaps, and only the Kimi row itself must not.
     expect(kimiButton.textContent).not.toMatch(/No answer yet/);
     expect(screen.getByText("$4.10 left")).toBeTruthy();
   });

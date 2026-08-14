@@ -35,7 +35,7 @@ const sharedWorker = new SharedWorker(new URL("./worker/core.worker.ts", import.
   type: "module",
 });
 const worker = sharedWorker.port;
-attachWorkerClient(worker, coreStore);
+attachWorkerClient(worker, coreStore, localStorage);
 
 // `sharedWorker.onerror` is NOT the CSP/wasm-failure catch-all a dedicated
 // Worker's `onerror` was. Per spec, a SharedWorker's `error` event covers

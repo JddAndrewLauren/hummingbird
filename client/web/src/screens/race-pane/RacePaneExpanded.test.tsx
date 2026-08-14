@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BindingDTO, PaneAlertDTO, PaneReadDTO } from "../../store/protocol";
 import { fireEvent, render, screen } from "../../test/component";
-import type { QuestionInputs } from "../questions/contract";
+import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import { RankedRegion } from "../questions/RankedRegion";
 import { BINDING_KEY, SOURCE } from "./race";
 
@@ -74,6 +74,7 @@ function mount(inputs: Omit<QuestionInputs, "nowMs">, onScreen = vi.fn()) {
 
 function world(overrides: Partial<QuestionInputs> = {}): Omit<QuestionInputs, "nowMs"> {
   return {
+    sync: EMPTY_QUESTION_SYNC,
     bindings: [seriesBinding("f1")],
     paneReads: {},
     calendarReads: {},

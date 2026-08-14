@@ -25,12 +25,8 @@ import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 // aside filters it to the `"now"` questions below (waste answered/imminent,
 // race answered/distant — one non-dormant and one quiet reading, so the
 // capture proves both), and `StatusScreen` filters the same object to the
-// `"status"` infra questions. One of those four still ignores
-// `QuestionInputs` entirely — `reachability`, whose
-// `screens/questions/placeholder.tsx` factory answers
-// `bound-but-unacquired` unconditionally, because nothing polls behind it
-// yet — so there is nothing to add here for it until #316 gives it a real
-// source to read.
+// `"status"` infra questions. Reachability reads the same sync snapshot
+// shape as the real device, supplied below with a recent completed cycle.
 //
 // **`kimi-balance/v1` (#313) is the first exception.** `kimiRead` below
 // gives the Status capture its first poller-backed, non-gap pane: a modest
@@ -50,7 +46,7 @@ import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 // capture three service rows — `authority`, `web`, `runner` — all in quiet
 // agreement, the honest steady state (see its own docstring). Between the
 // three, the Status capture holds **nine poller-backed panes** (1 + 5 + 3)
-// plus the single `reachability` gap pane.
+// plus one device-local reachability answer.
 
 /** The address the fixture's collection happens at. Fixed rather than the
  * device's own zone: a fixture whose answer changed with where the reviewer
@@ -318,6 +314,17 @@ function uptimeRead(nowMs: number): PaneReadDTO {
  * supplies itself. */
 export function demoQuestionInputs(nowMs: number): Omit<QuestionInputs, "nowMs"> {
   return {
+    sync: {
+      latestOutcome: {
+        kind: "completed",
+        retryAfterMs: null,
+        activeItemCount: 12,
+        wasFullSweep: false,
+        deadLettered: 0,
+      },
+      latestInformativeAtMs: nowMs - 60_000,
+      lastSuccessfulAtMs: nowMs - 60_000,
+    },
     bindings: [boundBinding, boundRaceBinding],
     paneReads: {
       [SOURCE]: wasteRead(nowMs),

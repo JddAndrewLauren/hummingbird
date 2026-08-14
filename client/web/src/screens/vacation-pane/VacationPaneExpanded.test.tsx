@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BindingDTO, CalendarEventDTO, FreshnessDTO } from "../../store/protocol";
 import { fireEvent, render, screen } from "../../test/component";
 import { RankedRegion } from "../questions/RankedRegion";
+import { EMPTY_QUESTION_SYNC } from "../questions/contract";
 import { CALENDAR_REQUEST_KEY, STALE_AFTER_MS } from "./vacation";
 
 // The pane shell's "component tests are the gate" rule (`src/test/component.tsx`): a pure
@@ -57,6 +58,7 @@ function mount(options: {
     <RankedRegion
       surface="now"
       inputs={{
+        sync: EMPTY_QUESTION_SYNC,
         bindings: options.bindings === undefined ? bound : options.bindings,
         paneReads: {},
         calendarConnected: options.calendarConnected ?? true,

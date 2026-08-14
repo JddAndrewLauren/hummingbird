@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   QUESTION_ORDER,
+  EMPTY_QUESTION_SYNC,
   boundedGlyphs,
   paneKey,
   type PaneGlyph,
@@ -16,6 +17,7 @@ import { QUESTIONS, panesFrom, rankPanes, requiredCalendarRequests, requiredSour
 
 function emptyInputs(): QuestionInputs {
   return {
+    sync: EMPTY_QUESTION_SYNC,
     bindings: [],
     paneReads: {},
     calendarReads: {},

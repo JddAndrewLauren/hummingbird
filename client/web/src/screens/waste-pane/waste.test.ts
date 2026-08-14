@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BindingDTO, FreshnessDTO, PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
-import type { QuestionInputs } from "../questions/contract";
+import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import {
   BINDING_KEY,
   SNAPSHOT_KEY,
@@ -58,6 +58,7 @@ function boundBinding(): BindingDTO {
 
 function inputs(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
   return {
+    sync: EMPTY_QUESTION_SYNC,
     bindings: [boundBinding()],
     paneReads: { [SOURCE]: read() },
     calendarReads: {},

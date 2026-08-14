@@ -186,6 +186,11 @@ export interface TaskState {
    * its own clock on a replay would launder a stale outcome into a fresh
    * success. */
   lastSyncAtMs: number | null;
+  /** The newest successful authority sync this origin/device has recorded.
+   * Unlike `lastSyncAtMs`, failures never advance it. Hydrated from
+   * same-origin storage when the worker client attaches, so a reload or a
+   * late view cannot forget the last time this device actually landed. */
+  lastSuccessfulSyncAtMs: number | null;
   /** Monotonic count of `syncOutcome` broadcasts this view has processed —
    * incremented by `worker-client.ts` on EVERY cycle, whatever its `kind`.
    * Until issue #191, this was what `useSyncWiring.ts` keyed its per-cycle
@@ -280,6 +285,7 @@ const initialTaskState: TaskState = {
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
+  lastSuccessfulSyncAtMs: null,
   syncOutcomeSeq: 0,
   queueDepth: null,
   deadLetters: [],

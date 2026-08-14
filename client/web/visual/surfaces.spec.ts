@@ -47,9 +47,7 @@ const SCREENS = [
   // produce — which is what makes the collapsed stack long enough to be
   // worth capturing at 768px); #315 landed the third (`uptime/v1`, three
   // service rows, all in quiet agreement). This capture therefore shows nine
-  // poller-backed panes alongside the *one* still-honest gap pane that is
-  // left — `reachability`, unpolled pending #316. Not permanent: that gap
-  // goes when #316 lands.
+  // poller-backed panes plus one quiet, device-local reachability answer.
   { name: "status", nav: "Status" },
   { name: "settings", nav: "Settings" },
 ] as const;

@@ -411,6 +411,7 @@ export function buildDemoTaskState(): TaskState {
     lastBindingWrite: null,
     lastSyncOutcome: null,
     lastSyncAtMs: null,
+    lastSuccessfulSyncAtMs: null,
     syncOutcomeSeq: 0,
     queueDepth: null,
     deadLetters: [],

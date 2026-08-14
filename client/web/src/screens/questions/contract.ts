@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import type { IconName } from "../../components/core/Icon";
 import type { BindingDTO, CalendarReadDTO, PaneReadDTO, TaskItemDTO } from "../../store/protocol";
+import type { TaskSyncOutcome } from "../../store/store";
 
 // ADR-0015's **pane shell contract** (#245): the one thing every standing
 // question answers, and the one shape the shell knows how to rank, collapse
@@ -143,7 +144,26 @@ export const QUESTION_ORDER: readonly StandingQuestion[] = [
  * what lets the demo fixture (`fixtures/demo-questions.ts`) hand the *real*
  * region a hand-authored world and photograph the real shell, rather than a
  * second demo-only rendering that can drift from it. */
+export interface QuestionSyncSnapshot {
+  latestOutcome: TaskSyncOutcome | null;
+  latestInformativeAtMs: number | null;
+  lastSuccessfulAtMs: number | null;
+}
+
+/** The honest pre-sync snapshot, shared by fixtures that are not about the
+ * sync lane. Kept in the contract so every `QuestionInputs` remains
+ * structurally complete rather than making sync optional. */
+export const EMPTY_QUESTION_SYNC: QuestionSyncSnapshot = {
+  latestOutcome: null,
+  latestInformativeAtMs: null,
+  lastSuccessfulAtMs: null,
+};
+
 export interface QuestionInputs {
+  /** The device's latest authority-sync facts. Questions receive the same
+   * immutable snapshot shape in real and demo worlds; they never sample a
+   * clock, read storage, or reach into the store themselves. */
+  sync: QuestionSyncSnapshot;
   /** `null` until the first `bindings` answer arrives — "nobody has read the
    * table yet", which is not the same as "the table is empty". */
   bindings: BindingDTO[] | null;
@@ -219,8 +239,8 @@ export interface QuestionDef {
   surface: Surface;
   /** Which `context_snapshots` sources the wiring must request a pane read
    * for. Empty for a question that reads no snapshot lane at all (the
-   * calendar-lane questions, #117/#121/#122, and every never-polled infra
-   * placeholder, #311). */
+   * calendar-lane questions, #117/#121/#122, and client-only questions such
+   * as device reachability, #316). */
   sources: readonly string[];
   /** Which subjects this question currently has — 0..N, so one question can
    * answer for several things (several bins, several race series).

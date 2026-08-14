@@ -30,6 +30,7 @@ const initialTask: TaskState = {
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
+  lastSuccessfulSyncAtMs: null,
   syncOutcomeSeq: 0,
   queueDepth: null,
   deadLetters: [],

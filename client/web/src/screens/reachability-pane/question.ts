@@ -1,9 +1,15 @@
-import { placeholderQuestion } from "../questions/placeholder";
+import type { QuestionDef } from "../questions/contract";
+import { ReachabilityPaneExpanded } from "./ReachabilityPaneExpanded";
+import { SUBJECT_KEY, reachabilityAnswer } from "./reachability";
 
-// "Can this device itself reach the authority?" (ADR-0017's "what this
-// obliges", #316 — pure client work answering the surface split with no new
-// source, no new credential and no schema change: the one pane only the
-// device itself can answer). Replaced wholesale once #316 lands; see
-// `placeholder.tsx`'s header for why this is a call, not a hand-shaped
-// `QuestionDef` of its own.
-export const reachabilityQuestion = placeholderQuestion("This device", "reachability");
+// The one Status answer only this device can give (#316). It deliberately
+// registers no source: authority reachability is inferred from the existing
+// sync cycle and persisted locally, never polled through a second lane.
+export const reachabilityQuestion: QuestionDef = {
+  label: "This device",
+  surface: "status",
+  sources: [],
+  subjects: () => [SUBJECT_KEY],
+  answer: (_subjectKey, inputs) => reachabilityAnswer(inputs),
+  Expanded: ReachabilityPaneExpanded,
+};
