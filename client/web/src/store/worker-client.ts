@@ -9,7 +9,9 @@ import type {
   CalendarSelectionDTO,
   CalendarWorkerRequest,
   ConditionDTO,
+  GrillVerdictName,
   RuleDTO,
+  StepDTO,
   SyncCadenceRequest,
   TaskActionName,
   TaskStageName,
@@ -213,6 +215,31 @@ export function attachWorkerClient(
           // immediate re-read or a just-set do-date reads stale there until
           // the next sync cycle.
           requestBlocked(worker);
+        }
+        return;
+      case "completeGrillResult":
+        store.setTaskState({
+          lastGrillCompletion: {
+            seed: message.seed,
+            itemId: message.itemId,
+            kind: message.kind,
+            grillId: message.grillId,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::complete_grill`'s overlay already updated the item's
+          // stage synchronously — same immediate re-read `triageResult`
+          // triggers, so a confirmed Grill is visible right away, offline
+          // or not.
+          requestTriageInbox(worker);
+          requestFrontier(worker);
+          requestBlocked(worker);
+          // A ticked `deleteUntickedPlan` soft-deletes the item's live
+          // Steps core-side — the checklist this view already read for
+          // that item (if any) needs the same immediate re-read, or the
+          // now-deleted rows would sit stale until the next sync cycle.
+          requestSteps(worker, message.itemId);
         }
         return;
       case "setBindingResult":
@@ -545,6 +572,52 @@ export function triageItem(
   // field — what this used to do — would turn every untouched field into an
   // explicit clear now that `null` means something.
   worker.postMessage({ type: "triage", seed, itemId, destination, edits, nowMs });
+}
+
+/** #355/ADR-0023's reviewed Grill outcome — the review card's Confirm
+ * button submits exactly this, caller-facing convenience shape over
+ * `TaskWorkerRequest`'s `"completeGrill"` variant, same split
+ * `CaptureFields` documents for `captureTask`'s own optional fields. */
+export interface GrillCompletion {
+  transcript: string;
+  summary: string;
+  verdict: GrillVerdictName;
+  modelProposal: string;
+  appliedPatch: string;
+  /** `CONTEXT.md`'s **Replace** gesture: the explicit, default-off tick.
+   * `false` unless a human actually ticked it. */
+  deleteUntickedPlan: boolean;
+}
+
+/** #355/ADR-0023's Grill-completion mutation: the review card's Confirm
+ * button. `seed` mints `Core::complete_grill`'s own queue-entry (and
+ * minted Grill) id — same caller-mints contract as `actOnTask`'s.
+ *
+ * `sessionSteps` is the review session's own captured snapshot of the
+ * item's Steps, taken when the review card first rendered — never a fresh
+ * read at submit time, which is what lets the core-side drift check
+ * (`unticked_steps_changed`) mean anything. */
+export function completeGrill(
+  worker: WorkerLike,
+  seed: string,
+  itemId: string,
+  sessionSteps: StepDTO[],
+  completion: GrillCompletion,
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "completeGrill",
+    seed,
+    itemId,
+    sessionSteps,
+    transcript: completion.transcript,
+    summary: completion.summary,
+    verdict: completion.verdict,
+    modelProposal: completion.modelProposal,
+    appliedPatch: completion.appliedPatch,
+    deleteUntickedPlan: completion.deleteUntickedPlan,
+    nowMs,
+  });
 }
 
 /** #118's binding write: one absolute-value CAS `PUT`, enqueued durably.

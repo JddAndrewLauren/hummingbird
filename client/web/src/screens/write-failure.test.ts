@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { itemDTO } from "../test/component";
 import {
   actFailureFor,
+  grillCompletionFailureFor,
   strandedActFailure,
   strandedTriageFailure,
   triageFailureFor,
 } from "./write-failure";
-import type { TaskActResult, TaskTriageResult } from "../store/store";
+import type { TaskActResult, TaskGrillCompletionResult, TaskTriageResult } from "../store/store";
 
 const result = (overrides: Partial<TaskTriageResult> = {}): TaskTriageResult => ({
   seed: "s1",
@@ -54,6 +55,44 @@ describe("triageFailureFor", () => {
     expect(triageFailureFor(result({ kind: "busy", error: null }), "c1")).toBe(
       "That triage didn't apply.",
     );
+  });
+});
+
+const grillResult = (overrides: Partial<TaskGrillCompletionResult> = {}): TaskGrillCompletionResult => ({
+  seed: "s1",
+  itemId: "c1",
+  kind: "failed",
+  grillId: null,
+  error: "409 conflict",
+  ...overrides,
+});
+
+describe("grillCompletionFailureFor", () => {
+  it("states the server's own words for the item the result names", () => {
+    expect(grillCompletionFailureFor(grillResult(), "c1")).toBe("409 conflict");
+  });
+
+  it("falls back to a sentence when the failure carried no message", () => {
+    expect(grillCompletionFailureFor(grillResult({ error: null }), "c1")).toBe("That Grill didn't apply.");
+  });
+
+  it("is silent for every other item — a failure belongs to the one it names", () => {
+    expect(grillCompletionFailureFor(grillResult(), "c2")).toBeNull();
+  });
+
+  it("is silent for a success, and before any result has arrived", () => {
+    expect(grillCompletionFailureFor(grillResult({ kind: "ok", error: null }), "c1")).toBeNull();
+    expect(grillCompletionFailureFor(null, "c1")).toBeNull();
+    expect(grillCompletionFailureFor(undefined, "c1")).toBeNull();
+  });
+
+  it("reports needs_re_review — the stale-Confirm cue — as a failure too", () => {
+    expect(
+      grillCompletionFailureFor(
+        grillResult({ kind: "needs_re_review", error: "unticked steps changed since this review was last shown" }),
+        "c1",
+      ),
+    ).toBe("unticked steps changed since this review was last shown");
   });
 });
 

@@ -70,6 +70,25 @@ export interface TaskHostLike {
     edits: string,
     nowMs: number,
   ): Promise<string>;
+  /** #355/ADR-0023's Grill-completion mutation. Mirrors
+   * `hummingbird-ffi-web`'s `TaskHost::completeGrill`, resolved to JSON:
+   * `{"kind": "ok"|"not_found"|"item_done"|"needs_re_review"|"failed"|"busy", "id": string|null, "error": string|null}`.
+   * `sessionStepsJson` is `Step[]`'s own JSON array, snake_case
+   * (`unmapStep`) — `hummingbird_domain::Step` carries no `rename_all`.
+   * `verdict` is the wire's snake_case spelling
+   * (`"resolved"`/`"fog_remains"`). */
+  completeGrill(
+    seed: string,
+    itemId: string,
+    sessionStepsJson: string,
+    transcript: string,
+    summary: string,
+    verdict: string,
+    modelProposal: string,
+    appliedPatch: string,
+    deleteUntickedPlan: boolean,
+    nowMs: number,
+  ): Promise<string>;
   /** #118's binding write. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::setBinding`, resolved to JSON:
    * `{"kind": "ok"|"unknown_key"|"failed"|"busy", "error": string|null}`. */
@@ -361,6 +380,12 @@ interface RawTriageResponse {
   error: string | null;
 }
 
+interface RawCompleteGrillResponse {
+  kind: "ok" | "not_found" | "item_done" | "needs_re_review" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
+}
+
 interface RawTaskEvent {
   kind: "credential_needed";
   at_ms: number;
@@ -548,6 +573,23 @@ function mapStep(raw: RawStep): StepDTO {
   };
 }
 
+/** `mapStep`'s inverse — a `StepDTO` back to `hummingbird_domain::Step`'s
+ * own snake_case field names, for `session_steps`'s JSON array. The Rust
+ * side has no `rename_all`, so this is the one seam that must spell the
+ * wire's real names rather than lean on `JSON.stringify`'s default
+ * camelCase pass-through. */
+function unmapStep(step: StepDTO): RawStep {
+  return {
+    id: step.id,
+    item_id: step.itemId,
+    body: step.body,
+    done: step.done,
+    position: step.position,
+    deleted_at: step.deletedAt,
+    version: step.version,
+  };
+}
+
 function mapEvents(raw: RawTaskEvent[]): TaskEventDTO[] {
   return raw.map((event) => ({ kind: event.kind, atMs: event.at_ms }));
 }
@@ -688,6 +730,31 @@ export async function handleTaskRequest(
         seed: request.seed,
         itemId: request.itemId,
         kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "completeGrill": {
+      const raw = JSON.parse(
+        await host.completeGrill(
+          request.seed,
+          request.itemId,
+          JSON.stringify(request.sessionSteps.map(unmapStep)),
+          request.transcript,
+          request.summary,
+          request.verdict,
+          request.modelProposal,
+          request.appliedPatch,
+          request.deleteUntickedPlan,
+          request.nowMs,
+        ),
+      ) as RawCompleteGrillResponse;
+      post({
+        type: "completeGrillResult",
+        seed: request.seed,
+        itemId: request.itemId,
+        kind: raw.kind,
+        grillId: raw.id,
         error: raw.error,
       });
       return;

@@ -204,6 +204,12 @@ export type TaskActionName = "start" | "complete" | "block" | "cancel";
  * the server cannot express. */
 export type TriageDestinationName = "grilling" | "ready";
 
+/** ADR-0023's verdict vocabulary — the wire's snake_case spelling, byte for
+ * byte `hummingbird_domain::GrillVerdict`'s own serde output and the
+ * runner's existing grill-me schema enum: this is the same vocabulary, not
+ * a second one. */
+export type GrillVerdictName = "resolved" | "fog_remains";
+
 /** Every field of an item a triage may edit, and the vocabulary of the three
  * instructions each one can carry: **an absent key leaves the field alone, an
  * explicit `null` clears it, and a value sets it.** That is
@@ -631,6 +637,29 @@ export type TaskWorkerRequest =
       edits: TriageEdits;
       nowMs: number;
     }
+  /** #355/ADR-0023's Grill-completion mutation: the review card's Confirm
+   * button. Same caller-mints-`seed` contract as `"act"`.
+   *
+   * `sessionSteps` is the review session's own captured snapshot of the
+   * item's Steps — compared against live state core-side
+   * (`Core::complete_grill`'s `unticked_steps_changed`) — never the item's
+   * current Steps re-read at submit time, which would defeat the whole
+   * point of a drift check. `deleteUntickedPlan` is `CONTEXT.md`'s
+   * **Replace** gesture: the explicit, default-off tick naming the step
+   * count, never inferred from the verdict. */
+  | {
+      type: "completeGrill";
+      seed: string;
+      itemId: string;
+      sessionSteps: StepDTO[];
+      transcript: string;
+      summary: string;
+      verdict: GrillVerdictName;
+      modelProposal: string;
+      appliedPatch: string;
+      deleteUntickedPlan: boolean;
+      nowMs: number;
+    }
   /** #118's binding write: one absolute-value CAS `PUT /api/settings/:key`,
    * enqueued durably like every other mutation. `key` is the kebab-case,
    * unversioned binding name (ADR-0015), resolved by name in
@@ -797,6 +826,21 @@ export type TaskWorkerResponse =
       seed: string;
       itemId: string;
       kind: "ok" | "not_found" | "failed" | "busy";
+      error: string | null;
+    }
+  /** #355/ADR-0023's Grill-completion result, matched back by `seed` — same
+   * broadcast-not-reply contract as `triageResult`. `"item_done"` is a
+   * Done item, out of the whole Grill plan's scope; `"needs_re_review"` is
+   * the review card's cue to refuse a stale Confirm and show fresh state
+   * rather than silently re-sending it (the item's live unticked Steps
+   * drifted since this session's own snapshot); `"failed"` is everything
+   * else. `grillId` is the minted Grill's id on `"ok"`, `null` otherwise. */
+  | {
+      type: "completeGrillResult";
+      seed: string;
+      itemId: string;
+      kind: "ok" | "not_found" | "item_done" | "needs_re_review" | "failed" | "busy";
+      grillId: string | null;
       error: string | null;
     }
   /** #118's binding write result, matched back by `seed` — same

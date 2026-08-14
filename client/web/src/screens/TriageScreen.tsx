@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
@@ -6,10 +6,13 @@ import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import type { DemoCapture, DemoData } from "../fixtures/demo";
+import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
 import type { TriageDestinationName } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
-import { TriageRow } from "./TriageRow";
+import { GrillTakeover } from "./GrillTakeover";
+import { grillCompletionFailureFor } from "./write-failure";
+import { grillMeButtonId, TriageRow } from "./TriageRow";
 import { orderTriage } from "./triage-order";
 import { SingleColumn } from "./layout";
 
@@ -38,6 +41,13 @@ export interface TriageScreenProps {
    * here: `useSyncWiring`'s tick is the one clock this origin gets (ADR-0007),
    * and a screen that read `Date.now()` per render would be a second one. */
   nowMs: number;
+  /** "Grill me" (#355, ADR-0023): `shell/useGrillTakeoverWiring.ts`'s whole
+   * composite — which item (if any) has the takeover open, the turn state
+   * and the Confirm mutation. Optional for the same demo-only reason as
+   * `onTriage`: demo mode has no real `TaskItemDTO` to grill, only
+   * `DemoCapture` fixtures, so its own "Grill" button stays the existing
+   * stub and this screen never opens a real takeover under `?demo`. */
+  grill?: GrillTakeoverWiring;
 }
 
 // The Triage screen: the unsorted inbox, one line per capture, expanding into
@@ -53,6 +63,7 @@ export function TriageScreen({
   onTriage,
   onComplete,
   nowMs,
+  grill,
 }: TriageScreenProps) {
   const queue = demoCaptures ?? [];
   // One row open at a time: expanding is a *selection*, and two open editors
@@ -61,6 +72,59 @@ export function TriageScreen({
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const realTriage = demo ? [] : orderTriage(task.triageInbox);
+
+  // Back restores focus to the row's own "Grill me" button — never a held
+  // DOM reference, unlike `shell/CapturePopover.tsx`'s `restoreTo`: the
+  // takeover unmounts the whole list, so the button that opened it is gone
+  // by the time Back is pressed, and the one Back remounts is a NEW
+  // element. Looked up by id instead (`TriageRow.tsx`'s `grillMeButtonId`,
+  // the same "id survives the tree, a ref does not" contract
+  // `CAPTURE_TRIGGER_ID` uses for its own trigger), the moment the takeover
+  // actually closes.
+  const focusOnCloseRef = useRef<string | null>(null);
+
+  function handleGrillMe(itemId: string): void {
+    focusOnCloseRef.current = itemId;
+    grill?.open(itemId);
+  }
+
+  function handleGrillBack(): void {
+    grill?.back();
+  }
+
+  useEffect(() => {
+    if (grill?.openItemId !== null && grill?.openItemId !== undefined) {
+      return;
+    }
+    const itemId = focusOnCloseRef.current;
+    if (itemId === null) {
+      return;
+    }
+    focusOnCloseRef.current = null;
+    document.getElementById(grillMeButtonId(itemId))?.focus();
+  }, [grill?.openItemId]);
+
+  const openItem = grill?.openItemId
+    ? task.triageInbox.find((item) => item.id === grill.openItemId)
+    : undefined;
+
+  if (grill && openItem) {
+    return (
+      <SingleColumn>
+        <GrillTakeover
+          item={openItem}
+          steps={task.stepsByItem[openItem.id] ?? []}
+          turn={grill.turn}
+          turns={grill.turns}
+          onAnswer={grill.answer}
+          onKeepGrilling={grill.keepGrilling}
+          onConfirm={grill.confirm}
+          onBack={handleGrillBack}
+          completionError={grillCompletionFailureFor(task.lastGrillCompletion, openItem.id)}
+        />
+      </SingleColumn>
+    );
+  }
 
   return (
     <SingleColumn>
@@ -173,6 +237,7 @@ export function TriageScreen({
                 nowMs={nowMs}
                 onTriage={onTriage}
                 onComplete={onComplete}
+                onGrillMe={grill ? handleGrillMe : undefined}
                 lastTriage={task.lastTriage}
               />
             ))}

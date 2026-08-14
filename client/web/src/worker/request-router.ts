@@ -26,6 +26,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   capture: true,
   act: true,
   triage: true,
+  completeGrill: true,
   setBinding: true,
   getBindings: true,
   getKindRegistry: true,

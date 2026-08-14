@@ -3,14 +3,25 @@
 // calls this rather than branching on `item.stage` inline, so the mapping
 // itself is unit-testable without React.
 //
-// Triage and Grilling offer nothing here: neither is an action yet
-// (`CONTEXT.md`'s "Stage" glossary entry — "Triage and Grilling are
-// pre-action by definition"), and promoting one is S13's triage screen, not
-// this slice. Done offers nothing either — a finished item has nothing left
-// to act on. There is no "pick" affordance because there is no state for
-// it: the frontier (S10, `Core::frontier`) already IS "what can be started
-// right now" — `"start"` on a Ready item is the only promotion this slice
-// makes, and it lands on `InProgress`, never a distinct "picked" stage.
+// Triage and Grilling offer nothing in `availableActions` — neither is an
+// action yet (`CONTEXT.md`'s "Stage" glossary entry — "Triage and Grilling
+// are pre-action by definition"), and promoting one is S13's triage screen,
+// not this vocabulary. Done offers nothing either — a finished item has
+// nothing left to act on. There is no "pick" affordance because there is no
+// state for it: the frontier (S10, `Core::frontier`) already IS "what can be
+// started right now" — `"start"` on a Ready item is the only promotion this
+// slice makes, and it lands on `InProgress`, never a distinct "picked" stage.
+//
+// **Triage now offers one gesture of its own: Grill me** (#355, ADR-0023) —
+// `canGrill` below, deliberately NOT folded into `availableActions`'s
+// `TaskActionName` vocabulary. A Grill is not an `ItemAction`: it opens the
+// interview takeover rather than mutating the item directly, and its
+// eventual stage move comes from `hummingbird-domain`'s own verdict
+// function (`resulting_stage`), never from this file's mapping. Grilling
+// itself offers no such button — an item already mid-interview has nothing
+// further to grill until this one's transcript resolves — so `canGrill` is
+// `true` for `"triage"` alone, the same "one deciding function" discipline
+// `canMarkDone` documents for its own, wider vocabulary.
 import type { TaskActionName, TaskItemDTO, TaskStageName } from "../store/protocol";
 
 const ACTIONS_BY_STAGE: Record<TaskStageName, readonly TaskActionName[]> = {
@@ -48,6 +59,14 @@ export function availableActions(stage: TaskStageName): readonly TaskActionName[
  * every screen's row, so the affordance cannot drift between them. */
 export function canMarkDone(item: Pick<TaskItemDTO, "stage" | "archivedAt">): boolean {
   return item.stage !== "done" && item.archivedAt === null;
+}
+
+/** Whether a row offers "Grill me" (#355, ADR-0023): Triage rows only, this
+ * slice — the tracer deliberately does not extend the affordance to any
+ * other stage. Beside `TriageRow`'s existing "Send to grilling" button, not
+ * a replacement for it: this slice adds a gesture and removes none. */
+export function canGrill(stage: TaskStageName): boolean {
+  return stage === "triage";
 }
 
 /** Mirrors `hummingbird_core::ItemAction::stage`'s mapping — the same

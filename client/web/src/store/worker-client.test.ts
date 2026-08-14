@@ -62,6 +62,7 @@ const initialTask: TaskState = {
   lastCapture: null,
   lastAct: null,
   lastTriage: null,
+  lastGrillCompletion: null,
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,

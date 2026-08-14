@@ -18,6 +18,8 @@ import backendRegistrySource from "./backend-registry.ts?raw";
 import backendSelectionSource from "./backend-selection.ts?raw";
 import declineSource from "./decline.ts?raw";
 import envelopeSource from "./envelope.ts?raw";
+import grillArgsSource from "./grill-args.ts?raw";
+import grillTurnStateSource from "./grill-turn-state.ts?raw";
 import microtaskAffordanceSource from "./microtask-affordance.ts?raw";
 import microtaskArgsSource from "./microtask-args.ts?raw";
 import ndjsonSource from "./ndjson.ts?raw";
@@ -27,6 +29,7 @@ import routeRunSource from "./route-run.ts?raw";
 import runSkillSource from "./run-skill.ts?raw";
 import runStateSource from "./run-state.ts?raw";
 import wiringSource from "../shell/useMicrotaskWiring.ts?raw";
+import grillWiringSource from "../shell/useGrillWiring.ts?raw";
 import backendSelectionHookSource from "../shell/useBackendSelection.ts?raw";
 import panelSource from "../components/domain/ItemDetailPanel.tsx?raw";
 
@@ -35,6 +38,8 @@ const SKILL_MODULES: Array<[string, string]> = [
   ["backend-selection.ts", backendSelectionSource],
   ["decline.ts", declineSource],
   ["envelope.ts", envelopeSource],
+  ["grill-args.ts", grillArgsSource],
+  ["grill-turn-state.ts", grillTurnStateSource],
   ["microtask-affordance.ts", microtaskAffordanceSource],
   ["microtask-args.ts", microtaskArgsSource],
   ["ndjson.ts", ndjsonSource],
@@ -45,16 +50,19 @@ const SKILL_MODULES: Array<[string, string]> = [
   ["run-state.ts", runStateSource],
 ];
 
-/** The whole lane: `src/skills/` plus the two `src/shell/` hooks that are
- * part of it. They cannot join `SKILL_MODULES` — the import-graph test
- * above allows only `./` specifiers, and a hook necessarily imports
+/** The whole lane: `src/skills/` plus the `src/shell/` hooks that are part
+ * of it. They cannot join `SKILL_MODULES` — the import-graph test above
+ * allows only `./` specifiers, and a hook necessarily imports
  * `../skills/…` — but every *other* invariant here binds them equally. The
  * selection hook is in the lane because it is where the picker's device
  * preference is read and written; a queue reference or a timer there would
- * be exactly as wrong as one in `route-run.ts`. */
+ * be exactly as wrong as one in `route-run.ts`. `useGrillWiring.ts` (#355,
+ * ADR-0023) is the Grill takeover's own turn-request hook — this issue's
+ * own "extend it to cover the new module" instruction. */
 const LANE_MODULES: Array<[string, string]> = [
   ...SKILL_MODULES,
   ["useMicrotaskWiring.ts", wiringSource],
+  ["useGrillWiring.ts", grillWiringSource],
   ["useBackendSelection.ts", backendSelectionHookSource],
 ];
 
@@ -93,6 +101,21 @@ describe("the skill lane cannot reach the sync engine", () => {
       .map((entry) => entry.replace(/^\s*type\s+/, "").trim())
       .filter((entry) => entry.length > 0);
     expect(named.sort()).toEqual(["WorkerLike", "triggerSyncManual"]);
+  });
+
+  /** Unlike `useMicrotaskWiring.ts`, this hook has NO sanctioned crossing at
+   * all: confirming a Grill (`Core::complete_grill`) is a separate, ordinary
+   * queued mutation wired the way `useTriageWiring.ts` wires `Core::triage`
+   * — see that hook's own module, not this one — so there is no cadence
+   * this file has any business asking for. */
+  it("the Grill turn-wiring hook reaches neither the store nor the worker layer", () => {
+    const imports = [...code(grillWiringSource).matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
+    for (const specifier of imports) {
+      expect(
+        specifier.startsWith("../store/") || specifier.startsWith("../worker/"),
+        `useGrillWiring.ts imports ${specifier}`,
+      ).toBe(false);
+    }
   });
 
   it("the selection hook reaches neither the store nor the worker layer", () => {

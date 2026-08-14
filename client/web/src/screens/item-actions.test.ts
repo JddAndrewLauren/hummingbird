@@ -3,6 +3,7 @@ import type { TaskItemDTO } from "../store/protocol";
 import {
   applyItemAction,
   availableActions,
+  canGrill,
   canMarkDone,
   resolveFallbackPending,
 } from "./item-actions";
@@ -76,6 +77,19 @@ describe("canMarkDone", () => {
 
   it("refuses an archived item — cancelled is settled, not completable", () => {
     expect(canMarkDone({ stage: "ready", archivedAt: 2_000 })).toBe(false);
+  });
+});
+
+// #355/ADR-0023's "Grill me" affordance: Triage rows only, this slice.
+describe("canGrill", () => {
+  it("is true for triage alone", () => {
+    expect(canGrill("triage")).toBe(true);
+  });
+
+  it("is false for every other stage, Grilling included", () => {
+    for (const stage of ["grilling", "ready", "in_progress", "blocked", "done"] as const) {
+      expect(canGrill(stage)).toBe(false);
+    }
   });
 });
 

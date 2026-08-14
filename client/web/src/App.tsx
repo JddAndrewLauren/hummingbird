@@ -26,6 +26,7 @@ import { tripsCalendarId } from "./calendar/selection";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
+import { useGrillTakeoverWiring } from "./shell/useGrillTakeoverWiring";
 import { useItemActions } from "./shell/useItemActions";
 import { useTriageWiring } from "./shell/useTriageWiring";
 import { useBackendSelection } from "./shell/useBackendSelection";
@@ -244,6 +245,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   }, []);
   const { act: handleAct } = useItemActions(worker);
   const { triage: handleTriage } = useTriageWiring(worker);
+  // #355/ADR-0023's Grill takeover — the Triage screen's own composition of
+  // the turn lane and the Confirm mutation (`useGrillTakeoverWiring.ts`'s
+  // own doc). Absent in demo mode, same reason `onTriage` is: demo has no
+  // real `TaskItemDTO` to grill.
+  const grillTakeover = useGrillTakeoverWiring(worker, task.syncOutcomeSeq);
   // #122's do-date write: the same triage mutation entry point every other
   // triage edit uses, with `destination: null` (leave `stage` untouched —
   // `useTriageWiring.ts`'s own doc) and only `scheduledDate` set. Not its
@@ -381,6 +387,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onTriage={demo ? undefined : handleTriage}
               onComplete={demo ? undefined : (itemId) => handleAct(itemId, "complete")}
               nowMs={syncNowMs}
+              grill={demo ? undefined : grillTakeover}
             />
           )}
           {screen === "routes" && <RoutesScreen demo={demo} />}

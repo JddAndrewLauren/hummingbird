@@ -1,5 +1,5 @@
 import type { TaskItemDTO } from "../store/protocol";
-import type { TaskActResult, TaskTriageResult } from "../store/store";
+import type { TaskActResult, TaskGrillCompletionResult, TaskTriageResult } from "../store/store";
 
 /** What a failed write says — the one spelling, for every surface that says it.
  *
@@ -87,6 +87,7 @@ function strandedFailure(
 
 const TRIAGE_FALLBACK = "That triage didn't apply.";
 const ACT_FALLBACK = "That action didn't apply.";
+const GRILL_COMPLETION_FALLBACK = "That Grill didn't apply.";
 
 /** The triage failure belonging to one item, matched by the id the result
  * itself carries. A failure belongs to whichever item it names, never to
@@ -107,6 +108,17 @@ export function actFailureFor(
   itemId: string,
 ): string | null {
   return failureFor(result, itemId, ACT_FALLBACK);
+}
+
+/** The Grill-completion failure belonging to one item, matched by the id
+ * the result itself carries — the review card's `triageFailureFor` twin.
+ * `"needs_re_review"` and every other non-`"ok"` kind read the same: the
+ * server's own words, or the fallback sentence. */
+export function grillCompletionFailureFor(
+  result: TaskGrillCompletionResult | null | undefined,
+  itemId: string,
+): string | null {
+  return failureFor(result, itemId, GRILL_COMPLETION_FALLBACK);
 }
 
 /** A triage failure with no `TriageRow` left to wear it — see
