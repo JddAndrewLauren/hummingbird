@@ -1,0 +1,182 @@
+/* The shell's layout, and its one breakpoint.
+   ==========================================
+
+   Why a stylesheet at all, in an app that styles everything with inline
+   `style={{}}` objects: a stylesheet rule cannot override an inline property.
+   No specificity, no `!important` on a shorthand, nothing beats an element's
+   own `style` attribute for the same longhand. So a media query can only
+   reach an element whose inline object has been *deleted*, which is why the
+   base rules below are here rather than in the components — the class is the
+   only styling those seven elements have.
+
+   The split is hard, and deliberately by kind. Mixing the two per element is
+   what regresses desktop:
+
+   - **These classes** carry the six pure-layout elements: the shell row and
+     the scroll container (`App.tsx`), the header and its title
+     (`shell/Header.tsx`), and the four screen skeletons
+     (`screens/layout.tsx`). Their phone form is a media query, no JS.
+   - **`useIsPhone`** (a `matchMedia` hook) is used only where the DOM *tree*
+     differs and no amount of CSS would do: the nav rail versus the bottom bar,
+     and `CapturePopover`'s JS-measured anchor.
+
+   `--gutter-page` is deliberately NOT redefined inside the media query. Three
+   unrelated things consume it — the scroll container, the header, and
+   `CapturePopover`'s measured width — and moving it would move all three
+   including a JS measurement. Per-class padding is overridden instead.
+
+   The breakpoint literal (640px) is `PHONE_MAX_WIDTH_PX` in `breakpoints.ts`;
+   CSS cannot read a custom property inside a media query and there is no
+   PostCSS plugin here, so it is spelled twice and `responsive-breakpoint.test.ts`
+   reads this file's source to pin the two equal. That file also explains why
+   640 and not 768. */
+
+/* ---- The shell ---------------------------------------------------------- */
+
+.hb-shell {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--surface-page);
+}
+
+/* The app's one scroll container: the design system fixes the rail and the
+   context panel and lets only the centre column move. On the phone form the
+   nav is a flex sibling *below* this box rather than floating chrome over it,
+   so there is no bar-shaped hole to reserve at the bottom — see `NavBar.tsx`. */
+.hb-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--gutter-page) var(--space-11);
+}
+
+.hb-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex: 0 0 auto;
+  padding: var(--space-7) var(--gutter-page) var(--space-6);
+}
+
+/* Focusable only programmatically (`Header.tsx`'s screen-change effect), so
+   it is not a keyboard-operable component and shows no ring. */
+.hb-header-title {
+  flex: 1;
+  min-width: 0;
+  font: var(--type-h1);
+  letter-spacing: var(--tracking-heading);
+  color: var(--text-primary);
+  outline: none;
+}
+
+/* ---- The screen skeletons ----------------------------------------------- */
+
+.hb-two-column {
+  display: flex;
+  gap: var(--space-8);
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+/* `min()` rather than a bare 380: a fixed minimum cannot be honoured below
+   380px of container, so the column overflowed the page horizontally instead
+   of shrinking. Desktop is unchanged — at 768 and up the container already
+   exceeds 380, so this resolves to 380px exactly. */
+.hb-column {
+  flex: 1;
+  min-width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+/* The context panel. It is sticky, so its height is whatever its content is —
+   and once Now's aside holds a ranked region that grows with the number of
+   standing questions (#245, ADR-0015), that content can exceed the viewport
+   and simply be unreachable: the shell's one scroll container scrolls the
+   *page*, past a panel stuck to the top. Capping it at the viewport and
+   letting it scroll itself is what keeps the bottom of the panel reachable on
+   every screen that has one (Now, Settings, Alerts, Routes).
+
+   All three of those properties are undone on the phone form below, where the
+   panel is stacked in the flow and none of them is true any more. */
+.hb-aside {
+  width: var(--panel-width);
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100dvh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/** A single-column surface capped at the content measure. */
+.hb-single-column {
+  max-width: var(--content-max);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+/* ---- The phone form ----------------------------------------------------- */
+
+@media (max-width: 640px) {
+  /* The rail becomes a bottom bar. `App.tsx` mounts exactly one of the two
+     (two navigation landmarks break `surfaces.spec.ts`'s strict-mode
+     `getByRole("navigation")`) and renders the bar *after* `<main>`, so this
+     needs only the axis flip: DOM order and visual order already agree. */
+  .hb-shell {
+    flex-direction: column;
+  }
+
+  /* The title takes its own line and the controls wrap under it — at 390px a
+     30px heading beside a sync badge, a refresh control and the New button
+     leaves the heading about two characters wide. */
+  .hb-header {
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    padding: var(--space-6) var(--gutter-page) var(--space-5);
+  }
+
+  .hb-header-title {
+    flex: 1 0 100%;
+    font: var(--type-h2);
+  }
+
+  .hb-scroll {
+    padding-bottom: var(--space-9);
+  }
+
+  /* Stacked, in the flow. Leaving `position: sticky` + `max-height: 100dvh` +
+     `overflow-y: auto` on a full-width panel below the column would create a
+     nested scroll region — a viewport-tall box inside a scrolling page, which
+     swallows the page's own scroll wherever a thumb happens to land. The
+     reachability problem the desktop rule solves does not exist here: stacked
+     in the flow, the panel's whole height is scrolled by the page. */
+  .hb-aside {
+    width: auto;
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+/* iOS Safari zooms the whole page when a form control smaller than 16px takes
+   focus, and never zooms back out. `--size-body` is 15px; the token file is a
+   copied mirror of the design project (`src/design/tokens/`) so it cannot be
+   changed here, and `Input.tsx`, `Textarea.tsx` and `Select.tsx` all set the
+   `font` shorthand inline — which `!important` on a longhand is the only thing
+   that beats. This is the app's one deliberate `!important`; a `--size-input`
+   token taken back upstream to the design project is the real fix.
+   (`-webkit-text-size-adjust` in `base.css` does not prevent focus-zoom.) */
+@media (max-width: 640px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

@@ -286,14 +286,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        height: "100dvh",
-        overflow: "hidden",
-        background: "var(--surface-page)",
-      }}
-    >
+    // `className`, not a style object: this is one of the six pure-layout
+    // elements whose phone form is a media query, and a stylesheet rule cannot
+    // override an inline property. `shell/responsive.css` has the whole
+    // argument and every rule.
+    <div className="hb-shell">
       <NavRail
         screen={screen}
         onScreen={setScreen}
@@ -324,15 +321,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         {updateReady ? <UpdateBanner onReload={handleReload} /> : null}
 
         {/* The one scroll container: the design README fixes the rail and
-            the context panel, and lets only the centre column move. */}
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: "auto",
-            padding: "0 var(--gutter-page) var(--space-11)",
-          }}
-        >
+            the context panel, and lets only the centre column move. Its
+            styling — and its phone form — is `shell/responsive.css`. */}
+        <div className="hb-scroll">
           {screen === "now" && (
             <NowScreen
               demo={demo}

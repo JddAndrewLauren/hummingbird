@@ -23,5 +23,12 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx", "csp-worker/**/*.test.ts"],
+    // Vitest's default (`css: false`) replaces the contents of every CSS
+    // module with an empty string, and it decides that by file extension — so
+    // it empties a `?raw` import too, silently. `responsive-breakpoint.test.ts`
+    // pins the phone breakpoint by reading `responsive.css`'s source text, and
+    // under the default it read `""` and asserted nothing at all. No test
+    // imports CSS for its styling, so turning this on only makes `?raw` honest.
+    css: true,
   },
 });

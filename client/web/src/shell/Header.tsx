@@ -43,28 +43,17 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
   }, [title]);
 
   return (
-    <header
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "var(--space-5)",
-        flex: "0 0 auto",
-        padding: "var(--space-7) var(--gutter-page) var(--space-6)",
-      }}
-    >
+    // `hb-header` / `hb-header-title` rather than style objects: on a phone the
+    // title takes its own line and drops a size, and a stylesheet rule cannot
+    // override an inline property — including the `font` shorthand, which is
+    // why the h1's whole object had to go too. `shell/responsive.css`.
+    <header className="hb-header">
       <h1
         ref={headingRef}
+        className="hb-header-title"
         // Focusable only programmatically, by the effect above — never a tab
         // stop, so it is not a keyboard-operable component and shows no ring.
         tabIndex={-1}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          font: "var(--type-h1)",
-          letterSpacing: "var(--tracking-heading)",
-          color: "var(--text-primary)",
-          outline: "none",
-        }}
       >
         {title}
       </h1>
