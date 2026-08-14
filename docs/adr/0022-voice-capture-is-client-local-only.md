@@ -47,10 +47,17 @@ reachable from Hummingbird's own capture control.
 same call minus the `processLocally` flag — returned **`"available"`**, while
 the same query *with* the flag returned `"downloadable"`. The instance property
 `processLocally` **defaults to `false`**. Omitting the flag does not degrade
-gracefully and does not fail; it silently succeeds against the network
-recognizer. The cloud path is the default path, it is live today, and the only
-thing standing between it and a Hummingbird capture is code that asks for
-local processing on purpose, every time.
+gracefully and does not fail — the browser reports itself **ready** for a
+recognition that has not been required to stay local.
+
+*What was measured is the readiness answer, not the audio's destination: this
+session never called `start()`, so it did not observe a recognition session
+reaching the network.* The inference that it would is what `processLocally`
+means and why the flag exists, but it is an inference and is marked as one. It
+does not need to be a measurement for Decision 1 to hold: a guarantee that
+cannot be established is already unusable, whatever the browser does behind it.
+The only thing standing between the default path and a Hummingbird capture is
+code that asks for local processing on purpose, every time.
 
 ## Decision 2 — the absence of the capability static is `unsupported`, never an assumption
 
@@ -58,9 +65,11 @@ local processing on purpose, every time.
 assertion.** Where the static is missing, the answer is `unsupported` and the
 microphone does not render.
 
-This is not defensive coding. A `SpeechRecognition` constructor that has no
-on-device statics is a **complete, working, network-backed recognizer** — the
-Web Speech API has shipped in that form for a decade. So the failure mode of
+This is not defensive coding, and it is not hypothetical. A `SpeechRecognition`
+constructor that has no on-device statics is a **complete, working recognizer
+with no way to require local processing** — the Web Speech API has shipped in
+that form for a decade, and **Safari 26.6 ships exactly it today** (measured;
+Decision 6). So the failure mode of
 treating a missing static as "probably fine, try it anyway" is not a crash or
 an empty transcript; it is Hummingbird quietly shipping audio to a remote
 service while its own ADR says it does not. The gate has to be positive:
@@ -189,10 +198,16 @@ Requires handling a user gesture when availability is "downloadable".
 ```
 
 Called from a real click handler (`navigator.userActivation.isActive === true`)
-it resolved **`true`** after **6891 ms**, with `available()` moving
+it resolved **`true`** after ~6.9 s — one sample, on one connection, so read it
+as "seconds, not instant" rather than as a figure — with `available()` moving
 `downloadable → downloading → available` while it ran. Once availability is
 `"available"`, `install()` resolves `true` with no gesture — the requirement
 applies only while the pack is still `downloadable`.
+
+*The rejection above is the control that makes that last sentence trustworthy:
+both the pre- and post-install calls were issued from the same non-gesture
+evaluation context, and only the pre-install one threw. The difference is the
+availability state, not the harness.*
 
 **This promotes one of #377's design choices from preference to requirement.**
 That plan chose "setup is two deliberate steps — the first mic tap in
@@ -218,38 +233,73 @@ version amends them from its own file; check this ADR's Status header.*
 
 ## Decision 6 — availability, and what is deliberately not known
 
-| Device | Browser | Constructor | On-device statics | `available({langs:["en-US"], processLocally:true})` |
+| Device | Browser | Constructor | On-device statics | Verdict |
 | --- | --- | --- | --- | --- |
-| Desk (macOS) | Chrome 151 | both names | `available`, `install` | `"downloadable"` → **`"available"`** after install |
-| Phone | **not probed** | — | — | — |
-| iPad | **not probed** | — | — | — |
+| Desk (macOS) | Chrome 151 | both names, same object | `available`, `install` | **ready** after install |
+| Desk (macOS) | Safari 26.6 | `webkitSpeechRecognition` **only** | **none** | **`unsupported`** |
+| Phone | not probed | — | — | — |
+| iPad | not probed (see below) | — | — | — |
 
-**#378 asked for all three so that "desktop only" would be a finding rather
-than an assumption. It is still an assumption, and this ADR does not pretend
-otherwise.** The phone and iPad were not probed; the operator scoped that work
-out on 2026-08-13 as unnecessary for the decision, which it is — Decision 1
-does not depend on where the recognizer is available, only on what may be done
-where it is not. That acceptance criterion on #378 is recorded as **not met**.
+### Safari ships the dangerous case, and it is now measured
 
-Two mechanical obstacles are worth recording, because the next person to try
-will hit both. `hb.twinion.net` serves
-`script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com` with no
-`unsafe-inline`, and **Safari enforces CSP against `javascript:` bookmarklets**
-where Chrome exempts them — so the app's own origin cannot be probed by
-bookmarklet on iOS at all. A probe there needs either a plain secure origin
-with no CSP (the statics are globals gated on secure context, not on origin) or
-Safari Web Inspector over a cable. One iPad attempt did run, but against
-`about:blank` with `isSecureContext: false`; it reported no constructor, which
-establishes **nothing** — an insecure context is expected to withhold the API,
-so that result is indistinguishable from the interesting answer.
+Probed on `https://example.com` (a secure context with no CSP — see the
+obstacle note below), Safari 26.6 on macOS:
+
+```
+"SpeechRecognition" in window        → false
+"webkitSpeechRecognition" in window  → true
+Object.getOwnPropertyNames(Ctor)     → ["length","name","prototype"]
+available / availableOnDevice / install / installOnDevice → all undefined
+"processLocally" in instance         → false
+```
+
+The prototype carries the full long-standing Web Speech surface — `start`,
+`stop`, `abort`, `onresult`, `interimResults`, `maxAlternatives` — and **not
+one** of `processLocally`, `phrases`, `unspokenPunctuation` or `quality`.
+
+**This is the exact hazard Decision 2 exists for, and it is no longer
+hypothetical.** Safari offers a complete, working, ready-to-use speech
+recognizer that a naive capability check — "is there a constructor?" — would
+happily light a microphone against. There is no flag to require local
+processing, no static to ask, and therefore no way for Hummingbird to establish
+the guarantee. Decision 2 routes it to `unsupported`, and the microphone does
+not render. Any future change that weakens the gate to a constructor-presence
+check ships cloud recognition on every Safari.
+
+### What is still not known
+
+**#378 asked for the phone and the iPad so that "desktop only" would be a
+finding rather than an assumption. Neither was probed**, and this ADR does not
+pretend otherwise — that acceptance criterion on #378 is recorded as **not
+met**. The operator scoped it out on 2026-08-13.
+
+The iPad runs the same WebKit at the same version (Safari 26.6, iPadOS 18.7),
+so the Safari row above is strong evidence for it — but it is *inference from a
+shared engine*, not a measurement of that device, and is not recorded as one.
 
 **The consequence for the code is nil**, which is why the gap is tolerable:
-Decision 2 already routes an absent static to `unsupported`, and an unprobed
-device is by definition one where local processing has not been established.
-The client behaves correctly on the phone and the iPad whatever the answer
-turns out to be. What is lost is only *knowing* — in particular, whether iOS
-Safari exposes a recognizer with no `processLocally`, which is the case
-Decision 2 exists for and the one worth measuring if anyone ever does.
+Decision 2 routes an absent static to `unsupported`, and an unprobed device is
+by definition one where local processing has not been established. The client
+behaves correctly on both whatever the answer is.
+
+### The obstacle, for whoever probes next
+
+`hb.twinion.net` serves `script-src 'self' 'wasm-unsafe-eval'
+https://accounts.google.com` with no `unsafe-inline`, and **Safari enforces CSP
+against `javascript:` bookmarklets** where Chrome exempts them — so the app's
+own origin cannot be probed by bookmarklet under Safari at all. Use a plain
+secure origin with no CSP, or Safari Web Inspector over a cable.
+
+Probing a different origin is sound for these statics, with one caveat worth
+stating: they are gated on **secure context**, which an insecure attempt
+demonstrated — one iPad run against `about:blank` reported no constructor at
+all, which establishes nothing, since an insecure context is expected to
+withhold the API. Origin is not wholly irrelevant, though: per #368,
+`on-device-speech-recognition` is a Permissions-Policy directive gating
+`install()`. It defaults to a `self` allowlist, so a **top-level** probe on any
+secure origin behaves the same — but a cross-origin iframe would not, and that
+directive name is itself unverified (it comes from MDN, not from this
+session's measurement).
 
 ### The install, and "install once"
 
@@ -328,6 +378,12 @@ must not infer the set of installed languages from the tag it passed.
 - **A code comment or module header claiming "falls back to cloud if
   unavailable" is a defect against this ADR**, not a nit, whether or not the
   code does it.
+- **Safari renders no microphone, and that is the correct output, not a bug.**
+  #383's design pass and #384's real-browser acceptance should expect the
+  capture box to look exactly as it does today under Safari — the `unsupported`
+  arm renders nothing, which is also what keeps the existing
+  `CapturePopover.test.tsx` cases untouched. A bug report of "the mic is
+  missing in Safari" is this ADR working.
 - **Superseding this ADR requires a measurement, not an argument.** A proposal
   to relax Decision 1 must show the browser state it was measured in, in the
   form Decision 5 uses.
@@ -337,6 +393,8 @@ must not infer the set of installed languages from the tag it passed.
 **Re-measure and amend when any of these becomes true:** `available` or
 `install` is renamed again or moves off the constructor; `processLocally`
 changes its default away from `false`; `available()` returns a value outside
-the three observed above; or a second device is probed at all — at which point
-Decision 6's table stops being one row and a gap, and the "desktop only" scope
-can finally be stated as a finding rather than the assumption it is today.
+the three observed above; **Safari gains any on-device static**, which would
+move it out of `unsupported` and make the microphone render somewhere it never
+has; or the phone or iPad is probed, closing the last gap in Decision 6 and
+letting the feature's device scope finally be stated as a finding rather than
+the part-measurement it is today.
