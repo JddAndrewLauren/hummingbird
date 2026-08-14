@@ -24,6 +24,19 @@ describe("csp-worker", () => {
     );
   });
 
+  it("grants same-origin microphone and on-device speech recognition via Permissions-Policy", async () => {
+    const env = fakeEnv(new Response("<html></html>", { status: 200 }));
+
+    const response = await worker.fetch(
+      new Request("https://hb.twinion.net/"),
+      env,
+    );
+
+    expect(response.headers.get("Permissions-Policy")).toBe(
+      "microphone=(self), on-device-speech-recognition=(self)",
+    );
+  });
+
   it("preserves the underlying asset response's status and body", async () => {
     const env = fakeEnv(new Response("not found", { status: 404 }));
 
