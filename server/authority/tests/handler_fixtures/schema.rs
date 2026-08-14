@@ -1,6 +1,7 @@
 //! Schema lifecycle: idempotent init, the full table set, and the additive
 //! growth path (1→2, then 2→3 for the notification lane, #131, then 3→4 for
-//! ADR-0015's `alerts.subject_key`).
+//! ADR-0015's `alerts.subject_key`, then 4→5 for `items.agent`, then 5→6
+//! for `grills`, #353).
 
 use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
@@ -44,6 +45,7 @@ fn init_schema_creates_every_adr_0009_table() {
         "rules",
         "push_targets",
         "deliveries",
+        "grills",
     ] {
         assert!(names.iter().any(|n| n == table), "missing table `{table}` in {names:?}");
     }
@@ -491,6 +493,68 @@ fn init_schema_grows_a_schema_4_database_additively() {
         "a migrated v4 store and a fresh store end up with byte-identical DDL — which is \
          why CREATE_ITEMS declares agent after the newline, before the closing paren, \
          and NOT inline the way CREATE_ALERTS declares subject_key",
+    );
+}
+
+/// A genuine v5 store: the frozen v2+v3 DDL, 3→4's `ALTER`, and 4→5's
+/// `ALTER`, which is how every real v5 store came to be — `hummingbird-
+/// authority` has been live at this shape since #237/#291.
+fn v5_store() -> RusqliteSql {
+    let sql = v4_store();
+    sql.exec(
+        "ALTER TABLE items ADD COLUMN agent INTEGER NOT NULL DEFAULT 0",
+        &[],
+    )
+    .expect("4→5's own ALTER applies");
+    sql.exec("UPDATE meta SET schema_version = 5 WHERE id = 1", &[])
+        .expect("v5 meta row seeds");
+    sql
+}
+
+/// The 5→6 growth path (#353): `grills`, back to the 1→2 / 2→3 shape — a
+/// purely additive new table, not another [`add_missing_columns`] arm.
+/// `CREATE TABLE IF NOT EXISTS` grows a v5 store for free, so this is the
+/// same style of test as `init_schema_grows_a_schema_2_database_additively`
+/// rather than the 3→4 / 4→5 column-presence style.
+#[test]
+fn init_schema_grows_a_schema_5_database_additively() {
+    let migrated = v5_store();
+    assert_eq!(schema_version(&migrated), 5, "starts genuinely at v5");
+    assert!(
+        !table_names(&migrated).contains(&"grills".to_string()),
+        "the v5 fixture must not already carry grills"
+    );
+    // A row written before the growth, to prove the table addition never
+    // touches anything pre-existing.
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, priority, created_at, updated_at, version, agent) \
+             VALUES ('i', 'compare three insurance quotes', 'ready', 0, 1000, 1000, 1, 0)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(
+        table_names(&migrated).contains(&"grills".to_string()),
+        "migrated store missing `grills`",
+    );
+    let rows = migrated.exec("SELECT id FROM items", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        table_names(&migrated),
+        table_names(&fresh),
+        "a migrated v5 store and a fresh store end up with identical table sets",
+    );
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v5 store and a fresh store end up with byte-identical DDL, \
+         including both new indexes (idx_grills_version, idx_grills_item)",
     );
 }
 

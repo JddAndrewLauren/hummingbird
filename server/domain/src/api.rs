@@ -10,6 +10,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::context::{Alert, ContextSnapshot, Setting};
+use crate::grill::{GrillVerdict, GrillWithoutTranscript};
 use crate::item::{Energy, Item, Size, Stage};
 use crate::project::{Fog, Project, Route};
 use crate::rule::{Condition, Platform, Rule, Tier};
@@ -210,6 +211,29 @@ pub struct CreateStep {
     pub item_id: String,
     pub body: String,
     pub position: i64,
+}
+
+/// `POST /api/grills` body: the outcome of one completed Grill (ADR-0023
+/// decision 2), plus the transcript that produced it. `resulting_stage` is
+/// deliberately absent — the handler computes it from the target item's
+/// *current* stage via `hummingbird_domain::resulting_stage` (#352), never
+/// accepted as a caller-supplied value the handler would have to trust.
+/// `completed_at` is likewise absent: a timestamp, server-stamped like
+/// every other create's (this module's own doc — "timestamps… never
+/// appear in a request body"), unlike `AlertIngest.raised_at`'s documented
+/// exception for a source that knows an event's time better than the
+/// server clock. A Grill's completion has no such external clock; it
+/// completes exactly when this request lands.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateGrill {
+    pub id: String,
+    pub item_id: String,
+    pub transcript: String,
+    pub summary: String,
+    pub verdict: GrillVerdict,
+    pub model_proposal: String,
+    pub applied_patch: String,
 }
 
 /// `PATCH /api/steps/:id` body. Ticking a Step is `{expected_version,
@@ -471,6 +495,12 @@ pub struct ChangesResponse {
     /// empty, and must still deserialize rather than fail the whole pull.
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// The `grills` table (#353, ADR-0023 decision 4): every column except
+    /// `transcript` — that rides `GET /api/grills/:id` only, never the
+    /// sweep. `#[serde(default)]` on the same #131 precedent: a response
+    /// predating this slice carries no `grills` key at all.
+    #[serde(default)]
+    pub grills: Vec<GrillWithoutTranscript>,
 }
 
 impl ChangesResponse {
@@ -489,6 +519,7 @@ impl ChangesResponse {
             context_snapshots: vec![],
             settings: vec![],
             rules: vec![],
+            grills: vec![],
         }
     }
 }
@@ -631,9 +662,76 @@ mod tests {
             "context_snapshots",
             "settings",
             "rules",
+            "grills",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected);
+    }
+
+    /// The acceptance criterion: a response minted before this slice (or a
+    /// fixture written before it) carries no `grills` key at all, and must
+    /// still deserialize — the same #131 precedent `rules` set.
+    #[test]
+    fn changes_response_without_a_grills_key_still_deserializes() {
+        let pre_slice = r#"{
+            "version": 1, "projects": [], "routes": [], "fog": [], "items": [],
+            "steps": [], "blocked_by": [], "alerts": [], "context_snapshots": [],
+            "settings": [], "rules": []
+        }"#;
+        let parsed: ChangesResponse = serde_json::from_str(pre_slice).unwrap();
+        assert!(parsed.grills.is_empty());
+    }
+
+    /// The acceptance criterion for the anti-goal: `grills` participates in
+    /// the delta pull like any other entity, and its wire shape never
+    /// carries a transcript.
+    #[test]
+    fn changes_response_carries_grills_without_a_transcript() {
+        use crate::grill::{Grill, GrillVerdict};
+
+        let grill = Grill {
+            id: "g-1".into(),
+            item_id: "a-1".into(),
+            transcript: "secret turn-by-turn text".into(),
+            summary: "s".into(),
+            verdict: GrillVerdict::Resolved,
+            model_proposal: "p".into(),
+            applied_patch: "p".into(),
+            resulting_stage: Stage::Ready,
+            completed_at: 10,
+            version: 1,
+        };
+        let response = ChangesResponse {
+            grills: vec![(&grill).into()],
+            ..ChangesResponse::empty(1)
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(!json.contains("secret turn-by-turn text"), "the transcript must never ride the wire: {json}");
+        let back: ChangesResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.grills.len(), 1);
+        assert_eq!(back.grills[0].id, "g-1");
+    }
+
+    #[test]
+    fn create_grill_round_trips_and_rejects_unknown_fields() {
+        use crate::grill::GrillVerdict;
+
+        let body = r#"{
+            "id": "g-1", "item_id": "a-1", "transcript": "t", "summary": "s",
+            "verdict": "resolved", "model_proposal": "p", "applied_patch": "p"
+        }"#;
+        let create: CreateGrill = serde_json::from_str(body).unwrap();
+        assert_eq!(create.verdict, GrillVerdict::Resolved);
+
+        assert!(
+            serde_json::from_str::<CreateGrill>(
+                r#"{"id": "g", "item_id": "a", "transcript": "t", "summary": "s",
+                    "verdict": "resolved", "model_proposal": "p", "applied_patch": "p",
+                    "resulting_stage": "ready"}"#
+            )
+            .is_err(),
+            "resulting_stage is server-computed, never caller-supplied",
+        );
     }
 
     /// The acceptance criterion: `rules` participates in the delta pull like
