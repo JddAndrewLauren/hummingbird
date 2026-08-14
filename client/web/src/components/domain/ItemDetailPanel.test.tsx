@@ -269,3 +269,48 @@ describe("the pinned-backend decline (#274)", () => {
     expect(screen.queryByRole("button", { name: /switch to/i })).toBeNull();
   });
 });
+
+// #446 verification step 7, as a test rather than a screenshot: unset is a
+// legitimate resting state, and a green build plus a capture both miss a
+// state-gated call site. This panel is the one surface that draws an
+// unjudged dimension rather than omitting it, so it is where the ghost
+// variants have to be exercised.
+describe("size and energy on the detail panel", () => {
+  it("draws both for an item with neither set — ghost glyph, em dash, muted", () => {
+    render(
+      <ItemDetailPanel
+        item={itemDTO({ id: "item-1", title: "Nobody has judged this", size: null, energy: null })}
+        steps={[]}
+        onClose={() => {}}
+      />,
+    );
+    // `Badge` wraps its children in an inner span, so the text match lands
+    // there and the pill carrying the colour is its parent — the same
+    // element the glyph sits in, which is the rule: never a colour on the
+    // icon without the label.
+    const size = screen.getByText(/^size:/).parentElement;
+    const energy = screen.getByText(/^energy:/).parentElement;
+    expect(size?.textContent).toBe("size:—");
+    expect(energy?.textContent).toBe("energy:—");
+    // Muted, not escalated: an unmade judgement is not a problem.
+    expect(size?.style.color).toBe("var(--text-muted)");
+    expect(energy?.style.color).toBe("var(--text-muted)");
+    expect(size?.querySelector("svg")).toBeDefined();
+  });
+
+  it("draws the level and its ramp colour once judged", () => {
+    render(
+      <ItemDetailPanel
+        item={itemDTO({ id: "item-1", title: "A judged item", size: "normal", energy: "high" })}
+        steps={[]}
+        onClose={() => {}}
+      />,
+    );
+    const size = screen.getByText(/^size:/).parentElement;
+    const energy = screen.getByText(/^energy:/).parentElement;
+    expect(size?.textContent).toBe("size:NORMAL");
+    expect(energy?.textContent).toBe("energy:HIGH");
+    expect(size?.style.color).toBe("var(--urgency-soon)");
+    expect(energy?.style.color).toBe("var(--urgency-now)");
+  });
+});
