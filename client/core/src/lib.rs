@@ -54,8 +54,8 @@ pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
-    Condition, CreateItem, CreateRule, Energy, Item, Project, Rule, RulePatch, Setting, Size,
-    Stage, Tier,
+    resulting_stage, Condition, CreateGrill, CreateItem, CreateRule, Energy, GrillVerdict, Item,
+    Project, Rule, RulePatch, Setting, Size, Stage, Step, Tier,
 };
 
 use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
@@ -257,6 +257,26 @@ fn apply_item_patch(base: &serde_json::Value, patch_fields: &serde_json::Value) 
     serde_json::from_value(serde_json::Value::Object(merged)).ok()
 }
 
+/// The item-side projection of a still-queued
+/// [`MutationIntent::CompleteGrill`], for the same reload-survival reason
+/// [`apply_item_patch`] exists: the only field a completion ever moves on
+/// the item is `stage`, and it moves it exactly the way
+/// [`hummingbird_domain::resulting_stage`] says — never re-derived, never a
+/// second inference of the verdict→stage table (`grill.rs`'s own "one
+/// spelling" precedent). `None` for a malformed base, an unparseable
+/// verdict, or a `Done` item (`resulting_stage`'s own rejection) — the same
+/// "never silently overlay-blind" contract [`apply_item_patch`] documents.
+fn apply_grill_completion(
+    item_base: &serde_json::Value,
+    grill_fields: &serde_json::Value,
+) -> Option<Item> {
+    let current: Item = serde_json::from_value(item_base.clone()).ok()?;
+    let verdict: GrillVerdict = serde_json::from_value(grill_fields.get("verdict")?.clone()).ok()?;
+    let resulting = resulting_stage(current.stage, verdict).ok()?;
+    let patch_fields = serde_json::json!({ "stage": resulting });
+    apply_item_patch(item_base, &patch_fields)
+}
+
 /// Rebuilds the overlay a previous session left mid-flight from whatever is
 /// still queued — both item creates and item patches — so a capture or an
 /// act (S11/#109) made offline, then reloaded before ever syncing, is still
@@ -354,6 +374,26 @@ fn overlay_from_queue(
                     CoreInitError(format!(
                         "queue entry {} is a patch for {path} whose base+patch_fields no \
                          longer merge into a valid Item",
+                        entry.id
+                    ))
+                })?;
+                overlay.insert(
+                    item.id.clone(),
+                    OverlayEntry {
+                        entry_id: entry.id.clone(),
+                        item,
+                    },
+                );
+            }
+            MutationIntent::CompleteGrill {
+                item_base,
+                grill_fields,
+                ..
+            } => {
+                let item = apply_grill_completion(item_base, grill_fields).ok_or_else(|| {
+                    CoreInitError(format!(
+                        "queue entry {} is a grill completion whose item_base+grill_fields \
+                         no longer resolve to a valid item stage move",
                         entry.id
                     ))
                 })?;
@@ -577,6 +617,105 @@ impl<E: std::fmt::Debug> std::fmt::Display for ActError<E> {
 }
 
 impl<E: std::fmt::Debug> std::error::Error for ActError<E> {}
+
+/// One reviewed Grill session's outcome, ready to submit as the atomic
+/// completion mutation ([`Core::complete_grill`], #354, ADR-0023).
+///
+/// `transcript` is carried all the way into the queued
+/// [`MutationIntent::CompleteGrill`] even though nothing else in this crate
+/// ever reads it back — this issue's "a dead-lettered completion restores
+/// reviewable state rather than discarding the session" acceptance is met
+/// by never dropping it in the first place: a dead-lettered [`QueueEntry`]
+/// still holds this session's full body, so whatever re-shows a
+/// dead-lettered completion (a future UI, per `CONTEXT.md`'s **Dead-letter
+/// journal**: "the words a person wrote are not" discarded) has everything
+/// it needs, with no separate session store to keep in sync.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrillCompletion {
+    pub transcript: String,
+    pub summary: String,
+    pub verdict: GrillVerdict,
+    pub model_proposal: String,
+    pub applied_patch: String,
+    /// `CONTEXT.md`'s **Replace** gesture: ticked, explicit, default off.
+    /// `false` unless a human actually ticked it in the review UI.
+    pub delete_unticked_plan: bool,
+}
+
+/// [`Core::complete_grill`] failed before ever reaching the outbound queue.
+#[derive(Debug)]
+pub enum CompleteGrillError<E> {
+    /// No live item with this id is known locally (mirror or overlay) —
+    /// nothing to complete a Grill against.
+    ItemNotFound,
+    /// The item is already `Done` — out of scope for the whole Grill plan
+    /// (ADR-0023), checked locally with the identical
+    /// [`hummingbird_domain::resulting_stage`] the authority itself uses,
+    /// rather than round-tripping to learn what a pure function of local
+    /// state already answers.
+    ItemDone,
+    /// At least one unticked, undeleted Step this session captured no
+    /// longer matches live state — a new unticked Step appeared, or an
+    /// existing one's text changed, since the review was last shown. A
+    /// Step *ticked or deleted* since then is not this — see
+    /// [`unticked_steps_changed`]'s own doc for the full rule.
+    NeedsReReview,
+    /// [`sync::SyncCycle::enqueue`] itself failed to persist the candidate
+    /// queue.
+    Snapshot(SnapshotError<E>),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for CompleteGrillError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompleteGrillError::ItemNotFound => write!(f, "item not found"),
+            CompleteGrillError::ItemDone => write!(f, "item is done"),
+            CompleteGrillError::NeedsReReview => {
+                write!(f, "unticked steps changed since this review was last shown")
+            }
+            CompleteGrillError::Snapshot(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for CompleteGrillError<E> {}
+
+/// Whether the item's *unticked, undeleted* Steps have drifted since a
+/// Grill review session captured `session_steps` — [`Core::complete_grill`]'s
+/// "new or changed unticked Steps force re-review" acceptance criterion,
+/// decided once here rather than inline.
+///
+/// A live unticked Step forces review when either: it has no matching id in
+/// `session_steps` at all (a brand-new Step appeared since review), or its
+/// body differs from what `session_steps` recorded for that id (an existing
+/// Step's text changed) — including when `session_steps` had recorded that
+/// id as already ticked or deleted (a Step *un*-ticked or resurrected since
+/// review is exactly as much a surprise as a new one).
+///
+/// A Step `session_steps` recorded as unticked that is now ticked or
+/// deleted *live* is deliberately **not** drift: `CONTEXT.md`'s **Replace**
+/// only ever protects a still-*live* Plan, and by the time this runs that
+/// Step has already left the live Plan by the human's own gesture,
+/// elsewhere, mid-interview — the acceptance criterion's "Steps ticked or
+/// deleted mid-interview survive," met by simply never comparing them.
+fn unticked_steps_changed(session_steps: &[Step], live_steps: &[Step]) -> bool {
+    let session_by_id: BTreeMap<&str, &Step> =
+        session_steps.iter().map(|step| (step.id.as_str(), step)).collect();
+
+    live_steps.iter().any(|live| {
+        if live.done || live.deleted_at.is_some() {
+            return false; // not live-unticked: never forces review
+        }
+        match session_by_id.get(live.id.as_str()) {
+            None => true, // a brand-new unticked step
+            Some(session_step) => {
+                session_step.body != live.body
+                    || session_step.done
+                    || session_step.deleted_at.is_some()
+            }
+        }
+    })
+}
 
 /// One host-visible signal, drained rather than delivered by callback
 /// (ADR-0003 rules out a host-implemented callback into the core).
@@ -1609,6 +1748,102 @@ where
         );
 
         Ok(())
+    }
+
+    /// Confirms a completed Grill interview (#354, ADR-0023): enqueues the
+    /// one atomic authority mutation — the Grill record, the item's stage
+    /// move, and (gated by `completion.delete_unticked_plan`) the unticked
+    /// Plan's soft-delete, all one `POST /api/grills` — and overlays the
+    /// item's new stage so a reader sees it immediately, offline or not.
+    /// `base`/overlay/dead-letter-revert reasoning is exactly
+    /// [`Core::act`]'s own (see that method's doc); nothing about a Grill
+    /// completion changes any of it.
+    ///
+    /// `session_steps` is this review session's own captured snapshot of
+    /// the item's Steps, compared against live mirror state via
+    /// [`unticked_steps_changed`]. A drift there
+    /// ([`CompleteGrillError::NeedsReReview`]) refuses to enqueue at all —
+    /// see that function's doc for exactly what counts.
+    ///
+    /// The item's own eligibility is checked with the identical function
+    /// the authority uses ([`hummingbird_domain::resulting_stage`]) before
+    /// ever touching the queue: a `Done` item is refused locally, the same
+    /// rejection the authority would otherwise answer with a 400.
+    ///
+    /// `seed` mints this Grill's own id
+    /// ([`sync::write::deterministic_id`]) — the *entity*-minting flavor of
+    /// the seed-minting rule ([`sync`]'s module doc), because a Grill is a
+    /// brand-new record, not a CAS write against an existing one; exactly
+    /// [`Core::capture`]'s own reasoning. Returns the minted Grill id.
+    pub async fn complete_grill(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        session_steps: &[Step],
+        completion: GrillCompletion,
+        now_ms: i64,
+    ) -> Result<String, CompleteGrillError<QS::Error>> {
+        let items = self.overlaid_items();
+        let Some(current) = items.get(item_id) else {
+            return Err(CompleteGrillError::ItemNotFound);
+        };
+        let resulting = resulting_stage(current.stage, completion.verdict)
+            .map_err(|_| CompleteGrillError::ItemDone)?;
+
+        let live_steps = self.steps_for(item_id);
+        if unticked_steps_changed(session_steps, &live_steps) {
+            return Err(CompleteGrillError::NeedsReReview);
+        }
+
+        let grill_id = sync::write::deterministic_id(seed);
+        let create = CreateGrill {
+            id: grill_id.clone(),
+            item_id: item_id.to_string(),
+            expected_version: current.version,
+            transcript: completion.transcript,
+            summary: completion.summary,
+            verdict: completion.verdict,
+            model_proposal: completion.model_proposal,
+            applied_patch: completion.applied_patch,
+            delete_unticked_plan: completion.delete_unticked_plan,
+        };
+        // `expected_version` is `drain`'s to fill in per attempt (from
+        // whichever version the item is rebased onto) — the same split
+        // `MutationIntent::Patch::patch_fields` keeps from its own
+        // `expected_version`, so it must not sit inside `grill_fields`.
+        let mut grill_fields = serde_json::to_value(&create).expect("CreateGrill always serializes");
+        if let serde_json::Value::Object(fields) = &mut grill_fields {
+            fields.remove("expected_version");
+        }
+        let item_base = serde_json::to_value(current).expect("Item always serializes");
+
+        let entry = QueueEntry {
+            id: grill_id.clone(),
+            intent: MutationIntent::CompleteGrill {
+                path: sync::write::paths::grills(),
+                grill_fields,
+                item_base,
+                item_base_updated_at: current.updated_at,
+            },
+        };
+
+        self.cycle
+            .enqueue(entry, now_ms)
+            .await
+            .map_err(CompleteGrillError::Snapshot)?;
+
+        let mut optimistic = current.clone();
+        optimistic.stage = resulting;
+        optimistic.updated_at = now_ms;
+        self.overlay.insert(
+            item_id.to_string(),
+            OverlayEntry {
+                entry_id: grill_id.clone(),
+                item: optimistic,
+            },
+        );
+
+        Ok(grill_id)
     }
 
     /// The host calls this at init and on every credential rotation.
@@ -3828,6 +4063,231 @@ mod tests {
             vec!["other"]
         );
         assert!(core.steps_for("nonexistent").is_empty());
+    }
+
+    // ------------------------------------------- complete_grill (#354, ADR-0023)
+
+    fn fixture_step(id: &str, item_id: &str, body: &str, done: bool) -> hummingbird_domain::Step {
+        hummingbird_domain::Step {
+            id: id.to_string(),
+            item_id: item_id.to_string(),
+            body: body.to_string(),
+            done,
+            position: 1,
+            deleted_at: None,
+            version: 1,
+        }
+    }
+
+    fn sample_completion(delete_unticked_plan: bool) -> GrillCompletion {
+        GrillCompletion {
+            transcript: "turn 1\nturn 2".to_string(),
+            summary: "clarified the destination".to_string(),
+            verdict: GrillVerdict::Resolved,
+            model_proposal: "{}".to_string(),
+            applied_patch: "{}".to_string(),
+            delete_unticked_plan,
+        }
+    }
+
+    /// The heart of #354: one call enqueues the atomic completion and
+    /// overlays the item's new stage immediately, offline or not — the
+    /// same "readable the instant it is made" contract [`Core::act`] and
+    /// [`Core::triage`] already hold.
+    #[tokio::test]
+    async fn completing_a_grill_overlays_the_items_new_stage_immediately() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("a-1", Stage::Triage)],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        core.run(&ScriptedRead::sweep_only(vec![Ok(sweep_body)]), &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0).await;
+
+        let grill_id = core
+            .complete_grill("seed-1", "a-1", &[], sample_completion(false), 2_000)
+            .await
+            .unwrap();
+        assert!(!grill_id.is_empty());
+
+        let frontier = core.frontier();
+        assert_eq!(frontier.len(), 1, "triage + resolved moves straight onto the frontier");
+        assert_eq!(frontier[0].stage, Stage::Ready);
+        assert_eq!(core.queue_depth(), 1);
+    }
+
+    #[tokio::test]
+    async fn completing_a_grill_on_an_unknown_item_is_item_not_found() {
+        let mut core = Core::new();
+        let error = core
+            .complete_grill("seed-1", "no-such-item", &[], sample_completion(false), 1_000)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CompleteGrillError::ItemNotFound));
+    }
+
+    /// ADR-0023: Done is out of scope for the whole Grill plan — checked
+    /// locally with the identical function the authority uses, before ever
+    /// touching the queue.
+    #[tokio::test]
+    async fn completing_a_grill_on_a_done_item_is_refused_locally() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("a-1", Stage::Done)],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        core.run(&ScriptedRead::sweep_only(vec![Ok(sweep_body)]), &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0).await;
+
+        let error = core
+            .complete_grill("seed-1", "a-1", &[], sample_completion(false), 2_000)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CompleteGrillError::ItemDone));
+        assert_eq!(core.queue_depth(), 0, "nothing was enqueued");
+    }
+
+    /// A brand-new unticked Step that appeared since the review session
+    /// captured its snapshot forces re-review rather than silently
+    /// committing against a Plan the human never saw.
+    #[tokio::test]
+    async fn a_new_unticked_step_since_review_forces_re_review() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("a-1", Stage::Triage)],
+            steps: vec![fixture_step("s-1", "a-1", "call the vet", false)],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        core.run(&ScriptedRead::sweep_only(vec![Ok(sweep_body)]), &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0).await;
+
+        // The session opened before "s-1" existed.
+        let error = core
+            .complete_grill("seed-1", "a-1", &[], sample_completion(false), 2_000)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CompleteGrillError::NeedsReReview));
+        assert_eq!(core.queue_depth(), 0, "a forced re-review enqueues nothing");
+    }
+
+    /// An unticked Step whose text changed since the session's snapshot
+    /// also forces re-review.
+    #[tokio::test]
+    async fn a_changed_unticked_step_since_review_forces_re_review() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("a-1", Stage::Triage)],
+            steps: vec![fixture_step("s-1", "a-1", "call the vet", false)],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        core.run(&ScriptedRead::sweep_only(vec![Ok(sweep_body)]), &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0).await;
+
+        let session = vec![fixture_step("s-1", "a-1", "call the groomer", false)];
+        let error = core
+            .complete_grill("seed-1", "a-1", &session, sample_completion(false), 2_000)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CompleteGrillError::NeedsReReview));
+    }
+
+    /// The anti-goal, asserted directly: a Step ticked or deleted *during*
+    /// the interview — after the session's own snapshot was captured —
+    /// never forces re-review. It simply survives, exactly as the
+    /// authority's own live re-evaluation (never a stale snapshot) does.
+    #[tokio::test]
+    async fn a_step_ticked_or_deleted_mid_interview_never_forces_re_review() {
+        for (live_done, live_deleted_at) in [(true, None), (false, Some(1_500))] {
+            let mut core = Core::new();
+            core.push_api_key("token-1");
+            let mut live_step = fixture_step("s-1", "a-1", "call the vet", false);
+            live_step.done = live_done;
+            live_step.deleted_at = live_deleted_at;
+            let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+                version: 1,
+                items: vec![fixture_item("a-1", Stage::Triage)],
+                steps: vec![live_step],
+                ..hummingbird_domain::ChangesResponse::empty(1)
+            })
+            .unwrap();
+            core.run(&ScriptedRead::sweep_only(vec![Ok(sweep_body)]), &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0).await;
+
+            // The session's own snapshot still shows it live and unticked —
+            // it was ticked/deleted by the human *after* the session opened.
+            let session = vec![fixture_step("s-1", "a-1", "call the vet", false)];
+            core.complete_grill("seed-1", "a-1", &session, sample_completion(false), 2_000)
+                .await
+                .expect("ticked/deleted-since-review must never force re-review");
+        }
+    }
+
+    /// The pure decision function, tested directly for the three cases the
+    /// issue names by name: new, changed, and ticked/deleted-since.
+    #[test]
+    fn unticked_steps_changed_covers_the_three_named_cases() {
+        let base = fixture_step("s-1", "a-1", "call the vet", false);
+        let base_slice = std::slice::from_ref(&base);
+
+        // Identical: no drift.
+        assert!(!unticked_steps_changed(base_slice, base_slice));
+
+        // New unticked step live that the session never saw.
+        assert!(unticked_steps_changed(&[], base_slice));
+
+        // Changed body.
+        let mut changed = base.clone();
+        changed.body = "call the groomer".to_string();
+        assert!(unticked_steps_changed(base_slice, std::slice::from_ref(&changed)));
+
+        // Ticked since the session's snapshot: survives, no drift.
+        let mut ticked = base.clone();
+        ticked.done = true;
+        assert!(!unticked_steps_changed(base_slice, std::slice::from_ref(&ticked)));
+
+        // Deleted since the session's snapshot: survives, no drift.
+        let mut deleted = base.clone();
+        deleted.deleted_at = Some(9_999);
+        assert!(!unticked_steps_changed(base_slice, std::slice::from_ref(&deleted)));
+    }
+
+    /// `delete_unticked_plan: true` reaches the wire body untouched — the
+    /// explicit **Replace** gesture (`CONTEXT.md`), never inferred.
+    #[tokio::test]
+    async fn delete_unticked_plan_reaches_the_queued_mutation_body() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("a-1", Stage::Triage)],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        core.run(&ScriptedRead::sweep_only(vec![Ok(sweep_body)]), &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0).await;
+
+        core.complete_grill("seed-1", "a-1", &[], sample_completion(true), 2_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::CompleteGrill { grill_fields, item_base, .. } = &entries.last().unwrap().intent
+        else {
+            panic!("a grill completion is a CompleteGrill intent");
+        };
+        assert_eq!(grill_fields["delete_unticked_plan"], serde_json::json!(true));
+        assert_eq!(grill_fields["item_id"], serde_json::json!("a-1"));
+        assert!(
+            grill_fields.get("expected_version").is_none(),
+            "expected_version is drain's to fill in per attempt, not enqueued here"
+        );
+        assert_eq!(item_base["version"], serde_json::json!(1));
     }
 
     // ------------------------------------------------- projects() (S10, #108 review)

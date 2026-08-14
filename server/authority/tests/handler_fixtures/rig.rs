@@ -197,6 +197,29 @@ impl Sql for RealCoercingSql<'_> {
     }
 }
 
+/// Fault injection for #354's atomicity anti-goal: forwards every statement
+/// to `inner` except one whose SQL text contains `fail_marker`, which fails
+/// instead of running. `BEGIN`/`COMMIT`/`ROLLBACK` never match a marker
+/// naming a real table statement, so a handler's own rollback still reaches
+/// the real connection — this proves the transaction actually undoes
+/// whatever committed before the injected fault, not merely that the
+/// handler returned an error.
+pub struct FailingSql<'a> {
+    pub inner: &'a dyn Sql,
+    pub fail_marker: &'a str,
+}
+
+impl Sql for FailingSql<'_> {
+    fn exec(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<Row>, SqlError> {
+        if sql.contains(self.fail_marker) {
+            return Err(SqlError {
+                message: format!("injected failure at statement matching {:?}", self.fail_marker),
+            });
+        }
+        self.inner.exec(sql, params)
+    }
+}
+
 // ------------------------------------------------------ request helpers
 
 /// The lowest-level request: explicit authorization header and admin

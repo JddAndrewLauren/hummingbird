@@ -606,13 +606,19 @@ pub struct MirrorSnapshotResponse {
 
 /// The touched fields' *intended* (local) values a [`MutationIntent`]
 /// carries — only a `Patch` has any; a `Create` never conflicts (deterministic
-/// ids, ADR-0007), so it is never the intent behind a `Conflict` reason.
+/// ids, ADR-0007), so it is never the intent behind a `Conflict` reason. A
+/// `CompleteGrill` is the same story as `Create` for this purpose: it names
+/// no item field by value (see that variant's own doc — none of its keys
+/// are foreign-shaped onto the item it targets), so it never carries a
+/// meaningful `Conflict` either.
 fn local_field_values(intent: &MutationIntent) -> serde_json::Map<String, serde_json::Value> {
     match intent {
         MutationIntent::Patch { patch_fields, .. } => {
             patch_fields.as_object().cloned().unwrap_or_default()
         }
-        MutationIntent::Create { .. } => serde_json::Map::new(),
+        MutationIntent::Create { .. } | MutationIntent::CompleteGrill { .. } => {
+            serde_json::Map::new()
+        }
     }
 }
 

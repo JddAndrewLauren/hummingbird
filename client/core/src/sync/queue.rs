@@ -141,6 +141,58 @@ pub enum MutationIntent {
         #[serde(default)]
         rebase_fields: Option<Value>,
     },
+    /// A `POST /api/grills` atomic completion (#354, ADR-0023): the Grill
+    /// record is created, the item's stage moves, and — gated by
+    /// `delete_unticked_plan` inside `grill_fields` — its unticked Plan is
+    /// soft-deleted, all as one authority-side write. Why this needed a
+    /// third arm rather than reusing [`MutationIntent::Create`] or
+    /// [`MutationIntent::Patch`]: it is genuinely both at once, and neither
+    /// existing shape is. It is a *create* — idempotent by the Grill's own
+    /// client-supplied id, replaying it must be a no-op — which
+    /// [`MutationIntent::Patch`] cannot express (its CAS token belongs to
+    /// the entity being *patched*, not one being freshly minted). It is
+    /// also a *CAS write against an existing entity* — the target item, by
+    /// `expected_version` — which [`MutationIntent::Create`] cannot express
+    /// at all (a create carries no `expected_version` and no `base` to
+    /// rebase a 409 against). A create-shaped struct with a bolted-on
+    /// `base` would silently misdescribe what conflicts: the id collision
+    /// safety is the Grill's, the version-conflict rebase is the item's,
+    /// and those are two different entities' contracts layered on one
+    /// request, not one contract with an extra field.
+    ///
+    /// `drain`'s `attempt` reuses [`super::write::adapter::patch_with_rebase`]
+    /// verbatim for the item side (`item_base` fills `patch_with_rebase`'s
+    /// `base` parameter) — "item-field conflicts rebase under the existing
+    /// bounded rebase rules" is met by literally calling the same function
+    /// every `Patch` variant does, not a second implementation of it. Every
+    /// key `grill_fields` carries (`id`, `item_id`, `transcript`,
+    /// `verdict`, …) is foreign to the item's own JSON shape, so
+    /// [`super::write::rebase::decide`]'s field-by-field diff never finds a
+    /// same-named field whose value could disagree — a version conflict on
+    /// this route is always [`super::write::rebase::RebaseDecision::Safe`]
+    /// (a bare version bump elsewhere), never a genuine
+    /// [`super::write::rebase::RebaseDecision::Collision`]: the only thing
+    /// that can actually go wrong — the item having moved to `Done` in the
+    /// meantime — the authority already reports as a `400`, which
+    /// `patch_with_rebase` surfaces as [`super::write::taxonomy::WriteError::Permanent`],
+    /// not a 409 this rebase loop ever sees.
+    CompleteGrill {
+        /// `/api/grills` — see [`super::write::paths::grills`].
+        path: String,
+        /// The full `CreateGrill` wire body this client intends,
+        /// `expected_version` excluded — `drain` fills that in per attempt
+        /// from whichever version the item is rebased onto, the same split
+        /// [`MutationIntent::Patch::patch_fields`] keeps.
+        grill_fields: Value,
+        /// The item this completion targets, as this client last knew it —
+        /// [`MutationIntent::Patch::base`]'s own role, reused verbatim.
+        item_base: Value,
+        /// The item's base update time — carried for the same ADR-0007
+        /// field-level-conflict (S5) reasons
+        /// [`MutationIntent::Patch::base_updated_at`] documents; nothing in
+        /// this slice reads it either.
+        item_base_updated_at: i64,
+    },
 }
 
 impl MutationIntent {
@@ -155,6 +207,12 @@ impl MutationIntent {
                 .as_object()
                 .map(|fields| fields.keys().cloned().collect())
                 .unwrap_or_default(),
+            // A completion touches no *item* field by name — see the
+            // variant's own doc: every key it carries is foreign to the
+            // item's JSON shape, so there is no meaningful touched-item-
+            // field list to report here (S5 material, unused by this
+            // slice, same as `Patch`'s).
+            MutationIntent::CompleteGrill { .. } => Vec::new(),
         }
     }
 
@@ -163,6 +221,7 @@ impl MutationIntent {
         match self {
             MutationIntent::Create { path, .. } => path,
             MutationIntent::Patch { path, .. } => path,
+            MutationIntent::CompleteGrill { path, .. } => path,
         }
     }
 
@@ -207,6 +266,14 @@ impl MutationIntent {
             // <item>/<blocker>`), so taking only the first segment would name
             // half an identity and read as if it were the whole one.
             MutationIntent::Patch { .. } => rest.map(str::to_string),
+            // Same reasoning as `Create`: `/api/grills` names no row in the
+            // path, so the row is the Grill's own client-supplied id,
+            // already sitting in `grill_fields`.
+            MutationIntent::CompleteGrill { grill_fields, .. } => grill_fields
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| rest.map(str::to_string)),
         };
         MutationSubject {
             entity: entity.to_string(),
@@ -475,6 +542,40 @@ async fn attempt(
                 base,
                 rebase_fields.as_ref(),
                 build_patch,
+            )
+            .await
+            .map(|_| ())
+        }
+        MutationIntent::CompleteGrill {
+            path,
+            grill_fields,
+            item_base,
+            ..
+        } => {
+            let grill_fields = grill_fields.clone();
+            let build_body = move |version: i64| {
+                let mut body = grill_fields.clone();
+                if let Value::Object(fields) = &mut body {
+                    fields.insert("expected_version".to_string(), json!(version));
+                }
+                body
+            };
+
+            // Literally the same `patch_with_rebase` every `Patch` variant
+            // drives — the variant's own doc explains why a version
+            // conflict on this route can never be a genuine field
+            // collision, only ever `Safe` (a bare retry at the new
+            // version) or the authority's `400` for a `Done` item, which
+            // this call surfaces as `WriteError::Permanent` rather than a
+            // 409 at all.
+            patch_with_rebase::<Value, Value>(
+                transport,
+                access_token,
+                HttpMethod::Post,
+                path,
+                item_base,
+                None,
+                build_body,
             )
             .await
             .map(|_| ())
@@ -1080,5 +1181,141 @@ mod tests {
             ],
             "a reloaded queue must name each entry's subject, create and patch alike"
         );
+    }
+
+    // ------------------------------------------- #354: MutationIntent's 3rd arm
+
+    fn complete_grill_entry(id: &str, grill_id: &str, item_id: &str, item_version: i64) -> QueueEntry {
+        QueueEntry {
+            id: id.to_string(),
+            intent: MutationIntent::CompleteGrill {
+                path: "/api/grills".to_string(),
+                grill_fields: json!({
+                    "id": grill_id,
+                    "item_id": item_id,
+                    "transcript": "t",
+                    "summary": "s",
+                    "verdict": "resolved",
+                    "model_proposal": "p",
+                    "applied_patch": "p",
+                    "delete_unticked_plan": false,
+                }),
+                item_base: json!({"id": item_id, "stage": "triage", "version": item_version}),
+                item_base_updated_at: 1_000,
+            },
+        }
+    }
+
+    /// The anti-goal this issue names directly: queue bytes written by a
+    /// build that only ever knew `Create`/`Patch` (no `CompleteGrill` arm at
+    /// all) must still deserialise into identical entries — adding a third
+    /// enum variant does not change how the first two already serialise.
+    #[tokio::test]
+    async fn old_queue_bytes_with_only_the_first_two_arms_still_deserialise_unchanged() {
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(create_entry("m-1", "a-1"));
+        queue.enqueue(patch_entry("m-2", "a-2", 3));
+
+        // Exactly the bytes a pre-#354 build would have written: no
+        // `CompleteGrill` variant ever touched this queue.
+        let old_bytes = serde_json::to_vec(&queue).unwrap();
+        let restored: OutboundQueue = serde_json::from_slice(&old_bytes)
+            .expect("pre-#354 queue bytes must still deserialise");
+
+        assert_eq!(restored.len(), 2, "both pre-existing entries survive");
+        assert_eq!(restored.entries().next().unwrap().id, "m-1");
+        assert_eq!(
+            restored.entries().nth(1).unwrap().intent,
+            patch_entry("m-2", "a-2", 3).intent,
+            "the patch entry is byte-for-byte the same after the round trip"
+        );
+
+        save_snapshot(&MemorySnapshotStore::default(), QUEUE_SCHEMA_VERSION, 1, &restored)
+            .await
+            .unwrap();
+    }
+
+    /// [`MutationIntent::subject`] for the new arm: the row is the Grill's
+    /// own client-supplied id (from `grill_fields`), never the item it
+    /// targets — the same "id lives in the body, not the path" reasoning
+    /// [`MutationIntent::Create`] already uses for `/api/items`.
+    #[test]
+    fn a_complete_grill_names_the_grill_as_its_subject_not_the_item() {
+        let subject = complete_grill_entry("m-1", "g-1", "a-1", 1).intent.subject();
+        assert_eq!(subject.entity, "grills");
+        assert_eq!(subject.id.as_deref(), Some("g-1"));
+    }
+
+    /// `drain` reuses `patch_with_rebase` verbatim for the item side: a
+    /// clean send (no 409 at all) succeeds in one call, `expected_version`
+    /// filled in from `item_base`'s own version.
+    #[tokio::test]
+    async fn a_clean_grill_completion_drains_in_one_call() {
+        let transport = ScriptedTransport::new(vec![ok(
+            201,
+            r#"{"id":"g-1","item_id":"a-1","transcript":"t","summary":"s","verdict":"resolved","model_proposal":"p","applied_patch":"p","resulting_stage":"ready","completed_at":1000,"version":2}"#,
+        )]);
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(complete_grill_entry("m-1", "g-1", "a-1", 1));
+
+        let outcome = queue.drain(&transport, "token", 1_000).await;
+
+        assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 0 });
+        assert!(queue.is_empty());
+        let sent = &transport.calls.lock().unwrap()[0];
+        assert_eq!(sent.method, HttpMethod::Post);
+        assert_eq!(sent.path, "/api/grills");
+        let body: Value = serde_json::from_str(&sent.body).unwrap();
+        assert_eq!(body["expected_version"], json!(1), "filled in from item_base's version");
+        assert_eq!(body["id"], json!("g-1"));
+    }
+
+    /// A version conflict on the item rebases like any other patch — the
+    /// variant's own doc claim, proven by literally driving it through
+    /// `patch_with_rebase`: nothing this completion carries collides with
+    /// an item field, so a 409 is always `Safe` and resolves on one retry.
+    #[tokio::test]
+    async fn a_stale_item_version_rebases_and_succeeds_on_one_retry() {
+        let conflict_body =
+            r#"{"error":"version_conflict","current":{"id":"a-1","stage":"grilling","version":2}}"#;
+        let retry_success = r#"{"id":"g-1","item_id":"a-1","transcript":"t","summary":"s","verdict":"resolved","model_proposal":"p","applied_patch":"p","resulting_stage":"ready","completed_at":1000,"version":3}"#;
+        let transport = ScriptedTransport::new(vec![ok(409, conflict_body), ok(201, retry_success)]);
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(complete_grill_entry("m-1", "g-1", "a-1", 1));
+
+        let outcome = queue.drain(&transport, "token", 1_000).await;
+
+        assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 0 });
+        assert_eq!(transport.call_count(), 2, "one original attempt plus one rebased retry");
+        let retried = &transport.calls.lock().unwrap()[1];
+        let body: Value = serde_json::from_str(&retried.body).unwrap();
+        assert_eq!(body["expected_version"], json!(2), "rebased onto the 409's own version");
+    }
+
+    /// A dead-lettered completion never loses the reviewed session: the
+    /// whole `grill_fields` body — transcript included — rides into the
+    /// dead-letter journal exactly as enqueued, because nothing about
+    /// `CompleteGrill` special-cases dead-lettering away from the generic
+    /// path every other variant already takes.
+    #[tokio::test]
+    async fn a_dead_lettered_completion_still_carries_the_full_reviewed_session() {
+        let conflict_body =
+            r#"{"error":"version_conflict","current":{"id":"a-1","stage":"grilling","version":2}}"#;
+        let transport = ScriptedTransport::new(vec![ok(400, r#"{"error":"validation","message":"item is done"}"#)]);
+        let _ = conflict_body; // not used on this path — a 400 is Permanent, never a 409.
+        let mut queue = OutboundQueue::new();
+        queue.enqueue(complete_grill_entry("m-1", "g-1", "a-1", 1));
+
+        let outcome = queue.drain(&transport, "token", 1_000).await;
+
+        assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 1 });
+        assert_eq!(queue.dead_letters().len(), 1);
+        match &queue.dead_letters()[0].entry.intent {
+            MutationIntent::CompleteGrill { grill_fields, .. } => {
+                assert_eq!(grill_fields["transcript"], json!("t"), "the transcript survives");
+                assert_eq!(grill_fields["summary"], json!("s"));
+            }
+            other => panic!("expected a CompleteGrill entry, got {other:?}"),
+        }
     }
 }
