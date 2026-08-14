@@ -28,11 +28,20 @@
 // (`google/gis.ts`) loads `https://accounts.google.com/gsi/client` as a
 // same-document `<script>` tag, which needs an explicit script-src grant.
 //
-// `frame-src` (new) admits exactly `https://accounts.google.com`: GIS's
-// silent re-mint (`prompt: "none"`) round-trips through a hidden iframe
-// served from that origin -- `default-src` alone does not cover frames
-// once `frame-src` is unset elsewhere, and `frame-ancestors` governs the
-// opposite direction (who may frame *us*), not this.
+// `frame-src` admits exactly `https://accounts.google.com`: GIS's silent
+// re-mint (`prompt: "none"`) round-trips through a hidden iframe served from
+// that origin -- `default-src` alone does not cover frames once `frame-src`
+// is unset elsewhere, and `frame-ancestors` governs the opposite direction
+// (who may frame *us*), not this.
+//
+// The iframe is the silent path, and since `google/redirect-flow.ts` it is no
+// longer the only Google path at all: on a standalone or phone-sized view the
+// INTERACTIVE connect is a top-level navigation to
+// `accounts.google.com/o/oauth2/v2/auth` and back to the origin root. No
+// directive here governs that. `form-action 'none'` constrains form
+// submissions, not `location.assign`, and CSP has had no `navigate-to` since
+// it was dropped from the spec -- so this list needs nothing added for it, and
+// that is a fact worth stating rather than rediscovering.
 export const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com",

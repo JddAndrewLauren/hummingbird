@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
 import { appUpdateSignal } from "./shell/app-update";
+import { captureOAuthRedirect } from "./shell/oauth-redirect";
 import { watchForActivation } from "./shell/reload-on-activate";
 import { coreStore } from "./store/store";
 import { watchForReadyTimeout } from "./store/ready-timeout";
@@ -12,6 +13,16 @@ import "./styles.css";
 
 // Before the first render, so nothing paints in the wrong theme.
 applyInitialTheme();
+
+// Before anything else too, and for a sharper reason: a return from Google's
+// redirect flow carries an access token in `location.hash`, and that has to
+// come off the URL before anything can log it, share it or restore it from
+// history. There is no router and no `/oauth/callback` route — the redirect
+// URI is the origin root, which sidesteps `not_found_handling` entirely — so
+// this IS the callback handler. The outcome is parked for
+// `useCalendarWiring`, which applies it once the core is ready; an ordinary
+// app open finds nothing and this costs one `URLSearchParams` parse.
+captureOAuthRedirect();
 
 // The ONLY file that touches `virtual:pwa-register` — the module
 // vite-plugin-pwa synthesises at build time, which vitest (running without

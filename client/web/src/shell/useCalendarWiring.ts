@@ -16,6 +16,10 @@ import {
 } from "../calendar/persistence";
 import { acceptSelectionChange, effectiveSelection } from "../calendar/selection";
 import { createGisTokenClient, type TokenClient } from "../google/gis";
+import type { RedirectOutcome } from "../google/redirect-flow";
+import { PHONE_MAX_WIDTH_PX } from "./breakpoints";
+import { startOAuthRedirect, takeOAuthRedirect } from "./oauth-redirect";
+import { isStandalone } from "./standalone";
 import { coreStore, type CalendarState, type CoreStatus } from "../store/store";
 import {
   pollRefresh,
@@ -60,6 +64,43 @@ function tokenClient(): TokenClient | null {
   }
   cachedTokenClient ??= createGisTokenClient(GOOGLE_CLIENT_ID);
   return cachedTokenClient;
+}
+
+/** Turns a redirect return into the same `ConnectionResult` the popup path
+ * produces, so everything downstream — the persisted flag, the store write,
+ * the rotation timer, the poll — is one code path with one shape. Synchronous:
+ * the token is already in hand, there is nothing to await. */
+function applyRedirect(
+  // `Exclude<…, "none">`: "this load is not a return from Google" is the
+  // caller's branch, not a case here, and typing it out makes that structural
+  // rather than a convention.
+  outcome: Exclude<RedirectOutcome, { kind: "none" }>,
+  deps: ConnectionDeps,
+): ConnectionResult {
+  if (outcome.kind === "error") {
+    return { connected: false, needsReconnect: false, expiresAtMs: null, error: outcome.error };
+  }
+  deps.pushToken(outcome.accessToken);
+  return {
+    connected: true,
+    needsReconnect: false,
+    expiresAtMs: outcome.expiresAtMs,
+    error: null,
+  };
+}
+
+/** Whether this device should use the redirect flow instead of GIS's popup.
+ *
+ * Standalone is the real criterion — an installed iOS web app is where the
+ * popup escapes to Safari and loses its opener, and where Safari's own storage
+ * container is no use because the app cannot see it. A phone-sized browser tab
+ * is included because the same popup on a small screen is a full-screen
+ * takeover with no visible relationship to the app it came from, and because a
+ * phone tab is one "Add to Home Screen" away from being the standalone case
+ * anyway. A desktop keeps GIS: it works there, and it is the less disruptive
+ * of the two. */
+function shouldUseRedirect(): boolean {
+  return isStandalone() || (typeof window !== "undefined" && window.innerWidth <= PHONE_MAX_WIDTH_PX);
 }
 
 export interface CalendarWiring {
@@ -146,9 +187,24 @@ export function useCalendarWiring(
     void (async () => {
       const wasConnected = readConnected(localStorage);
       const selectedCalendarIds = readSelectedCalendarIds(localStorage);
-      const result = await initConnection(deps, wasConnected);
+      // A return from the redirect flow lands here, not in a click handler:
+      // the round-trip is a full page load, so the component that started it
+      // no longer exists. `takeOAuthRedirect` is one-shot, which is what keeps
+      // StrictMode's double-invoke from applying the same token twice.
+      const redirect = takeOAuthRedirect();
+      const result =
+        redirect.kind === "none"
+          ? await initConnection(deps, wasConnected)
+          : applyRedirect(redirect, deps);
       if (cancelled) {
         return;
+      }
+      // The redirect path is the one that can report a failure at start-up:
+      // an ordinary open has nothing to say, and a silent re-mint's failure is
+      // `needsReconnect`, not a message. Written unconditionally so a
+      // successful return also clears whatever the last attempt left.
+      if (redirect.kind !== "none") {
+        coreStore.setCalendarState({ connectPending: false, connectError: result.error });
       }
       writeConnected(localStorage, result.connected);
       coreStore.setCalendarState({
@@ -275,6 +331,16 @@ export function useCalendarWiring(
     }
     const wasConnected = calendar.connected;
     coreStore.setCalendarState({ connectPending: true, connectError: null });
+    if (GOOGLE_CLIENT_ID && shouldUseRedirect()) {
+      // The document is about to be replaced, so nothing after this runs and
+      // there is nothing to await. The result comes back through the start
+      // effect above on the next load. `connectPending` stays set, which is
+      // correct: the attempt genuinely is in flight, and if the navigation
+      // fails to happen at all the button stays visibly busy rather than
+      // silently idle.
+      startOAuthRedirect(GOOGLE_CLIENT_ID);
+      return;
+    }
     const result = await connect(deps);
     // The error is written FIRST, above the early return below — not folded
     // into it. A failed *reconnect* takes that return, and before this the
