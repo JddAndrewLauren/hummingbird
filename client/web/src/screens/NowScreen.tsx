@@ -4,7 +4,7 @@ import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
-import { ItemDetailPanel } from "../components/domain/ItemDetailPanel";
+import { ItemPanel } from "../components/domain/ItemPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
@@ -185,7 +185,10 @@ function RealFrontier({
   // never both speak for one result.
   const strandedTriage = strandedTriageFailure(
     task.lastTriage,
-    selectedCapture?.id ?? null,
+    // Either editor counts as an owner now: the capture's `TriageRow`, or a
+    // minted item's `ItemPanel`, which says its own triage failures since it
+    // gained an Edit mode.
+    selectedCapture?.id ?? selectedItemId,
     task.triageInbox,
   );
 
@@ -347,11 +350,14 @@ function RealFrontier({
         </SelectedItemSection>
       ) : selectedItem ? (
         <SelectedItemSection key={selectedItem.id}>
-          <ItemDetailPanel
-            // Remounts per item so the grain/model selects reset with it — a
-            // grain chosen for one item says nothing about the next.
+          <ItemPanel
+            // Remounts per item so the grain select and the Edit state reset
+            // with it — a grain chosen for one item says nothing about the
+            // next, and neither does a half-typed edit.
             key={selectedItem.id}
+            mode="detail"
             item={selectedItem}
+            projects={task.projects}
             steps={task.stepsByItem[selectedItem.id] ?? []}
             onClose={onCloseItemDetail}
             onAct={(action) => {
@@ -360,6 +366,10 @@ function RealFrontier({
               onAct(selectedItem.id, action);
             }}
             actError={actError}
+            // Edit mode's Save — `Core::triage` with no destination (#122), so
+            // editing a minted action leaves its stage exactly where it is.
+            onTriage={onTriage}
+            lastTriage={task.lastTriage}
             microtask={microtask}
           />
         </SelectedItemSection>

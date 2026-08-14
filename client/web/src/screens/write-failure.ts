@@ -135,22 +135,31 @@ export function grillCompletionFailureFor(
   return result.error ?? GRILL_COMPLETION_FALLBACK;
 }
 
-/** A triage failure with no `TriageRow` left to wear it — see
- * [`strandedFailure`]. Suppressed while that capture is the open one, since
- * `TriageRow` is mounted then and owns the message. */
+/** A triage failure with no editor left to wear it — see [`strandedFailure`].
+ *
+ * `openEditorItemId` is whichever item has an editor open on it, and since
+ * item detail gained an Edit mode that is **either** of the two things Now's
+ * slot can hold: a capture in `TriageRow`, or a minted item in `ItemPanel`,
+ * both of which render this failure themselves. Passing only the capture
+ * would say a failed edit twice, once in the panel and once above the
+ * columns.
+ *
+ * `inbox` stays the inbox: it is only consulted to *name* the item a stranded
+ * failure belongs to, and a minted item's failure is never stranded — its
+ * panel is the thing that was open when the edit was sent. */
 export function strandedTriageFailure(
   result: TaskTriageResult | null | undefined,
-  openCaptureId: string | null,
+  openEditorItemId: string | null,
   inbox: readonly TaskItemDTO[],
 ): string | null {
-  return strandedFailure(result, openCaptureId, inbox, "Triage", TRIAGE_FALLBACK);
+  return strandedFailure(result, openEditorItemId, inbox, "Triage", TRIAGE_FALLBACK);
 }
 
-/** An act failure with no `ItemDetailPanel` left to wear it — the twin bug,
+/** An act failure with no `ItemPanel` left to wear it — the twin bug,
  * on the other mutation.
  *
  * `openItemId` is the item whose **detail panel** is open, which is not the
- * same as "the selected item": Now's slot holds either an `ItemDetailPanel` or
+ * same as "the selected item": Now's slot holds either an `ItemPanel` or
  * a `TriageRow`, and a capture in that slot still acts (its one-click
  * checkmark completes the item, `canMarkDone`). A failed act on the open
  * *capture* therefore has no `actError` anywhere — `TriageRow` renders triage
