@@ -336,6 +336,51 @@ describe("CaptureBox — dictation", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("ends a still-live session and drops its snapshot when a capture succeeds out from under it (#367)", async () => {
+    // Not the deliberate-submit case above: here the session belongs to a
+    // NEXT capture, still listening, when an EARLIER submit's result lands.
+    // The clear-on-ok rule rewrites `draft` to "" regardless, so the session's
+    // frozen halves (built from whatever the field said before that clear)
+    // would resurrect that text if a later transcript spliced onto them.
+    const { onSubmit, view, onDictatingChange, bumpCancel } = renderBox();
+    await settleProbe();
+    // A draft already sitting in the field when the NEXT session starts — if
+    // the snapshot were wrongly restored instead of dropped, this is what
+    // would come back, distinguishing this from a cancel.
+    fireEvent.change(field(), { target: { value: "buy milk" } });
+    fireEvent.click(mic());
+    hear("call the vet");
+
+    view.rerender(
+      <CaptureBox
+        onSubmit={onSubmit}
+        projects={[]}
+        demo={false}
+        focusRequestId={1}
+        lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
+        cancelDictationRequestId={0}
+        onDictatingChange={onDictatingChange}
+      />,
+    );
+
+    // The microphone is torn down — no hot recognizer survives the capture...
+    expect(seam.aborts).toBe(1);
+    expect(field().readOnly).toBe(false);
+    expect(mic()).toBeTruthy();
+    // ...the field is exactly what the successful capture left it (empty),
+    // not the words the dead session had spliced in...
+    expect(field().value).toBe("");
+    // ...and a transcript still arriving from the dead recognizer changes
+    // nothing at all.
+    hear("something else entirely");
+    expect(field().value).toBe("");
+    // A cancel afterwards restores nothing either: `frozenRef` was dropped
+    // alongside the session, so there is nothing left for `cancelDictation`
+    // to restore from.
+    bumpCancel(1);
+    expect(field().value).toBe("");
+  });
+
   it("leaves the metadata controls alone across a session", async () => {
     const { onSubmit } = renderBox();
     await settleProbe();
