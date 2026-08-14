@@ -19,7 +19,7 @@ pub use calendar_host::{
     CalendarEventsResponse, CalendarHostCore, CalendarListResponse, CALENDAR_POLL_INTERVAL_MS,
 };
 pub use task_host::{
-    ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureResponse, CoreFieldDTO,
+    ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureFields, CaptureResponse, CoreFieldDTO,
     CreateRuleResponse, DeadLetterEntryDTO, DeadLetterFieldDTO, DeadLettersResponse,
     FreshnessResponse, FrontierItemDTO, IsPendingResponse, ItemListResponse, KindRegistryResponse,
     MirrorSnapshotResponse, PaneReadResponse, PatchRuleResponse, ProjectListResponse,
@@ -334,7 +334,7 @@ mod wasm_bindings {
 
     // ------------------------------------------------------------ TaskHost
 
-    use super::task_host::{TaskHostCore, TriageEdits, TriageResponse};
+    use super::task_host::{CaptureFields, CaptureResponse, TaskHostCore, TriageEdits, TriageResponse};
 
     /// Whatever a synchronous setter had to defer because [`TaskShared`]'s
     /// host was checked out. NOT simple last-wins: `Push` and `Clear` always
@@ -860,30 +860,46 @@ mod wasm_bindings {
 
         /// Captures a new item. Resolves to JSON:
         /// `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
-        /// `size`/`energy` (#208) are the wire's snake_case vocabulary names
-        /// (`"quick"`/`"short"`/`"deep"`, `"low"`/`"medium"`/`"high"`),
-        /// resolved by name — never a raw id — on the way in; `context`
-        /// carries straight through. Each defaults to absent, so a caller
-        /// that never sets them still produces a capture with all three
-        /// absent.
-        #[allow(clippy::too_many_arguments)]
+        /// `fields` is one JSON object ([`CaptureFields`]) rather than the
+        /// positional scalars this took while there were three of them — the
+        /// same call [`TaskHost::triage`] made for the same reason. Every key
+        /// is optional and `null` means "not set": these are creation-time
+        /// values on an item that does not exist yet, so there is nothing a
+        /// `null` could be clearing. `size`/`energy` are the wire's snake_case
+        /// vocabulary names (`"quick"`/`"short"`/`"deep"`,
+        /// `"low"`/`"medium"`/`"high"`), resolved by name — never a raw id.
+        ///
+        /// Malformed JSON or an unknown key is a `"failed"` answer carrying
+        /// the parse error, refused before the host is ever checked out, on
+        /// the same "reject before the seam" discipline `triage` uses.
         pub fn capture(
             &self,
             seed: String,
             title: String,
             stage: String,
-            size: Option<String>,
-            energy: Option<String>,
-            context: Option<String>,
+            fields: String,
             now_ms: f64,
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
+                let fields: CaptureFields = match serde_json::from_str(&fields) {
+                    Ok(fields) => fields,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(
+                            &serde_json::to_string(&CaptureResponse {
+                                kind: "failed",
+                                id: None,
+                                error: Some(format!("unreadable capture fields: {error}")),
+                            })
+                            .expect("CaptureResponse serializes"),
+                        ));
+                    }
+                };
                 let Some(mut host) = inner.check_out() else {
                     return Ok(JsValue::from_str(BUSY_CAPTURE));
                 };
                 let response = host
-                    .capture(&seed, &title, &stage, size, energy, context, now_ms as i64)
+                    .capture(&seed, &title, &stage, fields, now_ms as i64)
                     .await;
                 inner.check_in(host);
                 Ok(JsValue::from_str(

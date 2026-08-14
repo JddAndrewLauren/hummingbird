@@ -139,6 +139,51 @@ pub struct TriageEdits {
     pub scheduled_date: Option<Option<String>>,
 }
 
+/// Every field the capture box may set on a brand-new item, as the JS side
+/// sends them — one JSON object, camelCased, deserialized here rather than the
+/// seven-scalar positional list this used to be.
+///
+/// **Plain `Option<T>`, deliberately not [`TriageEdits`]' double option.**
+/// These are creation-time values on an item that does not exist yet, so there
+/// is no stored value a `null` could be clearing: absent and null are the same
+/// instruction — don't send the field — and the three-state distinction
+/// `touched` exists for has nothing to distinguish. The UI leans on that: an
+/// untouched control sends `null` and the item is created without the field.
+///
+/// `deny_unknown_fields` and `camelCase` on purpose, and pinned by tests: this
+/// struct's field names are a contract with `store/protocol.ts`, and a
+/// misspelling on either side would deserialize to "unset" — a capture that
+/// silently drops the deadline someone typed.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureFields {
+    /// The wire's snake_case size name (`hummingbird_domain::Size::parse`);
+    /// resolved by name through the vocabulary, never a raw index.
+    #[serde(default)]
+    pub size: Option<String>,
+    /// Same "resolved by name" contract as `size`
+    /// (`hummingbird_domain::Energy::parse`).
+    #[serde(default)]
+    pub energy: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i64>,
+    /// `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`, checked with
+    /// `hummingbird_domain::is_valid_deadline` before the seam — the same
+    /// function the authority validates with, so the two cannot disagree.
+    #[serde(default)]
+    pub deadline: Option<String>,
+    /// A whole civil day (`YYYY-MM-DD`) and never a date-time: a scheduled
+    /// date is the do-date a human chose, which has no minute.
+    #[serde(default)]
+    pub scheduled_date: Option<String>,
+}
+
 /// Distinguishes "key absent" from "key present, value null" for a
 /// double-`Option` field. Without it serde folds both onto `None` and a
 /// clear becomes a no-op; the same shim the authority's own patch bodies use
@@ -1096,58 +1141,73 @@ impl TaskHostCore {
     /// without ever touching [`Core::capture`], the same "reject before the
     /// seam" discipline `calendar_host.rs` uses for its own inputs.
     ///
-    /// `size`/`energy` (#208) are each resolved by name through
+    /// `fields` (#208, widened here) carries everything the capture box may
+    /// set. `size`/`energy` are each resolved by name through
     /// `hummingbird_domain`'s own vocabulary (`Size::parse`/`Energy::parse`),
-    /// the same "reject before the seam" discipline
-    /// [`TaskHostCore::triage`] already applies to its own `size`/`energy`
-    /// edits — an unrecognised name fails here and never reaches
-    /// [`Core::capture`]. `context` carries straight through unparsed, same
-    /// as `TriageEdits::context`.
-    #[allow(clippy::too_many_arguments)]
+    /// and `priority`/`deadline`/`scheduled_date` are checked with the same
+    /// rules [`TaskHostCore::triage`] applies to its own edits — the same
+    /// "reject before the seam" discipline, so an input the authority would
+    /// 400 on fails here and never reaches [`Core::capture`] or the queue.
+    /// `context` and `description` carry straight through unparsed.
     pub async fn capture(
         &mut self,
         seed: &str,
         title: &str,
         stage: &str,
-        size: Option<String>,
-        energy: Option<String>,
-        context: Option<String>,
+        fields: CaptureFields,
         now_ms: i64,
     ) -> CaptureResponse {
+        let fail = |message: String| CaptureResponse {
+            kind: "failed",
+            id: None,
+            error: Some(message),
+        };
         let Some(stage) = Stage::parse(stage) else {
-            return CaptureResponse {
-                kind: "failed",
-                id: None,
-                error: Some(format!("unrecognised stage {stage:?}")),
-            };
+            return fail(format!("unrecognised stage {stage:?}"));
         };
-        let size = match size {
-            Some(raw) => match Size::parse(&raw) {
+        let size = match &fields.size {
+            Some(raw) => match Size::parse(raw) {
                 Some(size) => Some(size),
-                None => {
-                    return CaptureResponse {
-                        kind: "failed",
-                        id: None,
-                        error: Some(format!("unrecognised size {raw:?}")),
-                    };
-                }
+                None => return fail(format!("unrecognised size {raw:?}")),
             },
             None => None,
         };
-        let energy = match energy {
-            Some(raw) => match Energy::parse(&raw) {
+        let energy = match &fields.energy {
+            Some(raw) => match Energy::parse(raw) {
                 Some(energy) => Some(energy),
-                None => {
-                    return CaptureResponse {
-                        kind: "failed",
-                        id: None,
-                        error: Some(format!("unrecognised energy {raw:?}")),
-                    };
-                }
+                None => return fail(format!("unrecognised energy {raw:?}")),
             },
             None => None,
         };
-        let options = CaptureOptions { size, energy, context };
+        if let Some(priority) = fields.priority {
+            if !(0..=4).contains(&priority) {
+                return fail("priority must be between 0 and 4".to_string());
+            }
+        }
+        if let Some(deadline) = &fields.deadline {
+            if !is_valid_deadline(deadline) {
+                return fail("deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM".to_string());
+            }
+        }
+        if let Some(scheduled_date) = &fields.scheduled_date {
+            // The length check is what rules out `YYYY-MM-DDTHH:MM` while
+            // still borrowing the shared calendar validation (leap years,
+            // month lengths) rather than re-deriving it here — `triage`'s own
+            // note carries the full argument.
+            if scheduled_date.len() != 10 || !is_valid_deadline(scheduled_date) {
+                return fail("scheduled date must be YYYY-MM-DD".to_string());
+            }
+        }
+        let options = CaptureOptions {
+            size,
+            energy,
+            context: fields.context,
+            description: fields.description,
+            priority: fields.priority,
+            project_id: fields.project_id,
+            deadline: fields.deadline,
+            scheduled_date: fields.scheduled_date,
+        };
         match self.core.capture(seed, title, stage, now_ms, options).await {
             Ok(id) => CaptureResponse {
                 kind: "ok",
@@ -1452,7 +1512,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "not-an-action", 2_000).await;
@@ -1485,7 +1545,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "complete", 2_000).await;
@@ -1507,7 +1567,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "block", 2_000).await;
@@ -1527,7 +1587,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "cancel", 2_000).await;
@@ -1554,7 +1614,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -1573,7 +1633,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -1622,6 +1682,127 @@ mod triage_tests {
         );
     }
 
+    /// The capture wire's own contract, which `store/protocol.ts` writes
+    /// against. Same camelCase-and-`deny_unknown_fields` discipline as
+    /// `TriageEdits` above, and pinned for the same reason: a key spelled one
+    /// way here and another way there deserializes to "unset", which is a
+    /// capture silently dropping a deadline someone typed rather than an error
+    /// anybody sees.
+    ///
+    /// Where it deliberately differs: `null` is *not* a third instruction.
+    /// Nothing exists yet to clear, so a null reads exactly as an absent key.
+    #[test]
+    fn capture_fields_read_camel_case_keys_and_refuse_unknown_ones() {
+        let fields: CaptureFields = serde_json::from_str(
+            r#"{"projectId":"p1","scheduledDate":"2026-08-12","deadline":null,"priority":3}"#,
+        )
+        .unwrap();
+        assert_eq!(fields.project_id, Some("p1".to_string()));
+        assert_eq!(fields.scheduled_date, Some("2026-08-12".to_string()));
+        assert_eq!(fields.deadline, None, "a null is simply not set");
+        assert_eq!(fields.priority, Some(3));
+        assert_eq!(fields.context, None, "an absent key is not set either");
+
+        assert_eq!(
+            serde_json::from_str::<CaptureFields>("{}").unwrap(),
+            CaptureFields::default(),
+            "an empty object is every field unset — the resting state"
+        );
+        assert!(
+            serde_json::from_str::<CaptureFields>(r#"{"project_id":"p1"}"#).is_err(),
+            "snake_case is not this wire's spelling, and a dropped field is worse than an error"
+        );
+        assert!(
+            serde_json::from_str::<CaptureFields>(r#"{"deadlien":"2026-08-12"}"#).is_err(),
+            "an unknown key is refused, not read as `nothing was set`"
+        );
+    }
+
+    /// Every value rule the authority answers 400 on is checked before
+    /// `Core::capture` is reached — the same discipline triage has had, now
+    /// that capture can carry the same fields. Without it a bad deadline
+    /// typed into the capture box would queue a mutation that dead-letters
+    /// later, with nothing on screen to say so.
+    #[tokio::test]
+    async fn capturing_rejects_every_invalid_field_value_before_reaching_core_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-capture-invalid");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let cases = [
+            CaptureFields {
+                priority: Some(5),
+                ..CaptureFields::default()
+            },
+            CaptureFields {
+                deadline: Some("next tuesday".to_string()),
+                ..CaptureFields::default()
+            },
+            CaptureFields {
+                // A real date that is not a real day — the shared calendar
+                // validation, not a regex.
+                deadline: Some("2026-02-30".to_string()),
+                ..CaptureFields::default()
+            },
+            CaptureFields {
+                // A scheduled date is a whole civil day and never a date-time.
+                scheduled_date: Some("2026-08-12T09:30".to_string()),
+                ..CaptureFields::default()
+            },
+        ];
+        for fields in cases {
+            let response = host
+                .capture("seed-1", "buy milk", "ready", fields.clone(), 1_000)
+                .await;
+            assert_eq!(response.kind, "failed", "{fields:?}");
+            assert!(response.error.is_some(), "{fields:?}");
+        }
+        assert_eq!(host.frontier().items.len(), 0, "nothing was ever queued");
+    }
+
+    /// The other half: everything the capture box can set reaches the item,
+    /// in one capture mutation.
+    #[tokio::test]
+    async fn capturing_with_every_field_set_puts_them_all_on_the_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-capture-full");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host
+            .capture(
+                "seed-1",
+                "buy milk",
+                "ready",
+                CaptureFields {
+                    size: Some("quick".to_string()),
+                    energy: Some("low".to_string()),
+                    context: Some("@errands".to_string()),
+                    description: Some("the oat kind".to_string()),
+                    project_id: Some("proj-1".to_string()),
+                    priority: Some(2),
+                    deadline: Some("2026-09-01T09:30".to_string()),
+                    scheduled_date: Some("2026-08-30".to_string()),
+                },
+                1_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        let item = &host.frontier().items[0].item;
+        assert_eq!(item.size, Some(Size::Quick));
+        assert_eq!(item.energy, Some(Energy::Low));
+        assert_eq!(item.context.as_deref(), Some("@errands"));
+        assert_eq!(item.description.as_deref(), Some("the oat kind"));
+        assert_eq!(item.project_id.as_deref(), Some("proj-1"));
+        assert_eq!(item.priority, 2);
+        assert_eq!(item.deadline.as_deref(), Some("2026-09-01T09:30"));
+        assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-30"));
+    }
+
     /// Every value rule the authority answers 400 on is checked before
     /// `Core::triage` is reached, so the person sees a message on the form
     /// rather than a mutation that dead-letters later.
@@ -1632,7 +1813,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let rejected: Vec<(&str, TriageEdits)> = vec![
@@ -1705,7 +1886,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
         host.triage(
             "seed-triage-1",
@@ -1766,7 +1947,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -1806,7 +1987,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
@@ -1829,7 +2010,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
         host.act("seed-act-1", &id, "start", 1_500).await;
         assert_eq!(host.frontier().items[0].item.stage, Stage::InProgress);
@@ -1861,7 +2042,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
         host.triage(
             "seed-triage-7a",
@@ -1895,7 +2076,7 @@ mod grill_tests {
 
     async fn captured_item(host: &mut TaskHostCore) -> String {
         let response = host
-            .capture("seed-cap", "book flights", "triage", None, None, None, 1_000)
+            .capture("seed-cap", "book flights", "triage", CaptureFields::default(), 1_000)
             .await;
         response.id.expect("capture always mints an id")
     }
@@ -2063,7 +2244,7 @@ mod ledger_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
 
         let response = host.ledger(2_000);
         assert_eq!(response.kind, "ok");
@@ -2099,7 +2280,7 @@ mod ledger_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         host.act("seed-act-1", &id, "complete", 2_000).await;
@@ -2182,7 +2363,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = host.capture("seed-1", "buy milk", "not-a-stage", None, None, None, 1_000).await;
+        let response = host.capture("seed-1", "buy milk", "not-a-stage", CaptureFields::default(), 1_000).await;
 
         assert_eq!(response.kind, "failed");
         assert!(response.id.is_none());
@@ -2208,9 +2389,10 @@ mod tests {
                 "seed-1",
                 "buy milk",
                 "ready",
-                Some("giant".to_string()),
-                None,
-                None,
+                CaptureFields {
+                    size: Some("giant".to_string()),
+                    ..CaptureFields::default()
+                },
                 1_000,
             )
             .await;
@@ -2235,9 +2417,10 @@ mod tests {
                 "seed-1",
                 "buy milk",
                 "ready",
-                None,
-                Some("blazing".to_string()),
-                None,
+                CaptureFields {
+                    energy: Some("blazing".to_string()),
+                    ..CaptureFields::default()
+                },
                 1_000,
             )
             .await;
@@ -2264,9 +2447,12 @@ mod tests {
                 "seed-1",
                 "buy milk",
                 "ready",
-                Some("deep".to_string()),
-                Some("high".to_string()),
-                Some("@errands".to_string()),
+                CaptureFields {
+                    size: Some("deep".to_string()),
+                    energy: Some("high".to_string()),
+                    context: Some("@errands".to_string()),
+                    ..CaptureFields::default()
+                },
                 1_000,
             )
             .await;
@@ -2286,7 +2472,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        let response = host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
 
         assert_eq!(response.kind, "ok");
         let id = response.id.clone().unwrap();
@@ -2321,7 +2507,7 @@ mod tests {
             .await
             .unwrap();
 
-        host.capture("seed-1", "someday maybe", "triage", None, None, None, 1_000).await;
+        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
 
         assert_eq!(host.frontier().items.len(), 0);
         assert_eq!(host.triage_inbox().items.len(), 1);
@@ -2391,7 +2577,7 @@ mod tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
             .await
             .unwrap();
-        let response = host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        let response = host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = response.id.unwrap();
 
         host.clear_api_key();
@@ -2442,7 +2628,7 @@ mod tests {
             .await
             .unwrap();
 
-        host.capture("seed-1", "buy milk", "ready", None, None, None, 1_000).await;
+        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
 
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
     }
