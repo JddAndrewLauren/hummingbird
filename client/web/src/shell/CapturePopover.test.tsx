@@ -41,9 +41,18 @@ function field(): HTMLInputElement {
   return screen.getByLabelText("Capture") as HTMLInputElement;
 }
 
-/** The three optional fields left at rest — what `resolveCaptureFields` hands
+/** Every optional field left at rest — what `resolveCaptureFields` hands
  * `onSubmit` when nothing beside the title was touched. */
-const NO_FIELDS = { size: null, energy: null, context: null };
+const NO_FIELDS = {
+  size: null,
+  energy: null,
+  context: null,
+  description: null,
+  projectId: null,
+  priority: null,
+  deadline: null,
+  scheduledDate: null,
+};
 
 describe("CapturePopover — the overlay", () => {
   it("renders nothing at all while closed", () => {
@@ -163,6 +172,7 @@ describe("CapturePopover — the capture meta (#208)", () => {
     fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
 
     expect(onSubmit).toHaveBeenCalledWith("Buy soil", "triage", {
+      ...NO_FIELDS,
       size: "deep",
       energy: "high",
       context: "@garden",
@@ -177,9 +187,8 @@ describe("CapturePopover — the capture meta (#208)", () => {
     fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
 
     expect(onSubmit).toHaveBeenCalledWith("Buy soil", "triage", {
-      size: null,
+      ...NO_FIELDS,
       energy: "high",
-      context: null,
     });
   });
 

@@ -39,17 +39,17 @@ export interface TaskHostLike {
    * `protocol.ts`'s `initTaskApiKey` doc for the full contract. */
   rehydrateApiKey(apiKey: string): void;
   clearApiKey(): void;
-  /** #208's `size`/`energy`/`context` are each `string | null` — the wire's
-   * snake_case vocabulary names, resolved by name through
+  /** #208's capture fields as one JSON object (`ffi-web`'s `CaptureFields`),
+   * for the same reason `triage` below takes one: the list had grown past the
+   * point where positional scalars read. `size`/`energy` inside it are the
+   * wire's snake_case vocabulary names, resolved by name through
    * `hummingbird_domain::Size`/`Energy::parse` on the way in (never a raw
-   * index), and `context` carried straight through. `null` is "not set". */
+   * index); `null` on any key is "not set". */
   capture(
     seed: string,
     title: string,
     stage: string,
-    size: string | null,
-    energy: string | null,
-    context: string | null,
+    fields: string,
     nowMs: number,
   ): Promise<string>;
   act(seed: string, itemId: string, action: string, nowMs: number): Promise<string>;
@@ -688,9 +688,11 @@ export async function handleTaskRequest(
           request.seed,
           request.title,
           request.stage,
-          request.size,
-          request.energy,
-          request.context,
+          // Stringified whole, the same idiom `"triage"` uses below — the
+          // seam takes one JSON object. A `null` here is "not set" rather
+          // than a clear, so unlike triage's edits there is nothing that
+          // needs the absent/null distinction to survive the trip.
+          JSON.stringify(request.fields),
           request.nowMs,
         ),
       ) as RawCaptureResponse;

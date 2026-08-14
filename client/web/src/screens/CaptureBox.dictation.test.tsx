@@ -62,6 +62,19 @@ beforeEach(() => {
   seam.aborts = 0;
 });
 
+/** Every optional field left at rest — what `resolveCaptureFields` hands
+ * `onSubmit` when nothing beside the title was touched. */
+const NO_FIELDS = {
+  size: null,
+  energy: null,
+  context: null,
+  description: null,
+  projectId: null,
+  priority: null,
+  deadline: null,
+  scheduledDate: null,
+};
+
 function renderBox() {
   const onSubmit = vi.fn();
   const view = render(
@@ -138,11 +151,7 @@ describe("CaptureBox — dictation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
     // #110: the raw spliced string, unmodified, through the same path a typed
     // capture takes — and the metadata untouched by the session.
-    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", {
-      size: null,
-      energy: null,
-      context: null,
-    });
+    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
   });
 
   it("lands the transcript at the caret with the suffix intact", async () => {
@@ -266,11 +275,7 @@ describe("CaptureBox — dictation", () => {
     await startListening();
     hear("call the vet");
     fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
-    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", {
-      size: null,
-      energy: null,
-      context: null,
-    });
+    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
     expect(seam.aborts).toBe(1);
     view.rerender(
       <CaptureBox
@@ -317,8 +322,7 @@ describe("CaptureBox — dictation", () => {
     fireEvent.click(stopMic());
     fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
     expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", {
-      size: null,
-      energy: null,
+      ...NO_FIELDS,
       context: "@phone",
     });
   });

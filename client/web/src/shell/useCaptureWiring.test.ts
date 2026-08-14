@@ -16,6 +16,19 @@ function fakeWorker(): WorkerLike & { postMessage: ReturnType<typeof vi.fn> } {
   };
 }
 
+/** Every capture field at its resting state — the wire spells all of them out
+ * as `null` even when the caller passed `{}`. */
+const EMPTY_CAPTURE_FIELDS = {
+  size: null,
+  energy: null,
+  context: null,
+  description: null,
+  projectId: null,
+  priority: null,
+  deadline: null,
+  scheduledDate: null,
+};
+
 describe("submitCaptureRequest", () => {
   it("posts a getTriageInbox request immediately after the capture — this must fail without the fix", () => {
     const worker = fakeWorker();
@@ -26,7 +39,7 @@ describe("submitCaptureRequest", () => {
     expect(types).toEqual(["capture", "getTriageInbox"]);
   });
 
-  it("the capture message itself carries the raw title and stage unmodified, with size/energy/context absent by default", () => {
+  it("the capture message itself carries the raw title and stage unmodified, with every field absent by default", () => {
     const worker = fakeWorker();
 
     submitCaptureRequest(worker, "  Buy   OAT milk  ", "triage", 5_000, {}, "seed-2");
@@ -36,15 +49,13 @@ describe("submitCaptureRequest", () => {
       seed: "seed-2",
       title: "  Buy   OAT milk  ",
       stage: "triage",
-      size: null,
-      energy: null,
-      context: null,
+      fields: EMPTY_CAPTURE_FIELDS,
       nowMs: 5_000,
     });
   });
 
   // #208: a caller-supplied `fields` reaches the capture message verbatim.
-  it("carries a set size, energy and context onto the same capture message", () => {
+  it("carries every set field onto the same capture message", () => {
     const worker = fakeWorker();
 
     submitCaptureRequest(
@@ -52,7 +63,16 @@ describe("submitCaptureRequest", () => {
       "buy milk",
       "triage",
       5_000,
-      { size: "deep", energy: "high", context: "@errands" },
+      {
+        size: "deep",
+        energy: "high",
+        context: "@errands",
+        description: "the oat kind",
+        projectId: "proj-1",
+        priority: 3,
+        deadline: "2026-09-01",
+        scheduledDate: "2026-08-30",
+      },
       "seed-3",
     );
 
@@ -61,9 +81,16 @@ describe("submitCaptureRequest", () => {
       seed: "seed-3",
       title: "buy milk",
       stage: "triage",
-      size: "deep",
-      energy: "high",
-      context: "@errands",
+      fields: {
+        size: "deep",
+        energy: "high",
+        context: "@errands",
+        description: "the oat kind",
+        projectId: "proj-1",
+        priority: 3,
+        deadline: "2026-09-01",
+        scheduledDate: "2026-08-30",
+      },
       nowMs: 5_000,
     });
   });
@@ -82,9 +109,7 @@ describe("submitCaptureRequest", () => {
       seed: "seed-3",
       title: "Order the worktop",
       stage: "ready",
-      size: null,
-      energy: null,
-      context: null,
+      fields: EMPTY_CAPTURE_FIELDS,
       nowMs: 7_000,
     });
     const types = worker.postMessage.mock.calls.map(([message]) => message.type);

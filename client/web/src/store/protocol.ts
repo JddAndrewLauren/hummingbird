@@ -243,6 +243,30 @@ export interface TriageEdits {
   scheduledDate?: string | null;
 }
 
+/** Every field the capture box may set on a brand-new item, exactly as the
+ * seam's `CaptureFields` (`ffi-web/src/task_host.rs`) deserializes it: this
+ * object is stringified and handed straight across, so **these key names are
+ * that struct's camelCase field names** and both sides pin them.
+ *
+ * Every key is required-but-nullable rather than optional, unlike
+ * `TriageEdits`: `null` is the resting state and means "not set", there is no
+ * third "clear it" instruction to express on an item that does not exist yet,
+ * and spelling every key out is what makes a *missing* one a type error rather
+ * than a silently unsent field. */
+export interface CaptureFieldsWire {
+  size: "quick" | "short" | "deep" | null;
+  energy: "low" | "medium" | "high" | null;
+  context: string | null;
+  description: string | null;
+  projectId: string | null;
+  /** 0..=4, in `items.priority`'s own encoding (`screens/priority.ts`). */
+  priority: number | null;
+  /** `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` (`is_valid_deadline`). */
+  deadline: string | null;
+  /** A whole civil day, `YYYY-MM-DD` — a do-date has no minute. */
+  scheduledDate: string | null;
+}
+
 /** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
  * checklist (issue #96, S10) — read-only from this binding; ticking one is
@@ -597,22 +621,29 @@ export type TaskWorkerRequest =
    * issued the capture can match its own seed back against the
    * `captureResult` broadcast (see `TaskWorkerResponse`), since the
    * worker->view direction never replies to just one sender. */
-  /** `size`/`energy`/`context` (#208) carry the capture box's own optional
-   * selections through to the wire, riding this single create mutation —
-   * never a follow-up patch. `size`/`energy` are the wire's snake_case
-   * vocabulary names, resolved by name through
-   * `hummingbird_domain::Size`/`Energy::parse` at the seam, same discipline
-   * `"triage"` already uses for its own edit fields; `null` (the resting
-   * state every one of these controls starts at) means "not set", never a
-   * default value reaching `Core`. */
+  /** `fields` (#208) carries the capture box's own optional selections
+   * through to the wire, riding this single create mutation — never a
+   * follow-up patch. `size`/`energy` are the wire's snake_case vocabulary
+   * names, resolved by name through `hummingbird_domain::Size`/`Energy::parse`
+   * at the seam, same discipline `"triage"` already uses for its own edit
+   * fields; `null` (the resting state every one of these controls starts at)
+   * means "not set", never a default value reaching `Core`.
+   *
+   * One nested object rather than eight sibling keys, because it is
+   * stringified whole into the seam's `CaptureFields` argument
+   * (`worker/task-worker.ts`, the same idiom `"triage"` uses for its edits) —
+   * **its keys are that Rust struct's `rename_all = "camelCase"` field names
+   * and a misspelling on either side reads as "unset", which is why both
+   * sides pin the contract in tests.**
+   *
+   * Unlike `TriageEdits`, `null` is not a third instruction here: nothing
+   * exists yet to clear, so absent and null say the same thing. */
   | {
       type: "capture";
       seed: string;
       title: string;
       stage: TaskStageName;
-      size: "quick" | "short" | "deep" | null;
-      energy: "low" | "medium" | "high" | null;
-      context: string | null;
+      fields: CaptureFieldsWire;
       nowMs: number;
     }
   /** S11/#109's act mutation: start, complete, block, cancel. `seed` is the

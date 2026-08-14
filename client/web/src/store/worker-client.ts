@@ -30,15 +30,24 @@ import type {
  * clear-flag shape). */
 export type { TriageEdits } from "./protocol";
 
-/** The capture box's optional Energy/Size/Context selections (#208) — the
- * caller-facing convenience shape over `TaskWorkerRequest`'s `"capture"`
- * variant, same "omitted means unset" contract `TriageEdits` documents for
- * its own fields. `screens/capture-meta.ts`'s `resolveCaptureFields` is
- * what turns the capture box's live controls into this shape. */
+/** The capture box's optional field selections (#208) — the caller-facing
+ * convenience shape over `TaskWorkerRequest`'s `"capture"` variant, same
+ * "omitted means unset" contract `TriageEdits` documents for its own fields.
+ * `screens/capture-meta.ts`'s `resolveCaptureFields` is what turns the capture
+ * box's live controls into this shape.
+ *
+ * Optional here and required-but-nullable on the wire (`CaptureFieldsWire`):
+ * a caller sets what it has, and `captureTask` below fills in the `null`s, so
+ * a field added to the wire cannot be silently forgotten by this side. */
 export interface CaptureFields {
   size?: "quick" | "short" | "deep" | null;
   energy?: "low" | "medium" | "high" | null;
   context?: string | null;
+  description?: string | null;
+  projectId?: string | null;
+  priority?: number | null;
+  deadline?: string | null;
+  scheduledDate?: string | null;
 }
 
 // The narrow slice of the DOM `MessagePort` interface a view needs — narrow
@@ -532,9 +541,16 @@ export function captureTask(
     seed,
     title,
     stage,
-    size: fields.size ?? null,
-    energy: fields.energy ?? null,
-    context: fields.context ?? null,
+    fields: {
+      size: fields.size ?? null,
+      energy: fields.energy ?? null,
+      context: fields.context ?? null,
+      description: fields.description ?? null,
+      projectId: fields.projectId ?? null,
+      priority: fields.priority ?? null,
+      deadline: fields.deadline ?? null,
+      scheduledDate: fields.scheduledDate ?? null,
+    },
     nowMs,
   });
 }
