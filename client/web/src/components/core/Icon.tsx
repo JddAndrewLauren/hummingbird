@@ -1,7 +1,19 @@
 import type { HTMLAttributes } from "react";
 import {
   Activity,
+  // PROTOTYPE (#449): Archive…Trash2 in this import exist only for the
+  // projects prototype's ICON_MAP block below.
+  Archive as ArchiveGlyph,
+  ArchiveRestore,
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
   ArrowUpRight,
+  ChevronRight,
+  ExternalLink,
+  GripVertical,
+  Pencil,
+  Trash2,
   Bell,
   BellOff,
   Calendar,
@@ -111,6 +123,19 @@ export const ICON_MAP = {
   "energy-low": EnergyLow,
   "energy-medium": EnergyMedium,
   "energy-high": EnergyHigh,
+  // PROTOTYPE (#449): the block below exists only for screens/projects-
+  // prototype/ — if a variant is folded in, re-decide each glyph
+  // deliberately; if the prototype is deleted, delete these with it.
+  archive: ArchiveGlyph,
+  "archive-restore": ArchiveRestore,
+  "arrow-down": ArrowDown,
+  "arrow-left": ArrowLeft,
+  "arrow-up": ArrowUp,
+  "chevron-right": ChevronRight,
+  "external-link": ExternalLink,
+  "grip-vertical": GripVertical,
+  pencil: Pencil,
+  "trash-2": Trash2,
 } as const;
 
 export type IconName = keyof typeof ICON_MAP;

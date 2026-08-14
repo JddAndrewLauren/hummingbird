@@ -46,7 +46,9 @@ export const SCREENS: readonly Screen[] = [
 export const SCREEN_LABELS: Record<Screen, string> = {
   now: "Now",
   triage: "Triage",
-  routes: "Routes",
+  // PROTOTYPE (#449): "Projects" while the projects-prototype is mounted on
+  // this slot; revert to "Routes" when the prototype is deleted.
+  routes: "Projects",
   alerts: "Alerts",
   rules: "Rules",
   done: "Done",
@@ -60,7 +62,8 @@ export const SCREEN_LABELS: Record<Screen, string> = {
 export const SCREEN_TITLES: Record<Screen, string> = {
   now: "What's next",
   triage: "Triage",
-  routes: "Routes",
+  // PROTOTYPE (#449): same note as SCREEN_LABELS above.
+  routes: "Projects",
   alerts: "Alerts",
   rules: "Rules",
   done: "Done",

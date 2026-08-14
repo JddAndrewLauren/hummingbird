@@ -5,6 +5,7 @@ import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
 import { NowScreen } from "./screens/NowScreen";
 import { RoutesScreen } from "./screens/RoutesScreen";
+import { ProjectsPrototype } from "./screens/projects-prototype/ProjectsPrototype";
 import { RulesScreen } from "./screens/RulesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
@@ -390,7 +391,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               grill={demo ? undefined : grillTakeover}
             />
           )}
-          {screen === "routes" && <RoutesScreen demo={demo} />}
+          {/* PROTOTYPE (#449): dev builds show the Projects page UX
+              exploration on this slot; production keeps RoutesScreen. */}
+          {screen === "routes" &&
+            (import.meta.env.DEV ? <ProjectsPrototype /> : <RoutesScreen demo={demo} />)}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
           {screen === "rules" && (
             <RulesScreen
