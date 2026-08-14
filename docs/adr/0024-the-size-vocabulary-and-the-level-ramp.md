@@ -4,9 +4,11 @@
 **Context:** #446, from a design handoff proposing custom glyph families for
 the two metadata dimensions the app has always stored and barely drawn.
 Amends [ADR-0009](0009-the-owned-schema-and-context-lanes.md) (the DDL's
-`size` `CHECK`, `SCHEMA_VERSION` 6 → 7) and narrows
-[ADR-0021](0021-the-frontier-in-columns.md) decision 2 (what a colour on a
-frontier card is allowed to mean). Numbered 0024 because 0023 was taken by
+`size` `CHECK`, `SCHEMA_VERSION` 6 → 7) and amends
+[ADR-0021](0021-the-frontier-in-columns.md) twice — narrowing decision 2 (what
+a colour on a frontier card is allowed to mean) and reversing the first of its
+"Two corrections" (which side of the `short`/`normal` disagreement wins).
+Numbered 0024 because 0023 was taken by
 [ADR-0023](0023-the-grill-interview-is-a-native-typed-turn-contract.md) the
 day before.
 
@@ -27,6 +29,16 @@ the middle of that scale is `normal`, and that the glossary had simply
 recorded the wrong one. That is worth stating plainly because the glossary
 normally adjudicates: this is the exception where the code was closer to the
 domain than the document was, and the document moved.
+
+**Which reverses a correction ADR-0021 made in the other direction.** Its
+"Two corrections" section found the design mirror saying `quick / normal /
+deep` against a schema saying `'short'`, and ruled that **the schema wins**.
+The finding was right — the two disagreed — and the arbitration rule was the
+usual one. What it did not consider is that the schema could be the wrong
+side, which is what the operator's ruling above says it was. So the mirror's
+spelling stands and the schema is what moved; ADR-0021's DDL quotation is
+stale, and its own text is left as written with a pointer, per
+`docs/adr/README.md` rules 1 and 3.
 
 **The rename went to the wire rather than stopping at a display label.** A
 display-only fix was available and cheaper: keep `short` on the wire, print
@@ -69,6 +81,23 @@ all recorded at `rebuild_items_for_size_vocabulary` in
    first would rewrite `REFERENCES items(id)` to point at the scratch name and
    leave it there. Nothing is ever renamed; the parent is dropped and rebuilt
    under its own name.
+
+**Standing the children aside opens a window, and it is closed by being
+resumable rather than atomic.** For a few statements the only copy of a child
+row is its stash and the only copy of a parent row is the scratch table, and a
+transaction — the textbook answer — is not available: the `Sql` seam is one
+statement at a time and the Durable Object takes no `BEGIN`. `sql.rs`'s
+write-coalescing note covers a turn that *completes*, which a `SqlError`
+returned through `?` does not. So the guarantee is made from the other end:
+`init_schema` runs on every construction, so the next boot is the retry, and
+every intermediate state is one the rebuild can resume from — restoring the
+stashes when the parent has not crossed yet, and draining the scratch table
+*before* the DDL guard's early return when it has. That second case is the one
+worth naming: a guard that declines while the rows still sit in the scratch
+table loses them on every boot after, permanently. The mechanics are at
+`rebuild_items_for_size_vocabulary`; the two interruption tests in
+`server/authority/tests/handler_fixtures/schema.rs` are what keep this from
+being a claim.
 
 **A device may still send the old word, and is not punished for it.**
 `Size::Normal` carries `#[serde(alias = "short")]` and `Size::parse` accepts
