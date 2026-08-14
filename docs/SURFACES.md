@@ -32,7 +32,7 @@ human gate.
 
 ### Matrix
 
-Three widths × two themes × eleven screen states, per run.
+Three widths × two themes × twelve screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
@@ -91,7 +91,24 @@ reviewed by hand at 1440, 1024 and 768 in both themes on a device with real
 items, which is where enough columns to wrap exist at all. Entangling `?demo`
 with `RealFrontier` to photograph them is rejected there, not merely skipped:
 that branch exists to keep the two apart, so widening it would trade a
-documented coverage gap for an undocumented behavioural one. The popover is a state rather than a screen — it
+documented coverage gap for an undocumented behavioural one.
+
+**Since #420 the columns, the captures among them and #418's stranded-triage
+alert ARE photographed** — the twelfth state, `now-columns-*`, and the reason
+the count above moved. Not by widening `?demo`, which still never mounts
+`RealFrontier` and still means exactly what it meant: by a **second demo
+world**, `?demo=board`, which seeds a real `TaskState`
+(`src/fixtures/demo-task-state.ts`) and returns `null` for `DemoData`, and a
+null `demo` prop is what selects the `RealFrontier` branch. The rejection above
+is intact — this is the "decided change with its reasoning written down" that
+ADR-0021 decision 8 named as its own condition, and that decision carries the
+amendment. The fixture mirrors **production's measured shape and none of its
+content** (29 cards, its context/size/energy/source spread, no projects, no
+blocked edges), so what the gate photographs is the real awkward board rather
+than a tidy one. Still uncovered on this surface and still on the disposition:
+everything reached only by interaction — the axis switch, the facet-filter
+panel, the collapse reflow and the selected-card slot — since the capture is
+one still frame of the default view. The popover is a state rather than a screen — it
 renders over whatever is showing (`shell/CapturePopover.tsx`), so no
 per-screen capture ever contains it, and the scrim covering the whole window
 plus the card fitting inside 768 are only decidable with it open. `?demo` drives

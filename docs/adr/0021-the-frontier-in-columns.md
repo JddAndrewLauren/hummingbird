@@ -344,6 +344,40 @@ code would trade a documented coverage gap for an undocumented behavioural one.
 If it is ever done it is a decided change with its reasoning written down, not
 a side effect of wanting a picture.
 
+*Amended 2026-08-13 (#420): the gap is closed, and the rejection above still
+stands — this is the decided change it asked for, not the entangling it
+refused. `?demo` keeps its exact present meaning and still never mounts
+`RealFrontier`. What is added is a **second, mutually exclusive demo world**,
+`?demo=board`, which seeds a real `TaskState` — the shape the sync engine
+publishes — and returns `null` for `DemoData`. A null `demo` prop is precisely
+what makes `NowScreen` take its `RealFrontier` branch, so the two paths stay as
+separate as this decision wanted them: nothing is widened, and no production
+component learns that a fixture exists.*
+
+*Why a seeded state rather than richer kit fixtures: `DemoItem` carries no
+`context` and no `energy`, having been written before either was an axis, so
+the kit world could not express this decision's own grouping in principle.*
+
+*The fixture (`client/web/src/fixtures/demo-task-state.ts`) mirrors
+**production's measured shape and none of its content** — 29 board cards, the
+context/size/energy/source spreads read once from `GET /api/changes?since=0` on
+2026-08-13, no projects, no blocked edges, priority flat at zero. Mirroring the
+awkward parts is the point, and photographing them turned three of this ADR's
+own decisions into findings worth their own issues: **grouping by Project
+yields exactly one column**, because production has no projects at all
+(decision 1 licenses four axes; one of them currently does nothing);
+**the no-value bucket is the biggest column on every axis**, which decision 1
+pins always-last, so the largest column sits past the fold; and **`n more` is
+the normal case rather than an edge one**, two context columns being over
+`COLUMN_CAP` on day one. Two documented departures keep the gate covering
+states production is not in today: three deadlines, one per urgency band, so
+decision 2's colour ladder is photographed at all, and a seeded `lastTriage`
+failure so #418's alert is too.*
+
+*What this does not change: the disposition above still holds for everything a
+photograph cannot decide. The board world is read-only — no mutation is rewired
+to it — so it is a camera, not a second writable app.*
+
 ## Consequences
 
 - `screens/frontier-groups.ts` and its test are deleted with the project

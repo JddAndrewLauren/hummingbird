@@ -20,6 +20,13 @@ import { expect, test, type Page } from "@playwright/test";
 // start, with no deployed authority behind it either (#95's H3 gate). The
 // honest empty states are captured too, from the same screens without the
 // flag.
+//
+// Since #420 there are two populated worlds, not one, because `?demo` cannot
+// reach every surface. `?demo` is the KIT world (the design system's
+// display-shaped fixtures) and drives the nine screens below. `?demo=board`
+// is the BOARD world: a seeded `TaskState` that makes the screens take their
+// real render path, which is the only way this gate can photograph Now's
+// centre column at all — see the `now's columns` test.
 
 const SCREENS = [
   { name: "now", nav: "Now" },
@@ -49,14 +56,20 @@ const SCREENS = [
 
 const THEMES = ["light", "dark"] as const;
 
+/** `"kit"` is `?demo` — the design system's fixtures, what nine screens
+ * photograph. `"board"` is `?demo=board` (#420), a seeded `TaskState` that
+ * makes the screens take their REAL render path. `null` is no flag at all: the
+ * honest empty states. */
+type World = "kit" | "board" | null;
+
 /** The app resolves `light | dark | system` onto `[data-theme]` from
  * `hb.theme` (see `src/theme/`). Seeding the key before the first paint is
  * what avoids capturing a flash of the other theme. */
-async function openApp(page: Page, theme: (typeof THEMES)[number], demo: boolean) {
+async function openApp(page: Page, theme: (typeof THEMES)[number], world: World) {
   await page.addInitScript((value) => {
     window.localStorage.setItem("hb.theme", value);
   }, theme);
-  await page.goto(demo ? "/?demo" : "/");
+  await page.goto(world === "kit" ? "/?demo" : world === "board" ? "/?demo=board" : "/");
   // The shell paints before the wasm core is ready (the core's status is a
   // label, not a gate), so waiting on the nav rail is enough — and waiting
   // on the core would hang on a machine with no authority to reach.
@@ -101,7 +114,7 @@ for (const theme of THEMES) {
   test.describe(`${theme} theme`, () => {
     for (const screen of SCREENS) {
       test(`${screen.name} renders and captures`, async ({ page }, testInfo) => {
-        await openApp(page, theme, true);
+        await openApp(page, theme, "kit");
         await show(page, screen.nav);
         if (screen.name === "rules") {
           await openFirstRuleEditor(page);
@@ -119,7 +132,7 @@ for (const theme of THEMES) {
       // whatever is showing, so no per-screen capture ever contains it. Opened
       // over Now, the widest thing behind it — a scrim that fails to cover, or
       // a card that overflows the 768 width, shows up here and nowhere else.
-      await openApp(page, theme, true);
+      await openApp(page, theme, "kit");
       await show(page, "Now");
       await page.getByRole("button", { name: "New" }).click();
       await expect(page.getByRole("dialog")).toBeVisible();
@@ -130,10 +143,37 @@ for (const theme of THEMES) {
       });
     });
 
+    test("now's columns capture, at production's density", async ({ page }, testInfo) => {
+      // #420, and the reason the board world exists. `NowScreen` branches to
+      // `RealFrontier` only when `demo` is null, so everything ADR-0021
+      // decided — the wrapping columns, the switchable axis, the Filter
+      // panel, the unsorted captures as cards among the startable actions,
+      // and #418's stranded-triage alert — was invisible to this gate from
+      // the day it landed. Decision 8 recorded that; this closes it.
+      //
+      // The fixture mirrors production's measured spread
+      // (`fixtures/demo-task-state.ts`), so what gets photographed is the
+      // awkward real shape rather than a tidy one: 29 cards, the no-context
+      // bucket the biggest column and pinned last, and two columns over the
+      // six-card cap showing `n more`.
+      await openApp(page, theme, "board");
+      await show(page, "Now");
+      // The board is up (a column heading the fixture guarantees) and the
+      // alert with it — waiting on both is what stops a capture of a
+      // half-rendered screen.
+      await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
+      await expect(page.getByRole("alert")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/now-columns-${testInfo.project.name}-${theme}.png`,
+        fullPage: true,
+      });
+    });
+
     test("empty states capture", async ({ page }, testInfo) => {
       // No `?demo`: the honest empty states, which are what a new device
       // actually shows and which no fixture screen ever exercises.
-      await openApp(page, theme, false);
+      await openApp(page, theme, null);
       await show(page, "Now");
       await expect(page.getByText("Nothing to start")).toBeVisible();
       await expectNoHorizontalOverflow(page);
@@ -152,7 +192,7 @@ test.describe("brand token bindings", () => {
   test("the layout constants and accent resolve, and dark mode reaches the page", async ({
     page,
   }) => {
-    await openApp(page, "light", true);
+    await openApp(page, "light", "kit");
 
     const tokens = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement);
@@ -176,7 +216,7 @@ test.describe("brand token bindings", () => {
       () => getComputedStyle(document.body).backgroundColor,
     );
 
-    await openApp(page, "dark", true);
+    await openApp(page, "dark", "kit");
     expect(await page.getAttribute("html", "data-theme")).toBe("dark");
     const darkPage = await page.evaluate(
       () => getComputedStyle(document.body).backgroundColor,
