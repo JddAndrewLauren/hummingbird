@@ -1013,6 +1013,21 @@ describe("NowScreen — the captures in the columns", () => {
     );
   });
 
+  it("states it when an id is selected but nothing renders for it", () => {
+    // The gap between "an id is selected" and "an editor is on screen": the
+    // item has left both frontier and blocked, is not a capture either, and no
+    // optimistic fallback matches — so the slot renders nothing at all. Reading
+    // `selectedItemId` as the owning editor would suppress this line for
+    // exactly that state, because the capture lookup is keyed BY that id, and
+    // the failure would then be reported nowhere on screen.
+    renderNow(taskState({ lastTriage: failedTriage("i1") }), "i1");
+
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe("409 conflict");
+  });
+
   it("says nothing about a triage that worked", () => {
     renderWithTriage(
       taskState({
