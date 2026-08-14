@@ -37,8 +37,18 @@ the PROTOTYPE block in `components/core/Icon.tsx` (import + ICON_MAP).
 
 ---
 
-## Verdict (fill in before deleting)
+## Verdict (operator, 2026-08-14)
 
-- Winning variant:
-- Stolen bits from other variants:
-- Decisions this changes or confirms in #449's C5:
+- **Winning variant: B — gallery + dossier.** "The easy winner."
+- **Stolen bits:** from A, inline step expansion — selecting an action in
+  the dossier expands its steps under the row instead of loading them into
+  the aside. (VariantB.tsx now implements this; the aside keeps
+  properties, links, and archive only.)
+- **Decisions this confirms/refines for #449's C5:** ProjectsScreen is a
+  two-level surface — a card-grid list view (live projects, show-archived
+  toggle, inline New-project card) and a full-page detail on the
+  TwoColumn/Column/Aside skeleton. Reading column: route
+  destination/notes, ordered actions with reorder + inline expandable
+  steps, fog. Aside: properties (github repo as derived URL, default
+  context), links CRUD, archive with the cascade dialog. Back affordance
+  returns to the grid.

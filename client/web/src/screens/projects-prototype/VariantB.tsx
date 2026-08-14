@@ -1,9 +1,11 @@
 // PROTOTYPE (#449) — throwaway. Variant B: gallery → dossier. Two levels:
 // a card grid of the whole portfolio, then a full-page drill-in per project
 // using the sanctioned TwoColumn/Column/Aside skeleton — actions and fog in
-// the reading column, properties/links/steps/archive in the aside. Bets that
-// one project at a time deserves the whole screen, the way the old
-// RoutesScreen framed it.
+// the reading column, properties/links/archive in the aside. Bets that one
+// project at a time deserves the whole screen, the way the old RoutesScreen
+// framed it. THE WINNER (operator, 2026-08-14), with one bit stolen from
+// variant A at the operator's ask: selecting an action expands its steps
+// inline under the row rather than loading them into the aside.
 
 import { useState } from "react";
 import { Badge } from "../../components/core/Badge";
@@ -150,9 +152,7 @@ function Dossier({
 }: VariantProps & { project: ProtoProject }) {
   const [confirming, setConfirming] = useState(false);
   const live = liveActions(project);
-  const [asideActionId, setAsideActionId] = useState<string | null>(live[0]?.id ?? null);
-  const asideAction =
-    live.find((action) => action.id === asideActionId) ?? live[0] ?? null;
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
@@ -199,46 +199,58 @@ function Dossier({
             </div>
           </div>
 
-          <ProtoSection title="Actions" meta="click a row for its steps">
+          <ProtoSection title="Actions" meta="click a row to expand its steps">
             <Card padding="var(--space-3)">
               {live.map((action, index) => (
-                <div
-                  key={action.id}
-                  style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}
-                >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <ItemRow
-                      title={action.title}
-                      stage={action.stage}
-                      steps={
-                        action.steps.length > 0
-                          ? `${action.steps.filter((step) => step.done).length}/${action.steps.length}`
-                          : undefined
-                      }
-                      onClick={() => setAsideActionId(action.id)}
-                      style={
-                        asideAction?.id === action.id
-                          ? { background: "var(--surface-quiet)", borderRadius: "var(--radius-md)" }
-                          : undefined
-                      }
-                    />
+                <div key={action.id}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ItemRow
+                        title={action.title}
+                        stage={action.stage}
+                        steps={
+                          action.steps.length > 0
+                            ? `${action.steps.filter((step) => step.done).length}/${action.steps.length}`
+                            : undefined
+                        }
+                        onClick={() =>
+                          setExpandedId((current) => (current === action.id ? null : action.id))
+                        }
+                        style={
+                          expandedId === action.id
+                            ? { background: "var(--surface-quiet)", borderRadius: "var(--radius-md)" }
+                            : undefined
+                        }
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <IconButton
+                        icon="arrow-up"
+                        label={`Move ${action.title} up`}
+                        size="sm"
+                        disabled={index === 0}
+                        onClick={() => api.moveAction(project.id, action.id, -1)}
+                      />
+                      <IconButton
+                        icon="arrow-down"
+                        label={`Move ${action.title} down`}
+                        size="sm"
+                        disabled={index === live.length - 1}
+                        onClick={() => api.moveAction(project.id, action.id, 1)}
+                      />
+                    </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column" }}>
-                    <IconButton
-                      icon="arrow-up"
-                      label={`Move ${action.title} up`}
-                      size="sm"
-                      disabled={index === 0}
-                      onClick={() => api.moveAction(project.id, action.id, -1)}
-                    />
-                    <IconButton
-                      icon="arrow-down"
-                      label={`Move ${action.title} down`}
-                      size="sm"
-                      disabled={index === live.length - 1}
-                      onClick={() => api.moveAction(project.id, action.id, 1)}
-                    />
-                  </div>
+                  {expandedId === action.id ? (
+                    <div style={{ padding: "var(--space-3) var(--space-6) var(--space-5) var(--space-8)" }}>
+                      <StepsChecklist
+                        steps={action.steps}
+                        onTick={(stepId) => api.tickStep(project.id, action.id, stepId)}
+                        onAdd={(body) => api.addStep(project.id, action.id, body)}
+                        onEdit={(stepId, body) => api.editStep(project.id, action.id, stepId, body)}
+                        onDelete={(stepId) => api.deleteStep(project.id, action.id, stepId)}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               ))}
               {live.length === 0 ? (
@@ -303,19 +315,6 @@ function Dossier({
               onRemove={(linkId) => api.removeLink(project.id, linkId)}
             />
           </Card>
-
-          {asideAction ? (
-            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
-              <span className="hb-meta">steps · {asideAction.title}</span>
-              <StepsChecklist
-                steps={asideAction.steps}
-                onTick={(stepId) => api.tickStep(project.id, asideAction.id, stepId)}
-                onAdd={(body) => api.addStep(project.id, asideAction.id, body)}
-                onEdit={(stepId, body) => api.editStep(project.id, asideAction.id, stepId, body)}
-                onDelete={(stepId) => api.deleteStep(project.id, asideAction.id, stepId)}
-              />
-            </Card>
-          ) : null}
 
           <Card style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
             <span className="hb-meta">archive</span>
