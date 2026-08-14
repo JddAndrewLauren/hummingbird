@@ -94,7 +94,13 @@ describe("ItemRow — the meta chips", () => {
     const energy = screen.getByText("LOW");
     expect(size.style.color).toBe("var(--urgency-now)");
     expect(energy.style.color).toBe("var(--status-done-fg)");
-    expect(size.querySelector("svg")).toBeDefined();
+    // `not.toBeNull`, not `toBeDefined`: a missing glyph returns `null`,
+    // which *is* defined, so the weaker assertion passes on no icon at all.
+    const rings = size.querySelector("svg");
+    expect(rings).not.toBeNull();
+    // And the ramp itself, since it is opacity rather than colour and so
+    // survives every style assertion above: `deep` earns all three rings.
+    expect(Array.from(rings!.children, (el) => el.getAttribute("opacity"))).toEqual(["1", "1", "1"]);
   });
 
   // The row's documented contract for every optional chip: nothing to say,

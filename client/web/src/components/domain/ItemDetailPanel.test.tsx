@@ -295,7 +295,24 @@ describe("size and energy on the detail panel", () => {
     // Muted, not escalated: an unmade judgement is not a problem.
     expect(size?.style.color).toBe("var(--text-muted)");
     expect(energy?.style.color).toBe("var(--text-muted)");
-    expect(size?.querySelector("svg")).toBeDefined();
+    // `not.toBeNull`, not `toBeDefined`: a missing glyph returns `null`,
+    // which *is* defined. And the ghost wash is the whole point of this
+    // state — every element of both families at the flat unset opacity,
+    // never the earned/unearned contrast of a judged level.
+    const rings = size?.querySelector("svg");
+    const bars = energy?.querySelector("svg");
+    expect(rings).not.toBeNull();
+    expect(bars).not.toBeNull();
+    expect(Array.from(rings!.children, (el) => el.getAttribute("opacity"))).toEqual([
+      "0.45",
+      "0.45",
+      "0.45",
+    ]);
+    expect(Array.from(bars!.children, (el) => el.getAttribute("opacity"))).toEqual([
+      "0.45",
+      "0.45",
+      "0.45",
+    ]);
   });
 
   it("draws the level and its ramp colour once judged", () => {
