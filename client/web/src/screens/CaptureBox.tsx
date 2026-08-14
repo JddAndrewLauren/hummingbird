@@ -1,11 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/core/Button";
+import { IconButton } from "../components/core/IconButton";
 import { Select } from "../components/forms/Select";
 import { Slider } from "../components/forms/Slider";
 import { Input } from "../components/forms/Input";
 import { CAPTURE_INPUT_ID } from "../shell/capture-hotkey";
+import {
+  isDictationApiPresent,
+  probeDictationCapability,
+  startLocalDictation,
+  type DictationCapability,
+  type DictationSession,
+} from "../speech/local-dictation";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
+import { freezeDraft, spliceTranscript, type FrozenDraft } from "./capture-dictation";
 import { EMPTY_CAPTURE_META, resolveCaptureFields } from "./capture-meta";
 import { canSubmitCapture } from "./capture-validation";
 import type { CaptureDestination } from "./capture-destination";
@@ -60,6 +69,15 @@ export interface CaptureBoxProps {
   lastCapture: TaskCaptureResult | null;
 }
 
+/** The resting capability, and the arm a browser without the API keeps
+ * forever. A constant rather than `null`: "not yet probed" and "cannot" render
+ * identically (no microphone), so a fourth state would be a distinction with
+ * no reader. */
+const NO_DICTATION: DictationCapability = {
+  kind: "unsupported",
+  reason: "This browser can't dictate on the device.",
+};
+
 /** The capture box — one input, three optional metadata controls, and the two
  * stages a capture may be born into (`capture-destination.ts`). Extracted
  * from `TriageScreen` when capture moved into the shell's popover
@@ -68,7 +86,51 @@ export interface CaptureBoxProps {
  * cost a second `<input>` carrying the same DOM id as the popover's.
  *
  * Owns the draft and the metadata, and nothing else — where a capture goes is
- * the caller's wiring, what a valid draft is stays in `capture-validation.ts`. */
+ * the caller's wiring, what a valid draft is stays in `capture-validation.ts`.
+ *
+ * ## Dictation (#379, ADR-0022)
+ *
+ * The microphone in the field's trailing slot is **pre-mutation UI state that
+ * terminates at `setDraft(...)`**. Nothing about dictation crosses the wasm
+ * seam: `client/core/`, `server/`, the worker protocol and the task model are
+ * all untouched, and a dictated capture reaches `Core::capture` by exactly the
+ * path a typed one does — the same `onSubmit`, the same `canSubmitCapture`
+ * gate, the same raw string (#110). A later reader tempted to "fix" this by
+ * moving transcript handling into `client/core` would be adding a modality the
+ * domain has no use for. There is deliberately no modality flag on a capture.
+ *
+ * The recognizer itself is `speech/local-dictation.ts` and the splice is
+ * `capture-dictation.ts`; what lives here is the session's lifecycle, the
+ * caret, and the two rules that only exist because a field can be listening:
+ *
+ *  - **The field is `readOnly` while listening**, which makes a stale frozen
+ *    draft *unrepresentable* rather than handled — the halves frozen at
+ *    session start cannot go out of date if nothing else can edit the string.
+ *    It still permits focus, caret movement and `keydown`, so the shell's
+ *    hotkey contract is unaffected.
+ *  - **Enter while listening stops the session and does not submit.** That is
+ *    an explicit gate in the field's own `keydown` handler, NOT a consequence
+ *    of `readOnly`, which does not suppress `keydown` at all. The last final
+ *    result may not have arrived, and submitting half a sentence is the worst
+ *    available outcome.
+ *
+ * **Backgrounding cancels — it does not finalize and commit** (#379's open
+ * decision, taken here). Three reasons, in order of weight: a hidden page must
+ * not hold a hot microphone, and `abort()` is how it is released; every other
+ * ending here bumps the generation token *before* touching the recognizer, and
+ * a session that must survive its own ending to deliver one trailing result
+ * would be a second lifecycle shape for one edge case; and cancelling loses
+ * far less than it sounds — the transcript already spliced into the field
+ * STAYS there, so what is dropped is only the tail the recognizer had not yet
+ * delivered, never the words the operator watched appear. Committing on
+ * background would instead land text in a field nobody is looking at.
+ *
+ * Two guards are load-bearing rather than hygiene. The generation token means
+ * a callback from an ended session changes nothing. And the unmount cleanup
+ * aborting the session is the only thing that releases the microphone when the
+ * popover closes: `CapturePopover` returns `null` when closed, which unmounts
+ * this box and would otherwise leave the recognizer running with nothing
+ * receiving its results. */
 export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: CaptureBoxProps) {
   const [draft, setDraft] = useState("");
   const [meta, setMeta] = useState(EMPTY_CAPTURE_META);
@@ -87,6 +149,163 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
   useEffect(() => {
     focusField();
   }, [focusRequestId]);
+
+  // The same "by id, not a ref" idiom as `focusField`, hardened: the id is a
+  // document-wide lookup, so what comes back is only known to be an element.
+  function captureField(): HTMLInputElement | null {
+    const element = document.getElementById(CAPTURE_INPUT_ID);
+    return element instanceof HTMLInputElement ? element : null;
+  }
+
+  // Synchronous, in the initializer, and never re-read: a browser does not
+  // grow a speech API mid-session. False means the async probe below never
+  // runs at all — no promise, no post-render `setState`, and so no React
+  // `act()` warning in the existing `CapturePopover.test.tsx` cases, which
+  // mount this box under a jsdom with no speech API.
+  const [apiPresent] = useState(isDictationApiPresent);
+  const [dictation, setDictation] = useState<DictationCapability>(NO_DICTATION);
+  const [listening, setListening] = useState(false);
+  const [dictationError, setDictationError] = useState<string | null>(null);
+  const sessionRef = useRef<DictationSession | null>(null);
+  // Bumped by everything that ends a session, BEFORE the recognizer is
+  // touched, so a result or an error still in flight is inert by the time it
+  // lands. Teardown is keyed on session identity instead (see `endSession`),
+  // because the bump would otherwise make a session's own `onEnd` inert and
+  // nothing would ever clear `listening`.
+  const generationRef = useRef(0);
+  const pendingCaretRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!apiPresent) {
+      return;
+    }
+    let live = true;
+    void probeDictationCapability().then((capability) => {
+      if (live) {
+        setDictation(capability);
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [apiPresent]);
+
+  // `ready` only. `setup-required` is actionable but its control is #381's, and
+  // ADR-0022 forbids rendering anything at all for `unsupported` — not a
+  // disabled microphone, not one with a warning.
+  const canDictate = dictation.kind === "ready";
+
+  function endSession(mode: "stop" | "abort"): void {
+    const session = sessionRef.current;
+    generationRef.current += 1;
+    if (!session) {
+      return;
+    }
+    if (mode === "stop") {
+      session.stop();
+    } else {
+      session.abort();
+    }
+  }
+
+  function startDictation(): void {
+    const field = captureField();
+    // The halves are frozen ONCE, here, and every transcript in this session
+    // splices between these same two — see `capture-dictation.ts` on why that
+    // is what makes an interim result replace rather than accumulate.
+    const frozen: FrozenDraft = freezeDraft(
+      draft,
+      field?.selectionStart ?? null,
+      field?.selectionEnd ?? null,
+    );
+    setDictationError(null);
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    // A `let` assigned after the call, not the `const` it looks like it wants
+    // to be: `onEnd` closes over it, and reading a `const` from a callback the
+    // seam could fire before it returns would be a TDZ crash rather than a
+    // stale read.
+    let session: DictationSession | null = null;
+    session = startLocalDictation({
+      onTranscript: (transcript) => {
+        if (generation !== generationRef.current) {
+          return;
+        }
+        const spliced = spliceTranscript(frozen, transcript);
+        setDraft(spliced.value);
+        pendingCaretRef.current = spliced.caret;
+      },
+      onError: (error) => {
+        if (generation !== generationRef.current) {
+          return;
+        }
+        // ADR-0022 Decision 1: an error ends the session and the reader is
+        // told. It is never retried against anything else.
+        setDictationError(error.message);
+      },
+      onEnd: () => {
+        // Keyed on identity, not on the generation: this must still run for
+        // the session whose own ending bumped the generation, and must not run
+        // for one that has already been replaced or unmounted.
+        if (sessionRef.current !== session) {
+          return;
+        }
+        sessionRef.current = null;
+        setListening(false);
+      },
+    });
+    sessionRef.current = session;
+    setListening(true);
+    // Focus goes back to the field the microphone tap took it from: `readOnly`
+    // still allows focus, and Enter has to reach the field's own handler to
+    // stop the session.
+    field?.focus();
+  }
+
+  // Backgrounding cancels — see this component's header for why, and for what
+  // that does and does not lose. Bound only while listening, so a page hidden
+  // with no session pays nothing.
+  useEffect(() => {
+    if (!listening) {
+      return;
+    }
+    function onVisibilityChange(): void {
+      if (document.hidden) {
+        endSession("abort");
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+    // `listening` alone: `endSession` reads nothing but refs, so re-binding
+    // this on every render would be churn with no reader.
+  }, [listening]);
+
+  // Load-bearing, not hygiene: the popover unmounts this box when it closes,
+  // and the microphone would otherwise stay hot. `sessionRef` is cleared
+  // BEFORE the abort, so the session's `onEnd` finds no match and no state is
+  // set on a component that is going away.
+  useEffect(() => {
+    return () => {
+      const session = sessionRef.current;
+      generationRef.current += 1;
+      sessionRef.current = null;
+      session?.abort();
+    };
+  }, []);
+
+  // The caret React would otherwise park at the end: the field is controlled,
+  // so every splice rewrites `value`. A layout effect, so the caret is right
+  // before the browser paints and never visibly jumps; no dependency array and
+  // an early return, so ordinary typing — which sets no pending caret — is
+  // never disturbed.
+  useLayoutEffect(() => {
+    const caret = pendingCaretRef.current;
+    if (caret === null) {
+      return;
+    }
+    pendingCaretRef.current = null;
+    captureField()?.setSelectionRange(caret, caret);
+  });
 
   const canSubmit = canSubmitCapture(draft);
 
@@ -130,6 +349,17 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
     if (!canSubmit) {
       return;
     }
+    // A submit ends any live session, and this is what actually keeps a frozen
+    // draft from going stale: `readOnly` stops the *reader* editing the field,
+    // but #222's clear-on-ok rewrites `draft` from a capture result, and a
+    // transcript spliced onto halves frozen before that clear would resurrect
+    // the capture that was just submitted. The two buttons are deliberately
+    // NOT disabled while listening — an explicit click on "Add to Triage" is
+    // an unambiguous "this is what I meant", unlike the Enter this component's
+    // header gates.
+    if (listening) {
+      endSession("abort");
+    }
     if (demo) {
       // No `captureResult` is coming — the caller's fixture queue IS the
       // acknowledgement, so the demo arm clears and reports right away.
@@ -161,6 +391,23 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
           icon="feather"
           placeholder="What's on your mind?"
           value={draft}
+          // Makes a stale frozen draft unrepresentable rather than handled —
+          // see the header. It does NOT deliver the Enter contract below.
+          readOnly={listening}
+          trailing={
+            canDictate ? (
+              <IconButton
+                size="sm"
+                icon="mic"
+                // The design system's own toggled-on treatment (ember tint,
+                // brand foreground) — and the label changes with it, so the
+                // state is not carried by colour alone.
+                active={listening}
+                label={listening ? "Stop dictating" : "Dictate"}
+                onClick={() => (listening ? endSession("stop") : startDictation())}
+              />
+            ) : undefined
+          }
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             // `isComposing` guards an IME composition commit (e.g. an Enter
@@ -170,6 +417,13 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
             // and the default destination is Triage; minting is a deliberate
             // click, never something a keystroke does by accident.
             if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+              // The explicit session-state gate. `readOnly` does not suppress
+              // `keydown`, so without this an Enter mid-dictation would submit
+              // whatever half-sentence had arrived so far.
+              if (listening) {
+                endSession("stop");
+                return;
+              }
               submit("triage");
             }
           }}
@@ -236,6 +490,19 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
       <span className="hb-meta">
         optional — stage, dates and everything else are decided at mint time
       </span>
+      {dictationError ? (
+        // ADR-0022 Decision 1's "the session ends and the user is told", in
+        // its own slot rather than sharing the capture failure's: they are
+        // separate results, and a dictation that failed must not read as a
+        // capture that did. `role="alert"` for the same reason as below —
+        // nothing else on the page changes when it appears.
+        <p
+          role="alert"
+          style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)", margin: 0 }}
+        >
+          {dictationError}
+        </p>
+      ) : null}
       {captureError ? (
         // `role="alert"`: this paragraph renders only once a write has
         // already failed, so it appears with no other change on the page —
