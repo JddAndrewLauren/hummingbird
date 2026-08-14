@@ -15,8 +15,8 @@ touched — see "Brand-token bindings" below.
 
 The only built surface, in **two forms**: desktop, and — since the mobile pass
 — a phone form below 640px. `hb.twinion.net` (ADR-0006), a PWA offline shell
-served from Cloudflare Workers static assets. Not deployed yet — #95's H3
-human gate.
+served from Cloudflare Workers static assets, deployed from `main` by
+`.github/workflows/deploy-client.yml` — live since 2026-08-10.
 
 **The breakpoint is 640px**, defined in exactly two places:
 `src/shell/breakpoints.ts` (`PHONE_MAX_WIDTH_PX`) and the literal inside every
