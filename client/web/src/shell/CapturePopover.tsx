@@ -123,29 +123,24 @@ export function CapturePopover({
   // out again: whatever was focused when this opened — the header button, or
   // whatever the hotkey was pressed over — gets it back on close, so a
   // keyboard user is not dropped at the top of the document.
+  //
+  // Escape is *not* bound here any more. It was, on the document rather than
+  // the overlay's own `onKeyDown`, because an Escape must still close this
+  // when focus has left the card — and that is still true, which is why the
+  // listener moved up to the shell rather than down onto the markup. This
+  // popover is the shallowest claimant, so the shell hands it every Escape it
+  // is open for (`escape-claimants.ts`).
   useEffect(() => {
     if (!open) {
       return;
     }
     restoreTo.current = document.activeElement;
-    // Escape on the document, not on the overlay's own `onKeyDown`: an
-    // Escape must still close this if focus has left the card (tabbed past
-    // its last control, say), and a handler bound to the markup only sees
-    // what bubbles out of it.
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("keydown", onKeyDown);
       const target = restoreTo.current;
       if (target instanceof HTMLElement && target.isConnected) {
         target.focus();
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   if (!open) {

@@ -316,7 +316,7 @@ describe("ItemPanel — detail mode's Edit", () => {
     edit();
     expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Clean the garage");
     expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("the far bay");
-    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("@home");
+    expect((screen.getByLabelText("Context") as HTMLInputElement).value).toBe("@home");
     // Split across the deadline field's two controls, as its own tests pin.
     expect((screen.getByLabelText("Deadline") as HTMLInputElement).value).toBe("2026-09-01");
     expect((screen.getByLabelText("Time") as HTMLInputElement).value).toBe("09:30");

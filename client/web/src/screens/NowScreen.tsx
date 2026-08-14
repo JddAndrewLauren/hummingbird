@@ -178,22 +178,6 @@ function RealFrontier({
     ? (task.triageInbox.find((item) => item.id === selectedItemId) ?? null)
     : null;
 
-  // #418. `TriageRow` renders its own failure outside its expanded block so a
-  // late result still lands on a collapsed row — true on Triage, where the
-  // rows stay mounted in a list, and false here from the moment the row became
-  // the slot: closing the slot unmounts it outright. This is where the failure
-  // goes when there is no row left to wear it. `strandedTriageFailure` is
-  // silent while the failing capture IS the open one, so the two surfaces
-  // never both speak for one result.
-  const strandedTriage = strandedTriageFailure(
-    task.lastTriage,
-    // Either editor counts as an owner now: the capture's `TriageRow`, or a
-    // minted item's `ItemPanel`, which says its own triage failures since it
-    // gained an Edit mode.
-    selectedCapture?.id ?? selectedItemId,
-    task.triageInbox,
-  );
-
   // Reviewer finding on PR #207: a failed `actResult` used to be recorded in
   // `TaskState.lastAct` and rendered nowhere — this is what makes it visible,
   // matched to the currently open item by id so a stale failure from a
@@ -282,6 +266,29 @@ function RealFrontier({
     (fallbackItem && fallbackResolution
       ? { ...fallbackItem, pending: fallbackResolution.pending }
       : null);
+
+  // #418. `TriageRow` renders its own failure outside its expanded block so a
+  // late result still lands on a collapsed row — true on Triage, where the
+  // rows stay mounted in a list, and false here from the moment the row became
+  // the slot: closing the slot unmounts it outright. This is where the failure
+  // goes when there is no row left to wear it. `strandedTriageFailure` is
+  // silent while the failing capture IS the open one, so the two surfaces
+  // never both speak for one result.
+  //
+  // Sits below `selectedItem` because it must read the *resolved* one. Either
+  // editor counts as an owner: the capture's `TriageRow`, or a minted item's
+  // `ItemPanel`, which says its own triage failures since it gained an Edit
+  // mode — but only when that editor actually rendered. `selectedItemId` alone
+  // would be the wrong owner: `selectedCapture` is looked up BY it, so the
+  // expression would collapse to `selectedItemId` and claim an owner in the one
+  // case where there is none — an id selected whose item has left both frontier
+  // and blocked with no optimistic fallback left, where the slot renders
+  // nothing and this line is the only surface the failure has.
+  const strandedTriage = strandedTriageFailure(
+    task.lastTriage,
+    selectedCapture?.id ?? selectedItem?.id ?? null,
+    task.triageInbox,
+  );
 
   return (
     <>

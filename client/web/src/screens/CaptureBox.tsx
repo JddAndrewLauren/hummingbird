@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/core/Button";
 import { IconButton } from "../components/core/IconButton";
+import { Combobox } from "../components/forms/Combobox";
 import { DeadlineField } from "../components/forms/DeadlineField";
 import { Select } from "../components/forms/Select";
 import { Textarea } from "../components/forms/Textarea";
@@ -27,7 +28,7 @@ import {
 } from "./capture-meta";
 import { energyIcon, levelColor, sizeIcon } from "./size-energy";
 import { canSubmitCapture } from "./capture-validation";
-import { CONTEXT_OPTIONS } from "./field-vocabulary";
+import { CONTEXTS } from "./field-vocabulary";
 import { PRIORITY_OPTIONS } from "./priority";
 import type { CaptureDestination } from "./capture-destination";
 
@@ -40,8 +41,10 @@ import type { CaptureDestination } from "./capture-destination";
 // `capture-meta.test.ts` that was the only thing keeping the two aligned.
 //
 // The context list is NOT restated here. `screens/field-vocabulary.ts`'s
-// `CONTEXT_OPTIONS` is the one copy this branch left standing, and capture
-// and the triage editor both read it.
+// `CONTEXTS` is the one copy this branch left standing, and capture, the
+// triage editor and the frontier's chip order all read it. It reaches a
+// `Combobox` rather than a `Select` because context is an open vocabulary —
+// that module's header carries the decision.
 
 /** What the box did last, so the surface it sits on can say so. A popover
  * closes over whatever screen the person was on, so nothing else on screen
@@ -563,11 +566,12 @@ export function CaptureBox({
             value={meta.size}
             onChange={(size) => setMeta({ ...meta, size })}
           />
-          <Select
+          <Combobox
             label="Context"
             value={meta.context}
-            onChange={(event) => setMeta({ ...meta, context: event.target.value })}
-            options={CONTEXT_OPTIONS}
+            onChange={(context) => setMeta({ ...meta, context })}
+            suggestions={CONTEXTS}
+            placeholder="Not set"
           />
         </div>
         {/* Everything a mint would ask, behind one control. The sentence that

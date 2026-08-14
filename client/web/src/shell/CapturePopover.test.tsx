@@ -10,8 +10,9 @@
 // empty draft, `capture-destination.ts` names the two stages,
 // `capture-meta.ts` resolves the sliders onto the wire vocabulary. What no
 // node test can reach is whether the buttons actually consult them, whether
-// Enter still means Triage and not the mint, and whether Escape reaches
-// `onClose` from inside the card. That thread is what these mount.
+// Enter still means Triage and not the mint, and whether the overlay's ways
+// out reach `onClose`. That thread is what these mount. (Escape is not among
+// them any more — the shell owns it, `escape-claimants.ts`.)
 
 import { describe, expect, it, vi } from "vitest";
 import { CapturePopover } from "./CapturePopover";
@@ -74,23 +75,24 @@ describe("CapturePopover — the overlay", () => {
     expect(document.activeElement).toBe(field());
   });
 
-  it("closes on Escape from inside the card, on the close button, and on the scrim", () => {
-    // Escape is bound to the document, not the markup, so it must still work
-    // with focus in the field — which is where it always is on open.
+  it("closes on the close button and on the scrim, and claims no key of its own", () => {
+    // Escape is the shell's now (`escape-claimants.ts`) — this popover is its
+    // shallowest claimant, but it binds nothing itself, so a stray keydown
+    // here must do nothing at all.
     const first = renderPopover();
     fireEvent.keyDown(field(), { key: "Escape" });
-    expect(first.onClose).toHaveBeenCalledTimes(1);
+    expect(first.onClose).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(first.onClose).toHaveBeenCalledTimes(2);
+    expect(first.onClose).toHaveBeenCalledTimes(1);
 
     // The scrim is the dialog's parent element; a press on the card itself
     // must not close (a drag that ends outside is not a request to close).
     const dialog = screen.getByRole("dialog");
     fireEvent.mouseDown(dialog);
-    expect(first.onClose).toHaveBeenCalledTimes(2);
+    expect(first.onClose).toHaveBeenCalledTimes(1);
     fireEvent.mouseDown(dialog.parentElement as HTMLElement);
-    expect(first.onClose).toHaveBeenCalledTimes(3);
+    expect(first.onClose).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -325,7 +327,7 @@ describe("CapturePopover — the capture meta (#208)", () => {
     rerender({ seed: "s1", kind: "ok", id: "item-9", error: null });
 
     expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("-1");
-    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Context") as HTMLInputElement).value).toBe("");
   });
 
   // The caption that used to sit under these controls said stage and dates
@@ -356,7 +358,7 @@ describe("CapturePopover — the clear-on-ok rule (#222)", () => {
     expect(field().value).toBe("Buy soil");
     expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("2");
     expect(screen.getByRole("slider", { name: "Size" }).getAttribute("aria-valuenow")).toBe("2");
-    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("@garden");
+    expect((screen.getByLabelText("Context") as HTMLInputElement).value).toBe("@garden");
   });
 
   it("keeps the title and all three meta fields when the capture comes back failed", () => {
@@ -373,7 +375,7 @@ describe("CapturePopover — the clear-on-ok rule (#222)", () => {
     expect(field().value).toBe("Buy soil");
     expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("2");
     expect(screen.getByRole("slider", { name: "Size" }).getAttribute("aria-valuenow")).toBe("0");
-    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("@garden");
+    expect((screen.getByLabelText("Context") as HTMLInputElement).value).toBe("@garden");
   });
 
   // The seed guard, from the other side: a result already processed must not

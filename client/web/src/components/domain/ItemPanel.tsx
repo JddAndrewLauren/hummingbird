@@ -5,12 +5,13 @@ import { Card } from "../core/Card";
 import { Icon } from "../core/Icon";
 import { IconButton } from "../core/IconButton";
 import { Checkbox } from "../forms/Checkbox";
+import { Combobox } from "../forms/Combobox";
 import { DeadlineField } from "../forms/DeadlineField";
 import { Input } from "../forms/Input";
 import { Select } from "../forms/Select";
 import { Textarea } from "../forms/Textarea";
 import {
-  CONTEXT_OPTIONS,
+  CONTEXTS,
   ENERGY_OPTIONS,
   SIZE_OPTIONS,
 } from "../../screens/field-vocabulary";
@@ -273,12 +274,13 @@ export function ItemPanel({
           onChange={(event) => set("energy", event.target.value)}
           options={ENERGY_OPTIONS}
         />
-        <Select
+        <Combobox
           label="Context"
           size="sm"
           value={draft.context}
-          onChange={(event) => set("context", event.target.value)}
-          options={CONTEXT_OPTIONS}
+          onChange={(context) => set("context", context)}
+          suggestions={CONTEXTS}
+          placeholder="Not set"
         />
         <DeadlineField
           value={draft.deadline}

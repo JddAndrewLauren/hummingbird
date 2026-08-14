@@ -10,27 +10,44 @@
 // forgot to stub it would render the desktop rail and pass its assertions
 // against that — the silent failure `useIsPhone`'s header warns about.
 
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "../test/component";
+import { act, fireEvent, render, screen } from "../test/component";
 import { APP_VERSION } from "./build-version";
 import { NavBar } from "./NavBar";
 import { NAV_BAR_OVERFLOW, NAV_BAR_PRIMARY } from "./nav-bar";
 import { SCREEN_LABELS, type Screen } from "./screens";
 
+// The sheet is controlled by the shell now (`escape-claimants.ts`), so these
+// tests supply the state `App` supplies. Escape is deliberately not exercised
+// here any more: `NavBar` binds no key handler at all, and which overlay owns
+// an Escape is `escape-claimants.test.ts`'s subject.
 function renderBar(screenName: Screen = "now") {
   const onScreen = vi.fn();
   const onToggleTheme = vi.fn();
-  render(
-    <NavBar
-      screen={screenName}
-      onScreen={onScreen}
-      counts={{ triage: 4, alerts: 3 }}
-      statusLabel="api v1 · core ready"
-      theme="light"
-      onToggleTheme={onToggleTheme}
-    />,
-  );
-  return { onScreen, onToggleTheme };
+  let setSheetOpen!: (open: boolean) => void;
+
+  function Harness() {
+    const [sheetOpen, setOpen] = useState(false);
+    setSheetOpen = setOpen;
+    return (
+      <NavBar
+        screen={screenName}
+        onScreen={onScreen}
+        counts={{ triage: 4, alerts: 3 }}
+        statusLabel="api v1 · core ready"
+        theme="light"
+        onToggleTheme={onToggleTheme}
+        sheetOpen={sheetOpen}
+        onSheetOpen={setOpen}
+      />
+    );
+  }
+
+  render(<Harness />);
+  /** The shell closing the sheet from outside — what Escape now does. */
+  const closeFromShell = () => act(() => setSheetOpen(false));
+  return { onScreen, onToggleTheme, closeFromShell };
 }
 
 function openMore() {
@@ -96,11 +113,16 @@ describe("NavBar", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("Escape closes the sheet", () => {
-    renderBar();
+  // The sheet closes when the shell says so and binds nothing of its own —
+  // which is what stops one Escape closing this AND an item panel behind it
+  // (`escape-claimants.ts`). A stray key must not reopen or hold it.
+  it("shuts when the shell shuts it, and owns no key handler of its own", () => {
+    const { closeFromShell } = renderBar();
     openMore();
     expect(screen.getByRole("dialog")).toBeDefined();
     fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeDefined();
+    closeFromShell();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -159,15 +181,15 @@ describe("NavBar", () => {
   // Every way out of this sheet is a way back to the bar, so all three of them
   // have to hand focus back to the control that opened it.
   it.each([
-    ["Escape", () => fireEvent.keyDown(document, { key: "Escape" })],
+    ["the shell (Escape)", (bar: ReturnType<typeof renderBar>) => bar.closeFromShell()],
     ["the close button", () => fireEvent.click(screen.getByRole("button", { name: "Close" }))],
     ["choosing a screen", () => fireEvent.click(screen.getByRole("button", { name: "Settings" }))],
   ])("returns focus to More when the sheet is closed by %s", (_name, close) => {
-    renderBar();
+    const bar = renderBar();
     const more = screen.getByRole("button", { name: /^More$/ });
     more.focus();
     openMore();
-    close();
+    close(bar);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(more);
   });
