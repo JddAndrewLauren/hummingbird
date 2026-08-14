@@ -23,10 +23,10 @@ import { blockedReasonLabel } from "./blocked-reason";
 import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
-import { NowTriageSection } from "./NowTriageSection";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
-import type { StorageLike } from "./triage-collapse";
+import type { StorageLike } from "./storage";
+import { TriageRow } from "./TriageRow";
 
 export interface NowScreenProps {
   demo: DemoData | null;
@@ -63,19 +63,15 @@ export interface NowScreenProps {
    * `ItemDetailPanel`. `undefined` in demo mode like every other real-write
    * callback here. */
   microtask?: MicrotaskWiring;
-  /** S13/#111's triage mutation, for the triage section under the frontier —
-   * `shell/useTriageWiring.ts`'s `triage`, the SAME callback the Triage
-   * screen gets. Now is a second view of one inbox, never a second entry
+  /** S13/#111's triage mutation, for the captures now sitting in the frontier's
+   * own columns — `shell/useTriageWiring.ts`'s `triage`, the SAME callback the
+   * Triage screen gets. Now is a second view of one inbox, never a second entry
    * point into it. `undefined` in demo mode. */
   onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
-  /** The triage row checkmark's `Core::act` complete — `undefined` in demo
-   * mode, same as every other real-write callback. */
-  onCompleteTriage?: (itemId: string) => void;
   /** Injected storage for this screen's device-local view preferences —
-   * resolved once here rather than read in each consumer: the triage section's
-   * persisted collapse, `RankedRegion`'s pane overrides, and (#403) the
-   * frontier's grouping axis and collapsed columns. One storage seam, three
-   * readers. */
+   * resolved once here rather than read in each consumer: `RankedRegion`'s pane
+   * overrides, and (#403) the frontier's grouping axis and collapsed columns.
+   * One storage seam, two readers. */
   storage?: StorageLike;
 }
 
@@ -135,7 +131,6 @@ function RealFrontier({
   onAct,
   microtask,
   onTriage,
-  onCompleteTriage,
   storage,
 }: Pick<
   NowScreenProps,
@@ -147,7 +142,6 @@ function RealFrontier({
   | "onAct"
   | "microtask"
   | "onTriage"
-  | "onCompleteTriage"
   | "storage"
 >) {
   // Reviewer finding on PR #207: a failed `actResult` used to be recorded
@@ -162,6 +156,20 @@ function RealFrontier({
   const allItems = [...task.frontier, ...task.blocked.map((entry) => entry.item)];
   const liveSelectedItem = selectedItemId
     ? (allItems.find((item) => item.id === selectedItemId) ?? null)
+    : null;
+
+  // The selected card may now be an unsorted capture rather than a startable
+  // action, because both live in the same columns. A capture's editor is
+  // `TriageRow`'s, never `ItemDetailPanel`'s: the detail panel's act
+  // vocabulary offers a capture nothing at all (`item-actions.ts` —
+  // "Triage and Grilling are pre-action by definition"), so opening one there
+  // would be a panel of absent buttons over an item whose one real affordance
+  // is being sorted. Selecting either kind fills the SAME slot above the
+  // columns, so ADR-0021 decision 7's "selecting a card is not a takeover" now
+  // covers captures too, and S13/#111's "two editors are never open at once"
+  // survives for free — the slot holds one thing.
+  const selectedCapture = selectedItemId
+    ? (task.triageInbox.find((item) => item.id === selectedItemId) ?? null)
     : null;
 
   // S11/#109's item detail panel must stay open (reviewer finding on PR
@@ -244,7 +252,25 @@ function RealFrontier({
           act callback, steps, last-act error and microtask affordance — never a
           second implementation, so whatever lands on item detail next (Grill
           me, #359) arrives with no parallel code path to reconcile. */}
-      {selectedItem ? (
+      {selectedCapture ? (
+        <SelectedItemSection key={selectedCapture.id}>
+          {/* The same `TriageRow` the Triage screen renders, forced open —
+              never a second editor written for this surface. Its collapsed
+              header is the row's own close control, so the slot needs no
+              chrome of its own. */}
+          <TriageRow
+            key={selectedCapture.id}
+            item={selectedCapture}
+            projects={task.projects}
+            expanded
+            onToggle={onCloseItemDetail}
+            nowMs={nowMs}
+            onTriage={onTriage}
+            onComplete={(itemId) => onAct(itemId, "complete")}
+            lastTriage={task.lastTriage}
+          />
+        </SelectedItemSection>
+      ) : selectedItem ? (
         <SelectedItemSection key={selectedItem.id}>
           <ItemDetailPanel
             // Remounts per item so the grain/model selects reset with it — a
@@ -267,18 +293,25 @@ function RealFrontier({
       {/* The empty frontier is a *section* rather than a whole-branch return:
           an inbox full of captures with nothing yet promoted is the commonest
           state of a new device, and returning early here would render
-          "Nothing to start" over a hidden triage section — the one moment
-          the section is the only thing worth showing.
+          "Nothing to start" over the one thing worth showing.
 
-          Withheld while item detail is open, which #404 made a reachable state
-          rather than a hypothetical one: block or cancel your only startable
-          item and both queries go empty while the optimistic fallback keeps the
-          panel standing, so without this guard the screen would show the open
-          item, "Nothing to start", and no triage section — precisely the
-          combination the paragraph above exists to prevent. "Nothing to start"
+          The captures are now cards in those same columns, so the condition
+          counts them: a board carrying nothing but unsorted captures is
+          emphatically not "nothing to start" — it says exactly what to do next,
+          which is sort them.
+
+          Withheld while the slot above is filled, which #404 made a reachable
+          state rather than a hypothetical one: block or cancel your only
+          startable item and both queries go empty while the optimistic fallback
+          keeps the panel standing, so without this guard the screen would show
+          the open item and "Nothing to start" underneath it. "Nothing to start"
           is a claim about what you could pick *instead*, and that is not the
           question being asked while one item is expanded. */}
-      {selectedItem === null && task.frontier.length === 0 && task.blocked.length === 0 ? (
+      {selectedItem === null &&
+      selectedCapture === null &&
+      task.frontier.length === 0 &&
+      task.blocked.length === 0 &&
+      task.triageInbox.length === 0 ? (
         <Card padding="var(--space-3)">
           <EmptyState
             icon="zap"
@@ -291,10 +324,16 @@ function RealFrontier({
 
       {/* ADR-0021: the frontier in columns, grouped by a switchable axis, in
           place of the fixed project sections this branch used to cut. Project
-          is now one of the four axes, so nothing is lost. */}
-      {task.frontier.length > 0 ? (
+          is now one of the four axes, so nothing is lost.
+
+          The unsorted captures go in as well, marked with their stage chip and
+          ordered under the startable actions of whichever column they land in
+          — Now no longer has a triage section of its own, so an inbox with an
+          empty frontier still renders the board. */}
+      {task.frontier.length > 0 || task.triageInbox.length > 0 ? (
         <FrontierColumns
           frontier={task.frontier}
+          triage={task.triageInbox}
           projects={task.projects}
           nowMs={nowMs}
           selectedItemId={selectedItemId}
@@ -346,25 +385,6 @@ function RealFrontier({
         </Section>
       ) : null}
 
-      {/* Under the promoted items, always — see this component's own doc.
-          Still withheld while item detail is open, which is the ONE thing #404
-          deliberately did not change about selection: `TriageRow`'s expanded
-          editor and `ItemDetailPanel` are both editors, and "two editors are
-          never open at once" is S13/#111's own invariant. The columns stay
-          because a reader choosing among startable actions must keep seeing
-          the alternatives; an unsorted capture is not an alternative they were
-          choosing between, so nothing about that argument reaches down here. */}
-      {selectedItem ? null : (
-        <NowTriageSection
-          items={task.triageInbox}
-          projects={task.projects}
-          nowMs={nowMs}
-          lastTriage={task.lastTriage}
-          onTriage={onTriage}
-          onComplete={onCompleteTriage}
-          storage={storage}
-        />
-      )}
     </>
   );
 }
@@ -383,7 +403,6 @@ export function NowScreen({
   onSetScheduledDate,
   microtask,
   onTriage,
-  onCompleteTriage,
   storage,
 }: NowScreenProps) {
   // Resolved once, for both the ranked region and the triage section. The
@@ -479,7 +498,6 @@ export function NowScreen({
             onAct={onAct}
             microtask={microtask}
             onTriage={onTriage}
-            onCompleteTriage={onCompleteTriage}
             storage={resolvedStorage}
           />
         )}

@@ -1,4 +1,7 @@
-// Now's centre column: the frontier as wrapping columns (#402, ADR-0021).
+// Now's centre column: the frontier as wrapping columns (#402, ADR-0021), and
+// since the triage section was dissolved into them, the unsorted captures too
+// — same columns, same axis, each capture marked with its `triage` stage chip
+// and sorted under the startable actions of whatever column it lands in.
 // Everything decidable lives in `frontier-columns.ts`; this file threads state
 // through it and paints the result — the split every `screens/*` module keeps.
 //
@@ -30,6 +33,7 @@ import {
   type FacetSelection,
 } from "./frontier-facets";
 import { orderFrontier } from "./frontier-order";
+import { orderTriage } from "./triage-order";
 import {
   readCollapsedColumns,
   readFrontierAxis,
@@ -38,7 +42,7 @@ import {
 } from "./frontier-prefs";
 import { canMarkDone } from "./item-actions";
 import { hasPriority, priorityLabel } from "./priority";
-import type { StorageLike } from "./triage-collapse";
+import type { StorageLike } from "./storage";
 import { computeUrgency, type Urgency } from "./urgency";
 import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
 
@@ -190,7 +194,14 @@ function ItemCard({
             {URGENCY_LABEL[urgency]}
           </span>
           {/* "Ready" is the default and says nothing at card size — the stage
-              chip earns its width only once the item is already running. */}
+              chip earns its width only once the item is already running, or
+              (since the captures joined these columns) not yet sorted. That
+              chip IS the triage label: a capture is marked by the app's one
+              stage vocabulary rather than by a badge invented for this
+              surface, so the word on the card, on the Triage screen's rows and
+              in the funnel are the same word. It is also not a fourth meaning
+              for colour — stage is one of the three things the design system
+              lets a coloured pill encode. */}
           {item.stage === "ready" ? null : <StageBadge stage={item.stage} />}
           {item.size ? <Badge mono>{item.size}</Badge> : null}
           {hasPriority(item.priority) ? (
@@ -350,6 +361,7 @@ function FacetRow({
 
 export function FrontierColumns({
   frontier,
+  triage,
   projects,
   nowMs,
   selectedItemId,
@@ -358,6 +370,13 @@ export function FrontierColumns({
   storage,
 }: {
   frontier: readonly TaskItemDTO[];
+  /** `TaskState.triageInbox` — the unsorted captures, grouped into the same
+   * columns as the frontier rather than into a section of their own. They
+   * carry no axis value until somebody triages them, so on every axis they
+   * land in the no-value column; a capture a sweeper *did* set a context on
+   * lands in that context's column, which is the point of grouping them at
+   * all rather than stacking them somewhere separate. */
+  triage: readonly TaskItemDTO[];
   projects: readonly ProjectDTO[];
   nowMs: number;
   selectedItemId: string | null;
@@ -385,7 +404,19 @@ export function FrontierColumns({
   // `orderFrontier` unchanged, applied once before filtering and grouping —
   // neither reorders, so the within-column rule is `orderFrontier` and there is
   // no second ordering function.
-  const ordered = orderFrontier(frontier);
+  //
+  // The captures are appended AFTER the whole ordered frontier, and that
+  // single concatenation is the entire implementation of "triage sits below
+  // the promoted items": `groupFrontier` preserves input order inside every
+  // bucket, so whichever column a capture lands in, it lands under that
+  // column's startable actions. No third ordering function, and no per-column
+  // partition step — the rule the old triage *section* enforced by position on
+  // the page is now enforced by position in this array.
+  //
+  // Their own order among themselves stays `orderTriage` (oldest capture
+  // first), the same rule the Triage screen sorts by, so the two surfaces
+  // never disagree about which capture is next.
+  const ordered = [...orderFrontier(frontier), ...orderTriage(triage)];
   const shown = applyFacets(ordered, picked, nowMs);
   const columns = groupFrontier(shown, axis, projects);
   const activeFacets = facetCount(picked);

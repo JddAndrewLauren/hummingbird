@@ -676,12 +676,13 @@ describe("NowScreen — the surface filter (ADR-0017, #311)", () => {
   });
 });
 
-// Now's triage section: the same inbox the Triage screen renders, brought
-// under the frontier so a capture can be sorted without leaving the screen
-// you work from. What these cover is the *thread* — the section is rendered
-// from `RealFrontier`, so every one of these is about where it sits and when
-// it is there at all, which is precisely what typecheck cannot see.
-describe("NowScreen — the triage section", () => {
+// The unsorted captures, in the frontier's own columns. Now used to carry a
+// separate triage *section* under the board; the captures are cards among the
+// startable actions now, marked with their `triage` stage chip and sorted
+// under them. What these cover is the *thread* — which column a capture lands
+// in, where in that column it sits, and which editor selecting one opens —
+// which is precisely what typecheck cannot see.
+describe("NowScreen — the captures in the columns", () => {
   function fakeStorage(seed: Record<string, string> = {}) {
     const entries = { ...seed };
     return {
@@ -704,7 +705,7 @@ describe("NowScreen — the triage section", () => {
     } = {},
   ) {
     const onTriage = vi.fn();
-    const onCompleteTriage = vi.fn();
+    const onAct = vi.fn();
     const storage = options.storage ?? fakeStorage();
     render(
       <NowScreen
@@ -715,68 +716,127 @@ describe("NowScreen — the triage section", () => {
         selectedItemId={options.selectedItemId ?? null}
         onOpenItem={() => {}}
         onCloseItemDetail={() => {}}
-        onAct={() => {}}
+        onAct={onAct}
         calendarReads={{}}
         calendarConnected={false}
         onTriage={onTriage}
-        onCompleteTriage={onCompleteTriage}
         storage={storage}
       />,
     );
-    return { onTriage, onCompleteTriage, storage };
+    return { onTriage, onAct, storage };
   }
 
-  const capture = (id: string, title: string, createdAt: number) =>
-    itemDTO({ id, title, stage: "triage", createdAt });
+  const capture = (id: string, title: string, createdAt: number, context: string | null = null) =>
+    itemDTO({ id, title, stage: "triage", createdAt, context });
 
-  it("renders the inbox under the promoted items, never above them", () => {
+  /** Every item card in the board, in document order. `tabIndex` is what
+   * separates them from the surface's other `role="button"` controls (the axis
+   * switch, the Filter toggle, the column headers), none of which sets one. */
+  const cards = () =>
+    screen.getAllByRole("button").filter((node) => node.getAttribute("tabindex") === "0");
+
+  const cardTitles = () => cards().map((node) => node.querySelector("span > span")?.textContent);
+
+  /** The one card for this title. Not `getByRole(… name)`: the card's own
+   * mark-done checkmark is a nested button whose accessible name carries the
+   * same title, so a name query matches two things. */
+  const card = (title: string) => {
+    const found = cards().filter((node) => node.textContent?.includes(title));
+    expect(found).toHaveLength(1);
+    return found[0];
+  };
+
+  it("renders a capture as a card in the columns, marked with its stage", () => {
     renderWithTriage(
       taskState({
         frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
-        projects: [projectDTO({ id: "p1", name: "Household" })],
         triageInbox: [capture("c1", "Ring the plumber", 500)],
       }),
     );
 
-    // The frontier's column heading, on the default `context` axis — the
-    // section title this used to look for ("No project") is gone with the
-    // project grouping (#402), but what it was really asserting is unchanged:
-    // triage sits below whatever the frontier rendered.
-    const headings = screen.getAllByRole("heading", { level: 2 }).map((node) => node.textContent);
-    expect(headings).toContain("No context");
-    const triageIndex = headings.findIndex((text) => text?.startsWith("Triage"));
-    expect(triageIndex).toBeGreaterThan(headings.indexOf("No context"));
-    expect(screen.getByText("1 unsorted")).toBeDefined();
-    expect(screen.getByText("Ring the plumber")).toBeDefined();
+    expect(card("Ring the plumber").textContent).toContain("Triage");
+    // And the section that used to hold it is gone entirely — no header, no
+    // count, no second place to look for the same inbox.
+    expect(screen.queryByText(/unsorted/)).toBeNull();
   });
 
-  it("orders the captures oldest first, the same rule the Triage screen uses", () => {
+  it("puts the captures under the startable actions of their column", () => {
+    // Both land in `No context`: the action names none, and a capture names
+    // nothing at all until somebody triages it. Order within the column is the
+    // whole assertion.
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+      }),
+    );
+
+    expect(cardTitles()).toEqual(["Renew the passport", "Ring the plumber"]);
+  });
+
+  it("groups a capture by the live axis when it already names a value", () => {
+    // A capture a sweeper set a context on is not homeless — it belongs in
+    // that context's column, which is the point of grouping the captures at
+    // all rather than stacking them somewhere separate.
+    renderWithTriage(
+      taskState({
+        frontier: [
+          itemDTO({ id: "i1", title: "Prune the hedge", context: "@garden", stage: "ready" }),
+        ],
+        triageInbox: [capture("c1", "Buy secateurs", 500, "@garden")],
+      }),
+    );
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((node) => node.textContent);
+    expect(headings).toEqual(["@garden"]);
+    expect(cardTitles()).toEqual(["Prune the hedge", "Buy secateurs"]);
+  });
+
+  it("orders the captures oldest first among themselves, the Triage screen's own rule", () => {
     renderWithTriage(
       taskState({
         triageInbox: [capture("c2", "Newer capture", 900), capture("c1", "Older capture", 100)],
       }),
     );
-    const titles = screen
-      .getAllByText(/capture$/)
-      .map((node) => node.textContent);
-    expect(titles).toEqual(["Older capture", "Newer capture"]);
+    expect(cardTitles()).toEqual(["Older capture", "Newer capture"]);
   });
 
-  it("is absent entirely when the inbox is empty — an empty inbox is good news, not a card", () => {
-    renderWithTriage(taskState({ frontier: [itemDTO({ id: "i1", stage: "ready" })] }));
-    expect(screen.queryByText(/unsorted/)).toBeNull();
-  });
-
-  it("still renders when nothing is promoted yet, beside the honest empty state", () => {
-    // The commonest state of a new device: captures swept in, nothing
-    // triaged. The early return this replaced showed "Nothing to start" and
-    // hid the one thing worth doing.
+  it("renders the board for an inbox with nothing promoted yet", () => {
+    // The commonest state of a new device: captures swept in, nothing triaged.
+    // "Nothing to start" would be a lie about a screen that is saying exactly
+    // what to do next.
     renderWithTriage(taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }));
-    expect(screen.getByText("Nothing to start")).toBeDefined();
-    expect(screen.getByText("Ring the plumber")).toBeDefined();
+    expect(screen.queryByText("Nothing to start")).toBeNull();
+    expect(card("Ring the plumber")).toBeDefined();
   });
 
-  it("gives way to the item detail panel, so two editors are never open at once", () => {
+  it("still says nothing to start when there is genuinely nothing at all", () => {
+    renderWithTriage(taskState());
+    expect(screen.getByText("Nothing to start")).toBeDefined();
+  });
+
+  it("opens the triage editor above the columns, which stay standing", () => {
+    renderWithTriage(
+      taskState({
+        frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
+        triageInbox: [capture("c1", "Ring the plumber", 500)],
+      }),
+      { selectedItemId: "c1" },
+    );
+
+    // The editor is `TriageRow`'s, never `ItemDetailPanel`'s — a capture has no
+    // act vocabulary, so the detail panel would offer it nothing.
+    expect(screen.getByLabelText("Title")).toBeDefined();
+    expect(screen.queryByRole("button", { name: /^Start$/ })).toBeNull();
+    // ADR-0021 decision 7, now covering captures: the alternatives stay visible.
+    expect(card("Renew the passport")).toBeDefined();
+    expect(screen.getByRole("heading", { level: 2, name: "No context" })).toBeDefined();
+  });
+
+  it("keeps the captures on the board while a startable action is open", () => {
+    // The section this replaced was withheld whenever item detail opened,
+    // because two editors would have been open at once. One slot holds one
+    // editor now, so a capture's *card* has no reason to go anywhere.
     renderWithTriage(
       taskState({
         frontier: [itemDTO({ id: "i1", title: "Renew the passport", stage: "ready" })],
@@ -784,47 +844,19 @@ describe("NowScreen — the triage section", () => {
       }),
       { selectedItemId: "i1" },
     );
+
     expect(screen.getByRole("heading", { name: "Renew the passport" })).toBeDefined();
-    expect(screen.queryByText(/unsorted/)).toBeNull();
-  });
-
-  it("starts expanded, collapses on the header, and persists that to the injected storage", () => {
-    const storage = fakeStorage();
-    renderWithTriage(taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }), {
-      storage,
-    });
-
-    // Anchored: every row carries a "Triage" stage badge inside its own
-    // toggle button, so a bare /Triage/ matches the whole section.
-    const header = screen.getByRole("button", { name: /^Triage \d+ unsorted$/ });
-    expect(header.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Ring the plumber")).toBeDefined();
-
-    fireEvent.click(header);
-    expect(header.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("Ring the plumber")).toBeNull();
-    // The count stays readable while collapsed — that is the whole point of
-    // capping the list rather than the section.
-    expect(screen.getByText("1 unsorted")).toBeDefined();
-    expect(storage.entries["hb.now.triage-collapsed"]).toBe("1");
-  });
-
-  it("opens collapsed when the device already said so", () => {
-    renderWithTriage(taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }), {
-      storage: fakeStorage({ "hb.now.triage-collapsed": "1" }),
-    });
-    expect(screen.queryByText("Ring the plumber")).toBeNull();
+    expect(card("Ring the plumber")).toBeDefined();
+    // No triage editor: the slot is the detail panel's.
+    expect(screen.queryByLabelText("Title")).toBeNull();
   });
 
   it("promotes through the same one-call mutation the Triage screen uses", () => {
     const { onTriage } = renderWithTriage(
       taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }),
+      { selectedItemId: "c1" },
     );
 
-    // Expanding a row is a selection; the editor is one click away. Anchored
-    // on the row's own stage badge, so the mark-done checkmark beside it
-    // (named `Mark "Ring the plumber" done`) is never the match.
-    fireEvent.click(screen.getByRole("button", { name: /^Triage Ring the plumber/ }));
     fireEvent.change(screen.getByLabelText("Size"), { target: { value: "quick" } });
     fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
 
@@ -834,18 +866,13 @@ describe("NowScreen — the triage section", () => {
     expect(onTriage.mock.calls[0][2]).toMatchObject({ size: "quick" });
   });
 
-  it("keeps one row open at a time", () => {
-    renderWithTriage(
-      taskState({
-        triageInbox: [capture("c1", "Older capture", 100), capture("c2", "Newer capture", 900)],
-      }),
+  it("finishes a capture from its card, through the one act every screen shares", () => {
+    const { onAct } = renderWithTriage(
+      taskState({ triageInbox: [capture("c1", "Ring the plumber", 500)] }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /^Triage Older capture/ }));
-    expect(screen.getAllByLabelText("Title")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: /^Triage Newer capture/ }));
-    expect(screen.getAllByLabelText("Title")).toHaveLength(1);
-    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Newer capture");
+    fireEvent.click(screen.getByRole("button", { name: 'Mark "Ring the plumber" done' }));
+    expect(onAct).toHaveBeenCalledWith("c1", "complete");
   });
 });
 

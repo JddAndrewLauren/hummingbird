@@ -1,5 +1,5 @@
 // #403's preference criteria: "a pure sibling module over an injectable
-// storage, with the five-test template `triage-collapse.test.ts` establishes:
+// storage, with the five-test template `shell/rail-collapse.test.ts` establishes:
 // default, round-trip, key-removal-not-default, garbage reads as default,
 // absent-and-throwing storage" — run once for the axis and once for the
 // collapsed set.
@@ -14,7 +14,7 @@ import {
   writeCollapsedColumns,
   writeFrontierAxis,
 } from "./frontier-prefs";
-import type { StorageLike } from "./triage-collapse";
+import type { StorageLike } from "./storage";
 
 function fakeStorage(seed: Record<string, string> = {}): StorageLike & {
   entries: Record<string, string>;

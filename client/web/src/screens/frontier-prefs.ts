@@ -1,7 +1,7 @@
 // Now's frontier view preferences — the chosen grouping axis and the set of
 // collapsed columns (#403, ADR-0021 decision 5). A view preference on one
 // device, not a cross-device fact, so it lives in the injectable-`storage`
-// idiom `screens/triage-collapse.ts`, `shell/rail-collapse.ts` and
+// idiom (`screens/storage.ts`'s `StorageLike`) `shell/rail-collapse.ts` and
 // `screens/questions/collapse.ts` already use — never in the `settings` table,
 // which has no DELETE and syncs everywhere, so an axis or a column-label map
 // would accrete keys forever and follow the reader onto devices whose widths
@@ -21,7 +21,7 @@ import {
   FRONTIER_AXES,
   type FrontierAxis,
 } from "./frontier-columns";
-import type { StorageLike } from "./triage-collapse";
+import type { StorageLike } from "./storage";
 
 const AXIS_KEY = "hb.now.frontier-axis";
 const COLLAPSED_KEY = "hb.now.frontier-collapsed";
