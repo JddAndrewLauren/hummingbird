@@ -421,7 +421,14 @@ export function CaptureBox({
           id={CAPTURE_INPUT_ID}
           // `min()`: see `layout.tsx`'s `Column`.
           style={{ flex: 1, minWidth: "min(260px, 100%)" }}
-          label="Capture"
+          // The label is the accessible name only — the placeholder already
+          // asks the question on screen, and a "Capture" caption over a single
+          // field inside a capture popover names the container rather than
+          // telling the reader anything. `aria-label` rather than a
+          // visually-hidden `<label>`: `Input` renders no such variant, and
+          // adding one to the component library for a single caller would be
+          // the larger change.
+          aria-label="Capture"
           icon="feather"
           placeholder="What's on your mind?"
           value={draft}
