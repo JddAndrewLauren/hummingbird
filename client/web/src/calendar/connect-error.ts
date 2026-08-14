@@ -62,12 +62,32 @@ export function connectErrorCopy(error: string, standalone: boolean): ConnectErr
         message: "Google answered without a token.",
         hint: "Try again. If it repeats, remove this app's calendar access in your Google account and connect again.",
       };
-    default:
-      // The unknown case echoes the raw code rather than swallowing it. GIS
-      // adds `error_callback` types over time, and a reader who can quote the
-      // code is one who can be helped; "something went wrong" is not.
+    case "state_mismatch":
       return {
-        message: `Google reported "${error}".`,
+        message: "The sign-in answer did not match the request this app made.",
+        hint: "Press Connect from this screen and finish the sign-in without leaving it. If this page was opened by following a link from somewhere else, close it and open the app directly.",
+      };
+    case "no_expiry":
+      return {
+        message: "Google returned a token without saying how long it lasts.",
+        hint: "Try again. If it repeats, remove this app's calendar access in your Google account and connect again.",
+      };
+    default:
+      // The unknown case echoes the raw code rather than swallowing it, and a
+      // reader who can quote the code is one who can be helped; "something
+      // went wrong" is not.
+      //
+      // Note what the wording above this line has to be careful about. The
+      // error space is NOT only Google's: GIS adds `error_callback` types over
+      // time, but `google/redirect-flow.ts` mints codes of its own —
+      // `state_mismatch` (this app's CSRF check failing) and `no_expiry` (this
+      // app refusing an unusable token). Both are cased above precisely so
+      // they stop arriving here, where the sentence would have said Google
+      // reported them and sent the reader off to debug the wrong system. An
+      // unknown code keeps the attribution deliberately vague for the same
+      // reason: at this point nothing knows whose code it is.
+      return {
+        message: `The connection failed with "${error}".`,
         hint: "Try again. The code above is what to search for if it repeats.",
       };
   }

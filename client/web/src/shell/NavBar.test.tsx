@@ -135,4 +135,40 @@ describe("NavBar", () => {
     openMore();
     expect(screen.getAllByRole("navigation")).toHaveLength(1);
   });
+
+  // The sheet's controls are not navigation: five of them are, but the close
+  // button and the theme toggle are not, and inside the landmark all seven are
+  // announced as part of "Surfaces". The landmark assertion above cannot see
+  // this — a dialog nested in the nav is still one landmark.
+  it("the sheet is outside the navigation landmark", () => {
+    renderBar();
+    openMore();
+    const nav = screen.getByRole("navigation");
+    expect(nav.contains(screen.getByRole("dialog"))).toBe(false);
+  });
+
+  // `aria-modal="true"` hides everything outside the panel from assistive
+  // tech, and the More button that opened it is outside. Focus left there is
+  // focus on an element the user can no longer reach.
+  it("moves focus into the sheet on open", () => {
+    renderBar();
+    openMore();
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+  });
+
+  // Every way out of this sheet is a way back to the bar, so all three of them
+  // have to hand focus back to the control that opened it.
+  it.each([
+    ["Escape", () => fireEvent.keyDown(document, { key: "Escape" })],
+    ["the close button", () => fireEvent.click(screen.getByRole("button", { name: "Close" }))],
+    ["choosing a screen", () => fireEvent.click(screen.getByRole("button", { name: "Settings" }))],
+  ])("returns focus to More when the sheet is closed by %s", (_name, close) => {
+    renderBar();
+    const more = screen.getByRole("button", { name: /^More$/ });
+    more.focus();
+    openMore();
+    close();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(more);
+  });
 });

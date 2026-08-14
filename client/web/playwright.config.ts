@@ -51,10 +51,16 @@ export default defineConfig({
     // 768: the panel has wrapped below the column.
     { name: "narrow", use: { viewport: { width: 768, height: 1000 } } },
     // 390x844: an iPhone in portrait, the surface this app is installed on.
-    // `isMobile`/`hasTouch` are what make `matchMedia`'s phone branch and the
-    // touch affordances real — a bare 390px viewport in a desktop context
-    // would exercise the width and none of the behaviour. Chromium-only,
-    // matching the sole browser configured above.
+    // The media query fires on the viewport alone — `matchMedia("(max-width:
+    // 640px)")` reads width and nothing else, so the class-driven phone form
+    // and `useIsPhone` would both flip at 390px without any emulation.
+    // `isMobile`/`hasTouch` earn their place elsewhere: they drive the touch
+    // affordances and the pointer/hover media features, which is the half of
+    // the phone form a bare viewport would not exercise. They also change what
+    // the capture sees — the `fullPage` height artifact documented in
+    // `docs/SURFACES.md` is theirs, and is why captures here are
+    // viewport-sized. Chromium-only, matching the sole browser configured
+    // above.
     {
       name: "phone",
       use: {

@@ -97,9 +97,20 @@ async function show(page: Page, nav: string, projectName: string) {
   // (`src/shell/nav-bar.ts`) and are not in the DOM until the sheet is open.
   // The other three projects take the untouched path — they render the rail,
   // where every screen is one click.
+  //
+  // The sheet is scoped to the DIALOG, not the navigation landmark. It is a
+  // sibling of the `<nav>` rather than a child of it, deliberately: inside the
+  // landmark its five destinations, its close button and the theme toggle were
+  // all announced as part of "Surfaces", and the last two are not navigation at
+  // all (`NavBar.tsx`'s header). So a landmark-scoped query cannot reach these
+  // five, and scoping to the dialog is not a workaround but the accurate
+  // question.
   if (projectName === "phone" && PHONE_OVERFLOW_NAV.has(nav)) {
     await page.getByRole("navigation").getByRole("button", { name: "More", exact: true }).click();
-    await expect(page.getByRole("dialog", { name: "More surfaces" })).toBeVisible();
+    const sheet = page.getByRole("dialog", { name: "More surfaces" });
+    await expect(sheet).toBeVisible();
+    await sheet.getByRole("button", { name: nav, exact: true }).click();
+    return;
   }
   // `exact`: since #304 the rail's wordmark is itself a way home, labelled
   // "hummingbird — go to Now and refresh" — inside the same navigation
@@ -202,7 +213,7 @@ for (const theme of THEMES) {
       // bucket the biggest column and pinned last, and two columns over the
       // six-card cap showing `n more`.
       await openApp(page, theme, "board");
-      await show(page, "Now");
+      await show(page, "Now", testInfo.project.name);
       // The board is up (a column heading the fixture guarantees) and the
       // alerts with it — waiting on both is what stops a capture of a
       // half-rendered screen.

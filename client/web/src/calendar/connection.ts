@@ -68,8 +68,16 @@ export async function connect(deps: ConnectionDeps): Promise<ConnectionResult> {
   return connected(result.expiresAtMs);
 }
 
-/** Whether a [`connect`] attempt should be discarded entirely, leaving the
- * device's existing state untouched.
+/** Whether an interactive attempt's result should be discarded, leaving the
+ * device's existing connection state alone.
+ *
+ * TWO callers, and they are easy to forget the second of. [`connect`]'s popup
+ * result is one; the other is a return from the redirect flow, whose answer
+ * arrives on the next page load and is resolved through
+ * `calendar/redirect-return.ts` — that module's header explains why the two
+ * share this question but not the remedy for it. For a while only the popup
+ * consulted this, and a failed redirect return wiped exactly what the rest of
+ * this doc says must never be wiped.
  *
  * The same button is "Connect" and "Reconnect". For a first-time opt-in a
  * declined/failed consent correctly ends disconnected. For a *reconnect* it

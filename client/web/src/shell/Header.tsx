@@ -44,9 +44,13 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
 
   return (
     // `hb-header` / `hb-header-title` rather than style objects: on a phone the
-    // title takes its own line and drops a size, and a stylesheet rule cannot
-    // override an inline property — including the `font` shorthand, which is
-    // why the h1's whole object had to go too. `shell/responsive.css`.
+    // title takes its own line and drops a size, and at equal importance a
+    // stylesheet rule loses to an element's own `style` attribute. `!important`
+    // would have won — `font: var(--type-h2) !important` beats an inline `font`
+    // shorthand just as it beats a longhand — but only by putting `!important`
+    // on every phone declaration and on anything that ever needs to override
+    // one. Deleting the h1's object instead leaves one source of truth per
+    // element. `shell/responsive.css` carries the argument.
     <header className="hb-header">
       <h1
         ref={headingRef}

@@ -5,10 +5,12 @@ import type { ReactNode } from "react";
 // All four style through a class rather than a `style={{}}` object, and their
 // rules live in `shell/responsive.css`. That is not a preference: below 640px
 // the aside stops being a fixed, sticky, self-scrolling panel and becomes a
-// stacked block, and a stylesheet rule cannot override an inline property — so
-// the inline objects had to be deleted, not supplemented. That file's header
-// carries the full argument, and its `.hb-aside` rule carries the ADR-0015
-// reachability note this comment used to hold.
+// stacked block, and at equal importance a stylesheet rule loses to an
+// element's own `style` attribute. `!important` is the one thing that outranks
+// it, and undoing four properties on the aside would have meant four of them —
+// so the inline objects were deleted rather than supplemented and shouted over.
+// That file's header carries the full argument, and its `.hb-aside` rule
+// carries the ADR-0015 reachability note this comment used to hold.
 //
 // `Section` keeps its inline styles: it is not a layout skeleton, nothing about
 // it changes with width, and moving it would put non-responsive styling in the

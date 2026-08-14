@@ -91,9 +91,11 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
           (PR #200 review). */}
       {/* The flex/clip half of this span's styling is `hb-item-row-title` in
           `shell/responsive.css`, not inline: on a phone the title takes the
-          whole first line and wraps instead of clipping, and a stylesheet
-          rule cannot override an inline property. Only what depends on
-          `stage` stays here. */}
+          whole first line and wraps instead of clipping, and at equal
+          importance a stylesheet rule loses to an element's own `style`
+          attribute. Those properties moved out rather than being fought with
+          an `!important` apiece. Only what depends on `stage` stays here —
+          the media query never touches it, so it costs the class nothing. */}
       <span className="hb-item-row-title" style={{ color: stage === "done" ? "var(--text-muted)" : "var(--text-primary)",
         textDecoration: stage === "done" ? "line-through" : "none" }}>{title}</span>
       {pending ? (

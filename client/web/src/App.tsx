@@ -297,9 +297,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   }
 
   return (
-    // `className`, not a style object: this is one of the six pure-layout
-    // elements whose phone form is a media query, and a stylesheet rule cannot
-    // override an inline property. `shell/responsive.css` has the whole
+    // `className`, not a style object: this is one of the pure-layout elements
+    // whose phone form is a media query, and at equal importance a stylesheet
+    // rule loses to an element's own `style` attribute. `!important` on every
+    // phone declaration would beat it, which is exactly the cost that deleting
+    // this element's inline object avoids. `shell/responsive.css` has the whole
     // argument and every rule.
     <div className="hb-shell">
       {/* Exactly one navigation landmark is mounted, never both — two would

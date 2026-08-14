@@ -2,20 +2,40 @@
    ==========================================
 
    Why a stylesheet at all, in an app that styles everything with inline
-   `style={{}}` objects: a stylesheet rule cannot override an inline property.
-   No specificity, no `!important` on a shorthand, nothing beats an element's
-   own `style` attribute for the same longhand. So a media query can only
-   reach an element whose inline object has been *deleted*, which is why the
-   base rules below are here rather than in the components — the class is the
-   only styling those seven elements have.
+   `style={{}}` objects: at equal importance nothing in a stylesheet outranks
+   an element's own `style` attribute. Specificity does not enter into it —
+   the cascade sorts element-attached declarations above selector-matched ones
+   before it ever reaches specificity, so no selector can be made to win.
+   Exactly one mechanism does win: `!important`. Importance is sorted *first*,
+   above the style attribute's tiebreaker (CSS Cascade §"Cascade Sorting
+   Order": origin-and-importance, then context, then element-attached styles),
+   and an important author declaration beats a normal one in a `style`
+   attribute — shorthands included, so `font: var(--type-h2) !important` would
+   in fact have overridden the h1's inline `font`.
+
+   So the choice below was not "impossible versus possible", it was "delete
+   the inline object, or write `!important` on every declaration the phone
+   form changes". Deleting is what these rules do, and the reason is the
+   price of the alternative: every declaration in the phone block at the foot
+   of this file would have to carry `!important` — a block
+   where every line shouts says nothing about which lines matter, and worse,
+   it poisons the elements for later. Anything added afterwards that legibly
+   ought to override these — a one-off inline tweak, a state style, a future
+   layer — would silently lose, and the fix would be a second `!important`.
+   One source of truth per element costs nothing here and keeps the escape
+   hatch usable; the sole surviving `!important` in this file (the 16px input
+   rule at the bottom) is that same general mechanism, spent once where
+   deleting the inline style was not an option.
 
    The split is hard, and deliberately by kind. Mixing the two per element is
    what regresses desktop:
 
-   - **These classes** carry the six pure-layout elements: the shell row and
-     the scroll container (`App.tsx`), the header and its title
+   - **These classes** carry the pure-layout elements — the shell row and the
+     scroll container (`App.tsx`), the header and its title
      (`shell/Header.tsx`), and the four screen skeletons
-     (`screens/layout.tsx`). Their phone form is a media query, no JS.
+     (`screens/layout.tsx`) — plus a partial split on `ItemRow`, whose class
+     carries only the wrap the phone form needs while its caller-dependent
+     paint stays inline. Their phone form is a media query, no JS.
    - **`useIsPhone`** (a `matchMedia` hook) is used only where the DOM *tree*
      differs and no amount of CSS would do: the nav rail versus the bottom bar,
      and `CapturePopover`'s JS-measured anchor.
@@ -207,9 +227,15 @@
    focus, and never zooms back out. `--size-body` is 15px; the token file is a
    copied mirror of the design project (`src/design/tokens/`) so it cannot be
    changed here, and `Input.tsx`, `Textarea.tsx` and `Select.tsx` all set the
-   `font` shorthand inline — which `!important` on a longhand is the only thing
-   that beats. This is the app's one deliberate `!important`; a `--size-input`
-   token taken back upstream to the design project is the real fix.
+   `font` shorthand inline. `!important` is what beats an inline declaration —
+   see this file's header — and here it is the only move left. The header's
+   preferred fix, deleting the inline object and restating the whole thing in
+   a class, is not available: the right size is the token's, on every width
+   except this one, so deleting `font` from the three components would move
+   their entire desktop typography into this stylesheet to buy one phone-only
+   longhand. So this is the general mechanism used once where the alternative
+   was closed, not an exception to a rule. A `--size-input` token
+   taken back upstream to the design project is the real fix.
    (`-webkit-text-size-adjust` in `base.css` does not prevent focus-zoom.) */
 @media (max-width: 640px) {
   input,

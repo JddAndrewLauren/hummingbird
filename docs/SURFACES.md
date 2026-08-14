@@ -32,9 +32,17 @@ already photographs.
 
 - **CSS classes** (`src/shell/responsive.css`) for the pure-layout elements:
   the shell row, the scroll container, the header and its title, and the four
-  screen skeletons. Everything in `src/` styles through inline `style={{}}`
-  objects and a stylesheet rule cannot override an inline property, so those
-  elements' style objects were *deleted*, not supplemented.
+  screen skeletons — plus a partial split on `ItemRow`, whose class carries
+  only the phone wrap. Everything in `src/` styles through inline `style={{}}`
+  objects, and at equal importance a stylesheet rule loses to an element's own
+  `style` attribute; `!important` is the one mechanism that outranks it, for
+  shorthands as much as longhands. So those elements' style objects were
+  *deleted* rather than supplemented — the alternative was an `!important` on
+  every declaration in the phone block, and on anything that later had to
+  override one. The file's single surviving `!important` (the 16px input rule,
+  against iOS focus-zoom) is that same mechanism used once, where deleting was
+  not available: the token file is a copied mirror of the design project and
+  `Input`/`Textarea`/`Select` set the `font` shorthand inline.
 - **`src/shell/useIsPhone.ts`** (a `matchMedia` hook) only where the DOM tree
   itself differs: the nav rail versus the bottom bar, and `CapturePopover`'s
   JS-measured anchor.

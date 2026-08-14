@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Icon, type IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
@@ -34,6 +34,15 @@ export interface NavBarProps {
  * `App` mounts exactly one of this and `NavRail` — never both, even hidden.
  * Two navigation landmarks break `surfaces.spec.ts`'s strict-mode
  * `getByRole("navigation")` across all four visual projects.
+ *
+ * **The sheet is a sibling of the `<nav>`, not a child of it.** Inside the
+ * landmark, its five destinations, its close button and the theme toggle are
+ * all announced as part of "Surfaces" — so a screen-reader user walking the
+ * navigation hears a control set that is not on the bar and mostly is not
+ * navigation at all. Hoisting it out of the landmark costs nothing: it is
+ * `position: fixed`, so it is out of flow wherever it sits and the flex layout
+ * of `.hb-shell` never sees it, and a `dialog` is not a landmark, so the one-
+ * landmark invariant above still holds with the sheet open.
  *
  * The rail's collapse toggle has no counterpart here and `rail-collapse.ts` is
  * simply unread on a phone. Coupling that stored preference to the media query
@@ -72,42 +81,43 @@ export function NavBar({
   }
 
   return (
-    <nav
-      aria-label="Surfaces"
-      className="hb-navbar"
-      style={{
-        flex: "0 0 auto",
-        display: "flex",
-        alignItems: "stretch",
-        background: "var(--surface-quiet)",
-        borderTop: "1px solid var(--border-subtle)",
-        // The home indicator's strip. Resolves to 0 anywhere without one, and
-        // needs `viewport-fit=cover` in index.html to resolve to anything at
-        // all on iOS.
-        paddingBottom: "env(safe-area-inset-bottom)",
-      }}
-    >
-      {NAV_BAR_PRIMARY.map((item) => (
+    <>
+      <nav
+        aria-label="Surfaces"
+        style={{
+          flex: "0 0 auto",
+          display: "flex",
+          alignItems: "stretch",
+          background: "var(--surface-quiet)",
+          borderTop: "1px solid var(--border-subtle)",
+          // The home indicator's strip. Resolves to 0 anywhere without one, and
+          // needs `viewport-fit=cover` in index.html to resolve to anything at
+          // all on iOS.
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+      >
+        {NAV_BAR_PRIMARY.map((item) => (
+          <NavBarButton
+            key={item}
+            label={SCREEN_LABELS[item]}
+            icon={SCREEN_ICONS[item]}
+            active={item === screen}
+            count={counts[item]}
+            danger={item === "alerts"}
+            onClick={() => go(item)}
+          />
+        ))}
+        {/* More reads as the current location whenever the open screen is one
+            it hides — otherwise the bar shows nothing selected while Settings
+            is open, which reads as "you are nowhere". */}
         <NavBarButton
-          key={item}
-          label={SCREEN_LABELS[item]}
-          icon={SCREEN_ICONS[item]}
-          active={item === screen}
-          count={counts[item]}
-          danger={item === "alerts"}
-          onClick={() => go(item)}
+          label="More"
+          icon="ellipsis"
+          active={overflowActive}
+          expanded={sheetOpen}
+          onClick={() => setSheetOpen((open) => !open)}
         />
-      ))}
-      {/* More reads as the current location whenever the open screen is one it
-          hides — otherwise the bar shows nothing selected while Settings is
-          open, which reads as "you are nowhere". */}
-      <NavBarButton
-        label="More"
-        icon="ellipsis"
-        active={overflowActive}
-        expanded={sheetOpen}
-        onClick={() => setSheetOpen((open) => !open)}
-      />
+      </nav>
 
       {sheetOpen ? (
         <MoreSheet
@@ -120,7 +130,7 @@ export function NavBar({
           onClose={() => setSheetOpen(false)}
         />
       ) : null}
-    </nav>
+    </>
   );
 }
 
@@ -202,7 +212,10 @@ function NavBarButton({
 
 /** The overflow sheet: the five screens the bar cannot hold, the theme toggle
  * that has no rail footer to sit in any more, and the build version — which on
- * a phone is reachable here and in Settings, and nowhere else. */
+ * a phone is reachable here and in Settings, and nowhere else.
+ *
+ * Mounted only while open, so mount is open and unmount is close — which is
+ * what lets the focus contract below be one effect with no dependencies. */
 function MoreSheet({
   screen,
   counts,
@@ -220,6 +233,40 @@ function MoreSheet({
   onScreen: (screen: Screen) => void;
   onClose: () => void;
 }) {
+  const restoreTo = useRef<Element | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Focus in, and back out again — `CapturePopover`'s contract, and the same
+  // two halves. `aria-modal="true"` tells assistive tech to ignore everything
+  // outside this panel, and the More button that opened it is outside: leaving
+  // focus there parks a VoiceOver user on an element that has just been hidden
+  // from them, with the sheet they asked for unreachable. So the panel itself
+  // takes focus (hence `tabIndex={-1}` on it, which makes a container
+  // focusable without putting it in the tab order) rather than its first
+  // control: that way the sheet is announced by its own name before its
+  // contents, the way a sheet opening should read.
+  //
+  // The restore half is `CapturePopover`'s verbatim, and matters more here
+  // than it does there — every way out of this sheet is a way *back to the
+  // bar*, so without it a keyboard user is dropped at the top of the document
+  // after every visit to More. `isConnected` because a chosen screen may have
+  // re-rendered the bar out from under the node we saved.
+  //
+  // No focus trap, deliberately, and for the same reason `CapturePopover`
+  // has none: Escape is bound to the document (above), so tabbing out of the
+  // panel does not strand anyone — the sheet still closes and still hands
+  // focus back. A trap here would be a second idiom for the same job.
+  useEffect(() => {
+    restoreTo.current = document.activeElement;
+    panelRef.current?.focus();
+    return () => {
+      const target = restoreTo.current;
+      if (target instanceof HTMLElement && target.isConnected) {
+        target.focus();
+      }
+    };
+  }, []);
+
   return (
     // The scrim. `onMouseDown`, and only when the press landed on the scrim
     // itself: a press that starts inside the sheet and ends outside it is not
@@ -243,12 +290,18 @@ function MoreSheet({
       }}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="More surfaces"
+        tabIndex={-1}
         style={{
           background: "var(--surface-card)",
           borderTop: "1px solid var(--border-subtle)",
+          // The panel is a focus *destination*, not a control, and a ring
+          // drawn around the whole sheet says nothing a sighted user did not
+          // already see happen. Every control inside keeps its own.
+          outline: "none",
           // A sheet's radius (--radius-2xl), top corners only — it rises from
           // the bottom edge, so the bottom two never show.
           borderRadius: "var(--radius-2xl) var(--radius-2xl) 0 0",

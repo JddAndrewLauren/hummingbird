@@ -89,8 +89,21 @@ export function parseRedirectFragment(
 
   // State is checked before anything is believed, on the error path too: an
   // attacker-supplied fragment is as able to carry `error=access_denied` as a
-  // token, and reporting it would let a third party put words in the app's
-  // mouth. A missing `expectedState` means this window never started a flow.
+  // token. A missing `expectedState` means this window never started a flow.
+  //
+  // Reporting such a fragment would let a third party put words in the app's
+  // mouth, but that was never the sharp end of it, and reading this as though
+  // it were leaves the real exposure looking closed. The sharp end is what the
+  // CALLER does with an outcome of `kind: "error"`. Opening
+  // `https://hb.twinion.net/#error=x&state=y` needs no interaction beyond the
+  // click on the link, lands here, and comes out as a failed connection
+  // attempt; the caller then decides what that means for the device's stored
+  // state. Until `calendar/redirect-return.ts` existed, what it meant was
+  // `writeConnected(localStorage, false)` — a link that dropped the reader's
+  // calendar opt-in, their last-good snapshot and the Reconnect affordance.
+  // `state_mismatch` below is this app's own CSRF check failing, and every
+  // consumer of it should treat it as "believe nothing here", including
+  // believing nothing about whether this device is still connected.
   const state = params.get("state");
   if (expectedState === null || state === null || state !== expectedState) {
     return { kind: "error", error: "state_mismatch" };
