@@ -40,7 +40,7 @@ export type { TriageEdits } from "./protocol";
  * a caller sets what it has, and `captureTask` below fills in the `null`s, so
  * a field added to the wire cannot be silently forgotten by this side. */
 export interface CaptureFields {
-  size?: "quick" | "short" | "deep" | null;
+  size?: "quick" | "normal" | "deep" | null;
   energy?: "low" | "medium" | "high" | null;
   context?: string | null;
   description?: string | null;

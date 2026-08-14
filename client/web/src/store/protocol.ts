@@ -230,7 +230,7 @@ export interface TriageEdits {
   title?: string;
   description?: string | null;
   projectId?: string | null;
-  size?: "quick" | "short" | "deep" | null;
+  size?: "quick" | "normal" | "deep" | null;
   energy?: "low" | "medium" | "high" | null;
   context?: string | null;
   /** 0..=4, in `items.priority`'s own encoding (`screens/priority.ts` owns
@@ -254,7 +254,7 @@ export interface TriageEdits {
  * and spelling every key out is what makes a *missing* one a type error rather
  * than a silently unsent field. */
 export interface CaptureFieldsWire {
-  size: "quick" | "short" | "deep" | null;
+  size: "quick" | "normal" | "deep" | null;
   energy: "low" | "medium" | "high" | null;
   context: string | null;
   description: string | null;
@@ -297,7 +297,7 @@ export interface TaskItemDTO {
   title: string;
   description: string | null;
   stage: TaskStageName;
-  size: "quick" | "short" | "deep" | null;
+  size: "quick" | "normal" | "deep" | null;
   energy: "low" | "medium" | "high" | null;
   context: string | null;
   priority: number;

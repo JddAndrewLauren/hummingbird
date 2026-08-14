@@ -18,24 +18,30 @@ import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
 import { freezeDraft, spliceTranscript, type FrozenDraft } from "./capture-dictation";
-import { captureMetaProblems, EMPTY_CAPTURE_META, resolveCaptureFields } from "./capture-meta";
+import {
+  CAPTURE_ENERGY_NAMES,
+  CAPTURE_SIZE_NAMES,
+  captureMetaProblems,
+  EMPTY_CAPTURE_META,
+  resolveCaptureFields,
+} from "./capture-meta";
+import { energyIcon, levelColor, sizeIcon } from "./size-energy";
 import { canSubmitCapture } from "./capture-validation";
 import { CONTEXT_OPTIONS } from "./field-vocabulary";
 import { PRIORITY_OPTIONS } from "./priority";
 import type { CaptureDestination } from "./capture-destination";
 
-/** The capture box's Energy/Size `Slider` stops, left to right — the display
- * labels, which are NOT always the domain vocabulary ("normal" is the middle
- * size stop; `hummingbird_domain::Size` calls it `short`).
- *
- * Exported only so `capture-meta.test.ts` can pin them against that module's
- * own `CAPTURE_SIZE_NAMES`/`CAPTURE_ENERGY_NAMES`, which are indexed by the
- * raw slider index and hand-aligned with these. Nothing mechanical connects
- * the two sides: a fourth stop added here and not there resolves to
- * `undefined`, which reads downstream as "not set" — a dropped selection
- * with no error anywhere. The length assertion is that missing mechanism. */
-export const CAPTURE_ENERGY_STOPS: string[] = ["low", "medium", "high"];
-export const CAPTURE_SIZE_STOPS: string[] = ["quick", "normal", "deep"];
+// The Energy/Size `Slider` stops are `capture-meta.ts`'s
+// `CAPTURE_ENERGY_NAMES`/`CAPTURE_SIZE_NAMES` themselves, rendered directly.
+// There used to be a second pair of arrays here holding display labels,
+// because the middle size stop displayed "normal" while the wire said
+// "short"; ADR-0024 made those the same word, so the display copy had
+// nothing left to hold and went away, along with the length assertion in
+// `capture-meta.test.ts` that was the only thing keeping the two aligned.
+//
+// The context list is NOT restated here. `screens/field-vocabulary.ts`'s
+// `CONTEXT_OPTIONS` is the one copy this branch left standing, and capture
+// and the triage editor both read it.
 
 /** What the box did last, so the surface it sits on can say so. A popover
  * closes over whatever screen the person was on, so nothing else on screen
@@ -535,15 +541,25 @@ export function CaptureBox({
             alignItems: "start",
           }}
         >
+          {/* The stop lists are the wire vocabularies themselves, and the
+              glyphs and colours are derived from them by index — nothing here
+              is a second copy that could disagree with the level it draws.
+              Both start unset, which is what the ghost variants are for: the
+              slider shows no thumb and no ramp colour until someone chooses,
+              because deciding is mint-time work, not capture-time work. */}
           <Slider
             label="Energy"
-            options={CAPTURE_ENERGY_STOPS}
+            options={CAPTURE_ENERGY_NAMES}
+            optionIcons={CAPTURE_ENERGY_NAMES.map(energyIcon)}
+            optionColors={CAPTURE_ENERGY_NAMES.map(levelColor)}
             value={meta.energy}
             onChange={(energy) => setMeta({ ...meta, energy })}
           />
           <Slider
             label="Size"
-            options={CAPTURE_SIZE_STOPS}
+            options={CAPTURE_SIZE_NAMES}
+            optionIcons={CAPTURE_SIZE_NAMES.map(sizeIcon)}
+            optionColors={CAPTURE_SIZE_NAMES.map(levelColor)}
             value={meta.size}
             onChange={(size) => setMeta({ ...meta, size })}
           />

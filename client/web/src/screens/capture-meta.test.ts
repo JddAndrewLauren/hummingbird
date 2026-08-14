@@ -7,7 +7,6 @@ import {
   resolveCaptureFields,
   type CaptureMeta,
 } from "./capture-meta";
-import { CAPTURE_ENERGY_STOPS, CAPTURE_SIZE_STOPS } from "./CaptureBox";
 
 /** The resting state with one or two fields moved off it — every field is
  * optional on this form, so most cases are "exactly one thing chosen". */
@@ -55,8 +54,11 @@ describe("resolveCaptureFields", () => {
   });
 
   it("resolves every size slider stop to the domain's own wire name", () => {
+    // `meta()` is this branch's helper — the draft grew fields past the three
+    // scalars main's literal spells out. The middle value is ADR-0024's
+    // `normal`, which is what main renamed it to.
     expect(resolveCaptureFields(meta({ size: 0 })).size).toBe("quick");
-    expect(resolveCaptureFields(meta({ size: 1 })).size).toBe("short");
+    expect(resolveCaptureFields(meta({ size: 1 })).size).toBe("normal");
     expect(resolveCaptureFields(meta({ size: 2 })).size).toBe("deep");
   });
 
@@ -135,26 +137,15 @@ describe("captureMetaProblems", () => {
   });
 });
 
-// The missing mechanism between the two hand-aligned sides: `capture-meta.ts`
-// indexes `CAPTURE_SIZE_NAMES`/`CAPTURE_ENERGY_NAMES` by the raw index the
-// `Slider` in `CaptureBox.tsx` produces, and the compiler cannot see that
-// the arrays are supposed to correspond. A fourth stop added to one side and
-// not the other used to be a silently dropped selection (the test above);
-// now it is a red test.
-describe("the capture sliders and their wire-name arrays", () => {
-  it("offers exactly as many size stops as there are size names", () => {
-    expect(CAPTURE_SIZE_STOPS.length).toBe(CAPTURE_SIZE_NAMES.length);
-  });
-
-  it("offers exactly as many energy stops as there are energy names", () => {
-    expect(CAPTURE_ENERGY_STOPS.length).toBe(CAPTURE_ENERGY_NAMES.length);
-  });
-
-  // A `Slider` with fewer than two stops renders "nothing to choose from"
-  // instead of a track (see `Slider.tsx`), so an emptied array would take
-  // the control off the screen rather than fail an index lookup.
+// One array, so there is no longer a pair that can disagree — the length
+// assertion that used to live here went with the second array (see
+// `capture-meta.ts`). What survives is the one claim that is still about a
+// single array: a `Slider` with fewer than two stops renders "nothing to
+// choose from" instead of a track (`Slider.tsx`), so an emptied array would
+// take the control off the screen rather than fail an index lookup.
+describe("the capture sliders' stops", () => {
   it("keeps both sliders at two stops or more", () => {
-    expect(CAPTURE_SIZE_STOPS.length).toBeGreaterThanOrEqual(2);
-    expect(CAPTURE_ENERGY_STOPS.length).toBeGreaterThanOrEqual(2);
+    expect(CAPTURE_SIZE_NAMES.length).toBeGreaterThanOrEqual(2);
+    expect(CAPTURE_ENERGY_NAMES.length).toBeGreaterThanOrEqual(2);
   });
 });

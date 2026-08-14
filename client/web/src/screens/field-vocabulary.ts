@@ -29,10 +29,14 @@ export const CONTEXT_OPTIONS: Array<{ value: string; label: string }> = [
   ...CONTEXTS.map((context) => ({ value: context, label: context })),
 ];
 
+// The middle size is `normal`, not `short` (ADR-0024). The server still
+// accepts `short` as a serde alias, so the old value would have gone on
+// writing successfully while displaying a word the vocabulary no longer has —
+// which is why this is a merge fix and not a rename that could have waited.
 export const SIZE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "", label: "Not set" },
   { value: "quick", label: "Quick" },
-  { value: "short", label: "Short" },
+  { value: "normal", label: "Normal" },
   { value: "deep", label: "Deep" },
 ];
 

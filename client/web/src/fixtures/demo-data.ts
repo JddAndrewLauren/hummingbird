@@ -28,7 +28,11 @@ export interface DemoItem {
   urgency: Urgency;
   deadline?: string;
   scheduled?: string;
-  size?: string;
+  /** The real wire vocabulary, not a free label: `ItemRow` draws it as a
+   * glyph now (#446), so a demo row that invented a word would render the
+   * wrong ring count. */
+  size?: TaskItemDTO["size"];
+  energy?: TaskItemDTO["energy"];
   steps?: string;
   blockedBy?: string;
   project: string;

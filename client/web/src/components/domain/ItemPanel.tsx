@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Badge } from "../core/Badge";
 import { Button } from "../core/Button";
 import { Card } from "../core/Card";
+import { Icon } from "../core/Icon";
 import { IconButton } from "../core/IconButton";
 import { Checkbox } from "../forms/Checkbox";
 import { DeadlineField } from "../forms/DeadlineField";
@@ -15,6 +16,13 @@ import {
 } from "../../screens/field-vocabulary";
 import { availableActions, canGrill } from "../../screens/item-actions";
 import { hasPriority, priorityLabel, PRIORITY_OPTIONS } from "../../screens/priority";
+import {
+  energyIcon,
+  energyLabel,
+  levelColor,
+  sizeIcon,
+  sizeLabel,
+} from "../../screens/size-energy";
 import { buildTriageEdits, hasTriageEdits } from "../../screens/triage-form";
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
@@ -224,15 +232,42 @@ export function ItemPanel({
           onChange={(event) => set("priority", event.target.value)}
           options={PRIORITY_OPTIONS}
         />
+        {/* The glyph sits beside the field's *label*, showing the draft's
+            current level, and not inside the option list: a native `<option>`
+            renders text only — an SVG in one is dropped, and the whole point
+            of the family is that the level is visible before the menu is
+            opened. An untouched draft ("" — not set) gets the ghost variant,
+            which is the resting state, not a prompt to choose.
+
+            (#446/#447 wrote this on `TriageRow`'s editor, which this component
+            had already absorbed on this branch; ported rather than lost.) */}
         <Select
-          label="Size"
+          label={
+            <>
+              <Icon
+                name={sizeIcon(draft.size || null)}
+                size={13}
+                style={{ color: levelColor(draft.size || null) }}
+              />
+              Size
+            </>
+          }
           size="sm"
           value={draft.size}
           onChange={(event) => set("size", event.target.value)}
           options={SIZE_OPTIONS}
         />
         <Select
-          label="Energy"
+          label={
+            <>
+              <Icon
+                name={energyIcon(draft.energy || null)}
+                size={13}
+                style={{ color: levelColor(draft.energy || null) }}
+              />
+              Energy
+            </>
+          }
           size="sm"
           value={draft.energy}
           onChange={(event) => set("energy", event.target.value)}
@@ -381,8 +416,22 @@ export function ItemPanel({
           {hasPriority(item.priority) ? (
             <Badge tone="brand">{priorityLabel(item.priority)}</Badge>
           ) : null}
-          {item.size ? <Badge mono>size:{item.size}</Badge> : null}
-          {item.energy ? <Badge mono>energy:{item.energy}</Badge> : null}
+          {/* Both always render, unlike the row's meta chips and unlike
+              `context` beside them. This is the one surface that describes a
+              single item in full, so "nobody has judged this yet" is a fact
+              worth showing — as the ghost glyph and an em dash, which is what
+              the unset variants exist for. It is a resting state, never a
+              warning: muted, same weight as the rest, nothing escalated.
+
+              (#446/#447 wrote this on `ItemDetailPanel`, which this component
+              had already replaced on this branch; it is ported here rather
+              than lost to the merge.) */}
+          <Badge mono icon={sizeIcon(item.size)} style={{ color: levelColor(item.size) }}>
+            size:{sizeLabel(item.size)}
+          </Badge>
+          <Badge mono icon={energyIcon(item.energy)} style={{ color: levelColor(item.energy) }}>
+            energy:{energyLabel(item.energy)}
+          </Badge>
           {item.context ? <Badge mono>{item.context}</Badge> : null}
         </div>
       )}

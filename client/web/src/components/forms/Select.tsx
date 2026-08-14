@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { CSSProperties, SelectHTMLAttributes } from "react";
+import type { CSSProperties, ReactNode, SelectHTMLAttributes } from "react";
 import { Icon } from "../core/Icon";
 
 export interface SelectOption {
@@ -8,7 +8,11 @@ export interface SelectOption {
 }
 
 export interface SelectProps extends Omit<SelectHTMLAttributes<HTMLSelectElement>, "size" | "style"> {
-  label?: string;
+  /** A node rather than a string, so a caller can set a glyph beside the
+   * field name — a native `<option>` cannot carry an SVG, so a per-level
+   * icon has nowhere else to go (#446, `screens/TriageRow.tsx`). Plain
+   * strings still work and are still the common case. */
+  label?: ReactNode;
   /** Strings are used as both value and label. */
   options?: Array<string | SelectOption>;
   size?: "sm" | "md" | "lg";
@@ -22,7 +26,7 @@ export function Select({ label, options = [], value, onChange, size = "md", id, 
   const h = size === "lg" ? 44 : size === "sm" ? 30 : 36;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", ...style }}>
-      {label ? <label htmlFor={selectId} style={{ font: "var(--weight-semibold) var(--size-body-sm)/1.2 var(--font-sans)", color: "var(--text-secondary)" }}>{label}</label> : null}
+      {label ? <label htmlFor={selectId} style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--weight-semibold) var(--size-body-sm)/1.2 var(--font-sans)", color: "var(--text-secondary)" }}>{label}</label> : null}
       <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
         <select id={selectId} value={value} onChange={onChange}
           onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}

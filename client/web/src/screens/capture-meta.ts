@@ -37,26 +37,30 @@ export const EMPTY_CAPTURE_META: CaptureMeta = {
 };
 
 /** `Slider` index -> `hummingbird_domain::Size`'s own wire name, in the
- * slider's own left-to-right stop order (`CaptureBox.tsx`'s
- * `CAPTURE_SIZE_STOPS` — "normal" is the slider's
- * display label; the domain vocabulary at that stop is `"short"`).
+ * slider's own left-to-right stop order — and, since #446, also the stop
+ * labels themselves: `CaptureBox.tsx` renders this array.
  *
- * Indexed by the raw slider index, and hand-aligned with
- * `CaptureBox.tsx`'s `CAPTURE_SIZE_STOPS` — nothing mechanical connects
- * the two, so `capture-meta.test.ts` asserts their lengths agree. An index
- * past the end resolves to `undefined`, which reads downstream as "not set":
- * a silently dropped selection, never an error. Exported for that test
- * only. */
-export const CAPTURE_SIZE_NAMES: ReadonlyArray<"quick" | "short" | "deep"> = [
+ * It used to have a twin. The slider displayed "normal" at the middle stop
+ * while the wire said `"short"`, so `CaptureBox.tsx` kept a parallel
+ * `CAPTURE_SIZE_STOPS` of display labels, hand-aligned with this one and
+ * guarded only by a length assertion in `capture-meta.test.ts` — nothing
+ * mechanical connected them, and a stop added to one and not the other
+ * resolved to `undefined`, which reads downstream as "not set": a silently
+ * dropped selection with no error anywhere. ADR-0024 made the display word
+ * the wire word, which leaves nothing for a second array to hold. The guard
+ * went with it: there are no longer two things that can disagree.
+ *
+ * An index past the end still resolves to `undefined` and still reads as
+ * "not set" — that is the resting state, not a failure. */
+export const CAPTURE_SIZE_NAMES: ReadonlyArray<"quick" | "normal" | "deep"> = [
   "quick",
-  "short",
+  "normal",
   "deep",
 ];
 
-/** `Slider` index -> `hummingbird_domain::Energy`'s own wire name — the
- * slider's display labels already match the domain vocabulary here. Same
- * hand-alignment hazard as `CAPTURE_SIZE_NAMES` above, against
- * `CaptureBox.tsx`'s `CAPTURE_ENERGY_STOPS`. */
+/** `Slider` index -> `hummingbird_domain::Energy`'s own wire name, and the
+ * stop labels too — energy's display words always did match the domain
+ * vocabulary, so this array never had the twin `CAPTURE_SIZE_NAMES` did. */
 export const CAPTURE_ENERGY_NAMES: ReadonlyArray<"low" | "medium" | "high"> = [
   "low",
   "medium",

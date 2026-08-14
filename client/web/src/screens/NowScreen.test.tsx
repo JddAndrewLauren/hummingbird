@@ -284,6 +284,25 @@ describe("NowScreen — the frontier list", () => {
     expect(screen.getAllByText("Pending")).toHaveLength(1);
   });
 
+  // #446: the card's size and energy chips are glyph-only, like the row's.
+  // Nothing asserted this when the words came off — the whole suite passed on
+  // the change — so a card could regress to words, or lose its accessible
+  // name, silently. (The top-pick card takes the same treatment but renders
+  // only under `?demo`, so the visual capture is its only gate.)
+  it("draws a card's size and energy as named glyphs, with no word", () => {
+    renderNow(
+      taskState({
+        frontier: [
+          itemDTO({ id: "i1", title: "Prune the hedge", context: "@garden", size: "deep", energy: "low" }),
+        ],
+      }),
+    );
+    expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
+    expect(screen.queryByText(/^(LOW|MEDIUM|HIGH)$/)).toBeNull();
+    expect(screen.getByRole("img", { name: "Size: deep" })).toBeDefined();
+    expect(screen.getByRole("img", { name: "Energy: low" })).toBeDefined();
+  });
+
   // Rewritten from "groups by project name, with the unassigned group last"
   // (#402): project is now one of four axes rather than the only grouping, so
   // the same fact is asserted through the axis switch.
@@ -787,7 +806,9 @@ describe("NowScreen — the captures in the columns", () => {
       }),
     );
 
-    expect(card("Ring the plumber").textContent).toContain("Triage");
+    // The triage stage draws as a word-free `inbox` glyph, so its `title` is
+    // where the stage is now legible — the pill's text is empty by design.
+    expect(card("Ring the plumber").querySelector('[title="Triage"]')).not.toBeNull();
     // And the section that used to hold it is gone entirely — no header, no
     // count, no second place to look for the same inbox.
     expect(screen.queryByText(/unsorted/)).toBeNull();

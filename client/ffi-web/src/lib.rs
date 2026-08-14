@@ -866,12 +866,17 @@ mod wasm_bindings {
         /// is optional and `null` means "not set": these are creation-time
         /// values on an item that does not exist yet, so there is nothing a
         /// `null` could be clearing. `size`/`energy` are the wire's snake_case
-        /// vocabulary names (`"quick"`/`"short"`/`"deep"`,
-        /// `"low"`/`"medium"`/`"high"`), resolved by name — never a raw id.
+        /// vocabulary names (`"quick"`/`"normal"`/`"deep"` — ADR-0024 renamed
+        /// the middle one — and `"low"`/`"medium"`/`"high"`), resolved by name
+        /// rather than by a raw id.
         ///
         /// Malformed JSON or an unknown key is a `"failed"` answer carrying
         /// the parse error, refused before the host is ever checked out, on
         /// the same "reject before the seam" discipline `triage` uses.
+        ///
+        /// (`#[allow(clippy::too_many_arguments)]` stood here while the three
+        /// scalars were positional; folding them into `fields` is what took
+        /// the count back under the lint's threshold.)
         pub fn capture(
             &self,
             seed: String,
