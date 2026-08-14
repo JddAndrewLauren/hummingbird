@@ -175,11 +175,14 @@
    Energy/Size/Context row rather than on a line of its own underneath, which
    spent a whole line of vertical space on one short label.
 
-   The padding is what drops it onto the Context select's own line: past that
-   field's label (`--size-body-sm` at 1.2, plus the `--space-3` gap `Select`
+   The padding is what drops it onto the Context field's own line: past that
+   field's label (`--size-body-sm` at 1.2, plus the `--space-3` gap the field
    puts under it), then 1px to centre the 34px button against the 36px
-   control. Derived from the tokens `Select` lays itself out with rather than
-   measured, so a type or spacing change moves both together.
+   control. Derived from the tokens the field lays itself out with rather than
+   measured, so a type or spacing change moves both together. Context became a
+   `Combobox` over `Input` where it was a `Select`, and the arithmetic survived
+   unchanged because the two share that gap token and that `md` height — which
+   is the reason `Combobox` wraps `Input` instead of drawing its own box.
 
    Here rather than inline because the phone form below has to override it,
    and at equal importance nothing in a stylesheet outranks an element's own

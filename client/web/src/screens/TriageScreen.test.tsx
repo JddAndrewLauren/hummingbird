@@ -238,7 +238,7 @@ describe("TriageScreen — the editor", () => {
     expect((field("Priority") as HTMLSelectElement).value).toBe("2");
     expect((field("Size") as HTMLSelectElement).value).toBe("deep");
     expect((field("Energy") as HTMLSelectElement).value).toBe("high");
-    expect((field("Context") as HTMLSelectElement).value).toBe("@computer");
+    expect((field("Context") as HTMLInputElement).value).toBe("@computer");
     expect((field("Deadline") as HTMLInputElement).value).toBe("2026-08-14");
     expect((field("Scheduled date") as HTMLInputElement).value).toBe("2026-08-12");
   });

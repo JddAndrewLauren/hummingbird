@@ -13,6 +13,7 @@
 // reader can pick, never as a bucket an item is sorted into.
 
 import type { TaskItemDTO } from "../store/protocol";
+import { CONTEXTS } from "./field-vocabulary";
 import { computeUrgency, type Urgency } from "./urgency";
 
 /** The facets the filter panel offers. Note the overlap with the grouping axes
@@ -49,15 +50,23 @@ export const NO_FACETS: FacetSelection = {
 
 /** Contexts actually present in the given items — the chip row offers what is
  * there rather than a fixed list, because `items.context` is free text in the
- * schema and the set of places a person works is theirs. The known vocabulary
- * leads in its own order, anything unrecognised follows alphabetically, and
- * `NO_CONTEXT` is last (the same last-place rule the unnamed column has). */
+ * schema and the set of places a person works is theirs. The suggested
+ * vocabulary leads in its own order, anything else follows alphabetically, and
+ * `NO_CONTEXT` is last (the same last-place rule the unnamed column has).
+ *
+ * `CONTEXTS` rather than a fourth copy of those names: it is the same list the
+ * two forms suggest, and it only orders here — a context outside it is a chip
+ * like any other, which is the point. This used to be its own array, and it
+ * still carried `@waiting` after `field-vocabulary.ts` dropped it. */
 export function contextsOf(items: readonly TaskItemDTO[]): string[] {
-  const known = ["@computer", "@phone", "@home", "@garden", "@errands", "@waiting"];
+  // Widened to `readonly string[]`: `CONTEXTS` is a tuple of literals, and
+  // asking a tuple whether it `includes` an arbitrary string is a type error
+  // rather than the question being asked here.
+  const suggested: readonly string[] = CONTEXTS;
   const present = new Set(items.map((item) => item.context ?? NO_CONTEXT));
-  const ordered = known.filter((context) => present.has(context));
+  const ordered = suggested.filter((context) => present.has(context));
   const extra = [...present]
-    .filter((context) => context !== NO_CONTEXT && !known.includes(context))
+    .filter((context) => context !== NO_CONTEXT && !suggested.includes(context))
     .sort();
   return [...ordered, ...extra, ...(present.has(NO_CONTEXT) ? [NO_CONTEXT] : [])];
 }

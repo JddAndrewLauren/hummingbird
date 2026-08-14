@@ -17,7 +17,7 @@
 
 import { describe, expect, it } from "vitest";
 import { CAPTURE_ENERGY_NAMES, CAPTURE_SIZE_NAMES } from "./capture-meta";
-import { CONTEXT_OPTIONS, CONTEXTS, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
+import { CONTEXTS, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
 
 describe("field-vocabulary — the size and energy option lists", () => {
   it("offers exactly the wire's size names, in the slider's own order", () => {
@@ -47,16 +47,33 @@ describe("field-vocabulary — the size and energy option lists", () => {
     expect(SIZE_OPTIONS.map((option) => option.value)).not.toContain("short");
   });
 
-  it("leads every list with the resting 'Not set', which maps to no value", () => {
-    // Unset is a legitimate resting state on all three (deciding is mint-time
-    // work), and every form relies on the empty string being first.
-    for (const options of [SIZE_OPTIONS, ENERGY_OPTIONS, CONTEXT_OPTIONS]) {
+  it("leads both closed lists with the resting 'Not set', which maps to no value", () => {
+    // Unset is a legitimate resting state (deciding is mint-time work), and
+    // both forms rely on the empty string being first. Context has no such
+    // entry to check: it is a `Combobox`, where rest is an empty field.
+    for (const options of [SIZE_OPTIONS, ENERGY_OPTIONS]) {
       expect(options[0]).toEqual({ value: "", label: "Not set" });
       expect(options.slice(1).some((option) => option.value === "")).toBe(false);
     }
   });
+});
 
-  it("offers every context and invents none", () => {
-    expect(CONTEXT_OPTIONS.slice(1).map((option) => option.value)).toEqual([...CONTEXTS]);
+describe("field-vocabulary — the context suggestions", () => {
+  it("suggests the places this system's owner works", () => {
+    expect([...CONTEXTS]).toEqual(["@home", "@computer", "@phone", "@errands", "@garden"]);
+  });
+
+  it("does not suggest `@waiting`, which was the Blocked stage in disguise", () => {
+    // CONTEXT.md: "External wait is the only meaning of the Blocked state."
+    // A context named for waiting is a second home for that idea, and it fails
+    // Context's own test — *where or with what* the work can be done.
+    expect([...CONTEXTS]).not.toContain("@waiting");
+  });
+
+  it("carries no resting entry, because an empty context is not a choice in a list", () => {
+    // The `<select>` needed a `""` option to express "not set". A text field
+    // expresses it by being empty, so a `""` in here would be an offered
+    // suggestion of nothing.
+    expect([...CONTEXTS]).not.toContain("");
   });
 });

@@ -1,13 +1,35 @@
 // The option lists the item forms offer, in one place.
 //
-// Free vocabulary in the schema (`items.context`), a fixed list here: this is
-// a personal system and these are the places its owner actually works. Size
-// and Energy are `hummingbird_domain`'s own closed vocabularies, spelled with
-// the wire's names as values and sentence-case labels.
+// **Context is suggestions; Size and Energy are the vocabulary.** That is the
+// whole distinction this module encodes, and the two halves below are not
+// interchangeable. Size and Energy are `hummingbird_domain`'s own closed
+// vocabularies — a value outside them is a bug — so they are `<select>`
+// options, spelled with the wire's names as values and sentence-case labels.
+// Context is free text in `items.context`, and CONTEXT.md says why: *"an open
+// vocabulary, not a fixed enum … because the set of places a person works is
+// theirs."* So `CONTEXTS` feeds a `Combobox` and constrains nothing.
+//
+// It did not use to. Both forms rendered a `<select>` over these six, which
+// meant no surface in the app could enter a seventh — while `frontier-facets.ts`
+// built its filter chips from the contexts actually present and sorted
+// unrecognised ones in alphabetically, and `server/domain/src/item.rs` gave
+// `@calls` as an example of a context nobody could type. The read side had
+// always believed the glossary; only the write side disagreed, so this is the
+// write side being corrected rather than a decision being made.
+//
+// `@waiting` is gone from the list. It failed Context's own test — *where or
+// with what* an item can be done — and CONTEXT.md is flat that "External wait
+// is the only meaning of the Blocked state", so a context by that name was the
+// Blocked stage wearing a hard filter's clothes. Nothing is stranded by the
+// removal: the string is still valid, items already carrying it still sync,
+// still filter on the frontier, and can still be typed here. It is only no
+// longer suggested.
 //
 // One module because two forms offer the same choices — the capture box and
 // the item editor — and a context added to one copy and not the other is a
 // list that quietly disagrees with itself depending on where you sort from.
+// `frontier-facets.ts` reads `CONTEXTS` too, for its chip *order*, which is
+// the third copy this consolidation finally removed.
 //
 // **Not the capture box's sliders.** Those are indexed by *position* rather
 // than by value — `capture-meta.ts`'s `CAPTURE_SIZE_NAMES`/
@@ -26,20 +48,16 @@
 
 import type { TaskItemDTO } from "../store/protocol";
 
+/** The contexts the forms *suggest* and the frontier's chips order by — the
+ * places this system's owner actually works. Never a constraint on what
+ * `items.context` may hold: see the header. */
 export const CONTEXTS = [
   "@home",
   "@computer",
   "@phone",
   "@errands",
   "@garden",
-  "@waiting",
 ] as const;
-
-/** The `Select` options for context, with the resting "Not set" first. */
-export const CONTEXT_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "", label: "Not set" },
-  ...CONTEXTS.map((context) => ({ value: context, label: context })),
-];
 
 /** A `Select` option whose value is a level of `T`, or `""` for "not set".
  *
