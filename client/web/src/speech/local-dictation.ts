@@ -25,9 +25,15 @@
 // arm. A `switch` over an exhaustive union would be writing an unverified type
 // into the codebase.
 //
-// `install()` is deliberately absent: installing the on-device pack belongs to
-// #381, and ADR-0022 measured that it throws unless it is called from a real
-// user gesture. Nothing here calls it.
+// `installDictationModel()` (#381) is the ONLY place that calls `install()`.
+// ADR-0022 Decision 5 measured that the browser call must happen inside a
+// real user gesture's own call stack — no `await` first, no effect, no
+// timer — or it rejects `NotAllowedError`. That is why the function below
+// makes the `Ctor.install(...)` call its first synchronous statement rather
+// than, say, probing the constructor through an already-`async` helper: a
+// caller that invokes this function directly from a click handler keeps the
+// gesture; a caller that awaits anything first, even something in this
+// module, would not.
 //
 // **`quality` is left at its default, and the default is `"command"`** (one of
 // four instance members ADR-0022 measured: `processLocally`, `phrases`,
@@ -132,6 +138,10 @@ interface SpeechRecognitionLike {
 interface SpeechRecognitionCtor {
   new (): SpeechRecognitionLike;
   available?: (options: { langs: string[]; processLocally: boolean }) => Promise<string>;
+  /** #381, ADR-0022 Decision 5: `install({langs})`, not `installOnDevice`.
+   * Resolves a boolean; rejects `NotAllowedError` unless called synchronously
+   * inside a real user gesture while availability is still `"downloadable"`. */
+  install?: (options: { langs: string[] }) => Promise<boolean>;
 }
 
 /** One narrow `globalThis` read covering both names. Chrome 151 exposes both
@@ -192,6 +202,21 @@ export async function probeDictationCapability(): Promise<DictationCapability> {
   }
   // The open vocabulary, routed to the safe arm — see the module header.
   return { kind: "unsupported", reason: "This browser can't dictate on the device." };
+}
+
+/** Starts installing the on-device pack for `DICTATION_LANG` (#381). **Must be
+ * called synchronously from the download control's own click handler** — see
+ * the module header. Never throws and never rejects: a missing constructor, a
+ * missing `install` static, or a rejected promise (the gesture requirement,
+ * an offline network, anything else the browser declines to explain) all
+ * resolve `false`, so the caller has exactly one shape to branch on — the
+ * same "no throw, ever" contract `startLocalDictation` keeps. */
+export function installDictationModel(): Promise<boolean> {
+  const Ctor = readConstructor();
+  if (Ctor === null || typeof Ctor.install !== "function") {
+    return Promise.resolve(false);
+  }
+  return Ctor.install({ langs: [DICTATION_LANG] }).catch(() => false);
 }
 
 const ERROR_MESSAGES: Record<string, string> = {

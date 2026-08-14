@@ -9,6 +9,7 @@ import { Slider } from "../components/forms/Slider";
 import { Input } from "../components/forms/Input";
 import { CAPTURE_INPUT_ID } from "../shell/capture-hotkey";
 import {
+  installDictationModel,
   isDictationApiPresent,
   probeDictationCapability,
   startLocalDictation,
@@ -112,6 +113,24 @@ const NO_DICTATION: DictationCapability = {
   kind: "unsupported",
   reason: "This browser can't dictate on the device.",
 };
+
+/** #381's own state machine, held only while `dictation.kind ===
+ * "setup-required"` — the arm #379 deliberately left rendering nothing. It
+ * exists ONLY for the two-step gesture ADR-0022 Decision 5 made mandatory:
+ * `closed` is the setup mic's resting state (nothing shown, nothing called);
+ * the first tap moves to `explained` and calls nothing else; `installing`
+ * covers the several seconds Decision 5 measured `install()` taking; and
+ * `failed` carries the message for a rejected or `false` install, with the
+ * download control left in place so the reader can try again. A successful
+ * install never lands here at all — it re-probes and the branch that renders
+ * this whole block (`dictation.kind === "setup-required"`) stops matching. */
+type DictationSetupPhase =
+  | { phase: "closed" }
+  | { phase: "explained" }
+  | { phase: "installing" }
+  | { phase: "failed"; message: string };
+
+const SETUP_CLOSED: DictationSetupPhase = { phase: "closed" };
 
 /** The capture box — one input, three optional metadata controls, and the two
  * stages a capture may be born into (`capture-destination.ts`). Extracted
@@ -221,6 +240,7 @@ export function CaptureBox({
   // mount this box under a jsdom with no speech API.
   const [apiPresent] = useState(isDictationApiPresent);
   const [dictation, setDictation] = useState<DictationCapability>(NO_DICTATION);
+  const [setupPhase, setSetupPhase] = useState<DictationSetupPhase>(SETUP_CLOSED);
   const [listening, setListening] = useState(false);
   const [dictationError, setDictationError] = useState<string | null>(null);
   const sessionRef = useRef<DictationSession | null>(null);
@@ -263,10 +283,44 @@ export function CaptureBox({
     };
   }, [apiPresent]);
 
-  // `ready` only. `setup-required` is actionable but its control is #381's, and
-  // ADR-0022 forbids rendering anything at all for `unsupported` — not a
-  // disabled microphone, not one with a warning.
+  // `ready` only. ADR-0022 forbids rendering anything at all for
+  // `unsupported` — not a disabled microphone, not one with a warning.
   const canDictate = dictation.kind === "ready";
+  // #381's arm: actionable, but through the explain-then-download control
+  // below, never through the ordinary "Dictate" mic `canDictate` renders.
+  const setupRequired = dictation.kind === "setup-required";
+
+  // The download control's own click handler (#381). `installDictationModel()`
+  // is called FIRST, synchronously, before any `setState` — see ADR-0022
+  // Decision 5 and the module header of `speech/local-dictation.ts`: the
+  // browser call has to be the first thing that happens on this call stack or
+  // the still-live click gesture it depends on is gone. Nothing before this
+  // function runs an `await`, an effect, or a timer, and nothing ever will —
+  // that is the whole point of the acceptance criterion this satisfies.
+  function beginInstall(): void {
+    const install = installDictationModel();
+    setSetupPhase({ phase: "installing" });
+    install
+      .then((ok) => {
+        if (!ok) {
+          setSetupPhase({
+            phase: "failed",
+            message: "The speech model couldn't be installed. Typing still works.",
+          });
+          return;
+        }
+        return probeDictationCapability().then((capability) => {
+          setDictation(capability);
+          setSetupPhase(SETUP_CLOSED);
+        });
+      })
+      .catch(() => {
+        setSetupPhase({
+          phase: "failed",
+          message: "The speech model couldn't be installed. Typing still works.",
+        });
+      });
+  }
 
   function endSession(mode: "stop" | "abort"): void {
     const session = sessionRef.current;
@@ -593,6 +647,24 @@ export function CaptureBox({
                   label={listening ? "Stop dictating" : "Dictate"}
                   onClick={() => (listening ? endSession("stop") : startDictation())}
                 />
+              ) : setupRequired ? (
+                // #381: the setup-state mic. The first tap only opens the
+                // explanation below — nothing is downloaded and no network
+                // request is made until the hint's own control is clicked.
+                <IconButton
+                  size="sm"
+                  icon="mic"
+                  active={setupPhase.phase !== "closed"}
+                  label="Set up dictation"
+                  onClick={() => {
+                    // A tap while the hint is already open (installing,
+                    // failed, or already explained) must not reset it — only
+                    // the closed->explained transition does anything.
+                    if (setupPhase.phase === "closed") {
+                      setSetupPhase({ phase: "explained" });
+                    }
+                  }}
+                />
               ) : null}
               {/* An X inside a text field usually means "clear the text", so
                   the name has to do the disambiguating that the glyph cannot:
@@ -786,6 +858,26 @@ export function CaptureBox({
               onChange={(event) => setMeta({ ...meta, scheduledDate: event.target.value })}
             />
           </div>
+        </div>
+      ) : null}
+      {setupRequired && setupPhase.phase !== "closed" ? (
+        // #381: the explanation, and its own download control — the ONLY
+        // thing that calls `installDictationModel` (`beginInstall`, above).
+        // A `div` of its own rather than sharing `dictationError`'s `<p>`:
+        // this state carries a control, not just a sentence.
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+          <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)", margin: 0 }}>
+            {setupPhase.phase === "installing"
+              ? "Downloading the on-device speech model…"
+              : setupPhase.phase === "failed"
+                ? setupPhase.message
+                : "Local speech recognition needs a one-time download before dictation works."}
+          </p>
+          {setupPhase.phase !== "installing" ? (
+            <Button size="sm" variant="secondary" onClick={beginInstall}>
+              Download speech model
+            </Button>
+          ) : null}
         </div>
       ) : null}
       {dictationError ? (
