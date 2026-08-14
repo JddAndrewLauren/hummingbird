@@ -12,13 +12,13 @@
 // densities and affordances, not a variant flag on one.
 
 import { useState } from "react";
-import type { ButtonHTMLAttributes, CSSProperties } from "react";
 import { Badge } from "../components/core/Badge";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
 import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
+import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
 import { FRONTIER_AXES, groupFrontier, type FrontierAxis } from "./frontier-columns";
 import {
   applyFacets,
@@ -63,11 +63,11 @@ const NO_VALUE_LABEL: Record<FrontierAxis, string> = {
   energy: "No energy",
 };
 
-/** ADR-0021 decision 2: **colour encodes urgency and nothing else.** `calm` is
- * absent from the legend on purpose — the default is not a claim worth
- * colouring, so it takes the same hairline every card already has. */
-const LEGEND: readonly Urgency[] = ["overdue", "now", "soon"];
-
+/** ADR-0021 decision 2: **colour encodes urgency and nothing else.** `calm`
+ * takes the same hairline every card already has — the default is not a claim
+ * worth colouring. The three coloured values used to be spelled out in a legend
+ * above the board; the cards state the same thing in words on each card's own
+ * meta line, so the key was one row of permanent chrome saying nothing new. */
 const URGENCY_EDGE: Record<Urgency, string> = {
   overdue: "var(--urgency-overdue)",
   now: "var(--urgency-now)",
@@ -293,49 +293,6 @@ function controlHoverStyle(selected: boolean) {
     : { background: "var(--surface-quiet)", color: "var(--text-primary)" };
 }
 
-/** A control that honours the design system's hover contract.
- *
- * These stay hand-rolled rather than becoming `components/core/Button`: every
- * one of them is a *toggle* carrying `aria-pressed` or `aria-expanded`, and the
- * column header is a full-width button inside an `h2` whose own font and left
- * alignment the library's centred fixed-size skins do not fit. What they must
- * not do is skip the hover state — "a hovered thing gets *more* solid, not
- * less" — which every one of these controls was missing, and which is the only
- * thing this wrapper adds. */
-function ControlButton({
-  baseStyle,
-  hoverStyle,
-  children,
-  ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
-  baseStyle: CSSProperties;
-  hoverStyle: CSSProperties;
-}) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      {...rest}
-      type="button"
-      onMouseEnter={(event) => {
-        setHover(true);
-        rest.onMouseEnter?.(event);
-      }}
-      onMouseLeave={(event) => {
-        setHover(false);
-        rest.onMouseLeave?.(event);
-      }}
-      style={{
-        transition:
-          "background var(--dur-fast) var(--ease-flit), color var(--dur-fast) var(--ease-flit)",
-        ...baseStyle,
-        ...(hover ? hoverStyle : null),
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
 const FACET_LABEL: Record<Facet, string> = {
   context: "context",
   size: "size",
@@ -524,9 +481,6 @@ export function FrontierColumns({
           flexWrap: "wrap",
         }}
       >
-        <span className="hb-meta" style={{ marginRight: "var(--space-3)" }}>
-          group by
-        </span>
         {FRONTIER_AXES.map((entry) => (
           <ControlButton
             key={entry}
@@ -639,24 +593,6 @@ export function FrontierColumns({
         </Card>
       ) : null}
 
-      {/* The one thing colour says here, stated once as a key. */}
-      <div style={{ display: "flex", gap: "var(--space-5)", flexWrap: "wrap", alignItems: "center" }}>
-        {LEGEND.map((urgency) => (
-          <span key={urgency} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-            <span
-              aria-hidden="true"
-              style={{
-                width: 3,
-                height: 12,
-                borderRadius: "var(--radius-xs)",
-                background: URGENCY_EDGE[urgency],
-              }}
-            />
-            <span className="hb-meta">{URGENCY_LABEL[urgency]}</span>
-          </span>
-        ))}
-      </div>
-
       {/* An empty result says so, rather than rendering as an empty frontier —
           "nothing matches what you picked" and "nothing is startable" are very
           different facts and must not look alike. */}
@@ -747,25 +683,8 @@ export function FrontierColumns({
                   <ControlButton
                     aria-expanded={!isCollapsed}
                     onClick={() => toggleCollapsed(key)}
-                    baseStyle={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-3)",
-                      width: "100%",
-                      minHeight: "var(--row-height)",
-                      padding: "var(--space-2)",
-                      borderRadius: "var(--radius-control)",
-                      background: "none",
-                      border: "none",
-                      textAlign: "left",
-                      cursor: "pointer",
-                      font: "var(--type-body-strong)",
-                      color: isCollapsed ? "var(--text-secondary)" : "var(--text-primary)",
-                    }}
-                    hoverStyle={{
-                      background: "var(--surface-quiet)",
-                      color: "var(--text-primary)",
-                    }}
+                    baseStyle={sectionToggleStyle(isCollapsed)}
+                    hoverStyle={SECTION_TOGGLE_HOVER}
                   >
                     <Icon
                       name="chevron-down"

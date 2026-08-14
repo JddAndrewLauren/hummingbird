@@ -1,10 +1,25 @@
 import { describe, expect, it } from "vitest";
 import type {
   CalendarWorkerRequest,
+  CaptureFieldsWire,
   TaskWorkerRequest,
   TaskWorkerResponse,
   WorkerResponse,
 } from "./protocol";
+
+/** Every capture field at its resting state. Spelled out rather than built
+ * from `Object.keys`, so adding a wire field means writing it here — which is
+ * the point of the wire type being nullable-required rather than optional. */
+const EMPTY_CAPTURE_FIELDS: CaptureFieldsWire = {
+  size: null,
+  energy: null,
+  context: null,
+  description: null,
+  projectId: null,
+  priority: null,
+  deadline: null,
+  scheduledDate: null,
+};
 
 // The wire is `structuredClone`-compatible `postMessage` traffic in
 // production; `JSON.parse(JSON.stringify(...))` is the same round-trip for
@@ -25,9 +40,7 @@ describe("protocol round-trips", () => {
       seed: "seed-1",
       title: "buy milk",
       stage: "ready",
-      size: null,
-      energy: null,
-      context: null,
+      fields: EMPTY_CAPTURE_FIELDS,
       nowMs: 1_000,
     },
     {
@@ -35,9 +48,17 @@ describe("protocol round-trips", () => {
       seed: "seed-1",
       title: "buy milk",
       stage: "ready",
-      size: "deep",
-      energy: "high",
-      context: "@errands",
+      fields: {
+        ...EMPTY_CAPTURE_FIELDS,
+        size: "deep",
+        energy: "high",
+        context: "@errands",
+        description: "the oat kind",
+        projectId: "proj-1",
+        priority: 3,
+        deadline: "2026-09-01T09:30",
+        scheduledDate: "2026-08-30",
+      },
       nowMs: 1_000,
     },
     { type: "getFrontier" },

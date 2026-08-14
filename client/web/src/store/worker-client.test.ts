@@ -1142,7 +1142,7 @@ describe("the task send helpers (#105/S7)", () => {
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "clearTaskApiKey" });
   });
 
-  it("captureTask posts a capture request carrying its seed, with size/energy/context absent by default", () => {
+  it("captureTask posts a capture request carrying its seed, with every field absent by default", () => {
     const worker = fakeWorker();
     captureTask(worker, "seed-1", "buy milk", "ready", 1_000);
     expect(worker.postMessage).toHaveBeenCalledWith({
@@ -1150,29 +1150,52 @@ describe("the task send helpers (#105/S7)", () => {
       seed: "seed-1",
       title: "buy milk",
       stage: "ready",
-      size: null,
-      energy: null,
-      context: null,
+      // Every key present and null: the caller's shape is optional, the
+      // wire's is nullable-required, and this is where the one becomes the
+      // other — a field the caller omits must still be spelled out as unset
+      // rather than left off the message.
+      fields: {
+        size: null,
+        energy: null,
+        context: null,
+        description: null,
+        projectId: null,
+        priority: null,
+        deadline: null,
+        scheduledDate: null,
+      },
       nowMs: 1_000,
     });
   });
 
   // #208: a caller-supplied `fields` reaches the wire message verbatim.
-  it("captureTask posts a set size, energy and context verbatim", () => {
+  it("captureTask posts every set field verbatim, and nulls the rest", () => {
     const worker = fakeWorker();
     captureTask(worker, "seed-1", "buy milk", "ready", 1_000, {
       size: "deep",
       energy: "high",
       context: "@errands",
+      description: "the oat kind",
+      projectId: "proj-1",
+      priority: 3,
+      deadline: "2026-09-01T09:30",
+      scheduledDate: "2026-08-30",
     });
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: "capture",
       seed: "seed-1",
       title: "buy milk",
       stage: "ready",
-      size: "deep",
-      energy: "high",
-      context: "@errands",
+      fields: {
+        size: "deep",
+        energy: "high",
+        context: "@errands",
+        description: "the oat kind",
+        projectId: "proj-1",
+        priority: 3,
+        deadline: "2026-09-01T09:30",
+        scheduledDate: "2026-08-30",
+      },
       nowMs: 1_000,
     });
   });

@@ -8,7 +8,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, itemDTO, render, screen, stepDTO } from "../../test/component";
 import { IDLE, reduceRun, type SkillEvent, type SkillRunState } from "../../skills/run-state";
-import { ItemDetailPanel } from "./ItemDetailPanel";
+import type { TaskItemDTO } from "../../store/protocol";
+import { ItemPanel } from "./ItemPanel";
 
 function stateFrom(events: SkillEvent[]): SkillRunState {
   return events.reduce(reduceRun, IDLE);
@@ -25,8 +26,10 @@ function panel(options: {
 } = {}) {
   const onRun = options.onRun ?? vi.fn();
   render(
-    <ItemDetailPanel
+    <ItemPanel
+      mode="detail"
       item={itemDTO({ id: "item-1", title: "Clean the garage" })}
+      projects={[]}
       steps={options.steps ?? []}
       onClose={() => {}}
       microtask={
@@ -98,8 +101,10 @@ describe("the affordance follows the item's own steps", () => {
   it("flips from Break to Rewrite when the run's steps arrive through the read path", () => {
     const onRun = vi.fn();
     const { rerender } = render(
-      <ItemDetailPanel
+      <ItemPanel
+        mode="detail"
         item={itemDTO({ id: "item-1" })}
+        projects={[]}
         steps={[]}
         onClose={() => {}}
         microtask={{ run: IDLE, onRun }}
@@ -108,8 +113,10 @@ describe("the affordance follows the item's own steps", () => {
     expect(screen.getByRole("button", { name: /break into steps/i })).toBeTruthy();
 
     rerender(
-      <ItemDetailPanel
+      <ItemPanel
+        mode="detail"
         item={itemDTO({ id: "item-1" })}
+        projects={[]}
         steps={[stepDTO({ id: "a" }), stepDTO({ id: "b" }), stepDTO({ id: "c", done: true })]}
         onClose={() => {}}
         microtask={{ run: IDLE, onRun }}
@@ -270,16 +277,158 @@ describe("the pinned-backend decline (#274)", () => {
   });
 });
 
+// Item detail's Edit mode. A minted action's own fields used to be reachable
+// nowhere: `TriageRow`'s editor was the only one in the app, and it is only
+// mounted for something still in the inbox. This is the same fields, the same
+// draft hook and the same mutation — `Core::triage` with no destination
+// (#122), which edits and leaves the stage alone.
+describe("ItemPanel — detail mode's Edit", () => {
+  function detail(options: { onTriage?: ReturnType<typeof vi.fn>; item?: TaskItemDTO } = {}) {
+    const onTriage = options.onTriage ?? vi.fn();
+    const view = render(
+      <ItemPanel
+        mode="detail"
+        item={options.item ?? itemDTO({ id: "item-1", title: "Clean the garage" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+        onTriage={onTriage}
+      />,
+    );
+    return { onTriage, view };
+  }
+
+  const edit = () => fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+  it("reads as a record until asked, then seeds every field from the item", () => {
+    detail({
+      item: itemDTO({
+        id: "item-1",
+        title: "Clean the garage",
+        description: "the far bay",
+        context: "@home",
+        deadline: "2026-09-01T09:30",
+      }),
+    });
+
+    expect(screen.queryByLabelText("Title")).toBeNull();
+
+    edit();
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Clean the garage");
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("the far bay");
+    expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("@home");
+    // Split across the deadline field's two controls, as its own tests pin.
+    expect((screen.getByLabelText("Deadline") as HTMLInputElement).value).toBe("2026-09-01");
+    expect((screen.getByLabelText("Time") as HTMLInputElement).value).toBe("09:30");
+  });
+
+  it("saves only what changed, and leaves the stage alone", () => {
+    const { onTriage } = detail();
+    edit();
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "the far bay" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // `null` destination: an item in detail is already past triage, and
+    // `TriageDestinationName` has no word for "where it already was".
+    expect(onTriage).toHaveBeenCalledWith("item-1", null, { description: "the far bay" });
+  });
+
+  it("disables Save until something actually differs", () => {
+    detail();
+    edit();
+    const save = () => screen.getByRole("button", { name: "Save" });
+    expect(save().hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "x" } });
+    expect(save().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps the typing and the open editor when the write comes back failed", () => {
+    // #222, one surface over: a failed save must not take the reader's work
+    // with it, and must not close the editor they would retry from.
+    const { view } = detail();
+    edit();
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "the far bay" } });
+
+    view.rerender(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1", title: "Clean the garage" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+        onTriage={vi.fn()}
+        lastTriage={{ kind: "failed", seed: "s1", itemId: "item-1", error: "boom" }}
+      />,
+    );
+
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("the far bay");
+    // And the failure is on screen rather than swallowed.
+    expect(screen.getByText("boom")).toBeTruthy();
+  });
+
+  it("leaves Edit only once the write lands ok", () => {
+    const { view } = detail();
+    edit();
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "the far bay" } });
+
+    view.rerender(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1", title: "Clean the garage" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+        onTriage={vi.fn()}
+        lastTriage={{ kind: "ok", seed: "s1", itemId: "item-1", error: null }}
+      />,
+    );
+
+    expect(screen.queryByLabelText("Description")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  });
+
+  it("discards back to the item's own values without sending anything", () => {
+    const { onTriage } = detail();
+    edit();
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "the far bay" } });
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+
+    expect(onTriage).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Description")).toBeNull();
+    edit();
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("offers no Edit at all without an onTriage — demo mode has no worker", () => {
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+});
+
 // #446 verification step 7, as a test rather than a screenshot: unset is a
 // legitimate resting state, and a green build plus a capture both miss a
 // state-gated call site. This panel is the one surface that draws an
 // unjudged dimension rather than omitting it, so it is where the ghost
 // variants have to be exercised.
+//
+// Written against `ItemDetailPanel` on main; retargeted at `ItemPanel`'s
+// detail mode, which absorbed that component on this branch.
 describe("size and energy on the detail panel", () => {
   it("draws both for an item with neither set — ghost glyph, em dash, muted", () => {
     render(
-      <ItemDetailPanel
+      <ItemPanel
+        mode="detail"
         item={itemDTO({ id: "item-1", title: "Nobody has judged this", size: null, energy: null })}
+        projects={[]}
         steps={[]}
         onClose={() => {}}
       />,
@@ -317,8 +466,10 @@ describe("size and energy on the detail panel", () => {
 
   it("draws the level and its ramp colour once judged", () => {
     render(
-      <ItemDetailPanel
+      <ItemPanel
+        mode="detail"
         item={itemDTO({ id: "item-1", title: "A judged item", size: "normal", energy: "high" })}
+        projects={[]}
         steps={[]}
         onClose={() => {}}
       />,

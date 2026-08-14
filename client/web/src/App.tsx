@@ -10,12 +10,13 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
-import { isCaptureHotkey } from "./shell/capture-hotkey";
+import { closesItemDetail, isCaptureHotkey } from "./shell/capture-hotkey";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
 import { NavBar } from "./shell/NavBar";
 import { NavRail } from "./shell/NavRail";
 import { useIsPhone } from "./shell/useIsPhone";
+import { readAsideCollapsed, writeAsideCollapsed } from "./screens/questions/aside-prefs";
 import { readRailCollapsed, writeRailCollapsed } from "./shell/rail-collapse";
 import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
@@ -113,6 +114,18 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     const next = !railCollapsed;
     setRailCollapsed(next);
     writeRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
+  };
+  // Now's standing-questions aside, held here rather than in `NowScreen` for
+  // one reason: shut, its reopen control is a `?` in the header, and the header
+  // is the shell's. The same device-local idiom as the rail above — read once
+  // through the same storage guard, written on every toggle.
+  const [asideCollapsed, setAsideCollapsed] = useState(() =>
+    readAsideCollapsed(typeof localStorage === "undefined" ? undefined : localStorage),
+  );
+  const handleToggleAsideCollapsed = () => {
+    const next = !asideCollapsed;
+    setAsideCollapsed(next);
+    writeAsideCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
   };
   const { preference, theme, setPreference } = useTheme();
   // The nav rail and the bottom bar are different DOM trees, not one tree at
@@ -238,11 +251,45 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       ) {
         event.preventDefault();
         requestCapture();
+        return;
+      }
+
+      // Escape closes the open item detail — the same shell-level listener,
+      // for the same reason: the panel is not focused once the reader has
+      // clicked into the board behind it, and a handler on its own markup
+      // only sees what bubbles out of it.
+      //
+      // It is the LAST claimant, deliberately: `CapturePopover` sits over the
+      // detail panel and owns Escape while it is open, so the shallowest open
+      // thing must be what closes — otherwise one Escape shuts the popover
+      // AND the panel underneath it, and the reader loses something they
+      // never asked to close. The guard reads `captureOpen` rather than the
+      // event, because one document listener cannot see another's intent.
+      //
+      // `NavBar`'s phone sheet owns Escape the same way and is **not** guarded
+      // here, because its open state lives inside that component and reaching
+      // it would mean lifting sheet state into the shell for one keystroke.
+      // The cost is bounded and stated rather than hidden: on a phone, with a
+      // hardware keyboard, with both the sheet and an item open, one Escape
+      // closes both. Lift the state if that stops being hypothetical.
+      //
+      // The Grill takeover is not in the chain: it owns no Escape at all
+      // (`GrillTakeover.tsx` — leaving an interview is a deliberate Back),
+      // and it replaces the centre column rather than covering the panel.
+      if (
+        closesItemDetail({
+          key: event.key,
+          isComposing: event.isComposing,
+          captureOpen,
+          itemDetailOpen: selectedItemId !== null,
+        })
+      ) {
+        handleCloseItemDetail();
       }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [captureOpen, selectedItemId, handleCloseItemDetail]);
   const { act: handleAct } = useItemActions(worker);
   const { triage: handleTriage } = useTriageWiring(worker);
   // #355/ADR-0023's Grill takeover — the Triage screen's own composition of
@@ -346,6 +393,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // `sync-status.ts`.
           syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
+          // Only on Now — the aside exists on no other screen. Same rule as
+          // `onSearch`/`onRefresh` above: the affordance appears exactly where
+          // it would do something.
+          onToggleQuestions={screen === "now" ? handleToggleAsideCollapsed : undefined}
+          questionsCollapsed={asideCollapsed}
           onCapture={requestCapture}
         />
 
@@ -376,6 +428,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               // The same two callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
               onTriage={demo ? undefined : handleTriage}
+              asideCollapsed={asideCollapsed}
             />
           )}
           {screen === "triage" && (
@@ -470,6 +523,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         focusRequestId={captureFocusRequestId}
         onClose={() => setCaptureOpen(false)}
         onSubmit={handleCapture}
+        projects={demo ? [] : task.projects}
         demo={demo !== null}
         lastCapture={demo ? null : task.lastCapture}
       />

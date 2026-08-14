@@ -442,18 +442,34 @@ export function raceGapReason(series: string, inputs: QuestionInputs): string {
   return resolved.kind === "gap" ? resolved.reason : NO_SEASON;
 }
 
-/** The expanded pane's headline — the issue's own phrasing, counting to
- * **race day** and naming the **race**: "12 days before Monaco GP".
+/** The expanded pane's headline, in parts — counting to **race day** and
+ * naming the **race**: `Monaco GP` · `in` · `12` · `days`.
+ *
+ * Race-first, count second, with the joining words between them, which is the
+ * vacation countdown's shape (`vacation-pane/VacationPaneExpanded.tsx`) and is
+ * why this returns parts rather than the joined string it used to
+ * ("12 days before Monaco GP"): the two things the line says — which race, and
+ * how long — are set at display size and the grammar between them at body
+ * size, so neither answer reads as a caption on the other. A joined string
+ * cannot carry that, and the two countdown panes in one aside must not answer
+ * the same shape of question in two different shapes.
+ *
+ * It applies at every unit, minutes included: the split is about which words
+ * are the answer, and that does not change when the answer gets close.
  *
  * The session that actually happens first is a fact worth having and is not
  * lost: it goes on the line underneath (`RacePaneExpanded`), where it cannot
  * be mistaken for the answer to "when is the next race". */
-export function raceHeadline(view: RaceView, nowMs: number): string {
+export type RaceHeadlineParts =
+  | { kind: "countdown"; name: string; value: string; unit: string }
+  | { kind: "fallback"; text: string };
+
+export function raceHeadlineParts(view: RaceView, nowMs: number): RaceHeadlineParts {
   if (view.event === null) {
-    return "No races scheduled";
+    return { kind: "fallback", text: "No races scheduled" };
   }
   const { value, unit } = countdown(view.event.startsAtMs - nowMs);
-  return `${value} ${unit} before ${abbreviate(view.event.name)}`;
+  return { kind: "countdown", name: abbreviate(view.event.name), value, unit };
 }
 
 /** The same answer in one line, for the shell's collapsed row — which is

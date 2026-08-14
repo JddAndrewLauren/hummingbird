@@ -5,11 +5,12 @@ import { Icon } from "../../components/core/Icon";
 import { EmptyState } from "../../components/feedback/EmptyState";
 import { FitText } from "../questions/FitText";
 import type { QuestionInputs } from "../questions/contract";
+import type { CSSProperties } from "react";
 import {
   clock,
   dayLabel,
   raceGapReason,
-  raceHeadline,
+  raceHeadlineParts,
   raceSetup,
   raceView,
   seriesLabel,
@@ -26,6 +27,31 @@ import {
 //
 // There is no dormant or collapsed rendering here: the shell owns the
 // collapsed row, and off-season simply changes the words.
+
+/** The base the fitted headline starts from, and shrinks below only when the
+ * event's name makes it. */
+const HEADLINE_PX = 24;
+
+/** The two things the headline says — which race, and how long — set
+ * identically, so neither reads as a caption on the other. Sized in `em`
+ * against `HEADLINE_PX` for the reason `VacationPaneExpanded.tsx` records: the
+ * line is fitted to one line, and the ratio between answer and grammar has to
+ * survive the shrink or a long event name ends with "in" larger than the count
+ * it joins. */
+const HEADLINE: CSSProperties = {
+  fontSize: "1em",
+  lineHeight: 1,
+  color: "var(--text-primary)",
+};
+
+/** The words between them, which are grammar rather than answer. */
+const JOIN: CSSProperties = {
+  fontSize: `${15 / HEADLINE_PX}em`,
+  fontFamily: "var(--font-sans)",
+  fontWeight: "var(--weight-regular)",
+  letterSpacing: "var(--tracking-body)",
+  color: "var(--text-secondary)",
+};
 
 export function RacePaneExpanded({
   subjectKey,
@@ -98,6 +124,7 @@ export function RacePaneExpanded({
 
   const live = view.liveAlert !== null;
   const ageMs = view.freshness.kind === "age" ? view.freshness.ageMs : null;
+  const headline = raceHeadlineParts(view, inputs.nowMs);
 
   return (
     <Card
@@ -116,7 +143,7 @@ export function RacePaneExpanded({
       {/* One line always, shrunk to fit — the event name is the feed's, not
           ours, and it lands in a 320px aside. */}
       <FitText
-        basePx={24}
+        basePx={HEADLINE_PX}
         style={{
           fontFamily: "var(--font-display)",
           fontWeight: "var(--weight-bold)",
@@ -125,7 +152,18 @@ export function RacePaneExpanded({
           color: "var(--text-primary)",
         }}
       >
-        {raceHeadline(view, inputs.nowMs)}
+        {headline.kind === "fallback" ? (
+          headline.text
+        ) : (
+          <span style={{ display: "inline-flex", alignItems: "baseline", gap: "var(--space-3)" }}>
+            <span style={HEADLINE}>{headline.name}</span>
+            <span style={JOIN}>in</span>
+            <span style={{ ...HEADLINE, fontVariantNumeric: "tabular-nums" }}>
+              {headline.value}
+            </span>
+            <span style={JOIN}>{headline.unit}</span>
+          </span>
+        )}
       </FitText>
 
       {view.event !== null && view.nextStart !== null ? (

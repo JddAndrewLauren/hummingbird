@@ -13,6 +13,7 @@ import {
   nextRaceAt,
   parseRaceBody,
   raceAnswer,
+  raceHeadlineParts,
   raceSetup,
   raceSubjects,
   raceView,
@@ -171,7 +172,8 @@ describe("raceSetup", () => {
   });
 });
 
-const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const NOW = Date.UTC(2026, 7, 10, 9, 0, 0);
 
@@ -388,6 +390,51 @@ describe("raceView", () => {
       true,
     );
     expect(raceView("f1", world({ kind: "unknown" }))?.stale).toBe(true);
+  });
+});
+
+describe("raceHeadlineParts", () => {
+  const view = (deltaMs: number) =>
+    raceView(
+      "f1",
+      inputs({
+        bindings: followed("f1"),
+        paneReads: seasonRead({ f1: [event("Monaco Grand Prix", NOW + deltaMs)] }),
+        nowMs: NOW,
+      }),
+    )!;
+
+  it("splits the race from the count at every unit, minutes included", () => {
+    // The split is about which words are the answer, and that does not change
+    // when the answer gets close — the vacation pane sets its own countdown
+    // the same way at every distance.
+    expect(raceHeadlineParts(view(12 * DAY), NOW)).toEqual({
+      kind: "countdown",
+      name: "Monaco GP",
+      value: "12",
+      unit: "days",
+    });
+    expect(raceHeadlineParts(view(5 * HOUR), NOW)).toEqual({
+      kind: "countdown",
+      name: "Monaco GP",
+      value: "5",
+      unit: "hr",
+    });
+    expect(raceHeadlineParts(view(40 * MINUTE), NOW)).toEqual({
+      kind: "countdown",
+      name: "Monaco GP",
+      value: "40",
+      unit: "min",
+    });
+  });
+
+  it("falls back to a sentence when there is no race to count to", () => {
+    // Off-season has no name and no number, so there is nothing to set apart —
+    // it is one string, and the pane renders it as one.
+    expect(raceHeadlineParts(view(-3 * DAY), NOW)).toEqual({
+      kind: "fallback",
+      text: "No races scheduled",
+    });
   });
 });
 

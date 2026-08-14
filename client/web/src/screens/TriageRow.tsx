@@ -1,45 +1,14 @@
-import { useState } from "react";
-import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
+import { ItemPanel } from "../components/domain/ItemPanel";
 import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
-import { Input } from "../components/forms/Input";
-import { Select } from "../components/forms/Select";
-import { Textarea } from "../components/forms/Textarea";
 import { relativeAge } from "../shell/sync-status";
-import { energyIcon, levelColor, sizeIcon } from "./size-energy";
 import type { ProjectDTO, TaskItemDTO, TriageDestinationName } from "../store/protocol";
 import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
-import { canGrill, canMarkDone } from "./item-actions";
-import { PRIORITY_OPTIONS } from "./priority";
+import { canMarkDone } from "./item-actions";
 import { triageFailureFor } from "./write-failure";
-import {
-  buildTriageEdits,
-  effectiveDraft,
-  triageDraftProblems,
-  type TriageDraft,
-} from "./triage-form";
-
-/** The free-vocabulary contexts the forms offer. Free vocab in the schema
- * (`items.context`), a fixed list here: this is a personal system and these are
- * the places its owner actually works. */
-const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiting"];
-
-const SIZES: Array<{ value: TriageDraft["size"]; label: string }> = [
-  { value: "", label: "Not set" },
-  { value: "quick", label: "Quick" },
-  { value: "normal", label: "Normal" },
-  { value: "deep", label: "Deep" },
-];
-
-const ENERGIES: Array<{ value: TriageDraft["energy"]; label: string }> = [
-  { value: "", label: "Not set" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
 
 /** The DOM id a row's own "Grill me" button carries (#355, ADR-0023) — so
  * `TriageScreen` can find and re-focus it on Back after the takeover
@@ -61,7 +30,11 @@ export interface TriageRowProps {
   /** S13/#111's triage mutation. Absent for a render with no worker behind it
    * (demo mode), in which case the row is readable and never expands into an
    * editor that could not send anything. */
-  onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  onTriage?: (
+    itemId: string,
+    destination: TriageDestinationName | null,
+    edits: TriageEdits,
+  ) => void;
   /** The one-click "mark done" checkmark — `Core::act`'s `complete`, NOT a
    * triage: a capture that turned out already finished skips the editor
    * entirely. Absent in demo mode, same as `onTriage`. This is the recorded
@@ -108,46 +81,11 @@ export function TriageRow({
   onGrillMe,
   lastTriage,
 }: TriageRowProps) {
-  // Only what the person has typed is state — see `effectiveDraft`'s doc for
-  // why the rest is derived per render rather than seeded once.
-  const [touched, setTouched] = useState<Partial<TriageDraft>>({});
-  const draft = effectiveDraft(item, touched);
-  const problems = triageDraftProblems(draft);
-  const blocked = Object.keys(problems).length > 0;
   const editorId = `triage-editor-${item.id}`;
-
-  function set(field: keyof TriageDraft, value: string): void {
-    setTouched((current) => ({ ...current, [field]: value }));
-  }
-
-  // Reviewer finding on issue #222 (the capture/triage twin of PR #207's
-  // act-failure defect): the typing used to clear the instant Promote was
-  // clicked, optimistically, so a failed write lost the reader's edits AND
-  // said nothing about the failure. It now stays put — `promote` below only
-  // ever sends the mutation — and clears here, once and only once a result
-  // actually reports `"ok"` for THIS item. The React-docs "adjusting state
-  // when a prop changes" pattern, guarded on the result's own `seed` so a
-  // broadcast already observed is never reprocessed, and keyed by the itemId
-  // the result carries — a success on another row's item cannot wipe this
-  // row's still-in-flight edits.
-  const [processedTriageSeed, setProcessedTriageSeed] = useState<string | null>(null);
-  if (lastTriage && lastTriage.seed !== processedTriageSeed) {
-    setProcessedTriageSeed(lastTriage.seed);
-    if (lastTriage.kind === "ok" && lastTriage.itemId === item.id) {
-      setTouched({});
-    }
-  }
 
   // Matched by item id — see `write-failure.ts`, which owns this and the
   // sentence Now says when no row is mounted to say it (#418).
   const triageError = triageFailureFor(lastTriage, item.id);
-
-  function promote(destination: TriageDestinationName): void {
-    if (!onTriage || blocked) {
-      return;
-    }
-    onTriage(item.id, destination, buildTriageEdits(draft, item));
-  }
 
   return (
     <Card padding="0" style={{ display: "flex", flexDirection: "column" }}>
@@ -191,7 +129,7 @@ export function TriageRow({
               whiteSpace: "nowrap",
             }}
           >
-            {draft.title}
+            {item.title}
           </span>
           <span className="hb-meta" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>
             {/* Provenance, then age. `source` is null on anything typed here
@@ -268,158 +206,16 @@ export function TriageRow({
       ) : null}
 
       {expanded && onTriage ? (
-        <div
+        <ItemPanel
+          mode="triage"
           id={editorId}
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "var(--space-5)",
-            padding: "var(--space-5)",
-            paddingTop: "var(--space-4)",
-            borderTop: "1px solid var(--border-subtle)",
-          }}
-        >
-          <Input
-            label="Title"
-            size="sm"
-            value={draft.title}
-            error={problems.title}
-            onChange={(event) => set("title", event.target.value)}
-          />
-          <Textarea
-            label="Description"
-            rows={3}
-            value={draft.description}
-            placeholder="The only free-prose field — never a checklist"
-            onChange={(event) => set("description", event.target.value)}
-          />
-          <div
-            style={{
-              display: "grid",
-              // The inner `min()` matters once the container is itself under
-              // 160px: `auto-fit` cannot drop below one track, and that one
-              // track would otherwise hold its 160px and overflow.
-              gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
-              gap: "var(--space-4)",
-              alignItems: "start",
-            }}
-          >
-            <Select
-              label="Project"
-              size="sm"
-              value={draft.projectId}
-              onChange={(event) => set("projectId", event.target.value)}
-              options={[
-                { value: "", label: "No project" },
-                ...projects.map((project) => ({ value: project.id, label: project.name })),
-              ]}
-            />
-            <Select
-              label="Priority"
-              size="sm"
-              value={draft.priority}
-              onChange={(event) => set("priority", event.target.value)}
-              options={PRIORITY_OPTIONS}
-            />
-            {/* The glyph sits beside the field's *label*, showing the draft's
-                current level, and not inside the option list: a native
-                `<option>` renders text only — an SVG in one is dropped, and
-                the whole point of the family is that the level is visible
-                before the menu is opened. An untouched draft ("" — not set)
-                gets the ghost variant, which is the resting state, not a
-                prompt to choose. */}
-            <Select
-              label={
-                <>
-                  <Icon name={sizeIcon(draft.size || null)} size={13} style={{ color: levelColor(draft.size || null) }} />
-                  Size
-                </>
-              }
-              size="sm"
-              value={draft.size}
-              onChange={(event) => set("size", event.target.value)}
-              options={SIZES}
-            />
-            <Select
-              label={
-                <>
-                  <Icon name={energyIcon(draft.energy || null)} size={13} style={{ color: levelColor(draft.energy || null) }} />
-                  Energy
-                </>
-              }
-              size="sm"
-              value={draft.energy}
-              onChange={(event) => set("energy", event.target.value)}
-              options={ENERGIES}
-            />
-            <Select
-              label="Context"
-              size="sm"
-              value={draft.context}
-              onChange={(event) => set("context", event.target.value)}
-              options={[
-                { value: "", label: "Not set" },
-                ...CONTEXTS.map((context) => ({ value: context, label: context })),
-              ]}
-            />
-            <Input
-              label="Deadline"
-              size="sm"
-              value={draft.deadline}
-              placeholder="YYYY-MM-DD"
-              hint={problems.deadline ? undefined : "Day, or day and time"}
-              error={problems.deadline}
-              onChange={(event) => set("deadline", event.target.value)}
-            />
-            <Input
-              label="Scheduled date"
-              size="sm"
-              type="date"
-              value={draft.scheduledDate}
-              error={problems.scheduledDate}
-              onChange={(event) => set("scheduledDate", event.target.value)}
-            />
-          </div>
-          {/* The source is shown, never edited: provenance belongs to whatever
-              captured the item (`TriageEdits`' own doc). */}
-          <span className="hb-meta">
-            {item.sourceUrl
-              ? `source ${item.source ?? "unknown"} · ${item.sourceUrl}`
-              : `source ${item.source ?? "typed here"}`}
-          </span>
-          <div style={{ display: "flex", gap: "var(--space-4)", justifyContent: "flex-end" }}>
-            {onGrillMe && canGrill(item.stage) ? (
-              <Button
-                id={grillMeButtonId(item.id)}
-                size="sm"
-                variant="secondary"
-                iconLeft="sparkles"
-                disabled={item.pending}
-                onClick={() => onGrillMe(item.id)}
-              >
-                Grill me
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant="secondary"
-              iconLeft="help-circle"
-              disabled={item.pending || blocked}
-              onClick={() => promote("grilling")}
-            >
-              Send to grilling
-            </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              iconLeft="check"
-              disabled={item.pending || blocked}
-              onClick={() => promote("ready")}
-            >
-              Promote to ready
-            </Button>
-          </div>
-        </div>
+          item={item}
+          projects={projects}
+          onTriage={onTriage}
+          lastTriage={lastTriage}
+          onGrillMe={onGrillMe}
+          grillMeId={grillMeButtonId(item.id)}
+        />
       ) : null}
     </Card>
   );

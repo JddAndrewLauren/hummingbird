@@ -31,7 +31,7 @@ import runStateSource from "./run-state.ts?raw";
 import wiringSource from "../shell/useMicrotaskWiring.ts?raw";
 import grillWiringSource from "../shell/useGrillWiring.ts?raw";
 import backendSelectionHookSource from "../shell/useBackendSelection.ts?raw";
-import panelSource from "../components/domain/ItemDetailPanel.tsx?raw";
+import panelSource from "../components/domain/ItemPanel.tsx?raw";
 
 const SKILL_MODULES: Array<[string, string]> = [
   ["backend-registry.ts", backendRegistrySource],
@@ -169,7 +169,7 @@ describe("the stamp is not hardcoded at the render site", () => {
   /** #273's acceptance names this exactly. The panel renders
    * `stampLabel(run)`, whose only source is the envelope — so no provider
    * or model name may appear in the panel's own source at all. */
-  it("ItemDetailPanel.tsx contains no backend or model name", () => {
+  it("ItemPanel.tsx contains no backend or model name", () => {
     const body = code(panelSource);
     for (const name of ["anthropic", "claude-", "opus", "sonnet", "haiku", "moonshot"]) {
       expect(body.toLowerCase().includes(name), `the panel names ${name}`).toBe(false);

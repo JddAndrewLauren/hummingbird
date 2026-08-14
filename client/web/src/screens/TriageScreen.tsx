@@ -33,7 +33,11 @@ export interface TriageScreenProps {
    * Edits whatever `edits` sets and promotes the item to `destination`, as
    * one call. Optional so a demo-only render (no worker behind it) never
    * has to pass a real one. */
-  onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  onTriage?: (
+    itemId: string,
+    destination: TriageDestinationName | null,
+    edits: TriageEdits,
+  ) => void;
   /** The row checkmark's `Core::act` complete — see `TriageRow`'s own prop
    * doc. Optional for the same demo-only reason as `onTriage`. */
   onComplete?: (itemId: string) => void;

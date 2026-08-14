@@ -304,6 +304,17 @@ Three consequences, all of them things that would otherwise be discovered late:
   the last-act error and the microtask affordance. This is the point rather than
   an economy: whatever lands on item detail next — Grill me (#359) among them —
   arrives with no parallel code path to reconcile.
+
+  *Amended 2026-08-14 (ui-tweaks): the same argument was then made one level
+  up. `ItemDetailPanel` and `TriageRow`'s expanded body were themselves two
+  implementations of one thing, and only one of them could edit an item — so a
+  minted action's own description, deadline and project were reachable nowhere
+  in the app. They are now one component, `components/domain/ItemPanel.tsx`,
+  parameterised by mode: `"detail"` keeps exactly the behaviour above and adds
+  an **Edit** button revealing the identical fields, saving through
+  `Core::triage` with `destination: null` (the stage-agnostic edit #122 already
+  allowed). `"triage"` is the row's expanded body, unchanged. No new mutation,
+  and the slot below still holds exactly one editor.*
 - **The source card stays marked while its item is expanded.** With the columns
   still on screen, the reader has to be able to see where the thing at the top
   came from and what it was sitting next to.
@@ -416,7 +427,7 @@ to it — so it is a camera, not a second writable app.*
   survives, and there is still no second ordering function. **Colour:** stage is
   one of the three things the design system lets a coloured pill encode, so the
   chip is not decision 2's fourth meaning. **Selection:** a capture fills
-  decision 7's slot with `TriageRow` forced open — never `ItemDetailPanel`,
+  decision 7's slot with `TriageRow` forced open — never the detail rendering,
   whose act vocabulary offers a pre-action item nothing — so S13/#111's "two
   editors are never open at once" now holds by construction rather than by
   withholding a section, and the captures' cards stay on the board whichever
@@ -483,12 +494,20 @@ to it — so it is a camera, not a second writable app.*
   make one failure hide the other. Both sentences now come from one pure
   module, `screens/write-failure.ts` (renamed from `triage-failure.ts`, which
   this amendment's parent named; one algorithm, the subject as its parameter).
-  The act line stays silent while the failing item's `ItemDetailPanel` is open
+  The act line stays silent while the failing item's detail panel is open
   — that panel's `actError` owns the message then — but **not** while the
   failing item is an open capture, because a capture in the slot gets
   `TriageRow`, whose checkmark issues an act and which renders no act failure at
   all. That was a third stranding, found by asking which editor actually wears
   each result.*
+
+  *Amended 2026-08-14 (ui-tweaks): the **triage** line's suppression widened
+  on the same principle. It used to fall silent only for an open capture,
+  because only `TriageRow` could wear a triage failure; now that detail mode
+  edits through the same mutation, `ItemPanel` says its own, and
+  `strandedTriageFailure` takes whichever item has an editor open on it. The
+  question is unchanged — which editor actually wears each result — and the
+  answer moved because a second editor appeared.*
 
   *Meanwhile the dead-letter journal could not say **which** item an abandoned
   change was about: its entries carried the queue entry's id, which names the

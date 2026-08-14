@@ -311,8 +311,13 @@ describe("TriageScreen — the editor", () => {
     );
     fireEvent.click(row("vague thing"));
 
-    fireEvent.change(field("Deadline"), { target: { value: "14/08/2026" } });
-    expect(within(editor()).getByText(/YYYY-MM-DD/)).toBeDefined();
+    // The title, which is the field that can still hold something unsendable:
+    // both dates are native pickers now (`DeadlineField`, and the scheduled
+    // date's `type="date"`), and a picker cannot produce `14/08/2026` or a day
+    // that does not exist. `triageDraftProblems` still checks them — it is
+    // unit-tested against those rules — but the form can no longer offer one.
+    fireEvent.change(field("Title"), { target: { value: "   " } });
+    expect(within(editor()).getByText("A title is required")).toBeDefined();
     expect(
       screen.getByRole("button", { name: /promote to ready/i }).hasAttribute("disabled"),
     ).toBe(true);
@@ -321,7 +326,7 @@ describe("TriageScreen — the editor", () => {
 
     // Fixing it re-enables the promotion — the block is the field's current
     // state, not a latch.
-    fireEvent.change(field("Deadline"), { target: { value: "2026-08-14" } });
+    fireEvent.change(field("Title"), { target: { value: "A real title" } });
     expect(
       screen.getByRole("button", { name: /promote to ready/i }).hasAttribute("disabled"),
     ).toBe(false);

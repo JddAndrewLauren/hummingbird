@@ -15,11 +15,17 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { CapturePopover } from "./CapturePopover";
+import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import { fireEvent, render, screen } from "../test/component";
 
 function renderPopover(
-  options: { open?: boolean; demo?: boolean; lastCapture?: TaskCaptureResult | null } = {},
+  options: {
+    open?: boolean;
+    demo?: boolean;
+    lastCapture?: TaskCaptureResult | null;
+    projects?: ProjectDTO[];
+  } = {},
 ) {
   const onSubmit = vi.fn();
   const onClose = vi.fn();
@@ -28,6 +34,7 @@ function renderPopover(
     focusRequestId: 1,
     onClose,
     onSubmit,
+    projects: options.projects ?? [],
     demo: options.demo ?? false,
     lastCapture,
   });
@@ -41,9 +48,18 @@ function field(): HTMLInputElement {
   return screen.getByLabelText("Capture") as HTMLInputElement;
 }
 
-/** The three optional fields left at rest — what `resolveCaptureFields` hands
+/** Every optional field left at rest — what `resolveCaptureFields` hands
  * `onSubmit` when nothing beside the title was touched. */
-const NO_FIELDS = { size: null, energy: null, context: null };
+const NO_FIELDS = {
+  size: null,
+  energy: null,
+  context: null,
+  description: null,
+  projectId: null,
+  priority: null,
+  deadline: null,
+  scheduledDate: null,
+};
 
 describe("CapturePopover — the overlay", () => {
   it("renders nothing at all while closed", () => {
@@ -81,8 +97,8 @@ describe("CapturePopover — the overlay", () => {
 describe("CapturePopover — the capture box", () => {
   it("refuses an empty or whitespace-only draft on both destinations", () => {
     renderPopover();
-    const add = screen.getByRole("button", { name: /add to triage/i });
-    const mint = screen.getByRole("button", { name: /mint action/i });
+    const add = screen.getByRole("button", { name: "Triage" });
+    const mint = screen.getByRole("button", { name: "Mint action" });
 
     expect(add.hasAttribute("disabled")).toBe(true);
     expect(mint.hasAttribute("disabled")).toBe(true);
@@ -99,16 +115,16 @@ describe("CapturePopover — the capture box", () => {
   it("sends the raw draft to Triage", () => {
     const { onSubmit } = renderPopover();
     fireEvent.change(field(), { target: { value: "  Buy   OAT milk  " } });
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith("  Buy   OAT milk  ", "triage", NO_FIELDS);
   });
 
-  it("sends the skip — Mint action captures straight into Ready", () => {
+  it("sends the skip — the mint button captures straight into Ready", () => {
     const { onSubmit } = renderPopover();
     fireEvent.change(field(), { target: { value: "Order the worktop" } });
-    fireEvent.click(screen.getByRole("button", { name: /mint action/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Mint action" }));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith("Order the worktop", "ready", NO_FIELDS);
@@ -131,7 +147,7 @@ describe("CapturePopover — the capture box", () => {
   it("stays open and says where the capture went once the result comes back ok", () => {
     const { onSubmit, onClose, rerender } = renderPopover();
     fireEvent.change(field(), { target: { value: "Call the plumber" } });
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
     expect(onClose).not.toHaveBeenCalled();
 
     rerender({ seed: "s1", kind: "ok", id: "item-9", error: null });
@@ -140,7 +156,7 @@ describe("CapturePopover — the capture box", () => {
     expect(document.activeElement).toBe(field());
 
     fireEvent.change(field(), { target: { value: "Order the worktop" } });
-    fireEvent.click(screen.getByRole("button", { name: /mint action/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Mint action" }));
     rerender({ seed: "s2", kind: "ok", id: "item-10", error: null });
     expect(screen.getByText(/Minted into Ready — Order the worktop/)).toBeDefined();
     expect(onSubmit).toHaveBeenCalledTimes(2);
@@ -152,6 +168,122 @@ describe("CapturePopover — the capture box", () => {
 // `CaptureMeta`. The Energy/Size sliders are `role="slider"` elements moved
 // with the keyboard (`End` jumps to the last stop, per `Slider.tsx`'s own
 // `onKeyDown`), never a plain `<input>`.
+describe("CapturePopover — the full field set behind More details", () => {
+  const openDetails = () =>
+    fireEvent.click(screen.getByRole("button", { name: /more details/i }));
+
+  it("keeps every mint-time field shut until asked", () => {
+    // One line and Enter is the fastest thing on the screen, and a form that
+    // opens to seven fields taxes every capture for a decision most of them
+    // do not make.
+    renderPopover();
+
+    expect(screen.queryByLabelText("Description")).toBeNull();
+    expect(screen.queryByLabelText("Project")).toBeNull();
+    expect(screen.queryByLabelText("Priority")).toBeNull();
+    expect(screen.queryByLabelText("Deadline")).toBeNull();
+    expect(screen.queryByLabelText("Scheduled date")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /more details/i }).getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
+  it("carries every revealed field onto the submit, in one capture", () => {
+    const { onSubmit } = renderPopover({
+      projects: [
+        {
+          id: "proj-1",
+          name: "Kitchen",
+          description: null,
+          archivedAt: null,
+          createdAt: 0,
+          updatedAt: 0,
+          version: 0,
+        } as ProjectDTO,
+      ],
+    });
+    fireEvent.change(field(), { target: { value: "Order the worktop" } });
+    openDetails();
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "the oak one" },
+    });
+    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "proj-1" } });
+    fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Deadline"), { target: { value: "2026-09-01" } });
+    fireEvent.change(screen.getByLabelText("Scheduled date"), {
+      target: { value: "2026-08-30" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith("Order the worktop", "triage", {
+      ...NO_FIELDS,
+      description: "the oak one",
+      projectId: "proj-1",
+      priority: 2,
+      deadline: "2026-09-01",
+      scheduledDate: "2026-08-30",
+    });
+  });
+
+  it("names an hour through the deadline field's own second gesture", () => {
+    const { onSubmit } = renderPopover();
+    fireEvent.change(field(), { target: { value: "Call the vet" } });
+    openDetails();
+    fireEvent.change(screen.getByLabelText("Deadline"), { target: { value: "2026-09-01" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add time" }));
+    fireEvent.change(screen.getByLabelText("Time"), { target: { value: "09:30" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+
+    expect(onSubmit).toHaveBeenCalledWith("Call the vet", "triage", {
+      ...NO_FIELDS,
+      deadline: "2026-09-01T09:30",
+    });
+  });
+
+  it("cannot be given an impossible date at all — the controls are pickers", () => {
+    // Both date fields are `input[type=date]`, which refuses to hold
+    // `2026-02-30`; the value never reaches the form's state, so there is
+    // nothing for the submit gate to catch. That gate still runs
+    // (`captureMetaProblems`, unit-tested against the same rules triage
+    // uses) — this is the pin on WHY it never fires here, so a later change
+    // back to a free-text field is a visibly different test rather than a
+    // silently unguarded form.
+    renderPopover();
+    fireEvent.change(field(), { target: { value: "Call the vet" } });
+    openDetails();
+    fireEvent.change(screen.getByLabelText("Scheduled date"), {
+      target: { value: "2026-02-30" },
+    });
+
+    expect((screen.getByLabelText("Scheduled date") as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("button", { name: "Triage" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByText("Use YYYY-MM-DD")).toBeNull();
+  });
+
+  it("keeps the revealed fields while a capture is in flight, and shuts them on ok", () => {
+    // #222's rule, now covering five more fields than it did: a failed write
+    // must not take the reader's typing with it.
+    const { rerender } = renderPopover();
+    fireEvent.change(field(), { target: { value: "Call the vet" } });
+    openDetails();
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "about Bess" } });
+
+    rerender({ kind: "failed", seed: "seed-1", id: null, error: "boom" });
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("about Bess");
+
+    rerender({ kind: "ok", seed: "seed-2", id: "item-1", error: null });
+    // Shut again, and empty behind the disclosure — the next capture starts
+    // clean rather than inheriting this one's decisions.
+    expect(screen.queryByLabelText("Description")).toBeNull();
+    openDetails();
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("");
+  });
+});
+
 describe("CapturePopover — the capture meta (#208)", () => {
   it("carries the Energy/Size/Context selections onto the submit", () => {
     const { onSubmit } = renderPopover();
@@ -160,9 +292,10 @@ describe("CapturePopover — the capture meta (#208)", () => {
     fireEvent.keyDown(screen.getByRole("slider", { name: "Size" }), { key: "End" });
     fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
 
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
 
     expect(onSubmit).toHaveBeenCalledWith("Buy soil", "triage", {
+      ...NO_FIELDS,
       size: "deep",
       energy: "high",
       context: "@garden",
@@ -174,12 +307,11 @@ describe("CapturePopover — the capture meta (#208)", () => {
     fireEvent.change(field(), { target: { value: "Buy soil" } });
     fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
 
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
 
     expect(onSubmit).toHaveBeenCalledWith("Buy soil", "triage", {
-      size: null,
+      ...NO_FIELDS,
       energy: "high",
-      context: null,
     });
   });
 
@@ -189,22 +321,20 @@ describe("CapturePopover — the capture meta (#208)", () => {
     fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
     fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
 
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
     rerender({ seed: "s1", kind: "ok", id: "item-9", error: null });
 
     expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("-1");
     expect((screen.getByLabelText("Context") as HTMLSelectElement).value).toBe("");
   });
 
-  // #208 made the capture box's Energy/Size/Context genuinely persist, so
-  // this caption's old real-arm suffix — "(not yet stored on a real
-  // capture)" — became false, on the very arm that now DOES store them.
-  // Asserted verbatim so it cannot silently rot again.
-  it("does not claim the capture meta is unstored", () => {
+  // The caption that used to sit under these controls said stage and dates
+  // were "decided at mint time". They can be decided here now — the "More
+  // details" disclosure is where — so the sentence was deleted rather than
+  // reworded, and this is the pin against it coming back.
+  it("makes no claim about what capture cannot set", () => {
     renderPopover();
-    expect(
-      screen.getByText("optional — stage, dates and everything else are decided at mint time"),
-    ).toBeDefined();
+    expect(screen.queryByText(/decided at mint time/i)).toBeNull();
     expect(screen.queryByText(/not yet stored/i)).toBeNull();
   });
 });
@@ -220,7 +350,7 @@ describe("CapturePopover — the clear-on-ok rule (#222)", () => {
     fireEvent.keyDown(screen.getByRole("slider", { name: "Size" }), { key: "End" });
     fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
 
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
 
     // No result has come back — neither ok nor failed.
     expect(field().value).toBe("Buy soil");
@@ -235,7 +365,7 @@ describe("CapturePopover — the clear-on-ok rule (#222)", () => {
     fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
     fireEvent.keyDown(screen.getByRole("slider", { name: "Size" }), { key: "Home" });
     fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
 
     rerender({ seed: "s1", kind: "failed", id: null, error: "Offline." });
 
@@ -283,7 +413,7 @@ describe("CapturePopover — the clear-on-ok rule (#222)", () => {
   it("clears and reports right away in demo mode, where no result is coming", () => {
     const { onSubmit } = renderPopover({ demo: true });
     fireEvent.change(field(), { target: { value: "Call the plumber" } });
-    fireEvent.click(screen.getByRole("button", { name: /add to triage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(field().value).toBe("");
