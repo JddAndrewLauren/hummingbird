@@ -51,6 +51,20 @@ async function run(
   return posted;
 }
 
+/** Every capture field at its resting state, spelled out — the wire type is
+ * nullable-required rather than optional precisely so that a new field has to
+ * be written here rather than silently defaulting. */
+const EMPTY_CAPTURE_FIELDS = {
+  size: null,
+  energy: null,
+  context: null,
+  description: null,
+  projectId: null,
+  priority: null,
+  deadline: null,
+  scheduledDate: null,
+} as const;
+
 const rawItem = {
   id: "item-1",
   seq: 1,
@@ -142,35 +156,7 @@ describe("handleTaskRequest", () => {
         seed: "seed-1",
         title: "buy milk",
         stage: "ready",
-        size: null,
-        energy: null,
-        context: null,
-        nowMs: 1_000,
-      },
-      host,
-    );
-
-    expect(host.capture).toHaveBeenCalledWith("seed-1", "buy milk", "ready", null, null, null, 1_000);
-    expect(posted).toEqual([
-      { type: "captureResult", seed: "seed-1", kind: "ok", id: "item-1", error: null },
-    ]);
-  });
-
-  // #208: the wire's `size`/`energy`/`context` must reach the host call
-  // verbatim — this is the pure-layer half of "the values reach the wire
-  // message"; the component test proves the rendered controls produce this
-  // request in the first place.
-  it("capture forwards a set size, energy and context to the host verbatim", async () => {
-    const host = fakeHost();
-    await run(
-      {
-        type: "capture",
-        seed: "seed-1",
-        title: "buy milk",
-        stage: "ready",
-        size: "deep",
-        energy: "high",
-        context: "@errands",
+        fields: EMPTY_CAPTURE_FIELDS,
         nowMs: 1_000,
       },
       host,
@@ -180,9 +166,50 @@ describe("handleTaskRequest", () => {
       "seed-1",
       "buy milk",
       "ready",
-      "deep",
-      "high",
-      "@errands",
+      JSON.stringify(EMPTY_CAPTURE_FIELDS),
+      1_000,
+    );
+    expect(posted).toEqual([
+      { type: "captureResult", seed: "seed-1", kind: "ok", id: "item-1", error: null },
+    ]);
+  });
+
+  // #208: the wire's `fields` must reach the host call verbatim — this is
+  // the pure-layer half of "the values reach the wire message"; the component
+  // test proves the rendered controls produce this request in the first place.
+  it("capture forwards every set field to the host verbatim, as one JSON object", async () => {
+    const host = fakeHost();
+    await run(
+      {
+        type: "capture",
+        seed: "seed-1",
+        title: "buy milk",
+        stage: "ready",
+        fields: {
+          ...EMPTY_CAPTURE_FIELDS,
+          size: "deep",
+          energy: "high",
+          context: "@errands",
+          deadline: "2026-09-01",
+          priority: 3,
+        },
+        nowMs: 1_000,
+      },
+      host,
+    );
+
+    expect(host.capture).toHaveBeenCalledWith(
+      "seed-1",
+      "buy milk",
+      "ready",
+      JSON.stringify({
+        ...EMPTY_CAPTURE_FIELDS,
+        size: "deep",
+        energy: "high",
+        context: "@errands",
+        deadline: "2026-09-01",
+        priority: 3,
+      }),
       1_000,
     );
   });
@@ -197,9 +224,7 @@ describe("handleTaskRequest", () => {
         seed: "seed-1",
         title: "x",
         stage: "triage",
-        size: null,
-        energy: null,
-        context: null,
+        fields: EMPTY_CAPTURE_FIELDS,
         nowMs: 1_000,
       },
       host,
@@ -481,9 +506,7 @@ describe("handleTaskRequest", () => {
         seed: "seed-1",
         title: "x",
         stage: "triage",
-        size: null,
-        energy: null,
-        context: null,
+        fields: EMPTY_CAPTURE_FIELDS,
         nowMs: 1_000,
       },
       host,

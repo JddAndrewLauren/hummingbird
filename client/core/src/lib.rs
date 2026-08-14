@@ -193,17 +193,27 @@ struct SettingOverlayEntry {
     setting: Setting,
 }
 
-/// The capture box's optional Energy/Size/Context selections (#208),
-/// grouped in one small struct rather than three more positional parameters
-/// on [`Core::capture`] — the same "params struct once the positional list
-/// reads long" call `ffi-web`'s `TriageEdits` already made for triage's own
-/// edit fields. `Default` is every field `None`, which is what keeps a
-/// caller that never sets these producing a capture with all three absent.
+/// The capture box's optional field selections (#208), grouped in one small
+/// struct rather than a long positional list on [`Core::capture`] — the same
+/// "params struct once the positional list reads long" call `ffi-web`'s
+/// `TriageEdits` already made for triage's own edit fields. `Default` is every
+/// field `None`, which is what keeps a caller that never sets these producing a
+/// capture with all of them absent.
+///
+/// **Plain `Option<T>`, not `TriageEdits`' double option.** These are
+/// creation-time values on an item that does not exist yet, so there is no
+/// stored value a `Some(None)` could be clearing: absent and "set to nothing"
+/// are the same fact here, and the wire body simply omits the field.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaptureOptions {
     pub size: Option<Size>,
     pub energy: Option<Energy>,
     pub context: Option<String>,
+    pub description: Option<String>,
+    pub priority: Option<i64>,
+    pub project_id: Option<String>,
+    pub deadline: Option<String>,
+    pub scheduled_date: Option<String>,
 }
 
 /// Builds the optimistic [`Item`] a reader sees for a still-queued create,
@@ -1453,11 +1463,12 @@ where
     /// mutation below is the caller's own string, verbatim, never the
     /// seam's output.
     ///
-    /// `options` (#208) carries the capture box's Energy/Size/Context
-    /// selections onto the `CreateItem` — each field defaults to `None` in
+    /// `options` (#208) carries the capture box's own field selections onto
+    /// the `CreateItem` — each field defaults to `None` in
     /// [`CaptureOptions::default`], so a caller that never touches the
-    /// controls still produces a capture with all three absent, exactly the
-    /// "optional, decided at mint time" contract this issue must not break.
+    /// controls still produces a capture with all of them absent. Deciding
+    /// stays optional at capture time; what changed is that a reader who has
+    /// already decided need not wait for the mint to say so.
     pub async fn capture(
         &mut self,
         seed: &str,
@@ -1473,16 +1484,16 @@ where
         let create = CreateItem {
             id: id.clone(),
             title: title.clone(),
-            description: None,
+            description: options.description,
             stage: Some(stage),
             size: options.size,
             energy: options.energy,
             context: options.context,
-            priority: None,
-            project_id: None,
+            priority: options.priority,
+            project_id: options.project_id,
             project_pos: None,
-            deadline: None,
-            scheduled_date: None,
+            deadline: options.deadline,
+            scheduled_date: options.scheduled_date,
             source: None,
             source_key: None,
             source_url: None,
@@ -2168,6 +2179,11 @@ mod tests {
                 size: Some(Size::Deep),
                 energy: Some(Energy::High),
                 context: Some("@errands".to_string()),
+                description: Some("the oat kind".to_string()),
+                priority: Some(3),
+                project_id: Some("proj-1".to_string()),
+                deadline: Some("2026-09-01".to_string()),
+                scheduled_date: Some("2026-08-30".to_string()),
             },
         )
         .await
@@ -2177,14 +2193,63 @@ mod tests {
         assert_eq!(frontier[0].size, Some(Size::Deep));
         assert_eq!(frontier[0].energy, Some(Energy::High));
         assert_eq!(frontier[0].context.as_deref(), Some("@errands"));
+        assert_eq!(frontier[0].description.as_deref(), Some("the oat kind"));
+        assert_eq!(frontier[0].priority, 3);
+        assert_eq!(frontier[0].project_id.as_deref(), Some("proj-1"));
+        assert_eq!(frontier[0].deadline.as_deref(), Some("2026-09-01"));
+        assert_eq!(frontier[0].scheduled_date.as_deref(), Some("2026-08-30"));
+    }
+
+    /// The same selections in the *wire body*, not merely in the overlay: an
+    /// optimistic item assembled locally would agree with itself forever
+    /// while the queued `POST /api/items` carried none of it.
+    #[tokio::test]
+    async fn capture_options_reach_the_queued_create_body() {
+        let mut core = Core::new();
+        core.capture(
+            "seed-1",
+            "buy milk",
+            Stage::Ready,
+            1_000,
+            CaptureOptions {
+                size: Some(Size::Quick),
+                energy: None,
+                context: None,
+                description: Some("the oat kind".to_string()),
+                priority: Some(2),
+                project_id: Some("proj-1".to_string()),
+                deadline: Some("2026-09-01T09:30".to_string()),
+                scheduled_date: Some("2026-08-30".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let body = match &entries[0].intent {
+            MutationIntent::Create { body, .. } => body.clone(),
+            other => panic!("expected a create, got {other:?}"),
+        };
+        assert_eq!(body["description"], serde_json::json!("the oat kind"));
+        assert_eq!(body["priority"], serde_json::json!(2));
+        // Snake case on this wire: `CreateItem` carries no `rename_all`, so
+        // the DTO's own field names are the keys.
+        assert_eq!(body["project_id"], serde_json::json!("proj-1"));
+        assert_eq!(body["deadline"], serde_json::json!("2026-09-01T09:30"));
+        assert_eq!(body["scheduled_date"], serde_json::json!("2026-08-30"));
+        // An unset field is *omitted*, never sent as null: the server's own
+        // default is the resting state, and a null would be this client
+        // asserting one.
+        assert!(body.get("energy").is_none());
+        assert!(body.get("context").is_none());
     }
 
     /// #208's other half: leaving every field at its resting state
-    /// (`CaptureOptions::default()`) still produces a capture with all
-    /// three absent — the "optional, decided at mint time" contract must
+    /// (`CaptureOptions::default()`) still produces a capture with all of
+    /// them absent — the "optional, decided at mint time" contract must
     /// survive a caller that never touches the controls.
     #[tokio::test]
-    async fn leaving_capture_options_unset_leaves_all_three_absent() {
+    async fn leaving_capture_options_unset_leaves_them_all_absent() {
         let mut core = Core::new();
         core.capture(
             "seed-1",
@@ -2200,10 +2265,15 @@ mod tests {
         assert_eq!(frontier[0].size, None);
         assert_eq!(frontier[0].energy, None);
         assert_eq!(frontier[0].context, None);
+        assert_eq!(frontier[0].description, None);
+        assert_eq!(frontier[0].priority, 0);
+        assert_eq!(frontier[0].project_id, None);
+        assert_eq!(frontier[0].deadline, None);
+        assert_eq!(frontier[0].scheduled_date, None);
     }
 
-    /// Setting only one of the three sends that one and leaves the other
-    /// two absent — #208's third acceptance checkbox.
+    /// Setting only one sends that one and leaves the rest absent — #208's
+    /// third acceptance checkbox.
     #[tokio::test]
     async fn setting_only_one_capture_option_leaves_the_others_absent() {
         let mut core = Core::new();
@@ -2214,8 +2284,7 @@ mod tests {
             1_000,
             CaptureOptions {
                 size: Some(Size::Quick),
-                energy: None,
-                context: None,
+                ..CaptureOptions::default()
             },
         )
         .await

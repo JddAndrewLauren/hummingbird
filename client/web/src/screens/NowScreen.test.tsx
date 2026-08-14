@@ -68,6 +68,15 @@ function memoryStorage(seed: Record<string, string> = {}) {
   };
 }
 
+/** The frontier's column headings — every `h2` on the screen except the
+ * standing-questions aside's own, which is a section header in the other
+ * landmark entirely and is not a column. */
+function columnHeadings(): HTMLElement[] {
+  return screen
+    .getAllByRole("heading", { level: 2 })
+    .filter((heading) => heading.closest("aside") === null);
+}
+
 function renderNow(task: TaskState, selectedItemId: string | null = null) {
   const onAct = vi.fn();
   const onOpenItem = vi.fn();
@@ -426,11 +435,11 @@ describe("NowScreen — the frontier list", () => {
     // text rather than `ItemRow`'s `title` tooltip.
     renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Renew it", deadline: "1999-01-01" })] }));
 
-    // Twice on purpose: once naming the swatch in the legend, once on the card
-    // itself. The card's is the one that makes colour non-load-bearing.
-    expect(screen.getAllByText("Overdue")).toHaveLength(2);
-    // `calm` has no swatch, so it is named on cards but never in the legend.
-    expect(screen.queryByText("Calm")).toBeNull();
+    // Once, on the card itself — which is the occurrence that makes colour
+    // non-load-bearing. The legend above the board used to say it a second
+    // time; it was deleted as chrome that repeated what every card already
+    // states.
+    expect(screen.getAllByText("Overdue")).toHaveLength(1);
   });
 
   // `docs/SURFACES.md` records the triage section's `60dvh` cap as the ONLY
@@ -844,7 +853,7 @@ describe("NowScreen — the captures in the columns", () => {
       }),
     );
 
-    const headings = screen.getAllByRole("heading", { level: 2 }).map((node) => node.textContent);
+    const headings = columnHeadings().map((node) => node.textContent);
     expect(headings).toEqual(["@garden"]);
     expect(cardTitles()).toEqual(["Prune the hedge", "Buy secateurs"]);
   });
@@ -1219,9 +1228,7 @@ describe("NowScreen — the frontier's controls (#403)", () => {
     // Filter button legitimately carries its own `aria-expanded={false}`.
     expect("hb.now.frontier-collapsed" in storage.entries).toBe(false);
     // Energy across this spread is low, high, low — two columns.
-    const headers = screen
-      .getAllByRole("heading", { level: 2 })
-      .map((heading) => heading.querySelector("button"));
+    const headers = columnHeadings().map((heading) => heading.querySelector("button"));
     expect(headers).toHaveLength(2);
     for (const header of headers) {
       expect(header?.getAttribute("aria-expanded")).toBe("true");
@@ -1293,6 +1300,43 @@ describe("NowScreen — the frontier's controls (#403)", () => {
     // because the expansion was keyed by a label that no longer exists.
     expect(screen.queryByText("Action 7")).toBeNull();
     expect(screen.getByRole("button", { name: "Show 2 more in quick" })).toBeDefined();
+  });
+
+  // Neither the collapsed state nor the control belongs to this screen any
+  // more: one button in the shell's header owns both directions, and `App.tsx`
+  // owns the state. What is left to pin here is that the prop is obeyed.
+  // Persistence lives in `questions/aside-prefs.test.ts`, the button in
+  // `shell/Header.test.tsx`.
+  it("renders the standing-questions aside open by default", () => {
+    renderWithStorage(spread());
+
+    // Open unless told otherwise — a question that has fired is the one thing
+    // on Now you did not ask for and must not be hidden by an unset preference.
+    expect(screen.getByRole("complementary", { name: "Standing questions" })).toBeDefined();
+  });
+
+  it("drops the landmark entirely when the aside is shut, rather than leaving an empty one", () => {
+    render(
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={spread()}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={fakeStorage()}
+        asideCollapsed
+      />,
+    );
+
+    // No strip is left behind: an `aside` named "Standing questions" holding
+    // nothing is a landmark that lies, and the reopen control is the header's.
+    expect(screen.queryByRole("complementary", { name: "Standing questions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Standing questions" })).toBeNull();
   });
 
   it("does not persist the filter selection — Now never opens filtered", () => {

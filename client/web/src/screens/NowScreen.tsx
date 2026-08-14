@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
-import { ItemDetailPanel } from "../components/domain/ItemDetailPanel";
+import { ItemPanel } from "../components/domain/ItemPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
@@ -68,12 +68,21 @@ export interface NowScreenProps {
    * own columns — `shell/useTriageWiring.ts`'s `triage`, the SAME callback the
    * Triage screen gets. Now is a second view of one inbox, never a second entry
    * point into it. `undefined` in demo mode. */
-  onTriage?: (itemId: string, destination: TriageDestinationName, edits: TriageEdits) => void;
+  onTriage?: (
+    itemId: string,
+    destination: TriageDestinationName | null,
+    edits: TriageEdits,
+  ) => void;
   /** Injected storage for this screen's device-local view preferences —
    * resolved once here rather than read in each consumer: `RankedRegion`'s pane
    * overrides, and (#403) the frontier's grouping axis and collapsed columns.
    * One storage seam, two readers. */
   storage?: StorageLike;
+  /** Is the standing-questions aside shut? Owned by `App.tsx`, not here: the
+   * control that opens and shuts it is a single button in the shell's header,
+   * which is also where persistence lives (`questions/aside-prefs.ts`). This
+   * screen only renders the answer. */
+  asideCollapsed?: boolean;
 }
 
 /** The real-data half of `QuestionInputs` (never demo's) — exported so a
@@ -178,7 +187,10 @@ function RealFrontier({
   // never both speak for one result.
   const strandedTriage = strandedTriageFailure(
     task.lastTriage,
-    selectedCapture?.id ?? null,
+    // Either editor counts as an owner now: the capture's `TriageRow`, or a
+    // minted item's `ItemPanel`, which says its own triage failures since it
+    // gained an Edit mode.
+    selectedCapture?.id ?? selectedItemId,
     task.triageInbox,
   );
 
@@ -340,11 +352,14 @@ function RealFrontier({
         </SelectedItemSection>
       ) : selectedItem ? (
         <SelectedItemSection key={selectedItem.id}>
-          <ItemDetailPanel
-            // Remounts per item so the grain/model selects reset with it — a
-            // grain chosen for one item says nothing about the next.
+          <ItemPanel
+            // Remounts per item so the grain select and the Edit state reset
+            // with it — a grain chosen for one item says nothing about the
+            // next, and neither does a half-typed edit.
             key={selectedItem.id}
+            mode="detail"
             item={selectedItem}
+            projects={task.projects}
             steps={task.stepsByItem[selectedItem.id] ?? []}
             onClose={onCloseItemDetail}
             onAct={(action) => {
@@ -353,6 +368,10 @@ function RealFrontier({
               onAct(selectedItem.id, action);
             }}
             actError={actError}
+            // Edit mode's Save — `Core::triage` with no destination (#122), so
+            // editing a minted action leaves its stage exactly where it is.
+            onTriage={onTriage}
+            lastTriage={task.lastTriage}
             microtask={microtask}
           />
         </SelectedItemSection>
@@ -473,6 +492,7 @@ export function NowScreen({
   microtask,
   onTriage,
   storage,
+  asideCollapsed = false,
 }: NowScreenProps) {
   // Resolved once, for both the ranked region and the triage section. The
   // fallback keeps every existing caller (and every test that mounts this
@@ -592,31 +612,47 @@ export function NowScreen({
         )}
       </Column>
 
-      <Aside label="Standing questions">
-        {/* ADR-0015's ranked region replaces everything that used to be in
-            here — the context tile, the demo standing-question card and the
-            snapshot tiles — and it is the same component in both modes: only
-            the inputs differ, so `?demo` photographs the real shell.
+      {/* Shut, the panel is gone from the screen entirely rather than shrunk
+          to a strip: the `?` that reopens it lives in the shell's header
+          (`Header.tsx`, between Refresh and New), so nothing has to stay
+          behind to hold a control. That is also why the landmark unmounts —
+          an `aside` named "Standing questions" containing nothing is a
+          landmark that lies to a screen reader. */}
+      {asideCollapsed ? null : (
+        <Aside label="Standing questions">
+          {/* No heading and no control of its own. The words "Standing
+              questions" sat above a region that says what it is on every card,
+              and the landmark's `aria-label` is where that name belongs for
+              anyone who cannot see the panel. The collapse control is the
+              header's, in both directions (`shell/Header.tsx`) — a toggle that
+              lives inside the thing it hides has to move when you press it,
+              and then you have to find it twice. */}
 
-            The landmark was still called `Context` long after that swap, which
-            is what ADR-0021 renamed (#401): the panel holds standing questions
-            and nothing called context, this was the one inaccurate aside name
-            of the four, and the word is needed for the frontier's grouping
-            axis in the centre column — otherwise the screen says "Context"
-            twice, meaning an item's `@computer` on one side and context
-            *sources* on the other. */}
-        <RankedRegion
-          surface="now"
-          inputs={
-            demoQuestions(nowMs) ?? realQuestionInputs(task, calendarReads, calendarConnected)
-          }
-          nowMs={nowMs}
-          syncOutcomeSeq={task.syncOutcomeSeq}
-          storage={resolvedStorage}
-          onScreen={onScreen}
-          onSetScheduledDate={demo ? undefined : onSetScheduledDate}
-        />
-      </Aside>
+          {/* ADR-0015's ranked region replaces everything that used to be in
+              here — the context tile, the demo standing-question card and the
+              snapshot tiles — and it is the same component in both modes: only
+              the inputs differ, so `?demo` photographs the real shell.
+
+              The landmark was still called `Context` long after that swap,
+              which is what ADR-0021 renamed (#401): the panel holds standing
+              questions and nothing called context, this was the one inaccurate
+              aside name of the four, and the word is needed for the frontier's
+              grouping axis in the centre column — otherwise the screen says
+              "Context" twice, meaning an item's `@computer` on one side and
+              context *sources* on the other. */}
+          <RankedRegion
+            surface="now"
+            inputs={
+              demoQuestions(nowMs) ?? realQuestionInputs(task, calendarReads, calendarConnected)
+            }
+            nowMs={nowMs}
+            syncOutcomeSeq={task.syncOutcomeSeq}
+            storage={resolvedStorage}
+            onScreen={onScreen}
+            onSetScheduledDate={demo ? undefined : onSetScheduledDate}
+          />
+        </Aside>
+      )}
     </TwoColumn>
   );
 }

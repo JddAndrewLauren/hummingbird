@@ -20,12 +20,28 @@ export interface HeaderProps {
    * on what `App.tsx`'s `refresh-gate.ts` found refreshable — never just the
    * calendar, even on a device with both. */
   onRefresh?: () => void;
+  /** Toggles Now's standing-questions aside. Both directions live here, not
+   * one here and one in the panel's own corner: a control that moves when you
+   * press it is a control you have to find twice. Supplied by `App.tsx` only
+   * on Now, on the same rule as `onSearch`/`onRefresh` — the affordance
+   * appears where it would work. */
+  onToggleQuestions?: () => void;
+  /** Which way `onToggleQuestions` currently goes; picks the glyph. */
+  questionsCollapsed?: boolean;
   /** Opens the shell's capture popover (`CapturePopover`). Named for the
    * internal verb, labelled "New" in the UI. */
   onCapture: () => void;
 }
 
-export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: HeaderProps) {
+export function Header({
+  title,
+  syncLabel,
+  onSearch,
+  onRefresh,
+  onToggleQuestions,
+  questionsCollapsed = false,
+  onCapture,
+}: HeaderProps) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const mounted = useRef(false);
 
@@ -69,6 +85,38 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
       {onSearch ? <IconButton icon="search" label="Search" onClick={onSearch} /> : null}
       {onRefresh ? (
         <IconButton icon="refresh-cw" label="Refresh" onClick={onRefresh} />
+      ) : null}
+      {/* Between Refresh and New on purpose: it belongs with the chrome that
+          acts on the screen you are looking at, not with the one gesture that
+          creates something. It stays in this one slot through both states, so
+          shutting the panel never moves the control that reopens it.
+
+          Shut, `?` names what is missing; open, the chevron points the way the
+          panel goes — right, out of the reader's way. Both glyphs are already
+          in the design system's named vocabulary.
+
+          `label` and nothing else: `IconButton` writes `aria-label` AND
+          `title` from it after spreading `rest`, so a `title` passed here
+          would be silently dropped. `aria-expanded` carries the direction. */}
+      {onToggleQuestions ? (
+        // The rotation rides on a wrapper, not on `IconButton`'s `style`:
+        // that prop is spread last over the button's own `transform`, so
+        // writing one here would cost the press scale. Same reason as the
+        // capture box's disclosure (`screens/CaptureBox.tsx`).
+        <span
+          style={{
+            display: "inline-flex",
+            transform: questionsCollapsed ? "none" : "rotate(-90deg)",
+            transition: "transform var(--dur-fast) var(--ease-flit)",
+          }}
+        >
+          <IconButton
+            icon={questionsCollapsed ? "help-circle" : "chevron-down"}
+            label="Standing questions"
+            aria-expanded={!questionsCollapsed}
+            onClick={onToggleQuestions}
+          />
+        </span>
       ) : null}
       {/* The shell owns capture (#107): this opens `CapturePopover` over
           whatever screen is showing, rather than navigating to Triage. The

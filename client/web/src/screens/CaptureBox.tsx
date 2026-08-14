@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/core/Button";
 import { IconButton } from "../components/core/IconButton";
+import { DeadlineField } from "../components/forms/DeadlineField";
 import { Select } from "../components/forms/Select";
+import { Textarea } from "../components/forms/Textarea";
 import { Slider } from "../components/forms/Slider";
 import { Input } from "../components/forms/Input";
 import { CAPTURE_INPUT_ID } from "../shell/capture-hotkey";
@@ -12,20 +14,22 @@ import {
   type DictationCapability,
   type DictationSession,
 } from "../speech/local-dictation";
+import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
 import { freezeDraft, spliceTranscript, type FrozenDraft } from "./capture-dictation";
 import {
   CAPTURE_ENERGY_NAMES,
   CAPTURE_SIZE_NAMES,
+  captureMetaProblems,
   EMPTY_CAPTURE_META,
   resolveCaptureFields,
 } from "./capture-meta";
 import { energyIcon, levelColor, sizeIcon } from "./size-energy";
 import { canSubmitCapture } from "./capture-validation";
+import { CONTEXT_OPTIONS } from "./field-vocabulary";
+import { PRIORITY_OPTIONS } from "./priority";
 import type { CaptureDestination } from "./capture-destination";
-
-const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiting"];
 
 // The Energy/Size `Slider` stops are `capture-meta.ts`'s
 // `CAPTURE_ENERGY_NAMES`/`CAPTURE_SIZE_NAMES` themselves, rendered directly.
@@ -34,6 +38,10 @@ const CONTEXTS = ["@home", "@computer", "@phone", "@errands", "@garden", "@waiti
 // "short"; ADR-0024 made those the same word, so the display copy had
 // nothing left to hold and went away, along with the length assertion in
 // `capture-meta.test.ts` that was the only thing keeping the two aligned.
+//
+// The context list is NOT restated here. `screens/field-vocabulary.ts`'s
+// `CONTEXT_OPTIONS` is the one copy this branch left standing, and capture
+// and the triage editor both read it.
 
 /** What the box did last, so the surface it sits on can say so. A popover
  * closes over whatever screen the person was on, so nothing else on screen
@@ -54,6 +62,11 @@ export interface CaptureBoxProps {
    * `resolveCaptureFields` — never the slider's own indices or the select's
    * raw empty-string resting value. */
   onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
+  /** The Routes a capture can be filed under, for the Project select behind
+   * "More details". `[]` in demo mode and on a device that has never synced —
+   * the select still renders, offering "No project" alone, because an empty
+   * list is a fact about the projects and not a reason to hide the control. */
+  projects: ProjectDTO[];
   /** Demo mode has no worker behind it, so no `captureResult` will ever
    * arrive: the demo arm clears on submit (the fixture queue IS the
    * acknowledgement) and must never wear a stale failure from a previous
@@ -68,6 +81,13 @@ export interface CaptureBoxProps {
    * clear-on-ok rule below and the failure paragraph read. `null` until the
    * first capture resolves. */
   lastCapture: TaskCaptureResult | null;
+  /** Dismisses whatever surface the box is mounted on, drawn in the field's
+   * trailing slot beside the microphone. The close control lives here rather
+   * than on the surface because a row holding nothing but an X cost more
+   * vertical space above the field than the field itself uses, and the field
+   * is the only thing the popover is for. Optional: a surface that cannot be
+   * dismissed passes nothing and no control renders. */
+  onClose?: () => void;
 }
 
 /** The resting capability, and the arm a browser without the API keeps
@@ -132,7 +152,14 @@ const NO_DICTATION: DictationCapability = {
  * popover closes: `CapturePopover` returns `null` when closed, which unmounts
  * this box and would otherwise leave the recognizer running with nothing
  * receiving its results. */
-export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: CaptureBoxProps) {
+export function CaptureBox({
+  onSubmit,
+  projects,
+  demo,
+  focusRequestId,
+  lastCapture,
+  onClose,
+}: CaptureBoxProps) {
   const [draft, setDraft] = useState("");
   const [meta, setMeta] = useState(EMPTY_CAPTURE_META);
   const [last, setLast] = useState<LastSubmit | null>(null);
@@ -308,7 +335,19 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
     captureField()?.setSelectionRange(caret, caret);
   });
 
-  const canSubmit = canSubmitCapture(draft);
+  // Shut on arrival, and shut again after a capture lands: the box's whole
+  // job is that typing one line and pressing Enter is the fastest thing on
+  // the screen, and a form that reopens to seven fields taxes the next
+  // capture for a decision the last one happened to make.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  // Defence in depth rather than a live message: both date fields are native
+  // pickers, which cannot hold a date that does not exist, so this finds
+  // nothing today. It runs anyway because it is the same gate triage's form
+  // has, against the same rules the seam refuses on — and the day one of
+  // these becomes free text again, the gate is already here.
+  const metaProblems = captureMetaProblems(meta);
+  const canSubmit = canSubmitCapture(draft) && Object.keys(metaProblems).length === 0;
 
   // Issue #222's rule, applied to capture (#208 tripled what a failed capture
   // would discard: the title PLUS size, energy and context). The draft and
@@ -326,6 +365,7 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
     if (lastCapture.kind === "ok") {
       setDraft("");
       setMeta(EMPTY_CAPTURE_META);
+      setDetailsOpen(false);
       // The dictation failure goes with the draft it happened to. Left
       // standing, a "Nothing was heard." would sit under a freshly emptied box
       // describing a session two captures ago — the same stale-report failure
@@ -373,6 +413,7 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
       setLast({ destination, title: draft });
       setDraft("");
       setMeta(EMPTY_CAPTURE_META);
+      setDetailsOpen(false);
       focusField();
       return;
     }
@@ -393,26 +434,43 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
           id={CAPTURE_INPUT_ID}
           // `min()`: see `layout.tsx`'s `Column`.
           style={{ flex: 1, minWidth: "min(260px, 100%)" }}
-          label="Capture"
+          // The label is the accessible name only — the placeholder already
+          // asks the question on screen, and a "Capture" caption over a single
+          // field inside a capture popover names the container rather than
+          // telling the reader anything. `aria-label` rather than a
+          // visually-hidden `<label>`: `Input` renders no such variant, and
+          // adding one to the component library for a single caller would be
+          // the larger change.
+          aria-label="Capture"
           icon="feather"
           placeholder="What's on your mind?"
           value={draft}
           // Makes a stale frozen draft unrepresentable rather than handled —
           // see the header. It does NOT deliver the Enter contract below.
           readOnly={listening}
+          // Both controls ride inside the field's own box, pinned right, in
+          // the order the hand reaches for them: dictate belongs to the draft,
+          // close belongs to the surface. `sm` (28px) is the size that clears
+          // the `md` field's 36px interior.
           trailing={
-            canDictate ? (
-              <IconButton
-                size="sm"
-                icon="mic"
-                // The design system's own toggled-on treatment (ember tint,
-                // brand foreground) — and the label changes with it, so the
-                // state is not carried by colour alone.
-                active={listening}
-                label={listening ? "Stop dictating" : "Dictate"}
-                onClick={() => (listening ? endSession("stop") : startDictation())}
-              />
-            ) : undefined
+            <>
+              {canDictate ? (
+                <IconButton
+                  size="sm"
+                  icon="mic"
+                  // The design system's own toggled-on treatment (ember tint,
+                  // brand foreground) — and the label changes with it, so the
+                  // state is not carried by colour alone.
+                  active={listening}
+                  label={listening ? "Stop dictating" : "Dictate"}
+                  onClick={() => (listening ? endSession("stop") : startDictation())}
+                />
+              ) : null}
+              {/* An X inside a text field usually means "clear the text", so
+                  the name has to do the disambiguating that the glyph cannot:
+                  `label` is both the accessible name and the hover tooltip. */}
+              {onClose ? <IconButton size="sm" icon="x" label="Close" onClick={onClose} /> : null}
+            </>
           }
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -435,77 +493,172 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
           }}
         />
         <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-          <Button size="md" iconLeft="plus" disabled={!canSubmit} onClick={() => submit("triage")}>
-            Add to Triage
-          </Button>
-          {/* The skip. CONTEXT.md's Mint — "landing in Ready" — for something
-              already startable; the item never sits in Triage at all. */}
+          {/* The two destinations, drawn as what they are rather than as two
+              equal sentences: this one is the inbox (`inbox` is triage's own
+              icon in the design system's vocabulary)... */}
           <Button
             size="md"
             variant="secondary"
-            iconLeft="sparkles"
+            iconLeft="inbox"
+            disabled={!canSubmit}
+            onClick={() => submit("triage")}
+          >
+            Triage
+          </Button>
+          {/* ...and this one is the skip — CONTEXT.md's Mint, "landing in
+              Ready", for something already startable; the item never sits in
+              Triage at all. A bare `+` because minting is the gesture the
+              hand learns and then stops reading, and the accessible name
+              still says the whole thing. */}
+          <IconButton
+            size="lg"
+            variant="solid"
+            icon="plus"
+            label="Mint action"
             disabled={!canSubmit}
             onClick={() => submit("ready")}
-          >
-            Mint action
-          </Button>
+          />
         </div>
       </div>
-      <div
-        style={{
-          display: "grid",
-          // `repeat(3, 1fr)` forced three columns at every width, so on a
-          // phone each held ~110px and its contents spilled sideways.
-          // `auto-fit` drops to two and then one as the room runs out; the
-          // inner `min()` keeps the 160px track from being a floor of its own.
-          gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
-          gap: "var(--space-7)",
-          alignItems: "start",
-        }}
-      >
-        {/* The stop lists are the wire vocabularies themselves, and the
-            glyphs and colours are derived from them by index — nothing here
-            is a second copy that could disagree with the level it draws.
-            Both start unset, which is what the ghost variants are for: the
-            slider shows no thumb and no ramp colour until someone chooses,
-            because deciding is mint-time work, not capture-time work. */}
-        <Slider
-          label="Energy"
-          options={CAPTURE_ENERGY_NAMES}
-          optionIcons={CAPTURE_ENERGY_NAMES.map(energyIcon)}
-          optionColors={CAPTURE_ENERGY_NAMES.map(levelColor)}
-          value={meta.energy}
-          onChange={(energy) => setMeta({ ...meta, energy })}
-        />
-        <Slider
-          label="Size"
-          options={CAPTURE_SIZE_NAMES}
-          optionIcons={CAPTURE_SIZE_NAMES.map(sizeIcon)}
-          optionColors={CAPTURE_SIZE_NAMES.map(levelColor)}
-          value={meta.size}
-          onChange={(size) => setMeta({ ...meta, size })}
-        />
-        <Select
-          label="Context"
-          value={meta.context}
-          onChange={(event) => setMeta({ ...meta, context: event.target.value })}
-          options={[
-            { value: "", label: "Not set" },
-            ...CONTEXTS.map((context) => ({ value: context, label: context })),
-          ]}
-        />
+      {/* The three optional fields and the disclosure share one row. The
+          toggle used to sit on a row of its own underneath, which spent a
+          whole line of vertical space on one short label; pinned to the right
+          of Context it costs none. */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-5)" }}>
+        <div
+          style={{
+            // `min-width: 0` so the grid may shrink inside the flex row rather
+            // than pushing the toggle off the card's right edge.
+            flex: 1,
+            minWidth: 0,
+            display: "grid",
+            // `repeat(3, 1fr)` forced three columns at every width, so on a
+            // phone each held ~110px and its contents spilled sideways.
+            // `auto-fit` drops to two and then one as the room runs out; the
+            // inner `min()` keeps the 160px track from being a floor of its own.
+            gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
+            gap: "var(--space-7)",
+            alignItems: "start",
+          }}
+        >
+          {/* The stop lists are the wire vocabularies themselves, and the
+              glyphs and colours are derived from them by index — nothing here
+              is a second copy that could disagree with the level it draws.
+              Both start unset, which is what the ghost variants are for: the
+              slider shows no thumb and no ramp colour until someone chooses,
+              because deciding is mint-time work, not capture-time work. */}
+          <Slider
+            label="Energy"
+            options={CAPTURE_ENERGY_NAMES}
+            optionIcons={CAPTURE_ENERGY_NAMES.map(energyIcon)}
+            optionColors={CAPTURE_ENERGY_NAMES.map(levelColor)}
+            value={meta.energy}
+            onChange={(energy) => setMeta({ ...meta, energy })}
+          />
+          <Slider
+            label="Size"
+            options={CAPTURE_SIZE_NAMES}
+            optionIcons={CAPTURE_SIZE_NAMES.map(sizeIcon)}
+            optionColors={CAPTURE_SIZE_NAMES.map(levelColor)}
+            value={meta.size}
+            onChange={(size) => setMeta({ ...meta, size })}
+          />
+          <Select
+            label="Context"
+            value={meta.context}
+            onChange={(event) => setMeta({ ...meta, context: event.target.value })}
+            options={CONTEXT_OPTIONS}
+          />
+        </div>
+        {/* Everything a mint would ask, behind one control. The sentence that
+            used to sit here said dates were "decided at mint time"; they can
+            be decided here now, and the disclosure says so better than a
+            caption could. Shut by default and shut again after each capture —
+            see `detailsOpen`.
+
+            The words "More details" are gone from the screen and the glyph
+            carries them alone; `label` is both the accessible name and the
+            hover tooltip, so nothing about what this opens is unreachable.
+            The direction is the state, and it stays a rotated `chevron-down`
+            rather than a `chevron-right` — one more glyph in `ICON_MAP` is an
+            extension of the brand's named vocabulary, and this branch already
+            declined to make one of those unasked. */}
+        {/* A class, not an inline object: the padding that holds this level
+            with the Context select has to be undone at 390px, where the three
+            fields stack, and nothing in a stylesheet outranks a `style`
+            attribute. Both forms live in `shell/responsive.css`. */}
+        <div className="hb-capture-details-toggle">
+          {/* The rotation rides on this span, not on `IconButton`'s `style`:
+              that prop is spread last over the button's own `transform`, so
+              writing one here would silently cost the press scale. Rotating
+              the whole square box is indistinguishable from rotating the
+              glyph inside it, and the press animation survives. */}
+          <span
+            style={{
+              display: "inline-flex",
+              transform: detailsOpen ? "none" : "rotate(-90deg)",
+              transition: "transform var(--dur-fast) var(--ease-flit)",
+            }}
+          >
+            <IconButton
+              icon="chevron-down"
+              label="More details"
+              aria-expanded={detailsOpen}
+              onClick={() => setDetailsOpen(!detailsOpen)}
+            />
+          </span>
+        </div>
       </div>
-      {/* One string, not a ternary: #208 made the capture box's
-          Energy/Size/Context genuinely persist onto `CreateItem`, so the real
-          arm's old "(not yet stored on a real capture)" suffix went from true
-          to false — and it sat on the arm that now DOES store them, while
-          demo mode got the clean sentence. With the suffix gone the two arms
-          said the same thing, so there is nothing left to branch on.
-          `CapturePopover.test.tsx` pins the text so it cannot silently rot
-          back. */}
-      <span className="hb-meta">
-        optional — stage, dates and everything else are decided at mint time
-      </span>
+      {detailsOpen ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+          <Textarea
+            label="Description"
+            rows={3}
+            value={meta.description}
+            placeholder="The only free-prose field — never a checklist"
+            onChange={(event) => setMeta({ ...meta, description: event.target.value })}
+          />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
+              gap: "var(--space-5)",
+              alignItems: "start",
+            }}
+          >
+            <Select
+              label="Project"
+              size="sm"
+              value={meta.projectId}
+              onChange={(event) => setMeta({ ...meta, projectId: event.target.value })}
+              options={[
+                { value: "", label: "No project" },
+                ...projects.map((project) => ({ value: project.id, label: project.name })),
+              ]}
+            />
+            <Select
+              label="Priority"
+              size="sm"
+              value={meta.priority}
+              onChange={(event) => setMeta({ ...meta, priority: event.target.value })}
+              options={PRIORITY_OPTIONS}
+            />
+            <DeadlineField
+              value={meta.deadline}
+              error={metaProblems.deadline}
+              onChange={(deadline) => setMeta({ ...meta, deadline })}
+            />
+            <Input
+              label="Scheduled date"
+              size="sm"
+              type="date"
+              value={meta.scheduledDate}
+              error={metaProblems.scheduledDate}
+              onChange={(event) => setMeta({ ...meta, scheduledDate: event.target.value })}
+            />
+          </div>
+        </div>
+      ) : null}
       {dictationError ? (
         // ADR-0022 Decision 1's "the session ends and the user is told", in
         // its own slot rather than sharing the capture failure's: they are

@@ -84,11 +84,26 @@ function world(overrides: Partial<QuestionInputs> = {}): Omit<QuestionInputs, "n
   };
 }
 
+/** The headline line, rejoined. It is drawn as four elements — race, "in",
+ * count, unit — so that the answer and the grammar can take different type
+ * (`raceHeadlineParts`), and no single text node holds the sentence. */
+function headlineText(): string {
+  const line = screen.getByText("Monaco GP").parentElement;
+  // Joined on a space here because on screen the separator is the flex `gap`,
+  // which is layout and not a text node — concatenating the DOM would read
+  // "Monaco GPin9days".
+  return [...(line?.children ?? [])].map((part) => part.textContent).join(" ");
+}
+
 describe("RacePaneExpanded (mounted through RankedRegion)", () => {
   it("puts the countdown, the next session and the circuit on screen", () => {
     mount(world({ paneReads: { [SOURCE]: read({ f1: season(NOW + 12 * DAY) }) } }));
 
-    expect(screen.getByText("12 days before Monaco GP")).toBeDefined();
+    // Race first, count second, with the grammar between them at body size —
+    // the vacation pane's shape, so the aside's two countdowns answer alike.
+    // The parts are separate elements, so the whole line is read off the
+    // headline block rather than matched as one string.
+    expect(headlineText()).toBe("Monaco GP in 12 days");
     // The session that actually happens first, under the headline rather than
     // in it — Friday practice is two days before Sunday's race.
     expect(screen.getByText(/Practice 1 ·/)).toBeDefined();
@@ -109,7 +124,7 @@ describe("RacePaneExpanded (mounted through RankedRegion)", () => {
     // Both panes exist. The `f1` one is answered and (three days out) expands
     // on its own; `indycar` has no snapshot, so it collapses to a row saying
     // so rather than disappearing.
-    expect(screen.getByText("3 days before Monaco GP")).toBeDefined();
+    expect(headlineText()).toBe("Monaco GP in 3 days");
     expect(screen.getByText(/IndyCar · Never polled/)).toBeDefined();
   });
 
@@ -156,7 +171,7 @@ describe("RacePaneExpanded (mounted through RankedRegion)", () => {
     stale.snapshots[0].freshness = { kind: "age", ageMs: 13 * HOUR, declaredCadenceMs: 6 * HOUR };
     mount(world({ paneReads: { [SOURCE]: stale } }));
 
-    expect(screen.getByText("9 days before Monaco GP")).toBeDefined();
+    expect(headlineText()).toBe("Monaco GP in 9 days");
     expect(screen.getByText("stale — as of 13h ago")).toBeDefined();
   });
 });

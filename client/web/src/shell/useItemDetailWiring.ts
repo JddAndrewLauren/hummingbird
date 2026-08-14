@@ -7,6 +7,10 @@ import { requestIsPending, requestSteps, type WorkerLike } from "../store/worker
 // lives on the `TaskItemDTO` the frontier/blocked queries returned.
 export interface ItemDetailWiring {
   selectedItemId: string | null;
+  /** Opens an item — or closes it, when it is the one already open. The card
+   * is the toggle: clicking the expanded item's own card again is the gesture
+   * a reader tries first to put it away, and the triage rows have always
+   * worked that way. */
   openItem: (itemId: string) => void;
   closeItem: () => void;
 }
@@ -43,7 +47,8 @@ export function useItemDetailWiring(worker: WorkerLike, syncOutcomeSeq: number):
 
   return {
     selectedItemId,
-    openItem: setSelectedItemId,
+    openItem: (itemId: string) =>
+      setSelectedItemId((current) => (current === itemId ? null : itemId)),
     closeItem: () => setSelectedItemId(null),
   };
 }
