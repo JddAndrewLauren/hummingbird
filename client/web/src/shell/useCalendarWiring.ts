@@ -274,7 +274,17 @@ export function useCalendarWiring(
       return;
     }
     const wasConnected = calendar.connected;
+    coreStore.setCalendarState({ connectPending: true, connectError: null });
     const result = await connect(deps);
+    // The error is written FIRST, above the early return below — not folded
+    // into it. A failed *reconnect* takes that return, and before this the
+    // handler left without touching any state at all: the press produced
+    // nothing on screen, which is the reported bug in its purest form. A
+    // reconnect failing is exactly when the reader needs telling.
+    // `connection.ts`'s `shouldKeepExistingConnection` doc records this
+    // ordering too; both say it because moving it back is a one-line edit
+    // that looks like tidying.
+    coreStore.setCalendarState({ connectPending: false, connectError: result.error });
     if (shouldKeepExistingConnection(wasConnected, result)) {
       // A cancelled or failed *Reconnect*: keep the opt-in, the last-good
       // tile and the Reconnect button exactly as they were, so the user can

@@ -17,6 +17,11 @@ export interface ConnectionResult {
    * failed/declined attempt). The caller (App.tsx) uses this with
    * `msUntilRotation` to schedule the next proactive silent re-mint. */
   expiresAtMs: number | null;
+  /** The raw `TokenError.error` this attempt failed with, or `null` if it
+   * succeeded. Raw and not pre-formatted: `calendar/connect-error.ts` owns
+   * the words, and `remint-health.ts` matches on the code — both need the
+   * code itself, and a sentence is not a code. */
+  error: string | null;
 }
 
 export interface ConnectionDeps {
@@ -24,16 +29,15 @@ export interface ConnectionDeps {
   pushToken: (token: string) => void;
 }
 
-const STILL_NEEDS_RECONNECT: ConnectionResult = {
-  connected: true,
-  needsReconnect: true,
-  expiresAtMs: null,
-};
-const NOT_CONNECTED: ConnectionResult = {
-  connected: false,
-  needsReconnect: false,
-  expiresAtMs: null,
-};
+function stillNeedsReconnect(error: string): ConnectionResult {
+  return { connected: true, needsReconnect: true, expiresAtMs: null, error };
+}
+function notConnected(error: string | null): ConnectionResult {
+  return { connected: false, needsReconnect: false, expiresAtMs: null, error };
+}
+function connected(expiresAtMs: number): ConnectionResult {
+  return { connected: true, needsReconnect: false, expiresAtMs, error: null };
+}
 
 /** Core-start wiring: if this device was previously opted in (a persisted
  * flag the host owns, not a credential — see `calendar/persistence.ts`),
@@ -44,7 +48,10 @@ export async function initConnection(
   wasPreviouslyConnected: boolean,
 ): Promise<ConnectionResult> {
   if (!wasPreviouslyConnected) {
-    return NOT_CONNECTED;
+    // Not a failure: this device was never opted in, and there is nothing to
+    // report. `error: null` keeps "never tried" distinct from "tried and
+    // failed", which is what the Settings message is gated on.
+    return notConnected(null);
   }
   return silentReconnect(deps);
 }
@@ -55,10 +62,10 @@ export async function initConnection(
 export async function connect(deps: ConnectionDeps): Promise<ConnectionResult> {
   const result = await deps.tokenClient.requestToken("consent");
   if (!isTokenResult(result)) {
-    return NOT_CONNECTED;
+    return notConnected(result.error);
   }
   deps.pushToken(result.accessToken);
-  return { connected: true, needsReconnect: false, expiresAtMs: result.expiresAtMs };
+  return connected(result.expiresAtMs);
 }
 
 /** Whether a [`connect`] attempt should be discarded entirely, leaving the
@@ -70,7 +77,15 @@ export async function connect(deps: ConnectionDeps): Promise<ConnectionResult> {
  * the persisted flag, and takes the last-good (stale but real) tile and the
  * Reconnect affordance itself down with it — so cancelling the Google popup
  * once would cost the user their offline context. The existing connection
- * stands until a reconnect actually succeeds. */
+ * stands until a reconnect actually succeeds.
+ *
+ * Note what this does NOT cover: the FAILURE itself. Keeping the connection
+ * is about `connected`/`needsReconnect`, and the caller must still record
+ * `result.error` — a reconnect that failed is precisely when the reader needs
+ * telling, and this returning `true` used to mean the handler returned before
+ * touching any state at all. `useCalendarWiring.ts`'s `handleConnectClick`
+ * writes the error above this check for that reason; do not move it back
+ * below. */
 export function shouldKeepExistingConnection(
   wasConnected: boolean,
   result: ConnectionResult,
@@ -92,10 +107,10 @@ export async function handleCredentialNeeded(
 async function silentReconnect(deps: ConnectionDeps): Promise<ConnectionResult> {
   const result = await deps.tokenClient.requestToken("none");
   if (!isTokenResult(result)) {
-    return STILL_NEEDS_RECONNECT;
+    return stillNeedsReconnect(result.error);
   }
   deps.pushToken(result.accessToken);
-  return { connected: true, needsReconnect: false, expiresAtMs: result.expiresAtMs };
+  return connected(result.expiresAtMs);
 }
 
 /** How long to wait, in milliseconds, before proactively re-minting a token

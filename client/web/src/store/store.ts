@@ -37,6 +37,15 @@ export interface CalendarState {
    * from here is rendered as unavailable rather than silently dropped. */
   availableCalendars: CalendarListEntryDTO[];
   lastPollOutcome: PollOutcomeName | null;
+  /** A Connect/Reconnect press that has not come back yet. The interactive
+   * flow can take a minute of real human time (and, before
+   * `INTERACTIVE_TOKEN_TIMEOUT_MS`, could hang forever), so the button says
+   * so rather than looking untouched. */
+  connectPending: boolean;
+  /** The raw error code the last Connect/Reconnect attempt failed with, or
+   * `null` if the last one succeeded or none has been made. Rendered through
+   * `calendar/connect-error.ts`, never printed directly. */
+  connectError: string | null;
   /** Issue #267's calendar-events read, keyed by the caller-chosen request
    * `key` (the `stepsByItem`/`paneReads` "only what was actually requested"
    * shape). A missing entry means "not requested yet" — which also covers a
@@ -257,6 +266,8 @@ const initialCalendarState: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  connectPending: false,
+  connectError: null,
   eventReads: {},
 };
 
