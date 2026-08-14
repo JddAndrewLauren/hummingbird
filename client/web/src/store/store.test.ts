@@ -9,6 +9,7 @@ const initialCalendar: CalendarState = {
   lastPollOutcome: null,
   connectPending: false,
   connectError: null,
+  silentRemintBlocked: false,
   eventReads: {},
 };
 

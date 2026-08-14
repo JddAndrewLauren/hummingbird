@@ -14,6 +14,11 @@ import {
   writeConnected,
   writeSelectedCalendarIds,
 } from "../calendar/persistence";
+import {
+  INITIAL_REMINT_HEALTH,
+  recordSilentRemint,
+  type RemintHealth,
+} from "../calendar/remint-health";
 import { acceptSelectionChange, effectiveSelection } from "../calendar/selection";
 import { createGisTokenClient, type TokenClient } from "../google/gis";
 import type { RedirectOutcome } from "../google/redirect-flow";
@@ -124,6 +129,26 @@ export function useCalendarWiring(
   // `resumeAfterReconnect`.
   const lastRecoveryPollAtRef = useRef(0);
 
+  // The silent re-mint's running health (`calendar/remint-health.ts`). A ref,
+  // not state: nothing renders from the counter itself — only from the
+  // `blocked` flag, which is mirrored into the store below — and making it
+  // state would re-run every effect keyed on this hook for a number no view
+  // reads. Mirrored rather than derived because the effects that must bail
+  // out read `calendar.silentRemintBlocked`, and a ref read inside an effect
+  // would not re-run it when the value changed.
+  const remintHealthRef = useRef<RemintHealth>(INITIAL_REMINT_HEALTH);
+
+  /** Folds one silent-re-mint outcome in, and publishes `blocked` when it
+   * moves. Every silent path calls this — start, credential-needed and the
+   * rotation timer — so there is no third place a failure can be forgotten. */
+  function recordRemint(result: ConnectionResult) {
+    const before = remintHealthRef.current.blocked;
+    remintHealthRef.current = recordSilentRemint(remintHealthRef.current, result.error);
+    if (remintHealthRef.current.blocked !== before) {
+      coreStore.setCalendarState({ silentRemintBlocked: remintHealthRef.current.blocked });
+    }
+  }
+
   // Every push of the selection goes through here (#121), so the derived
   // union — ticked calendars ∪ the bound Trips calendar, each with its
   // horizon — cannot be applied at four call sites and forgotten at the
@@ -199,6 +224,11 @@ export function useCalendarWiring(
       if (cancelled) {
         return;
       }
+      if (redirect.kind === "none" && wasConnected) {
+        // Only then was this a silent re-mint. A never-opted-in device did
+        // not attempt one, and a redirect return is the interactive path.
+        recordRemint(result);
+      }
       // The redirect path is the one that can report a failure at start-up:
       // an ordinary open has nothing to say, and a silent re-mint's failure is
       // `needsReconnect`, not a message. Written unconditionally so a
@@ -239,7 +269,12 @@ export function useCalendarWiring(
   // Answers a credential-needed round-trip from the core: silent re-mint
   // first, falling back to the re-connect affordance in Settings.
   useEffect(() => {
-    if (!calendar.needsReconnect) {
+    // `silentRemintBlocked` bails out here rather than in `handleCredentialNeeded`:
+    // `needsReconnect` stays standing, so the Reconnect affordance and the
+    // last-good snapshot both survive and the reader sees stale-but-honest
+    // context instead of an app that has gone dark. What stops is only the
+    // hourly attempt that cannot succeed.
+    if (!calendar.needsReconnect || calendar.silentRemintBlocked) {
       return;
     }
     const deps = connectionDeps();
@@ -252,6 +287,7 @@ export function useCalendarWiring(
       if (cancelled) {
         return;
       }
+      recordRemint(result);
       coreStore.setCalendarState({
         connected: result.connected,
         needsReconnect: result.needsReconnect,
@@ -267,13 +303,18 @@ export function useCalendarWiring(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calendar.needsReconnect]);
+  }, [calendar.needsReconnect, calendar.silentRemintBlocked]);
 
   // Proactive rotation: GIS issues no refresh token, so a fresh silent
   // re-mint ahead of the current token's expiry is what keeps a long-lived
   // session from ever needing the reactive credential-needed path above.
   useEffect(() => {
-    if (!calendar.connected || calendar.needsReconnect || expiresAtMs === null) {
+    if (
+      !calendar.connected ||
+      calendar.needsReconnect ||
+      calendar.silentRemintBlocked ||
+      expiresAtMs === null
+    ) {
       return;
     }
     const deps = connectionDeps();
@@ -284,6 +325,7 @@ export function useCalendarWiring(
     const id = window.setTimeout(() => {
       void (async () => {
         const result = await handleCredentialNeeded(deps);
+        recordRemint(result);
         coreStore.setCalendarState({
           connected: result.connected,
           needsReconnect: result.needsReconnect,
@@ -293,7 +335,7 @@ export function useCalendarWiring(
     }, delayMs);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calendar.connected, calendar.needsReconnect, expiresAtMs]);
+  }, [calendar.connected, calendar.needsReconnect, calendar.silentRemintBlocked, expiresAtMs]);
 
   // #121: a `trips-calendar` binding edited on ANY device reaches this one
   // through the ordinary delta pull, and the polled set is derived from it —

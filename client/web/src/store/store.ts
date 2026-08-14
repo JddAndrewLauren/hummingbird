@@ -46,6 +46,12 @@ export interface CalendarState {
    * `null` if the last one succeeded or none has been made. Rendered through
    * `calendar/connect-error.ts`, never printed directly. */
   connectError: string | null;
+  /** The silent re-mint has failed enough consecutive times, in ways that
+   * mean a human is required, that it has stopped trying
+   * (`calendar/remint-health.ts`). `needsReconnect` stays standing alongside
+   * it, so this suppresses the hourly attempt without taking the Reconnect
+   * affordance or the last-good snapshot down with it. */
+  silentRemintBlocked: boolean;
   /** Issue #267's calendar-events read, keyed by the caller-chosen request
    * `key` (the `stepsByItem`/`paneReads` "only what was actually requested"
    * shape). A missing entry means "not requested yet" — which also covers a
@@ -268,6 +274,7 @@ const initialCalendarState: CalendarState = {
   lastPollOutcome: null,
   connectPending: false,
   connectError: null,
+  silentRemintBlocked: false,
   eventReads: {},
 };
 

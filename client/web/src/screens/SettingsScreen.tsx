@@ -591,10 +591,16 @@ export function SettingsScreen({
               padding="var(--space-5)"
               style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
             >
+              {/* Two readings of the same reconnect state. The blocked one
+                  replaces the ordinary sentence rather than joining it: the
+                  app has stopped retrying, and saying only "the credential no
+                  longer works" would leave the reader waiting for a recovery
+                  that is never coming. `calendar/remint-health.ts` decides. */}
               {calendar.connected && calendar.needsReconnect ? (
                 <p style={{ font: "var(--type-body-sm)", color: "var(--status-warn-fg)" }}>
-                  The credential no longer works. The last snapshot is still showing, and stays
-                  honest about its age.
+                  {calendar.silentRemintBlocked
+                    ? "The credential no longer works, and renewing it in the background has stopped working too — this browser will not hand the session over without you. The last snapshot is still showing, and stays honest about its age. Reconnect when you want it live again."
+                    : "The credential no longer works. The last snapshot is still showing, and stays honest about its age."}
                 </p>
               ) : null}
               {/* What the last attempt did, in words. Before this the button

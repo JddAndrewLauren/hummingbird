@@ -33,6 +33,7 @@ const calendar: CalendarState = {
   lastPollOutcome: null,
   connectPending: false,
   connectError: null,
+  silentRemintBlocked: false,
   eventReads: {},
 };
 
