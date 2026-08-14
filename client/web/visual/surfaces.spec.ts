@@ -76,6 +76,28 @@ async function openApp(page: Page, theme: (typeof THEMES)[number], world: World)
   await page.addInitScript((value) => {
     window.localStorage.setItem("hb.theme", value);
   }, theme);
+  // Take the speech API away before the app loads (#379). NOT a convenience:
+  // **headless Chromium 151.0.7922.34 crashes the renderer when
+  // `SpeechRecognition.available()` is called.** Measured, both ways, same
+  // build, same origin: headless -> `page.evaluate: Target crashed`;
+  // `headless: false` -> `"downloadable"`. Without this, every capture-popover
+  // case here died on the click that opens it, because mounting the capture box
+  // is what fires the capability probe.
+  //
+  // Deleting the constructor costs the captures nothing: the gate's browser
+  // holds no on-device language pack, so the arm it would photograph is
+  // `setup-required`, and ADR-0022 has `setup-required` and `unsupported` both
+  // render exactly nothing. The pixels are identical either way — which is why
+  // this belongs in the harness rather than as a `navigator.webdriver` check in
+  // product code, where it would be a browser bug shaping the app.
+  //
+  // Nothing in-page could defend against this: a renderer crash is not
+  // catchable from the page that provokes it. If the gate ever runs headed,
+  // drop this and photograph the real `setup-required` arm.
+  await page.addInitScript(() => {
+    delete (globalThis as { SpeechRecognition?: unknown }).SpeechRecognition;
+    delete (globalThis as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
+  });
   await page.goto(world === "kit" ? "/?demo" : world === "board" ? "/?demo=board" : "/");
   // The shell paints before the wasm core is ready (the core's status is a
   // label, not a gate), so waiting on the nav rail is enough — and waiting
