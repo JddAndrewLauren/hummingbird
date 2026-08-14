@@ -14,6 +14,7 @@ mod api;
 mod context;
 mod deadline;
 mod event;
+mod grill;
 mod item;
 mod live;
 mod project;
@@ -37,6 +38,7 @@ pub use event::{
     core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
 };
+pub use grill::{resulting_stage, GrillOnDoneItem, GrillVerdict};
 pub use item::{Energy, Item, Size, Stage};
 pub use live::{is_live, settled_at};
 pub use project::{Fog, Project, Route};
