@@ -7,6 +7,9 @@ const initialCalendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  connectPending: false,
+  connectError: null,
+  silentRemintBlocked: false,
   eventReads: {},
 };
 

@@ -13,7 +13,9 @@ import type { CaptureDestination } from "./screens/capture-destination";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
+import { NavBar } from "./shell/NavBar";
 import { NavRail } from "./shell/NavRail";
+import { useIsPhone } from "./shell/useIsPhone";
 import { readRailCollapsed, writeRailCollapsed } from "./shell/rail-collapse";
 import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
@@ -112,6 +114,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     writeRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
   };
   const { preference, theme, setPreference } = useTheme();
+  // The nav rail and the bottom bar are different DOM trees, not one tree at
+  // two sizes, so this is the media query as state rather than a CSS rule —
+  // `responsive.css`'s header argues where that line falls.
+  const isPhone = useIsPhone();
   // #274's picker choice: device-local, never synced (`useBackendSelection.ts`).
   const { selection: backendSelection, setSelection: setBackendSelection } = useBackendSelection();
   const {
@@ -278,6 +284,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // The rail's mark is the way home: Now, refreshed. A page reload would be
   // the other reading of "refresh", but it would tear down the core and the
   // SharedWorker for data the same press already re-fetches (ADR-0010).
+  // One counts object for whichever nav is mounted — the two forms show the
+  // same numbers, so a second literal would be a second answer waiting to
+  // diverge.
+  const navCounts = demo ? { triage: demo.triage.length, alerts: demo.alerts.length } : {};
+
   function handleHome() {
     setScreen("now");
     if (refreshEnabled) {
@@ -286,27 +297,42 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        height: "100dvh",
-        overflow: "hidden",
-        background: "var(--surface-page)",
-      }}
-    >
-      <NavRail
-        screen={screen}
-        onScreen={setScreen}
-        counts={demo ? { triage: demo.triage.length, alerts: demo.alerts.length } : {}}
-        statusLabel={coreStatusLabel(status, apiVersion)}
-        theme={theme}
-        onToggleTheme={() => setPreference(toggledPreference(theme))}
-        collapsed={railCollapsed}
-        onToggleCollapsed={handleToggleRailCollapsed}
-        onHome={handleHome}
-      />
+    // `className`, not a style object: this is one of the pure-layout elements
+    // whose phone form is a media query, and at equal importance a stylesheet
+    // rule loses to an element's own `style` attribute. `!important` on every
+    // phone declaration would beat it, which is exactly the cost that deleting
+    // this element's inline object avoids. `shell/responsive.css` has the whole
+    // argument and every rule.
+    <div className="hb-shell">
+      {/* Exactly one navigation landmark is mounted, never both — two would
+          break `surfaces.spec.ts`'s strict-mode `getByRole("navigation")` on
+          every visual project. The rail renders before `<main>` and the bar
+          after it, so each is in the DOM where it is on screen and neither
+          needs a CSS `order` to correct it. */}
+      {isPhone ? null : (
+        <NavRail
+          screen={screen}
+          onScreen={setScreen}
+          counts={navCounts}
+          statusLabel={coreStatusLabel(status, apiVersion)}
+          theme={theme}
+          onToggleTheme={() => setPreference(toggledPreference(theme))}
+          collapsed={railCollapsed}
+          onToggleCollapsed={handleToggleRailCollapsed}
+          onHome={handleHome}
+        />
+      )}
 
-      <main style={{ display: "flex", flex: 1, minWidth: 0, flexDirection: "column" }}>
+      {/* `minHeight: 0` alongside `minWidth: 0`, and both are load-bearing: a
+          flex item's default `min-height`/`min-width` is `auto`, which refuses
+          to shrink below its content. On the desktop row the width one is what
+          mattered. On the phone the shell is a COLUMN, so without the height
+          one this box grows to its content, the scroll container inside it
+          never scrolls, and the nav bar below it is pushed off the screen
+          entirely. */}
+      <main
+        style={{ display: "flex", flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}
+      >
         <Header
           title={SCREEN_TITLES[screen]}
           // The demo badge stands in for a real cycle only in demo mode;
@@ -324,15 +350,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         {updateReady ? <UpdateBanner onReload={handleReload} /> : null}
 
         {/* The one scroll container: the design README fixes the rail and
-            the context panel, and lets only the centre column move. */}
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: "auto",
-            padding: "0 var(--gutter-page) var(--space-11)",
-          }}
-        >
+            the context panel, and lets only the centre column move. Its
+            styling — and its phone form — is `shell/responsive.css`. */}
+        <div className="hb-scroll">
           {screen === "now" && (
             <NowScreen
               demo={demo}
@@ -423,6 +443,17 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
         </div>
       </main>
+
+      {isPhone ? (
+        <NavBar
+          screen={screen}
+          onScreen={setScreen}
+          counts={navCounts}
+          statusLabel={coreStatusLabel(status, apiVersion)}
+          theme={theme}
+          onToggleTheme={() => setPreference(toggledPreference(theme))}
+        />
+      ) : null}
 
       {/* The shell's capture box (#107): over the current screen, never
           instead of it. Rendered outside `<main>` — it is `position: fixed`

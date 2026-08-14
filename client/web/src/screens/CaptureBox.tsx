@@ -155,7 +155,8 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
       <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-5)", flexWrap: "wrap" }}>
         <Input
           id={CAPTURE_INPUT_ID}
-          style={{ flex: 1, minWidth: 260 }}
+          // `min()`: see `layout.tsx`'s `Column`.
+          style={{ flex: 1, minWidth: "min(260px, 100%)" }}
           label="Capture"
           icon="feather"
           placeholder="What's on your mind?"
@@ -193,7 +194,11 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
+          // `repeat(3, 1fr)` forced three columns at every width, so on a
+          // phone each held ~110px and its contents spilled sideways.
+          // `auto-fit` drops to two and then one as the room runs out; the
+          // inner `min()` keeps the 160px track from being a floor of its own.
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
           gap: "var(--space-7)",
           alignItems: "start",
         }}

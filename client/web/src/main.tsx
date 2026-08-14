@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
 import { appUpdateSignal } from "./shell/app-update";
+import { captureOAuthRedirect } from "./shell/oauth-redirect";
+import { watchForActivation } from "./shell/reload-on-activate";
 import { coreStore } from "./store/store";
 import { watchForReadyTimeout } from "./store/ready-timeout";
 import { attachWorkerClient } from "./store/worker-client";
@@ -12,6 +14,16 @@ import "./styles.css";
 // Before the first render, so nothing paints in the wrong theme.
 applyInitialTheme();
 
+// Before anything else too, and for a sharper reason: a return from Google's
+// redirect flow carries an access token in `location.hash`, and that has to
+// come off the URL before anything can log it, share it or restore it from
+// history. There is no router and no `/oauth/callback` route — the redirect
+// URI is the origin root, which sidesteps `not_found_handling` entirely — so
+// this IS the callback handler. The outcome is parked for
+// `useCalendarWiring`, which applies it once the core is ready; an ordinary
+// app open finds nothing and this costs one `URLSearchParams` parse.
+captureOAuthRedirect();
+
 // The ONLY file that touches `virtual:pwa-register` — the module
 // vite-plugin-pwa synthesises at build time, which vitest (running without
 // the plugin) could not resolve at all. `main.tsx` already plays exactly
@@ -20,13 +32,43 @@ applyInitialTheme();
 //
 // `registerType: "prompt"` leaves a new worker waiting rather than
 // skip-waiting into a page still rendering the old precached shell, so
-// `onNeedRefresh` is where the reader gets told. `updateSW(true)` is what
-// swaps to the waiting worker and reloads.
+// `onNeedRefresh` is where the reader gets told. `updateSW()` is what posts
+// `SKIP_WAITING` to that waiting worker; the reload is `watchForActivation`
+// below, in EVERY open view, once the new worker takes control.
+//
+// `false` states that intent, and nothing more: in vite-plugin-pwa 0.21.2
+// the argument is named `_reloadPage` and never read (the plugin attaches
+// its own `controlling` -> reload listener when it shows the prompt, not
+// when this flag is set). So passing `true` would behave identically today —
+// it would just describe an ownership that is not ours to claim. Verified
+// against `node_modules/vite-plugin-pwa/dist/client/build/register.js`; if a
+// version bump makes the argument live again, `false` is still what we want.
 const updateSW = registerSW({
   onNeedRefresh() {
-    appUpdateSignal.markReady(() => void updateSW(true));
+    appUpdateSignal.markReady(() => void updateSW(false));
   },
 });
+
+// Reload when a new worker takes control — including when ANOTHER view is
+// the one that applied the update. Wired here, beside the registration,
+// because `navigator.serviceWorker` is browser-only wiring and `main.tsx` is
+// where the rest of `src/` is spared knowing that; `reload-on-activate.ts`
+// holds the decision and is provable without a browser.
+//
+// Not disposed: this lives as long as the document does, and the only exit
+// from it is the reload itself.
+if ("serviceWorker" in navigator) {
+  watchForActivation(
+    {
+      hasController: () => navigator.serviceWorker.controller !== null,
+      onControllerChange(listener) {
+        navigator.serviceWorker.addEventListener("controllerchange", listener);
+        return () => navigator.serviceWorker.removeEventListener("controllerchange", listener);
+      },
+    },
+    () => window.location.reload(),
+  );
+}
 
 // ADR-0010 (#126): one core per origin, in a `SharedWorker` — every tab and
 // the installed PWA window is a view that connects a `MessagePort` to it,

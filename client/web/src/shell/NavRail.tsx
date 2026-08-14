@@ -1,5 +1,5 @@
 import { Badge } from "../components/core/Badge";
-import { Icon, type IconName } from "../components/core/Icon";
+import { Icon } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
 import markDark1x from "../design/brand/app-icon-dark-26.png";
 import markDark2x from "../design/brand/app-icon-dark-52.png";
@@ -8,24 +8,9 @@ import markLight1x from "../design/brand/app-icon-light-26.png";
 import markLight2x from "../design/brand/app-icon-light-52.png";
 import markLight3x from "../design/brand/app-icon-light-78.png";
 import type { ResolvedTheme } from "../theme/theme";
-import { APP_VERSION } from "./build-version";
-import { SCREENS, type Screen } from "./screens";
-
-// Nav labels are the surface's own name; the header asks the question the
-// screen answers (see SCREEN_TITLES). The order is `SCREENS`, not a second
-// list here — this record only says how each one is drawn, and being a
-// `Record<Screen, …>` it cannot silently miss a screen.
-const NAV: Record<Screen, { label: string; icon: IconName }> = {
-  now: { label: "Now", icon: "zap" },
-  triage: { label: "Triage", icon: "inbox" },
-  routes: { label: "Routes", icon: "route" },
-  alerts: { label: "Alerts", icon: "bell" },
-  rules: { label: "Rules", icon: "siren" },
-  done: { label: "Done", icon: "circle-check" },
-  ledger: { label: "Ledger", icon: "scroll-text" },
-  status: { label: "Status", icon: "activity" },
-  settings: { label: "Settings", icon: "settings" },
-};
+import { SCREEN_ICONS } from "./screen-icons";
+import { SCREEN_LABELS, SCREENS, type Screen } from "./screens";
+import { ShellMeta } from "./ShellMeta";
 
 export interface NavRailProps {
   screen: Screen;
@@ -167,7 +152,8 @@ export function NavRail({
 
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
         {SCREENS.map((item) => {
-          const { label, icon } = NAV[item];
+          const label = SCREEN_LABELS[item];
+          const icon = SCREEN_ICONS[item];
           const active = item === screen;
           const count = counts[item];
           return (
@@ -238,27 +224,11 @@ export function NavRail({
           padding: collapsed ? 0 : "0 var(--space-3)",
         }}
       >
-        {/* Two meta lines, stacked: the core's state (which carries the api
-            version) over the build version. Side by side at 11px they read as
-            one run-on string; stacked, each is its own fact.
-            The build version is deliberately its own span rather than folded
-            into `coreStatusLabel`: it is known even when the core failed or
-            is still starting, whereas that function's other two branches
-            say nothing at all. */}
-        {collapsed ? null : (
-          <div
-            style={{
-              flex: 1,
-              minWidth: 0,
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-1)",
-            }}
-          >
-            <span className="hb-meta">{statusLabel}</span>
-            <span className="hb-meta">{`v${APP_VERSION}`}</span>
-          </div>
-        )}
+        {/* The core's state over the build version — `ShellMeta` owns both
+            lines and the argument for stacking them. Shared with the phone
+            form's More sheet, which is the only place the version is
+            reachable there. */}
+        {collapsed ? null : <ShellMeta statusLabel={statusLabel} style={{ flex: 1 }} />}
         <IconButton
           icon={theme === "dark" ? "sun" : "moon"}
           label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}

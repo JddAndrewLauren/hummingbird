@@ -1,11 +1,17 @@
 # client/web
 
-Desktop web client shell (#69): Vite + React + Tailwind + TypeScript, the
+The web client shell (#69): Vite + React + Tailwind + TypeScript, the
 wasm sync core (`hummingbird-ffi-web`, #67) loaded in a **SharedWorker** —
 one core per origin, N views (ADR-0010, #126) — PWA offline shell, served
 from Cloudflare Workers static assets at `hb.twinion.net` (ADR-0006). The
 shell is built on the Hummingbird Design System (see the repo `CLAUDE.md`):
-a fixed nav rail over five surfaces — Now, Triage, Routes, Alerts, Settings.
+a nav over nine surfaces — Now, Triage, Routes, Alerts, Rules, Done, Ledger,
+Status, Settings — which is a **fixed rail on a desktop and a bottom bar on a
+phone**. That is the app's one breakpoint, 640px, defined in
+`src/shell/breakpoints.ts` and spelled again in `src/shell/responsive.css`
+(pinned equal by `src/shell/responsive-breakpoint.test.ts`); `docs/SURFACES.md`
+carries the argument for the value and for where the class-versus-hook line
+falls.
 Task sync against the owned authority (ADR-0008) is live as of S6–S13:
 capture (plus the global "c" focus hotkey), the frontier with its project
 groups, item detail and the relation-blocked explanation, the act
@@ -47,13 +53,17 @@ pnpm dev            # build the wasm core, then vite dev
   registers the `afterEach(cleanup)` RTL skips without `globals: true`.
   Component tests exist because **typecheck cannot tell you a module has no
   caller** — see that file's header.
-- `pnpm visual` — the Playwright visual gate: five screens x three widths x
-  two themes, plus Now's empty state, captured to `visual/.captures/` for
-  review. Fails on horizontal overflow, an unresolved brand token, or a
-  theme switch that does not reach the page; everything else is for human
-  eyes, since there is no committed golden. Needs a one-time `pnpm exec
-  playwright install chromium`, and is deliberately not in CI. The registry
-  is `docs/SURFACES.md`.
+- `pnpm visual` — the Playwright visual gate: nine screens x four widths
+  (1440 / 1024 / 768 / 390) x two themes, plus the capture popover and Now's
+  empty state, captured to `visual/.captures/` for review. Fails on
+  horizontal overflow, an unresolved brand token, or a theme switch that does
+  not reach the page; everything else is for human eyes, since there is no
+  committed golden — and the overflow assertion proves much less than it
+  sounds like (the shell is `overflow: hidden`, so it mostly measures what
+  cannot happen; `docs/SURFACES.md` and the spec's own docstring say how
+  little). The `-g` flag does **not** reach Playwright, so every run is the
+  whole matrix. Needs a one-time `pnpm exec playwright install chromium`, and
+  is deliberately not in CI. The registry is `docs/SURFACES.md`.
 - `pnpm typecheck` — `tsc -b --noEmit` across the app and the Cloudflare
   Worker script. Note `tsc -p tsconfig.json` checks **nothing** — the root
   config is solution-style (`"files": []`); always go through this script.
@@ -80,7 +90,13 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   `domain`, `feedback`). Inline styles over the design tokens, as in the
   source. `Icon` wraps `lucide-react` through a static name map: the design
   system's own CDN loader cannot ship under `script-src 'self'`.
-- `src/shell/` — the nav rail, the header, the screen list, and the
+- `src/shell/` — the two nav forms (`NavRail.tsx` and `NavBar.tsx` + its More
+  sheet, partitioned by `nav-bar.ts`; `App.tsx` mounts exactly one),
+  `ShellMeta.tsx` (the core-state and build-version lines both of them show),
+  the responsive layer (`breakpoints.ts`, `responsive.css`, `useIsPhone.ts`),
+  `standalone.ts` (installed-app-versus-tab, which changes both the connect
+  flow and its error copy), the OAuth redirect glue (`oauth-redirect.ts`, over
+  the pure `google/redirect-flow.ts`), the header, the screen list, and the
   app-lifetime wiring hooks, independent of which screen is mounted:
   `useCalendarWiring` (consent, token rotation, the 15-minute poll and the
   staleness clock), `useTaskTokenWiring` (the device token's entry, rest and
@@ -98,10 +114,11 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   the facts from the real `KeyboardEvent`). Also the app-update lane —
   `UpdateBanner.tsx` / `useAppUpdate.ts` / `app-update.ts` / `update-check.ts`,
   where a new deploy is announced rather than applied behind your back and
-  `main.tsx` is the only importer of `virtual:pwa-register` — and
-  `build-version.ts`, the displayed build number's whole decision (its I/O
-  half is `build-version.node.ts` at the package root).
-- `src/screens/` — the five surfaces. They switch on local state: there are
+  `main.tsx` is the only importer of `virtual:pwa-register`, plus
+  `reload-on-activate.ts`, which converges every open view once a new worker
+  takes control — and `build-version.ts`, the displayed build number's whole
+  decision (its I/O half is `build-version.node.ts` at the package root).
+- `src/screens/` — the nine surfaces. They switch on local state: there are
   no deep links to honour yet, so no router is installed. Everything
   decidable is a sibling pure module the `.tsx` only threads state through
   — `frontier-order.ts`, `frontier-groups.ts`, `priority.ts`, `urgency.ts`,

@@ -7,6 +7,7 @@ import { CalendarPicker } from "../components/domain/CalendarPicker";
 import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
+import { connectErrorCopy } from "../calendar/connect-error";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import { AUTO_SELECTION, BACKEND_REGISTRY } from "../skills/backend-registry";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./bindings";
 import type { DemoData } from "../fixtures/demo";
 import { APP_VERSION } from "../shell/build-version";
+import { isStandalone } from "../shell/standalone";
 import { coreInstanceLabel } from "../shell/status-label";
 import { effectiveCalendarIds, tripsCalendarId } from "../calendar/selection";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
@@ -54,6 +56,20 @@ const BACKEND_OPTIONS = [
 
 function isThemePreference(value: string): value is ThemePreference {
   return value === "system" || value === "light" || value === "dark";
+}
+
+/** What the last Connect/Reconnect press did, when it failed. Two lines: what
+ * happened, then what to do about it — an error the reader cannot act on is
+ * just bad news. Both come from `calendar/connect-error.ts`; this places them
+ * and nothing else. */
+function ConnectError({ error }: { error: string }) {
+  const { message, hint } = connectErrorCopy(error, isStandalone());
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+      <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{message}</p>
+      <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>{hint}</p>
+    </div>
+  );
 }
 
 /** A single-sentence card: what is not there, and why. */
@@ -300,7 +316,11 @@ function DeadLetterRow({
               key={field.field}
               style={{
                 display: "grid",
-                gridTemplateColumns: "auto 1fr 1fr",
+                // `minmax(0, 1fr)`, not a bare `1fr`: a `1fr` track is
+                // min-content-floored, and these two hold `JSON.stringify`
+                // output that has no wrap opportunity — one long value pushed
+                // the row wider than the page rather than wrapping in place.
+                gridTemplateColumns: "auto minmax(0, 1fr) minmax(0, 1fr)",
                 gap: "var(--space-4)",
                 alignItems: "baseline",
               }}
@@ -571,18 +591,45 @@ export function SettingsScreen({
               padding="var(--space-5)"
               style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
             >
+              {/* Two readings of the same reconnect state. The blocked one
+                  replaces the ordinary sentence rather than joining it: the
+                  app has stopped retrying, and saying only "the credential no
+                  longer works" would leave the reader waiting for a recovery
+                  that is never coming. `calendar/remint-health.ts` decides. */}
               {calendar.connected && calendar.needsReconnect ? (
                 <p style={{ font: "var(--type-body-sm)", color: "var(--status-warn-fg)" }}>
-                  The credential no longer works. The last snapshot is still showing, and stays
-                  honest about its age.
+                  {calendar.silentRemintBlocked
+                    ? "The credential no longer works, and renewing it in the background has stopped working too — this browser will not hand the session over without you. The last snapshot is still showing, and stays honest about its age. Reconnect when you want it live again."
+                    : "The credential no longer works. The last snapshot is still showing, and stays honest about its age."}
                 </p>
               ) : null}
+              {/* What the last attempt did, in words. Before this the button
+                  simply did nothing on every failure path — no pending state,
+                  no error, and (in an installed iOS app, where the popup
+                  escapes to Safari and loses its opener) no callback ever
+                  either. The copy is `calendar/connect-error.ts`; this only
+                  places it. */}
+              {calendar.connectError !== null ? (
+                <ConnectError error={calendar.connectError} />
+              ) : null}
               {!calendar.connected ? (
-                <Button iconLeft="calendar-clock" onClick={onConnect} fullWidth>
+                <Button
+                  iconLeft="calendar-clock"
+                  onClick={onConnect}
+                  fullWidth
+                  loading={calendar.connectPending}
+                  disabled={calendar.connectPending}
+                >
                   Connect Google Calendar
                 </Button>
               ) : calendar.needsReconnect ? (
-                <Button iconLeft="calendar-clock" onClick={onConnect} fullWidth>
+                <Button
+                  iconLeft="calendar-clock"
+                  onClick={onConnect}
+                  fullWidth
+                  loading={calendar.connectPending}
+                  disabled={calendar.connectPending}
+                >
                   Reconnect Google Calendar
                 </Button>
               ) : (

@@ -1,0 +1,246 @@
+/* The shell's layout, and its one breakpoint.
+   ==========================================
+
+   Why a stylesheet at all, in an app that styles everything with inline
+   `style={{}}` objects: at equal importance nothing in a stylesheet outranks
+   an element's own `style` attribute. Specificity does not enter into it —
+   the cascade sorts element-attached declarations above selector-matched ones
+   before it ever reaches specificity, so no selector can be made to win.
+   Exactly one mechanism does win: `!important`. Importance is sorted *first*,
+   above the style attribute's tiebreaker (CSS Cascade §"Cascade Sorting
+   Order": origin-and-importance, then context, then element-attached styles),
+   and an important author declaration beats a normal one in a `style`
+   attribute — shorthands included, so `font: var(--type-h2) !important` would
+   in fact have overridden the h1's inline `font`.
+
+   So the choice below was not "impossible versus possible", it was "delete
+   the inline object, or write `!important` on every declaration the phone
+   form changes". Deleting is what these rules do, and the reason is the
+   price of the alternative: every declaration in the phone block at the foot
+   of this file would have to carry `!important` — a block
+   where every line shouts says nothing about which lines matter, and worse,
+   it poisons the elements for later. Anything added afterwards that legibly
+   ought to override these — a one-off inline tweak, a state style, a future
+   layer — would silently lose, and the fix would be a second `!important`.
+   One source of truth per element costs nothing here and keeps the escape
+   hatch usable; the sole surviving `!important` in this file (the 16px input
+   rule at the bottom) is that same general mechanism, spent once where
+   deleting the inline style was not an option.
+
+   The split is hard, and deliberately by kind. Mixing the two per element is
+   what regresses desktop:
+
+   - **These classes** carry the pure-layout elements — the shell row and the
+     scroll container (`App.tsx`), the header and its title
+     (`shell/Header.tsx`), and the four screen skeletons
+     (`screens/layout.tsx`) — plus a partial split on `ItemRow`, whose class
+     carries only the wrap the phone form needs while its caller-dependent
+     paint stays inline. Their phone form is a media query, no JS.
+   - **`useIsPhone`** (a `matchMedia` hook) is used only where the DOM *tree*
+     differs and no amount of CSS would do: the nav rail versus the bottom bar,
+     and `CapturePopover`'s JS-measured anchor.
+
+   `--gutter-page` is deliberately NOT redefined inside the media query. Three
+   unrelated things consume it — the scroll container, the header, and
+   `CapturePopover`'s measured width — and moving it would move all three
+   including a JS measurement. Per-class padding is overridden instead.
+
+   The breakpoint literal (640px) is `PHONE_MAX_WIDTH_PX` in `breakpoints.ts`;
+   CSS cannot read a custom property inside a media query and there is no
+   PostCSS plugin here, so it is spelled twice and `responsive-breakpoint.test.ts`
+   reads this file's source to pin the two equal. That file also explains why
+   640 and not 768. */
+
+/* ---- The shell ---------------------------------------------------------- */
+
+.hb-shell {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--surface-page);
+}
+
+/* The app's one scroll container: the design system fixes the rail and the
+   context panel and lets only the centre column move. On the phone form the
+   nav is a flex sibling *below* this box rather than floating chrome over it,
+   so there is no bar-shaped hole to reserve at the bottom — see `NavBar.tsx`. */
+.hb-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--gutter-page) var(--space-11);
+}
+
+.hb-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex: 0 0 auto;
+  padding: var(--space-7) var(--gutter-page) var(--space-6);
+}
+
+/* Focusable only programmatically (`Header.tsx`'s screen-change effect), so
+   it is not a keyboard-operable component and shows no ring. */
+.hb-header-title {
+  flex: 1;
+  min-width: 0;
+  font: var(--type-h1);
+  letter-spacing: var(--tracking-heading);
+  color: var(--text-primary);
+  outline: none;
+}
+
+/* ---- The screen skeletons ----------------------------------------------- */
+
+.hb-two-column {
+  display: flex;
+  gap: var(--space-8);
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+/* `min()` rather than a bare 380: a fixed minimum cannot be honoured below
+   380px of container, so the column overflowed the page horizontally instead
+   of shrinking. Desktop is unchanged — at 768 and up the container already
+   exceeds 380, so this resolves to 380px exactly. */
+.hb-column {
+  flex: 1;
+  min-width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+/* The context panel. It is sticky, so its height is whatever its content is —
+   and once Now's aside holds a ranked region that grows with the number of
+   standing questions (#245, ADR-0015), that content can exceed the viewport
+   and simply be unreachable: the shell's one scroll container scrolls the
+   *page*, past a panel stuck to the top. Capping it at the viewport and
+   letting it scroll itself is what keeps the bottom of the panel reachable on
+   every screen that has one (Now, Settings, Alerts, Routes).
+
+   All three of those properties are undone on the phone form below, where the
+   panel is stacked in the flow and none of them is true any more. */
+.hb-aside {
+  width: var(--panel-width);
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100dvh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/** A single-column surface capped at the content measure. */
+.hb-single-column {
+  max-width: var(--content-max);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+/* ---- The item row ------------------------------------------------------- */
+
+/* `ItemRow` puts the title and up to six meta chips on one line, and the
+   title is the only one of them that can shrink — so at 390px it is what
+   gives, down to "O…" and "Draft t…" while the badges stay whole. This is
+   the clipping the visual gate cannot see: `expectNoHorizontalOverflow`
+   measures the document, and an ellipsis is the row shrinking *correctly*
+   as far as the document is concerned. */
+.hb-item-row-title {
+  flex: 1;
+  min-width: 0;
+  font: var(--type-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- The phone form ----------------------------------------------------- */
+
+@media (max-width: 640px) {
+  /* The rail becomes a bottom bar. `App.tsx` mounts exactly one of the two
+     (two navigation landmarks break `surfaces.spec.ts`'s strict-mode
+     `getByRole("navigation")`) and renders the bar *after* `<main>`, so this
+     needs only the axis flip: DOM order and visual order already agree. */
+  .hb-shell {
+    flex-direction: column;
+  }
+
+  /* The title takes its own line and the controls wrap under it — at 390px a
+     30px heading beside a sync badge, a refresh control and the New button
+     leaves the heading about two characters wide. */
+  .hb-header {
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    padding: var(--space-6) var(--gutter-page) var(--space-5);
+  }
+
+  .hb-header-title {
+    flex: 1 0 100%;
+    font: var(--type-h2);
+  }
+
+  .hb-scroll {
+    padding-bottom: var(--space-9);
+  }
+
+  /* Stacked, in the flow. Leaving `position: sticky` + `max-height: 100dvh` +
+     `overflow-y: auto` on a full-width panel below the column would create a
+     nested scroll region — a viewport-tall box inside a scrolling page, which
+     swallows the page's own scroll wherever a thumb happens to land. The
+     reachability problem the desktop rule solves does not exist here: stacked
+     in the flow, the panel's whole height is scrolled by the page. */
+  .hb-aside {
+    width: auto;
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  /* Two lines instead of one: the title takes the first, the meta chips and
+     the mark-done control wrap onto the second. `flex: 1 0 100%` on the title
+     is what forces the break — no grouping element is needed, and the row's
+     markup is unchanged. Wrapping rather than clipping is the point: a title
+     is the only part of a row that cannot be guessed from context. */
+  .hb-item-row {
+    flex-wrap: wrap;
+    row-gap: var(--space-3);
+  }
+
+  /* The basis is the rest of the first line, not the whole of it: the 6px
+     urgency dot and the row's `--space-5` gap precede the title, and a flat
+     `100%` pushes the title to a line of its own and leaves the dot stranded
+     alone above it. Filling exactly what remains keeps dot and title together
+     and still leaves no room for a meta chip, which is what forces the wrap. */
+  .hb-item-row-title {
+    flex: 1 0 calc(100% - 6px - var(--space-5));
+    overflow: visible;
+    white-space: normal;
+  }
+}
+
+/* iOS Safari zooms the whole page when a form control smaller than 16px takes
+   focus, and never zooms back out. `--size-body` is 15px; the token file is a
+   copied mirror of the design project (`src/design/tokens/`) so it cannot be
+   changed here, and `Input.tsx`, `Textarea.tsx` and `Select.tsx` all set the
+   `font` shorthand inline. `!important` is what beats an inline declaration —
+   see this file's header — and here it is the only move left. The header's
+   preferred fix, deleting the inline object and restating the whole thing in
+   a class, is not available: the right size is the token's, on every width
+   except this one, so deleting `font` from the three components would move
+   their entire desktop typography into this stylesheet to buy one phone-only
+   longhand. So this is the general mechanism used once where the alternative
+   was closed, not an exception to a rule. A `--size-input` token
+   taken back upstream to the design project is the real fix.
+   (`-webkit-text-size-adjust` in `base.css` does not prevent focus-zoom.) */
+@media (max-width: 640px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

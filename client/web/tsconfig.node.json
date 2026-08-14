@@ -26,6 +26,14 @@
     // node-only I/O half moving under `src/`, where `node:child_process`
     // could be pulled into the browser bundle.
     "src/shell/build-version.ts",
+    // Same arrangement, different reason: `visual/surfaces.spec.ts` drives the
+    // phone project's More sheet, and which screens are behind it is the app's
+    // own decision (`nav-bar.ts`). Importing it is what stops the spec from
+    // keeping a second, drifting copy of that partition. Both files are pure
+    // TypeScript with no import from `components/` — deliberately, since this
+    // project has no JSX; `screen-icons.ts` holds the half that does.
+    "src/shell/nav-bar.ts",
+    "src/shell/screens.ts",
     "vitest.config.ts",
     "playwright.config.ts",
     "visual/**/*.ts",
