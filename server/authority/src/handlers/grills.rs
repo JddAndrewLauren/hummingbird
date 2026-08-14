@@ -101,8 +101,9 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     }
 
     // Every fallible check is resolved above this line — nothing past here
-    // can fail for a reason a retry would fix, only a genuine backend
-    // fault, which is exactly what the transaction below guards against.
+    // can fail for a reason a retry would fix, only a genuine backend fault.
+    // That ordering is the whole atomicity story: see this module's header
+    // and `crate::sql`'s, since no transaction wraps the burst below.
     let version = read_meta_version(sql)? + 1;
     let unticked_step_ids = if create.delete_unticked_plan {
         select_unticked_step_ids(sql, &create.item_id)?
@@ -181,7 +182,7 @@ fn write_completion(
 }
 
 /// Every currently-unticked, not-yet-deleted Step on an item — evaluated
-/// fresh against live state at the moment the transaction opens, never
+/// fresh against live state at the moment the write burst runs, never
 /// against a client-supplied snapshot, which is what makes a Step ticked or
 /// deleted *during* the interview survive automatically: by the time this
 /// runs, it is simply no longer in the set.
