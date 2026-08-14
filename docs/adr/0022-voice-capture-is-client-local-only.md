@@ -236,14 +236,17 @@ version amends them from its own file; check this ADR's Status header.*
 | Device | Browser | Constructor | On-device statics | Verdict |
 | --- | --- | --- | --- | --- |
 | Desk (macOS) | Chrome 151 | both names, same object | `available`, `install` | **ready** after install |
-| Desk (macOS) | Safari 26.6 | `webkitSpeechRecognition` **only** | **none** | **`unsupported`** |
+| **iPad** (iPadOS 18.7) | Safari 26.6 | `webkitSpeechRecognition` **only** | **none** | **`unsupported`** |
 | Phone | not probed | — | — | — |
-| iPad | not probed (see below) | — | — | — |
+
+*Amended 2026-08-13 (#378): the Safari row was first committed as "Desk
+(macOS)". It is the **iPad**. See "why the device was mis-attributed" below —
+the mistake is left recorded because it is the trap the next probe will hit.*
 
 ### Safari ships the dangerous case, and it is now measured
 
 Probed on `https://example.com` (a secure context with no CSP — see the
-obstacle note below), Safari 26.6 on macOS:
+obstacle note below), Safari 26.6 on iPadOS 18.7:
 
 ```
 "SpeechRecognition" in window        → false
@@ -266,21 +269,41 @@ the guarantee. Decision 2 routes it to `unsupported`, and the microphone does
 not render. Any future change that weakens the gate to a constructor-presence
 check ships cloud recognition on every Safari.
 
+Because the measurement is of WebKit, it carries to **every browser on iOS and
+iPadOS**, not only Safari: they are all the same engine. It does *not* carry to
+Safari on macOS, which was not probed — see below.
+
+### Why the device was mis-attributed, and why that is recorded
+
+**The user agent said `Macintosh; Intel Mac OS X 10_15_7`, with no `Mobile`
+token.** It was an iPad. **iPadOS Safari has "Request Desktop Website" on by
+default**, and desktop mode presents the macOS Safari UA verbatim — which is
+also why an earlier run on `about:blank` from the same device reported
+`iPad; CPU OS 18_7 … Mobile/15E148`: desktop mode is a per-site setting, so one
+device can report either string depending on where the probe runs.
+
+This is left in the record rather than quietly corrected because the next
+person to run a probe on that device will read the same UA and reach the same
+wrong conclusion. **On iPadOS, the user agent is not evidence of the platform.**
+Get the device from whoever ran it, or read a signal desktop mode does not
+spoof (`navigator.maxTouchPoints > 0`, `ontouchstart in window`).
+
 ### What is still not known
 
-**#378 asked for the phone and the iPad so that "desktop only" would be a
-finding rather than an assumption. Neither was probed**, and this ADR does not
-pretend otherwise — that acceptance criterion on #378 is recorded as **not
-met**. The operator scoped it out on 2026-08-13.
+**#378 asked for the desk browser, the phone and the iPad. Two of the three are
+now measured** — desk Chrome and the iPad. **The phone was not probed**, so that
+acceptance criterion is still recorded as **not met**; the operator scoped it
+out on 2026-08-13.
 
-The iPad runs the same WebKit at the same version (Safari 26.6, iPadOS 18.7),
-so the Safari row above is strong evidence for it — but it is *inference from a
-shared engine*, not a measurement of that device, and is not recorded as one.
+**Safari on macOS was not probed either.** The iPad result is strong evidence
+for it — same engine, same version — but that is inference, and this ADR does
+not record inference as measurement. (It is the direction that matters little:
+the desk machine runs Chrome, where the feature works.)
 
 **The consequence for the code is nil**, which is why the gap is tolerable:
 Decision 2 routes an absent static to `unsupported`, and an unprobed device is
 by definition one where local processing has not been established. The client
-behaves correctly on both whatever the answer is.
+behaves correctly on the phone whatever the answer is.
 
 ### The obstacle, for whoever probes next
 
@@ -378,12 +401,14 @@ must not infer the set of installed languages from the tag it passed.
 - **A code comment or module header claiming "falls back to cloud if
   unavailable" is a defect against this ADR**, not a nit, whether or not the
   code does it.
-- **Safari renders no microphone, and that is the correct output, not a bug.**
-  #383's design pass and #384's real-browser acceptance should expect the
-  capture box to look exactly as it does today under Safari — the `unsupported`
-  arm renders nothing, which is also what keeps the existing
-  `CapturePopover.test.tsx` cases untouched. A bug report of "the mic is
-  missing in Safari" is this ADR working.
+- **The iPad — and every browser on iOS/iPadOS — renders no microphone, and
+  that is the correct output, not a bug.** #383's design pass and #384's
+  real-browser acceptance should expect the capture box to look exactly as it
+  does today there: the `unsupported` arm renders nothing, which is also what
+  keeps the existing `CapturePopover.test.tsx` cases untouched. A bug report of
+  "the mic is missing on the iPad" is this ADR working. Note this makes the
+  feature **desk-Chrome-only in practice**, which is a measured finding for the
+  iPad and an open question only for the phone.
 - **Superseding this ADR requires a measurement, not an argument.** A proposal
   to relax Decision 1 must show the browser state it was measured in, in the
   form Decision 5 uses.
@@ -395,6 +420,6 @@ must not infer the set of installed languages from the tag it passed.
 changes its default away from `false`; `available()` returns a value outside
 the three observed above; **Safari gains any on-device static**, which would
 move it out of `unsupported` and make the microphone render somewhere it never
-has; or the phone or iPad is probed, closing the last gap in Decision 6 and
+has; or the phone is probed, closing the last gap in Decision 6 and
 letting the feature's device scope finally be stated as a finding rather than
 the part-measurement it is today.
