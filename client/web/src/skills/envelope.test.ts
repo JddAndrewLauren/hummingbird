@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyLine, microtaskResult } from "./envelope";
+import { classifyLine, grillResult, microtaskResult } from "./envelope";
 
 describe("classifyLine", () => {
   it("reads a progress line", () => {
@@ -90,5 +90,47 @@ describe("microtaskResult", () => {
       steps: ["a", "b"],
       note: "",
     });
+  });
+});
+
+describe("grillResult", () => {
+  it("reads a question turn", () => {
+    const value = {
+      kind: "question",
+      question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] },
+    };
+    expect(grillResult(value)).toEqual({
+      kind: "question",
+      question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] },
+    });
+  });
+
+  it("reads a proposal turn", () => {
+    const value = {
+      kind: "proposal",
+      proposal: { summary: "Settled on SEA", verdict: "resolved", patch: { title: "book flights" } },
+    };
+    expect(grillResult(value)).toEqual({
+      kind: "proposal",
+      proposal: { summary: "Settled on SEA", verdict: "resolved", patch: { title: "book flights" } },
+    });
+  });
+
+  it("is null for anything that is not exactly one of the schema's two shapes", () => {
+    for (const value of [
+      null,
+      undefined,
+      42,
+      "question",
+      [],
+      {},
+      { kind: "question" },
+      { kind: "question", question: { prompt: "p", recommendedAnswer: "r", choices: ["only one"] } },
+      { kind: "proposal" },
+      { kind: "proposal", proposal: { summary: "s", verdict: "not-a-verdict", patch: {} } },
+      { kind: "something-else", question: { prompt: "p", recommendedAnswer: "r", choices: ["a", "b"] } },
+    ]) {
+      expect(grillResult(value)).toBeNull();
+    }
   });
 });

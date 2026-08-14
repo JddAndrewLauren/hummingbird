@@ -16,12 +16,12 @@ use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
 use hummingbird_core::{
-    ActError, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, CoreInitError, ItemAction,
-    TriageDestination, TriagePatch,
+    ActError, CaptureOptions, CompleteGrillError, Core, CoreCycleOutcome, CoreEvent,
+    CoreInitError, GrillCompletion, ItemAction, TriageDestination, TriagePatch,
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, Alert, Condition, Energy, EventKindEntry, FieldType, Item,
-    Project, Rule, Size, Stage, Tier, CORE_FIELDS, EVENT_KINDS,
+    Project, Rule, Size, Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -180,6 +180,23 @@ where
 /// with it rather than just failing.
 fn reject(message: String) -> TriageResponse {
     TriageResponse { kind: "failed", error: Some(message) }
+}
+
+/// What [`TaskHostCore::complete_grill`] resolves to (#355, ADR-0023).
+/// Four failure kinds, each distinct from `"failed"` because the caller's
+/// recovery differs: `"not_found"` (no such item —
+/// [`CompleteGrillError::ItemNotFound`]), `"item_done"` (the item is out of
+/// the Grill plan's scope — [`CompleteGrillError::ItemDone`]) and
+/// `"needs_re_review"` (the reviewed session's Steps have drifted since —
+/// [`CompleteGrillError::NeedsReReview`], the review card's cue to refuse
+/// the stale Confirm and show fresh state instead of silently re-sending
+/// it). `"failed"` covers an unrecognised `verdict` string, unreadable
+/// `session_steps` JSON, and a durability failure enqueueing the mutation.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CompleteGrillResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
 }
 
 /// Resolves a touched size/energy field by name: `None` stays untouched,
@@ -1268,6 +1285,94 @@ impl TaskHostCore {
         }
     }
 
+    /// Confirms a completed Grill interview (#355, ADR-0023): the review
+    /// card's Confirm button. `verdict` is the wire's snake_case spelling
+    /// (`"resolved"`/`"fog_remains"`, [`GrillVerdict::parse`]) and
+    /// `session_steps` the review session's own captured Steps as a JSON
+    /// array — both rejected here, before [`Core::complete_grill`] is ever
+    /// called, the same "reject before the seam" discipline
+    /// [`TaskHostCore::capture`]/[`TaskHostCore::triage`] use.
+    ///
+    /// The completion's own fields arrive as separate scalars rather than one
+    /// JSON payload (`triage`'s `edits` shape) because every one of them is a
+    /// required scalar the review card always sends — there is no
+    /// "untouched vs. cleared" distinction here for a patch object to carry —
+    /// so the argument count is the wasm boundary's, not a grouping this side
+    /// declined to make.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_grill(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        session_steps: &str,
+        transcript: String,
+        summary: String,
+        verdict: &str,
+        model_proposal: String,
+        applied_patch: String,
+        delete_unticked_plan: bool,
+        now_ms: i64,
+    ) -> CompleteGrillResponse {
+        let Some(verdict) = GrillVerdict::parse(verdict) else {
+            return CompleteGrillResponse {
+                kind: "failed",
+                id: None,
+                error: Some(format!("unrecognised grill verdict {verdict:?}")),
+            };
+        };
+        let session_steps: Vec<Step> = match serde_json::from_str(session_steps) {
+            Ok(steps) => steps,
+            Err(error) => {
+                return CompleteGrillResponse {
+                    kind: "failed",
+                    id: None,
+                    error: Some(format!("unreadable session steps: {error}")),
+                };
+            }
+        };
+        let completion = GrillCompletion {
+            transcript,
+            summary,
+            verdict,
+            model_proposal,
+            applied_patch,
+            delete_unticked_plan,
+        };
+        match self
+            .core
+            .complete_grill(seed, item_id, &session_steps, completion, now_ms)
+            .await
+        {
+            Ok(id) => CompleteGrillResponse {
+                kind: "ok",
+                id: Some(id),
+                error: None,
+            },
+            Err(CompleteGrillError::ItemNotFound) => CompleteGrillResponse {
+                kind: "not_found",
+                id: None,
+                error: Some("item not found".to_string()),
+            },
+            Err(CompleteGrillError::ItemDone) => CompleteGrillResponse {
+                kind: "item_done",
+                id: None,
+                error: Some("item is done".to_string()),
+            },
+            Err(CompleteGrillError::NeedsReReview) => CompleteGrillResponse {
+                kind: "needs_re_review",
+                id: None,
+                error: Some(
+                    "unticked steps changed since this review was last shown".to_string(),
+                ),
+            },
+            Err(error) => CompleteGrillResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
     /// Runs one [`Core::run`] cycle against the live `reqwest` transports.
     pub async fn run(
         &mut self,
@@ -1781,6 +1886,165 @@ mod triage_tests {
         .await;
 
         assert_eq!(host.frontier().items[0].item.scheduled_date, None);
+    }
+}
+
+#[cfg(test)]
+mod grill_tests {
+    use super::*;
+
+    async fn captured_item(host: &mut TaskHostCore) -> String {
+        let response = host
+            .capture("seed-cap", "book flights", "triage", None, None, None, 1_000)
+            .await;
+        response.id.expect("capture always mints an id")
+    }
+
+    #[tokio::test]
+    async fn resolving_a_triage_item_promotes_it_off_the_triage_inbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let response = host
+            .complete_grill(
+                "seed-grill-1",
+                &item_id,
+                "[]",
+                "Q: destination?\nA: Tokyo".to_string(),
+                "Settled on Tokyo".to_string(),
+                "resolved",
+                "{\"title\":\"book flights to Tokyo\"}".to_string(),
+                "{\"title\":\"book flights to Tokyo\"}".to_string(),
+                false,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.id.is_some());
+        assert!(host.triage_inbox().items.is_empty());
+        assert_eq!(host.frontier().items[0].item.stage, Stage::Ready);
+    }
+
+    #[tokio::test]
+    async fn an_unrecognised_verdict_is_rejected_before_reaching_core_complete_grill() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let response = host
+            .complete_grill(
+                "seed-grill-2",
+                &item_id,
+                "[]",
+                "transcript".to_string(),
+                "summary".to_string(),
+                "not-a-real-verdict",
+                "{}".to_string(),
+                "{}".to_string(),
+                false,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert!(response.id.is_none());
+        // Never reached `Core::complete_grill` — the item is exactly where
+        // it started.
+        assert_eq!(host.triage_inbox().items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unreadable_session_steps_json_is_rejected_before_reaching_core_complete_grill() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let response = host
+            .complete_grill(
+                "seed-grill-3",
+                &item_id,
+                "not json",
+                "transcript".to_string(),
+                "summary".to_string(),
+                "resolved",
+                "{}".to_string(),
+                "{}".to_string(),
+                false,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert_eq!(host.triage_inbox().items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn completing_a_grill_on_an_unknown_item_id_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-4");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let response = host
+            .complete_grill(
+                "seed-grill-4",
+                "no-such-item",
+                "[]",
+                "transcript".to_string(),
+                "summary".to_string(),
+                "resolved",
+                "{}".to_string(),
+                "{}".to_string(),
+                false,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "not_found");
+        assert!(response.error.is_some());
+    }
+
+    /// Fog remaining always demotes to Grilling
+    /// (`hummingbird_domain::resulting_stage`) — never a UI-side branch on
+    /// the item's stage.
+    #[tokio::test]
+    async fn fog_remains_demotes_a_triage_item_to_grilling() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-5");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let response = host
+            .complete_grill(
+                "seed-grill-5",
+                &item_id,
+                "[]",
+                "transcript".to_string(),
+                "still foggy".to_string(),
+                "fog_remains",
+                "{}".to_string(),
+                "{}".to_string(),
+                false,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.frontier().items.len(), 0, "Grilling never appears on the frontier");
     }
 }
 

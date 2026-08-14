@@ -378,3 +378,154 @@ describe("TriageScreen — the mark-done checkmark", () => {
     expect(screen.queryByRole("button", { name: /mark .* done/i })).toBeNull();
   });
 });
+
+// #355/ADR-0023's "Grill me" tracer: the row button opens the takeover, the
+// takeover replaces the whole screen, and Back closes it and restores focus
+// to the button that opened it.
+describe("TriageScreen — the Grill takeover", () => {
+  const IDLE_TURN = { phase: "idle" as const };
+
+  function fakeGrill(overrides: Partial<import("../shell/useGrillTakeoverWiring").GrillTakeoverWiring> = {}) {
+    return {
+      openItemId: null,
+      sessionSteps: null,
+      open: vi.fn(),
+      back: vi.fn(),
+      turn: IDLE_TURN,
+      turns: [],
+      answer: vi.fn(),
+      keepGrilling: vi.fn(),
+      retry: vi.fn(),
+      confirm: vi.fn(),
+      confirmSeed: null,
+      ...overrides,
+    };
+  }
+
+  it("offers no Grill me button without a grill prop (demo mode's own reason)", () => {
+    renderTriage(taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] }));
+    fireEvent.click(row("a foggy capture"));
+    expect(screen.queryByRole("button", { name: /grill me/i })).toBeNull();
+  });
+
+  it("Grill me calls grill.open with the item id", () => {
+    const grill = fakeGrill();
+    render(
+      <TriageScreen
+        demo={null}
+        task={taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] })}
+        onTriage={vi.fn()}
+        nowMs={NOW}
+        grill={grill}
+      />,
+    );
+    fireEvent.click(row("a foggy capture"));
+
+    fireEvent.click(screen.getByRole("button", { name: /grill me/i }));
+    expect(grill.open).toHaveBeenCalledWith("i1");
+  });
+
+  it("replaces the whole screen with the takeover once grill.openItemId names a real item", () => {
+    const grill = fakeGrill({
+      openItemId: "i1",
+      turn: {
+        phase: "question",
+        messages: [],
+        question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] },
+        backend: null,
+        model: null,
+      },
+    });
+    render(
+      <TriageScreen
+        demo={null}
+        task={taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] })}
+        onTriage={vi.fn()}
+        nowMs={NOW}
+        grill={grill}
+      />,
+    );
+
+    screen.getByText("Which airport?");
+    // The ordinary inbox is gone — this is a takeover, not an addition.
+    expect(screen.queryByText("a foggy capture")).toBeNull();
+  });
+
+  it("Back calls grill.back and restores focus to the row's own Grill me button once the takeover closes", () => {
+    const grill = fakeGrill();
+    const task = taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] });
+    const { rerender } = render(
+      <TriageScreen demo={null} task={task} onTriage={vi.fn()} nowMs={NOW} grill={grill} />,
+    );
+    fireEvent.click(row("a foggy capture"));
+    fireEvent.click(screen.getByRole("button", { name: /grill me/i }));
+
+    // The takeover renders once `openItemId` is set — the same `grill`
+    // object, so `back` below is the mock the click is asserted against.
+    rerender(
+      <TriageScreen
+        demo={null}
+        task={task}
+        onTriage={vi.fn()}
+        nowMs={NOW}
+        grill={{ ...grill, openItemId: "i1", turn: { phase: "asking", messages: [] } }}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Back to Triage"));
+    expect(grill.back).toHaveBeenCalledTimes(1);
+
+    // The real hook would now report `openItemId: null` — simulated here
+    // since `grill` is a plain fake, not the reactive hook itself.
+    rerender(<TriageScreen demo={null} task={task} onTriage={vi.fn()} nowMs={NOW} grill={grill} />);
+
+    expect(document.activeElement?.textContent).toContain("Grill me");
+  });
+
+  /** The refusal has to reach the review card that is still standing behind
+   * it — the round-2 blocker's user-visible half — and only when it belongs
+   * to the confirm this session actually made. */
+  it("renders the refusal of THIS session's confirm on the review card, and no other", () => {
+    const proposalTurn = {
+      phase: "proposal" as const,
+      messages: [],
+      proposal: { summary: "s", verdict: "resolved" as const, patch: {} },
+      backend: null,
+      model: null,
+    };
+    const task = taskState({
+      triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })],
+      lastGrillCompletion: {
+        seed: "i1:complete-grill:1000",
+        itemId: "i1",
+        kind: "needs_re_review",
+        grillId: null,
+        error: "unticked steps changed since this review was last shown",
+      },
+    });
+
+    const { rerender } = render(
+      <TriageScreen
+        demo={null}
+        task={task}
+        onTriage={vi.fn()}
+        nowMs={NOW}
+        grill={fakeGrill({ openItemId: "i1", turn: proposalTurn, confirmSeed: "i1:complete-grill:1000" })}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("unticked steps changed");
+
+    // A fresh session on the same item: the identical result is now some
+    // previous confirm's, and must not be worn by this proposal.
+    rerender(
+      <TriageScreen
+        demo={null}
+        task={task}
+        onTriage={vi.fn()}
+        nowMs={NOW}
+        grill={fakeGrill({ openItemId: "i1", turn: proposalTurn, confirmSeed: null })}
+      />,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});

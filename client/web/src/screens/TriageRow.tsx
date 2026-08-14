@@ -11,7 +11,7 @@ import { relativeAge } from "../shell/sync-status";
 import type { ProjectDTO, TaskItemDTO, TriageDestinationName } from "../store/protocol";
 import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
-import { canMarkDone } from "./item-actions";
+import { canGrill, canMarkDone } from "./item-actions";
 import { PRIORITY_OPTIONS } from "./priority";
 import { triageFailureFor } from "./write-failure";
 import {
@@ -40,6 +40,15 @@ const ENERGIES: Array<{ value: TriageDraft["energy"]; label: string }> = [
   { value: "high", label: "High" },
 ];
 
+/** The DOM id a row's own "Grill me" button carries (#355, ADR-0023) — so
+ * `TriageScreen` can find and re-focus it on Back after the takeover
+ * unmounts and remounts the whole list, the same "look it up by id rather
+ * than hold a ref across an unmount" contract `shell/CapturePopover.tsx`'s
+ * `CAPTURE_TRIGGER_ID` uses for its own trigger. */
+export function grillMeButtonId(itemId: string): string {
+  return `triage-grill-me-${itemId}`;
+}
+
 export interface TriageRowProps {
   item: TaskItemDTO;
   projects: ProjectDTO[];
@@ -59,6 +68,11 @@ export interface TriageRowProps {
    * detail-panel act vocabulary still offers nothing here, but finishing is
    * one click on every screen (`item-actions.ts`'s `canMarkDone`). */
   onComplete?: (itemId: string) => void;
+  /** "Grill me" (#355, ADR-0023): opens the center-column takeover over
+   * this item, decided by `item-actions.ts`'s `canGrill`. Absent in demo
+   * mode, same as `onTriage` — beside "Send to grilling", never a
+   * replacement for it. */
+  onGrillMe?: (itemId: string) => void;
   /** The most recent triage result any row got back (`TaskState.lastTriage`)
    * — matched here by the item id the result itself carries, the same
    * broadcast-recognition contract `NowScreen`'s `actError` uses for
@@ -90,6 +104,7 @@ export function TriageRow({
   nowMs,
   onTriage,
   onComplete,
+  onGrillMe,
   lastTriage,
 }: TriageRowProps) {
   // Only what the person has typed is state — see `effectiveDraft`'s doc for
@@ -355,6 +370,18 @@ export function TriageRow({
               : `source ${item.source ?? "typed here"}`}
           </span>
           <div style={{ display: "flex", gap: "var(--space-4)", justifyContent: "flex-end" }}>
+            {onGrillMe && canGrill(item.stage) ? (
+              <Button
+                id={grillMeButtonId(item.id)}
+                size="sm"
+                variant="secondary"
+                iconLeft="sparkles"
+                disabled={item.pending}
+                onClick={() => onGrillMe(item.id)}
+              >
+                Grill me
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="secondary"

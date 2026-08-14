@@ -105,6 +105,18 @@ export interface TaskTriageResult {
   error: string | null;
 }
 
+/** The result of the most recent `completeGrill` request this view issued
+ * (#355/ADR-0023), matched back by `seed` — same broadcast-recognition
+ * contract as [`TaskTriageResult`]. `grillId` is the minted Grill's id on
+ * `"ok"`, `null` otherwise. */
+export interface TaskGrillCompletionResult {
+  seed: string;
+  itemId: string;
+  kind: "ok" | "not_found" | "item_done" | "needs_re_review" | "failed" | "busy";
+  grillId: string | null;
+  error: string | null;
+}
+
 /** The result of the most recent `setBinding` request this view issued
  * (#118), matched back by `seed` — same broadcast-recognition contract as
  * [`TaskActResult`]. `key` is echoed so a per-row editor can tell which of
@@ -186,6 +198,9 @@ export interface TaskState {
   /** The result of the most recent `triage` request this view issued
    * (S13/#111) — `null` until the first one resolves. */
   lastTriage: TaskTriageResult | null;
+  /** The result of the most recent `completeGrill` request this view issued
+   * (#355/ADR-0023) — `null` until the first one resolves. */
+  lastGrillCompletion: TaskGrillCompletionResult | null;
   /** The result of the most recent `setBinding` request this view issued
    * (#118) — `null` until the first one resolves. */
   lastBindingWrite: TaskBindingResult | null;
@@ -300,6 +315,7 @@ const initialTaskState: TaskState = {
   lastCapture: null,
   lastAct: null,
   lastTriage: null,
+  lastGrillCompletion: null,
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,

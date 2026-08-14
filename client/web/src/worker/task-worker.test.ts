@@ -11,6 +11,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    completeGrill: vi.fn().mockResolvedValue('{"kind":"ok","id":"grill-1","error":null}'),
     setBinding: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
     kindRegistry: vi
@@ -384,6 +385,88 @@ describe("handleTaskRequest", () => {
         itemId: "no-such-item",
         kind: "not_found",
         error: "item not found",
+      },
+    ]);
+  });
+
+  it("completeGrill forwards every field to the host, snake_casing the session steps, and posts an ok result", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      {
+        type: "completeGrill",
+        seed: "seed-grill-1",
+        itemId: "item-1",
+        sessionSteps: [
+          { id: "step-1", itemId: "item-1", body: "pack", done: false, position: 0, deletedAt: null, version: 1 },
+        ],
+        transcript: "Q: destination?\nA: Tokyo",
+        summary: "Settled on Tokyo",
+        verdict: "resolved",
+        modelProposal: '{"title":"book flights to Tokyo"}',
+        appliedPatch: '{"title":"book flights to Tokyo"}',
+        deleteUntickedPlan: false,
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(host.completeGrill).toHaveBeenCalledWith(
+      "seed-grill-1",
+      "item-1",
+      '[{"id":"step-1","item_id":"item-1","body":"pack","done":false,"position":0,"deleted_at":null,"version":1}]',
+      "Q: destination?\nA: Tokyo",
+      "Settled on Tokyo",
+      "resolved",
+      '{"title":"book flights to Tokyo"}',
+      '{"title":"book flights to Tokyo"}',
+      false,
+      2_000,
+    );
+    expect(posted).toEqual([
+      {
+        type: "completeGrillResult",
+        seed: "seed-grill-1",
+        itemId: "item-1",
+        kind: "ok",
+        grillId: "grill-1",
+        error: null,
+      },
+    ]);
+  });
+
+  it("completeGrill posts a needs_re_review result verbatim", async () => {
+    const host = fakeHost({
+      completeGrill: vi
+        .fn()
+        .mockResolvedValue(
+          '{"kind":"needs_re_review","id":null,"error":"unticked steps changed since this review was last shown"}',
+        ),
+    });
+    const posted = await run(
+      {
+        type: "completeGrill",
+        seed: "seed-grill-2",
+        itemId: "item-1",
+        sessionSteps: [],
+        transcript: "t",
+        summary: "s",
+        verdict: "fog_remains",
+        modelProposal: "{}",
+        appliedPatch: "{}",
+        deleteUntickedPlan: false,
+        nowMs: 2_000,
+      },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "completeGrillResult",
+        seed: "seed-grill-2",
+        itemId: "item-1",
+        kind: "needs_re_review",
+        grillId: null,
+        error: "unticked steps changed since this review was last shown",
       },
     ]);
   });

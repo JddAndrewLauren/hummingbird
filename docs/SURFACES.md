@@ -120,7 +120,23 @@ card, its `triage` chip, its place under a column's startable actions and the
 `TriageRow` editor selecting it opens are never mounted under `?demo`.
 `screens/NowScreen.test.tsx` and `screens/TriageScreen.test.tsx` are the
 cover; a board mixing both kinds is reviewed by hand on a device with real
-captures, which is where a full inbox exists at all. **Now's
+captures, which is where a full inbox exists at all. **The Grill takeover**
+(#355, ADR-0023) joins that same exclusion for the identical reason:
+`TriageRow`'s real "Grill me" button, the question card, the review card and
+every turn state (asking, the question, the proposal, a decline) only exist
+over a real `TaskItemDTO`, and `?demo` renders `DemoCapture` fixtures with
+its own unrelated stub "Grill" button — so this screen never opens a real
+takeover under the flag. `screens/GrillTakeover.test.tsx`,
+`screens/TriageScreen.test.tsx` and the `shell/useGrillWiring.ts` /
+`shell/useGrillTakeoverWiring.ts` hook tests are the cover for every
+reachable turn state, and round 2's own tests cover the refused-Confirm
+error path (a `needs_re_review` answer leaves the takeover standing and
+names itself on the review card). What is still unphotographed is how any
+of it *looks*: the not-ready, disconnected and error states still owe
+#355's acceptance its own hand pass on a device with a real foggy
+capture — not yet performed as of this PR, and worth doing before or
+shortly after this lands, since none of it is exercised by `pnpm visual`.
+**Now's
 frontier columns** join the list for that same reason and are settled up front
 rather than discovered mid-slice (ADR-0021 decision 8, #400): because
 `NowScreen.tsx` branches to `RealFrontier` only when demo is off, the columns

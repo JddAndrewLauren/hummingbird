@@ -423,6 +423,7 @@ export function buildDemoTaskState(): TaskState {
       kind: "failed",
       error: "the authority refused that edit",
     },
+    lastGrillCompletion: null,
     lastBindingWrite: null,
     lastSyncOutcome: null,
     lastSyncAtMs: null,

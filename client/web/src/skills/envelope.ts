@@ -75,6 +75,76 @@ export interface MicrotaskResult {
  * authority; taking them from this object would be the second source of
  * truth for steps that #273 forbids. `note` is what this is for.
  */
+/** ADR-0023's typed turn: `grill-me`'s own `question` shape
+ * (`.claude/skills/grill-me/schema.json`) — 2-4 short `choices`, and free
+ * text is always still a valid answer regardless of what they list. */
+export interface GrillQuestion {
+  prompt: string;
+  recommendedAnswer: string;
+  choices: string[];
+}
+
+/** `grill-me`'s terminal `proposal` shape. `verdict` is the wire's
+ * snake_case spelling (`"resolved"`/`"fog_remains"`) — `hummingbird_domain`
+ * `GrillVerdict`'s own vocabulary, not a second one. `patch` is whatever
+ * item-field edits the interview turned up, as an opaque object: this
+ * client never reads a key out of it itself, only carries it through to
+ * `Core::complete_grill`'s `applied_patch`. */
+export interface GrillProposal {
+  summary: string;
+  verdict: "resolved" | "fog_remains";
+  patch: Record<string, unknown>;
+}
+
+export type GrillTurnResult =
+  | { kind: "question"; question: GrillQuestion }
+  | { kind: "proposal"; proposal: GrillProposal };
+
+function isGrillQuestion(value: unknown): value is GrillQuestion {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const question = value as Record<string, unknown>;
+  return (
+    typeof question.prompt === "string" &&
+    typeof question.recommendedAnswer === "string" &&
+    Array.isArray(question.choices) &&
+    question.choices.length >= 2 &&
+    question.choices.length <= 4 &&
+    question.choices.every((choice) => typeof choice === "string")
+  );
+}
+
+function isGrillProposal(value: unknown): value is GrillProposal {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proposal = value as Record<string, unknown>;
+  return (
+    typeof proposal.summary === "string" &&
+    (proposal.verdict === "resolved" || proposal.verdict === "fog_remains") &&
+    typeof proposal.patch === "object" &&
+    proposal.patch !== null &&
+    !Array.isArray(proposal.patch)
+  );
+}
+
+/**
+ * The terminal line's `result`, read as `grill-me`'s own schema
+ * (ADR-0023): exactly one of a `question` or a `proposal` turn, `null` for
+ * anything else — including a result that names both or neither, which the
+ * runner's own `oneOf` schema treats as a failed run in the first place, so
+ * there is nothing more specific to say about it here than "not that
+ * shape".
+ */
+export function grillResult(result: unknown): GrillTurnResult | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
+  const value = result as Record<string, unknown>;
+  if (value.kind === "question" && isGrillQuestion(value.question)) {
+    return { kind: "question", question: value.question };
+  }
+  if (value.kind === "proposal" && isGrillProposal(value.proposal)) {
+    return { kind: "proposal", proposal: value.proposal };
+  }
+  return null;
+}
+
 export function microtaskResult(result: unknown): MicrotaskResult | null {
   if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
   const value = result as Record<string, unknown>;

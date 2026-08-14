@@ -1,5 +1,5 @@
 import type { TaskItemDTO } from "../store/protocol";
-import type { TaskActResult, TaskTriageResult } from "../store/store";
+import type { TaskActResult, TaskGrillCompletionResult, TaskTriageResult } from "../store/store";
 
 /** What a failed write says — the one spelling, for every surface that says it.
  *
@@ -87,6 +87,7 @@ function strandedFailure(
 
 const TRIAGE_FALLBACK = "That triage didn't apply.";
 const ACT_FALLBACK = "That action didn't apply.";
+const GRILL_COMPLETION_FALLBACK = "That Grill didn't apply.";
 
 /** The triage failure belonging to one item, matched by the id the result
  * itself carries. A failure belongs to whichever item it names, never to
@@ -107,6 +108,31 @@ export function actFailureFor(
   itemId: string,
 ): string | null {
   return failureFor(result, itemId, ACT_FALLBACK);
+}
+
+/** The Grill-completion failure belonging to one **confirm**, matched by the
+ * `seed` that confirm minted — the review card's `triageFailureFor` twin, but
+ * scoped one level tighter than by item.
+ *
+ * By item would be wrong here in a way it is not for triage. `lastGrillCompletion`
+ * holds only the most recent result, and a Grill session is *re-openable on the
+ * same item*: a confirm refused with `"needs_re_review"` leaves the item exactly
+ * where it was, in Triage, so the next thing the reader does is grill it again —
+ * and an item-matched read would greet that fresh interview with the previous
+ * session's failure, attached to a proposal it does not describe. The seed names
+ * one request, so a stale result simply does not match. `seed` is `null` when
+ * this session has no confirm outstanding, which no result can match either.
+ *
+ * `"needs_re_review"` and every other non-`"ok"` kind read the same: the
+ * server's own words, or the fallback sentence. */
+export function grillCompletionFailureFor(
+  result: TaskGrillCompletionResult | null | undefined,
+  seed: string | null,
+): string | null {
+  if (!result || seed === null || result.seed !== seed || result.kind === "ok") {
+    return null;
+  }
+  return result.error ?? GRILL_COMPLETION_FALLBACK;
 }
 
 /** A triage failure with no `TriageRow` left to wear it — see

@@ -481,6 +481,7 @@ mod wasm_bindings {
     const BUSY_CAPTURE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_ACT: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_TRIAGE: &str = r#"{"kind":"busy","error":null}"#;
+    const BUSY_COMPLETE_GRILL: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
     const BUSY_QUEUE_DEPTH: &str = r#"{"kind":"busy","depth":0}"#;
     const BUSY_DEAD_LETTERS: &str = r#"{"kind":"busy","entries":[]}"#;
@@ -953,6 +954,56 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("TriageResponse serializes"),
+                ))
+            })
+        }
+
+        /// Confirms a completed Grill interview (#355, ADR-0023): the
+        /// review card's Confirm button. Resolves to JSON:
+        /// `{"kind": "ok"|"not_found"|"item_done"|"needs_re_review"|"failed"|"busy", "id": string|null, "error": string|null}`.
+        /// `session_steps` is a JSON array of `Step` — the review session's
+        /// own captured snapshot, compared against live state by
+        /// [`hummingbird_core::Core::complete_grill`] — and `verdict` is the
+        /// wire's snake_case spelling (`"resolved"`/`"fog_remains"`); both
+        /// are rejected as `"failed"` here, before the host is ever checked
+        /// out, on the same "reject before the seam" discipline
+        /// [`TaskHost::triage`] uses.
+        #[wasm_bindgen(js_name = completeGrill)]
+        pub fn complete_grill(
+            &self,
+            seed: String,
+            item_id: String,
+            session_steps: String,
+            transcript: String,
+            summary: String,
+            verdict: String,
+            model_proposal: String,
+            applied_patch: String,
+            delete_unticked_plan: bool,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_COMPLETE_GRILL));
+                };
+                let response = host
+                    .complete_grill(
+                        &seed,
+                        &item_id,
+                        &session_steps,
+                        transcript,
+                        summary,
+                        &verdict,
+                        model_proposal,
+                        applied_patch,
+                        delete_unticked_plan,
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CompleteGrillResponse serializes"),
                 ))
             })
         }
