@@ -172,11 +172,5 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   at: adds the strict CSP header to every asset response so it ships as a
   served header (ADR-0004), not a meta tag.
 - `wrangler.toml` — checked-in source of truth for the Cloudflare Workers
-  static-assets deploy: SPA fallback, the CSP worker, and (commented out
-  until the human step is done) the `hb.twinion.net` custom-domain route.
-
-## Out of scope here
-
-Performing the live Cloudflare deploy and the `hb.twinion.net` DNS binding
-is a human step (#69's brief) — everything above works fully locally via
-`vite dev` / `vite build` / `wrangler dev`.
+  static-assets deploy: SPA fallback, the CSP worker, and the
+  `hb.twinion.net` custom-domain route.
