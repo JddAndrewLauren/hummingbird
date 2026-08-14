@@ -129,8 +129,11 @@ its own unrelated stub "Grill" button — so this screen never opens a real
 takeover under the flag. `screens/GrillTakeover.test.tsx`,
 `screens/TriageScreen.test.tsx` and the `shell/useGrillWiring.ts` /
 `shell/useGrillTakeoverWiring.ts` hook tests are the cover for every
-reachable turn state; the not-ready, disconnected and error states still
-owe #355's acceptance its own hand pass on a device with a real foggy
+reachable turn state, and round 2's own tests cover the refused-Confirm
+error path (a `needs_re_review` answer leaves the takeover standing and
+names itself on the review card). What is still unphotographed is how any
+of it *looks*: the not-ready, disconnected and error states still owe
+#355's acceptance its own hand pass on a device with a real foggy
 capture — not yet performed as of this PR, and worth doing before or
 shortly after this lands, since none of it is exercised by `pnpm visual`.
 **Now's
