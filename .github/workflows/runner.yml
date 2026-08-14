@@ -67,8 +67,10 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Plain `node --test` over fifteen files with no install step; anything
-    # slower than this is a hung test, not a slow one.
+    # Plain `node --test` over `runner/test/*.test.js` with no install step:
+    # each file finishes in well under a second, so this budget is generous
+    # even as files are added; anything slower than this is a hung test, not
+    # a slow one.
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
