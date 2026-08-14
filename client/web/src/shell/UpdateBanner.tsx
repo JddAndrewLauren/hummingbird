@@ -13,8 +13,11 @@ import { Icon } from "../components/core/Icon";
 // The second sentence is load-bearing, not padding. Applying the update is
 // an ORIGIN-WIDE act: the button sends `skipWaiting`, and the spec's
 // Activate algorithm then hands every client the old worker controlled to
-// the new one and fires `controllerchange` in each — which the plugin's own
-// registration turns into a `location.reload()` in every tab. There is no
+// the new one and fires `controllerchange` in each — which
+// `shell/reload-on-activate.ts`, wired in `main.tsx` for every view at load,
+// turns into a `location.reload()` in every tab. That module is why the
+// sentence is true; the plugin's own listener, which used to be cited here,
+// only ever reaches views that had already shown this strip. There is no
 // tab-local version of this gesture (a plain reload never releases control,
 // so the worker would stay waiting and the shell stay one deploy behind),
 // and convergence is the safe outcome anyway: two builds live at once means
@@ -40,6 +43,11 @@ import { Icon } from "../components/core/Icon";
 // an unsent draft lost in a background tab; the fix for that is draft
 // persistence (`screens/questions/collapse.ts`'s injectable-`storage` idiom
 // over `sessionStorage`), never the service-worker lifecycle.
+//
+// That cost is now actually paid rather than merely argued. Before
+// `reload-on-activate.ts` a background tab that had never checked for an
+// update was silently spared the reload — and left in the broken-invariant
+// state above, which is the worse half of the trade. Accepted knowingly.
 
 export interface UpdateBannerProps {
   onReload: () => void;
