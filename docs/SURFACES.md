@@ -128,9 +128,12 @@ over a real `TaskItemDTO`, and `?demo` renders `DemoCapture` fixtures with
 its own unrelated stub "Grill" button — so this screen never opens a real
 takeover under the flag. `screens/GrillTakeover.test.tsx`,
 `screens/TriageScreen.test.tsx` and the `shell/useGrillWiring.ts` /
-`shell/useGrillTakeoverWiring.ts` hook tests are the cover; the not-ready,
-disconnected and error turn states are reviewed by hand on a device with a
-real foggy capture, per that issue's own acceptance. **Now's
+`shell/useGrillTakeoverWiring.ts` hook tests are the cover for every
+reachable turn state; the not-ready, disconnected and error states still
+owe #355's acceptance its own hand pass on a device with a real foggy
+capture — not yet performed as of this PR, and worth doing before or
+shortly after this lands, since none of it is exercised by `pnpm visual`.
+**Now's
 frontier columns** join the list for that same reason and are settled up front
 rather than discovered mid-slice (ADR-0021 decision 8, #400): because
 `NowScreen.tsx` branches to `RealFrontier` only when demo is off, the columns

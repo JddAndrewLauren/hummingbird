@@ -22,9 +22,6 @@ export interface GrillRunInput {
    * always has a uuid to hand (an item already open in Triage). */
   ref: string;
   turns: GrillTurn[];
-  /** Omitted leaves the runner's configured model — same rule
-   * `microtask-args.ts` applies. */
-  model?: string;
 }
 
 export interface GrillRunBody {
@@ -32,13 +29,13 @@ export interface GrillRunBody {
   args: Record<string, unknown>;
 }
 
-/** `model` is omitted when unset, so the runner's own default stays the
- * default rather than being re-specified here — the identical rule
- * `microtaskRunBody` applies for the same field. */
+/** No `model` option, unlike `microtaskRunBody`: #355's brief asks for no
+ * comforts beyond the interview itself, and #274's backend/model picker is
+ * one — `useGrillWiring.ts`'s own doc says so for the backend half; this
+ * is the same call for the runner's `model` arg, which nothing on this
+ * surface ever sets. Add it back only when a real caller needs it. */
 export function grillRunBody(input: GrillRunInput): GrillRunBody {
-  const args: Record<string, unknown> = { ref: input.ref, turns: input.turns };
-  if (input.model !== undefined && input.model !== "") args.model = input.model;
-  return { skill: "grill-me", args };
+  return { skill: "grill-me", args: { ref: input.ref, turns: input.turns } };
 }
 
 /** The plain-text record `Core::complete_grill`'s `GrillCompletion.transcript`

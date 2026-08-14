@@ -594,7 +594,8 @@ export interface GrillCompletion {
  * minted Grill) id — same caller-mints contract as `actOnTask`'s.
  *
  * `sessionSteps` is the review session's own captured snapshot of the
- * item's Steps, taken when the review card first rendered — never a fresh
+ * item's Steps, taken once when the interview opened
+ * (`shell/useGrillTakeoverWiring.ts`'s `sessionSteps`) — never a fresh
  * read at submit time, which is what lets the core-side drift check
  * (`unticked_steps_changed`) mean anything. */
 export function completeGrill(

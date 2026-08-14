@@ -38,6 +38,7 @@ describe("GrillTakeover", () => {
         turns={[]}
         onAnswer={onAnswer}
         onKeepGrilling={() => {}}
+        onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
         completionError={null}
@@ -66,6 +67,7 @@ describe("GrillTakeover", () => {
         turns={[]}
         onAnswer={onAnswer}
         onKeepGrilling={() => {}}
+        onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
         completionError={null}
@@ -94,6 +96,7 @@ describe("GrillTakeover", () => {
         turns={[]}
         onAnswer={() => {}}
         onKeepGrilling={() => {}}
+        onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
         completionError={null}
@@ -123,6 +126,7 @@ describe("GrillTakeover", () => {
         turns={[]}
         onAnswer={() => {}}
         onKeepGrilling={() => {}}
+        onRetry={() => {}}
         onConfirm={onConfirm}
         onBack={() => {}}
         completionError={null}
@@ -134,19 +138,48 @@ describe("GrillTakeover", () => {
 
     fireEvent.click(screen.getByText("Confirm"));
     expect(onConfirm).toHaveBeenCalledWith(
-      [step(), step({ id: "step-2" })],
       expect.objectContaining({ deleteUntickedPlan: false, verdict: "fog_remains" }),
     );
 
     fireEvent.click(tick);
     fireEvent.click(screen.getByText("Confirm"));
-    expect(onConfirm).toHaveBeenLastCalledWith(
-      expect.anything(),
-      expect.objectContaining({ deleteUntickedPlan: true }),
-    );
+    expect(onConfirm).toHaveBeenLastCalledWith(expect.objectContaining({ deleteUntickedPlan: true }));
   });
 
-  it("a declined turn states the reason with alert semantics", () => {
+  /** BLOCKER 2's fix, from the component's own vantage: `steps === null`
+   * ("the session's Steps snapshot has not landed yet") must disable
+   * Confirm and offer no plan tick — never read as "no Steps at all". */
+  it("disables Confirm and offers no plan tick while the Steps snapshot has not landed", () => {
+    const onConfirm = vi.fn();
+    render(
+      <GrillTakeover
+        item={item}
+        steps={null}
+        turn={{
+          phase: "proposal",
+          messages: [],
+          proposal: { summary: "Still foggy", verdict: "fog_remains", patch: {} },
+          backend: null,
+          model: null,
+        }}
+        turns={[]}
+        onAnswer={() => {}}
+        onKeepGrilling={() => {}}
+        onRetry={() => {}}
+        onConfirm={onConfirm}
+        onBack={() => {}}
+        completionError={null}
+      />,
+    );
+
+    expect(screen.queryByLabelText(/unfinished step/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Confirm" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByText("Confirm"));
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("a declined turn states the reason with alert semantics, and offers Try again", () => {
+    const onRetry = vi.fn();
     render(
       <GrillTakeover
         item={item}
@@ -155,6 +188,7 @@ describe("GrillTakeover", () => {
         turns={[]}
         onAnswer={() => {}}
         onKeepGrilling={() => {}}
+        onRetry={onRetry}
         onConfirm={() => {}}
         onBack={() => {}}
         completionError={null}
@@ -162,6 +196,8 @@ describe("GrillTakeover", () => {
     );
 
     expect(screen.getByRole("alert").textContent).toBe("The run ended without an answer.");
+    fireEvent.click(screen.getByText("Try again"));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it("Back calls onBack", () => {
@@ -174,6 +210,7 @@ describe("GrillTakeover", () => {
         turns={[]}
         onAnswer={() => {}}
         onKeepGrilling={() => {}}
+        onRetry={() => {}}
         onConfirm={() => {}}
         onBack={onBack}
         completionError={null}
@@ -182,6 +219,26 @@ describe("GrillTakeover", () => {
 
     fireEvent.click(screen.getByLabelText("Back to Triage"));
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  /** Non-blocking fix: focus moves into the takeover on mount. */
+  it("focus moves into the takeover when it mounts", () => {
+    const { container } = render(
+      <GrillTakeover
+        item={item}
+        steps={[]}
+        turn={{ phase: "asking", messages: [] }}
+        turns={[]}
+        onAnswer={() => {}}
+        onKeepGrilling={() => {}}
+        onRetry={() => {}}
+        onConfirm={() => {}}
+        onBack={() => {}}
+        completionError={null}
+      />,
+    );
+
+    expect(document.activeElement).toBe(container.firstChild);
   });
 
   it("a completion failure states with alert semantics on the review card", () => {
@@ -199,6 +256,7 @@ describe("GrillTakeover", () => {
         turns={[]}
         onAnswer={() => {}}
         onKeepGrilling={() => {}}
+        onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
         completionError="unticked steps changed since this review was last shown"
@@ -208,5 +266,32 @@ describe("GrillTakeover", () => {
     expect(screen.getByRole("alert").textContent).toBe(
       "unticked steps changed since this review was last shown",
     );
+  });
+
+  /** The label must not read as though it edits the item — `applied_patch`
+   * is recorded on the Grill and never applied automatically. */
+  it("the proposed-edit field says it is recorded, not applied", () => {
+    render(
+      <GrillTakeover
+        item={item}
+        steps={[]}
+        turn={{
+          phase: "proposal",
+          messages: [],
+          proposal: { summary: "Settled on SEA", verdict: "resolved", patch: {} },
+          backend: null,
+          model: null,
+        }}
+        turns={[]}
+        onAnswer={() => {}}
+        onKeepGrilling={() => {}}
+        onRetry={() => {}}
+        onConfirm={() => {}}
+        onBack={() => {}}
+        completionError={null}
+      />,
+    );
+
+    screen.getByText(/never applied to the item automatically/i);
   });
 });

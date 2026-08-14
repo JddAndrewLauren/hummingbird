@@ -388,12 +388,14 @@ describe("TriageScreen — the Grill takeover", () => {
   function fakeGrill(overrides: Partial<import("../shell/useGrillTakeoverWiring").GrillTakeoverWiring> = {}) {
     return {
       openItemId: null,
+      sessionSteps: null,
       open: vi.fn(),
       back: vi.fn(),
       turn: IDLE_TURN,
       turns: [],
       answer: vi.fn(),
       keepGrilling: vi.fn(),
+      retry: vi.fn(),
       confirm: vi.fn(),
       ...overrides,
     };

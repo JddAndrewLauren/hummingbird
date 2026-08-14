@@ -39,7 +39,7 @@ function Harness({
   store: TaskTokenStoreLike;
   itemId?: string;
 }) {
-  const { turn, turns, onAsk, onAnswer, onKeepGrilling, onDiscard } = useGrillWiring(itemId, {
+  const { turn, turns, onAsk, onAnswer, onKeepGrilling, onRetry, onDiscard } = useGrillWiring(itemId, {
     fetch: fetchImpl,
     tokenStore: store,
   });
@@ -52,6 +52,7 @@ function Harness({
       <button type="button" onClick={() => onAsk(itemId, itemId)}>ask</button>
       <button type="button" onClick={() => onAnswer(itemId, itemId, "SEA")}>answer</button>
       <button type="button" onClick={() => onKeepGrilling(itemId, itemId)}>keep grilling</button>
+      <button type="button" onClick={() => onRetry(itemId, itemId)}>retry</button>
       <button type="button" onClick={() => onDiscard(itemId)}>discard</button>
     </>
   );
@@ -180,5 +181,97 @@ describe("useGrillWiring", () => {
 
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(phase()).toBe("declined");
+  });
+
+  /** The brief's "leaves the transcript resumable" acceptance: a decline
+   * ends the REQUEST, not the conversation. `onRetry` must re-ask with the
+   * turns already accumulated, never a fresh empty interview. */
+  it("onRetry re-asks with the accumulated turns after a decline, never restarting the transcript", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(ndjson(QUESTION_LINE))
+      .mockRejectedValueOnce(new Error("Failed to fetch"))
+      .mockResolvedValueOnce(ndjson(PROPOSAL_LINE));
+    render(<Harness fetchImpl={fetchImpl as never} store={tokenStore()} />);
+
+    fireEvent.click(screen.getByText("ask"));
+    await settle();
+    fireEvent.click(screen.getByText("answer"));
+    await settle();
+    expect(phase()).toBe("declined");
+    // The round that was in flight when the decline happened is still
+    // held — `onAnswer` records it before asking, and a decline never
+    // drops it.
+    expect(screen.getByTestId("turn-count").textContent).toBe("1");
+
+    fireEvent.click(screen.getByText("retry"));
+    await settle();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const retryBody = JSON.parse(String((fetchImpl.mock.calls[2] as [unknown, RequestInit])[1].body));
+    expect(retryBody.args.turns).toEqual([
+      { question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] }, answer: "SEA" },
+    ]);
+    expect(phase()).toBe("proposal");
+  });
+
+  /** The regression this exists for: `finally` used to delete WHATEVER
+   * controller the map held for this item, including a newer run's — so
+   * discarding that newer run later found nothing to abort. */
+  it("discarding a superseded run still aborts it — an older run's finally never deletes a NEWER run's controller", async () => {
+    const runs: Array<{
+      resolveFetch: (response: Response) => void;
+      rejectFetch: (error: unknown) => void;
+      signal?: AbortSignal | null;
+    }> = [];
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      let resolveFetch!: (response: Response) => void;
+      let rejectFetch!: (error: unknown) => void;
+      const promise = new Promise<Response>((resolve, reject) => {
+        resolveFetch = resolve;
+        rejectFetch = reject;
+      });
+      runs.push({ resolveFetch, rejectFetch, signal: init?.signal });
+      return promise;
+    });
+    render(<Harness fetchImpl={fetchImpl as never} store={tokenStore()} />);
+
+    // Run A.
+    fireEvent.click(screen.getByText("ask"));
+    await settle();
+    expect(runs).toHaveLength(1);
+
+    // Discard aborts run A's controller and clears state — but run A's
+    // `fetch` promise is still pending, so its `finally` has not run yet.
+    fireEvent.click(screen.getByText("discard"));
+    await settle();
+    expect(phase()).toBe("idle");
+
+    // Run B starts before run A's fetch settles — same item, a NEW
+    // controller in the map.
+    fireEvent.click(screen.getByText("ask"));
+    await settle();
+    expect(runs).toHaveLength(2);
+    expect(phase()).toBe("asking");
+
+    // NOW let run A's aborted fetch settle: its `finally` runs while run
+    // B is the live one for this item.
+    runs[0]!.rejectFetch(new DOMException("The operation was aborted.", "AbortError"));
+    await settle();
+    await settle();
+
+    // Run B must still be abortable: discard must still find its REAL
+    // controller and abort it.
+    fireEvent.click(screen.getByText("discard"));
+    await settle();
+    expect(runs[1]!.signal?.aborted).toBe(true);
+    expect(phase()).toBe("idle");
+
+    // And releasing run B's own answer now — after it was discarded —
+    // must not resurrect anything either.
+    runs[1]!.resolveFetch(ndjson(QUESTION_LINE));
+    await settle();
+    await settle();
+    expect(phase()).toBe("idle");
   });
 });

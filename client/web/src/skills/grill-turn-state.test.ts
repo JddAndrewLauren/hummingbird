@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SkillEvent } from "./run-state";
-import { IDLE, isAsking, OUTSIDE_SCHEMA, reduceGrillTurn, type GrillTurnState } from "./grill-turn-state";
+import { IDLE, OUTSIDE_SCHEMA, reduceGrillTurn, type GrillTurnState } from "./grill-turn-state";
 
 function drive(events: SkillEvent[], from: GrillTurnState = IDLE): GrillTurnState {
   return events.reduce(reduceGrillTurn, from);
@@ -14,7 +14,6 @@ const PROPOSAL = { summary: "Settled on SEA", verdict: "resolved" as const, patc
 describe("reduceGrillTurn", () => {
   it("a tap starts an empty asking state", () => {
     expect(reduceGrillTurn(IDLE, STARTED)).toEqual({ phase: "asking", messages: [] });
-    expect(isAsking(reduceGrillTurn(IDLE, STARTED))).toBe(true);
   });
 
   it("a second start while asking leaves the state untouched", () => {

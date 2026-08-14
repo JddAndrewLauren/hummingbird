@@ -52,10 +52,6 @@ export type GrillTurnState =
 
 export const IDLE: GrillTurnState = { phase: "idle" };
 
-export function isAsking(state: GrillTurnState): boolean {
-  return state.phase === "asking";
-}
-
 export function reduceGrillTurn(state: GrillTurnState, event: SkillEvent): GrillTurnState {
   switch (event.kind) {
     case "started":

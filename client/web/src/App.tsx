@@ -249,7 +249,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // the turn lane and the Confirm mutation (`useGrillTakeoverWiring.ts`'s
   // own doc). Absent in demo mode, same reason `onTriage` is: demo has no
   // real `TaskItemDTO` to grill.
-  const grillTakeover = useGrillTakeoverWiring(worker, task.syncOutcomeSeq);
+  const grillTakeover = useGrillTakeoverWiring(worker, task.stepsByItem);
   // #122's do-date write: the same triage mutation entry point every other
   // triage edit uses, with `destination: null` (leave `stage` untouched —
   // `useTriageWiring.ts`'s own doc) and only `scheduledDate` set. Not its

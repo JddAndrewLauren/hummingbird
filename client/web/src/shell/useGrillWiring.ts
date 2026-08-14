@@ -49,6 +49,14 @@ export interface GrillWiring {
    * nothing to add before asking once more. A deliberate, user-clicked
    * re-request, never an automatic retry. */
   onKeepGrilling: (itemId: string, ref: string) => void;
+  /** "Try again", from a declined turn: asks again with the SAME
+   * accumulated turns — a decline (a dropped connection, a rejected
+   * token) ended the *request*, not the conversation, so the transcript
+   * threaded so far must survive it (the brief's "leaves the transcript
+   * resumable"). `onDiscard` is the only thing that ever drops `turns`;
+   * a decline on its own never does. Same "deliberate, user-clicked
+   * re-request, never automatic" rule as `onKeepGrilling`. */
+  onRetry: (itemId: string, ref: string) => void;
   /** Discards whatever turn state an item holds — Back, or a fresh open
    * over a different item. Aborts an in-flight request first, so a stale
    * response can never land after the takeover has moved on. */
@@ -92,12 +100,28 @@ export function useGrillWiring(selectedItemId: string | null, deps: GrillWiringD
         let state: GrillTurnState = IDLE;
         try {
           for await (const event of runSkill(CLOUD_RUNNER_ENTRY, grillRunBody({ ref, turns }), runDeps)) {
+            // This run may have been superseded — `onDiscard` deletes the
+            // map entry (and a fresh `ask` for the same item installs a
+            // DIFFERENT controller) without waiting for this loop to
+            // notice. Checking identity before every state write is what
+            // stops an abort-synthesized `failed` event from resurrecting
+            // turn state a caller already discarded, or from clobbering a
+            // newer run's narration.
+            if (inFlight.current.get(itemId) !== controller) return;
             state = reduceGrillTurn(state, event);
             const next = state;
             setTurnsByItem((current) => ({ ...current, [itemId]: next }));
           }
         } finally {
-          inFlight.current.delete(itemId);
+          // Only this run's OWN controller — a newer `ask` for the same
+          // item may already have installed a different one (started
+          // right after this run was discarded but before its `finally`
+          // ran), and deleting unconditionally would strand it: nothing
+          // would abort it on unmount, and `onDiscard` would find no
+          // controller to abort either.
+          if (inFlight.current.get(itemId) === controller) {
+            inFlight.current.delete(itemId);
+          }
         }
       })();
     },
@@ -132,6 +156,15 @@ export function useGrillWiring(selectedItemId: string | null, deps: GrillWiringD
     [ask, turnsByItem, historyByItem],
   );
 
+  const onRetry = useCallback(
+    (itemId: string, ref: string) => {
+      const state = turnsByItem[itemId] ?? IDLE;
+      if (state.phase !== "declined") return;
+      ask(itemId, ref, historyByItem[itemId] ?? []);
+    },
+    [ask, turnsByItem, historyByItem],
+  );
+
   const onDiscard = useCallback((itemId: string) => {
     inFlight.current.get(itemId)?.abort();
     inFlight.current.delete(itemId);
@@ -152,7 +185,7 @@ export function useGrillWiring(selectedItemId: string | null, deps: GrillWiringD
   const turn = (selectedItemId && turnsByItem[selectedItemId]) || IDLE;
   const turns = (selectedItemId && historyByItem[selectedItemId]) || [];
 
-  return { turn, turns, onAsk, onAnswer, onKeepGrilling, onDiscard };
+  return { turn, turns, onAsk, onAnswer, onKeepGrilling, onRetry, onDiscard };
 }
 
 let cachedStore: TaskTokenStoreLike | null = null;

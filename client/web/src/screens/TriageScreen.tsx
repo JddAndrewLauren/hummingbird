@@ -113,11 +113,12 @@ export function TriageScreen({
       <SingleColumn>
         <GrillTakeover
           item={openItem}
-          steps={task.stepsByItem[openItem.id] ?? []}
+          steps={grill.sessionSteps}
           turn={grill.turn}
           turns={grill.turns}
           onAnswer={grill.answer}
           onKeepGrilling={grill.keepGrilling}
+          onRetry={grill.retry}
           onConfirm={grill.confirm}
           onBack={handleGrillBack}
           completionError={grillCompletionFailureFor(task.lastGrillCompletion, openItem.id)}

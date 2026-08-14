@@ -23,18 +23,10 @@ describe("grillRunBody", () => {
     expect(grillRunBody({ ref: "i", turns }).args.turns).toEqual(turns);
   });
 
-  it("model rides along when set", () => {
-    expect(grillRunBody({ ref: "i", turns: [], model: "opus" })).toEqual({
-      skill: "grill-me",
-      args: { ref: "i", turns: [], model: "opus" },
-    });
-  });
-
-  /** Same rule `microtaskRunBody` applies: the empty value is the "Default
-   * model" option, and omitting the key is what leaves the runner's own
-   * default in place rather than naming it twice. */
-  it("an empty model omits the key entirely", () => {
-    expect("model" in grillRunBody({ ref: "i", turns: [], model: "" }).args).toBe(false);
+  /** #355's brief asks for no comforts beyond the interview — no `model`
+   * option, unlike `microtaskRunBody`. */
+  it("carries no model option — the args are exactly ref and turns", () => {
+    expect(Object.keys(grillRunBody({ ref: "i", turns: [] }).args)).toEqual(["ref", "turns"]);
   });
 });
 

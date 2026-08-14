@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
@@ -16,23 +16,29 @@ import { formatGrillTranscript, type GrillTurn } from "../skills/grill-args";
 /** The Triage row's center-column takeover (#355, ADR-0023): the interview,
  * one typed turn at a time (ADR-0023 decision 1), ending in the editable
  * review card. Deliberately without comforts, per the brief: no draft
- * persistence, no cross-tab lock, no history and no retry — leaving mid-
- * interview loses the conversation, and a decline stays a decline until
- * Back is pressed. This component renders the current `GrillTurnState` and
- * nothing else; every decision about turns, transcripts and the Confirm
+ * persistence, no cross-tab lock, no history — leaving mid-interview loses
+ * the conversation. A decline is NOT a dead end, though: "Try again" (below)
+ * re-asks with the transcript already threaded, which is what makes the
+ * transcript "resumable" a real property rather than a claim. This
+ * component renders the current `GrillTurnState` and nothing else; every
+ * decision about turns, transcripts, the Steps snapshot and the Confirm
  * mutation belongs to `shell/useGrillTakeoverWiring.ts`. */
 export interface GrillTakeoverProps {
   item: TaskItemDTO;
-  /** This item's live Steps, for the review card's plan-replacement tick
-   * (`screens/grill-review.ts`). */
-  steps: StepDTO[];
+  /** This session's frozen Steps snapshot (`useGrillTakeoverWiring.ts`'s
+   * `sessionSteps`) — `null` until it lands, which the review card and its
+   * Confirm button both read as "not ready yet", never as "no Steps". */
+  steps: StepDTO[] | null;
   turn: GrillTurnState;
   /** Every completed round so far — the review card's own transcript
    * (`skills/grill-args.ts`'s `formatGrillTranscript`). */
   turns: GrillTurn[];
   onAnswer: (text: string) => void;
   onKeepGrilling: () => void;
-  onConfirm: (sessionSteps: StepDTO[], completion: GrillCompletion) => void;
+  /** "Try again", from a decline — re-asks with the transcript already
+   * threaded (`useGrillWiring.ts`'s `onRetry`). */
+  onRetry: () => void;
+  onConfirm: (completion: GrillCompletion) => void;
   onBack: () => void;
   /** `write-failure.ts`'s `grillCompletionFailureFor`, read by the caller —
    * this component only renders it. */
@@ -118,11 +124,11 @@ function ReviewCard({
   completionError,
 }: {
   item: TaskItemDTO;
-  steps: StepDTO[];
+  steps: StepDTO[] | null;
   proposal: GrillProposal;
   turns: GrillTurn[];
   onKeepGrilling: () => void;
-  onConfirm: (sessionSteps: StepDTO[], completion: GrillCompletion) => void;
+  onConfirm: (completion: GrillCompletion) => void;
   completionError: string | null;
 }) {
   const [summary, setSummary] = useState(proposal.summary);
@@ -143,7 +149,11 @@ function ReviewCard({
     setDeleteUntickedPlan(false);
   }
 
-  const offerPlanReplacement = wouldStrandPlan(proposal.verdict, steps);
+  // `null` reads as "nothing to protect yet", the same honest default the
+  // Confirm button below also disables on — the snapshot has not landed,
+  // not "this item carries no plan".
+  const offerPlanReplacement = steps !== null && wouldStrandPlan(proposal.verdict, steps);
+  const snapshotReady = steps !== null;
 
   return (
     <Card padding="var(--space-6)" style={CARD_STYLE}>
@@ -160,6 +170,7 @@ function ReviewCard({
       />
       <Textarea
         label="Proposed edit"
+        hint="Recorded on the Grill — never applied to the item automatically."
         rows={4}
         value={patchText}
         onChange={(event) => setPatchText(event.target.value)}
@@ -168,7 +179,7 @@ function ReviewCard({
         <Checkbox
           checked={deleteUntickedPlan}
           onChange={(event) => setDeleteUntickedPlan(event.target.checked)}
-          label={planReplacementLabel(steps)}
+          label={planReplacementLabel(steps ?? [])}
         />
       ) : null}
       {completionError ? (
@@ -184,9 +195,9 @@ function ReviewCard({
           size="lg"
           variant="primary"
           iconLeft="check"
-          disabled={item.pending}
+          disabled={item.pending || !snapshotReady}
           onClick={() =>
-            onConfirm(steps, {
+            onConfirm({
               transcript: formatGrillTranscript(turns),
               summary,
               verdict: proposal.verdict,
@@ -210,12 +221,27 @@ export function GrillTakeover({
   turns,
   onAnswer,
   onKeepGrilling,
+  onRetry,
   onConfirm,
   onBack,
   completionError,
 }: GrillTakeoverProps) {
+  // Focus moves into the takeover the moment it mounts — otherwise it opens
+  // with focus left wherever the "Grill me" button was, which is no longer
+  // on screen at all (the whole row list is gone). `tabIndex={-1}`: the
+  // container is a landmark to land keyboard focus on, never a tab stop of
+  // its own.
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    containerRef.current?.focus();
+  }, []);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+    <div
+      ref={containerRef}
+      tabIndex={-1}
+      style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)", outline: "none" }}
+    >
       <BackRow title={item.title} onBack={onBack} />
 
       {turn.phase === "asking" ? (
@@ -244,6 +270,15 @@ export function GrillTakeover({
           <p role="alert" style={{ font: "var(--type-body)", color: "var(--status-danger-fg)", margin: 0 }}>
             {turn.reason}
           </p>
+          {/* The transcript threaded so far survives a decline — `onRetry`
+              re-asks with it intact, never a fresh empty interview. A
+              single control, per the brief's "no comforts": no automatic
+              retry, one deliberate button. */}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Button size="lg" variant="secondary" iconLeft="rotate-ccw" onClick={onRetry}>
+              Try again
+            </Button>
+          </div>
         </Card>
       ) : null}
     </div>

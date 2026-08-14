@@ -641,12 +641,13 @@ export type TaskWorkerRequest =
    * button. Same caller-mints-`seed` contract as `"act"`.
    *
    * `sessionSteps` is the review session's own captured snapshot of the
-   * item's Steps — compared against live state core-side
-   * (`Core::complete_grill`'s `unticked_steps_changed`) — never the item's
-   * current Steps re-read at submit time, which would defeat the whole
-   * point of a drift check. `deleteUntickedPlan` is `CONTEXT.md`'s
-   * **Replace** gesture: the explicit, default-off tick naming the step
-   * count, never inferred from the verdict. */
+   * item's Steps, frozen once by `shell/useGrillTakeoverWiring.ts`'s
+   * `sessionSteps` when the interview opened — compared against live state
+   * core-side (`Core::complete_grill`'s `unticked_steps_changed`) — never
+   * the item's current Steps re-read at submit time, which would defeat
+   * the whole point of a drift check. `deleteUntickedPlan` is
+   * `CONTEXT.md`'s **Replace** gesture: the explicit, default-off tick
+   * naming the step count, never inferred from the verdict. */
   | {
       type: "completeGrill";
       seed: string;
