@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BindingDTO, CalendarEventDTO, CalendarReadDTO } from "../../store/protocol";
-import type { QuestionInputs } from "../questions/contract";
+import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import { addCivilDays, deviceCivilToday } from "../waste-pane/zoned-day";
 import {
   CALENDAR_REQUEST_KEY,
@@ -75,6 +75,7 @@ function inputs(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
     { key: "trips-calendar", known: true, pending: false, value: { state: "text", text: "trips@g" } },
   ];
   return {
+    sync: EMPTY_QUESTION_SYNC,
     bindings,
     paneReads: {},
     calendarReads: {},

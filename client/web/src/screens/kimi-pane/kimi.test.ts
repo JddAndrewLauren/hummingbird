@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FreshnessDTO, PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
-import type { QuestionInputs } from "../questions/contract";
+import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import {
   IMMINENT_THRESHOLD_USD,
   NEAR_THRESHOLD_USD,
@@ -47,6 +47,7 @@ function read(snapshots: PaneSnapshotDTO[] = [snapshot()]): PaneReadDTO {
 
 function inputs(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
   return {
+    sync: EMPTY_QUESTION_SYNC,
     bindings: [],
     paneReads: { [SOURCE]: read() },
     calendarReads: {},

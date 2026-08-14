@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CalendarEventDTO, TaskItemDTO } from "../../store/protocol";
-import type { QuestionInputs } from "../questions/contract";
+import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import {
   CALENDAR_REQUEST_KEY,
   countKinds,
@@ -98,6 +98,7 @@ function allDayEvent(overrides: {
 
 function inputsWith(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
   return {
+    sync: EMPTY_QUESTION_SYNC,
     bindings: [],
     paneReads: {},
     calendarReads: {},

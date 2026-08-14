@@ -31,6 +31,7 @@ import {
   triggerSyncManual,
   type WorkerLike,
 } from "./worker-client";
+import type { SyncStorageLike } from "./sync-persistence";
 
 const initialCalendar: CalendarState = {
   connected: false,
@@ -64,6 +65,7 @@ const initialTask: TaskState = {
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
+  lastSuccessfulSyncAtMs: null,
   syncOutcomeSeq: 0,
   queueDepth: null,
   deadLetters: [],
@@ -81,6 +83,19 @@ function fakeWorker(): WorkerLike & { postMessage: ReturnType<typeof vi.fn> } {
   return {
     onmessage: null,
     postMessage: vi.fn(),
+  };
+}
+
+function fakeSyncStorage(initial?: number): SyncStorageLike {
+  const values = new Map<string, string>();
+  if (initial !== undefined) {
+    values.set("hb.sync.lastSuccessfulAtMs", JSON.stringify(initial));
+  }
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => {
+      values.set(key, value);
+    },
   };
 }
 
@@ -669,6 +684,60 @@ describe("attachWorkerClient", () => {
       deadLettered: 0,
     });
     expect(store.getSnapshot().task.lastSyncAtMs).toBe(5_000);
+    expect(store.getSnapshot().task.lastSuccessfulSyncAtMs).toBe(5_000);
+  });
+
+  it("hydrates persisted success before a replayed failure arrives", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store, fakeSyncStorage(8_000));
+
+    expect(store.getSnapshot().task.lastSuccessfulSyncAtMs).toBe(8_000);
+    worker.onmessage?.({
+      data: {
+        type: "syncOutcome",
+        kind: "pull_failed",
+        retryAfterMs: 30_000,
+        activeItemCount: null,
+        wasFullSweep: null,
+        deadLettered: null,
+        atMs: 9_000,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastSuccessfulSyncAtMs).toBe(8_000);
+    expect(store.getSnapshot().task.lastSyncAtMs).toBe(9_000);
+  });
+
+  it("persists only newer completed outcomes", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    const storage = fakeSyncStorage(8_000);
+    attachWorkerClient(worker, store, storage);
+
+    const broadcast = (kind: "completed" | "held" | "skipped" | "busy", atMs: number) => {
+      worker.onmessage?.({
+        data: {
+          type: "syncOutcome",
+          kind,
+          retryAfterMs: null,
+          activeItemCount: null,
+          wasFullSweep: null,
+          deadLettered: null,
+          atMs,
+        },
+      } as MessageEvent);
+    };
+
+    broadcast("completed", 7_000);
+    broadcast("held", 9_000);
+    broadcast("skipped", 10_000);
+    broadcast("busy", 11_000);
+    expect(store.getSnapshot().task.lastSuccessfulSyncAtMs).toBe(8_000);
+
+    broadcast("completed", 12_000);
+    expect(store.getSnapshot().task.lastSuccessfulSyncAtMs).toBe(12_000);
+    expect(storage.getItem("hb.sync.lastSuccessfulAtMs")).toBe("12000");
   });
 
   it("records the sweep time on a held or failed outcome too — staleness must not freeze", () => {

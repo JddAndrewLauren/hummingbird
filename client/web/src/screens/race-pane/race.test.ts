@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { BindingDTO, PaneAlertDTO, PaneSnapshotDTO } from "../../store/protocol";
-import type { QuestionInputs } from "../questions/contract";
+import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import {
   BINDING_KEY,
   SETUP_SUBJECT,
@@ -115,6 +115,7 @@ describe("parseRaceBody", () => {
 
 function inputs(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
   return {
+    sync: EMPTY_QUESTION_SYNC,
     bindings: [],
     paneReads: {},
     calendarReads: {},

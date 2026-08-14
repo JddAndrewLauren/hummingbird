@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TaskItemDTO } from "../../store/protocol";
 import { fireEvent, render, screen } from "../../test/component";
 import { RankedRegion } from "../questions/RankedRegion";
+import { EMPTY_QUESTION_SYNC } from "../questions/contract";
 import { CALENDAR_REQUEST_KEY, weekendWindow } from "./weekend";
 
 // The pane shell's "component tests are the gate" rule (`src/test/component.tsx`): a pure
@@ -49,6 +50,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [],
           paneReads: {},
           calendarConnected: true,
@@ -79,6 +81,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [],
           paneReads: {},
           calendarConnected: true,
@@ -105,6 +108,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [],
           paneReads: {},
           calendarConnected: true,
@@ -131,6 +135,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [],
           paneReads: {},
           calendarConnected: true,
@@ -156,6 +161,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [],
           paneReads: {},
           calendarConnected: true,
@@ -179,6 +185,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [],
           paneReads: {},
           calendarConnected: false,
@@ -205,6 +212,7 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
       <RankedRegion
         surface="now"
         inputs={{
+          sync: EMPTY_QUESTION_SYNC,
           bindings: [],
           paneReads: {},
           calendarConnected: true,

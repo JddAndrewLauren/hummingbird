@@ -1,4 +1,9 @@
 import { isInformativeSyncOutcome } from "../shell/sync-status";
+import {
+  advanceLastSuccessfulSyncAtMs,
+  readLastSuccessfulSyncAtMs,
+  type SyncStorageLike,
+} from "./sync-persistence";
 import type { createCoreStore } from "./store";
 import type {
   CalendarSelectionDTO,
@@ -81,11 +86,15 @@ type Store = Pick<
 // the same synchronous task that constructs the Worker, so the listener is
 // attached before any worker message can be dispatched.
 //
-// Takes no clock: it used to accept an injectable `now` purely to re-request
-// the context tile's current/next event after each poll outcome, and #245
-// replaced that tile with the ranked pane region, whose own reads are the
-// wiring hooks' business.
-export function attachWorkerClient(worker: WorkerLike, store: Store): void {
+// Outcome timestamps always come from the worker message, never this view's
+// receipt clock: replay must retain its real age. A completed outcome samples
+// `Date.now()` only to detect a persisted timestamp that is now in the future
+// after a wall-clock correction; it never stamps an outcome or owns a timer.
+export function attachWorkerClient(
+  worker: WorkerLike,
+  store: Store,
+  storage?: SyncStorageLike,
+): void {
   // One counter per attached worker (i.e. per view). As of issue #191 this
   // has no consumer left in view code — `useSyncWiring.ts`'s per-cycle
   // refresh, the only thing that used to key on it, was replaced by the
@@ -94,6 +103,8 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
   // deliberately, not silently dropped — see `TaskState.syncOutcomeSeq`'s
   // own doc for why.
   let syncOutcomeSeq = 0;
+  let lastSuccessfulSyncAtMs = storage ? readLastSuccessfulSyncAtMs(storage) : null;
+  store.setTaskState({ lastSuccessfulSyncAtMs });
   worker.onmessage = (event) => {
     const message = event.data;
     switch (message.type) {
@@ -286,6 +297,22 @@ export function attachWorkerClient(worker: WorkerLike, store: Store): void {
         // `syncOutcomeSeq` above); it is retained rather than deleted — see
         // `TaskState.syncOutcomeSeq`'s doc for why.
         syncOutcomeSeq += 1;
+        if (message.kind === "completed" && message.atMs >= 0 && Number.isFinite(message.atMs)) {
+          const advanced = storage
+            ? advanceLastSuccessfulSyncAtMs(
+                storage,
+                lastSuccessfulSyncAtMs,
+                message.atMs,
+                Date.now(),
+              )
+            : lastSuccessfulSyncAtMs === null || message.atMs > lastSuccessfulSyncAtMs
+              ? message.atMs
+              : lastSuccessfulSyncAtMs;
+          if (advanced !== lastSuccessfulSyncAtMs) {
+            lastSuccessfulSyncAtMs = advanced;
+            store.setTaskState({ lastSuccessfulSyncAtMs });
+          }
+        }
         if (!isInformativeSyncOutcome(message.kind)) {
           // `"skipped"`/`"busy"`: nothing was attempted at all, so this
           // broadcast says nothing about how stale the mirror is, and

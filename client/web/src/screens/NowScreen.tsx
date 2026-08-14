@@ -92,6 +92,11 @@ export function realQuestionInputs(
   calendarConnected: boolean,
 ): Omit<QuestionInputs, "nowMs"> {
   return {
+    sync: {
+      latestOutcome: task.lastSyncOutcome,
+      latestInformativeAtMs: task.lastSyncAtMs,
+      lastSuccessfulAtMs: task.lastSuccessfulSyncAtMs,
+    },
     bindings: task.bindings,
     paneReads: task.paneReads,
     calendarReads,
