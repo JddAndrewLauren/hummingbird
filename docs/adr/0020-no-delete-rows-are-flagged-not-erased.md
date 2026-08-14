@@ -22,6 +22,14 @@ per-table per ADR-0009's schema) and kept forever. This is a decision being
 one because reversing it is not a small change: see "What reversing it would
 cost" below.
 
+**Note (#394, 2026-08-13): two `DELETE` routes do exist, and neither
+contradicts this.** `DELETE /admin/tokens/{id}` (`admin_tokens::revoke`) and
+`DELETE /api/push_targets/{id}` (`push_targets::revoke`), both in
+`handlers/mod.rs`, sit on `tokens` and `push_targets` — neither is a synced
+table — and neither handler erases a row: each sets `revoked_at` and is
+idempotent on a second call. They are evidence for this posture, not
+against it.
+
 ### The mechanism
 
 `GET /api/changes?since=N` (ADR-0009) transmits every row whose `version >
