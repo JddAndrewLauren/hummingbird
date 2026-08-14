@@ -71,6 +71,10 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
       }}
       onMouseEnter={(event) => { setHover(true); onMouseEnter?.(event); }}
       onMouseLeave={(event) => { setHover(false); onMouseLeave?.(event); }}
+      // `hb-item-row` carries only what the phone form has to change — the
+      // wrap. Everything below is unconditional or caller-dependent and stays
+      // inline. See `shell/responsive.css` for why the split is by kind.
+      className="hb-item-row"
       style={{
         display: "flex", alignItems: "center", gap: "var(--space-5)",
         minHeight: "var(--row-height)", padding: "var(--space-4) var(--space-5)",
@@ -85,8 +89,15 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
           row for an unrelated reason (e.g. NowScreen's "Blocked" section)
           never compounds two opacities into an over-muted row
           (PR #200 review). */}
-      <span style={{ flex: 1, minWidth: 0, font: "var(--type-body)", color: stage === "done" ? "var(--text-muted)" : "var(--text-primary)",
-        textDecoration: stage === "done" ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+      {/* The flex/clip half of this span's styling is `hb-item-row-title` in
+          `shell/responsive.css`, not inline: on a phone the title takes the
+          whole first line and wraps instead of clipping, and at equal
+          importance a stylesheet rule loses to an element's own `style`
+          attribute. Those properties moved out rather than being fought with
+          an `!important` apiece. Only what depends on `stage` stays here —
+          the media query never touches it, so it costs the class nothing. */}
+      <span className="hb-item-row-title" style={{ color: stage === "done" ? "var(--text-muted)" : "var(--text-primary)",
+        textDecoration: stage === "done" ? "line-through" : "none" }}>{title}</span>
       {pending ? (
         <span title="Not yet confirmed by the server" style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: "var(--text-muted)" }}>
           <Icon name="loader-circle" size={13} />Pending

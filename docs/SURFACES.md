@@ -11,20 +11,50 @@ touched — see "Brand-token bindings" below.
 
 ---
 
-## Surface: desktop web
+## Surface: web
 
-The only built surface. `hb.twinion.net` (ADR-0006), a PWA offline shell
+The only built surface, in **two forms**: desktop, and — since the mobile pass
+— a phone form below 640px. `hb.twinion.net` (ADR-0006), a PWA offline shell
 served from Cloudflare Workers static assets. Not deployed yet — #95's H3
 human gate.
+
+**The breakpoint is 640px**, defined in exactly two places:
+`src/shell/breakpoints.ts` (`PHONE_MAX_WIDTH_PX`) and the literal inside every
+`@media` in `src/shell/responsive.css` — CSS cannot read a custom property
+from a media query and there is no PostCSS plugin here.
+`src/shell/responsive-breakpoint.test.ts` reads the stylesheet's source and
+pins the two equal. 640 and not 768 because 768 is already a documented
+desktop state in the matrix below ("the context panel has wrapped below the
+column"), so moving the nav there would silently redefine a width this gate
+already photographs.
+
+**How the phone form is expressed** — the split is hard, and by kind:
+
+- **CSS classes** (`src/shell/responsive.css`) for the pure-layout elements:
+  the shell row, the scroll container, the header and its title, and the four
+  screen skeletons — plus a partial split on `ItemRow`, whose class carries
+  only the phone wrap. Everything in `src/` styles through inline `style={{}}`
+  objects, and at equal importance a stylesheet rule loses to an element's own
+  `style` attribute; `!important` is the one mechanism that outranks it, for
+  shorthands as much as longhands. So those elements' style objects were
+  *deleted* rather than supplemented — the alternative was an `!important` on
+  every declaration in the phone block, and on anything that later had to
+  override one. The file's single surviving `!important` (the 16px input rule,
+  against iOS focus-zoom) is that same mechanism used once, where deleting was
+  not available: the token file is a copied mirror of the design project and
+  `Input`/`Textarea`/`Select` set the `font` shorthand inline.
+- **`src/shell/useIsPhone.ts`** (a `matchMedia` hook) only where the DOM tree
+  itself differs: the nav rail versus the bottom bar, and `CapturePopover`'s
+  JS-measured anchor.
 
 | | |
 | --- | --- |
 | **Code root** | `client/web/src/` |
 | **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Done, Ledger, Status, Settings |
-| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), and the landmark is named **"Standing questions"** for it (#401, ADR-0021 decision 6: it read `Context` long after the context tile stopped being there, and the word was needed for the centre column's grouping axis) — plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121, `screens/race-pane/` #119 — the first question emitting one pane *per subject*, so the aside's height varies with the `race-series` binding). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). |
-| **Now's centre column** | `screens/NowScreen.tsx`'s `RealFrontier` — the frontier in **wrapping columns** (`screens/FrontierColumns.tsx`, grouped by a switchable axis — Context, Project, Size or Energy — over the pure `screens/frontier-columns.ts`; #402, ADR-0021), then Blocked. The **unsorted captures are cards in those same columns** rather than a section of their own: `TaskState.triageInbox` is appended to the ordered frontier before grouping, so each capture lands in whichever column the live axis puts it in (the no-value one until something sets that field) and sits **under** that column's startable actions, marked by its `triage` `StageBadge` — the same stage vocabulary the Triage screen's rows use, and not a fourth meaning for colour. There is now **no independent scroll container in the centre column at all** — the shell's one container scrolls the page — which the columns already assumed: they wrap onto more lines instead of scrolling sideways, and no column overflows on its own (each caps at six cards with an `n more` toggle). Colour the card itself introduces encodes urgency and nothing else (the stage chip and priority label are `ItemRow`'s, and stage is one of the three things the design system lets colour mean), and the urgency is stated in words too — in text colours, not the swatch's, which is a contrast requirement rather than a taste one. Since #403 each column header collapses **in place** (shrink-to-fit, so neighbours reflow rather than leaving a hole) and a Filter button opens a facet panel (context/size/energy/urgency, OR within a facet and AND across) with an `n of m shown` readout; the axis and the collapsed set persist device-locally via `screens/frontier-prefs.ts`, the filter selection deliberately does not, and changing the axis clears the collapsed set. Since #404 **selecting a card is not a takeover**: the existing `ItemDetailPanel` expands *above* the columns, which stay mounted and visible under it, with the source card marked (`aria-current` plus an accent fill) and the panel scrolled into view — `RealFrontier` used to return the panel *instead of* the frontier. Selecting a **capture** fills that same slot with `TriageRow` forced open, never `ItemDetailPanel` (whose act vocabulary offers a pre-action item nothing), so S13/#111's "two editors are never open at once" holds by construction — one slot, one editor — and the captures' cards stay on the board whichever kind is open. Since #418 a **failed triage is stated above the columns, naming the capture** (`screens/triage-failure.ts`), for the case the slot made reachable: the row that would otherwise wear the failure is unmounted the moment the reader closes the panel. It is suppressed while that capture is the open one, so `TriageRow`'s own paragraph and this line never both speak for one result. |
-| **Status** | `screens/StatusScreen.tsx` (#311, ADR-0017) — the same `RankedRegion` as Now's aside, instantiated a second time (`surface="status"`) as a single-column screen rather than an aside. Three questions read real pollers (`screens/kimi-pane/` #313, `screens/github-pane/` #314, `screens/uptime-pane/` #315); `screens/reachability-pane/` #316 answers from this device's persisted authority-sync history, with no poller or source of its own. |
-| **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx`, `shell/CapturePopover.tsx` (the capture box, over any screen), `shell/UpdateBanner.tsx` (the "new version — reload" strip, under the header), `screens/layout.tsx` |
+| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), and the landmark is named **"Standing questions"** for it (#401, ADR-0021 decision 6: it read `Context` long after the context tile stopped being there, and the word was needed for the centre column's grouping axis) — plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121, `screens/race-pane/` #119 — the first question emitting one pane *per subject*, so the aside's height varies with the `race-series` binding). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). **On the phone form all three of those properties are undone** (`.hb-aside` in `shell/responsive.css`): sticky + `100dvh` + `overflow-y: auto` on a full-width panel below the column would make a nested scroll region, and the reachability problem they solve does not exist once the panel is stacked in the flow — the page scrolls its whole height. |
+| **Now's centre column** | `screens/NowScreen.tsx`'s `RealFrontier` — the frontier in **wrapping columns** (`screens/FrontierColumns.tsx`, grouped by a switchable axis — Context, Project, Size or Energy — over the pure `screens/frontier-columns.ts`; #402, ADR-0021), then Blocked. The **unsorted captures are cards in those same columns** rather than a section of their own: `TaskState.triageInbox` is appended to the ordered frontier before grouping, so each capture lands in whichever column the live axis puts it in (the no-value one until something sets that field) and sits **under** that column's startable actions, marked by its `triage` `StageBadge` — the same stage vocabulary the Triage screen's rows use, and not a fourth meaning for colour. There is now **no independent scroll container in the centre column at all** — the shell's one container scrolls the page — which the columns already assumed: they wrap onto more lines instead of scrolling sideways, and no column overflows on its own (each caps at six cards with an `n more` toggle). Colour the card itself introduces encodes urgency and nothing else (the stage chip and priority label are `ItemRow`'s, and stage is one of the three things the design system lets colour mean), and the urgency is stated in words too — in text colours, not the swatch's, which is a contrast requirement rather than a taste one. Since #403 each column header collapses **in place** (shrink-to-fit, so neighbours reflow rather than leaving a hole) and a Filter button opens a facet panel (context/size/energy/urgency, OR within a facet and AND across) with an `n of m shown` readout; the axis and the collapsed set persist device-locally via `screens/frontier-prefs.ts`, the filter selection deliberately does not, and changing the axis clears the collapsed set. Since #404 **selecting a card is not a takeover**: the existing `ItemDetailPanel` expands *above* the columns, which stay mounted and visible under it, with the source card marked (`aria-current` plus an accent fill) and the panel scrolled into view — `RealFrontier` used to return the panel *instead of* the frontier. Selecting a **capture** fills that same slot with `TriageRow` forced open, never `ItemDetailPanel` (whose act vocabulary offers a pre-action item nothing), so S13/#111's "two editors are never open at once" holds by construction — one slot, one editor — and the captures' cards stay on the board whichever kind is open. Since #418 a **failed write is stated above the columns, naming the item** (`screens/write-failure.ts`), for the case the slot made reachable: the editor that would otherwise wear the failure is unmounted the moment the reader closes the panel. There are **two such lines, not one** — a failed triage and a failed act are separate results in the store (`lastTriage`, `lastAct`), so a shared slot would let one failure hide the other. Each is suppressed while the editor that owns it is what the slot holds — `TriageRow` for a triage, `ItemDetailPanel` for an act — so no result is ever stated twice; the act line is *not* suppressed for an open capture, whose `TriageRow` renders no act failure though its checkmark issues one. |
+| **Status** | `screens/StatusScreen.tsx` (#311, ADR-0017) — the same `RankedRegion` as Now's aside, instantiated a second time (`surface="status"`) as a single-column screen rather than an aside; three questions read real pollers (`screens/kimi-pane/` #313, `screens/github-pane/` #314, `screens/uptime-pane/` #315), and `screens/reachability-pane/` #316 answers from this device's persisted authority-sync history, with no poller or source of its own. |
+| **Shell** | `shell/Header.tsx`, `shell/NavRail.tsx` (desktop) / `shell/NavBar.tsx` (phone — four screens plus a More sheet, partitioned by `shell/nav-bar.ts`; `App.tsx` mounts exactly one, since two navigation landmarks break the spec's strict-mode `getByRole("navigation")`), `shell/ShellMeta.tsx` (the core-state and build-version lines, in the rail's footer and at the foot of the More sheet — on a phone that sheet and Settings are the only two places the build version is reachable), `shell/CapturePopover.tsx` (the capture box, over any screen), `shell/UpdateBanner.tsx` (the "new version — reload" strip, under the header), `screens/layout.tsx`, `shell/responsive.css` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 16-component library |
 | **Toolset** | Playwright (`client/web/playwright.config.ts`, `client/web/visual/`) |
 | **Command** | `cd client/web && pnpm visual` |
@@ -32,13 +62,25 @@ human gate.
 
 ### Matrix
 
-Three widths × two themes × twelve screen states, per run.
+Four widths × two themes × twelve screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
 | `wide` | 1440 | Rail, content column and context panel side by side — the design target. |
 | `boundary` | 1024 | The wrap point. 236px rail + 380px minimum column + 320px panel plus gaps lands within a few pixels of this, so it is where `screens/layout.tsx`'s `TwoColumn` decides. A layout regression shows here first. |
-| `narrow` | 768 | The context panel has wrapped below the column. |
+| `narrow` | 768 | The context panel has wrapped below the column. Still the desktop form: it sits above the 640 breakpoint, deliberately. |
+| `phone` | 390 | The phone form. The rail is a bottom bar, the aside is stacked in the flow with **no nested scroll region**, and `ItemRow` wraps its title onto its own line. `deviceScaleFactor: 3`, `isMobile`, `hasTouch`. The spec opens the More sheet to reach the five overflow screens, importing the partition from `shell/nav-bar.ts` so it cannot drift. |
+
+The **rule editor at 390 is the one knowingly-exempt screen** (137px over):
+its condition rows are a dense grid of selects needing their own design pass.
+The exemption is by screen name in `visual/surfaces.spec.ts`, the capture is
+still taken, and every other screen at 390 is held to the same bar as desktop.
+
+Captures are **viewport-sized, not `fullPage`**: the shell is
+`height: 100dvh; overflow: hidden`, so the document is exactly one viewport on
+every project and `fullPage` can only add what is not really there — under the
+phone project's `isMobile` emulation it did, reporting 1048px of content for an
+844px page.
 
 Themes: `light` and `dark`, seeded into `localStorage` at `hb.theme` before
 first paint (the app resolves `light | dark | system` onto
@@ -93,8 +135,10 @@ with `RealFrontier` to photograph them is rejected there, not merely skipped:
 that branch exists to keep the two apart, so widening it would trade a
 documented coverage gap for an undocumented behavioural one.
 
-**Since #420 the columns, the captures among them and #418's stranded-triage
-alert ARE photographed** — the twelfth state, `now-columns-*`, and the reason
+**Since #420 the columns, the captures among them and #418's stranded-write
+alerts ARE photographed** (both of them — the board fixture seeds a failed
+triage and a failed act, and `surfaces.spec.ts` asserts the count rather than
+the first match, which is what caught the second line arriving) — the twelfth state, `now-columns-*`, and the reason
 the count above moved. Not by widening `?demo`, which still never mounts
 `RealFrontier` and still means exactly what it meant: by a **second demo
 world**, `?demo=board`, which seeds a real `TaskState`
@@ -134,6 +178,15 @@ What the spec *does* fail on is the machine-decidable subset: horizontal
 overflow at any width, unresolved brand tokens, and a theme switch that does
 not reach the page.
 
+**Be clear how little the overflow assertion proves.** `App.tsx`'s root is
+`overflow: hidden`, so content wider than the shell is *clipped* rather than
+extending `documentElement.scrollWidth` — the assertion largely measures the
+thing that cannot happen. It caught the rules editor's 137px, which escaped
+the clip anyway, so it is not useless; but "every screen passes" means "no
+screen scrolls sideways", not "every screen is usable at 390". A row whose
+title ellipsised to two characters passed it. Reading the captures is what
+found that, and reading the captures is still the gate.
+
 ### Not in CI
 
 Deliberately absent from `.github/workflows/client.yml`. `pnpm typecheck`
@@ -154,7 +207,18 @@ Requires a one-time `pnpm exec playwright install chromium` per machine.
 
 Layout constants the matrix above is derived from live in
 `design/tokens/spacing.css`: `--rail-width: 236px`, `--panel-width: 320px`,
-`--content-max: 880px`.
+`--content-max: 880px`, `--touch-min: 44px`.
+
+The breakpoint is **not** among them, and must not be added there:
+`src/design/tokens/` is a copied mirror of the design project and a re-pull
+silently deletes anything local. It is an app constant
+(`src/shell/breakpoints.ts`). A breakpoint scale taken upstream to the design
+project is a separate piece of work.
+
+The phone form amends one statement of the design README directly: *"The rail
+and the panel are fixed; only the centre column scrolls."* Below 640 the rail
+is a bottom bar and the panel is stacked in the flow. Only the centre column
+still scrolls — that half holds.
 
 The visual spec asserts these tokens **resolve**, never that they equal a
 particular hex or pixel value — the design system owns the values, and a

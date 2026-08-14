@@ -20,13 +20,17 @@ function deps(tokenClient: TokenClient): ConnectionDeps & { pushToken: ReturnTyp
 }
 
 describe("initConnection", () => {
+  // `error: null` here is the assertion, not boilerplate: a device that was
+  // never opted in has not FAILED, and Settings' error message is gated on
+  // this field being non-null. Reporting a code here would put a Google
+  // error on screen for someone who never pressed Connect.
   it("does nothing and stays disconnected on a never-opted-in device", async () => {
     const tokenClient = fakeTokenClient(() => ({ error: "should not be called" }));
     const d = deps(tokenClient);
 
     const result = await initConnection(d, false);
 
-    expect(result).toEqual({ connected: false, needsReconnect: false, expiresAtMs: null });
+    expect(result).toEqual({ connected: false, needsReconnect: false, expiresAtMs: null, error: null });
     expect(d.pushToken).not.toHaveBeenCalled();
     expect(tokenClient.requestToken).not.toHaveBeenCalled();
   });
@@ -40,7 +44,7 @@ describe("initConnection", () => {
 
     const result = await initConnection(d, true);
 
-    expect(result).toEqual({ connected: true, needsReconnect: false, expiresAtMs: 10_000 });
+    expect(result).toEqual({ connected: true, needsReconnect: false, expiresAtMs: 10_000, error: null });
     expect(d.pushToken).toHaveBeenCalledWith("tok-1");
   });
 
@@ -50,7 +54,7 @@ describe("initConnection", () => {
 
     const result = await initConnection(d, true);
 
-    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null });
+    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null, error: "interaction_required" });
     expect(d.pushToken).not.toHaveBeenCalled();
   });
 });
@@ -65,7 +69,7 @@ describe("connect", () => {
 
     const result = await connect(d);
 
-    expect(result).toEqual({ connected: true, needsReconnect: false, expiresAtMs: 20_000 });
+    expect(result).toEqual({ connected: true, needsReconnect: false, expiresAtMs: 20_000, error: null });
     expect(d.pushToken).toHaveBeenCalledWith("tok-2");
   });
 
@@ -75,7 +79,7 @@ describe("connect", () => {
 
     const result = await connect(d);
 
-    expect(result).toEqual({ connected: false, needsReconnect: false, expiresAtMs: null });
+    expect(result).toEqual({ connected: false, needsReconnect: false, expiresAtMs: null, error: "access_denied" });
     expect(d.pushToken).not.toHaveBeenCalled();
   });
 });
@@ -90,7 +94,7 @@ describe("handleCredentialNeeded", () => {
 
     const result = await handleCredentialNeeded(d);
 
-    expect(result).toEqual({ connected: true, needsReconnect: false, expiresAtMs: 30_000 });
+    expect(result).toEqual({ connected: true, needsReconnect: false, expiresAtMs: 30_000, error: null });
     expect(d.pushToken).toHaveBeenCalledWith("tok-3");
   });
 
@@ -100,14 +104,14 @@ describe("handleCredentialNeeded", () => {
 
     const result = await handleCredentialNeeded(d);
 
-    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null });
+    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null, error: "interaction_required" });
     expect(d.pushToken).not.toHaveBeenCalled();
   });
 });
 
 describe("shouldKeepExistingConnection", () => {
-  const failed = { connected: false, needsReconnect: false, expiresAtMs: null };
-  const succeeded = { connected: true, needsReconnect: false, expiresAtMs: 10_000 };
+  const failed = { connected: false, needsReconnect: false, expiresAtMs: null, error: null };
+  const succeeded = { connected: true, needsReconnect: false, expiresAtMs: 10_000, error: null };
 
   it("keeps the opt-in when a Reconnect is cancelled or fails", () => {
     // The device stays connected-but-needing-reconnect: its last-good tile

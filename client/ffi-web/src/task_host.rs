@@ -423,6 +423,12 @@ pub struct DeadLetterFieldDTO {
 /// `fields` and no `message`; `"contention"` (#163) carries neither — a
 /// genuinely disjoint second 409 has no colliding field name to show, only
 /// repeated churn.
+///
+/// `entity`/`entity_id` are what the abandoned change was *about*
+/// ([`MutationIntent::subject`]) — the journal's own `id` is the queue
+/// entry's, which names the attempt rather than the thing, so this affordance
+/// could previously say a write had been abandoned without saying whose.
+/// `entity_id` is `None` only when the intent genuinely named no single row.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DeadLetterEntryDTO {
     pub id: String,
@@ -430,6 +436,8 @@ pub struct DeadLetterEntryDTO {
     pub message: Option<String>,
     pub fields: Vec<DeadLetterFieldDTO>,
     pub at_ms: i64,
+    pub entity: String,
+    pub entity_id: Option<String>,
 }
 
 /// The wrapper around [`TaskHostCore::dead_letters`]'s answer.
@@ -609,6 +617,10 @@ fn local_field_values(intent: &MutationIntent) -> serde_json::Map<String, serde_
 }
 
 fn map_dead_letter(entry: &DeadLetterEntry) -> DeadLetterEntryDTO {
+    // Derived in the core, where it is natively tested, and carried onto
+    // every variant below rather than into one of them: what a change was
+    // about is the same fact however the change died.
+    let subject = entry.entry.intent.subject();
     match &entry.reason {
         DeadLetterReason::Permanent(message) => DeadLetterEntryDTO {
             id: entry.entry.id.clone(),
@@ -616,6 +628,8 @@ fn map_dead_letter(entry: &DeadLetterEntry) -> DeadLetterEntryDTO {
             message: Some(message.clone()),
             fields: Vec::new(),
             at_ms: entry.at_ms,
+            entity: subject.entity,
+            entity_id: subject.id,
         },
         DeadLetterReason::Conflict { fields, current } => {
             let local = local_field_values(&entry.entry.intent);
@@ -633,6 +647,8 @@ fn map_dead_letter(entry: &DeadLetterEntry) -> DeadLetterEntryDTO {
                 message: None,
                 fields: mapped_fields,
                 at_ms: entry.at_ms,
+                entity: subject.entity,
+                entity_id: subject.id,
             }
         }
         DeadLetterReason::Contention { .. } => DeadLetterEntryDTO {
@@ -641,6 +657,8 @@ fn map_dead_letter(entry: &DeadLetterEntry) -> DeadLetterEntryDTO {
             message: None,
             fields: Vec::new(),
             at_ms: entry.at_ms,
+            entity: subject.entity,
+            entity_id: subject.id,
         },
     }
 }
@@ -2367,6 +2385,10 @@ mod tests {
                 message: Some("validation".to_string()),
                 fields: Vec::new(),
                 at_ms: 5_000,
+                entity: "items".to_string(),
+                // This fixture's create body carries no `id`, so there is no
+                // row to name and the DTO says so rather than inventing one.
+                entity_id: None,
             }
         );
     }
@@ -2404,6 +2426,10 @@ mod tests {
                     server: serde_json::json!("someone else's"),
                 }],
                 at_ms: 6_000,
+                // The abandoned change was about this item — the `id` above
+                // is the queue entry's, which names the attempt instead.
+                entity: "items".to_string(),
+                entity_id: Some("item-1".to_string()),
             }
         );
     }
@@ -2673,11 +2699,13 @@ mod tests {
                 message: Some("validation".to_string()),
                 fields: Vec::new(),
                 at_ms: 5_000,
+                entity: "items".to_string(),
+                entity_id: Some("a-1".to_string()),
             }],
         };
         assert_eq!(
             serde_json::to_string(&permanent).unwrap(),
-            r#"{"kind":"ok","entries":[{"id":"item-1","reason":"permanent","message":"validation","fields":[],"at_ms":5000}]}"#
+            r#"{"kind":"ok","entries":[{"id":"item-1","reason":"permanent","message":"validation","fields":[],"at_ms":5000,"entity":"items","entity_id":"a-1"}]}"#
         );
 
         let conflict = DeadLettersResponse {
@@ -2692,11 +2720,15 @@ mod tests {
                     server: serde_json::json!("someone else's"),
                 }],
                 at_ms: 6_000,
+                entity: "settings".to_string(),
+                // `null` on the wire, not an absent key — `task-worker.ts`
+                // reads it as "named no single row" and must see the field.
+                entity_id: None,
             }],
         };
         assert_eq!(
             serde_json::to_string(&conflict).unwrap(),
-            r#"{"kind":"ok","entries":[{"id":"item-2","reason":"conflict","message":null,"fields":[{"field":"title","local":"buy oat milk","server":"someone else's"}],"at_ms":6000}]}"#
+            r#"{"kind":"ok","entries":[{"id":"item-2","reason":"conflict","message":null,"fields":[{"field":"title","local":"buy oat milk","server":"someone else's"}],"at_ms":6000,"entity":"settings","entity_id":null}]}"#
         );
     }
 

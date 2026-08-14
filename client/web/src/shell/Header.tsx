@@ -43,28 +43,21 @@ export function Header({ title, syncLabel, onSearch, onRefresh, onCapture }: Hea
   }, [title]);
 
   return (
-    <header
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "var(--space-5)",
-        flex: "0 0 auto",
-        padding: "var(--space-7) var(--gutter-page) var(--space-6)",
-      }}
-    >
+    // `hb-header` / `hb-header-title` rather than style objects: on a phone the
+    // title takes its own line and drops a size, and at equal importance a
+    // stylesheet rule loses to an element's own `style` attribute. `!important`
+    // would have won — `font: var(--type-h2) !important` beats an inline `font`
+    // shorthand just as it beats a longhand — but only by putting `!important`
+    // on every phone declaration and on anything that ever needs to override
+    // one. Deleting the h1's object instead leaves one source of truth per
+    // element. `shell/responsive.css` carries the argument.
+    <header className="hb-header">
       <h1
         ref={headingRef}
+        className="hb-header-title"
         // Focusable only programmatically, by the effect above — never a tab
         // stop, so it is not a keyboard-operable component and shows no ring.
         tabIndex={-1}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          font: "var(--type-h1)",
-          letterSpacing: "var(--tracking-heading)",
-          color: "var(--text-primary)",
-          outline: "none",
-        }}
       >
         {title}
       </h1>

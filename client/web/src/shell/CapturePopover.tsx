@@ -5,6 +5,7 @@ import { CaptureBox } from "../screens/CaptureBox";
 import type { CaptureDestination } from "../screens/capture-destination";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
+import { useIsPhone } from "./useIsPhone";
 
 /** The DOM id the header's New button carries, so this popover can measure
  * what it hangs from. An id rather than a ref threaded through `Header`:
@@ -61,6 +62,7 @@ export function CapturePopover({
 }: CapturePopoverProps) {
   const restoreTo = useRef<Element | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const isPhone = useIsPhone();
 
   // Measured, not hardcoded: the header's height is type- and token-dependent,
   // and the button's right edge moves with the sync badge and the refresh
@@ -74,6 +76,16 @@ export function CapturePopover({
   // the DOM at all (the hotkey works on every screen, and a future screen may
   // not carry the button) the markup's own fallback stands: the top-right
   // corner, which is where the button sits when there is one.
+  //
+  // The *horizontal* half of the measurement is desktop-only, and that is
+  // `useIsPhone`'s second legitimate caller: the anchor's shape differs, not
+  // just its numbers. At 390px the card is already almost the full width, so
+  // hanging its right edge off the button's leaves it a few pixels from the
+  // right gutter and ragged against the left one — and the phone header wraps,
+  // which moves that button onto a second line under the title. Gutter to
+  // gutter is the only placement that reads as deliberate. The vertical half
+  // still measures, on both: the header's height is type- and
+  // token-dependent, and on a phone it is a wrap away from changing again.
   useLayoutEffect(() => {
     if (!open) {
       return;
@@ -87,13 +99,21 @@ export function CapturePopover({
       const rect = trigger.getBoundingClientRect();
       const top = rect.bottom + ANCHOR_GAP;
       card.style.top = `${top}px`;
-      card.style.right = `${window.innerWidth - rect.right}px`;
+      // `left` wins over `right` once a width is set, so writing it is what
+      // moves the card off the trigger's edge; clearing it hands the markup's
+      // own `right: var(--gutter-page)` back.
+      if (isPhone) {
+        card.style.left = "var(--gutter-page)";
+      } else {
+        card.style.left = "";
+        card.style.right = `${window.innerWidth - rect.right}px`;
+      }
       card.style.maxHeight = `${window.innerHeight - top - BOTTOM_ROOM}px`;
     }
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [open]);
+  }, [open, isPhone]);
 
   // Focus goes into the field (CaptureBox's own effect) and has to come back
   // out again: whatever was focused when this opened — the header button, or

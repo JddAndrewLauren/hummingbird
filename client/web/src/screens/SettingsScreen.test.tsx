@@ -21,8 +21,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../shell/useCalendarWiring", () => ({ GOOGLE_CLIENT_ID: "test-client-id" }));
 
 import { SettingsScreen } from "./SettingsScreen";
-import { bindingDTO, fireEvent, render, screen, taskState } from "../test/component";
-import type { BindingDTO } from "../store/protocol";
+import { bindingDTO, fireEvent, itemDTO, render, screen, taskState } from "../test/component";
+import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 
 const calendar: CalendarState = {
@@ -31,6 +31,9 @@ const calendar: CalendarState = {
   selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
+  connectPending: false,
+  connectError: null,
+  silentRemintBlocked: false,
   eventReads: {},
 };
 
@@ -50,6 +53,7 @@ interface SettingsOptions {
 }
 
 function renderSettings(options: SettingsOptions = {}) {
+  const onConnect = vi.fn();
   const onSetBinding = vi.fn();
   const onSelectionChange = vi.fn();
   const onBackendSelection = vi.fn();
@@ -66,7 +70,7 @@ function renderSettings(options: SettingsOptions = {}) {
       onThemePreference={vi.fn()}
       backendSelection={current.backendSelection ?? "auto"}
       onBackendSelection={onBackendSelection}
-      onConnect={vi.fn()}
+      onConnect={onConnect}
       onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
       taskTokenState="resting"
@@ -84,6 +88,7 @@ function renderSettings(options: SettingsOptions = {}) {
   // A pull arriving is a re-render with new props, not a remount — which is
   // the whole point of the stale-draft test below.
   return {
+    onConnect,
     onSetBinding,
     onSelectionChange,
     onBackendSelection,
@@ -367,5 +372,112 @@ describe("SettingsScreen — the microtask backend picker (#274)", () => {
     const { onBackendSelection } = renderSettings();
     fireEvent.change(screen.getByLabelText("Microtask backend"), { target: { value: "cloud" } });
     expect(onBackendSelection).toHaveBeenCalledWith("cloud");
+  });
+});
+
+describe("SettingsScreen — the dead-letter journal", () => {
+  const entry = (overrides: Partial<DeadLetterEntryDTO> = {}): DeadLetterEntryDTO => ({
+    id: "q-1",
+    reason: "permanent",
+    message: "validation",
+    fields: [],
+    atMs: 5_000,
+    entity: "items",
+    entityId: "a-1",
+    ...overrides,
+  });
+
+  const ledgerRow = (id: string, title: string): LedgerRowDTO => ({
+    ...itemDTO({ id, title, stage: "ready" }),
+    absentSinceMs: null,
+    deadLettered: true,
+    hasLiveAlert: false,
+  });
+
+  // The thread this file exists to mount: the naming rule itself is unit-tested
+  // in `dead-letter-subject.test.ts`, and what no node test can see is whether
+  // the row actually calls it with the ledger the screen holds.
+  it("names the item an abandoned change was about, not just the queue entry", () => {
+    renderSettings({
+      task: {
+        deadLetters: [entry()],
+        ledger: [ledgerRow("a-1", "Ring the plumber")],
+      },
+    });
+
+    expect(screen.getByText('item "Ring the plumber"')).toBeDefined();
+    // The queue entry's own id stays on the row — it names the attempt, which
+    // is still what a person quotes when asking why it was abandoned.
+    expect(screen.getByText("q-1")).toBeDefined();
+  });
+
+  it("falls back to the id rather than nothing when the ledger cannot name it", () => {
+    renderSettings({ task: { deadLetters: [entry({ entityId: "a-9" })] } });
+    expect(screen.getByText("item a-9")).toBeDefined();
+  });
+
+  it("says the entity alone when the change named no row", () => {
+    renderSettings({
+      task: { deadLetters: [entry({ entity: "settings", entityId: null })] },
+    });
+    expect(screen.getByText("setting")).toBeDefined();
+  });
+});
+
+// The calendar connection's three new pieces of state (the mobile pass). All
+// three were shipped with a fixture field and no assertion, which is the
+// precise shape of the failure `test/component.tsx` records: state that
+// compiles, typechecks, and is rendered by nobody.
+describe("SettingsScreen — the calendar connection's state", () => {
+  it("says nothing about a connection nobody has attempted", () => {
+    renderSettings();
+    expect(screen.getByRole("button", { name: /connect google calendar/i })).toBeDefined();
+    // No error copy, and nothing claiming a failure that has not happened.
+    expect(screen.queryByText(/never answered|did not open|declined/i)).toBeNull();
+  });
+
+  it("renders the last failure as a diagnosis AND a next action", () => {
+    // Both halves matter: `connect-error.ts` pairs them precisely because an
+    // error the reader cannot act on is just bad news. A screen that rendered
+    // only `message` would pass a laxer test and help nobody.
+    renderSettings({ calendar: { connectError: "popup_failed_to_open" } });
+    expect(screen.getByText(/did not open/i)).toBeDefined();
+    expect(screen.getByText(/pop-up blocker/i)).toBeDefined();
+  });
+
+  it("does not blame Google for this app's own CSRF check", () => {
+    // `state_mismatch` is `google/redirect-flow.ts` refusing a fragment. It
+    // used to fall through to the default arm and render as `Google reported
+    // "state_mismatch".`, sending the reader to debug the wrong system.
+    renderSettings({ calendar: { connectError: "state_mismatch" } });
+    expect(screen.queryByText(/Google reported/i)).toBeNull();
+    expect(screen.getByText(/did not match the request this app made/i)).toBeDefined();
+  });
+
+  it("disables the button while a connect attempt is in flight", () => {
+    // The redirect path sets this and navigates away; on a desktop popup it
+    // covers a live `await`. Either way a second press must not start a
+    // second consent.
+    const { onConnect } = renderSettings({ calendar: { connectPending: true } });
+    const button = screen.getByRole("button", { name: /connect google calendar/i });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onConnect).not.toHaveBeenCalled();
+  });
+
+  it("tells a blocked device that the background renewal has stopped, not just that the credential died", () => {
+    // The ordinary reconnect sentence would leave the reader waiting for a
+    // recovery that is never coming — `remint-health.ts` has stopped trying.
+    renderSettings({
+      calendar: { connected: true, needsReconnect: true, silentRemintBlocked: true },
+    });
+    expect(screen.getByText(/renewing it in the background has stopped working/i)).toBeDefined();
+    expect(screen.getByRole("button", { name: /reconnect google calendar/i })).toBeDefined();
+  });
+
+  it("keeps the ordinary reconnect sentence while the silent path is still trying", () => {
+    renderSettings({ calendar: { connected: true, needsReconnect: true } });
+    expect(screen.getByText(/The credential no longer works\./i)).toBeDefined();
+    expect(screen.queryByText(/has stopped working/i)).toBeNull();
   });
 });

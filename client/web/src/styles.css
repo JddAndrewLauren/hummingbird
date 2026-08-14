@@ -16,6 +16,15 @@
 @import "./design/tokens/base.css" layer(base);
 @import "tailwindcss";
 
+/* The shell's layout classes and its one breakpoint. Unlayered and imported
+   after Tailwind on purpose: these are the *only* styling those elements have
+   (their inline style objects were deleted — a stylesheet cannot override an
+   inline property, so a media query could not otherwise reach them), and
+   unlayered rules outrank every layered utility. Not a token file: it is app
+   layout, and `src/design/tokens/` is a copied mirror that a re-pull would
+   overwrite. See its own header. */
+@import "./shell/responsive.css";
+
 /* The design system themes on [data-theme="dark"], not the OS preference. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 

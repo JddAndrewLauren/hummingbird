@@ -26,7 +26,7 @@ import { Aside, Column, Section, TwoColumn } from "./layout";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
-import { strandedTriageFailure } from "./triage-failure";
+import { actFailureFor, strandedActFailure, strandedTriageFailure } from "./write-failure";
 import { TriageRow } from "./TriageRow";
 
 export interface NowScreenProps {
@@ -150,15 +150,6 @@ function RealFrontier({
   | "onTriage"
   | "storage"
 >) {
-  // Reviewer finding on PR #207: a failed `actResult` used to be recorded
-  // in `TaskState.lastAct` and rendered nowhere — this is what makes it
-  // visible, matched to the currently open item by id so a stale failure
-  // from a DIFFERENT item never bleeds into this one.
-  const actError =
-    task.lastAct && task.lastAct.itemId === selectedItemId && task.lastAct.kind !== "ok"
-      ? (task.lastAct.error ?? "That action didn't apply.")
-      : null;
-
   const allItems = [...task.frontier, ...task.blocked.map((entry) => entry.item)];
   const liveSelectedItem = selectedItemId
     ? (allItems.find((item) => item.id === selectedItemId) ?? null)
@@ -189,6 +180,29 @@ function RealFrontier({
     task.lastTriage,
     selectedCapture?.id ?? null,
     task.triageInbox,
+  );
+
+  // Reviewer finding on PR #207: a failed `actResult` used to be recorded in
+  // `TaskState.lastAct` and rendered nowhere — this is what makes it visible,
+  // matched to the currently open item by id so a stale failure from a
+  // DIFFERENT item never bleeds into this one.
+  const actError = selectedItemId ? actFailureFor(task.lastAct, selectedItemId) : null;
+
+  // #418's twin, on the other mutation. `actError` above only renders inside
+  // `ItemDetailPanel`, so an act that failed after the reader closed the panel
+  // was displayed nowhere at all — the same defect the amendment fixed for
+  // triage, and the reason this pair of lines exists rather than one.
+  //
+  // The panel is open only when a *non-capture* fills the slot: a selected
+  // capture gets `TriageRow`, which speaks for triage failures and not for act
+  // ones, though its checkmark issues an act (`canMarkDone`). So the id passed
+  // as "the panel's item" is the selected one only on that branch, and the
+  // name is looked up across the inbox too, since a capture can be what
+  // failed.
+  const strandedAct = strandedActFailure(
+    task.lastAct,
+    selectedCapture ? null : selectedItemId,
+    [...allItems, ...task.triageInbox],
   );
 
   // S11/#109's item detail panel must stay open (reviewer finding on PR
@@ -259,26 +273,40 @@ function RealFrontier({
 
   return (
     <>
-      {/* Above the slot, not inside it: this line exists precisely for the
+      {/* Above the slot, not inside it: these lines exist precisely for the
           renders where the slot is empty. Text and nothing else — ADR-0021
           decision 2 keeps colour on a card meaning urgency and nothing else,
           so a failure states itself in words, which is the same accessibility
           argument the cards already make for urgency. `role="alert"`, like
           every other danger paragraph in this app: it appears with no other
           change on the page, so colour alone would never reach a screen
-          reader. */}
-      {strandedTriage ? (
-        <p
-          role="alert"
-          style={{
-            font: "var(--type-body-sm)",
-            color: "var(--status-danger-fg)",
-            margin: 0,
-          }}
-        >
-          {strandedTriage}
-        </p>
-      ) : null}
+          reader.
+
+          Two, because triage and act are two results the store holds at once
+          (`TaskState.lastTriage` and `lastAct` are separate fields), and a
+          failure of each can be stranded at the same time. Each is silent
+          whenever the editor that owns it is the thing on screen, so no
+          failure is ever stated twice. */}
+      {(
+        [
+          ["triage", strandedTriage],
+          ["act", strandedAct],
+        ] as const
+      ).map(([kind, message]) =>
+        message ? (
+          <p
+            key={kind}
+            role="alert"
+            style={{
+              font: "var(--type-body-sm)",
+              color: "var(--status-danger-fg)",
+              margin: 0,
+            }}
+          >
+            {message}
+          </p>
+        ) : null,
+      )}
 
       {/* #404 / ADR-0021 decision 7: the selected item expands ABOVE the
           columns, which stay standing under it — this used to be an early

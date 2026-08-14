@@ -307,16 +307,17 @@ pub struct LedgerEntry {
 /// items patch's path id) without insisting the body still deserialises:
 /// a dead letter is already terminal, so a badge is owed on whatever id is
 /// still legible, never an init-blocking `Err`.
+///
+/// The reading itself is [`MutationIntent::subject`]'s, narrowed to items —
+/// this used to derive it again inline, and two derivations of "which row is
+/// this change about" is exactly the pair that drifts once a path shape
+/// changes.
 fn item_id_of_intent(intent: &MutationIntent) -> Option<String> {
-    match intent {
-        MutationIntent::Create { path, body } if *path == sync::write::paths::items() => body
-            .get("id")
-            .and_then(|id| id.as_str())
-            .map(str::to_string),
-        MutationIntent::Patch { path, .. } => path
-            .strip_prefix("/api/items/")
-            .map(str::to_string),
-        MutationIntent::Create { .. } => None,
+    let subject = intent.subject();
+    if subject.entity == "items" {
+        subject.id
+    } else {
+        None
     }
 }
 
