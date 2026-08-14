@@ -28,6 +28,7 @@ grepping it.
 | The authority server | `server/authority/` (+ `worker/` wasm32 shim) | `src/lib.rs`; DDL and its migration traps in `src/schema.rs` |
 | Rule evaluation | `server/rules-engine/` | `src/lib.rs`, ADR-0013 |
 | The notification lane | `authority/src/{delivery,sweep,fcm}.rs`, `worker/src/fcm.rs` | `delivery.rs`, ADR-0012/0014 |
+| Grill (interview + the immutable per-item attachment) | `domain/src/grill.rs`, `authority/src/handlers/grills.rs` | `grill.rs`, ADR-0023 |
 | The which-cans poller | `server/city-waste/` | `src/lib.rs`, then `src/judge.rs` |
 | Evaluated-stream pollers | `server/{gmail-poll,calendar-poll,graph-poll}/` | each `src/lib.rs`, ADR-0011 |
 | The race lane (2 binaries) | `server/race-poll/` | `src/lib.rs` |

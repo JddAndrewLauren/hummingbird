@@ -1,8 +1,9 @@
 //! The full owned schema, verbatim from ADR-0009 as amended 2026-08-09
 //! (`scheduled_date`, `settings`), plus the notification lane's three
 //! tables (ADR-0012, amended by ADR-0013) landed here in their own slice
-//! (#131). Fourteen tables and six indexes; `tokens` gained a `source`
-//! column in #145.
+//! (#131), plus the Grill interview's `grills` table (ADR-0023, #353).
+//! Fifteen tables and eight indexes; `tokens` gained a `source` column in
+//! #145.
 
 use crate::sql::{Sql, SqlError, SqlValue};
 
@@ -36,7 +37,13 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// [`add_missing_columns`] is the only thing that grows it. Same mechanism
 /// as 3→4, second arm, and the same load-bearing formatting trap on
 /// [`CREATE_ITEMS`].
-pub const SCHEMA_VERSION: i64 = 5;
+///
+/// 6 adds `grills` (#353, ADR-0023): the immutable per-item Grill-interview
+/// attachment. Back to the 1→2 and 2→3 shape — purely a new table, which
+/// `CREATE TABLE IF NOT EXISTS` grows for free — not another
+/// [`add_missing_columns`] arm; nothing about an existing table's shape
+/// changes.
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -277,18 +284,44 @@ CREATE TABLE IF NOT EXISTS deliveries (
   UNIQUE(alert_id, rule_id, generation, severity)
 )";
 
-const CREATE_INDEXES: [&str; 6] = [
+/// The Grill interview's immutable per-item attachment (#353, ADR-0023
+/// decision 2): one row per completed Grill, never edited or resumed.
+/// `resulting_stage` is stored, not recomputed at read time — it is
+/// `hummingbird_domain::resulting_stage`'s output at the moment this row
+/// was written (#352), the one place this crate stores that function's
+/// answer rather than re-deriving it. `transcript` sits in storage like
+/// every other column here; it is the *wire* (`ChangesResponse`,
+/// `changes.rs`'s `pull`) that leaves it out, never this table.
+pub const CREATE_GRILLS: &str = "\
+CREATE TABLE IF NOT EXISTS grills (
+  id              TEXT PRIMARY KEY,
+  item_id         TEXT NOT NULL REFERENCES items(id),
+  transcript      TEXT NOT NULL,
+  summary         TEXT NOT NULL,
+  verdict         TEXT NOT NULL CHECK (verdict IN ('resolved','fog_remains')),
+  model_proposal  TEXT NOT NULL,
+  applied_patch   TEXT NOT NULL,
+  resulting_stage TEXT NOT NULL CHECK (resulting_stage IN
+                     ('triage','grilling','ready','in_progress','blocked','done')),
+  completed_at    INTEGER NOT NULL,
+  version         INTEGER NOT NULL
+)";
+
+const CREATE_INDEXES: [&str; 8] = [
     "CREATE INDEX IF NOT EXISTS idx_items_version ON items(version)",
     "CREATE INDEX IF NOT EXISTS idx_steps_version ON steps(version)",
     "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_steps_item    ON steps(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_rules_version ON rules(version)",
+    "CREATE INDEX IF NOT EXISTS idx_grills_version ON grills(version)",
+    "CREATE INDEX IF NOT EXISTS idx_grills_item    ON grills(item_id)",
 ];
 
 /// Every table, parents before children (routes/fog reference projects,
-/// steps/blocked_by reference items, deliveries references alerts/rules).
-const CREATE_TABLES: [&str; 14] = [
+/// steps/blocked_by/grills reference items, deliveries references
+/// alerts/rules).
+const CREATE_TABLES: [&str; 15] = [
     CREATE_META,
     CREATE_PROJECTS,
     CREATE_ROUTES,
@@ -303,6 +336,7 @@ const CREATE_TABLES: [&str; 14] = [
     CREATE_RULES,
     CREATE_PUSH_TARGETS,
     CREATE_DELIVERIES,
+    CREATE_GRILLS,
 ];
 
 /// Idempotent: safe to run on every Durable Object construction. A schema-1
