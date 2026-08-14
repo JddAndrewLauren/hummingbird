@@ -44,9 +44,22 @@ import {
 // and passes the handlers down.
 //
 // Everything here is intentionally thin: every decision (silent re-mint vs.
-// re-connect, staleness, selection toggling) is delegated to a unit-tested
+// re-connect, staleness, selection toggling, which errors mean a human is
+// required, how to read a redirect fragment) is delegated to a unit-tested
 // pure module under calendar/ or google/; this file only wires their results
 // into the store and the worker.
+//
+// There are now TWO interactive paths, and the choice is `shouldUseRedirect`
+// below. Desktop keeps GIS's popup. A standalone or phone-sized view takes a
+// top-level redirect (`google/redirect-flow.ts`), because the popup escapes to
+// Safari in an installed iOS web app and loses its opener — it can never come
+// back. The redirect's answer arrives on the NEXT page load, so it is applied
+// in the start effect rather than in the click handler that asked for it.
+//
+// The silent path stays one path and stays iframe-based — `prompt=none` over a
+// redirect would be a full-page navigation, which cannot run hourly — so it
+// stays subject to iOS ITP, and `calendar/remint-health.ts` is what stops it
+// retrying something only a human can fix.
 
 // The 15-minute context-poll foreground timer (#46, under ADR-0005). The
 // host is responsible for only ticking while online and foregrounded —
