@@ -80,7 +80,7 @@ describe("TriageScreen — the collapsed inbox", () => {
     expect(screen.getByText("ask dad about the trailer hitch")).toBeDefined();
     expect(screen.getByText("the fence gate is dragging again")).toBeDefined();
     expect(screen.queryByRole("button", { name: /promote to ready/i })).toBeNull();
-    expect(screen.queryByLabelText("Due date")).toBeNull();
+    expect(screen.queryByLabelText("Deadline")).toBeNull();
   });
 
   it("states each capture's provenance and age on its line", () => {
@@ -239,7 +239,7 @@ describe("TriageScreen — the editor", () => {
     expect((field("Size") as HTMLSelectElement).value).toBe("deep");
     expect((field("Energy") as HTMLSelectElement).value).toBe("high");
     expect((field("Context") as HTMLSelectElement).value).toBe("@computer");
-    expect((field("Due date") as HTMLInputElement).value).toBe("2026-08-14");
+    expect((field("Deadline") as HTMLInputElement).value).toBe("2026-08-14");
     expect((field("Scheduled date") as HTMLInputElement).value).toBe("2026-08-12");
   });
 
@@ -261,7 +261,7 @@ describe("TriageScreen — the editor", () => {
     fireEvent.change(field("Size"), { target: { value: "deep" } });
     fireEvent.change(field("Energy"), { target: { value: "high" } });
     fireEvent.change(field("Context"), { target: { value: "@computer" } });
-    fireEvent.change(field("Due date"), { target: { value: "2026-08-14" } });
+    fireEvent.change(field("Deadline"), { target: { value: "2026-08-14" } });
     fireEvent.change(field("Scheduled date"), { target: { value: "2026-08-12" } });
     fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
 
@@ -299,7 +299,7 @@ describe("TriageScreen — the editor", () => {
     fireEvent.click(row("vague thing"));
 
     fireEvent.change(field("Context"), { target: { value: "" } });
-    fireEvent.change(field("Due date"), { target: { value: "" } });
+    fireEvent.change(field("Deadline"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
 
     expect(onTriage).toHaveBeenCalledWith("i1", "ready", { context: null, deadline: null });
@@ -311,7 +311,7 @@ describe("TriageScreen — the editor", () => {
     );
     fireEvent.click(row("vague thing"));
 
-    fireEvent.change(field("Due date"), { target: { value: "14/08/2026" } });
+    fireEvent.change(field("Deadline"), { target: { value: "14/08/2026" } });
     expect(within(editor()).getByText(/YYYY-MM-DD/)).toBeDefined();
     expect(
       screen.getByRole("button", { name: /promote to ready/i }).hasAttribute("disabled"),
@@ -321,7 +321,7 @@ describe("TriageScreen — the editor", () => {
 
     // Fixing it re-enables the promotion — the block is the field's current
     // state, not a latch.
-    fireEvent.change(field("Due date"), { target: { value: "2026-08-14" } });
+    fireEvent.change(field("Deadline"), { target: { value: "2026-08-14" } });
     expect(
       screen.getByRole("button", { name: /promote to ready/i }).hasAttribute("disabled"),
     ).toBe(false);
