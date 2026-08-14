@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/core/Button";
+import { Icon } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
+import { DeadlineField } from "../components/forms/DeadlineField";
 import { Select } from "../components/forms/Select";
+import { Textarea } from "../components/forms/Textarea";
 import { Slider } from "../components/forms/Slider";
 import { Input } from "../components/forms/Input";
 import { CAPTURE_INPUT_ID } from "../shell/capture-hotkey";
@@ -12,12 +15,14 @@ import {
   type DictationCapability,
   type DictationSession,
 } from "../speech/local-dictation";
+import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
 import { freezeDraft, spliceTranscript, type FrozenDraft } from "./capture-dictation";
-import { EMPTY_CAPTURE_META, resolveCaptureFields } from "./capture-meta";
+import { captureMetaProblems, EMPTY_CAPTURE_META, resolveCaptureFields } from "./capture-meta";
 import { canSubmitCapture } from "./capture-validation";
 import { CONTEXT_OPTIONS } from "./field-vocabulary";
+import { PRIORITY_OPTIONS } from "./priority";
 import type { CaptureDestination } from "./capture-destination";
 
 /** The capture box's Energy/Size `Slider` stops, left to right — the display
@@ -52,6 +57,11 @@ export interface CaptureBoxProps {
    * `resolveCaptureFields` — never the slider's own indices or the select's
    * raw empty-string resting value. */
   onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
+  /** The Routes a capture can be filed under, for the Project select behind
+   * "More details". `[]` in demo mode and on a device that has never synced —
+   * the select still renders, offering "No project" alone, because an empty
+   * list is a fact about the projects and not a reason to hide the control. */
+  projects: ProjectDTO[];
   /** Demo mode has no worker behind it, so no `captureResult` will ever
    * arrive: the demo arm clears on submit (the fixture queue IS the
    * acknowledgement) and must never wear a stale failure from a previous
@@ -130,7 +140,13 @@ const NO_DICTATION: DictationCapability = {
  * popover closes: `CapturePopover` returns `null` when closed, which unmounts
  * this box and would otherwise leave the recognizer running with nothing
  * receiving its results. */
-export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: CaptureBoxProps) {
+export function CaptureBox({
+  onSubmit,
+  projects,
+  demo,
+  focusRequestId,
+  lastCapture,
+}: CaptureBoxProps) {
   const [draft, setDraft] = useState("");
   const [meta, setMeta] = useState(EMPTY_CAPTURE_META);
   const [last, setLast] = useState<LastSubmit | null>(null);
@@ -306,7 +322,19 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
     captureField()?.setSelectionRange(caret, caret);
   });
 
-  const canSubmit = canSubmitCapture(draft);
+  // Shut on arrival, and shut again after a capture lands: the box's whole
+  // job is that typing one line and pressing Enter is the fastest thing on
+  // the screen, and a form that reopens to seven fields taxes the next
+  // capture for a decision the last one happened to make.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  // Defence in depth rather than a live message: both date fields are native
+  // pickers, which cannot hold a date that does not exist, so this finds
+  // nothing today. It runs anyway because it is the same gate triage's form
+  // has, against the same rules the seam refuses on — and the day one of
+  // these becomes free text again, the gate is already here.
+  const metaProblems = captureMetaProblems(meta);
+  const canSubmit = canSubmitCapture(draft) && Object.keys(metaProblems).length === 0;
 
   // Issue #222's rule, applied to capture (#208 tripled what a failed capture
   // would discard: the title PLUS size, energy and context). The draft and
@@ -324,6 +352,7 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
     if (lastCapture.kind === "ok") {
       setDraft("");
       setMeta(EMPTY_CAPTURE_META);
+      setDetailsOpen(false);
       // The dictation failure goes with the draft it happened to. Left
       // standing, a "Nothing was heard." would sit under a freshly emptied box
       // describing a session two captures ago — the same stale-report failure
@@ -371,6 +400,7 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
       setLast({ destination, title: draft });
       setDraft("");
       setMeta(EMPTY_CAPTURE_META);
+      setDetailsOpen(false);
       focusField();
       return;
     }
@@ -433,20 +463,31 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
           }}
         />
         <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-          <Button size="md" iconLeft="plus" disabled={!canSubmit} onClick={() => submit("triage")}>
-            Add to Triage
-          </Button>
-          {/* The skip. CONTEXT.md's Mint — "landing in Ready" — for something
-              already startable; the item never sits in Triage at all. */}
+          {/* The two destinations, drawn as what they are rather than as two
+              equal sentences: this one is the inbox (`inbox` is triage's own
+              icon in the design system's vocabulary)... */}
           <Button
             size="md"
             variant="secondary"
-            iconLeft="sparkles"
+            iconLeft="inbox"
+            disabled={!canSubmit}
+            onClick={() => submit("triage")}
+          >
+            Triage
+          </Button>
+          {/* ...and this one is the skip — CONTEXT.md's Mint, "landing in
+              Ready", for something already startable; the item never sits in
+              Triage at all. A bare `+` because minting is the gesture the
+              hand learns and then stops reading, and the accessible name
+              still says the whole thing. */}
+          <IconButton
+            size="lg"
+            variant="solid"
+            icon="plus"
+            label="Mint action"
             disabled={!canSubmit}
             onClick={() => submit("ready")}
-          >
-            Mint action
-          </Button>
+          />
         </div>
       </div>
       <div
@@ -480,17 +521,79 @@ export function CaptureBox({ onSubmit, demo, focusRequestId, lastCapture }: Capt
           options={CONTEXT_OPTIONS}
         />
       </div>
-      {/* One string, not a ternary: #208 made the capture box's
-          Energy/Size/Context genuinely persist onto `CreateItem`, so the real
-          arm's old "(not yet stored on a real capture)" suffix went from true
-          to false — and it sat on the arm that now DOES store them, while
-          demo mode got the clean sentence. With the suffix gone the two arms
-          said the same thing, so there is nothing left to branch on.
-          `CapturePopover.test.tsx` pins the text so it cannot silently rot
-          back. */}
-      <span className="hb-meta">
-        optional — stage, dates and everything else are decided at mint time
-      </span>
+      {/* Everything a mint would ask, behind one button. The sentence that
+          used to sit here said dates were "decided at mint time"; they can be
+          decided here now, and the disclosure says so better than a caption
+          could. Shut by default and shut again after each capture — see
+          `detailsOpen`. */}
+      <div>
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-expanded={detailsOpen}
+          onClick={() => setDetailsOpen(!detailsOpen)}
+        >
+          <Icon
+            name="chevron-down"
+            size={14}
+            style={{
+              transform: detailsOpen ? "none" : "rotate(-90deg)",
+              transition: "transform var(--dur-fast) var(--ease-flit)",
+            }}
+          />
+          More details
+        </Button>
+      </div>
+      {detailsOpen ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+          <Textarea
+            label="Description"
+            rows={3}
+            value={meta.description}
+            placeholder="The only free-prose field — never a checklist"
+            onChange={(event) => setMeta({ ...meta, description: event.target.value })}
+          />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
+              gap: "var(--space-5)",
+              alignItems: "start",
+            }}
+          >
+            <Select
+              label="Project"
+              size="sm"
+              value={meta.projectId}
+              onChange={(event) => setMeta({ ...meta, projectId: event.target.value })}
+              options={[
+                { value: "", label: "No project" },
+                ...projects.map((project) => ({ value: project.id, label: project.name })),
+              ]}
+            />
+            <Select
+              label="Priority"
+              size="sm"
+              value={meta.priority}
+              onChange={(event) => setMeta({ ...meta, priority: event.target.value })}
+              options={PRIORITY_OPTIONS}
+            />
+            <DeadlineField
+              value={meta.deadline}
+              error={metaProblems.deadline}
+              onChange={(deadline) => setMeta({ ...meta, deadline })}
+            />
+            <Input
+              label="Scheduled date"
+              size="sm"
+              type="date"
+              value={meta.scheduledDate}
+              error={metaProblems.scheduledDate}
+              onChange={(event) => setMeta({ ...meta, scheduledDate: event.target.value })}
+            />
+          </div>
+        </div>
+      ) : null}
       {dictationError ? (
         // ADR-0022 Decision 1's "the session ends and the user is told", in
         // its own slot rather than sharing the capture failure's: they are

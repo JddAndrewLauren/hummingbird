@@ -470,6 +470,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         focusRequestId={captureFocusRequestId}
         onClose={() => setCaptureOpen(false)}
         onSubmit={handleCapture}
+        projects={demo ? [] : task.projects}
         demo={demo !== null}
         lastCapture={demo ? null : task.lastCapture}
       />

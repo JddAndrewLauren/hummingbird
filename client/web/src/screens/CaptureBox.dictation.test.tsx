@@ -78,7 +78,13 @@ const NO_FIELDS = {
 function renderBox() {
   const onSubmit = vi.fn();
   const view = render(
-    <CaptureBox onSubmit={onSubmit} demo={false} focusRequestId={1} lastCapture={null} />,
+    <CaptureBox
+      onSubmit={onSubmit}
+      projects={[]}
+      demo={false}
+      focusRequestId={1}
+      lastCapture={null}
+    />,
   );
   return { onSubmit, view };
 }
@@ -148,7 +154,7 @@ describe("CaptureBox — dictation", () => {
     expect(mic()).toBeTruthy();
     expect(field().value).toBe("call the vet");
 
-    fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
     // #110: the raw spliced string, unmodified, through the same path a typed
     // capture takes — and the metadata untouched by the session.
     expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
@@ -274,12 +280,13 @@ describe("CaptureBox — dictation", () => {
     const { onSubmit, view } = renderBox();
     await startListening();
     hear("call the vet");
-    fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
     expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
     expect(seam.aborts).toBe(1);
     view.rerender(
       <CaptureBox
         onSubmit={onSubmit}
+        projects={[]}
         demo={false}
         focusRequestId={1}
         lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
@@ -298,11 +305,12 @@ describe("CaptureBox — dictation", () => {
       seam.handlers?.onEnd();
     });
     fireEvent.change(field(), { target: { value: "call the vet" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
     expect(screen.getByRole("alert").textContent).toBe("Nothing was heard.");
     view.rerender(
       <CaptureBox
         onSubmit={onSubmit}
+        projects={[]}
         demo={false}
         focusRequestId={1}
         lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
@@ -320,7 +328,7 @@ describe("CaptureBox — dictation", () => {
     fireEvent.click(mic());
     hear("call the vet");
     fireEvent.click(stopMic());
-    fireEvent.click(screen.getByRole("button", { name: "Add to Triage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
     expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", {
       ...NO_FIELDS,
       context: "@phone",

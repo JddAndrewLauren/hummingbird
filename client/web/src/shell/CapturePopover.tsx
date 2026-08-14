@@ -3,6 +3,7 @@ import { Card } from "../components/core/Card";
 import { IconButton } from "../components/core/IconButton";
 import { CaptureBox } from "../screens/CaptureBox";
 import type { CaptureDestination } from "../screens/capture-destination";
+import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
 import { useIsPhone } from "./useIsPhone";
@@ -27,6 +28,9 @@ export interface CapturePopoverProps {
   focusRequestId: number;
   onClose: () => void;
   onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
+  /** The Routes a capture can be filed under, forwarded straight to
+   * `CaptureBox`'s Project select. `[]` in demo mode. */
+  projects: ProjectDTO[];
   demo: boolean;
   /** `TaskState.lastCapture`, threaded through to `CaptureBox` — the box
    * clears only once a result actually reports `"ok"` (#222), and a failed
@@ -57,6 +61,7 @@ export function CapturePopover({
   focusRequestId,
   onClose,
   onSubmit,
+  projects,
   demo,
   lastCapture,
 }: CapturePopoverProps) {
@@ -200,14 +205,17 @@ export function CapturePopover({
           padding="var(--space-6)"
           style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-5)" }}>
-            <h2 style={{ flex: 1, minWidth: 0, font: "var(--type-h3)", color: "var(--text-primary)" }}>
-              New
-            </h2>
+          {/* No heading. The card holds one field with a placeholder asking
+              the question, and a "New" above it named the popover rather than
+              telling the reader anything they could not see. The dialog keeps
+              its `aria-label` — that is where the name belongs for anyone who
+              cannot see the card at all — and the close control stays. */}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
             <IconButton icon="x" label="Close" onClick={onClose} />
           </div>
           <CaptureBox
             onSubmit={onSubmit}
+            projects={projects}
             demo={demo}
             focusRequestId={focusRequestId}
             lastCapture={lastCapture}
