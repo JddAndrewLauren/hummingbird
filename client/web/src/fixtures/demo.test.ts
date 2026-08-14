@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEMO_DATA } from "./demo-data";
-import { DEMO_TASK_STATE } from "./demo-task-state";
 import { demoData, demoTaskState } from "./demo";
 
 // `demoData()` reads `window.location.search`, and the test environment is
@@ -59,7 +58,14 @@ describe("demoTaskState", () => {
   it("seeds the real render path for ?demo=board", () => {
     vi.stubEnv("DEV", true);
     withSearch("?demo=board");
-    expect(demoTaskState()).toBe(DEMO_TASK_STATE);
+    const state = demoTaskState();
+    // Built per call rather than a shared const — see `demo-task-state.ts`'s
+    // header for why that is a bundling requirement — so this asserts the
+    // shape it returns, never object identity.
+    expect(state).not.toBeNull();
+    expect(state?.frontier).toHaveLength(12);
+    expect(state?.triageInbox).toHaveLength(17);
+    expect(state?.lastTriage?.kind).toBe("failed");
   });
 
   it("returns nothing in a production build, so no fixture item can reach a real device", () => {

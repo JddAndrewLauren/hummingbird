@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEMO_TASK_STATE } from "./demo-task-state";
-import { computeUrgency } from "../screens/urgency";
-import { isValidDeadline } from "../screens/urgency";
+import { buildDemoTaskState } from "./demo-task-state";
+import { computeUrgency, isValidDeadline } from "../screens/urgency";
 
 // The board fixture's header states production's measured shape and claims to
 // mirror it. These assertions are what stop that claim rotting into a
@@ -9,7 +8,10 @@ import { isValidDeadline } from "../screens/urgency";
 // which is the moment to either fix the item or re-measure and rewrite the
 // header. The numbers came from `GET /api/changes?since=0` on 2026-08-13.
 
-const board = [...DEMO_TASK_STATE.frontier, ...DEMO_TASK_STATE.triageInbox];
+// Built once here rather than per test: `buildDemoTaskState` reads the clock,
+// and every assertion below is about shape, which no two calls disagree on.
+const state = buildDemoTaskState();
+const board = [...state.frontier, ...state.triageInbox];
 
 const tally = (values: Array<string | null>) =>
   values.reduce<Record<string, number>>((acc, value) => {
@@ -18,10 +20,10 @@ const tally = (values: Array<string | null>) =>
     return acc;
   }, {});
 
-describe("DEMO_TASK_STATE — production's shape, none of its content", () => {
+describe("buildDemoTaskState — production's shape, none of its content", () => {
   it("puts 29 cards on the board, 12 startable and 17 unsorted", () => {
-    expect(DEMO_TASK_STATE.frontier).toHaveLength(12);
-    expect(DEMO_TASK_STATE.triageInbox).toHaveLength(17);
+    expect(state.frontier).toHaveLength(12);
+    expect(state.triageInbox).toHaveLength(17);
     expect(board).toHaveLength(29);
   });
 
@@ -59,8 +61,8 @@ describe("DEMO_TASK_STATE — production's shape, none of its content", () => {
   });
 
   it("has no projects and no blocked edges, which is why the Project axis is one column", () => {
-    expect(DEMO_TASK_STATE.projects).toEqual([]);
-    expect(DEMO_TASK_STATE.blocked).toEqual([]);
+    expect(state.projects).toEqual([]);
+    expect(state.blocked).toEqual([]);
     expect(board.every((i) => i.projectId === null)).toBe(true);
   });
 
@@ -76,7 +78,7 @@ describe("DEMO_TASK_STATE — production's shape, none of its content", () => {
   });
 });
 
-describe("DEMO_TASK_STATE — the two deliberate departures from production", () => {
+describe("buildDemoTaskState — the two deliberate departures from production", () => {
   it("carries one deadline per urgency band, which production's single deadline cannot", () => {
     const nowMs = Date.now();
     const bands = board
@@ -95,16 +97,16 @@ describe("DEMO_TASK_STATE — the two deliberate departures from production", ()
   });
 
   it("seeds a failed triage naming a capture that is on the board, so #418's alert renders", () => {
-    const failure = DEMO_TASK_STATE.lastTriage;
+    const failure = state.lastTriage;
     expect(failure?.kind).toBe("failed");
     // Naming an item that is NOT in the inbox would silently degrade the
     // alert to its un-named fallback — the fixture would still "work" and
     // would stop demonstrating the sentence it exists to demonstrate.
-    expect(DEMO_TASK_STATE.triageInbox.some((i) => i.id === failure?.itemId)).toBe(true);
+    expect(state.triageInbox.some((i) => i.id === failure?.itemId)).toBe(true);
   });
 });
 
-describe("DEMO_TASK_STATE — ages stay honest", () => {
+describe("buildDemoTaskState — ages stay honest", () => {
   it("dates every item relative to load, so nothing ever reads `412d ago`", () => {
     const nowMs = Date.now();
     for (const item of board) {

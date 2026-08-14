@@ -9,7 +9,7 @@
 
 import { DEMO_DATA, type DemoData } from "./demo-data";
 import { demoMode, isDemoEnabled } from "./demo-mode";
-import { DEMO_TASK_STATE } from "./demo-task-state";
+import { buildDemoTaskState } from "./demo-task-state";
 import type { TaskState } from "../store/store";
 
 export type {
@@ -32,8 +32,16 @@ export function demoData(): DemoData | null {
 
 /** The board world's seeded `TaskState` (#420), or `null` for every other
  * mode. Behind the same double gate `demoData` is: substituted to
- * `if (false && …)` in a production build, so Rollup drops `DEMO_TASK_STATE`
+ * `if (false && …)` in a production build, so Rollup drops the whole fixture
  * with the dead branch and no fixture item can reach a real device.
+ *
+ * That claim held for `DEMO_DATA` and did NOT hold for this one until the
+ * fixture was rewritten to build inside a function — a dead branch only drops
+ * a module Rollup can prove is side-effect-free at the top level, and the
+ * first cut read the clock and called a helper while constructing its seeds.
+ * `pnpm assert-no-fixtures` is what stops that returning; it runs in CI right
+ * after the build, because this is a claim about the artifact and only the
+ * artifact can answer it.
  *
  * Deliberately mutually exclusive with `demoData()` — `?demo=board` returns a
  * state here and `null` there, which is the whole mechanism: a null `demo`
@@ -43,5 +51,5 @@ export function demoTaskState(): TaskState | null {
   if (!import.meta.env.DEV) {
     return null;
   }
-  return demoMode(window.location.search) === "board" ? DEMO_TASK_STATE : null;
+  return demoMode(window.location.search) === "board" ? buildDemoTaskState() : null;
 }

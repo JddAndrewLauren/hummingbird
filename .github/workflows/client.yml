@@ -91,3 +91,12 @@ jobs:
       - name: web build (wasm core in a worker + PWA shell)
         working-directory: client/web
         run: pnpm run build
+
+      # A claim about the artifact, so only the artifact can answer it: the
+      # demo fixtures are gated twice in source, but a dead branch only drops a
+      # module Rollup can prove is side-effect-free at the top level. #420
+      # shipped 5.3 KB of fixture past a gate that read as airtight. Must run
+      # after the build, never instead of it.
+      - name: no demo fixture in the production bundle
+        working-directory: client/web
+        run: pnpm run assert-no-fixtures

@@ -43,6 +43,17 @@
 //      `?demo=board` by hand — it is the fixture, not a real fault.
 //
 // Dev-only, gated twice, same as the kit world — see `demo.ts`.
+//
+// **Everything below is built inside a function, and the seed arrays are inert
+// data.** That is a bundling requirement, not a style: the dead-branch gate in
+// `demo.ts` only removes this fixture if Rollup can prove the module is
+// side-effect-free at the top level. The first cut of this file failed that —
+// a top-level `Date.now()` plus `deadlineIn(...)` CALLS inside the array
+// literals meant Rollup had to retain the seeds, and 5.3 KB of fixture shipped
+// in the production bundle while the kit world's pure literal was dropped. So:
+// no top-level clock read, and offsets in the seeds are plain numbers that the
+// builder turns into strings. `pnpm assert-no-fixtures` is the regression
+// test, and it runs in CI after the build.
 
 import type { TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -51,37 +62,38 @@ const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-/** Ages and deadlines are relative to load, never frozen calendar values —
- * `demo-data.ts`'s `deadlineHoursFromNow` established the reason and it is the
- * same one here: a fixed timestamp drifts out of its urgency band and silently
- * stops demonstrating the state it exists to demonstrate, and a capture
- * captured in 2026 would read "412d ago" forever. */
-const LOADED_AT = Date.now();
-
-/** `YYYY-MM-DDTHH:MM`, naive local — the only deadline spelling ADR-0009/0013
- * allows, and what `screens/urgency.ts` parses back as local wall-clock. */
-function deadlineIn(ms: number): string {
-  const d = new Date(LOADED_AT + ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 interface Seed {
   id: string;
   title: string;
   stage: TaskItemDTO["stage"];
+  /** How long before *now* this was captured. Resolved against the clock when
+   * the state is built, never frozen — `demo-data.ts`'s `deadlineHoursFromNow`
+   * established the reason and it is the same one here: a fixed timestamp
+   * drifts out of its urgency band and silently stops demonstrating the state
+   * it exists to demonstrate, and a capture captured in 2026 would read
+   * "412d ago" forever. */
   agoMs: number;
   context?: string;
   size?: TaskItemDTO["size"];
   energy?: TaskItemDTO["energy"];
-  deadline?: string;
-  scheduledDate?: string;
+  /** Offsets from now, resolved by the builder. Numbers rather than the
+   * strings they become, so these literals stay inert — see the header. */
+  deadlineInMs?: number;
+  scheduledInMs?: number;
   description?: string;
   source?: string;
 }
 
-function item(seed: Seed, index: number): TaskItemDTO {
-  const createdAt = LOADED_AT - seed.agoMs;
+/** `YYYY-MM-DDTHH:MM`, naive local — the only deadline spelling ADR-0009/0013
+ * allows, and what `screens/urgency.ts` parses back as local wall-clock. */
+function deadlineAt(loadedAt: number, ms: number): string {
+  const d = new Date(loadedAt + ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function item(seed: Seed, index: number, loadedAt: number): TaskItemDTO {
+  const createdAt = loadedAt - seed.agoMs;
   return {
     id: seed.id,
     seq: index + 1,
@@ -96,8 +108,11 @@ function item(seed: Seed, index: number): TaskItemDTO {
     priority: 0,
     projectId: null,
     projectPos: null,
-    deadline: seed.deadline ?? null,
-    scheduledDate: seed.scheduledDate ?? null,
+    deadline: seed.deadlineInMs === undefined ? null : deadlineAt(loadedAt, seed.deadlineInMs),
+    scheduledDate:
+      seed.scheduledInMs === undefined
+        ? null
+        : deadlineAt(loadedAt, seed.scheduledInMs).slice(0, 10),
     source: seed.source ?? null,
     sourceKey: seed.source ? `${seed.id}-key` : null,
     sourceUrl: null,
@@ -130,7 +145,7 @@ const FRONTIER_SEEDS: Seed[] = [
     size: "short",
     energy: "medium",
     // Band 1 of 3: overdue.
-    deadline: deadlineIn(-6 * HOUR),
+    deadlineInMs: -6 * HOUR,
   },
   {
     id: "b-f3",
@@ -141,7 +156,7 @@ const FRONTIER_SEEDS: Seed[] = [
     size: "quick",
     energy: "low",
     // Band 2 of 3: inside the 24h "now" window.
-    deadline: deadlineIn(8 * HOUR),
+    deadlineInMs: 8 * HOUR,
   },
   {
     id: "b-f4",
@@ -152,7 +167,7 @@ const FRONTIER_SEEDS: Seed[] = [
     size: "deep",
     energy: "high",
     // Band 3 of 3: past 24h, inside the 3-day "soon" window.
-    deadline: deadlineIn(40 * HOUR),
+    deadlineInMs: 40 * HOUR,
   },
   {
     id: "b-f5",
@@ -162,7 +177,7 @@ const FRONTIER_SEEDS: Seed[] = [
     context: "@errands",
     size: "short",
     energy: "medium",
-    scheduledDate: deadlineIn(2 * DAY).slice(0, 10),
+    scheduledInMs: 2 * DAY,
   },
   {
     id: "b-f6",
@@ -355,41 +370,51 @@ const TRIAGE_SEEDS: Seed[] = [
  * interface fails this file at build time rather than shipping a fixture that
  * silently omits it. Every "not read yet" field is left at its honest `null` —
  * the board world seeds the frontier and the inbox, and claims nothing about
- * the Ledger, Done, bindings or rules, which have their own screens. */
-export const DEMO_TASK_STATE: TaskState = {
-  frontier: FRONTIER_SEEDS.map(item),
-  triageInbox: TRIAGE_SEEDS.map(item),
-  // Production has no `blocked_by` edges and no projects at all — the second
-  // is why grouping by Project produces exactly one column here, which is a
-  // finding about the axis rather than a gap in the fixture.
-  blocked: [],
-  stepsByItem: {},
-  projects: [],
-  ledger: null,
-  done: null,
-  bindings: null,
-  kindRegistry: null,
-  rules: null,
-  lastRuleWrite: null,
-  paneReads: {},
-  pending: {},
-  lastCapture: null,
-  lastAct: null,
-  // Departure 2 in the header: this is what makes #418's alert render, and it
-  // names a capture that is genuinely on the board so the alert can find its
-  // title. Not a fault — the fixture.
-  lastTriage: {
-    seed: "demo-board-triage-1",
-    itemId: "b-t7",
-    kind: "failed",
-    error: "the authority refused that edit",
-  },
-  lastBindingWrite: null,
-  lastSyncOutcome: null,
-  lastSyncAtMs: null,
-  syncOutcomeSeq: 0,
-  queueDepth: null,
-  deadLetters: [],
-  needsReconnect: false,
-  hostError: null,
-};
+ * the Ledger, Done, bindings or rules, which have their own screens.
+ *
+ * A **function**, not a const, and that is the bundling requirement in the
+ * header: a const would have to be constructed at import, which is a top-level
+ * side effect, which is what kept 5.3 KB of this file in the production bundle
+ * the first time round. Called once, from behind `demo.ts`'s dead-branch gate.
+ * Reading the clock here rather than at import is the free improvement that
+ * falls out: ages are relative to when the board is asked for. */
+export function buildDemoTaskState(): TaskState {
+  const loadedAt = Date.now();
+  return {
+    frontier: FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
+    triageInbox: TRIAGE_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
+    // Production has no `blocked_by` edges and no projects at all — the second
+    // is why grouping by Project produces exactly one column here, which is a
+    // finding about the axis rather than a gap in the fixture.
+    blocked: [],
+    stepsByItem: {},
+    projects: [],
+    ledger: null,
+    done: null,
+    bindings: null,
+    kindRegistry: null,
+    rules: null,
+    lastRuleWrite: null,
+    paneReads: {},
+    pending: {},
+    lastCapture: null,
+    lastAct: null,
+    // Departure 2 in the header: this is what makes #418's alert render, and it
+    // names a capture that is genuinely on the board so the alert can find its
+    // title. Not a fault — the fixture.
+    lastTriage: {
+      seed: "demo-board-triage-1",
+      itemId: "b-t7",
+      kind: "failed",
+      error: "the authority refused that edit",
+    },
+    lastBindingWrite: null,
+    lastSyncOutcome: null,
+    lastSyncAtMs: null,
+    syncOutcomeSeq: 0,
+    queueDepth: null,
+    deadLetters: [],
+    needsReconnect: false,
+    hostError: null,
+  };
+}
