@@ -340,7 +340,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               // The same two callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
               onTriage={demo ? undefined : handleTriage}
-              onCompleteTriage={demo ? undefined : (itemId) => handleAct(itemId, "complete")}
             />
           )}
           {screen === "triage" && (

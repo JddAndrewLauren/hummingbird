@@ -177,6 +177,11 @@ records the triage section's `60dvh` cap as the *only* one there — everywhere
 else the shell's single container scrolls the page. That stays true: no
 per-column overflow, and no sideways-scrolling strip.
 
+*Amended 2026-08-13: the triage section is gone (see the amendment to the
+Consequences below), and its cap with it, so the centre column now has **no**
+independent scroll container. The constraint this decision states is unchanged
+and strictly easier to hold.*
+
 ### Two rejected alternatives, both tried in the browser
 
 **A sideways-scrolling strip of columns.** Rejected: a board you scroll
@@ -220,6 +225,11 @@ The chosen axis and the set of collapsed columns persist **per device**, in
 `hb.<screen>.<thing>` keys, defaults encoded as **key absence** rather than as
 a stored default value, and every call tolerating absent or throwing storage —
 a preference that cannot persist still applies for the session.
+
+*Amended 2026-08-13: `triage-collapse.ts` is deleted with the section it was a
+preference for (see the amendment to the Consequences below). The idiom is
+unchanged and `shell/rail-collapse.ts` still shows it; the `StorageLike` this
+decision's modules inject now comes from `client/web/src/screens/storage.ts`.*
 
 **Why never the `settings` table.** [ADR-0015](0015-the-standing-question-read-contract.md)
 and [ADR-0017](0017-the-standing-question-surface-axis.md) both rejected it for
@@ -348,6 +358,33 @@ a side effect of wanting a picture.
   items in, a fresh data shape out, display text left to the caller, and the
   clock a parameter where one is needed rather than read inside.
 - The Blocked section and the triage section stay below the columns, unchanged.
+
+  *Amended 2026-08-13: the triage section is **dissolved into the columns**.
+  The unsorted captures are cards among the startable actions — grouped by the
+  same live axis, ordered under that column's actions, and marked with the
+  `triage` `StageBadge` rather than a badge invented for this surface.
+  `screens/NowTriageSection.tsx` and `screens/triage-collapse.ts` are deleted
+  with it; `StorageLike` moved to `screens/storage.ts`, which is what the rest
+  of the preference modules import now.*
+
+  *Three things this leaves standing rather than reopening. **Ordering:** one
+  concatenation before grouping (`orderFrontier`'s output, then `orderTriage`'s)
+  is the whole implementation, because `groupFrontier` preserves input order
+  inside every bucket — so decision 1's "one ordering rule, one spelling"
+  survives, and there is still no second ordering function. **Colour:** stage is
+  one of the three things the design system lets a coloured pill encode, so the
+  chip is not decision 2's fourth meaning. **Selection:** a capture fills
+  decision 7's slot with `TriageRow` forced open — never `ItemDetailPanel`,
+  whose act vocabulary offers a pre-action item nothing — so S13/#111's "two
+  editors are never open at once" now holds by construction rather than by
+  withholding a section, and the captures' cards stay on the board whichever
+  kind is open.*
+
+  *Why at all: the section was a second place to look for work on a screen whose
+  question is "what do I do next". An unsorted capture **is** a candidate answer
+  — sorting it is the doing — and stacking the captures outside the axis meant
+  the one thing the board could not tell you was which of them belonged to the
+  context you are actually in.*
 - `CONTEXT.md` gains **Size**, **Energy** and the item's **Context**. All three
   existed only inside other definitions and in ADR-0009's DDL; this decision
   makes all three UI vocabulary, and the glossary adjudicates design questions.
