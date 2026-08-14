@@ -1269,26 +1269,41 @@ describe("NowScreen — the frontier's controls (#403)", () => {
     expect(screen.getByRole("button", { name: "Show 2 more in quick" })).toBeDefined();
   });
 
-  it("collapses the standing-questions aside, and remembers it per device", () => {
-    const storage = fakeStorage();
-    const first = renderWithStorage(spread(), storage);
+  // Neither the collapsed state nor the control belongs to this screen any
+  // more: one button in the shell's header owns both directions, and `App.tsx`
+  // owns the state. What is left to pin here is that the prop is obeyed.
+  // Persistence lives in `questions/aside-prefs.test.ts`, the button in
+  // `shell/Header.test.tsx`.
+  it("renders the standing-questions aside open by default", () => {
+    renderWithStorage(spread());
 
-    // Open by default — a question that has fired is the one thing on Now you
-    // did not ask for and must not be hidden by an unset preference.
-    const header = screen.getByRole("button", { expanded: true, name: "Standing questions" });
-    fireEvent.click(header);
+    // Open unless told otherwise — a question that has fired is the one thing
+    // on Now you did not ask for and must not be hidden by an unset preference.
+    expect(screen.getByRole("complementary", { name: "Standing questions" })).toBeDefined();
+  });
 
-    expect(
-      screen.getByRole("button", { expanded: false, name: "Standing questions" }),
-    ).toBeDefined();
-    expect(storage.entries["hb.questions.aside-collapsed"]).toBe("1");
-    first.unmount();
+  it("drops the landmark entirely when the aside is shut, rather than leaving an empty one", () => {
+    render(
+      <NowScreen
+        demo={null}
+        onScreen={() => {}}
+        task={spread()}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={fakeStorage()}
+        asideCollapsed
+      />,
+    );
 
-    // Still shut on the next visit, and re-opening clears the key rather than
-    // storing the default.
-    renderWithStorage(spread(), storage);
-    fireEvent.click(screen.getByRole("button", { expanded: false, name: "Standing questions" }));
-    expect("hb.questions.aside-collapsed" in storage.entries).toBe(false);
+    // No strip is left behind: an `aside` named "Standing questions" holding
+    // nothing is a landmark that lies, and the reopen control is the header's.
+    expect(screen.queryByRole("complementary", { name: "Standing questions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Standing questions" })).toBeNull();
   });
 
   it("does not persist the filter selection — Now never opens filtered", () => {

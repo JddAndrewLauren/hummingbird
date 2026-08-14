@@ -10,6 +10,14 @@
 // It lives here rather than inside `FrontierColumns.tsx` because Now's
 // standing-questions aside collapses through the same gesture and must not grow
 // a second, subtly different toggle to do it.
+//
+// The two skins below are that rule's one honest exception. The frontier's
+// columns collapse *vertically* and keep a full-width labelled header to sit
+// in; the aside collapses away entirely, so its control is a square in the
+// panel's corner with no header row to be full-width inside — and its shut
+// half is not here at all, but a `?` `IconButton` in `shell/Header.tsx`. So
+// the shapes differ — but they stay in this file, share `SECTION_TOGGLE_HOVER`,
+// and are both `ControlButton`, which is the part worth keeping single.
 
 import { useState } from "react";
 import type { ButtonHTMLAttributes, CSSProperties } from "react";
@@ -68,6 +76,26 @@ export function sectionToggleStyle(collapsed: boolean): CSSProperties {
     color: collapsed ? "var(--text-secondary)" : "var(--text-primary)",
   };
 }
+
+/** The shut control Now's standing-questions aside wears in its top-right
+ * corner. No open/shut variant: shut, the panel is not on screen at all and
+ * the `?` that reopens it is an `IconButton` in the shell's header, so this
+ * skin only ever draws one state. `--row-height` is its box for the reason it
+ * is a row's height — it is also the minimum touch target. */
+export const ASIDE_TOGGLE_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flex: "0 0 auto",
+  width: "var(--row-height)",
+  height: "var(--row-height)",
+  padding: 0,
+  borderRadius: "var(--radius-control)",
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  color: "var(--text-muted)",
+};
 
 export const SECTION_TOGGLE_HOVER: CSSProperties = {
   background: "var(--surface-quiet)",

@@ -16,6 +16,7 @@ import { Header } from "./shell/Header";
 import { NavBar } from "./shell/NavBar";
 import { NavRail } from "./shell/NavRail";
 import { useIsPhone } from "./shell/useIsPhone";
+import { readAsideCollapsed, writeAsideCollapsed } from "./screens/questions/aside-prefs";
 import { readRailCollapsed, writeRailCollapsed } from "./shell/rail-collapse";
 import { canRefresh } from "./shell/refresh-gate";
 import { SCREEN_TITLES, type Screen } from "./shell/screens";
@@ -113,6 +114,18 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     const next = !railCollapsed;
     setRailCollapsed(next);
     writeRailCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
+  };
+  // Now's standing-questions aside, held here rather than in `NowScreen` for
+  // one reason: shut, its reopen control is a `?` in the header, and the header
+  // is the shell's. The same device-local idiom as the rail above — read once
+  // through the same storage guard, written on every toggle.
+  const [asideCollapsed, setAsideCollapsed] = useState(() =>
+    readAsideCollapsed(typeof localStorage === "undefined" ? undefined : localStorage),
+  );
+  const handleToggleAsideCollapsed = () => {
+    const next = !asideCollapsed;
+    setAsideCollapsed(next);
+    writeAsideCollapsed(typeof localStorage === "undefined" ? undefined : localStorage, next);
   };
   const { preference, theme, setPreference } = useTheme();
   // The nav rail and the bottom bar are different DOM trees, not one tree at
@@ -380,6 +393,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // `sync-status.ts`.
           syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
+          // Only on Now — the aside exists on no other screen. Same rule as
+          // `onSearch`/`onRefresh` above: the affordance appears exactly where
+          // it would do something.
+          onToggleQuestions={screen === "now" ? handleToggleAsideCollapsed : undefined}
+          questionsCollapsed={asideCollapsed}
           onCapture={requestCapture}
         />
 
@@ -410,6 +428,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               // The same two callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
               onTriage={demo ? undefined : handleTriage}
+              asideCollapsed={asideCollapsed}
             />
           )}
           {screen === "triage" && (

@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
-import { Icon } from "../components/core/Icon";
 import { ItemPanel } from "../components/domain/ItemPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
@@ -21,11 +20,9 @@ import type {
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
-import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
 import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
-import { readAsideCollapsed, writeAsideCollapsed } from "./questions/aside-prefs";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
@@ -81,6 +78,11 @@ export interface NowScreenProps {
    * overrides, and (#403) the frontier's grouping axis and collapsed columns.
    * One storage seam, two readers. */
   storage?: StorageLike;
+  /** Is the standing-questions aside shut? Owned by `App.tsx`, not here: the
+   * control that opens and shuts it is a single button in the shell's header,
+   * which is also where persistence lives (`questions/aside-prefs.ts`). This
+   * screen only renders the answer. */
+  asideCollapsed?: boolean;
 }
 
 /** The real-data half of `QuestionInputs` (never demo's) — exported so a
@@ -489,18 +491,13 @@ export function NowScreen({
   microtask,
   onTriage,
   storage,
+  asideCollapsed = false,
 }: NowScreenProps) {
   // Resolved once, for both the ranked region and the triage section. The
   // fallback keeps every existing caller (and every test that mounts this
   // screen without the prop) on exactly the storage it had before.
   const resolvedStorage =
     storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
-  // Read once at mount, like every other view preference on this screen: the
-  // stored value seeds the state and the state is the truth from then on, so a
-  // toggle never waits on a storage round-trip.
-  const [asideCollapsed, setAsideCollapsed] = useState(() =>
-    readAsideCollapsed(resolvedStorage),
-  );
   // Ranking is not implemented, so the hero picks by the one property that
   // makes an item obviously the current one — not by fixture position, which
   // would let a reordered fixture describe the wrong action.
@@ -594,52 +591,34 @@ export function NowScreen({
         )}
       </Column>
 
-      <Aside label="Standing questions">
-        {/* The section's own header, and its collapse control (#404's column
-            headers are the same gesture, through the same `ControlButton`).
-            The aside carried only an aria label before this, so the heading is
-            new: a landmark named for screen readers and unnamed on screen is a
-            panel whose contents you have to infer.
+      {/* Shut, the panel is gone from the screen entirely rather than shrunk
+          to a strip: the `?` that reopens it lives in the shell's header
+          (`Header.tsx`, between Refresh and New), so nothing has to stay
+          behind to hold a control. That is also why the landmark unmounts —
+          an `aside` named "Standing questions" containing nothing is a
+          landmark that lies to a screen reader. */}
+      {asideCollapsed ? null : (
+        <Aside label="Standing questions">
+          {/* No heading and no control of its own. The words "Standing
+              questions" sat above a region that says what it is on every card,
+              and the landmark's `aria-label` is where that name belongs for
+              anyone who cannot see the panel. The collapse control is the
+              header's, in both directions (`shell/Header.tsx`) — a toggle that
+              lives inside the thing it hides has to move when you press it,
+              and then you have to find it twice. */}
 
-            Collapsing persists per device (`aside-prefs.ts`), like the
-            frontier's own axis and collapsed columns. */}
-        <h2 style={{ margin: 0, font: "inherit" }}>
-          <ControlButton
-            aria-expanded={!asideCollapsed}
-            onClick={() => {
-              const next = !asideCollapsed;
-              setAsideCollapsed(next);
-              writeAsideCollapsed(resolvedStorage, next);
-            }}
-            baseStyle={sectionToggleStyle(asideCollapsed)}
-            hoverStyle={SECTION_TOGGLE_HOVER}
-          >
-            <Icon
-              name="chevron-down"
-              size={14}
-              style={{
-                color: "var(--text-muted)",
-                transform: asideCollapsed ? "rotate(-90deg)" : "none",
-                transition: "transform var(--dur-fast) var(--ease-flit)",
-              }}
-            />
-            <span style={{ flex: 1, minWidth: 0 }}>Standing questions</span>
-          </ControlButton>
-        </h2>
+          {/* ADR-0015's ranked region replaces everything that used to be in
+              here — the context tile, the demo standing-question card and the
+              snapshot tiles — and it is the same component in both modes: only
+              the inputs differ, so `?demo` photographs the real shell.
 
-        {/* ADR-0015's ranked region replaces everything that used to be in
-            here — the context tile, the demo standing-question card and the
-            snapshot tiles — and it is the same component in both modes: only
-            the inputs differ, so `?demo` photographs the real shell.
-
-            The landmark was still called `Context` long after that swap, which
-            is what ADR-0021 renamed (#401): the panel holds standing questions
-            and nothing called context, this was the one inaccurate aside name
-            of the four, and the word is needed for the frontier's grouping
-            axis in the centre column — otherwise the screen says "Context"
-            twice, meaning an item's `@computer` on one side and context
-            *sources* on the other. */}
-        {asideCollapsed ? null : (
+              The landmark was still called `Context` long after that swap,
+              which is what ADR-0021 renamed (#401): the panel holds standing
+              questions and nothing called context, this was the one inaccurate
+              aside name of the four, and the word is needed for the frontier's
+              grouping axis in the centre column — otherwise the screen says
+              "Context" twice, meaning an item's `@computer` on one side and
+              context *sources* on the other. */}
           <RankedRegion
             surface="now"
             inputs={
@@ -653,8 +632,8 @@ export function NowScreen({
             onScreen={onScreen}
             onSetScheduledDate={demo ? undefined : onSetScheduledDate}
           />
-        )}
-      </Aside>
+        </Aside>
+      )}
     </TwoColumn>
   );
 }
