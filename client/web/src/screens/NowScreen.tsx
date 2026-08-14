@@ -23,7 +23,7 @@ import { blockedReasonLabel } from "./blocked-reason";
 import { FrontierColumns } from "./FrontierColumns";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
-import { energyIcon, energyLabel, levelColor, sizeIcon, sizeLabel } from "./size-energy";
+import { energyIcon, energyTitle, levelColor, sizeIcon, sizeTitle } from "./size-energy";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
@@ -509,14 +509,20 @@ export function NowScreen({
                 <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
                   <StageBadge stage={top.stage} />
                   {top.size ? (
-                    <Badge mono icon={sizeIcon(top.size)} style={{ color: levelColor(top.size) }}>
-                      size:{sizeLabel(top.size)}
-                    </Badge>
+                    <Badge
+                      mono
+                      icon={sizeIcon(top.size)}
+                      title={sizeTitle(top.size)}
+                      style={{ color: levelColor(top.size) }}
+                    />
                   ) : null}
                   {top.energy ? (
-                    <Badge mono icon={energyIcon(top.energy)} style={{ color: levelColor(top.energy) }}>
-                      energy:{energyLabel(top.energy)}
-                    </Badge>
+                    <Badge
+                      mono
+                      icon={energyIcon(top.energy)}
+                      title={energyTitle(top.energy)}
+                      style={{ color: levelColor(top.energy) }}
+                    />
                   ) : null}
                   <Badge mono tone="brand">
                     {top.id}

@@ -3,7 +3,7 @@ import type { CSSProperties, HTMLAttributes } from "react";
 import { Icon } from "../core/Icon";
 import { MarkDoneButton } from "./MarkDoneButton";
 import { hasPriority, priorityLabel } from "../../screens/priority";
-import { energyIcon, energyLabel, levelColor, sizeIcon, sizeLabel } from "../../screens/size-energy";
+import { energyIcon, energyTitle, levelColor, sizeIcon, sizeTitle } from "../../screens/size-energy";
 import type { TaskItemDTO } from "../../store/protocol";
 import { StageBadge } from "./StageBadge";
 import type { Stage } from "./StageBadge";
@@ -126,14 +126,18 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, sc
           <Icon name="link" size={13} />{blockedBy}
         </span>
       ) : null}
+      {/* Glyph only, no word (#446): the row annotates a title, and two
+          spelled-out dimensions per line competed with it. `title` is what
+          keeps the mark answerable — the same pattern `pending` above uses,
+          and the reason `sizeLabel` is not called here. */}
       {size ? (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: levelColor(size) }}>
-          <Icon name={sizeIcon(size)} size={13} />{sizeLabel(size)}
+        <span title={sizeTitle(size)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(size) }}>
+          <Icon name={sizeIcon(size)} size={13} />
         </span>
       ) : null}
       {energy ? (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)", letterSpacing: "var(--tracking-meta)", textTransform: "uppercase", color: levelColor(energy) }}>
-          <Icon name={energyIcon(energy)} size={13} />{energyLabel(energy)}
+        <span title={energyTitle(energy)} style={{ display: "inline-flex", alignItems: "center", color: levelColor(energy) }}>
+          <Icon name={energyIcon(energy)} size={13} />
         </span>
       ) : null}
       {priority !== undefined && hasPriority(priority) ? (

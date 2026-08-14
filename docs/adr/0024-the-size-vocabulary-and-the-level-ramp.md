@@ -81,7 +81,8 @@ spelling.
 
 ## Decision 2 — size and energy are drawn, and the ramp may use colour
 
-**Both dimensions render as a glyph and its word**: size as depth rings (a
+**Both dimensions render as a glyph, and the word only where there is room
+for it**: size as depth rings (a
 centre dot gaining rings as the work goes deeper), energy as three ascending
 bars. The level is carried twice over — by the glyph's fill (earned elements
 solid, unearned ghosted, unset a flat wash) and by colour from a four-step
@@ -90,10 +91,29 @@ ramp that reuses tokens the system already has: `--text-muted`,
 **position on the scale**, not by name, which is what lets one table serve
 both dimensions instead of two that can drift.
 
-**Icon and label always share a colour.** The design system's rule (README,
-ICONOGRAPHY) is why `levelColor` returns one answer applied to both. A
-coloured mark beside an uncoloured word reads as decoration; together they
-read as one statement about the item.
+**The word belongs to `ItemDetailPanel` alone.** Every other surface — the
+row, the frontier card, the top-pick card, the capture sliders — draws the
+glyph with no text. Two spelled-out dimensions per line is a lot of shouting
+for two facts a mark can carry, and on a dense list the uppercase words
+competed with the titles they were there to annotate. The detail panel keeps
+both words because it is the surface with room to be explicit, and it is also
+the only one that draws the unset state (below) — which matters, because
+`size-unset` and `size-deep` are the same three rings and are told apart by
+opacity alone. A word-free glyph is therefore only ever a *judged* glyph.
+
+**A word-free glyph carries a `title`.** `sizeTitle`/`energyTitle` give the
+chip its tooltip and its accessible name in one, so a bare mark still answers
+"what are you" to a screen reader and to a reader who has not learned the ramp
+yet. This is `IconButton`'s required `label` applied to a non-control: the
+system already holds that a label-less glyph must name itself.
+
+**Icon and label share a colour wherever both exist.** The design system's
+rule (README, ICONOGRAPHY: icons never carry colour independently of their
+label) is why `levelColor` returns one answer applied to both — a coloured
+mark beside an uncoloured word reads as decoration. The mismatch is what the
+rule guards against, so a glyph drawn with no word does not trip it, and
+colour is not the only channel in either case: the level is in the geometry
+too, so the ramp reinforces a distinction it never solely carries.
 
 **This narrows ADR-0021 decision 2, and the cost is real.** That ADR said a
 frontier card's colour "encodes urgency and nothing else". Size badges render
@@ -120,11 +140,13 @@ the surfaces disagree about what silence means:
 - **`ItemDetailPanel` always draws both**, ghost and em dash included. It is
   the one surface that describes a single item in full, so "nobody has judged
   this yet" is information the panel owes its reader.
-- **`ItemRow` and the frontier card omit an absent dimension entirely**,
-  keeping the row's existing contract for every optional chip — nothing to
-  say, nothing rendered, the rule `priority`, `steps` and `blockedBy` already
-  follow. A dense column is not the place to draw an unmade judgement on every
-  line.
+- **`ItemRow`, the frontier card and the top-pick card omit an absent
+  dimension entirely**, keeping the row's existing contract for every optional
+  chip — nothing to say, nothing rendered, the rule `priority`, `steps` and
+  `blockedBy` already follow. A dense column is not the place to draw an unmade
+  judgement on every line. These are exactly the word-free surfaces, and the
+  two facts hold each other up: because they omit, no glyph ever has to
+  distinguish *unset* from *deep* without a word to help it.
 - **The capture slider and the triage select always draw it**, because there
   the value is being chosen and its absence is the current answer.
 

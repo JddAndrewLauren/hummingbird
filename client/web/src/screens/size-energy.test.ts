@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { energyIcon, energyLabel, levelColor, sizeIcon, sizeLabel } from "./size-energy";
+import {
+  energyIcon,
+  energyLabel,
+  energyTitle,
+  levelColor,
+  sizeIcon,
+  sizeLabel,
+  sizeTitle,
+} from "./size-energy";
 
 describe("sizeIcon / energyIcon", () => {
   it("names one glyph per level", () => {
@@ -55,5 +63,25 @@ describe("sizeLabel / energyLabel", () => {
   it("renders an em dash for an unjudged dimension", () => {
     expect(sizeLabel(null)).toBe("—");
     expect(energyLabel(null)).toBe("—");
+  });
+});
+
+// The accessible name for the four surfaces that draw the glyph with no word
+// beside it (ADR-0024). Dropping the label is only defensible because this
+// exists, so it is asserted rather than trusted.
+describe("sizeTitle / energyTitle", () => {
+  it("names the dimension and its level, in sentence case", () => {
+    expect(sizeTitle("normal")).toBe("Size: normal");
+    expect(energyTitle("high")).toBe("Energy: high");
+  });
+
+  // Not the label's uppercase: this is read aloud or shown as a tooltip.
+  it("does not shout, unlike the visible label", () => {
+    expect(sizeTitle("deep")).not.toBe(`Size: ${sizeLabel("deep")}`);
+  });
+
+  it("stays total, so an unjudged dimension still names itself", () => {
+    expect(sizeTitle(null)).toBe("Size: not judged");
+    expect(energyTitle(null)).toBe("Energy: not judged");
   });
 });

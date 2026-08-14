@@ -3,7 +3,9 @@ import { Icon, type IconName } from "./Icon";
 
 export interface BadgeProps extends Omit<HTMLAttributes<HTMLSpanElement>, "style"> {
   tone?: "neutral" | "brand" | "success" | "warn" | "danger" | "info";
-  /** Lucide icon name rendered at 13px before the label. */
+  /** Icon name rendered at 13px before the label — or alone, if there are no
+   * children. A label-less badge must carry a `title` for its accessible
+   * name (#446). */
   icon?: IconName;
   /** Leading status dot instead of an icon. */
   dot?: boolean;
@@ -37,7 +39,12 @@ export function Badge({ tone = "neutral", icon, dot = false, mono = false, style
     }} {...rest}>
       {dot ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: fg }} /> : null}
       {icon ? <Icon name={icon} size={13} /> : null}
-      <span style={{ display: "inline-block" }}>{children}</span>
+      {/* Not an unconditional span: empty, it still takes the flex `gap`
+          above and the pill wears a blank column of padding on its right.
+          An icon-only badge has to sit symmetrically around its glyph. */}
+      {children === undefined || children === null ? null : (
+        <span style={{ display: "inline-block" }}>{children}</span>
+      )}
     </span>
   );
 }

@@ -77,21 +77,26 @@ describe("ItemRow — the meta chips", () => {
   });
 
   // #446: rows carried size as a bare muted word and no energy at all. Both
-  // are now glyph + word in the level's ramp colour.
-  it("renders size and energy as their own uppercase words", () => {
+  // are now a glyph in the level's ramp colour and **no word** — the row
+  // annotates a title, and two spelled-out dimensions per line competed with
+  // it. The word survives on `ItemDetailPanel` only (ADR-0024).
+  it("draws size and energy as glyphs, with no word on the row", () => {
     render(<ItemRow title="An action" size="normal" energy="high" />);
-    expect(screen.getByText("NORMAL")).toBeDefined();
-    expect(screen.getByText("HIGH")).toBeDefined();
+    expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
+    expect(screen.queryByText(/LOW|MEDIUM|HIGH/)).toBeNull();
+    // Silent to the eye is not silent to a screen reader: the chip names
+    // itself, which is the whole licence for dropping the word.
+    expect(screen.getByTitle("Size: normal")).toBeDefined();
+    expect(screen.getByTitle("Energy: high")).toBeDefined();
   });
 
-  it("colours each of them by its level, icon and label together", () => {
+  it("colours each glyph by its level, and draws the level's own ramp", () => {
     render(<ItemRow title="An action" size="deep" energy="low" />);
-    // The match lands on the chip itself — the span wrapping both the glyph
-    // and the word — because the glyph contributes no text. So reading the
-    // colour here reads the one the icon inherits too, which is the rule
-    // being asserted: never a colour on one without the other.
-    const size = screen.getByText("DEEP");
-    const energy = screen.getByText("LOW");
+    // The chip is found by its accessible name now that it carries no text,
+    // and it is the element holding both the colour and the glyph — so
+    // reading colour here reads the one the icon inherits.
+    const size = screen.getByTitle("Size: deep");
+    const energy = screen.getByTitle("Energy: low");
     expect(size.style.color).toBe("var(--urgency-now)");
     expect(energy.style.color).toBe("var(--status-done-fg)");
     // `not.toBeNull`, not `toBeDefined`: a missing glyph returns `null`,
@@ -112,5 +117,10 @@ describe("ItemRow — the meta chips", () => {
     expect(screen.queryByText("—")).toBeNull();
     expect(screen.queryByText(/QUICK|NORMAL|DEEP/)).toBeNull();
     expect(screen.queryByText(/LOW|MEDIUM|HIGH/)).toBeNull();
+    // Now that the chip is word-free, its title is the only thing left to
+    // leak an unjudged dimension — and a ghost glyph here would be
+    // indistinguishable from `deep` without a word beside it.
+    expect(screen.queryByTitle(/^Size:/)).toBeNull();
+    expect(screen.queryByTitle(/^Energy:/)).toBeNull();
   });
 });

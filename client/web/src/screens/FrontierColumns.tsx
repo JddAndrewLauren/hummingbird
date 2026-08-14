@@ -42,7 +42,7 @@ import {
 } from "./frontier-prefs";
 import { canMarkDone } from "./item-actions";
 import { hasPriority, priorityLabel } from "./priority";
-import { energyIcon, energyLabel, levelColor, sizeIcon, sizeLabel } from "./size-energy";
+import { energyIcon, energyTitle, levelColor, sizeIcon, sizeTitle } from "./size-energy";
 import type { StorageLike } from "./storage";
 import { computeUrgency, type Urgency } from "./urgency";
 import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
@@ -214,14 +214,20 @@ function ItemCard({
               badge). Absent stays absent — a dense column is not the place to
               draw an unjudged dimension; `ItemDetailPanel` is. */}
           {item.size ? (
-            <Badge mono icon={sizeIcon(item.size)} style={{ color: levelColor(item.size) }}>
-              {sizeLabel(item.size)}
-            </Badge>
+            <Badge
+              mono
+              icon={sizeIcon(item.size)}
+              title={sizeTitle(item.size)}
+              style={{ color: levelColor(item.size) }}
+            />
           ) : null}
           {item.energy ? (
-            <Badge mono icon={energyIcon(item.energy)} style={{ color: levelColor(item.energy) }}>
-              {energyLabel(item.energy)}
-            </Badge>
+            <Badge
+              mono
+              icon={energyIcon(item.energy)}
+              title={energyTitle(item.energy)}
+              style={{ color: levelColor(item.energy) }}
+            />
           ) : null}
           {hasPriority(item.priority) ? (
             <span className="hb-meta" style={{ color: "var(--text-brand)" }}>

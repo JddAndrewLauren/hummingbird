@@ -9,12 +9,28 @@
 // this way it is unit-testable without a DOM. The drawing itself is
 // `components/core/custom-glyphs.tsx`; `Icon` is what puts the two together.
 //
-// **Icon and label always share a colour.** The design system's rule
-// (README, ICONOGRAPHY: "icons never carry colour independently of their
-// label") is what makes `levelColor` a single answer used for both, rather
-// than a tint applied to the glyph alone. A coloured mark beside an
-// uncoloured word reads as decoration; coloured together they read as one
-// statement about the item.
+// **The word is the detail panel's alone.** Everywhere else — the row, the
+// frontier card, the top-pick card, the capture sliders — the glyph stands
+// on its own. Two spelled-out dimensions per line was a lot of shouting for
+// two facts that a mark can carry, and on a dense list the words competed
+// with the titles they were meant to annotate. `sizeLabel`/`energyLabel`
+// survive for the one surface that describes a single item in full.
+//
+// **A label-free glyph carries a `title` instead**, from `sizeTitle` /
+// `energyTitle` below: a bare mark still has to answer "what are you" to a
+// screen reader and to anyone who has not yet learned the ramp. `Icon`'s own
+// `title` prop is the other half of this contract, and `IconButton`'s
+// required `label` is the same rule for controls.
+//
+// **Icon and label still share a colour where there is a label.** The design
+// system's rule (README, ICONOGRAPHY: "icons never carry colour
+// independently of their label") is what makes `levelColor` a single answer
+// used for both, rather than a tint applied to the glyph alone — a coloured
+// mark beside an uncoloured word reads as decoration. What the rule guards
+// against is that mismatch, so a glyph drawn with no word at all does not
+// trip it. And colour is never the only channel: the level is in the
+// geometry too — how many rings are filled, how many bars are tall — so the
+// ramp reinforces a distinction it does not solely carry.
 //
 // **Unset is a resting state, not a warning.** Nothing here escalates when
 // a dimension is absent: the glyph ghosts to a flat 45% wash, the label is
@@ -93,11 +109,30 @@ export function levelColor(value: Size | Energy): string {
 
 /** The uppercase meta-line label. The em dash is what "unset" looks like —
  * the same width in every row, and readable as a deliberate blank rather
- * than a missing render. */
+ * than a missing render.
+ *
+ * Only `ItemDetailPanel` draws these now; see the header on why the other
+ * four surfaces carry the glyph alone. */
 export function sizeLabel(size: Size): string {
   return size ? size.toUpperCase() : "—";
 }
 
 export function energyLabel(energy: Energy): string {
   return energy ? energy.toUpperCase() : "—";
+}
+
+/** The accessible name for a glyph drawn **without** its word, which is
+ * every surface but the detail panel. A bare mark has to say what it is to
+ * something other than the eye: this is what goes on the chip's `title`, so
+ * it is the hover tooltip and the accessible name at once.
+ *
+ * Sentence case, not the label's uppercase — this is read aloud or shown as
+ * a tooltip, and neither wants shouting. It stays a total function so the
+ * unset case has an answer, though no label-free surface renders it. */
+export function sizeTitle(size: Size): string {
+  return `Size: ${size ?? "not judged"}`;
+}
+
+export function energyTitle(energy: Energy): string {
+  return `Energy: ${energy ?? "not judged"}`;
 }
