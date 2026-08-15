@@ -9,10 +9,17 @@
 //!
 //! # Why this is in Rust at all
 //!
-//! Bespoke answer and band stay in TS `screens/*.ts`, which is what
-//! protects the visual iteration loop. Two things do not, because they must
-//! not drift; alert liveness is one ([`hummingbird_domain::is_live`]), and
-//! this is the other. It exists to hold two lines:
+//! Two things must not drift between clients; alert liveness is one
+//! ([`hummingbird_domain::is_live`]), and this is the other. It exists to
+//! hold two lines:
+//!
+//! ADR-0015 originally carved out only those two and left bespoke answer
+//! and band in TS `screens/*.ts` to protect the visual iteration loop.
+//! ADR-0025 redrew that line for the multi-client world — the band
+//! functions and their thresholds are decision logic and sink here too, as
+//! each screen is built for Android (#141). This module is unaffected by
+//! that redraw: it was always on the Rust side of it. What changed is that
+//! it is no longer the exception.
 //!
 //! **`Unknown` may never render as fresh.** Two different unknowns exist,
 //! and collapsing them into a boolean hides a real difference:
@@ -34,8 +41,11 @@
 //! # What is deliberately *not* here
 //!
 //! **The threshold.** ADR-0015 is emphatic that it is not carved out: it
-//! stays in TS beside each band function, because the driver is not the
+//! belongs beside each band function, because the driver is not the
 //! cadence but the **cost of a wrong answer**, which differs per question.
+//! (ADR-0025 keeps that reasoning exactly and moves the pair together —
+//! band *and* threshold sink into the core per screen. "Beside its band
+//! function" is the invariant; "in TS" was only where the bands were.)
 //! Race polls every six hours and calls `2 ×` stale; waste polls daily and
 //! calls **26h** stale rather than 48h, because a 47-hour-old waste answer
 //! can be a whole collection cycle wrong and would render "Trash Tonight"

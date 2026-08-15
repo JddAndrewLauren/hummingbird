@@ -1,14 +1,17 @@
 // Issue #110/S12 acceptance: "An empty capture is refused client-side — a
 // junk row must never be able to wedge the queue." A whitespace-only draft
-// counts as empty: `Core::capture` (client/core) has no opinion of its own
-// on this — it enqueues whatever `title` it is handed — so the refusal has
-// to happen here, before a request is ever sent to the worker.
+// counts as empty.
+//
+// The rule no longer lives here. It is
+// `hummingbird_core::decisions::can_submit_capture` (ADR-0025, #141/M1-1),
+// reached through the main-thread wasm seam — `Core::capture` still has no
+// opinion of its own on an empty title, so this is still a *pre-submit*
+// decision the caller makes, but it is now one function shared by the web
+// and Android rather than a TS copy that could drift from a Kotlin one.
+//
+// This module is kept as the import site rather than deleted so the sink
+// stayed a rewire: every caller (`CaptureBox`, `TriageScreen`,
+// `triage-form.ts`) and `capture-validation.test.ts` are untouched, which
+// is what makes the unchanged component tests a regression proof.
 
-/** Whether `draft` is a real capture worth submitting. Pure — no trimming
- * side effect on the caller's own state; `TriageScreen` still sends the
- * original (untrimmed) string on submit, since #110's "raw string reaches
- * the mutation unmodified" criterion means this function decides whether to
- * submit, never what gets submitted. */
-export function canSubmitCapture(draft: string): boolean {
-  return draft.trim().length > 0;
-}
+export { canSubmitCapture } from "../decisions/seam";

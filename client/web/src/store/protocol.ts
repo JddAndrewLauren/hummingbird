@@ -453,7 +453,11 @@ export interface KindRegistryDTO {
 // each row's measured age (`Freshness::measure`'s clock rule) and which
 // alerts are still live (ADR-0014's predicate). Everything else — the answer,
 // the band, the threshold, the `(source, subjectKey)` join onto a pane — is
-// this side's, per ADR-0015's carve-out.
+// this side's, per ADR-0015's carve-out. That list shrinks as M1 runs:
+// ADR-0025 sinks the band functions and their thresholds into the core, and
+// the client reaches them through `src/decisions/seam.ts` rather than
+// re-deriving them here. The two facts above are the ones that were never
+// this side's to begin with.
 
 /** How old one answer is (`hummingbird_core::freshness::Freshness`).
  *

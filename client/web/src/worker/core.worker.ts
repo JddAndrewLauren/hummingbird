@@ -8,6 +8,17 @@
 // directly as an ES module, and those plugins apply to shared workers the
 // same as dedicated ones.
 //
+// This is not the only instantiation of that module any more (ADR-0025,
+// #499): the main thread instantiates it a second time behind
+// `src/decisions/seam.ts`, for the pure decision functions a React render
+// has to call synchronously. That instance holds no core, no storage and no
+// queue, which is the whole reason it does not make this a second sync
+// engine — the seam's header carries the argument. What matters HERE is the
+// direction of the boundary: nothing under `src/decisions/` may appear in
+// this file's static import graph, because a static wasm import is exactly
+// the top-level `await` the next paragraph forbids.
+// `worker/worker-import-graph.test.ts` fails the build if one appears.
+//
 // Every tab and the installed PWA window is a VIEW: it connects a
 // `MessagePort` via `onconnect` below, and `PortRegistry` (ports.ts) is what
 // turns that into "one core, N views" — it announces the "ready"/"error"

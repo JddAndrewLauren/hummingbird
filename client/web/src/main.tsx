@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
+import { initDecisions } from "./decisions/seam";
 import { appUpdateSignal } from "./shell/app-update";
 import { captureOAuthRedirect } from "./shell/oauth-redirect";
 import { watchForActivation } from "./shell/reload-on-activate";
@@ -109,8 +110,31 @@ if (!root) {
   throw new Error("missing #root element");
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <App worker={worker} />
-  </StrictMode>,
-);
+// ADR-0025 (#141/M1-1): the SECOND wasm instantiation, on the main thread,
+// behind `src/decisions/seam.ts`. It is awaited before the first render
+// rather than joined to a spinner because there is no render-time gate to
+// join: `App` mounts every screen while the worker is still connecting (the
+// core's status is a label, not a gate), so a component could call a
+// synchronous decision wrapper in its very first render. Awaiting here IS
+// the gate, and it is the strongest form of it — no component ever renders
+// against a not-ready seam, so the wrapper's not-ready branch can stay a
+// throw instead of a stale TS fallback.
+//
+// A failure renders the app anyway, on the existing surface for exactly
+// this: `sharedWorker.onerror` above puts a wasm/CSP failure into the
+// store's `error`, and the shell renders "core failed". A blank page would
+// hide the one fact worth showing.
+initDecisions()
+  .catch((cause: unknown) => {
+    coreStore.setState({
+      status: "error",
+      error: cause instanceof Error ? cause.message : "decision seam failed to load",
+    });
+  })
+  .finally(() => {
+    createRoot(root).render(
+      <StrictMode>
+        <App worker={worker} />
+      </StrictMode>,
+    );
+  });
