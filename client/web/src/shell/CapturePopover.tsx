@@ -35,6 +35,14 @@ export interface CapturePopoverProps {
    * clears only once a result actually reports `"ok"` (#222), and a failed
    * one is words beside the field. */
   lastCapture: TaskCaptureResult | null;
+  /** Bumped by the shell's single Escape handler (`App.tsx`) when an Escape
+   * while dictating should cancel the session in place rather than close
+   * this popover (#380). Forwarded straight to `CaptureBox` — this popover
+   * holds no dictation state of its own, only the plumbing. */
+  cancelDictationRequestId?: number;
+  /** Forwarded straight from `CaptureBox`'s own report of whether a session
+   * is live, so `App.tsx`'s Escape handler can branch (#380). */
+  onDictatingChange?: (dictating: boolean) => void;
 }
 
 /** The shell's capture popover — the capture box under the header's New
@@ -63,6 +71,8 @@ export function CapturePopover({
   projects,
   demo,
   lastCapture,
+  cancelDictationRequestId,
+  onDictatingChange,
 }: CapturePopoverProps) {
   const restoreTo = useRef<Element | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -130,6 +140,13 @@ export function CapturePopover({
   // listener moved up to the shell rather than down onto the markup. This
   // popover is the shallowest claimant, so the shell hands it every Escape it
   // is open for (`escape-claimants.ts`).
+  //
+  // #380 adds no second listener beside it: an Escape while dictating means
+  // "cancel the dictation, stay open" rather than "close", so the shell's one
+  // handler needs the fact and a way to act on it. `cancelDictationRequestId`
+  // and `onDictatingChange` above are that — plumbing straight through to
+  // `CaptureBox`, which is the only thing that knows whether a session is
+  // live and the only thing that can restore the frozen draft.
   useEffect(() => {
     if (!open) {
       return;
@@ -215,6 +232,8 @@ export function CapturePopover({
             focusRequestId={focusRequestId}
             lastCapture={lastCapture}
             onClose={onClose}
+            cancelDictationRequestId={cancelDictationRequestId}
+            onDictatingChange={onDictatingChange}
           />
         </Card>
       </div>
