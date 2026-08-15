@@ -38,8 +38,11 @@ val Sky100 = Color(0xFFD9EDF6)
 val Sky600 = Color(0xFF166588)
 
 val Crimson100 = Color(0xFFFADEDB)
+val Crimson500 = Color(0xFFB3261E) // --urgency-overdue (light)
 val Crimson600 = Color(0xFF961D16)
 val CrimsonDark = Color(0xFFF08076) // --status-danger-fg (dark)
+
+val Amber500 = Color(0xFFD99A06) // --urgency-soon (light)
 
 // Semantic values with no ramp entry of their own in the CSS.
 val BorderDefaultLight = Color(0xFFE2D9D0) // --border-default (light)
@@ -48,3 +51,7 @@ val StatusInfoFgDark = Color(0xFF5CB6D8) // --status-info-fg (dark)
 val BorderDefaultDark = Color(0x1FFFFFFF) // --border-default (dark): white 12%
 val BorderSubtleDark = Color(0x12FFFFFF) // --border-subtle (dark): white 7%
 val StatusDangerBgDark = Color(0x38B3261E) // --status-danger-bg (dark)
+// `--urgency-soon` diverges between scopes (dark is a literal, not a ramp
+// alias) — the same "carry the divergent value under its own name" pattern
+// `CrimsonDark`/`StatusInfoFgDark` above already use.
+val UrgencySoonDark = Color(0xFFF0B429) // --urgency-soon (dark)

@@ -40,17 +40,26 @@ import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.RunOutcome
 
-// M0's proof screen (#141): the embedded core's API version, the mirror's
-// active-item count, and one live sync against the authority. Every screen
-// after this one arrives with its decision modules sunk into core first
-// (ADR-0025); this screen deliberately decides nothing.
+// `NowScreen` (M1-6/#504) is this activity's content — the frontier,
+// decided core-side and rendered verbatim (`NowScreen.kt`'s own doc). M0's
+// proof screen (#141: the embedded core's API version, the mirror's
+// active-item count, and one live sync against the authority) moves behind
+// the "Status" action rather than being deleted — still the cheapest manual
+// check that the generated binding and the loaded `.so` agree. No nav
+// library in M1 (recorded deferral, M1-6's brief): a plain `showStatus`
+// toggle stands in for the `NavHost` a later milestone would add.
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             HummingbirdTheme {
-                ProofScreen()
+                var showStatus by remember { mutableStateOf(false) }
+                if (showStatus) {
+                    ProofScreen(onBack = { showStatus = false })
+                } else {
+                    NowScreen(onShowStatus = { showStatus = true })
+                }
             }
         }
     }
@@ -86,7 +95,7 @@ private fun describe(outcome: RunOutcome): String = when (outcome.kind) {
 }
 
 @Composable
-private fun ProofScreen() {
+private fun ProofScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -147,6 +156,9 @@ private fun ProofScreen() {
         ) {
             // The product name is lowercase everywhere.
             Text("hummingbird", style = MaterialTheme.typography.headlineLarge)
+            TextButton(onClick = onBack) {
+                Text("Back to Now")
+            }
 
             val current = facts
             if (current == null) {

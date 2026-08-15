@@ -31,6 +31,9 @@ class ColorTokenDriftTest {
         "BorderDefaultDark" to ScopedToken("--border-default", Scope.DARK),
         "BorderSubtleDark" to ScopedToken("--border-subtle", Scope.DARK),
         "StatusDangerBgDark" to ScopedToken("--status-danger-bg", Scope.DARK),
+        // `--urgency-soon` diverges between scopes (dark is a literal, not
+        // a ramp alias) — see `Color.kt`'s own comment on `UrgencySoonDark`.
+        "UrgencySoonDark" to ScopedToken("--urgency-soon", Scope.DARK),
     )
 
     // A ramp name is CamelCase-with-trailing-digits; anything else must be
