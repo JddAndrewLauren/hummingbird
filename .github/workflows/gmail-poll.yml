@@ -14,14 +14,26 @@
 # competitor: ADR-0011 assigns Gmail's cadence to nothing else, and nothing
 # else polls Gmail. It is the poller establishing the scaffolding #136/#137
 # follow, and each of those adds its own workflow on the same reasoning.
+#
+# **Dormant since 2026-08-14 (#486).** Every run this lane has ever had — 82 of
+# them — failed on `HB_INGEST_TOKEN is not set`: `GMAIL_INGEST_TOKEN` was never
+# minted, and neither were the three `GOOGLE_*` secrets below. The `schedule:`
+# is commented out so that red does not go on masking real failures in the
+# Actions tab; `workflow_dispatch:` stays, so the lane is runnable the moment
+# its credentials exist. This does not retract the argument above — it is the
+# same rule read the other way. A cadence has exactly one owner, and while this
+# lane has no live clock, the commented-out block is where that ownership stays
+# legible; re-enabling means restoring exactly that one block.
 name: gmail-poll
 
 on:
-  # Every 15 minutes — `hummingbird_gmail_poll::cursor::POLLED_EVERY_MS` must
-  # match this interval; it is what the notification lane's own latency
-  # bound (and any future pane reading this poller's cadence) reads.
-  schedule:
-    - cron: "*/15 * * * *"
+  # Every 15 minutes, when live — `hummingbird_gmail_poll::cursor::POLLED_EVERY_MS`
+  # must match this interval; it is what the notification lane's own latency
+  # bound (and any future pane reading this poller's cadence) reads. That
+  # coupling outlives the dormancy: re-check the constant against the cron
+  # before restoring the block, not after.
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same

@@ -9,13 +9,24 @@
 # (hummingbird is public, so only the 60-day auto-disable survives from
 # issue #8's ban, and this lane has no competing clock: ADR-0011 assigns
 # Google Calendar's cadence to nothing else, and nothing else polls it).
+#
+# **Dormant since 2026-08-14 (#486).** All 78 runs this lane has ever had failed
+# on `HB_INGEST_TOKEN is not set`: `CALENDAR_INGEST_TOKEN` was never minted, nor
+# the three `GOOGLE_*` secrets. The `schedule:` is commented out so that red
+# stops masking real failures; `workflow_dispatch:` stays, so the lane is
+# runnable the moment its credentials exist. Same one-owner rule as above, read
+# the other way — the commented-out block is where this cadence's ownership
+# stays legible, and re-enabling means restoring exactly that one block.
+# Note this lane's frozen source string is `google-calendar/v1`, not
+# `calendar/v1`, which is what its ingest token must be bound to.
 name: calendar-poll
 
 on:
-  # Every 15 minutes — `hummingbird_calendar_poll::cursor::POLLED_EVERY_MS`
-  # must match this interval.
-  schedule:
-    - cron: "*/15 * * * *"
+  # Every 15 minutes, when live — `hummingbird_calendar_poll::cursor::POLLED_EVERY_MS`
+  # must match this interval. That coupling outlives the dormancy: re-check the
+  # constant against the cron before restoring the block, not after.
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same

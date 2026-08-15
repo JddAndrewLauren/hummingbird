@@ -8,11 +8,26 @@
 # A fifth Actions `schedule:`, on the other four pollers' own reasoning:
 # no competing clock (ADR-0011 assigns this cadence to nothing else, and
 # nothing else polls M365 calendar).
+#
+# **Dormant since 2026-08-14 (#486).** All 74 runs this lane has ever had failed
+# on `HB_INGEST_TOKEN is not set`: `M365_CALENDAR_INGEST_TOKEN` was never
+# minted, nor the `GRAPH_*` vars and `GRAPH_CLIENT_PRIVATE_KEY` below. The
+# `schedule:` is commented out so that red stops masking real failures;
+# `workflow_dispatch:` stays, so the lane is runnable once provisioned. Same
+# one-owner rule read the other way — the commented-out block is where this
+# cadence's ownership stays legible, and re-enabling is restoring exactly it.
+#
+# **Gated on the same unresolved Graph posture question as `graph-mail-poll`**
+# (tenant-wide app-only read vs. an Exchange Application Access Policy; see that
+# file's header and `src/lib.rs`). Posted to #137, which is now closed; it lives
+# on #486. Settle it before provisioning, not after.
 name: graph-calendar-poll
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
+  # Every 15 minutes, when live. Re-check this crate's own `POLLED_EVERY_MS`
+  # against the cron before restoring the block, not after.
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
 
 concurrency:
