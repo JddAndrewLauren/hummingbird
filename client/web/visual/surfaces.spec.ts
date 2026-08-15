@@ -84,12 +84,14 @@ async function openApp(page: Page, theme: (typeof THEMES)[number], world: World)
   // case here died on the click that opens it, because mounting the capture box
   // is what fires the capability probe.
   //
-  // Deleting the constructor costs the captures nothing: the gate's browser
-  // holds no on-device language pack, so the arm it would photograph is
-  // `setup-required`, and ADR-0022 has `setup-required` and `unsupported` both
-  // render exactly nothing. The pixels are identical either way — which is why
-  // this belongs in the harness rather than as a `navigator.webdriver` check in
-  // product code, where it would be a browser bug shaping the app.
+  // Deleting the constructor is not pixel-neutral: a real headed browser
+  // resolves `"downloadable"` to `setup-required` and renders #381's setup
+  // mic, but this deletion pins the capability at `unsupported` instead,
+  // which renders nothing. The gate accepts that gap because none of the
+  // states past "nothing renders" are photographable here anyway (no live
+  // mic, no on-device model download) — which is why this belongs in the
+  // harness rather than as a `navigator.webdriver` check in product code,
+  // where it would be a browser bug shaping the app.
   //
   // Nothing in-page could defend against this: a renderer crash is not
   // catchable from the page that provokes it. If the gate ever runs headed,

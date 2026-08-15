@@ -208,18 +208,21 @@ tidiness: headless Chromium 151.0.7922.34 **crashes the renderer** when
 `SpeechRecognition.available()` is called, so mounting the capture box killed
 the tab and all eight capture-popover cases failed on the click that opens it.
 Measured both ways in the same build — headless crashes, `headless: false`
-returns `"downloadable"`. Deleting the constructor changes no pixel either
-way: the gate's browser was never going to have a language pack, so the
-popover photographs exactly as it did before #379, #381 or this slice. A
-renderer crash is not catchable from the page that provokes it, which is why
-the defence is in the harness and not a `navigator.webdriver` check in
+returns `"downloadable"`. Deleting the constructor is not pixel-neutral: a
+real headed browser resolves `"downloadable"` to `setup-required` and renders
+#381's setup mic, but the gate's headless run (constructor deleted)
+pins the capability at `unsupported`, which renders nothing. The two are
+different states rendered for different reasons — the gate accepts that gap
+because the setup mic is not photographable here regardless (see below), and
+a renderer crash is not catchable from the page that provokes it, which is
+why the defence is in the harness and not a `navigator.webdriver` check in
 product code.
 
 **None of the states past "nothing renders" are photographable, and none of
 them ever will be**, since they all need either a live microphone or an
 on-device model download, neither of which headless Chromium has: the
 ordinary listening mic (`active` treatment, "Stop dictating"), #381's
-explain/download hint in its three phases (explained, downloading, failed),
+explain/download hint in its three phases (explained, installing, failed),
 the on-device-model-installed re-probe to `ready`, and a dictation error —
 including a denied-microphone ("Microphone access is blocked for this site.")
 — stated in the field's own alert paragraph. Every one of those is covered
