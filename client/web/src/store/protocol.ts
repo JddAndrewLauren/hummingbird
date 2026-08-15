@@ -334,6 +334,21 @@ export interface LedgerRowDTO extends TaskItemDTO {
   hasLiveAlert: boolean;
 }
 
+/** **Recall**'s group label (#478, CONTEXT.md): which of the three display
+ * buckets a result row sits in. Core-decided ([`Core::search`]'s own
+ * grouping, mirroring `ledger-order.ts`'s `ledgerRowState`), never
+ * re-derived on this side. */
+export type RecallGroup = "live" | "done" | "archived";
+
+/** One Recall result row — an item plus the group it matched in
+ * (`ffi-web`'s `SearchRowDTO`). Never carries the resolved project name:
+ * the query matched against it core-side, but a result row shows the
+ * item's own fields, and `TaskState.projects` already resolves
+ * `projectId` for display the same way the frontier does. */
+export interface RecallRowDTO extends TaskItemDTO {
+  group: RecallGroup;
+}
+
 /** What one binding is currently set to (#118, ADR-0015) — the wire shape of
  * `hummingbird_core::bindings::BindingValue`. A tagged union, deliberately
  * not `string | null`: "nobody has set this" and "this holds something that
@@ -781,6 +796,13 @@ export type TaskWorkerRequest =
    * resolving the alert badge's liveness core-side, same contract as
    * `getPaneRead`. */
   | { type: "getLedger"; nowMs: number }
+  /** **Recall** (#478): re-find one item across the whole retained roster
+   * by remembered words or by handle. `nowMs` resolves the same
+   * alert-liveness read `getLedger` does — `search` shares its corpus with
+   * `getLedger`. An empty/whitespace-only `query` is answered with zero
+   * rows, core-side (never a client-side short-circuit, so a caller never
+   * has to know the empty-query rule itself). */
+  | { type: "search"; query: string; nowMs: number }
   /** Every live `Done` item — the Done screen's read. */
   | { type: "getDone" }
   /** Relation-blocked items with the reason visible — S10 (issue #108). */
@@ -987,6 +1009,11 @@ export type TaskWorkerResponse =
    * to a late-connecting port: the alert badge was resolved against the
    * request's own `nowMs`, and a replay would state it as current. */
   | { type: "ledger"; rows: LedgerRowDTO[] }
+  /** Answers `search` (#478). Same drop-on-busy contract as `ledger`:
+   * never posted for a `"busy"` read. `total` is the un-capped match
+   * count the "N more" line reads directly — never re-derived from
+   * `rows.length` here. */
+  | { type: "searchResult"; rows: RecallRowDTO[]; total: number }
   /** Answers `getDone`. Same drop-on-busy contract as `frontier`. */
   | { type: "done"; items: TaskItemDTO[] }
   | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }

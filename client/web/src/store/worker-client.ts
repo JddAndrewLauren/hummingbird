@@ -350,6 +350,9 @@ export function attachWorkerClient(
       case "ledger":
         store.setTaskState({ ledger: message.rows });
         return;
+      case "searchResult":
+        store.setTaskState({ search: { rows: message.rows, total: message.total } });
+        return;
       case "done":
         store.setTaskState({ done: message.items });
         return;
@@ -821,6 +824,18 @@ export function requestGrillingItems(worker: WorkerLike): void {
  * makes a re-request mean anything. */
 export function requestLedger(worker: WorkerLike, nowMs: number): void {
   worker.postMessage({ type: "getLedger", nowMs });
+}
+
+/** **Recall** (#478): re-find one item across the whole retained roster by
+ * remembered words or by handle. `nowMs` is the request's own clock,
+ * resolving the same alert-liveness read `requestLedger` does — `search`
+ * shares its corpus with `getLedger`. An empty/whitespace-only `query` is
+ * answered with zero rows core-side; this function still sends the
+ * request rather than short-circuiting, so the overlay's "no results"
+ * state and its "nothing typed yet" state can be told apart by whether a
+ * result has arrived at all. */
+export function requestSearch(worker: WorkerLike, query: string, nowMs: number): void {
+  worker.postMessage({ type: "search", query, nowMs });
 }
 
 /** Every live `Done` item — the Done screen's read. */

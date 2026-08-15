@@ -12,6 +12,8 @@ import type {
   PaneEnvelopeDTO,
   PaneReadDTO,
   ProjectDTO,
+  RecallGroup,
+  RecallRowDTO,
   RuleDTO,
   StepDTO,
   TaskEventDTO,
@@ -161,6 +163,10 @@ export interface TaskHostLike {
   /** The complete retained roster — see `RawLedgerListResponse`. `nowMs`
    * resolves the alert badge's liveness core-side. */
   ledger(nowMs: number): string;
+  /** **Recall** (#478) — see `RawSearchResponse`. `nowMs` resolves the same
+   * alert-liveness read `ledger` does; `search` shares its corpus with
+   * `ledger`. */
+  search(query: string, nowMs: number): string;
   /** Every live `Done` item; same `RawItemListResponse` shape as
    * `frontier`. */
   done(): string;
@@ -354,6 +360,19 @@ interface RawLedgerListResponse {
   rows: RawLedgerRow[];
 }
 
+/** One Recall result row: the item's own fields flat at the top level
+ * (`ffi-web`'s `SearchRowDTO` flattens the same way `RawItem` does), plus
+ * which group it matched in. */
+interface RawSearchRow extends RawItem {
+  group: RecallGroup;
+}
+
+interface RawSearchResponse {
+  kind: "ok" | "busy";
+  rows: RawSearchRow[];
+  total: number;
+}
+
 interface RawBlockedEntry {
   item: RawItem;
   blocked_by: RawItem[];
@@ -511,6 +530,13 @@ function mapLedgerRow(raw: RawLedgerRow): LedgerRowDTO {
     absentSinceMs: raw.absent_since_ms,
     deadLettered: raw.dead_lettered,
     hasLiveAlert: raw.has_live_alert,
+  };
+}
+
+function mapSearchRow(raw: RawSearchRow): RecallRowDTO {
+  return {
+    ...mapItem(raw),
+    group: raw.group,
   };
 }
 
@@ -1011,6 +1037,15 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "ledger", rows: raw.rows.map(mapLedgerRow) });
+      return;
+    }
+    case "search": {
+      const raw = JSON.parse(host.search(request.query, request.nowMs)) as RawSearchResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty answer — same contract as `getLedger`.
+        return;
+      }
+      post({ type: "searchResult", rows: raw.rows.map(mapSearchRow), total: raw.total });
       return;
     }
     case "getDone": {

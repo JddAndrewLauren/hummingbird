@@ -460,6 +460,9 @@ mod wasm_bindings {
     // ledger renders as "nothing has ever been tracked" — a claim a core
     // that has not loaded may not make.
     const BUSY_LEDGER_LIST: &str = r#"{"kind":"busy","rows":[]}"#;
+    // Same drop-not-store contract as `BUSY_LEDGER_LIST` — Recall's rows
+    // *and* its `total` (#478).
+    const BUSY_SEARCH: &str = r#"{"kind":"busy","rows":[],"total":0}"#;
     const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     // #118: an empty binding list would read as "nothing is bound", which
@@ -642,6 +645,23 @@ mod wasm_bindings {
                 Some(host) => serde_json::to_string(&host.ledger(now_ms as i64))
                     .expect("LedgerListResponse serializes"),
                 None => BUSY_LEDGER_LIST.to_string(),
+            }
+        }
+
+        /// **Recall** (#478): re-find one item across the whole retained
+        /// roster by remembered words or by handle, as JSON: `{"kind":
+        /// "ok"|"busy", "rows": [Item & {"group": "live"|"done"|"archived"}],
+        /// "total": number}`. `busy` carries an empty list and a zero
+        /// `total` because the shape demands both, and the host drops the
+        /// whole answer on it rather than storing it, same contract as
+        /// [`TaskHost::ledger`]. `now_ms` is host-supplied and resolves the
+        /// same alert-liveness read `ledger` does (`search` shares its
+        /// corpus with `ledger`).
+        pub fn search(&self, query: String, now_ms: f64) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.search(&query, now_ms as i64))
+                    .expect("SearchResponse serializes"),
+                None => BUSY_SEARCH.to_string(),
             }
         }
 

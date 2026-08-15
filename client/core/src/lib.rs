@@ -48,6 +48,7 @@ pub mod context;
 pub mod freshness;
 pub mod pane;
 pub mod rank;
+pub mod search;
 pub mod storage;
 pub mod sync;
 pub mod task;
@@ -1157,6 +1158,65 @@ where
             .filter(|item| item.archived_at.is_none())
             .filter(|item| item.stage == Stage::Done)
             .collect()
+    }
+
+    /// **Recall** (#478, ADR-0025's core-first rule applied): re-find one
+    /// known item across everything the mirror has ever known, by
+    /// remembered words or by handle. Reads the exact same corpus
+    /// [`Core::ledger`] does — live, `Done` and archived alike — and labels
+    /// each row a [`search::Group`] the same way `ledger-order.ts`'s
+    /// `ledgerRowState` already distinguishes them on the web side:
+    /// [`search::Group::Archived`] when the item's own `archived_at` is
+    /// `Some` **or** the row's `absent_since_ms` is (an explicit archive
+    /// beats the mirror's retention stamp when both exist — `archived_at`
+    /// is when the archive actually happened; a pending, not-yet-synced
+    /// cancel sets it optimistically before any sweep updates the mirror's
+    /// own presence flag), regardless of `stage`; [`search::Group::Done`]
+    /// for a live `Stage::Done` row; [`search::Group::Live`] otherwise.
+    /// Project names resolve through [`Core::projects`]'s own table
+    /// (decision 11: searchable *through* an item, never a project result
+    /// of its own) — an item whose project is itself archived resolves no
+    /// name here, exactly the limit [`Core::projects`] already has.
+    ///
+    /// All decision logic — tokenizing, the handle shortcut, ordering, the
+    /// cap — lives in [`search::search`], pure and unit-tested there; this
+    /// method only assembles the corpus, the same split [`Core::ledger`]
+    /// keeps from [`sync::mirror::SyncMirror::all_items_including_absent`].
+    pub fn search(&self, query: &str, now_ms: i64) -> search::Outcome {
+        let projects: std::collections::HashMap<String, String> = self
+            .cycle
+            .mirror()
+            .all_projects()
+            .map(|project| (project.id.clone(), project.name.clone()))
+            .collect();
+
+        let candidates: Vec<search::Candidate> = self
+            .ledger(now_ms)
+            .into_iter()
+            .map(|entry| {
+                let group = if entry.item.archived_at.is_some() || entry.absent_since_ms.is_some()
+                {
+                    search::Group::Archived
+                } else if entry.item.stage == Stage::Done {
+                    search::Group::Done
+                } else {
+                    search::Group::Live
+                };
+                let project_name = entry
+                    .item
+                    .project_id
+                    .as_deref()
+                    .and_then(|id| projects.get(id))
+                    .cloned();
+                search::Candidate {
+                    item: entry.item,
+                    group,
+                    project_name,
+                }
+            })
+            .collect();
+
+        search::search(&candidates, query)
     }
 
     /// How old this device's answer to one standing question is (ADR-0015).
@@ -4140,6 +4200,114 @@ mod tests {
             core.ledger(2_000).iter().any(|row| row.item.id == "a-2"),
             "the done-then-archived item is still a ledger row"
         );
+    }
+
+    // ------------------------------------------------- search() (#478, Recall)
+
+    /// [`Core::search`] assembles the same corpus [`Core::ledger`] reads —
+    /// live, `Done` and archived alike — and labels each row's
+    /// [`search::Group`] the way this module's doc promises: an archived
+    /// row groups `Archived` even when its own `stage` is `Done`.
+    #[tokio::test]
+    async fn search_groups_the_ledgers_own_corpus_live_done_and_archived() {
+        let mut done_then_archived = fixture_item("a-2", Stage::Done);
+        done_then_archived.title = "widget project".to_string();
+        done_then_archived.archived_at = Some(900);
+        let mut live_done = fixture_item("a-3", Stage::Done);
+        live_done.title = "widget report".to_string();
+        let mut live = fixture_item("a-1", Stage::Ready);
+        live.title = "widget spec".to_string();
+
+        let core = seeded_core(vec![live, live_done, done_then_archived], vec![]).await;
+
+        let outcome = core.search("widget", 2_000);
+        let groups: std::collections::HashMap<String, search::Group> = outcome
+            .rows
+            .iter()
+            .map(|row| (row.item.id.clone(), row.group))
+            .collect();
+        assert_eq!(groups.get("a-1"), Some(&search::Group::Live));
+        assert_eq!(groups.get("a-3"), Some(&search::Group::Done));
+        assert_eq!(
+            groups.get("a-2"),
+            Some(&search::Group::Archived),
+            "a Done item that was later archived groups Archived, not Done"
+        );
+    }
+
+    /// A pending, not-yet-synced cancel sets `archived_at` optimistically
+    /// before any sweep updates the mirror's own presence flag —
+    /// [`Core::search`] must group it `Archived` from that flag alone, the
+    /// same "the item's own flag wins" rule `ledger-order.ts`'s
+    /// `ledgerRowState` documents on the web side.
+    #[tokio::test]
+    async fn search_groups_a_pending_cancel_as_archived_before_any_sync() {
+        let mut core = seeded_core(vec![fixture_item("a-1", Stage::Ready)], vec![]).await;
+        core.act("seed-1", "a-1", ItemAction::Cancel, 1_500)
+            .await
+            .unwrap();
+
+        let outcome = core.search("item a-1", 2_000);
+        assert_eq!(outcome.rows.len(), 1);
+        assert_eq!(outcome.rows[0].group, search::Group::Archived);
+    }
+
+    /// Decision 11: a project's name is searchable through its items.
+    #[tokio::test]
+    async fn search_matches_a_query_token_against_the_items_own_project_name() {
+        fn fixture_project(id: &str, name: &str) -> hummingbird_domain::Project {
+            hummingbird_domain::Project {
+                id: id.to_string(),
+                name: name.to_string(),
+                archived_at: None,
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }
+        }
+
+        let mut in_project = fixture_item("a-1", Stage::Ready);
+        in_project.title = "buy stamps".to_string();
+        in_project.project_id = Some("p-1".to_string());
+        let mut not_in_project = fixture_item("a-2", Stage::Ready);
+        not_in_project.title = "buy stamps".to_string();
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![in_project, not_in_project],
+            projects: vec![fixture_project("p-1", "House move")],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 0.0).await;
+
+        let outcome = core.search("move", 2_000);
+        assert_eq!(
+            outcome.rows.iter().map(|row| row.item.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"]
+        );
+    }
+
+    /// A handle-shaped query finds one item by `seq`, ranging over the whole
+    /// retained roster like every other Recall query.
+    #[tokio::test]
+    async fn search_finds_an_archived_item_by_its_handle() {
+        let mut archived = fixture_item("a-1", Stage::Ready);
+        archived.seq = Some(42);
+        archived.title = "unrelated title".to_string();
+        archived.archived_at = Some(500);
+        let core = seeded_core(vec![archived], vec![]).await;
+
+        let outcome = core.search("hb-42", 2_000);
+        assert_eq!(
+            outcome.rows.iter().map(|row| row.item.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"]
+        );
+        assert_eq!(outcome.rows[0].group, search::Group::Archived);
     }
 
     /// The ledger is overlaid like every other item read: a mutation taken

@@ -646,6 +646,10 @@ export function buildDemoTaskState(): TaskState {
     stepsByItem: {},
     projects: [],
     ledger,
+    // Demo mode never issues a `search` request of its own — the overlay's
+    // wiring hook drives it live, the same reason `bindings`/`kindRegistry`
+    // stay `null` here too.
+    search: null,
     done,
     bindings: [boundWasteBinding, boundRaceBinding, boundTripsBinding],
     // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed
