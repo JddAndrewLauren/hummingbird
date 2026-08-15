@@ -143,10 +143,9 @@ mod tests {
     // stops recognising fails a build-time test here rather than silently
     // dropping out of the pane.
     //
-    // **Every one of the ten scheduled workflows is embedded**, not a
-    // sample of them: a guard that covered four would have said nothing
-    // about the other six, which is exactly the drop-out this guard exists
-    // to catch. `EVERY_SCHEDULED_WORKFLOW` below is the list, and
+    // **Every scheduled workflow is embedded** — nine today — not a sample
+    // of them: a guard that covered four would have said nothing about the
+    // rest, which is exactly the drop-out this guard exists to catch. `EVERY_SCHEDULED_WORKFLOW` below is the list, and
     // `every_committed_scheduled_workflow_is_still_read_as_scheduled` walks
     // it.
     const CALENDAR_POLL: &str = include_str!("../../../.github/workflows/calendar-poll.yml");
@@ -160,18 +159,21 @@ mod tests {
     const UPTIME_PROBE: &str = include_str!("../../../.github/workflows/uptime-probe.yml");
     const DEPLOY: &str = include_str!("../../../.github/workflows/deploy.yml");
     const CLIENT: &str = include_str!("../../../.github/workflows/client.yml");
+    const GRAPH_MAIL_POLL: &str = include_str!("../../../.github/workflows/graph-mail-poll.yml");
 
     /// `(file name, contents, expected top-level `name:`, expected crons)`
     /// for every `schedule:`-carrying workflow committed in this repo.
-    /// Adding a ninth scheduled workflow without adding it here fails
+    /// Adding a tenth scheduled workflow without adding it here fails
     /// `the_embedded_list_covers_every_scheduled_workflow_in_the_repo` —
-    /// including the graph lanes when #486's Phase B restores their
-    /// blocks (see the module header on doing that in the same PR).
+    /// as `graph-calendar-poll.yml` will when #486 Phase B restores the
+    /// second graph lane (see the module header on doing that in the same
+    /// PR).
     const EVERY_SCHEDULED_WORKFLOW: &[(&str, &str, &str, &[&str])] = &[
         ("calendar-poll.yml", CALENDAR_POLL, "calendar-poll", &["*/15 * * * *"]),
         ("city-waste.yml", CITY_WASTE, "city-waste", &["40 13 * * *"]),
         ("github-status.yml", GITHUB_STATUS, "github-status", &["15 6 * * *"]),
         ("gmail-poll.yml", GMAIL_POLL, "gmail-poll", &["*/15 * * * *"]),
+        ("graph-mail-poll.yml", GRAPH_MAIL_POLL, "graph-mail-poll", &["*/15 * * * *"]),
         ("kimi-balance.yml", KIMI_BALANCE, "kimi-balance", &["0 */6 * * *"]),
         ("race-alert-poll.yml", RACE_ALERT_POLL, "race-alert-poll", &["*/15 * * * *"]),
         ("race-schedule-poll.yml", RACE_SCHEDULE_POLL, "race-schedule-poll", &["0 */6 * * *"]),
@@ -228,11 +230,12 @@ mod tests {
         );
     }
 
-    /// The header's own count, pinned: eight today (the two graph lanes
-    /// are dormant, #487, until #486's Phase B).
+    /// The header's own count, pinned: nine today — `graph-mail-poll`
+    /// rejoined in #486 Phase B, and `graph-calendar-poll` is the tenth,
+    /// still dormant until its own restore PR lands.
     #[test]
-    fn the_repo_carries_eight_scheduled_workflows_today() {
-        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 8);
+    fn the_repo_carries_nine_scheduled_workflows_today() {
+        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 9);
     }
 
     #[test]
