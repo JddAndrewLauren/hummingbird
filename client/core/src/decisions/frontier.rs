@@ -223,7 +223,7 @@ pub fn group_frontier(
             unnamed.push(column);
         }
     }
-    named.sort_by(|a, b| b.ids.len().cmp(&a.ids.len()));
+    named.sort_by_key(|c| std::cmp::Reverse(c.ids.len()));
 
     named.into_iter().chain(unnamed).collect()
 }
