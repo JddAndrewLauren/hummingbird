@@ -350,6 +350,13 @@ export interface SettingsScreenProps {
   viewOrdinal: number | null;
   error: string | null;
   calendar: CalendarState;
+  /** True only when `calendar` is the board world's fixture (#452, piece 4),
+   * never for a live `CalendarState` — `demo` (above) stays `null` in that
+   * world (the two worlds are mutually exclusive, `demo.test.ts`), so the
+   * calendar card needs its own signal to bypass the `GOOGLE_CLIENT_ID`/
+   * `status` gates below, which describe the live wiring's preconditions and
+   * mean nothing for a fixture that was never fetched through it. */
+  calendarIsDemo: boolean;
   themePreference: ThemePreference;
   onThemePreference: (preference: ThemePreference) => void;
   /** #274's picker choice — `AUTO_SELECTION` or a registered entry's id,
@@ -385,6 +392,7 @@ export function SettingsScreen({
   viewOrdinal,
   error,
   calendar,
+  calendarIsDemo,
   themePreference,
   onThemePreference,
   backendSelection,
@@ -433,9 +441,9 @@ export function SettingsScreen({
     <TwoColumn>
       <Column>
         <Section title="Calendar context">
-          {!GOOGLE_CLIENT_ID ? (
+          {demo === null && !calendarIsDemo && !GOOGLE_CLIENT_ID ? (
             <Note>Calendar context is unavailable: this build has no Google client id.</Note>
-          ) : status !== "ready" ? (
+          ) : demo === null && !calendarIsDemo && status !== "ready" ? (
             <Note>Calendar context is unavailable until the local core loads.</Note>
           ) : demo || hasCalendars ? (
             <>

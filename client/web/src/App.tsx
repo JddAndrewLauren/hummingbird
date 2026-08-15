@@ -494,6 +494,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               viewOrdinal={viewOrdinal}
               error={error}
               calendar={settingsDemoCalendar ?? calendar}
+              calendarIsDemo={settingsDemoCalendar !== null}
               themePreference={preference}
               onThemePreference={setPreference}
               backendSelection={backendSelection}
