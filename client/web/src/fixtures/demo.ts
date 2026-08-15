@@ -7,12 +7,13 @@
 // dead branch. The `?demo` check is what makes it opt-in during development,
 // so `pnpm dev` still shows the honest empty states by default.
 
+import { buildDemoCalendarState } from "./demo-calendar";
 import { DEMO_DATA, type DemoData } from "./demo-data";
 import { demoMode, isDemoEnabled } from "./demo-mode";
 import { demoQuestionInputs } from "./demo-questions";
 import { buildDemoTaskState } from "./demo-task-state";
 import type { QuestionInputs } from "../screens/questions/contract";
-import type { TaskState } from "../store/store";
+import type { CalendarState, TaskState } from "../store/store";
 
 export type {
   DemoAlert,
@@ -71,4 +72,18 @@ export function demoTaskState(): TaskState | null {
     return null;
   }
   return demoMode(window.location.search) === "board" ? buildDemoTaskState() : null;
+}
+
+/** The board world's seeded calendar (#452, piece 4), or `null` everywhere
+ * else — same double gate and the same reason `demoTaskState` is deliberately
+ * `TaskState`-shaped rather than a store override: `CalendarState` feeds
+ * `useCalendarWiring`'s real effects, so `App.tsx` injects this at the prop
+ * boundary (`SettingsScreen`'s `calendar` prop only) and leaves the hook
+ * itself reading the live store slice. See `demo-calendar.ts`'s header for
+ * the whole argument. */
+export function demoCalendar(): CalendarState | null {
+  if (!import.meta.env.DEV) {
+    return null;
+  }
+  return demoMode(window.location.search) === "board" ? buildDemoCalendarState() : null;
 }

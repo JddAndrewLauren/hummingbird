@@ -350,6 +350,16 @@ export interface SettingsScreenProps {
   viewOrdinal: number | null;
   error: string | null;
   calendar: CalendarState;
+  /** True only when `calendar` is the board world's fixture (#452, piece 4),
+   * never for a live `CalendarState` — `demo` (above) stays `null` in that
+   * world (the two worlds are mutually exclusive, `demo.test.ts`), so the
+   * calendar card needs its own signal to bypass the `GOOGLE_CLIENT_ID`/
+   * `status` gates below, which describe the live wiring's preconditions and
+   * mean nothing for a fixture that was never fetched through it. It also
+   * routes the card's toggles to the local demo copy — through
+   * `onSelectionChange` they would persist fixture ids to the real device
+   * selection and poll Google for calendars that do not exist. */
+  calendarIsDemo: boolean;
   themePreference: ThemePreference;
   onThemePreference: (preference: ThemePreference) => void;
   /** #274's picker choice — `AUTO_SELECTION` or a registered entry's id,
@@ -385,6 +395,7 @@ export function SettingsScreen({
   viewOrdinal,
   error,
   calendar,
+  calendarIsDemo,
   themePreference,
   onThemePreference,
   backendSelection,
@@ -410,18 +421,22 @@ export function SettingsScreen({
   // Demo mode toggles a local copy and nothing else: the fixture ids are not
   // real calendars, and routing them through `onSelectionChange` would persist
   // them to localStorage and poll the worker for calendars that do not exist.
+  // BOTH fixture worlds take this path — the kit world (`demo`) and the board
+  // world (`calendarIsDemo`, where `demo` stays null), so every fixture branch
+  // below tests `fixtureCalendars`, never `demo` alone.
+  const fixtureCalendars = demo !== null || calendarIsDemo;
   const [demoSelectedIds, setDemoSelectedIds] = useState<string[]>(() => {
-    const first = demo?.calendars[0]?.id;
+    const first = demo?.calendars[0]?.id ?? (calendarIsDemo ? calendar.availableCalendars[0]?.id : undefined);
     return first === undefined ? [] : [first];
   });
 
   // #121: designating a Trips calendar opts this device into polling it, so
   // its row renders checked and locked with the reason said out loud —
-  // never a calendar fetched with nothing on screen to explain it. `demo` has
-  // no bindings table to read and no real calendars to poll, so it locks
-  // nothing.
-  const tripsId = demo ? null : tripsCalendarId(task.bindings);
-  const polledIds = demo
+  // never a calendar fetched with nothing on screen to explain it. Neither
+  // fixture world has a bindings table to read or real calendars to poll,
+  // so they lock nothing.
+  const tripsId = fixtureCalendars ? null : tripsCalendarId(task.bindings);
+  const polledIds = fixtureCalendars
     ? demoSelectedIds
     : effectiveCalendarIds(calendar.selectedCalendarIds, tripsId);
 
@@ -433,16 +448,16 @@ export function SettingsScreen({
     <TwoColumn>
       <Column>
         <Section title="Calendar context">
-          {!GOOGLE_CLIENT_ID ? (
+          {!calendarIsDemo && !GOOGLE_CLIENT_ID ? (
             <Note>Calendar context is unavailable: this build has no Google client id.</Note>
-          ) : status !== "ready" ? (
+          ) : !calendarIsDemo && status !== "ready" ? (
             <Note>Calendar context is unavailable until the local core loads.</Note>
           ) : demo || hasCalendars ? (
             <>
               <CalendarPicker
                 calendars={demo ? demo.calendars : calendar.availableCalendars}
                 selectedIds={polledIds}
-                unavailableIds={demo ? [] : unavailableIds}
+                unavailableIds={fixtureCalendars ? [] : unavailableIds}
                 lockedIds={tripsId === null ? [] : [tripsId]}
                 lockedHint={
                   <>
@@ -451,7 +466,7 @@ export function SettingsScreen({
                   </>
                 }
                 onToggle={(id) =>
-                  demo
+                  fixtureCalendars
                     ? setDemoSelectedIds((current) => toggleCalendarId(current, id))
                     : onSelectionChange(toggleCalendarId(polledIds, id))
                 }

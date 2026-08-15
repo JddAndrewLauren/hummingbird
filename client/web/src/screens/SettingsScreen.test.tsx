@@ -66,6 +66,7 @@ function renderSettings(options: SettingsOptions = {}) {
       viewOrdinal={current.viewOrdinal ?? null}
       error={null}
       calendar={{ ...calendar, ...current.calendar }}
+      calendarIsDemo={false}
       themePreference="system"
       onThemePreference={vi.fn()}
       backendSelection={current.backendSelection ?? "auto"}

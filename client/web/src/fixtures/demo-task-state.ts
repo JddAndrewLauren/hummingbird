@@ -45,6 +45,53 @@
 //      per mutation kind. Expect both when eyeballing `?demo=board` by hand —
 //      they are the fixture, not a real fault.
 //
+// **#452 grows this seed to the whole of `TaskState`, not just the frontier
+// and the inbox**, so every screen that reads the store — not only Now —
+// takes its real render path under `?demo=board`. Four pieces:
+//
+//   1. `rules` / `kindRegistry` — the kit world's `ruleDetails` /
+//      `ruleKindRegistry` (`demo-data.ts`), reused rather than re-typed: they
+//      are already the real wire DTOs `RulesScreen` reads. `projects` and
+//      `blocked` stay `[]`, unchanged — production's own measured shape
+//      (above), not a gap.
+//   2. `done` / `ledger` — measured from the same `GET /api/changes?since=0`
+//      call, re-run on 2026-08-14, when the authority held 46 items:
+//
+//        by stage     triage 22 · ready 14 · done 7 · grilling 2 · in_progress 1
+//        done          6 of 7 carry no size/energy; 1 is deep/high
+//        done source   3 none · 3 gmail/v1 · 1 google-tasks/v1
+//        archived      6, spread across other stages (not `done`) —
+//                      the mirror's retention stamp outliving a stage
+//
+//      `DONE_SEEDS` below mirrors that split at a smaller n (6 items: 5 no
+//      size/energy split none/gmail/google-tasks, 1 deep/high) rather than
+//      copying the 7 real ones verbatim — the measured SHAPE travels, never
+//      the real titles. `buildDemoTaskState`'s `ledger` is the frontier, the
+//      inbox and `done` unioned into `LedgerRowDTO`s (the same "one item
+//      pool, several reads of it" the real mirror gives, via `liveLedgerRow`),
+//      plus `ARCHIVED_ONLY_SEEDS` standing in for the six archived rows the
+//      count above found — again the shape at a smaller n (three), not the
+//      real six. One live row carries `deadLettered: true` and one carries
+//      `hasLiveAlert: true` (`DEAD_LETTERED_ITEM_ID`/`LIVE_ALERT_ITEM_ID`),
+//      so both of the Ledger's badges render.
+//   3. `bindings` / `paneReads` / (`lastSyncOutcome`, `lastSyncAtMs`,
+//      `lastSuccessfulSyncAtMs`) — `demo-questions.ts` used to hand-build
+//      these same six `QuestionInputs` fields as a THIRD fixture world,
+//      duplicating the two above. Every one is expressible in `TaskState`, so
+//      it is expressed here instead — `demo-pane-reads.ts` holds the actual
+//      `PaneReadDTO` builders now, shared by both worlds. `calendarReads: {}`
+//      and `calendarConnected: false` need no seeding at all: they come
+//      straight off the live `CalendarState` (`App.tsx`'s prop threading,
+//      unchanged), and a board device with no calendar credential mounted
+//      honestly reads that way. `bindings` gains a `trips-calendar` entry
+//      beside the waste/race ones `demo-pane-reads.ts` already carries —
+//      production's own three known settings keys, measured from the same
+//      call (`city-waste-page`, `trips-calendar`, `race-series`, all known).
+//   4. A demo calendar for Settings' calendar card — `demo-calendar.ts`,
+//      threaded in by `App.tsx` at the PROP boundary, not through this
+//      module: see that file's header for why `CalendarState` cannot be
+//      overridden the way this one is.
+//
 // Dev-only, gated twice, same as the kit world — see `demo.ts`.
 //
 // **Everything below is built inside a function, and the seed arrays are inert
@@ -58,8 +105,24 @@
 // builder turns into strings. `pnpm assert-no-fixtures` is the regression
 // test, and it runs in CI after the build.
 
-import type { TaskItemDTO } from "../store/protocol";
+import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
+import type { BindingDTO, LedgerRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
+import { DEMO_DATA } from "./demo-data";
+import {
+  boundRaceBinding,
+  boundWasteBinding,
+  githubRead,
+  GITHUB_SOURCE,
+  kimiRead,
+  KIMI_SOURCE,
+  raceRead,
+  RACE_SOURCE,
+  uptimeRead,
+  UPTIME_SOURCE,
+  wasteRead,
+  WASTE_SOURCE,
+} from "./demo-pane-reads";
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -369,11 +432,152 @@ const TRIAGE_SEEDS: Seed[] = [
   },
 ];
 
+/** The six done items (#452, piece 2) — measured shape in the header: five
+ * of six carry no size/energy, one is deep/high, sources split
+ * none/gmail/google-tasks. */
+const DONE_SEEDS: Seed[] = [
+  {
+    id: "b-d1",
+    title: "File the storm drain report with the city",
+    stage: "done",
+    agoMs: 10 * DAY,
+  },
+  {
+    id: "b-d2",
+    title: "Reply to the HOA about the fence colour",
+    stage: "done",
+    agoMs: 6 * DAY,
+    source: "gmail/v1",
+  },
+  {
+    id: "b-d3",
+    title: "Confirm the plumber's invoice",
+    stage: "done",
+    agoMs: 15 * DAY,
+    source: "gmail/v1",
+  },
+  {
+    id: "b-d4",
+    title: "Pay the storage unit renewal",
+    stage: "done",
+    agoMs: 20 * DAY,
+    source: "google-tasks/v1",
+  },
+  {
+    id: "b-d5",
+    title: "Update the emergency contact card",
+    stage: "done",
+    agoMs: 25 * DAY,
+  },
+  {
+    id: "b-d6",
+    title: "Rebuild the compost bin from the split boards",
+    stage: "done",
+    agoMs: 12 * DAY,
+    size: "deep",
+    energy: "high",
+  },
+];
+
+/** Three archived-only ledger rows — not on the frontier, in the inbox or
+ * among `DONE_SEEDS`, standing in (at a smaller n) for the six the header's
+ * measurement found spread across other stages: the mirror's retention
+ * stamp outliving a stage, exactly what `ledgerRowState` labels "archived"
+ * regardless of what `stage` the row still carries. */
+interface ArchivedSeed {
+  id: string;
+  title: string;
+  stage: TaskItemDTO["stage"];
+  agoArchivedMs: number;
+}
+
+const ARCHIVED_ONLY_SEEDS: ArchivedSeed[] = [
+  { id: "b-a1", title: "Cancel the storage unit direct debit", stage: "ready", agoArchivedMs: 40 * DAY },
+  { id: "b-a2", title: "Chase the warranty claim", stage: "triage", agoArchivedMs: 22 * DAY },
+  { id: "b-a3", title: "Book the chimney sweep", stage: "in_progress", agoArchivedMs: 60 * DAY },
+];
+
+function archivedLedgerRow(seed: ArchivedSeed, index: number, loadedAt: number): LedgerRowDTO {
+  const archivedAt = loadedAt - seed.agoArchivedMs;
+  return {
+    id: seed.id,
+    seq: 200 + index,
+    title: seed.title,
+    description: null,
+    stage: seed.stage,
+    size: null,
+    energy: null,
+    context: null,
+    priority: 0,
+    projectId: null,
+    projectPos: null,
+    deadline: null,
+    scheduledDate: null,
+    source: null,
+    sourceKey: null,
+    sourceUrl: null,
+    archivedAt,
+    createdAt: archivedAt - 5 * DAY,
+    updatedAt: archivedAt,
+    version: 1,
+    pending: false,
+    absentSinceMs: archivedAt,
+    deadLettered: false,
+    hasLiveAlert: false,
+  };
+}
+
+/** A live `TaskItemDTO` (frontier, inbox or `DONE_SEEDS`), read as the
+ * Ledger's own shape — same item, one more read of it, never a second
+ * source of truth (`ledger-order.ts`'s own "derive, don't record"— the
+ * screen's, borrowed here since the fixture is the same shape). `deadLettered`
+ * and `hasLiveAlert` default false; `DEAD_LETTERED_ITEM_ID`/
+ * `LIVE_ALERT_ITEM_ID` below name the one row of each that carries the
+ * badge, so the Ledger screen's two badges both render at least once. */
+function liveLedgerRow(
+  taskItem: TaskItemDTO,
+  badges: { deadLettered?: boolean; hasLiveAlert?: boolean } = {},
+): LedgerRowDTO {
+  return {
+    ...taskItem,
+    absentSinceMs: null,
+    deadLettered: badges.deadLettered ?? false,
+    hasLiveAlert: badges.hasLiveAlert ?? false,
+  };
+}
+
+/** Which live row demonstrates which Ledger badge — named by id so the
+ * choice is legible beside the rows themselves rather than threaded through
+ * index arithmetic. `b-f2` ("Reply to the letting agent") already carries a
+ * deadline band; `b-t4` ("Re: your quote for the glazing") is already a
+ * `gmail/v1` capture — neither badge invents a new item to hang itself on. */
+const DEAD_LETTERED_ITEM_ID = "b-f2";
+const LIVE_ALERT_ITEM_ID = "b-t4";
+
+const boundTripsBinding: BindingDTO = {
+  key: TRIPS_CALENDAR_BINDING_KEY,
+  known: true,
+  pending: false,
+  // The same fictional calendar id `demo-calendar.ts` lists — a board device
+  // with a Trips calendar designated locks that same row in Settings'
+  // picker, which is what makes the two fixtures agree the way `demo-data.ts`
+  // and `demo-questions.ts` already had to.
+  value: { state: "text", text: "demo-family" },
+};
+
 /** The seeded state, typed as the real `TaskState` so a field added to that
  * interface fails this file at build time rather than shipping a fixture that
- * silently omits it. Every "not read yet" field is left at its honest `null` —
- * the board world seeds the frontier and the inbox, and claims nothing about
- * the Ledger, Done, bindings or rules, which have their own screens.
+ * silently omits it.
+ *
+ * #452 grew this from "the frontier and the inbox, nothing else" to the
+ * whole shape a synced board device actually holds — the header's four
+ * pieces. What is STILL left at its honest `null`/`{}`/`false` is exactly
+ * what a real board device would not have answered either:
+ * `lastRuleWrite`/`lastGrillCompletion`/`lastBindingWrite` (no write has
+ * been issued this session), `pending`/`stepsByItem` (nothing has been
+ * asked about yet), and `queueDepth`/`deadLetters`/`needsReconnect`/
+ * `hostError` (S9's sync-status affordance, outside this issue's four
+ * pieces).
  *
  * A **function**, not a const, and that is the bundling requirement in the
  * header: a const would have to be constructed at import, which is a top-level
@@ -383,22 +587,52 @@ const TRIAGE_SEEDS: Seed[] = [
  * falls out: ages are relative to when the board is asked for. */
 export function buildDemoTaskState(): TaskState {
   const loadedAt = Date.now();
+  const frontier = FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt));
+  const triageInbox = TRIAGE_SEEDS.map((seed, index) => item(seed, index, loadedAt));
+  const done = DONE_SEEDS.map((seed, index) => item(seed, index, loadedAt));
+
+  const ledger: LedgerRowDTO[] = [
+    ...[...frontier, ...triageInbox, ...done].map((taskItem) =>
+      liveLedgerRow(taskItem, {
+        deadLettered: taskItem.id === DEAD_LETTERED_ITEM_ID,
+        hasLiveAlert: taskItem.id === LIVE_ALERT_ITEM_ID,
+      }),
+    ),
+    ...ARCHIVED_ONLY_SEEDS.map((seed, index) => archivedLedgerRow(seed, index, loadedAt)),
+  ];
+
   return {
-    frontier: FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
-    triageInbox: TRIAGE_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
+    frontier,
+    triageInbox,
     // Production has no `blocked_by` edges and no projects at all — the second
     // is why grouping by Project produces exactly one column here, which is a
     // finding about the axis rather than a gap in the fixture.
     blocked: [],
     stepsByItem: {},
     projects: [],
-    ledger: null,
-    done: null,
-    bindings: null,
-    kindRegistry: null,
-    rules: null,
+    ledger,
+    done,
+    bindings: [boundWasteBinding, boundRaceBinding, boundTripsBinding],
+    // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed
+    // these as the real `RuleDTO[]`/`KindRegistryDTO` (piece 1's "a move
+    // rather than a rewrite") — the kit world keeps its own reference to the
+    // same object via `App.tsx`'s `demo.ruleDetails`/`demo.ruleKindRegistry`.
+    kindRegistry: DEMO_DATA.ruleKindRegistry,
+    rules: DEMO_DATA.ruleDetails,
     lastRuleWrite: null,
-    paneReads: {},
+    // Piece 3: every standing question's read, built by the SAME functions
+    // the kit world's `demoQuestionInputs` calls (`demo-pane-reads.ts`) — one
+    // input path, not a third fixture world hand-building the same six
+    // fields. The weekend/vacation panes' own `calendarReads`/
+    // `calendarConnected` arrive through `App.tsx`'s live `CalendarState`
+    // prop threading, unchanged, and need no entry here.
+    paneReads: {
+      [WASTE_SOURCE]: wasteRead(loadedAt),
+      [RACE_SOURCE]: raceRead(loadedAt),
+      [KIMI_SOURCE]: kimiRead(loadedAt),
+      [GITHUB_SOURCE]: githubRead(loadedAt),
+      [UPTIME_SOURCE]: uptimeRead(loadedAt),
+    },
     pending: {},
     lastCapture: null,
     // The same departure, on the other mutation: an act failure that outlived
@@ -425,10 +659,20 @@ export function buildDemoTaskState(): TaskState {
     },
     lastGrillCompletion: null,
     lastBindingWrite: null,
-    lastSyncOutcome: null,
-    lastSyncAtMs: null,
-    lastSuccessfulSyncAtMs: null,
-    syncOutcomeSeq: 0,
+    // Piece 3's third field: a recent, ordinary completed cycle — the same
+    // reading `reachability.ts`'s pane needs to answer `answered` rather than
+    // "never synced on this device", and `activeItemCount` is this board's
+    // own frontier-plus-inbox total, not the old fixture's unrelated `12`.
+    lastSyncOutcome: {
+      kind: "completed",
+      retryAfterMs: null,
+      activeItemCount: frontier.length + triageInbox.length,
+      wasFullSweep: false,
+      deadLettered: 0,
+    },
+    lastSyncAtMs: loadedAt - 60_000,
+    lastSuccessfulSyncAtMs: loadedAt - 60_000,
+    syncOutcomeSeq: 1,
     queueDepth: null,
     deadLetters: [],
     needsReconnect: false,
