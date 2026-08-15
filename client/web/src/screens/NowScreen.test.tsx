@@ -1791,7 +1791,10 @@ describe("NowScreen — the Grill takeover (#359)", () => {
     // object, so `back` below is the mock the click is asserted against.
     rerender(spread(), "i1", { ...grill, openItemId: "i1", turn: { phase: "asking", messages: [] } });
 
-    fireEvent.click(screen.getByLabelText("Back to Triage"));
+    // The accessible name has to say where Back actually goes on THIS
+    // screen — review round 1's own finding, since the button is icon-only
+    // and this is its only name.
+    fireEvent.click(screen.getByLabelText("Back to Now"));
     expect(grill.back).toHaveBeenCalledTimes(1);
 
     // The real hook would now report `openItemId: null` — simulated here

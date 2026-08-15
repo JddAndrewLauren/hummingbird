@@ -131,6 +131,7 @@ export function TriageScreen({
           steps={grill.sessionSteps}
           turn={grill.turn}
           turns={grill.turns}
+          backLabel="Back to Triage"
           onAnswer={grill.answer}
           onKeepGrilling={grill.keepGrilling}
           onRetry={grill.retry}

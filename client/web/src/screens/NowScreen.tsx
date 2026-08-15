@@ -343,6 +343,12 @@ function RealFrontier({
       return;
     }
     focusOnCloseRef.current = null;
+    // Review round 1's non-blocking note: a `fog_remains` confirm moves this
+    // item into `task.grillingItems`, so the slot that reopens is the
+    // `selectedCapture`/`TriageRow` branch below, which carries no
+    // `nowGrillMeButtonId` — this lookup no-ops and focus drops to `<body>`.
+    // Triage's own version of this effect has the identical shape, so this
+    // is an inherited gap, not a regression this slice introduced.
     document.getElementById(nowGrillMeButtonId(itemId))?.focus();
   }, [grill?.openItemId]);
 
@@ -350,6 +356,10 @@ function RealFrontier({
   // blocked items detail mode opens, plus the captures `TriageRow` opens —
   // the same "the takeover's item must resolve against the combined set, not
   // just one array" fix #357 made for `TriageScreen.tsx`'s own `openItem`.
+  // `grill.openItemId` is app-wide (`shell/useGrillTakeoverWiring.ts` — one
+  // interview session for the whole app), so a grill opened from Triage and
+  // then navigated to renders here too, over Now's centre column: intended,
+  // not a bug, since it is the same one session either screen would resume.
   const openItem = grill?.openItemId
     ? [...allItems, ...task.triageInbox, ...task.grillingItems].find(
         (item) => item.id === grill.openItemId,
@@ -370,6 +380,7 @@ function RealFrontier({
         steps={grill.sessionSteps}
         turn={grill.turn}
         turns={grill.turns}
+        backLabel="Back to Now"
         onAnswer={grill.answer}
         onKeepGrilling={grill.keepGrilling}
         onRetry={grill.retry}
