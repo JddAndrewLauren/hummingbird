@@ -55,3 +55,8 @@ val StatusDangerBgDark = Color(0x38B3261E) // --status-danger-bg (dark)
 // alias) — the same "carry the divergent value under its own name" pattern
 // `CrimsonDark`/`StatusInfoFgDark` above already use.
 val UrgencySoonDark = Color(0xFFF0B429) // --urgency-soon (dark)
+// `--urgency-overdue` diverges the same way: light is `var(--crimson-500)`
+// (hence `Crimson500` above) but dark is its own literal, not `CrimsonDark`
+// (`--status-danger-fg`) — the same divergent-value pattern as
+// `UrgencySoonDark`.
+val UrgencyOverdueDark = Color(0xFFF08076) // --urgency-overdue (dark)

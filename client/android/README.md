@@ -38,9 +38,11 @@ an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
 ## Sync model (grilling 2026-08-14)
 
 Foreground: one `user` cycle on resume plus the 60-second `timer` cadence
-while open (`MainActivity`). Background: an OS-deferred hourly WorkManager
-refresh (`sync/SyncWorker.kt`) — the middle leg only; correctness never
-depends on it. Sync-on-FCM-push arrives with M2 (the notification surface).
+while open, owned by `MainActivity`'s always-composed `AppRoot` (not by
+either individual screen, so it runs the same whether Now or Status is
+showing). Background: an OS-deferred hourly WorkManager refresh
+(`sync/SyncWorker.kt`) — the middle leg only; correctness never depends on
+it. Sync-on-FCM-push arrives with M2 (the notification surface).
 
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).

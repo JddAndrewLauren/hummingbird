@@ -34,6 +34,9 @@ class ColorTokenDriftTest {
         // `--urgency-soon` diverges between scopes (dark is a literal, not
         // a ramp alias) — see `Color.kt`'s own comment on `UrgencySoonDark`.
         "UrgencySoonDark" to ScopedToken("--urgency-soon", Scope.DARK),
+        // Same divergence for `--urgency-overdue` — see `Color.kt`'s own
+        // comment on `UrgencyOverdueDark`.
+        "UrgencyOverdueDark" to ScopedToken("--urgency-overdue", Scope.DARK),
     )
 
     // A ramp name is CamelCase-with-trailing-digits; anything else must be

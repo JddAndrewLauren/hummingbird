@@ -37,12 +37,12 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.theme.Amber500
-import net.twinion.hummingbird.ui.theme.CrimsonDark
 import net.twinion.hummingbird.ui.theme.Crimson500
 import net.twinion.hummingbird.ui.theme.Ember400
 import net.twinion.hummingbird.ui.theme.Ember500
 import net.twinion.hummingbird.ui.theme.Ink300
 import net.twinion.hummingbird.ui.theme.Ink400
+import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
 import net.twinion.hummingbird.ui.theme.UrgencySoonDark
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 import uniffi.hummingbird_ffi_mobile.NowItemRecord
@@ -52,10 +52,12 @@ import uniffi.hummingbird_ffi_mobile.NowItemRecord
 // this file never orders, bands or decides an affordance itself (see
 // `NowViewModel`'s own doc, and `lib.rs`'s module header for the
 // Android-never-calls-per-item-decision-functions asymmetry with web this
-// screen is the production instance of). `MainActivity` becomes this
-// composable's host (M0's proof screen moves behind the "Status" action,
-// M1-6's own scope note); no nav library in M1 — `onShowStatus` is a plain
-// callback, the same mode-toggle shape a `NavHost` would later replace.
+// screen is the production instance of). `MainActivity`'s `AppRoot` becomes
+// this composable's host (M0's proof screen moves behind the "Status"
+// action, M1-6's own scope note); no nav library in M1 — `onShowStatus` is a
+// plain callback, the same mode-toggle shape a `NavHost` would later
+// replace. `AppRoot` also owns the foreground sync cadence and hands this
+// screen its completion via `syncTick` (see that parameter's own note).
 
 /** `YYYY-MM-DDTHH:MM`, the reader's own local wall clock — the shape
  * `hummingbird_core::decisions::urgency::compute_urgency`'s module doc
@@ -74,7 +76,7 @@ private fun urgencyColor(band: MobileUrgencyBand, dark: Boolean): Color = when (
     MobileUrgencyBand.CALM -> if (dark) Ink400 else Ink300
     MobileUrgencyBand.SOON -> if (dark) UrgencySoonDark else Amber500
     MobileUrgencyBand.NOW -> if (dark) Ember400 else Ember500
-    MobileUrgencyBand.OVERDUE -> if (dark) CrimsonDark else Crimson500
+    MobileUrgencyBand.OVERDUE -> if (dark) UrgencyOverdueDark else Crimson500
 }
 
 /** [MobileUrgencyBand]'s mono-meta label (README: "UPPERCASE only in the
@@ -88,9 +90,10 @@ private fun urgencyLabel(band: MobileUrgencyBand): String = when (band) {
 }
 
 /** S11/#109's wire vocabulary, mapped to its button label and nothing more
- * — `item-actions.ts`'s `ACTION_BUTTON` verbatim (`Mark blocked` says what
- * `Blocked` means, per the design README's voice rule; "Blocked" means an
- * external wait and nothing else). Which actions a row *offers* is decided
+ * — `ItemPanel.tsx`'s `ACTION_BUTTON` verbatim (`client/web/src/components/
+ * domain/ItemPanel.tsx:74`; `Mark blocked` says what `Blocked` means, per
+ * the design README's voice rule; "Blocked" means an external wait and
+ * nothing else). Which actions a row *offers* is decided
  * entirely core-side ([NowItemRecord.availableActions]) — this map only
  * ever renders whatever that list already contains. */
 private val ACTION_LABEL: Map<String, String> = mapOf(
@@ -101,7 +104,7 @@ private val ACTION_LABEL: Map<String, String> = mapOf(
 )
 
 @Composable
-fun NowScreen(onShowStatus: () -> Unit) {
+fun NowScreen(onShowStatus: () -> Unit, syncTick: Int = 0) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val viewModel = remember { NowViewModel.create(context) }
@@ -115,13 +118,23 @@ fun NowScreen(onShowStatus: () -> Unit) {
 
     LaunchedEffect(Unit) { reload() }
 
-    // Foreground refresh on every return to the screen — the same
-    // `LifecycleResumeEffect` shape `ProofScreen` already uses, so a
-    // capture or an act taken elsewhere (or on another device) shows up
-    // the moment this screen is looked at again.
+    // Foreground refresh on every return to this screen — independent of
+    // `syncTick` below, so a capture or an act taken elsewhere (or on
+    // another device) shows up the moment this screen is looked at again,
+    // even before the next sync cycle completes.
     LifecycleResumeEffect(Unit) {
         val resumed = scope.launch { reload() }
         onPauseOrDispose { resumed.cancel() }
+    }
+
+    // `syncTick` is `AppRoot`'s cadence hand-off (#514 review): the
+    // foreground `user`/`timer` sync legs live at the content root now, not
+    // on this screen, so this is how Now learns a cycle completed — one
+    // whether the tick's own cause was this screen being open or `Status`
+    // being open — and re-reads `now_queue` rather than rendering a stale
+    // mirror until its own next resume.
+    LaunchedEffect(syncTick) {
+        if (syncTick > 0) reload()
     }
 
     Scaffold { padding ->
