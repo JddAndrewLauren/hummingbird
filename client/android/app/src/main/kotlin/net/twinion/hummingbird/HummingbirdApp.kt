@@ -19,8 +19,9 @@ class HummingbirdApp : Application() {
     // The ~hourly OS-deferred refresh (#141 sync model). KEEP: rescheduling
     // an already-scheduled job on every app open would reset its cadence —
     // WorkManager owns this clock, nothing else does (the no-competing-
-    // clocks rule; the foreground 60s cadence in MainActivity is the
-    // *other* leg, live only while the app is open, exactly as on web).
+    // clocks rule; the foreground 60s cadence in `MainActivity`'s `AppRoot`
+    // is the *other* leg — live whenever the app is foregrounded,
+    // regardless of which screen is showing, exactly as on web).
     private fun scheduleHourlySync() {
         val request = PeriodicWorkRequestBuilder<SyncWorker>(1, TimeUnit.HOURS)
             .setConstraints(

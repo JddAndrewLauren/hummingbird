@@ -21,6 +21,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -40,19 +41,121 @@ import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.RunOutcome
 
-// M0's proof screen (#141): the embedded core's API version, the mirror's
-// active-item count, and one live sync against the authority. Every screen
-// after this one arrives with its decision modules sunk into core first
-// (ADR-0025); this screen deliberately decides nothing.
+// `NowScreen` (M1-6/#504) is this activity's content — the frontier,
+// decided core-side and rendered verbatim (`NowScreen.kt`'s own doc). M0's
+// proof screen (#141: the embedded core's API version, the mirror's
+// active-item count, and one live sync against the authority) moves behind
+// the "Status" action rather than being deleted — still the cheapest manual
+// check that the generated binding and the loaded `.so` agree. No nav
+// library in M1 (recorded deferral, M1-6's brief): a plain `showStatus`
+// toggle stands in for the `NavHost` a later milestone would add.
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             HummingbirdTheme {
-                ProofScreen()
+                AppRoot()
             }
         }
+    }
+}
+
+// The always-composed content root. The #141 sync cadence (one `user` cycle
+// on every foreground resume, plus the 60-second `timer` tick while
+// resumed) lives here rather than inside `ProofScreen` — it must run
+// whichever of Now/Status is on screen, since Now's own mirror is what it
+// keeps fresh and an act taken there is what it flushes. `ProofScreen` was
+// the cadence's original, and wrong, home: it only composes while the
+// "Status" toggle is on, so hoisting the toggle's *content* without hoisting
+// the cadence would leave Now unrefreshed and an act unflushed for up to an
+// hour, until `SyncWorker`'s background leg. `syncTick` is this root's only
+// hand-off to `NowScreen`: it increments once per completed sync cycle so
+// Now re-reads `now_queue` after each one, not only on its own resume.
+@Composable
+private fun AppRoot() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var core by remember { mutableStateOf<MobileTaskHost?>(null) }
+    var facts by remember { mutableStateOf<CoreFacts?>(null) }
+    var statusLine by remember { mutableStateOf<String?>(null) }
+    var syncing by remember { mutableStateOf(false) }
+    var needsToken by remember { mutableStateOf(false) }
+    var syncTick by remember { mutableIntStateOf(0) }
+    var showStatus by remember { mutableStateOf(false) }
+
+    suspend fun sync(trigger: String) {
+        val host = core ?: return
+        syncing = true
+        val outcome = host.run(
+            System.currentTimeMillis(),
+            trigger,
+            false,
+            Random.nextDouble(),
+        )
+        val credentialEvent =
+            host.takeEvents().any { it.kind == "credential_needed" }
+        statusLine = describe(outcome)
+        needsToken = credentialEvent ||
+            outcome.kind == "no_credential" || outcome.kind == "held"
+        facts = readFacts(host)
+        syncing = false
+        syncTick += 1
+    }
+
+    LaunchedEffect(Unit) {
+        val host = CoreHolder.get(context)
+        core = host
+        facts = readFacts(host)
+        needsToken = TokenStore.load(context) == null
+    }
+
+    // Foreground legs of the #141 sync model: one deliberate cycle on
+    // every return to the app, plus the 60-second cadence tick while
+    // resumed (ADR-0007's foreground timer, exactly the web client's) —
+    // hoisted to this root (not `ProofScreen`) so it runs regardless of
+    // which screen is showing (#514 review).
+    LifecycleResumeEffect(core) {
+        val resumed = scope.launch {
+            if (core != null) {
+                sync("user")
+                while (true) {
+                    delay(60_000)
+                    sync("timer")
+                }
+            }
+        }
+        onPauseOrDispose { resumed.cancel() }
+    }
+
+    if (showStatus) {
+        ProofScreen(
+            facts = facts,
+            statusLine = statusLine,
+            syncing = syncing,
+            needsToken = needsToken,
+            onBack = { showStatus = false },
+            onSync = { scope.launch { sync("user") } },
+            onSaveToken = { token ->
+                scope.launch {
+                    TokenStore.save(context, token)
+                    core?.pushApiKey(token)
+                    needsToken = false
+                    sync("user")
+                }
+            },
+            onForgetToken = {
+                scope.launch {
+                    TokenStore.clear(context)
+                    core?.clearApiKey()
+                    needsToken = true
+                    statusLine = "No device token — paste one to sync."
+                }
+            },
+        )
+    } else {
+        NowScreen(onShowStatus = { showStatus = true }, syncTick = syncTick)
     }
 }
 
@@ -85,58 +188,20 @@ private fun describe(outcome: RunOutcome): String = when (outcome.kind) {
     else -> outcome.kind
 }
 
+// The M0 proof screen's display, with no state or cadence of its own — both
+// live in `AppRoot` now (#514 review), since the cadence must keep running
+// while this screen isn't the one on top.
 @Composable
-private fun ProofScreen() {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-
-    var core by remember { mutableStateOf<MobileTaskHost?>(null) }
-    var facts by remember { mutableStateOf<CoreFacts?>(null) }
-    var statusLine by remember { mutableStateOf<String?>(null) }
-    var syncing by remember { mutableStateOf(false) }
-    var needsToken by remember { mutableStateOf(false) }
-
-    suspend fun sync(trigger: String) {
-        val host = core ?: return
-        syncing = true
-        val outcome = host.run(
-            System.currentTimeMillis(),
-            trigger,
-            false,
-            Random.nextDouble(),
-        )
-        val credentialEvent =
-            host.takeEvents().any { it.kind == "credential_needed" }
-        statusLine = describe(outcome)
-        needsToken = credentialEvent ||
-            outcome.kind == "no_credential" || outcome.kind == "held"
-        facts = readFacts(host)
-        syncing = false
-    }
-
-    LaunchedEffect(Unit) {
-        val host = CoreHolder.get(context)
-        core = host
-        facts = readFacts(host)
-        needsToken = TokenStore.load(context) == null
-    }
-
-    // Foreground legs of the #141 sync model: one deliberate cycle on
-    // every return to the screen, plus the 60-second cadence tick while
-    // resumed (ADR-0007's foreground timer, exactly the web client's).
-    LifecycleResumeEffect(core) {
-        val resumed = scope.launch {
-            if (core != null) {
-                sync("user")
-                while (true) {
-                    delay(60_000)
-                    sync("timer")
-                }
-            }
-        }
-        onPauseOrDispose { resumed.cancel() }
-    }
-
+private fun ProofScreen(
+    facts: CoreFacts?,
+    statusLine: String?,
+    syncing: Boolean,
+    needsToken: Boolean,
+    onBack: () -> Unit,
+    onSync: () -> Unit,
+    onSaveToken: (String) -> Unit,
+    onForgetToken: () -> Unit,
+) {
     Scaffold { padding ->
         Column(
             modifier = Modifier
@@ -147,9 +212,11 @@ private fun ProofScreen() {
         ) {
             // The product name is lowercase everywhere.
             Text("hummingbird", style = MaterialTheme.typography.headlineLarge)
+            TextButton(onClick = onBack) {
+                Text("Back to Now")
+            }
 
-            val current = facts
-            if (current == null) {
+            if (facts == null) {
                 CircularProgressIndicator()
             } else {
                 Card(
@@ -164,9 +231,9 @@ private fun ProofScreen() {
                     ) {
                         // The mono meta style: data the system computed.
                         Text(
-                            "CORE API V${current.apiVersion} · " +
-                                "${current.activeItems} ACTIVE · " +
-                                "${current.queueDepth} QUEUED",
+                            "CORE API V${facts.apiVersion} · " +
+                                "${facts.activeItems} ACTIVE · " +
+                                "${facts.queueDepth} QUEUED",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -177,26 +244,10 @@ private fun ProofScreen() {
                 }
 
                 if (needsToken) {
-                    TokenEntry(
-                        onSave = { token ->
-                            scope.launch {
-                                TokenStore.save(context, token)
-                                core?.pushApiKey(token)
-                                needsToken = false
-                                sync("user")
-                            }
-                        },
-                    )
+                    TokenEntry(onSave = onSaveToken)
                 } else {
-                    SyncButton(syncing = syncing, onSync = { scope.launch { sync("user") } })
-                    TextButton(onClick = {
-                        scope.launch {
-                            TokenStore.clear(context)
-                            core?.clearApiKey()
-                            needsToken = true
-                            statusLine = "No device token — paste one to sync."
-                        }
-                    }) {
+                    SyncButton(syncing = syncing, onSync = onSync)
+                    TextButton(onClick = onForgetToken) {
                         Text("Forget token")
                     }
                 }

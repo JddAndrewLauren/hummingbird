@@ -24,13 +24,13 @@
 
 use hummingbird_domain::{deadline_sort_key, is_valid_deadline, minutes_until};
 
-/// How pressing a deadline reads right now. A `uniffi::Enum` crossing to
-/// Kotlin is M1-6's job (#504), not this module's — `hummingbird-core`
-/// stays binding-agnostic (ADR-0003, pinned by
-/// `cargo_toml_has_no_binding_macro_dependencies` in `lib.rs`), so this is
-/// a plain enum shaped to make that later exposure a direct
-/// `#[derive(uniffi::Enum)]` on a mirroring type in `ffi-mobile`, never a
-/// second definition of the four bands.
+/// How pressing a deadline reads right now. `hummingbird-core` stays
+/// binding-agnostic (ADR-0003, pinned by
+/// `cargo_toml_has_no_binding_macro_dependencies` in `lib.rs`), so this
+/// stays a plain enum; M1-6 (#504) exposes it to Kotlin as
+/// `ffi-mobile::MobileUrgencyBand`, a mirroring type carrying its own
+/// `#[derive(uniffi::Enum)]` (see that type's doc), never a second
+/// definition of the four bands crossing this module's own boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UrgencyBand {
     Calm,
