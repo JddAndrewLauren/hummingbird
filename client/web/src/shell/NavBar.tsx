@@ -22,6 +22,9 @@ export interface NavBarProps {
    * here — `escape-claimants.ts` explains why the state had to leave. */
   sheetOpen: boolean;
   onSheetOpen: (open: boolean) => void;
+  /** Opens the shell's Recall overlay (#480), from the More sheet's own
+   * entry. Absent in demo mode — `NavRail`'s identical `onSearch` doc. */
+  onSearch?: () => void;
 }
 
 /** The phone form of the nav rail: four screens on a bar, the rest behind a
@@ -67,12 +70,21 @@ export function NavBar({
   onToggleTheme,
   sheetOpen,
   onSheetOpen,
+  onSearch,
 }: NavBarProps) {
   const overflowActive = isOverflowScreen(screen);
 
   function go(next: Screen) {
     onScreen(next);
     onSheetOpen(false);
+  }
+
+  // Search is a gesture, not a destination — closes the sheet the same way
+  // `go` does, but never touches `screen` (`onSearch` is undefined in demo
+  // mode, the same rule `NavRail`'s follows).
+  function search() {
+    onSheetOpen(false);
+    onSearch?.();
   }
 
   return (
@@ -122,6 +134,7 @@ export function NavBar({
           theme={theme}
           onToggleTheme={onToggleTheme}
           onScreen={go}
+          onSearch={onSearch ? search : undefined}
           onClose={() => onSheetOpen(false)}
         />
       ) : null}
@@ -218,6 +231,7 @@ function MoreSheet({
   theme,
   onToggleTheme,
   onScreen,
+  onSearch,
   onClose,
 }: {
   screen: Screen;
@@ -226,6 +240,9 @@ function MoreSheet({
   theme: ResolvedTheme;
   onToggleTheme: () => void;
   onScreen: (screen: Screen) => void;
+  /** Already wired to close the sheet (`NavBar`'s own `search`) — this
+   * component only renders the row and calls it. */
+  onSearch?: () => void;
   onClose: () => void;
 }) {
   const restoreTo = useRef<Element | null>(null);
@@ -319,6 +336,36 @@ function MoreSheet({
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {/* Recall's More-sheet entry (#480). A gesture, not a destination:
+              deliberately its own row rather than folded into the
+              `NAV_BAR_OVERFLOW` list below — Search is not one of `SCREENS`,
+              so it takes no `aria-current` and `nav-bar.ts`'s "both halves
+              derive from `SCREENS`" invariant stays about screens only.
+              Absent in demo mode, `onSearch`'s own doc. */}
+          {onSearch ? (
+            <button
+              type="button"
+              onClick={onSearch}
+              aria-label="Search everything"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--space-5)",
+                minHeight: "var(--row-height)",
+                padding: "0 var(--space-4)",
+                background: "transparent",
+                color: "var(--text-primary)",
+                border: "1px solid transparent",
+                borderRadius: "var(--radius-control)",
+                font: "var(--weight-medium) var(--size-body)/1 var(--font-sans)",
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+            >
+              <Icon name="search" size={18} />
+              <span style={{ flex: 1 }}>Search</span>
+            </button>
+          ) : null}
           {NAV_BAR_OVERFLOW.map((item) => {
             const label = SCREEN_LABELS[item];
             const icon = SCREEN_ICONS[item];

@@ -1,11 +1,13 @@
 // Who owns an Escape, when more than one thing is open.
 //
-// The shell stacks overlays: the capture popover sits over everything, the
-// phone's More sheet over the screen, an item detail panel beside it. Each of
-// them used to bind its own `keydown` on the document and close itself, and a
-// document listener cannot see another's intent — so on a phone with a
-// hardware keyboard, one Escape with both the sheet and an item open closed
-// both, and the reader lost something they never asked to close.
+// The shell stacks overlays: the capture popover and Recall's overlay both
+// sit over everything (#480 — fixed chrome at the same z-index, rendered as
+// siblings in `App.tsx`), the phone's More sheet over the screen, an item
+// detail panel beside it. Each of them used to bind its own `keydown` on the
+// document and close itself, and a document listener cannot see another's
+// intent — so on a phone with a hardware keyboard, one Escape with both the
+// sheet and an item open closed both, and the reader lost something they
+// never asked to close.
 //
 // The fix is not a fourth guard bolted onto a third handler. It is this: one
 // ordered list of claimants, one place that reads it, and no component owning
@@ -26,11 +28,19 @@
 
 /** Every overlay that can claim an Escape, **shallowest first** — which is
  * the whole rule. One Escape closes the topmost open thing and nothing else.
+ * "Topmost" here is decided by actual paint order, not by which overlay feels
+ * more central: `App.tsx` renders `<CapturePopover>` before
+ * `<RecallOverlay>` as siblings, both fixed chrome at the identical
+ * z-index (40) — equal z-index plus later DOM position means the browser
+ * paints Recall over capture, so with both open, Recall is what a person
+ * actually sees on top and `search` has to come before `capture` in this
+ * list, or Escape would close the popover underneath while the visible
+ * overlay stayed put.
  *
  * The Grill takeover is deliberately absent: it claims no Escape at all
  * (`GrillTakeover.tsx` — leaving an interview is a deliberate Back), and it
  * replaces the centre column rather than covering anything. */
-export const ESCAPE_CLAIMANTS = ["capture", "navSheet", "itemDetail"] as const;
+export const ESCAPE_CLAIMANTS = ["search", "capture", "navSheet", "itemDetail"] as const;
 
 export type EscapeClaimant = (typeof ESCAPE_CLAIMANTS)[number];
 

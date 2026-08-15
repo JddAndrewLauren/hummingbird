@@ -15,6 +15,7 @@ use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
+use hummingbird_core::search::Group;
 use hummingbird_core::{
     ActError, CaptureOptions, CompleteGrillError, Core, CoreCycleOutcome, CoreEvent,
     CoreInitError, GrillCompletion, ItemAction, TriagePatch,
@@ -405,6 +406,34 @@ pub struct LedgerRowDTO {
 pub struct LedgerListResponse {
     pub kind: &'static str,
     pub rows: Vec<LedgerRowDTO>,
+}
+
+/// One Recall result row (`Core::search`, #478): the item's fields flat at
+/// the top level exactly like [`LedgerRowDTO`], plus the same per-item
+/// `pending` stamp every other item read carries and the [`Group`] it
+/// matched in ("live"/"done"/"archived", per [`Group`]'s serde). Never
+/// carries the resolved project name — the query matched against it
+/// core-side, but rows are read-only in this slice and a caller already has
+/// [`TaskHostCore::projects`] for display.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SearchRowDTO {
+    #[serde(flatten)]
+    pub item: Item,
+    pub pending: bool,
+    pub group: Group,
+}
+
+/// The wrapper around [`TaskHostCore::search`]'s answer. Same `"busy"`
+/// contract as [`ItemListResponse`] — a `"busy"` answer carries an empty
+/// list and a zero `total` because the shape demands both, and the host
+/// drops it rather than storing it. `total` is the un-capped match count
+/// (decision 8): the UI's "N more" line reads it directly rather than
+/// re-deriving a count from a capped list.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SearchResponse {
+    pub kind: &'static str,
+    pub rows: Vec<SearchRowDTO>,
+    pub total: usize,
 }
 
 /// The wrapper around [`TaskHostCore::is_pending`]'s answer.
@@ -914,6 +943,32 @@ impl TaskHostCore {
                         dead_lettered: entry.dead_lettered,
                         has_live_alert: entry.has_live_alert,
                         item: entry.item,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// **Recall** (#478), per [`Core::search`]: re-find one item across the
+    /// whole retained roster by remembered words or by handle. `now_ms`
+    /// resolves the same alert-liveness read [`TaskHostCore::ledger`] does
+    /// (`search` shares its corpus with `ledger`), and `total` is the
+    /// un-capped match count. Same per-item `pending` stamp as
+    /// [`TaskHostCore::frontier`], through the same single site.
+    pub fn search(&self, query: &str, now_ms: i64) -> SearchResponse {
+        let outcome = self.core.search(query, now_ms);
+        SearchResponse {
+            kind: "ok",
+            total: outcome.total,
+            rows: outcome
+                .rows
+                .into_iter()
+                .map(|row| {
+                    let pending = self.core.is_pending(&row.item.id);
+                    SearchRowDTO {
+                        pending,
+                        group: row.group,
+                        item: row.item,
                     }
                 })
                 .collect(),
@@ -2508,6 +2563,73 @@ mod ledger_tests {
         host.act("seed-act-2", &id, "cancel", 4_000).await;
         assert_eq!(host.done().items.len(), 0);
         assert_eq!(host.ledger(5_000).rows.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    /// The wire contract `task-worker.ts` parses: the item's own snake_case
+    /// fields flat at the top level (exactly [`LedgerRowDTO`]'s pattern),
+    /// plus `group`, pinned on its keys and its serde string.
+    #[tokio::test]
+    async fn a_search_row_serializes_item_fields_flat_beside_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-search-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "buy stamps", "ready", CaptureFields::default(), 1_000).await;
+
+        let response = host.search("stamps", 2_000);
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.total, 1);
+
+        let json: serde_json::Value = serde_json::to_value(&response.rows[0]).unwrap();
+        for key in ["id", "title", "stage", "archived_at", "updated_at", "pending", "group"] {
+            assert!(json.get(key).is_some(), "search row must carry {key:?} at the top level");
+        }
+        assert_eq!(json["group"], serde_json::Value::String("live".to_string()));
+        assert_eq!(json["pending"], serde_json::Value::Bool(true));
+    }
+
+    /// Recall's corpus reaches archived rows too, and labels them
+    /// accordingly — the same roster [`TaskHostCore::ledger`] reads.
+    #[tokio::test]
+    async fn search_reaches_an_archived_item_and_labels_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-search-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "widget report", "ready", CaptureFields::default(), 1_000).await;
+        let id = host.frontier().items[0].item.id.clone();
+        host.act("seed-act-1", &id, "cancel", 2_000).await;
+
+        let response = host.search("widget", 3_000);
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].item.id, id);
+        assert_eq!(response.rows[0].group, Group::Archived);
+    }
+
+    /// An empty query never reaches the core matcher with anything to
+    /// find — the `"ok"`/empty-list answer this seam promises rather than
+    /// `"busy"`.
+    #[tokio::test]
+    async fn an_empty_query_returns_no_rows_and_zero_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-search-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        host.capture("seed-1", "anything at all", "ready", CaptureFields::default(), 1_000).await;
+
+        let response = host.search("", 2_000);
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.rows.len(), 0);
+        assert_eq!(response.total, 0);
     }
 }
 

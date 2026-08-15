@@ -42,6 +42,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getTriageInbox: true,
   getGrillingItems: true,
   getLedger: true,
+  search: true,
   getDone: true,
   getBlocked: true,
   getSteps: true,

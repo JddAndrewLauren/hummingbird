@@ -117,7 +117,7 @@
 // test, and it runs in CI after the build.
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
-import type { BindingDTO, LedgerRowDTO, TaskItemDTO } from "../store/protocol";
+import type { BindingDTO, LedgerRowDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
 import {
@@ -554,6 +554,19 @@ function archivedLedgerRow(seed: ArchivedSeed, index: number, loadedAt: number):
   };
 }
 
+/** One `RecallRowDTO` (#478) over an already-built `TaskItemDTO` — a search
+ * result is the item plus which of the three groups it fell into, never a
+ * second copy of the item's own fields (`RecallRowDTO extends TaskItemDTO`,
+ * `store/protocol.ts`). Used below to stand in for `Core::search`'s answer,
+ * which #481's board fixture needs seeded: `task.search` never falls
+ * through to the live store's own answer in board mode (`App.tsx`'s
+ * `task = demoTask ?? liveTask`, and `demoTask` is never `null` here), so
+ * whatever `useRecallWiring` requests live is discarded and this seed is the
+ * only search answer the overlay will ever render under `?demo=board`. */
+function recallRow(taskItem: TaskItemDTO, group: RecallRowDTO["group"]): RecallRowDTO {
+  return { ...taskItem, group };
+}
+
 /** A live `TaskItemDTO` (frontier, inbox or `DONE_SEEDS`), read as the
  * Ledger's own shape — same item, one more read of it, never a second
  * source of truth (`ledger-order.ts`'s own "derive, don't record"— the
@@ -635,6 +648,29 @@ export function buildDemoTaskState(): TaskState {
     ...ARCHIVED_ONLY_SEEDS.map((seed, index) => archivedLedgerRow(seed, index, loadedAt)),
   ];
 
+  // #481's Recall search seed — one row per group `RecallOverlay` renders
+  // differently: `b-f7` ("Rewrite the backup script…", `stage: "ready"`) is
+  // the LIVE row, carrying a description so its expanded `ItemPanel` has
+  // more than a title to show and wired with `onTriage` (`App.tsx`'s
+  // `demo ? undefined : handleTriage`, and `demo` is null in board mode) so
+  // its expansion offers Edit; `b-d2` ("Reply to the HOA…") is the DONE row
+  // and `b-a2` ("Chase the warranty claim", one of `ARCHIVED_ONLY_SEEDS`) is
+  // the ARCHIVED row — both expand read-only, since `RecallRow` only ever
+  // passes `onTriage` through for a `"live"` group. `archivedLedgerRow`'s
+  // three Ledger-only fields (`absentSinceMs`/`deadLettered`/`hasLiveAlert`)
+  // are dropped rather than carried into a `RecallRowDTO`, which has no use
+  // for them.
+  const { absentSinceMs: _archivedAbsentSinceMs, deadLettered: _archivedDeadLettered, hasLiveAlert: _archivedHasLiveAlert, ...archivedRecallItem } =
+    archivedLedgerRow(ARCHIVED_ONLY_SEEDS[1], 1, loadedAt);
+  const search: TaskState["search"] = {
+    rows: [
+      recallRow(frontier[6], "live"),
+      recallRow(done[1], "done"),
+      recallRow(archivedRecallItem, "archived"),
+    ],
+    total: 3,
+  };
+
   return {
     frontier,
     triageInbox,
@@ -646,6 +682,11 @@ export function buildDemoTaskState(): TaskState {
     stepsByItem: {},
     projects: [],
     ledger,
+    // #481: the board world's own Recall answer, seeded above — `task.search`
+    // never falls through to whatever `Core::search` actually answers in
+    // board mode (see `recallRow`'s doc), so the overlay would otherwise
+    // render "Searching…" forever for any query typed against `?demo=board`.
+    search,
     done,
     bindings: [boundWasteBinding, boundRaceBinding, boundTripsBinding],
     // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed

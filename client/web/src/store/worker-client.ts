@@ -350,6 +350,9 @@ export function attachWorkerClient(
       case "ledger":
         store.setTaskState({ ledger: message.rows });
         return;
+      case "searchResult":
+        store.setTaskState({ search: { rows: message.rows, total: message.total } });
+        return;
       case "done":
         store.setTaskState({ done: message.items });
         return;
@@ -821,6 +824,20 @@ export function requestGrillingItems(worker: WorkerLike): void {
  * makes a re-request mean anything. */
 export function requestLedger(worker: WorkerLike, nowMs: number): void {
   worker.postMessage({ type: "getLedger", nowMs });
+}
+
+/** **Recall** (#478): re-find one item across the whole retained roster by
+ * remembered words or by handle. `nowMs` is the request's own clock,
+ * resolving the same alert-liveness read `requestLedger` does — `search`
+ * shares its corpus with `getLedger`. This function sends whatever `query`
+ * it is given, blank or not — it is `useRecallWiring.ts`'s job to withhold
+ * the call for an empty/whitespace-only query, not this one's; that hook is
+ * this function's only caller today. `RecallOverlay` tells "nothing typed
+ * yet" apart from "no results" on its own `query` prop directly
+ * (`trimmed.length === 0`, checked before it ever looks at `rows`), not by
+ * whether a request was sent. */
+export function requestSearch(worker: WorkerLike, query: string, nowMs: number): void {
+  worker.postMessage({ type: "search", query, nowMs });
 }
 
 /** Every live `Done` item — the Done screen's read. */
