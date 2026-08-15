@@ -29,8 +29,8 @@
 /** Every overlay that can claim an Escape, **shallowest first** — which is
  * the whole rule. One Escape closes the topmost open thing and nothing else.
  * "Topmost" here is decided by actual paint order, not by which overlay feels
- * more central: `App.tsx` renders `<CapturePopover>` (#613) before
- * `<RecallOverlay>` (#630) as siblings, both fixed chrome at the identical
+ * more central: `App.tsx` renders `<CapturePopover>` before
+ * `<RecallOverlay>` as siblings, both fixed chrome at the identical
  * z-index (40) — equal z-index plus later DOM position means the browser
  * paints Recall over capture, so with both open, Recall is what a person
  * actually sees on top and `search` has to come before `capture` in this
