@@ -33,13 +33,13 @@ describe("escapeClaimant", () => {
       escapeClaimant(
         escape({ capture: true, search: true, navSheet: true, itemDetail: true }),
       ),
-    ).toBe("capture");
+    ).toBe("search");
   });
 
   // Every pair, so the order is pinned rather than sampled — a later
   // reordering of `ESCAPE_CLAIMANTS` has to break a named case here.
   it.each([
-    [["capture", "search"], "capture"],
+    [["search", "capture"], "search"],
     [["capture", "navSheet"], "capture"],
     [["capture", "itemDetail"], "capture"],
     [["search", "navSheet"], "search"],
@@ -64,6 +64,6 @@ describe("escapeClaimant", () => {
   // added or removed, `App.tsx`'s closer map and `EscapeInput["open"]` stop
   // compiling — this asserts the list itself was a deliberate edit.
   it("is the four shell overlays, shallowest first", () => {
-    expect(ESCAPE_CLAIMANTS).toEqual(["capture", "search", "navSheet", "itemDetail"]);
+    expect(ESCAPE_CLAIMANTS).toEqual(["search", "capture", "navSheet", "itemDetail"]);
   });
 });

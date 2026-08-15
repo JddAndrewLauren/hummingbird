@@ -307,7 +307,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         })
       ) {
         event.preventDefault();
-        requestSearchOpen();
+        // Demo mode's `task` is the static fixture, same as the header's
+        // `onSearch` above and reported for the identical reason: opening it
+        // there would spin forever on "Searching…" for any typed query.
+        if (!demo) {
+          requestSearchOpen();
+        }
         return;
       }
 
@@ -353,6 +358,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
+    demo,
     captureOpen,
     captureDictating,
     searchOpen,
@@ -622,11 +628,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onDictatingChange={setCaptureDictating}
       />
 
-      {/* **Recall** (#478): the header's Search button is the only trigger
-          wired in this slice — see `Header`'s `onSearch` doc and
-          `useRecallWiring`'s above. Rendered beside `CapturePopover` for the
-          same reason: fixed chrome over the whole window, not screen
-          content. */}
+      {/* **Recall** (#478/#480): every trigger — the header's Search button,
+          the `/` hotkey, the rail's magnifier and the phone More sheet's
+          entry — opens this same state; see `useRecallWiring`'s doc above.
+          Rendered after `CapturePopover` as a sibling, both fixed chrome at
+          the same z-index: that DOM order is why Recall paints over capture
+          when both are open (`escape-claimants.ts`'s ordering argument),
+          not merely styling convenience. */}
       <RecallOverlay
         open={searchOpen}
         query={searchQuery}
