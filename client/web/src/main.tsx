@@ -2,9 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
+import { initDecisions } from "./decisions/seam";
 import { appUpdateSignal } from "./shell/app-update";
 import { captureOAuthRedirect } from "./shell/oauth-redirect";
 import { watchForActivation } from "./shell/reload-on-activate";
+import { SeamFailure } from "./shell/SeamFailure";
 import { coreStore } from "./store/store";
 import { watchForReadyTimeout } from "./store/ready-timeout";
 import { attachWorkerClient } from "./store/worker-client";
@@ -109,8 +111,41 @@ if (!root) {
   throw new Error("missing #root element");
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <App worker={worker} />
-  </StrictMode>,
+// ADR-0025 (#141/M1-1): the SECOND wasm instantiation, on the main thread,
+// behind `src/decisions/seam.ts`. It is awaited before the first render
+// rather than joined to a spinner because there is no render-time gate to
+// join: `App` mounts every screen while the worker is still connecting (the
+// core's status is a label, not a gate), so a component could call a
+// synchronous decision wrapper in its very first render. Awaiting here IS
+// the gate, and it is the strongest form of it — no component ever renders
+// against a not-ready seam, so the wrapper's not-ready branch can stay a
+// throw instead of a stale TS fallback.
+//
+// A failure keeps the gate CLOSED and renders `SeamFailure` instead of
+// `App` — never both, and never `App` alone. Rendering the app anyway would
+// undo the paragraph above: the wrappers throw when the seam is not ready,
+// there is no error boundary here, and the throw happens inside a render
+// (`CaptureBox`'s `canSubmitCapture`), so the first capture the reader opens
+// would unmount the whole tree into a blank page. Reporting it through
+// `coreStore` is not enough either — the SharedWorker's `ready` message sets
+// `error: null` (`store/worker-client.ts`), so a worker that connects after
+// this rejection would erase the report and leave a healthy-looking shell
+// over a seam that still throws.
+initDecisions().then(
+  () => {
+    createRoot(root).render(
+      <StrictMode>
+        <App worker={worker} />
+      </StrictMode>,
+    );
+  },
+  (cause: unknown) => {
+    createRoot(root).render(
+      <StrictMode>
+        <SeamFailure
+          detail={cause instanceof Error ? cause.message : "decision seam failed to load"}
+        />
+      </StrictMode>,
+    );
+  },
 );

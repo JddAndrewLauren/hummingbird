@@ -12,7 +12,14 @@
 //! `wasm32` build itself is what CI's `cargo build --target
 //! wasm32-unknown-unknown -p hummingbird-ffi-web` step gates.
 
+//! [`decisions`] is the exception to all of that: free functions over
+//! scalars and JSON, native-tested, and the one part of this crate the web
+//! instantiates a **second** time on its main thread (ADR-0025/#141) rather
+//! than reaching through the SharedWorker. Its header states what may be
+//! added to it without breaking that arrangement.
+
 mod calendar_host;
+pub mod decisions;
 mod task_host;
 
 pub use calendar_host::{

@@ -38,6 +38,12 @@
 //! fold once #126 lands.
 //!
 //! Persistence lives in [`storage`] (#68).
+//!
+//! **The decisions every client has to agree on** live in [`decisions`]
+//! (ADR-0025, #141): pure, clock-free predicates, reached from the web by a
+//! second main-thread instantiation of the wasm module rather than through
+//! [`Core`]'s SharedWorker protocol. That module's header states what may
+//! and may not be added to it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -45,6 +51,7 @@ pub mod bindings;
 pub mod calendar;
 pub mod capture;
 pub mod context;
+pub mod decisions;
 pub mod freshness;
 pub mod pane;
 pub mod rank;

@@ -197,6 +197,12 @@ so an override map would accrete keys for panes that no longer exist.
 
 ## The Rust/TS carve-out
 
+**This section is amended — see the Status header.** ADR-0025 redrew the
+line for the multi-client world (band functions and their thresholds sink
+into the core), and its own M1-1 amendment records the mechanism the web
+reaches them through. What follows is what was decided here, in 2026-08-10's
+one-client world.
+
 Bespoke answer and band live in **TS `screens/*.ts` pure modules**, which
 protects the visual iteration loop all four prototypes proved out. The
 core-side read is generic — for a source, its snapshot rows and its live

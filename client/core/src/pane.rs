@@ -11,9 +11,13 @@
 //! **What is generic and what is not.** This module knows that a snapshot
 //! carries a [`SnapshotEnvelope`] and that an alert has a lifecycle; it
 //! knows nothing about what any particular pane means by its answer. The
-//! answer state, the band, the headline and the threshold all stay in TS
-//! beside each pane's own band function, which is exactly ADR-0015's
-//! carve-out. The two things that must not drift — the age clamp
+//! answer state, the band, the headline and the threshold all live beside
+//! each pane's own band function, not here — ADR-0015's carve-out. (Where
+//! that is has moved: ADR-0015 put those modules in TS, ADR-0025 sinks the
+//! deciding half of them — band and threshold — into this crate as each
+//! screen is built for Android, leaving the headline per-client. Either
+//! way, none of it is *this* module's: it stays generic.) The two things
+//! that must not drift — the age clamp
 //! ([`crate::freshness::Freshness::measure`]) and alert liveness
 //! ([`hummingbird_domain::Alert::is_live`]) — are applied here, once.
 //!

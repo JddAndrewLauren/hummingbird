@@ -11,8 +11,11 @@ import { RankedRegion } from "./questions/RankedRegion";
 // tile grid, so collapse-when-dormant gives it "all green is one quiet
 // stack, red announces itself" for free (ADR-0017 decision 1).
 //
-// Thin by design: everything decidable lives in `screens/*.ts` pure modules
-// already (the registry's surface filter, the sort, the collapse map); this
+// Thin by design: nothing decidable is decided in this file. The surface
+// filter, the sort and the collapse map are pure modules beside it today,
+// and ADR-0025 moves that kind of decision further out still — into the
+// core, reached through `src/decisions/seam.ts` — as each screen is built
+// for Android. Neither move touches this component, which is the point; this
 // component's only job is to pick the surface's inputs — real or demo — and
 // hand them to the same `RankedRegion` `NowScreen` uses, which is what keeps
 // this a second surface of one contract rather than a parallel screen that

@@ -1,6 +1,11 @@
 # ADR-0025: Decisions sink to the core; rendering stays per-client
 
-**Status:** accepted · 2026-08-14
+**Status:** accepted · 2026-08-14 · **amended 2026-08-15 (#499):** M1-1's
+probe fixed the web-side mechanism — a second, main-thread instantiation of
+the existing `hummingbird_ffi_web` wasm module, exposing free
+`#[wasm_bindgen]` functions — and recorded what does *not* sink in M1. See
+[The web seam, fixed by M1-1's probe](#the-web-seam-fixed-by-m1-1s-probe)
+below.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -92,6 +97,10 @@ refactor between the operator and the first Android screen, and it drags
 genuinely view-shaped code (headline strings) into Rust where the
 iteration-loop argument still wins.
 
+**A worker round trip for the web's half.** Rejected at M1-1 (below): the
+modules being sunk run synchronously during React render, and a
+`postMessage` hop cannot be spliced into a render.
+
 **The named risk, and its exit.** The seam cost is not zero: each sunk
 module is a wasm/UniFFI surface change. If the first screen's sink shows
 binding churn dominating — costing more per module than a port would —
@@ -99,3 +108,64 @@ the fallback recorded at decision time is to keep only the clearly-shared
 decisions (orderings, urgency, priority, bands) in core and let
 view-adjacent modules go per-client. That fallback is an amendment to this
 ADR, not a silent drift.
+
+## The web seam, fixed by M1-1's probe
+
+*Amended 2026-08-15 ([#499](https://github.com/JddAndrewLauren/hummingbird/issues/499)):
+this ADR was accepted with the web-side mechanism unresolved. "Rewire the
+web through `ffi-web`" was not a like-for-like swap, because the wasm core
+is instantiated only inside the SharedWorker while every module being sunk
+runs synchronously during React render. M1-1 was run as a probe to fix it,
+and this section is its outcome.*
+
+**The mechanism.** A **second instantiation of the same
+`hummingbird_ffi_web` module, on the main thread**, exposing free
+`#[wasm_bindgen]` functions over scalars and JSON
+(`client/ffi-web/src/decisions.rs`), wrapped by synchronous TypeScript in
+`client/web/src/decisions/seam.ts` and awaited in `main.tsx` before the
+first `createRoot().render()`. Every later M1 issue rewires through that
+one file; no module imports the generated package directly.
+
+**Why not a worker round trip.** Per-keystroke capture validation and
+per-render ordering/faceting cannot absorb an async hop, and the grouping
+axis and facet selection are main-thread UI state the worker cannot see.
+
+**Scope note: this does not violate ADR-0010.** Checked against that ADR's
+text rather than its title. Its three failure modes — divergent mirrors,
+two sync timers, duplicate writes — each require a second *queue*. The
+functions reached through this seam construct no `Core`, open no storage,
+start no timer, and take `now` as an argument. The rule is structural, not
+a promise: nothing under `client/web/src/decisions/` may enter
+`core.worker.ts`'s static import graph, and
+`client/web/src/worker/worker-import-graph.test.ts` fails the build if it
+does. A function that needs a core, storage or a clock belongs behind the
+SharedWorker's existing request protocol instead.
+
+**What the probe measured** (Chromium via Playwright over the production
+build, and node; full numbers in #499's PR). Instantiation added to the
+loading gate: **p50 9.1 ms** (budget: 300 ms). One 100-item
+`TaskItemDTO` payload crossing as JSON, `JSON.stringify` included: **p50
+0.1 ms, first call 1.9 ms** (budget: single-digit ms). Added bytes:
+**+411 bytes of wasm** for the first sunk decision, plus a one-time
+**37.8 KiB raw / 8.1 KiB gzip** duplicate of the wasm-bindgen JS glue,
+which is the seam's whole fixed cost and is not paid again per module.
+vitest instantiates the module in both `node` and `jsdom` from one
+`setupFiles` entry, with no per-file hack. No flip condition was hit.
+
+### What does *not* sink in M1
+
+Later M1 briefs quote their row. A verdict of "stays" here is scoped to M1,
+not permanent — it is where the line fell for the capture/Now slice.
+
+| Module | Verdict |
+|---|---|
+| `size-energy.ts` | rendering; re-imports vocabulary via the shim |
+| `blocked-reason.ts` | rendering |
+| `frontier-prefs.ts` | view prefs |
+| `capture-dictation.ts` | DOM caret, ADR-0022 |
+| capture-meta's form-adapter half | slider indices / `""` sentinels |
+| `capture-destination.ts` | type-only |
+| `FrontierColumns.tsx`'s `URGENCY_EDGE`/`LABEL` maps | presentation of the band, not the band |
+| `rules/backtest.ts:52`, `rules/deadline-picker.ts:32` | known drift — local re-derivations of the deadline reading, out of M1's rewire |
+| Calendar / #169's two doors | out of M1 entirely |
+

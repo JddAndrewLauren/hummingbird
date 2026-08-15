@@ -118,6 +118,10 @@ captures in the columns** join that list for the same reason one more level up:
 `NowScreen.tsx` branches to `RealFrontier` only when demo is off, so a capture's
 card, its `triage` chip, its place under a column's startable actions and the
 `TriageRow` editor selecting it opens are never mounted under `?demo`.
+And `shell/SeamFailure.tsx` (ADR-0025, #141/M1-1) — the surface `main.tsx`
+renders *instead of* `App` when the main-thread decision seam fails to
+instantiate. No query flag can reach it: it requires a wasm failure, which is
+what the surface exists to report. `shell/SeamFailure.test.tsx` is the cover.
 `screens/NowScreen.test.tsx` and `screens/TriageScreen.test.tsx` are the
 cover; a board mixing both kinds is reviewed by hand on a device with real
 captures, which is where a full inbox exists at all. **The Grill takeover**

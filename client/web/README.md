@@ -52,10 +52,16 @@ pnpm dev            # build the wasm core, then vite dev
 ## Commands
 
 - `pnpm build` — wasm core build, `tsc -b`, then `vite build` into `dist/`.
-- `pnpm test` — vitest over the store, worker-protocol, screen/shell
+- `pnpm test` — a wasm core build (the decision seam is a real wasm module
+  under test, so the tests need the package the same way `typecheck` does),
+  then vitest over the store, worker-protocol, screen/shell
   pure-logic and CSP-worker unit tests (`src/**/*.test.ts`,
   `csp-worker/**/*.test.ts`), plus the component tests
-  (`src/**/*.test.tsx`). `environment: "node"` stays the default — the
+  (`src/**/*.test.tsx`). Every test file gets `src/test/wasm-setup.ts`
+  (vitest `setupFiles`), which instantiates the decision seam before the
+  file's imports run — so a component can call a synchronous decision
+  wrapper during render without knowing wasm is behind it, in either
+  environment. `environment: "node"` stays the default — the
   `worker/*` tests assert against a `SharedWorker`-shaped world with no
   `document` — and a component test opts into jsdom per file with a
   `// @vitest-environment jsdom` docblock. Mount through
@@ -96,6 +102,13 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
 
 ## Layout
 
+- `src/decisions/` — the **main-thread decision seam** (ADR-0025, #499):
+  a second instantiation of the same `hummingbird_ffi_web` wasm module,
+  beside the SharedWorker's, exposing the decisions every client shares as
+  plain synchronous functions a render can call. `main.tsx` awaits it
+  before the first render; `seam.ts`'s header carries why that is not a
+  second core under ADR-0010, and `worker/worker-import-graph.test.ts`
+  keeps it out of the worker's static graph.
 - `src/components/` — the design system's 16 components, ported to `.tsx`
   from `.claude/skills/hummingbird-design/components/` (`core`, `forms`,
   `domain`, `feedback`). Inline styles over the design tokens, as in the
@@ -133,7 +146,8 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   no deep links to honour yet, so no router is installed. Everything
   decidable is a sibling pure module the `.tsx` only threads state through
   — `frontier-order.ts`, `frontier-groups.ts`, `priority.ts`, `urgency.ts`,
-  `blocked-reason.ts`, `capture-validation.ts`, `triage-order.ts`,
+  `blocked-reason.ts`, `capture-validation.ts` (as of #499 a re-export of
+  the core's own rule — see `src/decisions/` below), `triage-order.ts`,
   `item-actions.ts`, `triage-form.ts`, `bindings.ts`. Three sub-trees keep
   the same split at more depth: `questions/` is ADR-0015's pane shell — read
   `questions/contract.ts` first, it is what a standing question owes the

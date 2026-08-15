@@ -23,6 +23,15 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx", "csp-worker/**/*.test.ts"],
+    // The main-thread decision seam (ADR-0025, #141) is a wasm module, and
+    // the wrappers over it are synchronous — a component calls one during
+    // render and cannot await anything. This setup file instantiates it
+    // once per test file, before that file's imports run, in whichever
+    // environment the file asked for; `src/test/wasm-setup.ts` explains why
+    // it hand-instantiates rather than importing the bundler entry point.
+    // A `setupFiles` entry, not a per-file import, precisely so no test
+    // file has to know: `CapturePopover.test.tsx` passes unchanged.
+    setupFiles: ["src/test/wasm-setup.ts"],
     // Vitest's default (`css: false`) replaces the contents of every CSS
     // module with an empty string, and it decides that by file extension — so
     // it empties a `?raw` import too, silently. `responsive-breakpoint.test.ts`
