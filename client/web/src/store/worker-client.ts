@@ -17,7 +17,6 @@ import type {
   TaskStageName,
   TaskWorkerRequest,
   TierName,
-  TriageDestinationName,
   TriageEdits,
   WorkerResponse,
 } from "./protocol";
@@ -568,18 +567,19 @@ export function actOnTask(
   worker.postMessage({ type: "act", seed, itemId, action, nowMs });
 }
 
-/** S13/#111's triage mutation: edits whatever fields `edits` sets and
- * promotes to `destination`, as one CAS `PATCH`. `seed` mints `Core::triage`'s
- * own queue-entry id — same caller-mints contract as `actOnTask`'s.
+/** S13/#111's triage mutation: edits whatever fields `edits` sets and, when
+ * `destination` is `"ready"`, promotes the item, as one CAS `PATCH`. `seed`
+ * mints `Core::triage`'s own queue-entry id — same caller-mints contract as
+ * `actOnTask`'s. `"ready"` is triage's only destination (#360).
  *
  * `destination` is `null` (#122) for a pure field edit that leaves `stage`
  * untouched — the weekend-plans pane's do-date chip's own call shape, since
- * `TriageDestinationName` cannot name an item that is already `InProgress`. */
+ * a promotion cannot name an item that is already `InProgress`. */
 export function triageItem(
   worker: WorkerLike,
   seed: string,
   itemId: string,
-  destination: TriageDestinationName | null,
+  destination: "ready" | null,
   edits: TriageEdits,
   nowMs: number,
 ): void {

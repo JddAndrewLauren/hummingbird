@@ -15,13 +15,6 @@ describe("mintTriageSeed", () => {
     expect(first).toEqual(second);
   });
 
-  it("a different destination mints a different seed", () => {
-    const a = mintTriageSeed("item-1", "ready", 5_000);
-    const b = mintTriageSeed("item-1", "grilling", 5_000);
-
-    expect(a).not.toEqual(b);
-  });
-
   it("a null destination (#122's pure field edit) mints its own stable seed, distinct from every real destination", () => {
     const first = mintTriageSeed("item-1", null, 5_000);
     const second = mintTriageSeed("item-1", null, 5_000);

@@ -194,16 +194,6 @@ export type TaskStageName =
  * `blocked_by` relation edge (S10's `getBlocked`), never this. */
 export type TaskActionName = "start" | "complete" | "block" | "cancel";
 
-/** S13/#111's triage promotion vocabulary — the only two stages a triage
- * mutation may promote a captured item into (`TriageDestination`,
- * `client/core/src/lib.rs`). Deliberately not a `TaskStageName`, same
- * "reject before the seam" discipline `TaskActionName` documents for its
- * own vocabulary — and deliberately no `"backlog"` spelling: the owned
- * schema's six-stage vocabulary has no such stage, so an item not yet ready
- * to promote simply stays in `"triage"` rather than sending a destination
- * the server cannot express. */
-export type TriageDestinationName = "grilling" | "ready";
-
 /** ADR-0023's verdict vocabulary — the wire's snake_case spelling, byte for
  * byte `hummingbird_domain::GrillVerdict`'s own serde output and the
  * runner's existing grill-me schema enum: this is the same vocabulary, not
@@ -651,20 +641,23 @@ export type TaskWorkerRequest =
    * `"capture"` documents above — `Core::act`'s own queue-entry id derives
    * from it. */
   | { type: "act"; seed: string; itemId: string; action: TaskActionName; nowMs: number }
-  /** S13/#111's triage mutation: edits whatever `edits` sets and promotes to
-   * `destination`, as ONE CAS `PATCH` — never one mutation per field. Same
-   * caller-mints-`seed` contract as `"act"`.
+  /** S13/#111's triage mutation: edits whatever `edits` sets and, when
+   * `destination` is `"ready"`, promotes the item, as ONE CAS `PATCH` —
+   * never one mutation per field. Same caller-mints-`seed` contract as
+   * `"act"`. `"ready"` is triage's only destination (#360) — an item
+   * reaches `"grilling"` exactly one way, a `fog_remains` Grill verdict,
+   * never through this mutation.
    *
    * `destination` is `null` (#122) to leave `stage` untouched entirely —
    * the weekend-plans pane's do-date chip triages items that may already be
-   * `InProgress`, which `TriageDestinationName`'s two-value vocabulary
-   * cannot name, so a caller that wants only `edits.scheduledDate` applied
-   * sends no destination rather than one that would demote the item. */
+   * `InProgress`, which a promotion would demote back to `Ready`, so a
+   * caller that wants only `edits.scheduledDate` applied sends no
+   * destination at all. */
   | {
       type: "triage";
       seed: string;
       itemId: string;
-      destination: TriageDestinationName | null;
+      destination: "ready" | null;
       edits: TriageEdits;
       nowMs: number;
     }

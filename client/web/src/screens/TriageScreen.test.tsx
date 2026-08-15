@@ -284,8 +284,8 @@ describe("TriageScreen — the editor", () => {
       taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
     );
     fireEvent.click(row("vague thing"));
-    fireEvent.click(screen.getByRole("button", { name: /send to grilling/i }));
-    expect(onTriage).toHaveBeenCalledWith("i1", "grilling", {});
+    fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
+    expect(onTriage).toHaveBeenCalledWith("i1", "ready", {});
   });
 
   it("clears a field that is emptied, rather than leaving it alone", () => {

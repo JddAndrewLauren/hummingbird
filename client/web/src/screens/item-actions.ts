@@ -63,8 +63,8 @@ export function canMarkDone(item: Pick<TaskItemDTO, "stage" | "archivedAt">): bo
 
 /** Whether a row offers "Grill me" (#355, ADR-0023): Triage rows only, this
  * slice — the tracer deliberately does not extend the affordance to any
- * other stage. Beside `TriageRow`'s existing "Send to grilling" button, not
- * a replacement for it: this slice adds a gesture and removes none. */
+ * other stage. Since #360, promoting an item straight into Grilling is no
+ * longer a triage gesture at all: this is the only way an item gets there. */
 export function canGrill(stage: TaskStageName): boolean {
   return stage === "triage";
 }
