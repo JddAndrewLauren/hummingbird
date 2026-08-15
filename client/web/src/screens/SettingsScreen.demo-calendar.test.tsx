@@ -14,7 +14,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { SettingsScreen } from "./SettingsScreen";
-import { render, screen, taskState } from "../test/component";
+import { DEMO_DATA } from "../fixtures/demo-data";
+import { fireEvent, render, screen, taskState } from "../test/component";
 import type { CalendarState } from "../store/store";
 
 const demoCalendar: CalendarState = {
@@ -33,7 +34,8 @@ const demoCalendar: CalendarState = {
 };
 
 function renderBoardSettings(status: "loading" | "ready" = "loading") {
-  return render(
+  const onSelectionChange = vi.fn();
+  render(
     <SettingsScreen
       demo={null}
       status={status}
@@ -48,7 +50,7 @@ function renderBoardSettings(status: "loading" | "ready" = "loading") {
       backendSelection="auto"
       onBackendSelection={vi.fn()}
       onConnect={vi.fn()}
-      onSelectionChange={vi.fn()}
+      onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
       taskTokenState="resting"
       taskTokenEnteredAtMs={null}
@@ -60,6 +62,7 @@ function renderBoardSettings(status: "loading" | "ready" = "loading") {
       onDownloadMirror={vi.fn()}
     />,
   );
+  return { onSelectionChange };
 }
 
 describe("SettingsScreen — the board world's calendar card", () => {
@@ -74,6 +77,66 @@ describe("SettingsScreen — the board world's calendar card", () => {
     renderBoardSettings("loading");
     expect(screen.queryByText(/calendar context is unavailable/i)).toBeNull();
     expect(screen.getByText("Fictional (personal)")).toBeDefined();
+  });
+
+  // The round-2 hazard (#452's own words): the fixture card's toggle must
+  // never reach `onSelectionChange`, whose live handler persists the ids to
+  // the shared localStorage key and polls Google for calendars that do not
+  // exist. `demo` is null in this world, so the toggle must branch on
+  // `calendarIsDemo`, not `demo`.
+  it("toggles locally and never calls onSelectionChange", () => {
+    const { onSelectionChange } = renderBoardSettings("loading");
+    const family = screen.getByRole("checkbox", { name: /Fictional \(family\)/ });
+    fireEvent.click(family);
+    expect(onSelectionChange).not.toHaveBeenCalled();
+    expect((family as HTMLInputElement).checked).toBe(true);
+  });
+
+  // The board world has no bindings table to read (`demo-calendar.ts`), so no
+  // row may render locked off the live `task.bindings` — every fixture row
+  // stays toggleable.
+  it("locks no row off the live bindings", () => {
+    renderBoardSettings("loading");
+    for (const name of [/Fictional \(personal\)/, /Fictional \(family\)/]) {
+      expect((screen.getByRole("checkbox", { name }) as HTMLInputElement).disabled).toBe(false);
+    }
+  });
+
+  // Round-2's kit-world pin: bare `?demo` in a tree with no client id (this
+  // repo ships only `.env.example`, and the visual gate's dev server reads no
+  // `.env.local`) shows the "no Google client id" Note, exactly as it did
+  // before #452 — `SettingsScreen.test.tsx` cannot see this because it mocks
+  // the client id truthy.
+  it("keeps the kit world's no-client-id Note unchanged", () => {
+    render(
+      <SettingsScreen
+        demo={DEMO_DATA}
+        status="loading"
+        apiVersion={null}
+        coreId={null}
+        viewOrdinal={null}
+        error={null}
+        calendar={{ ...demoCalendar, availableCalendars: [] }}
+        calendarIsDemo={false}
+        themePreference="system"
+        onThemePreference={vi.fn()}
+        backendSelection="auto"
+        onBackendSelection={vi.fn()}
+        onConnect={vi.fn()}
+        onSelectionChange={vi.fn()}
+        onRefresh={vi.fn()}
+        taskTokenState="resting"
+        taskTokenEnteredAtMs={null}
+        onSubmitTaskToken={vi.fn()}
+        onForgetTaskToken={vi.fn()}
+        task={taskState()}
+        online
+        syncNowMs={10_000}
+        onDownloadMirror={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/no Google client id/i)).toBeDefined();
+    expect(screen.queryByText("Andrew (personal)")).toBeNull();
   });
 
   it("still gates a live (non-demo) render on the client id, unchanged", () => {
