@@ -42,6 +42,19 @@
 export interface DecisionsModule {
   can_submit_capture(draft: string): boolean;
   decisions_probe_item_payload(itemsJson: string): string;
+  // M1-2 (#500): the capture decision set.
+  compute_urgency(deadline: string | undefined, now: string): string;
+  is_valid_deadline(deadline: string): boolean;
+  is_valid_scheduled_date(scheduledDate: string): boolean;
+  deadline_sort_key(deadline: string): string;
+  split_deadline(value: string): string;
+  join_deadline(date: string, time: string | undefined): string;
+  capture_meta_problems(deadline: string, scheduledDate: string): string;
+  priority_from_select(raw: string): number | undefined;
+  size_options_json(): string;
+  energy_options_json(): string;
+  contexts_json(): string;
+  frontier_axes_json(): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -114,4 +127,122 @@ export function canSubmitCapture(draft: string): boolean {
  * ordering call. */
 export function probeItemPayload(itemsJson: string): string {
   return required().decisions_probe_item_payload(itemsJson);
+}
+
+// ------------------------------------------------------------ M1-2 (#500)
+// The capture decision set: urgency, the deadline-field grammar, and the
+// capture/triage field problems. `urgency.ts`, `deadline-parts.ts` and the
+// decision half of `capture-meta.ts` are re-exports of the wrappers below —
+// see those files for why `field-vocabulary.ts`'s own exports stay literal
+// TS arrays rather than calling `sizeOptions`/`energyOptions`/`contexts`
+// here directly (a module-evaluation-order constraint: those arrays are
+// read at React-render time by components that are statically imported —
+// and so, transitively, MODULE-EVALUATED — before `initDecisions()`
+// resolves; a top-level `const` computed by calling into wasm at that point
+// would throw the "used before ready" guard on every page load, per this
+// file's own "not-ready is a throw, never a fallback" rule above).
+
+export type Urgency = "calm" | "soon" | "now" | "overdue";
+
+/** The rule itself is `hummingbird_core::decisions::urgency::compute_urgency`.
+ * `nowMs` is a real epoch millisecond count (`Date.now()`), exactly as
+ * every existing caller already holds one; this wrapper — not the core, per
+ * ADR-0015's "resolves no civil date to an instant" rule — is what turns it
+ * into the deadline-shaped local wall-clock string the Rust function
+ * takes. */
+export function computeUrgency(deadline: string | null, nowMs: number): Urgency {
+  return required().compute_urgency(deadline ?? undefined, localWallClock(nowMs)) as Urgency;
+}
+
+/** Renders `nowMs` as this device's own local wall-clock reading, in the
+ * deadline grammar's own shape (`YYYY-MM-DDTHH:MM`) — the one place a
+ * timezone offset is read on the web, matching exactly what the retired
+ * `computeUrgency`'s `new Date(year, month, day, hour, minute)` call used
+ * to do implicitly on both sides of its subtraction. */
+function localWallClock(nowMs: number): string {
+  const d = new Date(nowMs);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function isValidDeadline(deadline: string): boolean {
+  return required().is_valid_deadline(deadline);
+}
+
+export function isValidScheduledDate(scheduledDate: string): boolean {
+  return required().is_valid_scheduled_date(scheduledDate);
+}
+
+export function deadlineSortKey(deadline: string): string {
+  return required().deadline_sort_key(deadline);
+}
+
+export interface DeadlineParts {
+  date: string;
+  time: string | null;
+}
+
+export function splitDeadline(value: string): DeadlineParts {
+  return JSON.parse(required().split_deadline(value)) as DeadlineParts;
+}
+
+export function joinDeadline(date: string, time: string | null): string {
+  return required().join_deadline(date, time ?? undefined);
+}
+
+export interface CaptureMetaProblems {
+  deadline?: string;
+  scheduledDate?: string;
+}
+
+/** `hummingbird_core::decisions::capture::capture_meta_problems` — shared
+ * verbatim by `capture-meta.ts`'s `captureMetaProblems` and
+ * `triage-form.ts`'s `triageDraftProblems`, which used to hand-copy the
+ * same two messages. */
+export function captureMetaProblems(deadline: string, scheduledDate: string): CaptureMetaProblems {
+  const raw = JSON.parse(required().capture_meta_problems(deadline, scheduledDate)) as {
+    deadline: string | null;
+    scheduledDate: string | null;
+  };
+  const problems: CaptureMetaProblems = {};
+  if (raw.deadline !== null) problems.deadline = raw.deadline;
+  if (raw.scheduledDate !== null) problems.scheduledDate = raw.scheduledDate;
+  return problems;
+}
+
+/** `hummingbird_core::decisions::capture::priority_from_select` — the
+ * capture box's `"0"` -> "not sent" priority rule. */
+export function priorityFromSelect(raw: string): number | null {
+  return required().priority_from_select(raw) ?? null;
+}
+
+export interface VocabOption {
+  value: string;
+  label: string;
+}
+
+/** `hummingbird_core::decisions::vocabulary::size_options` /
+ * `energy_options` — the vocabulary's real values only, no leading "Not
+ * set" entry. Not yet called by any production module in M1-2: see the
+ * header above for why `field-vocabulary.ts` keeps its own literal arrays
+ * for now, and `field-vocabulary.test.ts` for the pinning test that keeps
+ * them provably equal to these. */
+export function sizeOptionsFromCore(): VocabOption[] {
+  return JSON.parse(required().size_options_json()) as VocabOption[];
+}
+
+export function energyOptionsFromCore(): VocabOption[] {
+  return JSON.parse(required().energy_options_json()) as VocabOption[];
+}
+
+/** `hummingbird_core::decisions::vocabulary::CONTEXTS` — pinning-test-only
+ * in M1-2 for the same reason as the two functions above. */
+export function contextsFromCore(): string[] {
+  return JSON.parse(required().contexts_json()) as string[];
+}
+
+/** `hummingbird_core::decisions::vocabulary::FRONTIER_AXES` — M1-3's
+ * (#501) first consumer; nothing in M1-2 calls this in production. */
+export function frontierAxesFromCore(): string[] {
+  return JSON.parse(required().frontier_axes_json()) as string[];
 }

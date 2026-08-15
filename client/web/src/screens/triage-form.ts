@@ -19,7 +19,7 @@
 //     entirely.
 
 import type { TaskItemDTO, TriageEdits } from "../store/protocol";
-import { isValidDeadline, isValidScheduledDate } from "./urgency";
+import { captureMetaProblems } from "../decisions/seam";
 
 /** One triage-inbox item's editable draft. Every field is a string because
  * that is what an `<input>`/`<select>` controls — including `priority`, whose
@@ -101,11 +101,16 @@ export function triageDraftProblems(draft: TriageDraft): TriageDraftProblems {
     // it is the one field with no "unset" state to fall back to.
     problems.title = "A title is required";
   }
-  if (draft.deadline.length > 0 && !isValidDeadline(draft.deadline)) {
-    problems.deadline = "Use YYYY-MM-DD or YYYY-MM-DDTHH:MM";
+  // The same `hummingbird_core::decisions::capture::capture_meta_problems`
+  // call `capture-meta.ts`'s `captureMetaProblems` makes (M1-2, #500): one
+  // function answering for both forms' deadline/scheduledDate fields, so
+  // the two message strings this used to hand-copy cannot drift apart.
+  const dateProblems = captureMetaProblems(draft.deadline, draft.scheduledDate);
+  if (dateProblems.deadline !== undefined) {
+    problems.deadline = dateProblems.deadline;
   }
-  if (draft.scheduledDate.length > 0 && !isValidScheduledDate(draft.scheduledDate)) {
-    problems.scheduledDate = "Use YYYY-MM-DD";
+  if (dateProblems.scheduledDate !== undefined) {
+    problems.scheduledDate = dateProblems.scheduledDate;
   }
   if (!PRIORITY_VALUES.has(draft.priority)) {
     problems.priority = "Pick a priority";

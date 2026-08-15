@@ -5,7 +5,23 @@ probe fixed the web-side mechanism — a second, main-thread instantiation of
 the existing `hummingbird_ffi_web` wasm module, exposing free
 `#[wasm_bindgen]` functions — and recorded what does *not* sink in M1. See
 [The web seam, fixed by M1-1's probe](#the-web-seam-fixed-by-m1-1s-probe)
-below.
+below. **Amended 2026-08-15 (#500):** M1-2 sank the capture decision set
+(urgency, the deadline-field grammar, `vocabulary.rs`, and
+`capture_meta_problems`) and found one more case the verdict table did not
+yet cover — a vocabulary's *value list itself* (`field-vocabulary.ts`'s
+`SIZE_OPTIONS`/`ENERGY_OPTIONS`/`CONTEXTS`), read as a plain array at
+React-render time by a component reachable, transitively, from `main.tsx`'s
+static `import { App }`. A `const` computed by calling the wasm seam
+executes at MODULE EVALUATION — which for that whole import graph happens
+before `initDecisions()` is ever awaited — so it would throw the "used
+before ready" guard on every page load; `urgency.ts`/`deadline-parts.ts`/
+capture-meta's decision half sink cleanly because every one of *their*
+exports is a function, called only from event handlers and render bodies,
+never at module-evaluation time. `field-vocabulary.ts` therefore keeps
+hand-written arrays, now pinned against `hummingbird_core::decisions::
+vocabulary`'s real, seam-exposed functions by `field-vocabulary.test.ts`
+rather than sunk at runtime — see that module's own header for the full
+argument and #500's PR description for the trade-off as it was decided.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -166,6 +182,8 @@ not permanent — it is where the line fell for the capture/Now slice.
 | capture-meta's form-adapter half | slider indices / `""` sentinels |
 | `capture-destination.ts` | type-only |
 | `FrontierColumns.tsx`'s `URGENCY_EDGE`/`LABEL` maps | presentation of the band, not the band |
+| `field-vocabulary.ts`'s `SIZE_OPTIONS`/`ENERGY_OPTIONS`/`CONTEXTS` (added at #500) | stays a literal TS array, module-evaluation-order constraint (see the amendment above); pinned against `hummingbird_core::decisions::vocabulary` by a test, not sunk at runtime |
+| `frontier-facets.ts`'s `SIZES`/`ENERGIES` (noted at #500, unedited — M1-3/#501's file) | rendering-adjacent facet list; still a literal copy pending #501 |
 | `rules/backtest.ts:52`, `rules/deadline-picker.ts:32` | known drift — local re-derivations of the deadline reading, out of M1's rewire |
 | Calendar / #169's two doors | out of M1 entirely |
 
