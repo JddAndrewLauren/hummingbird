@@ -565,6 +565,39 @@ impl ItemAction {
             ItemAction::Cancel => None,
         }
     }
+
+    /// S11/#109's wire spelling of this action — `"start"`/`"complete"`/
+    /// `"block"`/`"cancel"`. The mirror of [`ItemAction::parse`]; every
+    /// `ItemAction -> &str` copy that used to live at each wasm boundary
+    /// (`client/ffi-web/src/{task_host,decisions}.rs`) now calls this
+    /// instead, so the wire spelling is spelled once for the whole
+    /// workspace, not once per crossing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ItemAction::Start => "start",
+            ItemAction::Complete => "complete",
+            ItemAction::Block => "block",
+            ItemAction::Cancel => "cancel",
+        }
+    }
+
+    /// Maps S11/#109's wire action name to [`ItemAction`] — the one place a
+    /// string crossing any client boundary becomes the closed act
+    /// vocabulary, the same "reject before the seam" discipline this
+    /// crate's `TriagePatch`/`Stage::parse` machinery already applies.
+    /// Never a raw [`Stage`]: there is no wire action that lets a caller
+    /// send an arbitrary stage id. Every wasm-facing crate that used to
+    /// carry its own copy of this match (`client/ffi-web/src/task_host.rs`,
+    /// `client/ffi-web/src/decisions.rs`) now calls this one instead.
+    pub fn parse(action: &str) -> Option<Self> {
+        match action {
+            "start" => Some(ItemAction::Start),
+            "complete" => Some(ItemAction::Complete),
+            "block" => Some(ItemAction::Block),
+            "cancel" => Some(ItemAction::Cancel),
+            _ => None,
+        }
+    }
 }
 
 /// S13/#111's multi-field triage edit — every field of an item the triage

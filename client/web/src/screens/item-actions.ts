@@ -1,61 +1,42 @@
-// S11/#109's act affordances: which buttons item detail offers for an
-// item's current stage. A pure function — item detail (`ItemDetailPanel`)
-// calls this rather than branching on `item.stage` inline, so the mapping
-// itself is unit-testable without React.
+// S11/#109's act affordances, plus #355/#359/ADR-0023's Grill affordance:
+// which buttons item detail offers for an item's current stage, and which
+// stage an act vocabulary word sets.
 //
-// Triage and Grilling offer nothing in `availableActions` — neither is an
-// action yet (`CONTEXT.md`'s "Stage" glossary entry — "Triage and Grilling
-// are pre-action by definition"), and promoting one is S13's triage screen,
-// not this vocabulary. Done offers nothing either — a finished item has
-// nothing left to act on. There is no "pick" affordance because there is no
-// state for it: the frontier (S10, `Core::frontier`) already IS "what can be
-// started right now" — `"start"` on a Ready item is the only promotion this
-// slice makes, and it lands on `InProgress`, never a distinct "picked" stage.
+// The rules no longer live here. They are `hummingbird_core::decisions::actions`
+// (ADR-0025, #141/M1-4), reached through the main-thread wasm seam this
+// module now wraps — `availableActions`, `canMarkDone`, `canGrill` and
+// `grillButtonLabel` below are thin re-exports over `../decisions/seam`,
+// kept as named functions here (rather than deleted) so every caller
+// (`ItemPanel`, `TriageRow`, `LedgerScreen`, `FrontierColumns`,
+// `NowScreen`, `MarkDoneButton`) and `item-actions.test.ts` stay untouched —
+// the unchanged component tests are the regression proof the sink was a
+// rewire, not a rewrite.
 //
-// **Triage now offers one gesture of its own: Grill me** (#355, ADR-0023) —
-// `canGrill` below, deliberately NOT folded into `availableActions`'s
-// `TaskActionName` vocabulary. A Grill is not an `ItemAction`: it opens the
-// interview takeover rather than mutating the item directly, and its
-// eventual stage move comes from `hummingbird-domain`'s own verdict
-// function (`resulting_stage`), never from this file's mapping.
+// **What did NOT move.** `applyItemAction` and `resolveFallbackPending`
+// are view-model plumbing over `TaskItemDTO`, not decisions two clients
+// could disagree about: `applyItemAction`'s `Date.now()`/`archivedAt` write
+// and `resolveFallbackPending`'s optimistic-vs-live reconciliation are
+// screen-local state management, and ADR-0025's own module doc names
+// clock-freedom as the line a decision has to cross to sink. `applyItemAction`
+// still asks the seam which stage an action resolves to
+// (`appliedStage`) rather than holding a second copy of that mapping.
 //
-// **#359 widens it to Now's frontier rows** (Ready, In Progress): Now's
-// centre-column card, once selected, offers the identical button through
-// `ItemPanel`'s `"detail"` mode. A resolved grill on either of those leaves
-// the stage unchanged (the domain verdict function's own call); `fog_remains`
-// demotes it to Grilling, which is the one thing that takes a started item
-// off the frontier. Grilling stays `true` too — #357's combined "triage
-// process" queue can show a Grilling-stage row on EITHER screen, and that
-// row's own "Resume grill" button must not vanish just because the item's
-// stage is no longer Triage. Blocked and Done stay closed: neither is
-// reachable from a frontier row, and this slice does not open a new one for
-// them.
+// A Grill is still not an `ItemAction`: it opens the interview takeover
+// rather than mutating the item directly, and its eventual stage move comes
+// from `hummingbird-domain`'s own verdict function (`resulting_stage`),
+// never from this file's mapping — `canGrill` only decides whether the
+// button is offered.
 import type { TaskActionName, TaskItemDTO, TaskStageName } from "../store/protocol";
-
-const ACTIONS_BY_STAGE: Record<TaskStageName, readonly TaskActionName[]> = {
-  triage: [],
-  grilling: [],
-  // `"complete"` from Ready (and Blocked below) is the amendment the row
-  // checkmark made: finishing is one click from any live stage, because
-  // "I did it" is a fact about the world, not about whether the app was
-  // told the item had been started first. `Core::act` never gated on the
-  // current stage anyway — this vocabulary was the only gate.
-  ready: ["start", "complete", "block", "cancel"],
-  // Resuming a stalled `in_progress` item back into `in_progress` is a
-  // no-op the UI never offers; only forward (`complete`) or sideways
-  // (`block`, `cancel`) actions apply.
-  in_progress: ["complete", "block", "cancel"],
-  // `Blocked` means an external wait ended (`CONTEXT.md`) — the way
-  // back onto the frontier is `"start"`, exactly as if the item were
-  // freshly Ready, and `"complete"` covers the wait that ended because
-  // the item turned out finished. `"block"` is deliberately absent: an
-  // already-blocked item offers no "block it again" affordance.
-  blocked: ["start", "complete", "cancel"],
-  done: [],
-};
+import {
+  appliedStage,
+  availableActions as seamAvailableActions,
+  canGrill as seamCanGrill,
+  canMarkDone as seamCanMarkDone,
+  grillButtonLabel as seamGrillButtonLabel,
+} from "../decisions/seam";
 
 export function availableActions(stage: TaskStageName): readonly TaskActionName[] {
-  return ACTIONS_BY_STAGE[stage] ?? [];
+  return seamAvailableActions(stage);
 }
 
 /** Whether a row offers the one-click "mark done" checkmark: any live,
@@ -66,7 +47,7 @@ export function availableActions(stage: TaskStageName): readonly TaskActionName[
  * decision made to "pre-action by definition". The one deciding function for
  * every screen's row, so the affordance cannot drift between them. */
 export function canMarkDone(item: Pick<TaskItemDTO, "stage" | "archivedAt">): boolean {
-  return item.stage !== "done" && item.archivedAt === null;
+  return seamCanMarkDone(item.stage, item.archivedAt !== null);
 }
 
 /** Whether a row offers "Grill me" (#355, ADR-0023; widened to Now's
@@ -79,12 +60,7 @@ export function canMarkDone(item: Pick<TaskItemDTO, "stage" | "archivedAt">): bo
  * Triage. Blocked and Done are not reachable from either screen's row, so
  * this slice opens no such button for them. */
 export function canGrill(stage: TaskStageName): boolean {
-  return (
-    stage === "triage" ||
-    stage === "grilling" ||
-    stage === "ready" ||
-    stage === "in_progress"
-  );
+  return seamCanGrill(stage);
 }
 
 /** The Grill button's own label (#356, ADR-0023): "Resume grill" when this
@@ -93,25 +69,9 @@ export function canGrill(stage: TaskStageName): boolean {
  * deciding function" discipline `canGrill`/`canMarkDone` document for their
  * own affordance. */
 export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill" {
-  return hasDraft ? "Resume grill" : "Grill me";
+  return seamGrillButtonLabel(hasDraft);
 }
 
-/** Mirrors `hummingbird_core::ItemAction::stage`'s mapping — the same
- * closed action-to-stage vocabulary, restated here only for the UI's own
- * optimistic display (`NowScreen.tsx`'s `RealFrontier`).
- *
- * Why this exists at all: `"block"` and `"cancel"` both move an item out of
- * every query the store can currently re-fetch (`getFrontier`/`getBlocked`
- * — `Stage::Blocked` and an archived item are outside both, S10's own
- * scope), so waiting for the next server round trip to show the result
- * would mean the item detail panel either goes stale (still showing the
- * pre-action stage) or has nothing live to render at all. This produces the
- * same post-mutation `TaskItemDTO` `Core::act`'s own overlay already
- * computed, so the panel can display it immediately without inventing a
- * second source of truth — it is a read-time projection, never sent
- * anywhere, and the next successful sync cycle's `frontier`/`blocked`
- * refresh (or dead-letter revert) is what makes the real value authoritative
- * again. */
 /** The round-2 PR #207 fix: what `pending` the detail panel's FALLBACK item
  * (an item that has left both `frontier` and `blocked` — a just-blocked or
  * just-cancelled one) should render, and whether the screen is still waiting
@@ -135,7 +95,11 @@ export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill"
  *
  * Pure on purpose (reviewer note on PR #207): the repo has no component-test
  * infrastructure, so the deciding logic lives here where a vitest node test
- * can execute it; `NowScreen.tsx` only threads React state through it. */
+ * can execute it; `NowScreen.tsx` only threads React state through it.
+ *
+ * **Not a sunk decision** (ADR-0025/#141/M1-4 scope note): this is optimistic
+ * UI reconciliation over screen-local state, not a fact two clients could
+ * disagree about — it stays a plain TS function. */
 export interface FallbackPendingResolution {
   /** What the rendered item's `pending` should be this render. */
   pending: boolean;
@@ -156,19 +120,50 @@ export function resolveFallbackPending(
   return { pending: livePending ?? optimisticPending, awaitingConfirm: false };
 }
 
+/** Mirrors the stage `hummingbird_core::decisions::applied_stage` (the same
+ * closed action-to-stage vocabulary `hummingbird_core::ItemAction::stage`
+ * already states once) resolves for `action` — restated here only for the
+ * UI's own optimistic display (`NowScreen.tsx`'s `RealFrontier`).
+ *
+ * Why this exists at all: `"block"` and `"cancel"` both move an item out of
+ * every query the store can currently re-fetch (`getFrontier`/`getBlocked`
+ * — `Stage::Blocked` and an archived item are outside both, S10's own
+ * scope), so waiting for the next server round trip to show the result
+ * would mean the item detail panel either goes stale (still showing the
+ * pre-action stage) or has nothing live to render at all. This produces the
+ * same post-mutation `TaskItemDTO` `Core::act`'s own overlay already
+ * computed, so the panel can display it immediately without inventing a
+ * second source of truth — it is a read-time projection, never sent
+ * anywhere, and the next successful sync cycle's `frontier`/`blocked`
+ * refresh (or dead-letter revert) is what makes the real value authoritative
+ * again. */
 export function applyItemAction(item: TaskItemDTO, action: TaskActionName): TaskItemDTO {
-  switch (action) {
-    case "start":
-      return { ...item, stage: "in_progress", pending: true };
-    case "complete":
-      return { ...item, stage: "done", pending: true };
-    case "block":
-      return { ...item, stage: "blocked", pending: true };
-    case "cancel":
-      // `hummingbird_domain::Item::archived_at` is `ms epoch | null` — any
-      // non-null value marks it archived; the exact timestamp is never
-      // read back from this projection (`Core::act`'s own enqueue call
-      // carries the real one).
-      return { ...item, archivedAt: Date.now(), pending: true };
+  // `"cancel"` is checked by name, never inferred from `appliedStage`
+  // answering `null` — the seam's `item_applied_stage` answers `null` for
+  // BOTH `"cancel"` (no stage, `archivedAt` is the write) and an
+  // unrecognised action string (the wasm side rejects it before the seam,
+  // exactly as `ItemAction::parse` does in `client/core/src/lib.rs`). Those
+  // are not the same outcome: the old switch-based implementation had no
+  // default case at all (`TaskActionName` is closed), so an action outside
+  // the vocabulary never reached a write. Collapsing both `null`s onto the
+  // archive branch would silently set `archivedAt` for a value this
+  // function does not recognise — the destructive default this review
+  // comment exists to remove.
+  if (action === "cancel") {
+    // `hummingbird_domain::Item::archived_at` is `ms epoch | null` — any
+    // non-null value marks it archived; the exact timestamp is never
+    // read back from this projection (`Core::act`'s own enqueue call
+    // carries the real one).
+    return { ...item, archivedAt: Date.now(), pending: true };
   }
+  const stage = appliedStage(action);
+  if (stage === null) {
+    // Defensive only: `TaskActionName` is a closed TS union, so this path
+    // is unreachable through a well-typed caller. If it is ever reached
+    // anyway, the item is returned unmutated rather than guessing at a
+    // write — the same "reject before the seam" discipline the wasm
+    // boundary itself applies to an unrecognised action string.
+    return item;
+  }
+  return { ...item, stage, pending: true };
 }

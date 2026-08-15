@@ -16,6 +16,8 @@
 //! target: `wasm_bindgen` on a free function over `&str`/`bool`/`String`
 //! needs no JS to run against, exactly like `core_api_version`.
 
+use hummingbird_core::ItemAction;
+use hummingbird_domain::Stage;
 use wasm_bindgen::prelude::*;
 
 /// Whether a capture draft is worth submitting — `hummingbird_core`'s
@@ -145,6 +147,68 @@ pub fn frontier_axes_json() -> String {
     serde_json::to_string(&vocabulary::FRONTIER_AXES).unwrap()
 }
 
+// -------------------------------------------------------------- M1-4 (#502)
+
+/// S11/#109's act affordances for `stage` — `hummingbird_core::decisions::available_actions`
+/// verbatim, wire-vocabulary strings in, a JSON array of the same strings
+/// out. An unrecognised stage answers with an empty array rather than
+/// panicking; the TS side is typed to `TaskStageName` so this never fires
+/// in practice, but the boundary does not trust that from the wasm side.
+/// The `Stage`/`ItemAction` string vocabularies themselves are spelled once
+/// each, in `Stage::parse`/`Stage::as_str` and `ItemAction::parse`/
+/// `ItemAction::as_str` (`client/core/src/lib.rs`) — this file, and
+/// `client/ffi-web/src/task_host.rs`'s own boundary, both call those rather
+/// than carrying a second copy of either match.
+#[wasm_bindgen]
+pub fn item_available_actions(stage: &str) -> String {
+    let actions: Vec<&'static str> = match Stage::parse(stage) {
+        Some(stage) => hummingbird_core::decisions::available_actions(stage)
+            .iter()
+            .map(|action| action.as_str())
+            .collect(),
+        None => Vec::new(),
+    };
+    serde_json::to_string(&actions).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// The stage an act vocabulary word sets — `hummingbird_core::decisions::applied_stage`
+/// verbatim. `null` covers both `ItemAction::Cancel` (which sets no stage)
+/// and an unrecognised `action` string.
+#[wasm_bindgen]
+pub fn item_applied_stage(action: &str) -> Option<String> {
+    ItemAction::parse(action)
+        .and_then(hummingbird_core::decisions::applied_stage)
+        .map(|stage| stage.as_str().to_string())
+}
+
+/// Whether `stage` offers the one-click mark-done checkmark —
+/// `hummingbird_core::decisions::can_mark_done` verbatim. An unrecognised
+/// stage answers `false`.
+#[wasm_bindgen]
+pub fn item_can_mark_done(stage: &str, archived: bool) -> bool {
+    match Stage::parse(stage) {
+        Some(stage) => hummingbird_core::decisions::can_mark_done(stage, archived),
+        None => false,
+    }
+}
+
+/// Whether `stage` offers "Grill me" — `hummingbird_core::decisions::can_grill`
+/// verbatim. An unrecognised stage answers `false`.
+#[wasm_bindgen]
+pub fn item_can_grill(stage: &str) -> bool {
+    match Stage::parse(stage) {
+        Some(stage) => hummingbird_core::decisions::can_grill(stage),
+        None => false,
+    }
+}
+
+/// The Grill button's own label — `hummingbird_core::decisions::grill_button_label`
+/// verbatim.
+#[wasm_bindgen]
+pub fn item_grill_button_label(has_draft: bool) -> String {
+    hummingbird_core::decisions::grill_button_label(has_draft).to_string()
+}
+
 /// One item as the *main thread* holds it: `TaskItemDTO`
 /// (`client/web/src/store/protocol.ts`), camelCase, already mapped out of
 /// the worker's snake_case wire shape by `task-worker.ts`.
@@ -229,6 +293,71 @@ mod tests {
                 "{draft:?} disagreed across the binding",
             );
         }
+    }
+
+    #[test]
+    fn item_available_actions_is_the_core_rule_verbatim_as_json() {
+        assert_eq!(item_available_actions("triage"), "[]");
+        assert_eq!(
+            item_available_actions("ready"),
+            r#"["start","complete","block","cancel"]"#,
+        );
+        assert_eq!(item_available_actions("in_progress"), r#"["complete","block","cancel"]"#);
+        assert_eq!(item_available_actions("blocked"), r#"["start","complete","cancel"]"#);
+        assert_eq!(item_available_actions("done"), "[]");
+    }
+
+    #[test]
+    fn item_available_actions_answers_empty_for_an_unrecognised_stage() {
+        assert_eq!(item_available_actions("not-a-stage"), "[]");
+    }
+
+    #[test]
+    fn item_applied_stage_is_the_core_rule_verbatim() {
+        assert_eq!(item_applied_stage("start").as_deref(), Some("in_progress"));
+        assert_eq!(item_applied_stage("complete").as_deref(), Some("done"));
+        assert_eq!(item_applied_stage("block").as_deref(), Some("blocked"));
+        assert_eq!(item_applied_stage("cancel"), None);
+    }
+
+    #[test]
+    fn item_applied_stage_answers_none_for_an_unrecognised_action() {
+        assert_eq!(item_applied_stage("not-an-action"), None);
+    }
+
+    #[test]
+    fn item_can_mark_done_is_the_core_rule_verbatim() {
+        for stage in ["triage", "grilling", "ready", "in_progress", "blocked"] {
+            assert!(item_can_mark_done(stage, false), "{stage} should allow mark-done");
+        }
+        assert!(!item_can_mark_done("done", false));
+        assert!(!item_can_mark_done("ready", true));
+    }
+
+    #[test]
+    fn item_can_mark_done_answers_false_for_an_unrecognised_stage() {
+        assert!(!item_can_mark_done("not-a-stage", false));
+    }
+
+    #[test]
+    fn item_can_grill_is_the_core_rule_verbatim() {
+        for stage in ["triage", "grilling", "ready", "in_progress"] {
+            assert!(item_can_grill(stage), "{stage} should allow grill");
+        }
+        for stage in ["blocked", "done"] {
+            assert!(!item_can_grill(stage), "{stage} should refuse grill");
+        }
+    }
+
+    #[test]
+    fn item_can_grill_answers_false_for_an_unrecognised_stage() {
+        assert!(!item_can_grill("not-a-stage"));
+    }
+
+    #[test]
+    fn item_grill_button_label_is_the_core_rule_verbatim() {
+        assert_eq!(item_grill_button_label(false), "Grill me");
+        assert_eq!(item_grill_button_label(true), "Resume grill");
     }
 
     fn one_item(id: &str, stage: &str) -> String {

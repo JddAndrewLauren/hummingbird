@@ -35,6 +35,8 @@
 // mounting a decision consumer against a rejected seam would trade a stated
 // failure for a blank page on the reader's first capture.
 
+import type { TaskActionName, TaskStageName } from "../store/protocol";
+
 /** The wasm module's shape, named here rather than imported from the
  * generated `.d.ts`: this file is also the type the node-side test loader
  * satisfies, and the generated package is a build artifact (gitignored) the
@@ -55,6 +57,12 @@ export interface DecisionsModule {
   energy_options_json(): string;
   contexts_json(): string;
   frontier_axes_json(): string;
+  // M1-4 (#502): the item stage-transition rules.
+  item_available_actions(stage: string): string;
+  item_applied_stage(action: string): string | undefined;
+  item_can_mark_done(stage: string, archived: boolean): boolean;
+  item_can_grill(stage: string): boolean;
+  item_grill_button_label(hasDraft: boolean): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -245,4 +253,37 @@ export function contextsFromCore(): string[] {
  * (#501) first consumer; nothing in M1-2 calls this in production. */
 export function frontierAxesFromCore(): string[] {
   return JSON.parse(required().frontier_axes_json()) as string[];
+}
+
+// ------------------------------------------------------------ M1-4 (#502)
+
+/** S11/#109's act affordances for `stage` — `hummingbird_core::decisions::available_actions`
+ * (M1-4, #502) through the wasm boundary's JSON array. */
+export function availableActions(stage: TaskStageName): readonly TaskActionName[] {
+  return JSON.parse(required().item_available_actions(stage)) as TaskActionName[];
+}
+
+/** The stage an act vocabulary word sets, or `null` for `"cancel"` (which
+ * touches `archivedAt` instead of `stage`) —
+ * `hummingbird_core::decisions::applied_stage` verbatim. */
+export function appliedStage(action: TaskActionName): TaskStageName | null {
+  return (required().item_applied_stage(action) as TaskStageName | undefined) ?? null;
+}
+
+/** Whether a row offers the one-click "mark done" checkmark —
+ * `hummingbird_core::decisions::can_mark_done` verbatim. */
+export function canMarkDone(stage: TaskStageName, archived: boolean): boolean {
+  return required().item_can_mark_done(stage, archived);
+}
+
+/** Whether a row offers "Grill me" —
+ * `hummingbird_core::decisions::can_grill` verbatim. */
+export function canGrill(stage: TaskStageName): boolean {
+  return required().item_can_grill(stage);
+}
+
+/** The Grill button's own label —
+ * `hummingbird_core::decisions::grill_button_label` verbatim. */
+export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill" {
+  return required().item_grill_button_label(hasDraft) as "Grill me" | "Resume grill";
 }

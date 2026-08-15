@@ -143,6 +143,20 @@ describe("applyItemAction", () => {
     expect(result.archivedAt).not.toBeNull();
     expect(result.pending).toBe(true);
   });
+
+  // Reviewer finding on PR #508: `appliedStage` answers `null` for BOTH
+  // `"cancel"` and an action string the seam does not recognise, and an
+  // earlier version of `applyItemAction` collapsed both onto the archive
+  // branch — a bad string would silently set `archivedAt`. An unrecognised
+  // action must never be reachable through `TaskActionName` (it is a closed
+  // union), but `applyItemAction` still owes this defensively: the item
+  // comes back unmutated rather than archived.
+  it("never archives on an unrecognised action, only on cancel", () => {
+    const bogus = "not-a-real-action" as unknown as Parameters<typeof applyItemAction>[1];
+    const result = applyItemAction(baseItem, bogus);
+    expect(result).toEqual(baseItem);
+    expect(result.archivedAt).toBeNull();
+  });
 });
 
 // The round-2 reviewer finding on PR #207: `applyItemAction`'s frozen
