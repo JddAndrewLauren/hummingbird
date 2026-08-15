@@ -9,10 +9,12 @@ import {
   frontierAxesFromCore,
   initDecisions,
   orderFrontier,
+  priorityRankFromCore,
   resetDecisionsForTest,
   SIZES,
   sizeOptionsFromCore,
 } from "./seam";
+import { priorityRank } from "../screens/priority";
 import { loadDecisionsForTest } from "../test/wasm-setup";
 import type { TaskItemDTO } from "../store/protocol";
 
@@ -74,6 +76,16 @@ describe("the seam's literal frontier-facet vocabulary, pinned against the core"
 
   it("FACETS matches the core's frontier facet axes", () => {
     expect([...FACETS]).toEqual(frontierAxesFromCore());
+  });
+
+  // `priority.ts`'s `priorityRank` is the one vocabulary the M1-3 review
+  // found still duplicated (`client/core/src/decisions/frontier.rs`'s own
+  // `priority_rank`, unpinned) — pinned here the same way the three literal
+  // arrays above are.
+  it("priorityRank matches the core's priority rank, for every real value and an unrecognised one", () => {
+    for (const raw of [0, 1, 2, 3, 4, 5, -1]) {
+      expect(priorityRank(raw)).toEqual(priorityRankFromCore(raw));
+    }
   });
 });
 

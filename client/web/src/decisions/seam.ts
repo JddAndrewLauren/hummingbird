@@ -261,6 +261,15 @@ export function frontierAxesFromCore(): string[] {
   return JSON.parse(required().frontier_axes_json()) as string[];
 }
 
+/** `hummingbird_core::decisions::frontier::priority_rank` — pinning-test-only:
+ * `screens/priority.ts`'s `priorityRank` is the module-evaluation-time
+ * literal every production caller uses (the frontier's own order rendered
+ * inline, before the seam is guaranteed ready), and `seam.test.ts` pins it
+ * against this wrapper so the two copies cannot drift silently. */
+export function priorityRankFromCore(raw: number): number {
+  return required().priority_rank(raw);
+}
+
 // ------------------------------------------------------------ M1-3 (#501)
 // The frontier's ordering, grouping and faceting, and the combined
 // Now/Triage queue. `frontier-order.ts`, `frontier-columns.ts`,
@@ -272,38 +281,28 @@ export function frontierAxesFromCore(): string[] {
 //
 // **Ids cross the boundary, not whole items.** The wasm side already holds
 // nothing about the item beyond what a rule reads (id, priority, deadline,
-// context, size, energy, projectId); the caller here holds the full
-// `TaskItemDTO` already, so every wrapper below re-serializes only that
-// slice outward and maps the ordered/filtered ids it gets back onto its own
-// items — never round-tripping a whole item through JSON in either
-// direction beyond what wasm strictly needs.
+// context, size, energy, projectId — `FrontierItemDTO` in
+// `ffi-web/src/decisions.rs`, exactly `QueueItemDTO`'s pattern below it);
+// the caller here holds the full `TaskItemDTO` already, so every wrapper
+// below re-serializes only that seven-field slice outward via
+// `frontierPayload` and maps the ordered/filtered ids it gets back onto its
+// own items — never round-tripping a whole item through JSON in either
+// direction.
 
-/** The subset of `TaskItemDTO` the frontier decisions read — what actually
- * crosses into wasm, camelCase already. */
+/** The seven fields `hummingbird_core::decisions::frontier::FrontierItem`
+ * reads — what actually crosses into wasm, camelCase already, and nothing
+ * else `TaskItemDTO` carries (no title, no stage, no timestamps): matches
+ * `FrontierItemDTO` in `ffi-web/src/decisions.rs` field for field. */
 function frontierPayload(items: readonly TaskItemDTO[]): string {
   return JSON.stringify(
     items.map((item) => ({
       id: item.id,
-      seq: item.seq,
-      title: item.title,
-      description: item.description,
-      stage: item.stage,
+      priority: item.priority,
+      deadline: item.deadline,
+      context: item.context,
       size: item.size,
       energy: item.energy,
-      context: item.context,
-      priority: item.priority,
       projectId: item.projectId,
-      projectPos: item.projectPos,
-      deadline: item.deadline,
-      scheduledDate: item.scheduledDate,
-      source: item.source,
-      sourceKey: item.sourceKey,
-      sourceUrl: item.sourceUrl,
-      archivedAt: item.archivedAt,
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-      version: item.version,
-      pending: item.pending,
     })),
   );
 }

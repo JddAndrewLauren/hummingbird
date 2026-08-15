@@ -208,48 +208,15 @@ pub fn item_grill_button_label(has_draft: bool) -> String {
     hummingbird_core::decisions::grill_button_label(has_draft).to_string()
 }
 
-/// One item as the *main thread* holds it: `TaskItemDTO`
-/// (`client/web/src/store/protocol.ts`), camelCase, already mapped out of
-/// the worker's snake_case wire shape by `task-worker.ts`.
-///
-/// Deliberately a second shape rather than a reuse of
-/// [`crate::task_host::FrontierItemDTO`]: that one is what the *worker*
-/// serializes on its way out of the core, and the main-thread seam's input
-/// is whatever the store is already holding. Naming the real shape is the
-/// point — a benchmark over a shape nobody sends measures nothing.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MainThreadItemDTO {
-    pub id: String,
-    pub seq: Option<i64>,
-    pub title: String,
-    pub description: Option<String>,
-    pub stage: String,
-    pub size: Option<String>,
-    pub energy: Option<String>,
-    pub context: Option<String>,
-    pub priority: i64,
-    pub project_id: Option<String>,
-    pub project_pos: Option<i64>,
-    pub deadline: Option<String>,
-    pub scheduled_date: Option<String>,
-    pub source: Option<String>,
-    pub source_key: Option<String>,
-    pub source_url: Option<String>,
-    pub archived_at: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub version: i64,
-    pub pending: bool,
-}
-
 // ----------------------------------------------------------------- M1-3 (#501)
 // The frontier's ordering, grouping and faceting, plus the combined
-// Now/Triage queue. Every function below crosses [`MainThreadItemDTO`]s (or
-// the handful of fields a rule actually reads) as JSON, and returns the
-// *ordered/filtered ids* rather than whole items: `seam.ts`'s wrappers hold
-// the full `TaskItemDTO`s already and map ids back onto them, so nothing
-// crosses the boundary twice.
+// Now/Triage queue. Every function below crosses [`FrontierItemDTO`]s — the
+// handful of fields [`FrontierItem`] actually reads, JSON's own strict
+// subset of `TaskItemDTO` (`client/web/src/store/protocol.ts`), exactly
+// [`QueueItemDTO`] below's pattern — and returns the *ordered/filtered ids*
+// rather than whole items: `seam.ts`'s wrappers hold the full `TaskItemDTO`s
+// already and map ids back onto them, so nothing crosses the boundary
+// twice, and the crossing itself never carries a field no rule reads.
 //
 // This replaces `decisions_probe_item_payload`, M1-1's measuring instrument
 // for exactly this crossing cost — the real calls below are its answer,
@@ -260,7 +227,27 @@ use hummingbird_core::decisions::frontier::{
 };
 use hummingbird_core::decisions::queue::{self, QueueItem};
 
-fn to_frontier_item(dto: &MainThreadItemDTO) -> FrontierItem {
+/// One item as [`FrontierItem`] reads it — `id`, `priority`, `deadline`,
+/// `context`, `size`, `energy` and `projectId`, camelCase, and nothing
+/// else: the frontier rules never read a title, a stage or a timestamp, so
+/// `seam.ts`'s `frontierPayload` never serializes one outward. Deliberately
+/// a distinct shape from [`crate::task_host::FrontierItemDTO`]: that one is
+/// what the *worker* serializes on its way out of the core (a whole item,
+/// `#[serde(flatten)]`ed), while this is the main-thread seam's own
+/// strict-subset input, exactly [`QueueItemDTO`]'s pattern below.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontierItemDTO {
+    pub id: String,
+    pub priority: i64,
+    pub deadline: Option<String>,
+    pub context: Option<String>,
+    pub size: Option<String>,
+    pub energy: Option<String>,
+    pub project_id: Option<String>,
+}
+
+fn to_frontier_item(dto: &FrontierItemDTO) -> FrontierItem {
     FrontierItem {
         id: dto.id.clone(),
         priority: dto.priority,
@@ -272,8 +259,23 @@ fn to_frontier_item(dto: &MainThreadItemDTO) -> FrontierItem {
     }
 }
 
-fn parse_items(items_json: &str) -> Result<Vec<MainThreadItemDTO>, String> {
+fn parse_items(items_json: &str) -> Result<Vec<FrontierItemDTO>, String> {
     serde_json::from_str(items_json).map_err(|e| e.to_string())
+}
+
+/// [`frontier::priority_rank`] — pinned from the web side by
+/// `seam.test.ts` against `priority.ts`'s own `priorityRank`, the one
+/// vocabulary the M1-3 review found still duplicated rather than sunk
+/// (`priority.ts`'s header records why the *labels* stay client-side; the
+/// rank was never meant to be part of that carve-out). `i32` in and out,
+/// not the core rule's own `i64`: same reasoning as
+/// [`priority_from_select`] above — `wasm-bindgen` crosses `i64` as a JS
+/// `BigInt`, and both the raw wire priority and its rank live nowhere near
+/// `i32`'s range, so narrowing at the boundary loses nothing and matches
+/// the plain `number` `priorityRank`/`priorityRankFromCore` already use.
+#[wasm_bindgen]
+pub fn priority_rank(raw: i32) -> i32 {
+    frontier::priority_rank(raw as i64) as i32
 }
 
 /// The frontier's stable priority/deadline display order
@@ -412,7 +414,7 @@ pub fn contexts_of_json(items_json: &str) -> String {
 
 /// One item as [`queue::order_triage`]/[`queue::triage_process_queue`] read
 /// it: an id and its capture time — the JSON shape `seam.ts` sends, a strict
-/// subset of [`MainThreadItemDTO`].
+/// subset of `TaskItemDTO` exactly like [`FrontierItemDTO`] above.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueueItemDTO {
@@ -556,29 +558,19 @@ mod tests {
         assert_eq!(item_grill_button_label(true), "Resume grill");
     }
 
-    fn one_item(id: &str, stage: &str) -> String {
+    /// A `FrontierItemDTO` JSON literal — `stage` is accepted for callers'
+    /// readability (`one_item("a", "ready")` names what the id stands for)
+    /// but is not part of the payload: `FrontierItem` never reads a stage,
+    /// so `seam.ts`'s real `frontierPayload` never sends one either.
+    fn one_item(id: &str, _stage: &str) -> String {
         serde_json::json!({
             "id": id,
-            "seq": 42,
-            "title": "buy milk",
-            "description": null,
-            "stage": stage,
             "size": "quick",
             "energy": "low",
             "context": "@errands",
             "priority": 2,
             "projectId": null,
-            "projectPos": null,
             "deadline": "2026-08-20",
-            "scheduledDate": null,
-            "source": "web/v1",
-            "sourceKey": null,
-            "sourceUrl": null,
-            "archivedAt": null,
-            "createdAt": 1_755_000_000_000i64,
-            "updatedAt": 1_755_000_000_000i64,
-            "version": 1,
-            "pending": false
         })
         .to_string()
     }
@@ -674,33 +666,33 @@ mod tests {
         assert_eq!(parsed["grillingCount"], serde_json::json!(1));
     }
 
-    /// A minimal [`MainThreadItemDTO`] JSON literal, only the fields the
+    /// A minimal [`FrontierItemDTO`] JSON literal, only the fields the
     /// frontier functions read varying by parameter — everything else
     /// fixed at a value none of these tests inspects.
     fn json_item(id: &str, priority: i64, context: Option<&str>) -> String {
         serde_json::json!({
             "id": id,
-            "seq": null,
-            "title": "untitled",
-            "description": null,
-            "stage": "ready",
             "size": null,
             "energy": null,
             "context": context,
             "priority": priority,
             "projectId": null,
-            "projectPos": null,
             "deadline": null,
-            "scheduledDate": null,
-            "source": null,
-            "sourceKey": null,
-            "sourceUrl": null,
-            "archivedAt": null,
-            "createdAt": 1,
-            "updatedAt": 1,
-            "version": 0,
-            "pending": false
         })
         .to_string()
+    }
+
+    /// [`priority_rank`] pass-through, pinned against the core rule the same
+    /// way `the_capture_binding_is_the_core_rule_verbatim` pins
+    /// `can_submit_capture` above.
+    #[test]
+    fn priority_rank_binding_is_the_core_rule_verbatim() {
+        for raw in [0, 1, 2, 3, 4, 5, -1] {
+            assert_eq!(
+                priority_rank(raw) as i64,
+                hummingbird_core::decisions::frontier::priority_rank(raw as i64),
+                "{raw} disagreed across the binding",
+            );
+        }
     }
 }
