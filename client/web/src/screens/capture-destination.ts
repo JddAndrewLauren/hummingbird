@@ -17,10 +17,12 @@ import type { TaskStageName } from "../store/protocol";
  * there is one queued mutation, one id, and nothing to rebase between two
  * halves of one gesture.
  *
- * Deliberately NOT `TriageDestinationName` (`"grilling" | "ready"`), which is
- * a different question about a different item: that vocabulary is where an
- * *existing* capture may be promoted TO, and it has no `"triage"` member
- * because staying put is not a destination. This one has no `"grilling"`
- * member for the mirror-image reason — fog is found by looking at a capture
- * later, never declared at the moment of typing it. */
+ * Deliberately NOT the triage mutation's own destination question
+ * (`"ready" | null`, `store/protocol.ts`'s `"triage"` request), which is a
+ * different question about a different item: that one is where an
+ * *existing* capture may be promoted TO, and `null` there means "leave it in
+ * Triage" because staying put is not a destination at all. This one has no
+ * `"grilling"` member for the mirror-image reason — fog is found by looking
+ * at a capture later (a Grill's `fog_remains` verdict, #360), never declared
+ * at the moment of typing it. */
 export type CaptureDestination = Extract<TaskStageName, "triage" | "ready">;

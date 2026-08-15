@@ -19,7 +19,7 @@
 // model already named.
 
 import { liveUndoneSteps } from "../skills/microtask-affordance";
-import type { GrillVerdictName, StepDTO } from "../store/protocol";
+import type { GrillVerdictName, StepDTO, TaskStageName } from "../store/protocol";
 
 /** Whether confirming this verdict risks stranding a live plan: the item
  * has at least one live, undone Step, and the verdict is `fog_remains` (the
@@ -38,3 +38,26 @@ export function planReplacementLabel(steps: StepDTO[]): string {
   const count = liveUndoneSteps(steps).length;
   return `Also delete ${count} unfinished step${count === 1 ? "" : "s"}`;
 }
+
+/** #359 review round 1: whether confirming this verdict takes a STARTED
+ * item off Now's frontier. `fog_remains` demotes every live stage to
+ * Grilling (`hummingbird_domain::resulting_stage`'s own table — Triage,
+ * Grilling, Ready, In Progress and Blocked all take that arm, the same fact
+ * `wouldStrandPlan` above already reads off the verdict alone), but Ready
+ * and In Progress are the only two of those actually visible on the
+ * frontier today: Triage and Grilling were never on it, and Blocked is not
+ * reachable from a Grill button at all (`item-actions.ts`'s `canGrill`).
+ * The review card's own "Fog remains" badge names the verdict but not this
+ * consequence — this is the deciding function for the sentence that does,
+ * so the same "one deciding function" discipline applies here as it does to
+ * `wouldStrandPlan` and every `item-actions.ts` export. */
+export function demotesFromFrontier(verdict: GrillVerdictName, stage: TaskStageName): boolean {
+  return verdict === "fog_remains" && (stage === "ready" || stage === "in_progress");
+}
+
+/** The sentence `demotesFromFrontier` gates — the actual consequence,
+ * spelled out rather than left to the verdict badge's word alone. One
+ * literal: both screens' review cards read the identical fact, since
+ * neither Now nor Triage disagrees about what a Grilling stage move means. */
+export const FRONTIER_DEMOTION_WARNING =
+  "Confirming moves this item to Grilling and takes it off the frontier.";

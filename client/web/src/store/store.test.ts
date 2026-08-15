@@ -16,6 +16,7 @@ const initialCalendar: CalendarState = {
 const initialTask: TaskState = {
   frontier: [],
   triageInbox: [],
+  grillingItems: [],
   blocked: [],
   stepsByItem: {},
   projects: [],
@@ -31,6 +32,9 @@ const initialTask: TaskState = {
   lastAct: null,
   lastTriage: null,
   lastGrillCompletion: null,
+  lastGrillDraftWrite: null,
+  grillDraftItemIds: [],
+  grillDraftByItem: {},
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,

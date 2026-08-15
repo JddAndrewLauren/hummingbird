@@ -17,11 +17,19 @@
 // `TaskActionName` vocabulary. A Grill is not an `ItemAction`: it opens the
 // interview takeover rather than mutating the item directly, and its
 // eventual stage move comes from `hummingbird-domain`'s own verdict
-// function (`resulting_stage`), never from this file's mapping. Grilling
-// itself offers no such button — an item already mid-interview has nothing
-// further to grill until this one's transcript resolves — so `canGrill` is
-// `true` for `"triage"` alone, the same "one deciding function" discipline
-// `canMarkDone` documents for its own, wider vocabulary.
+// function (`resulting_stage`), never from this file's mapping.
+//
+// **#359 widens it to Now's frontier rows** (Ready, In Progress): Now's
+// centre-column card, once selected, offers the identical button through
+// `ItemPanel`'s `"detail"` mode. A resolved grill on either of those leaves
+// the stage unchanged (the domain verdict function's own call); `fog_remains`
+// demotes it to Grilling, which is the one thing that takes a started item
+// off the frontier. Grilling stays `true` too — #357's combined "triage
+// process" queue can show a Grilling-stage row on EITHER screen, and that
+// row's own "Resume grill" button must not vanish just because the item's
+// stage is no longer Triage. Blocked and Done stay closed: neither is
+// reachable from a frontier row, and this slice does not open a new one for
+// them.
 import type { TaskActionName, TaskItemDTO, TaskStageName } from "../store/protocol";
 
 const ACTIONS_BY_STAGE: Record<TaskStageName, readonly TaskActionName[]> = {
@@ -61,12 +69,31 @@ export function canMarkDone(item: Pick<TaskItemDTO, "stage" | "archivedAt">): bo
   return item.stage !== "done" && item.archivedAt === null;
 }
 
-/** Whether a row offers "Grill me" (#355, ADR-0023): Triage rows only, this
- * slice — the tracer deliberately does not extend the affordance to any
- * other stage. Beside `TriageRow`'s existing "Send to grilling" button, not
- * a replacement for it: this slice adds a gesture and removes none. */
+/** Whether a row offers "Grill me" (#355, ADR-0023; widened to Now's
+ * frontier by #359): Triage, Grilling, Ready and In Progress. Since #360,
+ * promoting an item straight into Grilling is no longer a triage gesture at
+ * all — Grill is the only way an item gets there — which is also why
+ * Grilling itself stays `true`: it has nothing further to grill until this
+ * transcript resolves, but #357's combined queue can still show a Grilling
+ * row on Now, and its "Resume grill" button must read the same here as on
+ * Triage. Blocked and Done are not reachable from either screen's row, so
+ * this slice opens no such button for them. */
 export function canGrill(stage: TaskStageName): boolean {
-  return stage === "triage";
+  return (
+    stage === "triage" ||
+    stage === "grilling" ||
+    stage === "ready" ||
+    stage === "in_progress"
+  );
+}
+
+/** The Grill button's own label (#356, ADR-0023): "Resume grill" when this
+ * item already carries a draft, "Grill me" otherwise — decided by this ONE
+ * function rather than a per-screen branch on `hasDraft`, the same "one
+ * deciding function" discipline `canGrill`/`canMarkDone` document for their
+ * own affordance. */
+export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill" {
+  return hasDraft ? "Resume grill" : "Grill me";
 }
 
 /** Mirrors `hummingbird_core::ItemAction::stage`'s mapping — the same

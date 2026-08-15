@@ -15,7 +15,7 @@ import {
   ENERGY_OPTIONS,
   SIZE_OPTIONS,
 } from "../../screens/field-vocabulary";
-import { availableActions, canGrill } from "../../screens/item-actions";
+import { availableActions, canGrill, grillButtonLabel } from "../../screens/item-actions";
 import { hasPriority, priorityLabel, PRIORITY_OPTIONS } from "../../screens/priority";
 import {
   energyIcon,
@@ -35,7 +35,6 @@ import type {
   StepDTO,
   TaskActionName,
   TaskItemDTO,
-  TriageDestinationName,
 } from "../../store/protocol";
 import type { TaskTriageResult } from "../../store/store";
 import type { TriageEdits } from "../../store/worker-client";
@@ -52,10 +51,12 @@ import { StageBadge } from "./StageBadge";
 // field is drawn:
 //
 // - `"triage"` — the capture is unsorted, so the fields are the point and
-//   stand open, and the row ends in the two promotions plus Grill me. There is
-//   no act row (`item-actions.ts`: "Triage and Grilling are pre-action by
-//   definition") and no steps checklist, because there is nothing to act on or
-//   break down yet.
+//   stand open, and the row ends in the promotion to Ready plus Grill me
+//   (#360: Ready is triage's only destination — an item reaches Grilling
+//   exactly one way, a `fog_remains` Grill verdict). There is no act row
+//   (`item-actions.ts`: "Triage and Grilling are pre-action by definition")
+//   and no steps checklist, because there is nothing to act on or break down
+//   yet.
 // - `"detail"` — the item is minted, so it reads as a record: badges, act row,
 //   steps. **Edit** reveals the same fields the triage mode shows, saving
 //   through `Core::triage` with `destination: null` (#122's stage-agnostic
@@ -112,20 +113,27 @@ export interface ItemPanelProps {
    * an editor that could not send anything. */
   onTriage?: (
     itemId: string,
-    destination: TriageDestinationName | null,
+    destination: "ready" | null,
     edits: TriageEdits,
   ) => void;
   /** The most recent triage result any editor got back
    * (`TaskState.lastTriage`) — what clears the typing on an `"ok"` naming this
    * item (#222), and what detail mode renders as a failure. */
   lastTriage?: TaskTriageResult | null;
-  /** "Grill me" (#355, ADR-0023): opens the centre-column takeover over this
-   * item, decided by `item-actions.ts`'s `canGrill`. Triage mode. */
+  /** "Grill me" (#355, ADR-0023; widened to `"detail"` mode by #359): opens
+   * the centre-column takeover over this item, decided by `item-actions.ts`'s
+   * `canGrill`. Both modes now. */
   onGrillMe?: (itemId: string) => void;
+  /** Whether this item already carries a Grill draft (#356) — the button's
+   * label is `item-actions.ts`'s `grillButtonLabel(hasGrillDraft)`, never a
+   * branch drawn here. `false` in demo mode (`onGrillMe` absent there too),
+   * where there is no real draft to have read. */
+  hasGrillDraft?: boolean;
   /** The DOM id the triage row's header points `aria-controls` at. */
   id?: string;
-  /** The id a triage row's own "Grill me" button carries, so the screen can
-   * re-focus it after the takeover unmounts the list. */
+  /** The id this mode's own "Grill me" button carries, so the screen can
+   * re-focus it after the takeover unmounts and remounts the row (Triage) or
+   * the columns (Now, #359). */
   grillMeId?: string;
   /** #273's microtask affordance. `undefined` in demo mode, which is what
    * guarantees a demo detail view cannot issue a real request. */
@@ -155,6 +163,7 @@ export function ItemPanel({
   onTriage,
   lastTriage = null,
   onGrillMe,
+  hasGrillDraft = false,
   id,
   grillMeId,
   microtask,
@@ -330,18 +339,9 @@ export function ItemPanel({
               disabled={item.pending}
               onClick={() => onGrillMe(item.id)}
             >
-              Grill me
+              {grillButtonLabel(hasGrillDraft)}
             </Button>
           ) : null}
-          <Button
-            size="sm"
-            variant="secondary"
-            iconLeft="help-circle"
-            disabled={item.pending || blocked}
-            onClick={() => onTriage?.(item.id, "grilling", buildTriageEdits(draft, item))}
-          >
-            Send to grilling
-          </Button>
           <Button
             size="sm"
             variant="primary"
@@ -403,8 +403,8 @@ export function ItemPanel({
               iconLeft="check"
               // `destination: null` (#122): this edits the fields and leaves
               // the stage exactly where it is. An item in detail is already
-              // past triage, and `TriageDestinationName` has no word for
-              // "where it already was".
+              // past triage, and there is no destination for "where it
+              // already was".
               disabled={item.pending || blocked || !hasTriageEdits(draft, item)}
               onClick={() => onTriage?.(item.id, null, buildTriageEdits(draft, item))}
             >
@@ -454,6 +454,24 @@ export function ItemPanel({
               </Button>
             );
           })}
+        </div>
+      ) : null}
+
+      {/* #359: Grill reaches Now. Its own row, not folded into the act row
+          above — a Grill is not an `ItemAction` (`item-actions.ts`'s own
+          doc), and the two rows are gated by independent conditions. */}
+      {onGrillMe && canGrill(item.stage) ? (
+        <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
+          <Button
+            id={grillMeId}
+            size="sm"
+            variant="secondary"
+            iconLeft="sparkles"
+            disabled={item.pending}
+            onClick={() => onGrillMe(item.id)}
+          >
+            {grillButtonLabel(hasGrillDraft)}
+          </Button>
         </div>
       ) : null}
 

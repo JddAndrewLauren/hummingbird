@@ -194,21 +194,22 @@ export type TaskStageName =
  * `blocked_by` relation edge (S10's `getBlocked`), never this. */
 export type TaskActionName = "start" | "complete" | "block" | "cancel";
 
-/** S13/#111's triage promotion vocabulary — the only two stages a triage
- * mutation may promote a captured item into (`TriageDestination`,
- * `client/core/src/lib.rs`). Deliberately not a `TaskStageName`, same
- * "reject before the seam" discipline `TaskActionName` documents for its
- * own vocabulary — and deliberately no `"backlog"` spelling: the owned
- * schema's six-stage vocabulary has no such stage, so an item not yet ready
- * to promote simply stays in `"triage"` rather than sending a destination
- * the server cannot express. */
-export type TriageDestinationName = "grilling" | "ready";
-
 /** ADR-0023's verdict vocabulary — the wire's snake_case spelling, byte for
  * byte `hummingbird_domain::GrillVerdict`'s own serde output and the
  * runner's existing grill-me schema enum: this is the same vocabulary, not
  * a second one. */
 export type GrillVerdictName = "resolved" | "fog_remains";
+
+/** #356/ADR-0023's Grill draft turn — the same shape `skills/grill-args.ts`'s
+ * `GrillTurn` is (`{question: {prompt, recommendedAnswer, choices}, answer}`),
+ * restated here rather than imported so this file keeps its own convention:
+ * no imports, the wire shape spelled out in one self-contained place. The
+ * two are structurally identical, so a caller passes a real `GrillTurn[]`
+ * here with no conversion. */
+export interface GrillDraftTurnDTO {
+  question: { prompt: string; recommendedAnswer: string; choices: string[] };
+  answer: string;
+}
 
 /** Every field of an item a triage may edit, and the vocabulary of the three
  * instructions each one can carry: **an absent key leaves the field alone, an
@@ -651,20 +652,23 @@ export type TaskWorkerRequest =
    * `"capture"` documents above — `Core::act`'s own queue-entry id derives
    * from it. */
   | { type: "act"; seed: string; itemId: string; action: TaskActionName; nowMs: number }
-  /** S13/#111's triage mutation: edits whatever `edits` sets and promotes to
-   * `destination`, as ONE CAS `PATCH` — never one mutation per field. Same
-   * caller-mints-`seed` contract as `"act"`.
+  /** S13/#111's triage mutation: edits whatever `edits` sets and, when
+   * `destination` is `"ready"`, promotes the item, as ONE CAS `PATCH` —
+   * never one mutation per field. Same caller-mints-`seed` contract as
+   * `"act"`. `"ready"` is triage's only destination (#360) — an item
+   * reaches `"grilling"` exactly one way, a `fog_remains` Grill verdict,
+   * never through this mutation.
    *
    * `destination` is `null` (#122) to leave `stage` untouched entirely —
    * the weekend-plans pane's do-date chip triages items that may already be
-   * `InProgress`, which `TriageDestinationName`'s two-value vocabulary
-   * cannot name, so a caller that wants only `edits.scheduledDate` applied
-   * sends no destination rather than one that would demote the item. */
+   * `InProgress`, which a promotion would demote back to `Ready`, so a
+   * caller that wants only `edits.scheduledDate` applied sends no
+   * destination at all. */
   | {
       type: "triage";
       seed: string;
       itemId: string;
-      destination: TriageDestinationName | null;
+      destination: "ready" | null;
       edits: TriageEdits;
       nowMs: number;
     }
@@ -692,6 +696,26 @@ export type TaskWorkerRequest =
       deleteUntickedPlan: boolean;
       nowMs: number;
     }
+  /** #356/ADR-0023's draft save — the takeover's own continuous "Back or
+   * close saves automatically" write, sent after every completed turn, not
+   * just on Back. Device-local: never reaches the outbound queue, the
+   * mirror, or any sweep/delta payload (`Core::save_grill_draft`'s own
+   * doc). No `seed`: unlike a sync mutation, a draft write has no queue
+   * entry to mint an id for — its result is matched back by `itemId`
+   * alone, the same shape `getSteps`/`steps` already use. */
+  | { type: "saveGrillDraft"; itemId: string; turns: GrillDraftTurnDTO[]; nowMs: number }
+  /** #356's explicit, confirmed "Discard" gesture — and the one place a
+   * completed Grill's `"ok"` clears the interview that produced it
+   * (`worker-client.ts`'s `completeGrillResult` handling). */
+  | { type: "discardGrillDraft"; itemId: string; nowMs: number }
+  /** #356's resume read: this item's saved turns, if any — asked for once
+   * when opening an item this build already knows (via
+   * `getGrillDraftItemIds`) carries a draft. */
+  | { type: "getGrillDraft"; itemId: string }
+  /** #356's bulk read: every item id carrying a draft — the Triage inbox's
+   * "Resume grill" labels, one request for the whole list rather than one
+   * per row. */
+  | { type: "getGrillDraftItemIds" }
   /** #118's binding write: one absolute-value CAS `PUT /api/settings/:key`,
    * enqueued durably like every other mutation. `key` is the kebab-case,
    * unversioned binding name (ADR-0015), resolved by name in
@@ -748,6 +772,10 @@ export type TaskWorkerRequest =
   | { type: "getPaneRead"; source: string; nowMs: number }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
+  /** Items already grilled once and still foggy — the "triage process"
+   * queue's second half (#357, CONTEXT.md); `getTriageInbox` deliberately
+   * stays Triage-stage-only. */
+  | { type: "getGrillingItems" }
   /** The complete retained roster — every item the mirror has ever known,
    * archived rows included and labelled. `nowMs` is the request's own clock,
    * resolving the alert badge's liveness core-side, same contract as
@@ -875,6 +903,30 @@ export type TaskWorkerResponse =
       grillId: string | null;
       error: string | null;
     }
+  /** #356's draft save result, matched back by `itemId` (no `seed` — see
+   * `"saveGrillDraft"`'s own doc). `"failed"` covers a durability failure
+   * writing the draft store; unreadable turns never reach this side (they
+   * are always a real `GrillDraftTurnDTO[]` array here, not JSON text). */
+  | {
+      type: "saveGrillDraftResult";
+      itemId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** #356's discard result, matched back by `itemId`. */
+  | {
+      type: "discardGrillDraftResult";
+      itemId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getGrillDraft` (#356) — `exists: false`/`turns: null` is a
+   * genuine "no draft", never "not read yet" (a gap `TaskState
+   * .grillDraftByItem`'s own doc names). */
+  | { type: "grillDraft"; itemId: string; exists: boolean; turns: GrillDraftTurnDTO[] | null }
+  /** Answers `getGrillDraftItemIds` (#356) — every item id carrying a draft,
+   * as of the last broadcast. */
+  | { type: "grillDraftItemIds"; itemIds: string[] }
   /** #118's binding write result, matched back by `seed` — same
    * broadcast-not-reply contract as `actResult`. `"unknown_key"` is a caller
    * mistake the seam refused (not in ADR-0015's closed vocabulary);
@@ -926,6 +978,9 @@ export type TaskWorkerResponse =
   | { type: "paneRead"; read: PaneReadDTO }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
+  /** Answers `getGrillingItems` (#357). Same drop-on-busy contract as
+   * `frontier`. */
+  | { type: "grillingItems"; items: TaskItemDTO[] }
   /** Answers `getLedger`. Never posted for a `"busy"` read — an empty
    * ledger renders as "nothing has ever been tracked", a claim a core that
    * has not loaded may not make (same contract as `paneRead`). Not replayed

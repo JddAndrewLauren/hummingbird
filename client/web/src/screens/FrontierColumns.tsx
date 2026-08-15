@@ -1,7 +1,11 @@
 // Now's centre column: the frontier as wrapping columns (#402, ADR-0021), and
-// since the triage section was dissolved into them, the unsorted captures too
-// — same columns, same axis, each capture marked with its `triage` stage chip
-// and sorted under the startable actions of whatever column it lands in.
+// since the triage section was dissolved into them, the "triage process"
+// queue too (#357: Triage and Grilling together, CONTEXT.md) — same columns,
+// same axis, each item marked with its own stage chip and sorted under the
+// startable actions of whatever column it lands in. This is Now's own
+// rendering of the SAME combined queue the Triage screen shows —
+// `triage-process-order.ts`'s `triageProcessQueue` is the one function
+// deciding membership and order for both, never a `stage ===` check here.
 // Everything decidable lives in `frontier-columns.ts`; this file threads state
 // through it and paints the result — the split every `screens/*` module keeps.
 //
@@ -33,7 +37,7 @@ import {
   type FacetSelection,
 } from "./frontier-facets";
 import { orderFrontier } from "./frontier-order";
-import { orderTriage } from "./triage-order";
+import { triageProcessQueue } from "./triage-process-order";
 import {
   readCollapsedColumns,
   readFrontierAxis,
@@ -348,6 +352,8 @@ function FacetRow({
 export function FrontierColumns({
   frontier,
   triage,
+  grilling,
+  draftItemIds,
   projects,
   nowMs,
   selectedItemId,
@@ -356,13 +362,22 @@ export function FrontierColumns({
   storage,
 }: {
   frontier: readonly TaskItemDTO[];
-  /** `TaskState.triageInbox` — the unsorted captures, grouped into the same
-   * columns as the frontier rather than into a section of their own. They
-   * carry no axis value until somebody triages them, so on every axis they
-   * land in the no-value column; a capture a sweeper *did* set a context on
-   * lands in that context's column, which is the point of grouping them at
-   * all rather than stacking them somewhere separate. */
+  /** `TaskState.triageInbox` — the captured Triage items, grouped into the
+   * same columns as the frontier rather than into a section of their own.
+   * They carry no axis value until somebody triages them, so on every axis
+   * they land in the no-value column; a capture a sweeper *did* set a
+   * context on lands in that context's column, which is the point of
+   * grouping them at all rather than stacking them somewhere separate. */
   triage: readonly TaskItemDTO[];
+  /** `TaskState.grillingItems` — the "triage process" queue's second half
+   * (#357, CONTEXT.md), grouped into the same columns as `triage`: this is
+   * Now's collapsible triage area, and neither it nor the Triage screen may
+   * filter by stage on its own — `triageProcessQueue` is the one function
+   * both read. */
+  grilling: readonly TaskItemDTO[];
+  /** `TaskState.grillDraftItemIds` (#356) — decides which of `triage`/
+   * `grilling` sort to the front of the combined queue. */
+  draftItemIds: readonly string[];
   projects: readonly ProjectDTO[];
   nowMs: number;
   selectedItemId: string | null;
@@ -399,10 +414,11 @@ export function FrontierColumns({
   // partition step — the rule the old triage *section* enforced by position on
   // the page is now enforced by position in this array.
   //
-  // Their own order among themselves stays `orderTriage` (oldest capture
-  // first), the same rule the Triage screen sorts by, so the two surfaces
-  // never disagree about which capture is next.
-  const ordered = [...orderFrontier(frontier), ...orderTriage(triage)];
+  // Their own order among themselves stays `triageProcessQueue`'s (drafts,
+  // then Grilling, then oldest-capture-first Triage) — the same rule the
+  // Triage screen sorts by, so the two surfaces never disagree about which
+  // capture is next.
+  const ordered = [...orderFrontier(frontier), ...triageProcessQueue(triage, grilling, draftItemIds).items];
   const shown = applyFacets(ordered, picked, nowMs);
   const columns = groupFrontier(shown, axis, projects);
   const activeFacets = facetCount(picked);

@@ -7,13 +7,12 @@ import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import type { DemoCapture, DemoData } from "../fixtures/demo";
 import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
-import type { TriageDestinationName } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { GrillTakeover } from "./GrillTakeover";
 import { grillCompletionFailureFor } from "./write-failure";
 import { grillMeButtonId, TriageRow } from "./TriageRow";
-import { orderTriage } from "./triage-order";
+import { triageProcessQueue } from "./triage-process-order";
 import { SingleColumn } from "./layout";
 
 export interface TriageScreenProps {
@@ -35,7 +34,7 @@ export interface TriageScreenProps {
    * has to pass a real one. */
   onTriage?: (
     itemId: string,
-    destination: TriageDestinationName | null,
+    destination: "ready" | null,
     edits: TriageEdits,
   ) => void;
   /** The row checkmark's `Core::act` complete — see `TriageRow`'s own prop
@@ -75,7 +74,14 @@ export function TriageScreen({
   // being worked. `null` is the resting state — an inbox is for reading first.
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const realTriage = demo ? [] : orderTriage(task.triageInbox);
+  // #357: the "triage process" queue — local drafts, then Grilling-stage
+  // items, then captured Triage items — as one combined, ordered read.
+  // Neither this screen nor Now's collapsible area filters by stage on its
+  // own; `triageProcessQueue` is the one function both render from.
+  const triageQueue = demo
+    ? null
+    : triageProcessQueue(task.triageInbox, task.grillingItems, task.grillDraftItemIds);
+  const realTriage = triageQueue?.items ?? [];
 
   // Back restores focus to the row's own "Grill me" button — never a held
   // DOM reference, unlike `shell/CapturePopover.tsx`'s `restoreTo`: the
@@ -108,8 +114,13 @@ export function TriageScreen({
     document.getElementById(grillMeButtonId(itemId))?.focus();
   }, [grill?.openItemId]);
 
+  // #357: `realTriage` is the combined queue (Triage AND Grilling), so the
+  // takeover's item must resolve against it too — resolving against
+  // `task.triageInbox` alone would leave a Grilling row's "Grill me"/"Resume
+  // grill" opening a takeover with no item to render, and no reachable
+  // Back/Discard.
   const openItem = grill?.openItemId
-    ? task.triageInbox.find((item) => item.id === grill.openItemId)
+    ? realTriage.find((item) => item.id === grill.openItemId)
     : undefined;
 
   if (grill && openItem) {
@@ -120,11 +131,13 @@ export function TriageScreen({
           steps={grill.sessionSteps}
           turn={grill.turn}
           turns={grill.turns}
+          backLabel="Back to Triage"
           onAnswer={grill.answer}
           onKeepGrilling={grill.keepGrilling}
           onRetry={grill.retry}
           onConfirm={grill.confirm}
           onBack={handleGrillBack}
+          onDiscard={grill.discard}
           completionError={grillCompletionFailureFor(task.lastGrillCompletion, grill.confirmSeed)}
         />
       </SingleColumn>
@@ -148,7 +161,7 @@ export function TriageScreen({
           <span className="hb-meta">
             {demo
               ? `${queue.length} unsorted · swept every 15m`
-              : `${realTriage.length} unsorted`}
+              : `${triageQueue?.capturedCount ?? 0} captured · ${triageQueue?.grillingCount ?? 0} grilling`}
           </span>
         </div>
         {demo ? (
@@ -243,6 +256,7 @@ export function TriageScreen({
                 onTriage={onTriage}
                 onComplete={onComplete}
                 onGrillMe={grill ? handleGrillMe : undefined}
+                hasGrillDraft={task.grillDraftItemIds.includes(item.id)}
                 lastTriage={task.lastTriage}
               />
             ))}

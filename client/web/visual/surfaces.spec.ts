@@ -255,11 +255,12 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     await expect(page.getByRole("alert")).toHaveCount(2);
   },
   triage: async (page) => {
-    // `demo-task-state.test.ts` pins `triageInbox` at 17 — `TriageScreen`'s
-    // real branch (taken because `demo` is null under `?demo=board`) renders
-    // `${realTriage.length} unsorted`, never the kit branch's "swept every
-    // 15m" wording.
-    await expect(page.getByText("17 unsorted")).toBeVisible();
+    // `demo-task-state.test.ts` pins `triageInbox` at 17 and `grillingItems`
+    // at 1 — `TriageScreen`'s real branch (taken because `demo` is null
+    // under `?demo=board`) renders `triageProcessQueue`'s combined header,
+    // `${capturedCount} captured · ${grillingCount} grilling`, never the kit
+    // branch's "swept every 15m" wording nor the old "N unsorted" phrasing.
+    await expect(page.getByText("17 captured · 1 grilling")).toBeVisible();
   },
   routes: async (page) => {
     await expect(page.getByRole("heading", { level: 2, name: "No routes yet" })).toBeVisible();
@@ -283,9 +284,10 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     await expect(page.getByText("6 done")).toBeVisible();
   },
   ledger: async (page) => {
-    // frontier (12) + triageInbox (17) + done (6) + the archived-only seeds
-    // (3) = 38 — `demo-task-state.ts`'s own header states the same count.
-    await expect(page.getByText("38 ever · derived, not recorded")).toBeVisible();
+    // frontier (12) + triageInbox (17) + grillingItems (1) + done (6) + the
+    // archived-only seeds (3) = 39 — the Ledger's pool is every live list
+    // `demo-task-state.ts` builds, not just three of the four.
+    await expect(page.getByText("39 ever · derived, not recorded")).toBeVisible();
   },
   status: async (page) => {
     // Ten poller-backed panes — `docs/SURFACES.md`'s own count, made
@@ -377,7 +379,9 @@ for (const theme of THEMES) {
       //
       // The fixture mirrors production's measured spread
       // (`fixtures/demo-task-state.ts`), so what gets photographed is the
-      // awkward real shape rather than a tidy one: 29 cards, the no-context
+      // awkward real shape rather than a tidy one: 30 cards (12 frontier + 17
+      // captured + the one fictional Grilling item `demo-task-state.ts`'s own
+      // header flags as added after the 29 was measured), the no-context
       // bucket the biggest column and pinned last, and two columns over the
       // six-card cap showing `n more`.
       await openApp(page, theme, "board");

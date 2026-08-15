@@ -187,6 +187,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
   return {
     frontier: [],
     triageInbox: [],
+    grillingItems: [],
     blocked: [],
     stepsByItem: {},
     projects: [],
@@ -202,6 +203,9 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     lastAct: null,
     lastTriage: null,
     lastGrillCompletion: null,
+    lastGrillDraftWrite: null,
+    grillDraftItemIds: [],
+    grillDraftByItem: {},
     lastBindingWrite: null,
     lastSyncOutcome: null,
     lastSyncAtMs: null,

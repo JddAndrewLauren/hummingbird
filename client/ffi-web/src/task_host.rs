@@ -17,7 +17,7 @@ use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
 use hummingbird_core::{
     ActError, CaptureOptions, CompleteGrillError, Core, CoreCycleOutcome, CoreEvent,
-    CoreInitError, GrillCompletion, ItemAction, TriageDestination, TriagePatch,
+    CoreInitError, GrillCompletion, ItemAction, TriagePatch,
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, Alert, Condition, Energy, EventKindEntry, FieldType, Item,
@@ -244,6 +244,41 @@ pub struct CompleteGrillResponse {
     pub error: Option<String>,
 }
 
+/// What [`TaskHostCore::save_grill_draft`]/[`TaskHostCore::discard_grill_draft`]
+/// resolve to (#356, ADR-0023): `"failed"` covers unreadable `turns` JSON
+/// (save only) and a durability failure writing the draft store.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SaveGrillDraftResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DiscardGrillDraftResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// One item's draft read (#356). `exists` is `false` and `turns` is
+/// `None` when the item has no draft — distinct from an item this build
+/// merely has not asked about yet, which is `client/web`'s own "not read
+/// yet" gap (`TaskState.grillDraftByItem`'s doc), not a state this
+/// response has any business naming.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GrillDraftResponse {
+    pub kind: &'static str,
+    pub exists: bool,
+    pub turns: Option<serde_json::Value>,
+}
+
+/// Every item id carrying a draft (#356) — the bulk read a Triage-inbox-wide
+/// "Resume grill" label needs without one request per row.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GrillDraftItemIdsResponse {
+    pub kind: &'static str,
+    pub item_ids: Vec<String>,
+}
+
 /// Resolves a touched size/energy field by name: `None` stays untouched,
 /// `Some(None)` stays a clear, and a value is looked up in the vocabulary —
 /// an unrecognised name is an `Err` the caller turns into a rejection,
@@ -274,22 +309,6 @@ fn parse_action(action: &str) -> Option<ItemAction> {
         "complete" => Some(ItemAction::Complete),
         "block" => Some(ItemAction::Block),
         "cancel" => Some(ItemAction::Cancel),
-        _ => None,
-    }
-}
-
-/// Maps S13/#111's wire destination name to [`TriageDestination`] — the one
-/// place a triage promotion's target crosses the JS boundary and becomes
-/// the closed destination vocabulary, same "reject before the seam"
-/// discipline [`parse_action`] applies to its own wire strings. Never a raw
-/// [`hummingbird_domain::Stage`]: there is no wire name that lets a caller
-/// send an arbitrary stage id, and there is deliberately no `"backlog"`
-/// spelling here — the owned schema has no such stage (see
-/// [`TriageDestination`]'s own doc).
-fn parse_destination(destination: &str) -> Option<TriageDestination> {
-    match destination {
-        "grilling" => Some(TriageDestination::Grilling),
-        "ready" => Some(TriageDestination::Ready),
         _ => None,
     }
 }
@@ -841,6 +860,22 @@ impl TaskHostCore {
         }
     }
 
+    /// Items already grilled once and still foggy, per
+    /// [`Core::grilling_items`] — the "triage process" queue's second half
+    /// (#357, CONTEXT.md). Same per-item `pending` stamp as
+    /// [`TaskHostCore::frontier`].
+    pub fn grilling_items(&self) -> ItemListResponse {
+        ItemListResponse {
+            kind: "ok",
+            items: self
+                .core
+                .grilling_items()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
+        }
+    }
+
     /// Relation-blocked items with the reason visible, per [`Core::blocked`].
     /// Same per-item `pending` stamp as [`TaskHostCore::frontier`], on both
     /// the blocked item and the blockers it is paired with.
@@ -1248,15 +1283,18 @@ impl TaskHostCore {
     }
 
     /// Triages an already-captured item (S13/#111): edits whatever
-    /// `edits` sets and promotes it to `destination`, as one CAS `PATCH`
-    /// (never one mutation per field — [`Core::triage`]'s own doc).
-    /// `destination` is the wire's snake_case destination name
-    /// ([`parse_destination`]), or `None` (#122) to leave `stage` untouched
-    /// entirely — the weekend-plans pane's do-date chip triages an item that
-    /// may already be `InProgress`, which `TriageDestination`'s two-value
-    /// vocabulary cannot name, so a caller that only wants
-    /// `edits.scheduled_date` applied passes no destination at all rather
-    /// than one that would silently demote the item back to `Ready`.
+    /// `edits` sets and, when `destination` is `Some("ready")`, promotes it
+    /// to Ready, as one CAS `PATCH` (never one mutation per field —
+    /// [`Core::triage`]'s own doc). `"ready"` is the only recognised wire
+    /// destination (#360) — an item reaches Grilling exactly one way, a
+    /// `fog_remains` verdict from a completed Grill
+    /// ([`TaskHostCore::complete_grill`]), never through this seam. Any other
+    /// non-`None` string is rejected before [`Core::triage`] is ever called.
+    /// `None` (#122) leaves `stage` untouched entirely — the weekend-plans
+    /// pane's do-date chip triages an item that may already be `InProgress`,
+    /// which a promotion would silently demote back to `Ready`, so a caller
+    /// that only wants `edits.scheduled_date` applied passes no destination
+    /// at all.
     ///
     /// Everything else a wire value could get wrong is rejected HERE, before
     /// [`Core::triage`] is ever called, the same "reject before the seam"
@@ -1277,14 +1315,12 @@ impl TaskHostCore {
         edits: TriageEdits,
         now_ms: i64,
     ) -> TriageResponse {
-        let destination = match destination {
-            Some(raw) => match parse_destination(raw) {
-                Some(destination) => Some(destination),
-                None => {
-                    return reject(format!("unrecognised triage destination {raw:?}"));
-                }
-            },
-            None => None,
+        let promote_to_ready = match destination {
+            Some("ready") => true,
+            Some(raw) => {
+                return reject(format!("unrecognised triage destination {raw:?}"));
+            }
+            None => false,
         };
         if edits.title.as_deref() == Some("") {
             // The authority answers 400 on an empty title; a `NOT NULL`
@@ -1332,7 +1368,7 @@ impl TaskHostCore {
             deadline: edits.deadline,
             scheduled_date: edits.scheduled_date,
         };
-        match self.core.triage(seed, item_id, destination, patch, now_ms).await {
+        match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms).await {
             Ok(()) => TriageResponse { kind: "ok", error: None },
             Err(ActError::ItemNotFound) => TriageResponse {
                 kind: "not_found",
@@ -1430,6 +1466,81 @@ impl TaskHostCore {
                 id: None,
                 error: Some(error.to_string()),
             },
+        }
+    }
+
+    /// Saves (or replaces) `item_id`'s Grill draft (#356, ADR-0023) — the
+    /// takeover's own continuous "Back or close saves automatically" write,
+    /// called after every completed turn, not just on Back. `turns` is the
+    /// caller's own opaque JSON array, rejected here — never reaching
+    /// [`Core::save_grill_draft`] — if it is not even valid JSON, the same
+    /// "reject before the seam" discipline `complete_grill`'s
+    /// `session_steps` uses.
+    pub async fn save_grill_draft(
+        &mut self,
+        item_id: &str,
+        turns: &str,
+        now_ms: i64,
+    ) -> SaveGrillDraftResponse {
+        let turns: serde_json::Value = match serde_json::from_str(turns) {
+            Ok(turns) => turns,
+            Err(error) => {
+                return SaveGrillDraftResponse {
+                    kind: "failed",
+                    error: Some(format!("unreadable grill draft turns: {error}")),
+                };
+            }
+        };
+        match self.core.save_grill_draft(item_id, turns, now_ms).await {
+            Ok(()) => SaveGrillDraftResponse { kind: "ok", error: None },
+            Err(error) => SaveGrillDraftResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Discards `item_id`'s Grill draft (#356) — the takeover's explicit,
+    /// confirmed "Discard" gesture, and the one place a completed Grill's
+    /// local `"ok"` clears the interview that produced it.
+    pub async fn discard_grill_draft(
+        &mut self,
+        item_id: &str,
+        now_ms: i64,
+    ) -> DiscardGrillDraftResponse {
+        match self.core.discard_grill_draft(item_id, now_ms).await {
+            Ok(()) => DiscardGrillDraftResponse { kind: "ok", error: None },
+            Err(error) => DiscardGrillDraftResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// `item_id`'s Grill draft, if any (#356) — the takeover's own "resume"
+    /// read, asked for once when opening an item this build already knows
+    /// (via `grill_draft_item_ids`) carries a draft.
+    pub fn grill_draft(&self, item_id: &str) -> GrillDraftResponse {
+        match self.core.grill_draft(item_id) {
+            Some(turns) => GrillDraftResponse {
+                kind: "ok",
+                exists: true,
+                turns: Some(turns.clone()),
+            },
+            None => GrillDraftResponse {
+                kind: "ok",
+                exists: false,
+                turns: None,
+            },
+        }
+    }
+
+    /// Every item id carrying a draft (#356) — one bulk read for the whole
+    /// Triage inbox's "Resume grill" labels.
+    pub fn grill_draft_item_ids(&self) -> GrillDraftItemIdsResponse {
+        GrillDraftItemIdsResponse {
+            kind: "ok",
+            item_ids: self.core.grill_draft_item_ids(),
         }
     }
 
@@ -1617,8 +1728,12 @@ mod triage_tests {
         host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
+        // "grilling" (#360) is now rejected exactly like any other
+        // unrecognised spelling — promoting straight into Grilling is no
+        // longer a triage gesture at all; an item reaches Grilling only via
+        // a `fog_remains` Grill verdict, never through this seam.
         let response = host
-            .triage("seed-triage-1", &id, Some("backlog"), TriageEdits::default(), 2_000)
+            .triage("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
             .await;
 
         assert_eq!(response.kind, "failed");
@@ -1891,7 +2006,7 @@ mod triage_tests {
         host.triage(
             "seed-triage-1",
             &id,
-            Some("grilling"),
+            Some("ready"),
             TriageEdits {
                 context: Some(Some("@computer".to_string())),
                 size: Some(Some("deep".to_string())),
@@ -1980,24 +2095,12 @@ mod triage_tests {
         assert!(frontier.items[0].pending, "an unconfirmed triage must read as pending");
     }
 
-    #[tokio::test]
-    async fn sending_to_grilling_leaves_the_triage_inbox_without_reaching_the_frontier() {
-        let dir = tempfile::tempdir().unwrap();
-        let namespace = dir.path().join("ns-triage-5");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
-            .await
-            .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
-        let id = host.triage_inbox().items[0].item.id.clone();
-
-        let response = host
-            .triage("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
-            .await;
-
-        assert_eq!(response.kind, "ok");
-        assert_eq!(host.triage_inbox().items.len(), 0);
-        assert_eq!(host.frontier().items.len(), 0);
-    }
+    // Send-to-grilling through this seam is gone (#360): an item reaches
+    // Grilling exactly one way now, a `fog_remains` verdict from a completed
+    // Grill (`grill_tests::fog_remains_demotes_a_triage_item_to_grilling`).
+    // `"grilling"` is simply an unrecognised destination here, re-pinned by
+    // `triaging_with_an_unrecognised_destination_never_reaches_core_triage`
+    // above.
 
     /// #122: `destination: None` at this seam must reach `Core::triage` as
     /// a genuine `None`, not accidentally coerced into some destination —
@@ -2226,6 +2329,115 @@ mod grill_tests {
 
         assert_eq!(response.kind, "ok");
         assert_eq!(host.frontier().items.len(), 0, "Grilling never appears on the frontier");
+    }
+
+    /// #357: `grilling_items` is the "triage process" queue's second half —
+    /// a demoted item leaves `triage_inbox` and appears here instead, never
+    /// in both and never in neither.
+    #[tokio::test]
+    async fn fog_remains_moves_the_item_from_triage_inbox_to_grilling_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-6");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let response = host
+            .complete_grill(
+                "seed-grill-6",
+                &item_id,
+                "[]",
+                "transcript".to_string(),
+                "still foggy".to_string(),
+                "fog_remains",
+                "{}".to_string(),
+                "{}".to_string(),
+                false,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(host.triage_inbox().items.is_empty());
+        assert_eq!(host.grilling_items().items.len(), 1);
+        assert_eq!(host.grilling_items().items[0].item.id, item_id);
+    }
+
+    // -------------------------------------------- grill drafts (#356, ADR-0023)
+
+    #[tokio::test]
+    async fn a_saved_draft_is_readable_and_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let saved = host
+            .save_grill_draft(&item_id, r#"[{"question":{"prompt":"p","recommendedAnswer":"r","choices":[]},"answer":"a"}]"#, 1_000)
+            .await;
+        assert_eq!(saved.kind, "ok");
+        assert!(saved.error.is_none());
+
+        let read = host.grill_draft(&item_id);
+        assert_eq!(read.kind, "ok");
+        assert!(read.exists);
+        assert!(read.turns.is_some());
+
+        let ids = host.grill_draft_item_ids();
+        assert_eq!(ids.kind, "ok");
+        assert_eq!(ids.item_ids, vec![item_id]);
+    }
+
+    #[tokio::test]
+    async fn unreadable_turns_json_is_rejected_before_reaching_core_save_grill_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let saved = host.save_grill_draft(&item_id, "not json", 1_000).await;
+        assert_eq!(saved.kind, "failed");
+        assert!(saved.error.is_some());
+        assert!(!host.grill_draft(&item_id).exists, "a rejected save must not reach the core");
+    }
+
+    #[tokio::test]
+    async fn discarding_removes_the_draft_and_is_a_no_op_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+        host.save_grill_draft(&item_id, "[]", 1_000).await;
+
+        let discarded = host.discard_grill_draft(&item_id, 2_000).await;
+        assert_eq!(discarded.kind, "ok");
+        assert!(!host.grill_draft(&item_id).exists);
+
+        // A second discard, with nothing left to discard, is still "ok".
+        let discarded_again = host.discard_grill_draft(&item_id, 3_000).await;
+        assert_eq!(discarded_again.kind, "ok");
+    }
+
+    #[tokio::test]
+    async fn an_item_with_no_draft_reads_as_not_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-4");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let read = host.grill_draft("no-such-item");
+        assert_eq!(read.kind, "ok");
+        assert!(!read.exists);
+        assert!(read.turns.is_none());
+        assert!(host.grill_draft_item_ids().item_ids.is_empty());
     }
 }
 

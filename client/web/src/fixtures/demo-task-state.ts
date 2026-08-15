@@ -14,7 +14,8 @@
 // invented. What *is* taken from production is the SHAPE — measured once from
 // `GET /api/changes?since=0` on 2026-08-13, when the authority held 37 items:
 //
-//   board cards      29  (12 frontier + 17 unsorted captures)
+//   board cards      29  (12 frontier + 17 captured) — before departure 3 below
+//                        adds one fictional Grilling item, never measured
 //   by context       no context 12 · @computer 8 · @errands 4 · @phone 3 · @home 2
 //   by size          no size 13 · deep 8 · quick 4 · normal 4
 //   by energy        no energy 17 · high 5 · medium 4 · low 3
@@ -29,7 +30,7 @@
 // column** because production has no projects at all. A tidier fixture would
 // photograph a system nobody has.
 //
-// Two deliberate departures, both so the gate keeps covering states production
+// Three deliberate departures, all so the gate keeps covering states production
 // happens not to be in today:
 //
 //   1. Production holds ONE deadline, so a faithful mirror would paint every
@@ -44,6 +45,13 @@
 //      surface that looks like it has a single failure slot when it has one
 //      per mutation kind. Expect both when eyeballing `?demo=board` by hand —
 //      they are the fixture, not a real fault.
+//   3. Production has never grilled anything into Grilling yet, so a faithful
+//      mirror would leave the "triage process" queue's second half (#357,
+//      CONTEXT.md) unphotographed by `visual/surfaces.spec.ts:224`'s "now's
+//      columns" capture — exactly the surface this fixture exists to cover.
+//      One item is seeded `stage: "grilling"` so its own `StageBadge` and its
+//      place in `triageProcessQueue`'s combined order both render somewhere
+//      the gate actually looks.
 //
 // **#452 grows this seed to the whole of `TaskState`, not just the frontier
 // and the inbox**, so every screen that reads the store — not only Now —
@@ -67,13 +75,16 @@
 //      size/energy split none/gmail/google-tasks, 1 deep/high) rather than
 //      copying the 7 real ones verbatim — the measured SHAPE travels, never
 //      the real titles. `buildDemoTaskState`'s `ledger` is the frontier, the
-//      inbox and `done` unioned into `LedgerRowDTO`s (the same "one item
-//      pool, several reads of it" the real mirror gives, via `liveLedgerRow`),
-//      plus `ARCHIVED_ONLY_SEEDS` standing in for the six archived rows the
-//      count above found — again the shape at a smaller n (three), not the
-//      real six. One live row carries `deadLettered: true` and one carries
-//      `hasLiveAlert: true` (`DEAD_LETTERED_ITEM_ID`/`LIVE_ALERT_ITEM_ID`),
-//      so both of the Ledger's badges render.
+//      inbox, `grillingItems` (departure 3's seeded Grilling item) and `done`
+//      unioned into `LedgerRowDTO`s (the same "one item pool, several reads
+//      of it" the real mirror gives, via `liveLedgerRow`) — every live list
+//      this fixture builds, not a subset of them — plus `ARCHIVED_ONLY_SEEDS`
+//      standing in for the six archived rows the count above found — again
+//      the shape at a smaller n (three), not the real six. That is
+//      12 + 17 + 1 + 6 + 3 = 39 Ledger rows in total. One live row carries
+//      `deadLettered: true` and one carries `hasLiveAlert: true`
+//      (`DEAD_LETTERED_ITEM_ID`/`LIVE_ALERT_ITEM_ID`), so both of the
+//      Ledger's badges render.
 //   3. `bindings` / `paneReads` / (`lastSyncOutcome`, `lastSyncAtMs`,
 //      `lastSuccessfulSyncAtMs`) — `demo-questions.ts` used to hand-build
 //      these same six `QuestionInputs` fields as a THIRD fixture world,
@@ -432,6 +443,22 @@ const TRIAGE_SEEDS: Seed[] = [
   },
 ];
 
+/** Departure 3 in the header: the one item already grilled once and still
+ * foggy — `TaskState.grillingItems`, `Core::grilling_items`'s (#357) own
+ * query. Sorts ahead of `TRIAGE_SEEDS` in `triageProcessQueue`'s combined
+ * order, behind any local draft (none seeded here — a draft is device-local
+ * state this fixture makes no claim about). */
+const GRILLING_SEEDS: Seed[] = [
+  {
+    id: "b-g1",
+    title: "book the removals van",
+    stage: "grilling",
+    agoMs: 10 * HOUR,
+    size: "deep",
+    description: "Grilled once already; still can't settle on a date range.",
+  },
+];
+
 /** The six done items (#452, piece 2) — measured shape in the header: five
  * of six carry no size/energy, one is deep/high, sources split
  * none/gmail/google-tasks. */
@@ -590,9 +617,16 @@ export function buildDemoTaskState(): TaskState {
   const frontier = FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt));
   const triageInbox = TRIAGE_SEEDS.map((seed, index) => item(seed, index, loadedAt));
   const done = DONE_SEEDS.map((seed, index) => item(seed, index, loadedAt));
+  // Departure 3 in the header: production has never grilled anything into
+  // Grilling, so this seeds one anyway — the surface this fixture exists
+  // to keep photographed. Hoisted alongside `frontier`/`triageInbox`/`done`
+  // (not inlined at its one call site below) because the Ledger's pool and
+  // `activeItemCount` both need the same read of it — "one item pool,
+  // several reads of it" holds across all four live lists, not just three.
+  const grillingItems = GRILLING_SEEDS.map((seed, index) => item(seed, index, loadedAt));
 
   const ledger: LedgerRowDTO[] = [
-    ...[...frontier, ...triageInbox, ...done].map((taskItem) =>
+    ...[...frontier, ...triageInbox, ...grillingItems, ...done].map((taskItem) =>
       liveLedgerRow(taskItem, {
         deadLettered: taskItem.id === DEAD_LETTERED_ITEM_ID,
         hasLiveAlert: taskItem.id === LIVE_ALERT_ITEM_ID,
@@ -604,6 +638,7 @@ export function buildDemoTaskState(): TaskState {
   return {
     frontier,
     triageInbox,
+    grillingItems,
     // Production has no `blocked_by` edges and no projects at all — the second
     // is why grouping by Project produces exactly one column here, which is a
     // finding about the axis rather than a gap in the fixture.
@@ -658,15 +693,20 @@ export function buildDemoTaskState(): TaskState {
       error: "the authority refused that edit",
     },
     lastGrillCompletion: null,
+    lastGrillDraftWrite: null,
+    grillDraftItemIds: [],
+    grillDraftByItem: {},
     lastBindingWrite: null,
     // Piece 3's third field: a recent, ordinary completed cycle — the same
     // reading `reachability.ts`'s pane needs to answer `answered` rather than
-    // "never synced on this device", and `activeItemCount` is this board's
-    // own frontier-plus-inbox total, not the old fixture's unrelated `12`.
+    // "never synced on this device", and `activeItemCount` mirrors
+    // `SyncMirror::active_item_count`'s own filter (every stage but `Done`,
+    // `client/core/src/sync/mirror.rs`) — frontier, inbox AND the seeded
+    // Grilling item, not the old fixture's unrelated `12`.
     lastSyncOutcome: {
       kind: "completed",
       retryAfterMs: null,
-      activeItemCount: frontier.length + triageInbox.length,
+      activeItemCount: frontier.length + triageInbox.length + grillingItems.length,
       wasFullSweep: false,
       deadLettered: 0,
     },

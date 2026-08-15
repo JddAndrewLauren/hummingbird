@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StepDTO } from "../store/protocol";
-import { planReplacementLabel, wouldStrandPlan } from "./grill-review";
+import { demotesFromFrontier, planReplacementLabel, wouldStrandPlan } from "./grill-review";
 
 function step(overrides: Partial<StepDTO> = {}): StepDTO {
   return {
@@ -32,6 +32,31 @@ describe("wouldStrandPlan", () => {
 
   it("is false for resolved, whatever the steps — resolved never demotes a live stage", () => {
     expect(wouldStrandPlan("resolved", [step()])).toBe(false);
+  });
+});
+
+// #359 review round 1: the review card's own warning that a Confirm will
+// take a started item off the frontier — distinct from `wouldStrandPlan`,
+// which is about a live PLAN, not the frontier itself.
+describe("demotesFromFrontier", () => {
+  it("is true for fog_remains on a Ready or In Progress item — both are on the frontier today", () => {
+    expect(demotesFromFrontier("fog_remains", "ready")).toBe(true);
+    expect(demotesFromFrontier("fog_remains", "in_progress")).toBe(true);
+  });
+
+  it("is false for fog_remains on Triage or Grilling — neither was ever on the frontier", () => {
+    expect(demotesFromFrontier("fog_remains", "triage")).toBe(false);
+    expect(demotesFromFrontier("fog_remains", "grilling")).toBe(false);
+  });
+
+  it("is false for fog_remains on Blocked or Done — not reachable from a Grill button", () => {
+    expect(demotesFromFrontier("fog_remains", "blocked")).toBe(false);
+    expect(demotesFromFrontier("fog_remains", "done")).toBe(false);
+  });
+
+  it("is false for resolved, whatever the stage — resolved never moves a live stage", () => {
+    expect(demotesFromFrontier("resolved", "ready")).toBe(false);
+    expect(demotesFromFrontier("resolved", "in_progress")).toBe(false);
   });
 });
 

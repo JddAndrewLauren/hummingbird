@@ -9,6 +9,7 @@ import type {
   CalendarSelectionDTO,
   CalendarWorkerRequest,
   ConditionDTO,
+  GrillDraftTurnDTO,
   GrillVerdictName,
   RuleDTO,
   StepDTO,
@@ -17,7 +18,6 @@ import type {
   TaskStageName,
   TaskWorkerRequest,
   TierName,
-  TriageDestinationName,
   TriageEdits,
   WorkerResponse,
 } from "./protocol";
@@ -90,6 +90,7 @@ type Store = Pick<
   | "setTaskPending"
   | "setTaskSteps"
   | "setTaskPaneRead"
+  | "setTaskGrillDraft"
 >;
 
 // Wires a worker's response messages into the store. This is the only place
@@ -187,6 +188,10 @@ export function attachWorkerClient(
           // included — so an act can now remove an item from the triage
           // inbox, the same immediate re-read `triageResult` does.
           requestTriageInbox(worker);
+          // A Grilling item is just as actable (`canMarkDone`/`item-actions.ts`
+          // gates on stage, not this read) — same immediate re-read for the
+          // same reason.
+          requestGrillingItems(worker);
           // The Ledger/Done refresh an act also warrants is NOT here:
           // `getLedger` carries a `nowMs` this module deliberately never
           // samples (see this function's doc), so `useLedgerWiring.ts` keys
@@ -216,6 +221,7 @@ export function attachWorkerClient(
           // triaged item leaves the triage query and appears on the
           // frontier through the mirror, not local bookkeeping).
           requestTriageInbox(worker);
+          requestGrillingItems(worker);
           requestFrontier(worker);
           // #122: a `null`-destination triage (the weekend-plans pane's
           // do-date chip) can touch an item sitting in `task.blocked` —
@@ -242,6 +248,10 @@ export function attachWorkerClient(
           // triggers, so a confirmed Grill is visible right away, offline
           // or not.
           requestTriageInbox(worker);
+          // A `fog_remains` verdict demotes the item straight into Grilling
+          // (`task_host.rs`'s `complete_grill` doc) — same immediate
+          // re-read as `triageInbox` above.
+          requestGrillingItems(worker);
           requestFrontier(worker);
           requestBlocked(worker);
           // A ticked `deleteUntickedPlan` soft-deletes the item's live
@@ -250,6 +260,32 @@ export function attachWorkerClient(
           // now-deleted rows would sit stale until the next sync cycle.
           requestSteps(worker, message.itemId);
         }
+        return;
+      // Save and discard share one result slot — a caller only ever cares
+      // "did my last draft write land", not which kind of write it was.
+      case "saveGrillDraftResult":
+      case "discardGrillDraftResult":
+        store.setTaskState({
+          lastGrillDraftWrite: {
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        return;
+      case "grillDraft":
+        // Every real answer installs an entry — `stepsByItem`'s own "only
+        // grows entries actually asked about" shape, but unlike that read
+        // `exists: false` is NOT skipped here: `useGrillTakeoverWiring.ts`'s
+        // resume wait has no other way to learn the wait is over, and a
+        // race (the bulk `grillDraftItemIds` list said yes, a concurrent
+        // discard in another tab made this per-item read say no by the
+        // time it landed) must resolve as "resume with nothing" rather than
+        // leave that session's interview stuck at `idle` forever.
+        store.setTaskGrillDraft(message.itemId, message.exists ? message.turns ?? [] : []);
+        return;
+      case "grillDraftItemIds":
+        store.setTaskState({ grillDraftItemIds: message.itemIds });
         return;
       case "setBindingResult":
         store.setTaskState({
@@ -307,6 +343,9 @@ export function attachWorkerClient(
         return;
       case "triageInbox":
         store.setTaskState({ triageInbox: message.items });
+        return;
+      case "grillingItems":
+        store.setTaskState({ grillingItems: message.items });
         return;
       case "ledger":
         store.setTaskState({ ledger: message.rows });
@@ -568,18 +607,19 @@ export function actOnTask(
   worker.postMessage({ type: "act", seed, itemId, action, nowMs });
 }
 
-/** S13/#111's triage mutation: edits whatever fields `edits` sets and
- * promotes to `destination`, as one CAS `PATCH`. `seed` mints `Core::triage`'s
- * own queue-entry id — same caller-mints contract as `actOnTask`'s.
+/** S13/#111's triage mutation: edits whatever fields `edits` sets and, when
+ * `destination` is `"ready"`, promotes the item, as one CAS `PATCH`. `seed`
+ * mints `Core::triage`'s own queue-entry id — same caller-mints contract as
+ * `actOnTask`'s. `"ready"` is triage's only destination (#360).
  *
  * `destination` is `null` (#122) for a pure field edit that leaves `stage`
  * untouched — the weekend-plans pane's do-date chip's own call shape, since
- * `TriageDestinationName` cannot name an item that is already `InProgress`. */
+ * a promotion cannot name an item that is already `InProgress`. */
 export function triageItem(
   worker: WorkerLike,
   seed: string,
   itemId: string,
-  destination: TriageDestinationName | null,
+  destination: "ready" | null,
   edits: TriageEdits,
   nowMs: number,
 ): void {
@@ -635,6 +675,34 @@ export function completeGrill(
     deleteUntickedPlan: completion.deleteUntickedPlan,
     nowMs,
   });
+}
+
+/** #356/ADR-0023's draft save — the takeover's own continuous "Back or
+ * close saves automatically" write, called after every completed turn.
+ * Device-local: never enqueued, never touches the outbound queue. */
+export function saveGrillDraft(
+  worker: WorkerLike,
+  itemId: string,
+  turns: GrillDraftTurnDTO[],
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "saveGrillDraft", itemId, turns, nowMs });
+}
+
+/** #356's explicit, confirmed "Discard" gesture. */
+export function discardGrillDraft(worker: WorkerLike, itemId: string, nowMs: number): void {
+  worker.postMessage({ type: "discardGrillDraft", itemId, nowMs });
+}
+
+/** #356's resume read: one item's saved draft, if any. */
+export function requestGrillDraft(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "getGrillDraft", itemId });
+}
+
+/** #356's bulk read: every item id carrying a draft — the Triage inbox's
+ * "Resume grill" labels. */
+export function requestGrillDraftItemIds(worker: WorkerLike): void {
+  worker.postMessage({ type: "getGrillDraftItemIds" });
 }
 
 /** #118's binding write: one absolute-value CAS `PUT`, enqueued durably.
@@ -739,6 +807,12 @@ export function requestFrontier(worker: WorkerLike): void {
 
 export function requestTriageInbox(worker: WorkerLike): void {
   worker.postMessage({ type: "getTriageInbox" });
+}
+
+/** Items already grilled once and still foggy — the "triage process"
+ * queue's second half (#357). */
+export function requestGrillingItems(worker: WorkerLike): void {
+  worker.postMessage({ type: "getGrillingItems" });
 }
 
 /** The complete retained roster — the Ledger screen's read. `nowMs` is the

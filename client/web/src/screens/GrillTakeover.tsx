@@ -8,23 +8,32 @@ import { Input } from "../components/forms/Input";
 import { Textarea } from "../components/forms/Textarea";
 import type { GrillProposal, GrillQuestion } from "../skills/envelope";
 import type { GrillTurnState } from "../skills/grill-turn-state";
-import { planReplacementLabel, wouldStrandPlan } from "./grill-review";
+import { demotesFromFrontier, FRONTIER_DEMOTION_WARNING, planReplacementLabel, wouldStrandPlan } from "./grill-review";
 import type { GrillCompletion } from "../store/worker-client";
 import type { StepDTO, TaskItemDTO } from "../store/protocol";
 import { formatGrillTranscript, type GrillTurn } from "../skills/grill-args";
 
 /** The Triage row's center-column takeover (#355, ADR-0023): the interview,
  * one typed turn at a time (ADR-0023 decision 1), ending in the editable
- * review card. Deliberately without comforts, per the brief: no draft
- * persistence, no cross-tab lock, no history — leaving mid-interview loses
- * the conversation. A decline is NOT a dead end, though: "Try again" (below)
- * re-asks with the transcript already threaded, which is what makes the
- * transcript "resumable" a real property rather than a claim. This
- * component renders the current `GrillTurnState` and nothing else; every
- * decision about turns, transcripts, the Steps snapshot and the Confirm
- * mutation belongs to `shell/useGrillTakeoverWiring.ts`. */
+ * review card. Leaving mid-interview (Back, or closing the tab) never loses
+ * the conversation: it is saved automatically through the core, device-local
+ * (#356) — `Discard`, below, is the one EXPLICIT, confirmed way to actually
+ * drop it. A decline is NOT a dead end either: "Try again" (below) re-asks
+ * with the transcript already threaded, which is what makes the transcript
+ * "resumable" a real property rather than a claim. This component renders
+ * the current `GrillTurnState` and nothing else; every decision about turns,
+ * transcripts, the draft, the Steps snapshot and the Confirm mutation
+ * belongs to `shell/useGrillTakeoverWiring.ts`. */
 export interface GrillTakeoverProps {
   item: TaskItemDTO;
+  /** The close control's accessible name (#359 review round 1): the ONLY
+   * name an icon-only button carries, so it has to name the surface Back
+   * actually returns to. This component is now mounted on two screens with
+   * two different destinations — `"Back to Triage"` from `TriageScreen.tsx`,
+   * `"Back to Now"` from `NowScreen.tsx` — and hard-coding either one lies
+   * to a screen reader on the other surface, the same standard
+   * `docs/SURFACES.md` already applies to a landmark's name. */
+  backLabel: string;
   /** This session's frozen Steps snapshot (`useGrillTakeoverWiring.ts`'s
    * `sessionSteps`) — `null` until it lands, which the review card and its
    * Confirm button both read as "not ready yet", never as "no Steps". */
@@ -40,6 +49,10 @@ export interface GrillTakeoverProps {
   onRetry: () => void;
   onConfirm: (completion: GrillCompletion) => void;
   onBack: () => void;
+  /** #356's explicit, confirmed "Discard" gesture — `useGrillTakeoverWiring
+   * .ts`'s `discard`, only ever called after this component confirms with
+   * the human first (below). */
+  onDiscard: () => void;
   /** `write-failure.ts`'s `grillCompletionFailureFor`, read by the caller —
    * this component only renders it. */
   completionError: string | null;
@@ -47,11 +60,39 @@ export interface GrillTakeoverProps {
 
 const CARD_STYLE = { display: "flex", flexDirection: "column" as const, gap: "var(--space-5)" };
 
-function BackRow({ title, onBack }: { title: string; onBack: () => void }) {
+function BackRow({
+  title,
+  backLabel,
+  onBack,
+  onDiscard,
+}: {
+  title: string;
+  backLabel: string;
+  onBack: () => void;
+  onDiscard: () => void;
+}) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
-      <IconButton icon="x" label="Back to Triage" onClick={onBack} />
-      <span className="hb-meta">grilling — {title}</span>
+      <IconButton icon="x" label={backLabel} onClick={onBack} />
+      <span className="hb-meta" style={{ flex: "1 1 auto" }}>
+        grilling — {title}
+      </span>
+      {/* #356's explicit, confirmed "Discard": a native confirm dialog is
+          the whole of "confirmed" here — the simplest thing that actually
+          stops an accidental tap, and this app has no modal system to
+          build a second one on top of for a single, rare button. */}
+      <Button
+        size="sm"
+        variant="ghost"
+        iconLeft="trash-2"
+        onClick={() => {
+          if (window.confirm("Discard this grill? The interview so far will be lost.")) {
+            onDiscard();
+          }
+        }}
+      >
+        Discard
+      </Button>
     </div>
   );
 }
@@ -162,6 +203,21 @@ function ReviewCard({
           {proposal.verdict === "resolved" ? "Resolved" : "Fog remains"}
         </Badge>
       </div>
+      {/* #359 review round 1: the badge above names the VERDICT, not its
+          consequence — for a started (Ready/In Progress) item this Confirm
+          silently takes it off the frontier, which is exactly the case the
+          brief singles out ("the review card's demotion warning matters
+          more here than it did on Triage"). `role="status"`, not `"alert"`:
+          this is a heads-up ahead of an action the reader has not yet taken,
+          not a report of something that already failed. */}
+      {demotesFromFrontier(proposal.verdict, item.stage) ? (
+        <p
+          role="status"
+          style={{ font: "var(--type-body-sm)", color: "var(--status-warn-fg)", margin: 0 }}
+        >
+          {FRONTIER_DEMOTION_WARNING}
+        </p>
+      ) : null}
       <Textarea
         label="Summary"
         rows={3}
@@ -219,11 +275,13 @@ export function GrillTakeover({
   steps,
   turn,
   turns,
+  backLabel,
   onAnswer,
   onKeepGrilling,
   onRetry,
   onConfirm,
   onBack,
+  onDiscard,
   completionError,
 }: GrillTakeoverProps) {
   // Focus moves into the takeover the moment it mounts — otherwise it opens
@@ -242,7 +300,7 @@ export function GrillTakeover({
       tabIndex={-1}
       style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)", outline: "none" }}
     >
-      <BackRow title={item.title} onBack={onBack} />
+      <BackRow title={item.title} backLabel={backLabel} onBack={onBack} onDiscard={onDiscard} />
 
       {turn.phase === "asking" ? (
         <Card padding="var(--space-6)" style={CARD_STYLE}>

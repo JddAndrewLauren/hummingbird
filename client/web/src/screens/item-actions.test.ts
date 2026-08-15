@@ -5,6 +5,7 @@ import {
   availableActions,
   canGrill,
   canMarkDone,
+  grillButtonLabel,
   resolveFallbackPending,
 } from "./item-actions";
 
@@ -80,16 +81,34 @@ describe("canMarkDone", () => {
   });
 });
 
-// #355/ADR-0023's "Grill me" affordance: Triage rows only, this slice.
+// #355/ADR-0023's "Grill me" affordance. #359 widens it past Triage alone:
+// Now's frontier rows (Ready, In Progress) get it too, and Grilling must stay
+// `true` because #357's combined "triage process" queue can show a Grilling
+// row on EITHER screen — without it, that row's "Resume grill" button would
+// vanish the moment its stage flipped out of Triage.
 describe("canGrill", () => {
-  it("is true for triage alone", () => {
-    expect(canGrill("triage")).toBe(true);
+  it("is true for triage, grilling, ready and in_progress", () => {
+    for (const stage of ["triage", "grilling", "ready", "in_progress"] as const) {
+      expect(canGrill(stage)).toBe(true);
+    }
   });
 
-  it("is false for every other stage, Grilling included", () => {
-    for (const stage of ["grilling", "ready", "in_progress", "blocked", "done"] as const) {
+  it("is false for blocked and done", () => {
+    for (const stage of ["blocked", "done"] as const) {
       expect(canGrill(stage)).toBe(false);
     }
+  });
+});
+
+// #356/ADR-0023's "Grill me"/"Resume grill" label: one deciding function,
+// never a per-screen branch on whether a draft exists.
+describe("grillButtonLabel", () => {
+  it("reads Grill me when the item has no draft", () => {
+    expect(grillButtonLabel(false)).toBe("Grill me");
+  });
+
+  it("reads Resume grill when the item already carries a draft", () => {
+    expect(grillButtonLabel(true)).toBe("Resume grill");
   });
 });
 

@@ -50,6 +50,16 @@ function Harness({
       {turn.phase === "question" ? <span data-testid="prompt">{turn.question.prompt}</span> : null}
       {turn.phase === "proposal" ? <span data-testid="summary">{turn.proposal.summary}</span> : null}
       <button type="button" onClick={() => onAsk(itemId, itemId)}>ask</button>
+      <button
+        type="button"
+        onClick={() =>
+          onAsk(itemId, itemId, [
+            { question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] }, answer: "SEA" },
+          ])
+        }
+      >
+        resume
+      </button>
       <button type="button" onClick={() => onAnswer(itemId, itemId, "SEA")}>answer</button>
       <button type="button" onClick={() => onKeepGrilling(itemId, itemId)}>keep grilling</button>
       <button type="button" onClick={() => onRetry(itemId, itemId)}>retry</button>
@@ -86,6 +96,26 @@ describe("useGrillWiring", () => {
     expect(body).toEqual({ skill: "grill-me", args: { ref: "item-1", turns: [] } });
     expect(phase()).toBe("question");
     expect(screen.getByTestId("prompt").textContent).toBe("Which airport?");
+  });
+
+  /** #356's "Resume grill" seam: `onAsk` threads a caller-supplied
+   * `initialTurns` straight through to the request, the same way
+   * `onKeepGrilling`/`onRetry` already thread the accumulated turns —
+   * resuming a saved draft is just a fresh ask with a non-empty start. */
+  it("onAsk threads a caller-supplied initialTurns array through to the request", async () => {
+    const fetchImpl = vi.fn(async (_input: unknown, _init?: RequestInit) => ndjson(PROPOSAL_LINE));
+    render(<Harness fetchImpl={fetchImpl as never} store={tokenStore()} />);
+
+    fireEvent.click(screen.getByText("resume"));
+    await settle();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.args.turns).toEqual([
+      { question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] }, answer: "SEA" },
+    ]);
+    expect(screen.getByTestId("turn-count").textContent).toBe("1");
+    expect(phase()).toBe("proposal");
   });
 
   it("onAnswer appends the round and asks again with the accumulated turns", async () => {

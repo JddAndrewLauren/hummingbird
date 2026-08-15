@@ -29,6 +29,7 @@ describe("isTaskWorkerRequest", () => {
     { type: "getPaneRead", source: "city-waste/v2", nowMs: 1 },
     { type: "getFrontier" },
     { type: "getTriageInbox" },
+    { type: "getGrillingItems" },
     { type: "getBlocked" },
     { type: "getSteps", itemId: "i" },
     { type: "getProjects" },

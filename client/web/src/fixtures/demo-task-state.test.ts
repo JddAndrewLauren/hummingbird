@@ -11,7 +11,11 @@ import { computeUrgency, isValidDeadline } from "../screens/urgency";
 // Built once here rather than per test: `buildDemoTaskState` reads the clock,
 // and every assertion below is about shape, which no two calls disagree on.
 const state = buildDemoTaskState();
-const board = [...state.frontier, ...state.triageInbox];
+// #357: the one seeded Grilling item is departure 3, not part of production's
+// measured shape (the header's table stays the 29-card measurement) — but it
+// IS on Now's board (`triageProcessQueue` combines it with `triageInbox`), so
+// it belongs in every assertion below that is about what actually renders.
+const board = [...state.frontier, ...state.triageInbox, ...state.grillingItems];
 
 const tally = (values: Array<string | null>) =>
   values.reduce<Record<string, number>>((acc, value) => {
@@ -21,15 +25,17 @@ const tally = (values: Array<string | null>) =>
   }, {});
 
 describe("buildDemoTaskState — production's shape, none of its content", () => {
-  it("puts 29 cards on the board, 12 startable and 17 unsorted", () => {
+  it("puts 30 cards on the board: 12 startable, 17 captured, 1 grilling", () => {
     expect(state.frontier).toHaveLength(12);
     expect(state.triageInbox).toHaveLength(17);
-    expect(board).toHaveLength(29);
+    expect(state.grillingItems).toHaveLength(1);
+    expect(board).toHaveLength(30);
   });
 
   it("mirrors the context spread, so the no-context column really is the biggest", () => {
+    // The seeded Grilling item carries no context, same as most of production.
     expect(tally(board.map((i) => i.context))).toEqual({
-      "(none)": 12,
+      "(none)": 13,
       "@computer": 8,
       "@errands": 4,
       "@phone": 3,
@@ -38,14 +44,15 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
   });
 
   it("mirrors the size and energy spread, both dominated by unset", () => {
+    // The seeded Grilling item is `size: "deep"`, `energy` unset.
     expect(tally(board.map((i) => i.size))).toEqual({
       "(none)": 13,
-      deep: 8,
+      deep: 9,
       quick: 4,
       normal: 4,
     });
     expect(tally(board.map((i) => i.energy))).toEqual({
-      "(none)": 17,
+      "(none)": 18,
       high: 5,
       medium: 4,
       low: 3,
@@ -54,7 +61,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
 
   it("mirrors the capture sources — most typed, seven swept from mail", () => {
     expect(tally(board.map((i) => i.source))).toEqual({
-      "(none)": 21,
+      "(none)": 22,
       "gmail/v1": 7,
       "google-tasks/v1": 1,
     });
@@ -78,7 +85,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
   });
 });
 
-describe("buildDemoTaskState — the two deliberate departures from production", () => {
+describe("buildDemoTaskState — the three deliberate departures from production", () => {
   it("carries one deadline per urgency band, which production's single deadline cannot", () => {
     const nowMs = Date.now();
     const bands = board
@@ -103,6 +110,11 @@ describe("buildDemoTaskState — the two deliberate departures from production",
     // alert to its un-named fallback — the fixture would still "work" and
     // would stop demonstrating the sentence it exists to demonstrate.
     expect(state.triageInbox.some((i) => i.id === failure?.itemId)).toBe(true);
+  });
+
+  it("seeds one Grilling-stage item, so #357's queue and its badge both render", () => {
+    expect(state.grillingItems).toHaveLength(1);
+    expect(state.grillingItems[0].stage).toBe("grilling");
   });
 });
 
@@ -139,10 +151,15 @@ describe("buildDemoTaskState — #452 grows the seed past the frontier and the i
     expect(state.done?.every((i) => i.stage === "done")).toBe(true);
   });
 
-  it("seeds the Ledger as a superset of the frontier, the inbox and Done, plus archived-only rows", () => {
+  it("seeds the Ledger as a superset of the frontier, the inbox, Grilling and Done, plus archived-only rows", () => {
     expect(state.ledger).not.toBeNull();
     const ledgerIds = new Set(state.ledger?.map((row) => row.id));
-    for (const item of [...state.frontier, ...state.triageInbox, ...(state.done ?? [])]) {
+    for (const item of [
+      ...state.frontier,
+      ...state.triageInbox,
+      ...state.grillingItems,
+      ...(state.done ?? []),
+    ]) {
       expect(ledgerIds.has(item.id)).toBe(true);
     }
     // At least one archived-only row: present in the Ledger, absent from every
@@ -152,9 +169,16 @@ describe("buildDemoTaskState — #452 grows the seed past the frontier and the i
         row.archivedAt !== null &&
         !state.frontier.some((i) => i.id === row.id) &&
         !state.triageInbox.some((i) => i.id === row.id) &&
+        !state.grillingItems.some((i) => i.id === row.id) &&
         !(state.done ?? []).some((i) => i.id === row.id),
     );
     expect(archivedOnly?.length).toBeGreaterThan(0);
+  });
+
+  it("counts the seeded Grilling item into lastSyncOutcome.activeItemCount, mirroring SyncMirror::active_item_count's every-stage-but-Done filter", () => {
+    expect(state.lastSyncOutcome?.activeItemCount).toBe(
+      state.frontier.length + state.triageInbox.length + state.grillingItems.length,
+    );
   });
 
   it("gives the Ledger at least one deadLettered row and one hasLiveAlert row, so both badges render", () => {
