@@ -43,6 +43,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 
@@ -76,21 +77,39 @@ class CaptureActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** Starts one on-device recognition pass; `onTranscript` receives the
-     * first hypothesis verbatim. A no-op if the permission was refused or
-     * the device has no recognizer — the button simply does nothing rather
-     * than crashing, since M1 has no error-surfacing affordance for this. */
-    private fun startListening(onTranscript: (String) -> Unit) {
+    /** Starts one **on-device** recognition pass; `onTranscript` receives
+     * the first hypothesis verbatim, and `onFailure` every other way the
+     * pass can end.
+     *
+     * ADR-0022's prohibition is on audio leaving the device, and
+     * `isRecognitionAvailable`/`createSpeechRecognizer` do not establish
+     * that: they resolve the *default* recognition service, which the
+     * platform documents as free to send audio to a remote server. Only the
+     * `…OnDevice…` pair positively establishes local processing, so those
+     * are what this asks for, and an absent on-device recognizer means the
+     * feature is unavailable — never a quiet fall back to the default
+     * service, which is exactly the "network-backed recognizer as an
+     * error-path fallback" the ADR rejects by name.
+     *
+     * Every failure path ends the session and reports, per the same ADR:
+     * "the prohibition explicitly includes error paths." */
+    private fun startListening(
+        onTranscript: (String) -> Unit,
+        onFailure: (DictationFailure) -> Unit,
+    ) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
+            onFailure(DictationFailure.NO_PERMISSION)
             return
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+        if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+            onFailure(DictationFailure.UNAVAILABLE)
             return
         }
-        val active = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this).also { recognizer = it }
-        active.setRecognitionListener(TranscriptListener(onTranscript))
+        val active = recognizer
+            ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(this).also { recognizer = it }
+        active.setRecognitionListener(TranscriptListener(onTranscript, onFailure))
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         }
@@ -98,14 +117,50 @@ class CaptureActivity : ComponentActivity() {
     }
 }
 
+/** The ways a dictation pass can end without text, each with the sentence
+ * the capture screen shows for it. One enum rather than four call sites
+ * composing strings, because ADR-0022 treats the *set* as the requirement:
+ * unavailable, refused, mid-session error, no match — all four visible.
+ * Wording follows the design README's honesty rule: say what happened and
+ * what still works, apologise for nothing. */
+enum class DictationFailure(val message: String) {
+    NO_PERMISSION("Dictation needs microphone access. Typing still works."),
+    UNAVAILABLE("This device has no on-device speech recognition. Typing still works."),
+    FAILED("Dictation stopped. Typing still works."),
+    NO_MATCH("No speech recognised."),
+}
+
 /** A raw-transcript-only listener (ADR-0022): the first hypothesis's text,
  * verbatim, never trimmed or parsed here — [CaptureViewModel.onTranscript]
- * is the next stop, and it does not touch the string either. */
-private class TranscriptListener(private val onTranscript: (String) -> Unit) : RecognitionListener {
+ * is the next stop, and it does not touch the string either. A result that
+ * carries no hypothesis is a failure, not a silent no-op: an empty
+ * `RESULTS_RECOGNITION` is the no-match case the ADR names. */
+private class TranscriptListener(
+    private val onTranscript: (String) -> Unit,
+    private val onFailure: (DictationFailure) -> Unit,
+) : RecognitionListener {
     override fun onResults(results: Bundle) {
-        results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.firstOrNull()
-            ?.let(onTranscript)
+        val transcript = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+        if (transcript == null) {
+            onFailure(DictationFailure.NO_MATCH)
+            return
+        }
+        onTranscript(transcript)
+    }
+
+    /** The recognizer has already ended the session by the time this
+     * arrives; the only thing left is to say so. Nothing here retries, and
+     * nothing here reaches for a second recognizer — that is the fallback
+     * ADR-0022 rejects. */
+    override fun onError(error: Int) {
+        val failure = when (error) {
+            SpeechRecognizer.ERROR_NO_MATCH,
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+            -> DictationFailure.NO_MATCH
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> DictationFailure.NO_PERMISSION
+            else -> DictationFailure.FAILED
+        }
+        onFailure(failure)
     }
 
     override fun onReadyForSpeech(params: Bundle?) {}
@@ -113,26 +168,33 @@ private class TranscriptListener(private val onTranscript: (String) -> Unit) : R
     override fun onRmsChanged(rmsdB: Float) {}
     override fun onBufferReceived(buffer: ByteArray?) {}
     override fun onEndOfSpeech() {}
-    override fun onError(error: Int) {}
     override fun onPartialResults(partialResults: Bundle?) {}
     override fun onEvent(eventType: Int, params: Bundle?) {}
 }
 
 @Composable
 private fun CaptureScreen(
-    startListening: ((String) -> Unit) -> Unit,
+    startListening: ((String) -> Unit, (DictationFailure) -> Unit) -> Unit,
     onFinished: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val viewModel = remember { CaptureViewModel.create(context) }
+    // Activity-scoped, not composition-scoped: see CaptureViewModel.factory.
+    val viewModel: CaptureViewModel = viewModel(factory = CaptureViewModel.factory(context))
     val draft by viewModel.draft.collectAsState()
+    val dictationFailure by viewModel.dictationFailure.collectAsState()
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
 
     val micPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> if (granted) startListening(viewModel::onTranscript) }
+    ) { granted ->
+        if (granted) {
+            startListening(viewModel::onTranscript, viewModel::onDictationFailed)
+        } else {
+            viewModel.onDictationFailed(DictationFailure.NO_PERMISSION)
+        }
+    }
 
     // Zero taps to a raised keyboard: request focus and show the IME the
     // instant this screen composes.
@@ -178,9 +240,25 @@ private fun CaptureScreen(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { submit() }),
                 )
-                IconButton(onClick = { micPermission.launch(Manifest.permission.RECORD_AUDIO) }) {
+                IconButton(
+                    onClick = {
+                        viewModel.onDictationStarted()
+                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                ) {
                     Icon(painterResource(R.drawable.ic_mic), contentDescription = "Dictate")
                 }
+            }
+
+            // ADR-0022: a dictation pass that ends without text says so.
+            // A mic that renders and then does nothing is the failure mode
+            // that ADR calls a defect rather than a nit.
+            dictationFailure?.let {
+                Text(
+                    it.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
 
             Button(onClick = { submit() }, enabled = viewModel.canSubmit(draft)) {

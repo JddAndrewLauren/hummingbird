@@ -104,4 +104,41 @@ class NowScreenStructuralTest {
             }
         }
     }
+
+    @Test
+    fun `calm gets no urgency swatch`() {
+        // ADR-0021 decision 2: "`calm` gets no swatch — the default is not
+        // a claim worth colouring." The rule lives in urgencyColor's own
+        // mapping (CALM -> null) rather than at the call site, so this
+        // asserts the mapping and that the caller honours a null.
+        assertTrue(
+            "urgencyColor must return a nullable Color so CALM can map to no swatch",
+            Regex("""fun urgencyColor\([^)]*\): Color\?""").containsMatchIn(nowScreenSrc),
+        )
+        assertTrue(
+            "urgencyColor must map MobileUrgencyBand.CALM to null",
+            Regex("""MobileUrgencyBand\.CALM\s*->\s*null""").containsMatchIn(nowScreenSrc),
+        )
+        assertTrue(
+            "the swatch Box must be rendered only when urgencyColor gives one",
+            Regex("""urgencyColor\([^)]*\)\?\.let""").containsMatchIn(nowScreenSrc),
+        )
+    }
+
+    @Test
+    fun `the action buttons wrap rather than clipping at a narrow width`() {
+        // A Ready item offers all four actions (decisions::actions::
+        // available_actions), and "Start / Complete / Mark blocked /
+        // Cancel" is wider than a phone card — a fixed, non-scrolling Row
+        // clipped the trailing action on the ordinary case. No emulator
+        // here, so this gates the container choice itself.
+        val actionsBlock = Regex("""availableActions\.isNotEmpty\(\)[\s\S]*?\n {12}}""")
+            .find(nowScreenSrc)
+            ?.value
+            ?: error("could not locate the available-actions block in NowScreen.kt")
+        assertTrue(
+            "the action buttons must sit in a FlowRow, not a fixed Row",
+            actionsBlock.contains("FlowRow("),
+        )
+    }
 }

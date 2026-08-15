@@ -3,6 +3,7 @@ package net.twinion.hummingbird
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,5 +69,39 @@ class CaptureViewModelTest {
         vm.onDraftChange("stale text")
         vm.onTranscript("dictated text")
         assertEquals("dictated text", vm.draft.value)
+    }
+
+    // ADR-0022 requires a dictation pass that ends without text to end the
+    // session *and say so*; `DictationLocalityTest` gates that every path
+    // raises something, and these gate what the reader then sees.
+
+    @Test
+    fun `a dictation failure is held for the screen to show`() {
+        val vm = viewModel()
+        vm.onDictationFailed(DictationFailure.UNAVAILABLE)
+        assertEquals(DictationFailure.UNAVAILABLE, vm.dictationFailure.value)
+    }
+
+    @Test
+    fun `starting a fresh attempt clears the previous notice`() {
+        // A stale "no speech recognised" hanging over a listening mic reads
+        // as the new attempt having already failed.
+        val vm = viewModel()
+        vm.onDictationFailed(DictationFailure.NO_MATCH)
+        vm.onDictationStarted()
+        assertNull(vm.dictationFailure.value)
+    }
+
+    @Test
+    fun `a transcript clears the notice a previous failure left`() {
+        val vm = viewModel()
+        vm.onDictationFailed(DictationFailure.FAILED)
+        vm.onTranscript("dictated text")
+        assertNull(vm.dictationFailure.value)
+    }
+
+    @Test
+    fun `dictation is idle-clean before anything is attempted`() {
+        assertNull(viewModel().dictationFailure.value)
     }
 }

@@ -2,6 +2,9 @@ package net.twinion.hummingbird
 
 import android.content.Context
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -62,5 +65,16 @@ class NowViewModel(
                     CoreHolder.get(context.applicationContext).act(itemId, action, nowMs)
                 },
             )
+
+        /** The factory `NowScreen` hands to `viewModel()`, so the loaded
+         * queue is scoped to the Activity's `ViewModelStore` rather than to
+         * a composition — the same correction [CaptureViewModel.factory]
+         * documents (`remember` does not survive Activity recreation, and a
+         * fold/unfold recreates). Cheaper here than there, since a lost
+         * queue only means a re-read rather than lost typing, but the two
+         * screens holding their state the same way is the point. */
+        fun factory(context: Context): ViewModelProvider.Factory = viewModelFactory {
+            initializer { create(context) }
+        }
     }
 }

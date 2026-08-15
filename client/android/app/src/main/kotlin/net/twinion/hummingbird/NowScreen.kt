@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.viewmodel.compose.viewModel
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
@@ -40,8 +42,6 @@ import net.twinion.hummingbird.ui.theme.Amber500
 import net.twinion.hummingbird.ui.theme.Crimson500
 import net.twinion.hummingbird.ui.theme.Ember400
 import net.twinion.hummingbird.ui.theme.Ember500
-import net.twinion.hummingbird.ui.theme.Ink300
-import net.twinion.hummingbird.ui.theme.Ink400
 import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
 import net.twinion.hummingbird.ui.theme.UrgencySoonDark
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
@@ -67,13 +67,20 @@ private val DEADLINE_SHAPE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyy
 
 private fun nowDeadlineShaped(): String = LocalDateTime.now().format(DEADLINE_SHAPE)
 
-/** [MobileUrgencyBand]'s dot colour — exhaustive, no `else` arm: the
- * compile-time drift gate the brief names for a `uniffi::Enum` crossing.
- * Values are the design mirror's `--urgency-*` tokens
- * (`.claude/skills/hummingbird-design/tokens/colors.css`), light/dark split
- * exactly `HummingbirdTheme`'s own mapping notes state the pattern for. */
-private fun urgencyColor(band: MobileUrgencyBand, dark: Boolean): Color = when (band) {
-    MobileUrgencyBand.CALM -> if (dark) Ink400 else Ink300
+/** [MobileUrgencyBand]'s dot colour, or `null` for the band that gets no
+ * dot — exhaustive, no `else` arm: the compile-time drift gate the brief
+ * names for a `uniffi::Enum` crossing. Values are the design mirror's
+ * `--urgency-*` tokens (`.claude/skills/hummingbird-design/tokens/colors.css`),
+ * light/dark split exactly `HummingbirdTheme`'s own mapping notes state the
+ * pattern for.
+ *
+ * `CALM` maps to `null` rather than to a grey, because ADR-0021 decision 2
+ * is explicit: "`calm` gets no swatch — the default is not a claim worth
+ * colouring". Encoding that here rather than at the call site keeps the
+ * rule with the mapping the rule is about, and keeps the `when` the one
+ * place a new band has to be answered for. */
+private fun urgencyColor(band: MobileUrgencyBand, dark: Boolean): Color? = when (band) {
+    MobileUrgencyBand.CALM -> null
     MobileUrgencyBand.SOON -> if (dark) UrgencySoonDark else Amber500
     MobileUrgencyBand.NOW -> if (dark) Ember400 else Ember500
     MobileUrgencyBand.OVERDUE -> if (dark) UrgencyOverdueDark else Crimson500
@@ -107,7 +114,8 @@ private val ACTION_LABEL: Map<String, String> = mapOf(
 fun NowScreen(onShowStatus: () -> Unit, syncTick: Int = 0) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val viewModel = remember { NowViewModel.create(context) }
+    // Activity-scoped, not composition-scoped: see NowViewModel.factory.
+    val viewModel: NowViewModel = viewModel(factory = NowViewModel.factory(context))
     val items by viewModel.items.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val dark = isSystemInDarkTheme()
@@ -205,11 +213,13 @@ private fun NowRow(record: NowItemRecord, dark: Boolean, onAct: (String) -> Unit
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(urgencyColor(record.urgency, dark), CircleShape),
-                )
+                urgencyColor(record.urgency, dark)?.let { swatch ->
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(swatch, CircleShape),
+                    )
+                }
                 Text(
                     urgencyLabel(record.urgency),
                     style = MaterialTheme.typography.labelSmall,
@@ -227,7 +237,18 @@ private fun NowRow(record: NowItemRecord, dark: Boolean, onAct: (String) -> Unit
             Text(record.title, style = MaterialTheme.typography.bodyLarge)
 
             if (record.availableActions.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // A `FlowRow`, not a `Row`: a `Ready` item offers all four
+                // actions (`decisions::actions::available_actions`), and
+                // "Start / Complete / Mark blocked / Cancel" is wider than
+                // a phone card — a fixed, non-scrolling Row clipped the
+                // trailing action on the ordinary case, not just on the
+                // Fold's cover display. Wrapping keeps every offered action
+                // reachable at any width without this file deciding which
+                // ones matter.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     for (action in record.availableActions) {
                         OutlinedButton(onClick = { onAct(action) }) {
                             Text(ACTION_LABEL[action] ?: action)

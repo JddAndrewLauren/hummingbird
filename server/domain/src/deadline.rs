@@ -208,6 +208,19 @@ pub fn shift(base: &str, amount: i64, unit: DurationUnit) -> Option<String> {
 /// [`shift`] already uses — no second "how many days between two calendar
 /// dates".
 ///
+/// **The DST residue is known and accepted.** Civil minutes are not elapsed
+/// minutes across an offset change: `2026-03-07T12:00` → `2026-03-08T12:30`
+/// in Los Angeles is 23.5 real hours but 1,470 civil ones, so a deadline
+/// sitting within an hour of a band boundary can read one band off, twice a
+/// year, for readers in a zone that shifts. Measuring elapsed time instead
+/// would mean resolving both civil values to instants *here* — a tzdb in
+/// this crate, which the ADR-0015 amendment forbids by name and which the
+/// wasm32-thinness rule (`CLAUDE.md`) forbids again for the worker build.
+/// The band a reader sees is a read-time reading, not a stored fact, and no
+/// routing decision hangs on it (`CONTEXT.md`), so an hour of skew at the
+/// edge is cheaper than either prohibition. Anything needing true elapsed
+/// time belongs in the caller that already owns the reader's zone.
+///
 /// `None` if either string is not `is_valid_deadline`-accepted.
 pub fn minutes_until(deadline: &str, now: &str) -> Option<i64> {
     let deadline_minutes = civil_minutes(&deadline_sort_key(deadline))?;

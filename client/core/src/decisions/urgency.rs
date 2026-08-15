@@ -169,8 +169,20 @@ pub fn join_deadline(date: &str, time: Option<&str>) -> String {
     }
 }
 
+/// Shape only (`\d{4}-\d{2}-\d{2}`), the date half of
+/// [`is_date_time_shaped`] and held to the same digit-by-digit discipline
+/// for the reason [`join_deadline`]'s doc states: an unrecognised legacy
+/// value must come back unchanged, and a length-and-two-hyphens check is
+/// not recognition — it accepts `abcd-ef-gh` and rewrites it to
+/// `abcd-ef-ghT09:30`. Validity (an impossible calendar date) is still a
+/// separate question, asked by [`is_valid_deadline_field`].
 fn is_date_only(s: &str) -> bool {
-    s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-'
+    if s.len() != 10 {
+        return false;
+    }
+    let b = s.as_bytes();
+    let digit = |i: usize| b[i].is_ascii_digit();
+    (0..4).all(digit) && b[4] == b'-' && (5..7).all(digit) && b[7] == b'-' && (8..10).all(digit)
 }
 
 #[cfg(test)]
@@ -315,5 +327,16 @@ mod tests {
     #[test]
     fn join_deadline_refuses_to_build_a_date_time_on_a_date_it_does_not_recognise() {
         assert_eq!(join_deadline("next tuesday", Some("09:30")), "next tuesday");
+    }
+
+    /// The near-miss the old length-and-two-hyphens check let through: a
+    /// ten-character legacy value that merely *looks* like a date under a
+    /// shape test is not recognised, so it comes back untouched rather than
+    /// being rewritten into a date-time that was never a deadline.
+    #[test]
+    fn join_deadline_leaves_a_date_shaped_non_date_alone() {
+        assert_eq!(join_deadline("abcd-ef-gh", Some("09:30")), "abcd-ef-gh");
+        assert_eq!(join_deadline("2026-0x-01", Some("09:30")), "2026-0x-01");
+        assert_eq!(join_deadline("q3-planning", Some("09:30")), "q3-planning");
     }
 }

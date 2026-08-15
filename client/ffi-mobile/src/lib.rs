@@ -59,21 +59,41 @@ pub fn can_submit_capture(draft: &str) -> bool {
 
 /// Mints a fresh seed for one durable mutation ([`MobileTaskHost::capture`]
 /// or [`MobileTaskHost::act`]). Only uniqueness matters here, never
-/// unpredictability — the same "no clock or RNG that panics on bare wasm32"
-/// story `sync::write::deterministic_id`'s callers already tell, adapted for
-/// a host that supplies no seed of its own (`useCaptureWiring.ts`'s
-/// `mintSeed` is the web's equivalent, reached from JS instead of from here
-/// because that door takes a caller-supplied seed — this crate's mutation
-/// methods take a narrower signature that does not, so the mint moves behind
-/// the seam). One shared in-process monotonic counter, paired with the
-/// caller's own `now_ms` and a `kind` tag so a capture and an act at the
-/// same millisecond never collide either: two mutations can never share an
-/// id within one process, and a fresh process starts the counter over only
-/// alongside a fresh `now_ms`.
+/// unpredictability — but uniqueness has to hold **across processes**, not
+/// just within one, because the seed becomes an entity id and the
+/// authority's create path is idempotent on it: a second capture that mints
+/// an id an earlier one already used is not a duplicate, it is a *lost*
+/// capture, silently answered with the old item. `now_ms` plus a
+/// process-local counter cannot carry that weight — a restart resets the
+/// counter, so a repeated wall-clock millisecond (a clock step back, an NTP
+/// correction, a fast relaunch) reproduces a live id. So the seed leads
+/// with OS randomness, exactly as the web's equivalent already does
+/// (`useCaptureWiring.ts`'s `mintSeed`, `crypto.randomUUID()`).
+///
+/// The counter stays, behind the random bytes, for the one thing randomness
+/// does not give for free: two mutations in the same process are ordered
+/// and distinct even if the RNG were to repeat itself. `kind` and `now_ms`
+/// remain for legibility of a raw id in a log.
+///
+/// This crate never builds for `wasm32` (that is `ffi-web`, which takes a
+/// caller-supplied seed from JS precisely so it needs no RNG of its own),
+/// so `getrandom` here does not reopen the "no RNG that panics on bare
+/// wasm32" constraint `sync::write::deterministic_id`'s callers work under.
+/// A failing RNG is not a reason to refuse a capture, so it degrades to the
+/// old counter-only shape rather than propagating — the narrow cross-process
+/// window is strictly better than dropping the user's text.
 static MUTATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn mint_mutation_seed(kind: &str, now_ms: i64) -> String {
-    format!("mobile-{kind}:{now_ms}:{}", MUTATION_SEQ.fetch_add(1, Ordering::Relaxed))
+    let seq = MUTATION_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut random = [0u8; 16];
+    match getrandom::getrandom(&mut random) {
+        Ok(()) => {
+            let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            format!("mobile-{kind}:{now_ms}:{seq}:{hex}")
+        }
+        Err(_) => format!("mobile-{kind}:{now_ms}:{seq}"),
+    }
 }
 
 uniffi::setup_scaffolding!();
@@ -671,6 +691,21 @@ mod tests {
         let b = host.capture("second".to_string(), 5_000).await.unwrap();
         assert_ne!(a, b);
         assert_eq!(host.queue_depth().await, 2);
+    }
+
+    /// The counter alone cannot carry uniqueness across a process restart
+    /// (it starts over), so the seed leads with OS randomness — see
+    /// [`mint_mutation_seed`]'s doc for why a repeated id is a *lost*
+    /// capture rather than a duplicate one. Held identical `kind` and
+    /// `now_ms` here so only the random field can be doing the work; the
+    /// counter is deliberately not what this observes.
+    #[test]
+    fn the_mutation_seed_carries_randomness_not_just_the_counter() {
+        let random_field = |seed: String| seed.rsplit(':').next().unwrap().to_string();
+        let a = random_field(mint_mutation_seed("capture", 1_000));
+        let b = random_field(mint_mutation_seed("capture", 1_000));
+        assert_eq!(a.len(), 32, "expected 16 random bytes, hex-encoded");
+        assert_ne!(a, b);
     }
 
     /// `Core::capture` still has no opinion of its own on an empty title

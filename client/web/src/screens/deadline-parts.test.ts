@@ -46,4 +46,13 @@ describe("joinDeadline", () => {
     // stranger one; the raw text stays as it is.
     expect(joinDeadline("next tuesday", "09:30")).toBe("next tuesday");
   });
+
+  it("does not recognise a merely date-shaped legacy value", () => {
+    // The near-miss: ten characters with hyphens in the right two places is
+    // not a date. Recognition is digit-by-digit, so these stay as they are
+    // rather than being rewritten into a date-time that was never a deadline.
+    for (const raw of ["abcd-ef-gh", "2026-0x-01", "q3-planning"]) {
+      expect(joinDeadline(raw, "09:30")).toBe(raw);
+    }
+  });
 });
