@@ -414,6 +414,38 @@ describe("ItemPanel — detail mode's Edit", () => {
   });
 });
 
+// #479 round-2 review: a caller with no steps wiring of its own (Recall's
+// expanded result) must not get "No Steps yet." — a claim this panel has no
+// way to know is true when nobody ever asked `Core` for this item's steps.
+describe("ItemPanel — showSteps (#479)", () => {
+  it("renders the steps block by default, same as every existing caller", () => {
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText("No Steps yet.")).toBeTruthy();
+  });
+
+  it("renders no steps block at all with showSteps={false}, whatever steps holds", () => {
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1" })}
+        projects={[]}
+        onClose={() => {}}
+        showSteps={false}
+      />,
+    );
+    expect(screen.queryByText("No Steps yet.")).toBeNull();
+    expect(screen.queryByText("steps")).toBeNull();
+  });
+});
+
 // #359: Grill reaches Now, and Now's own "row" is a selected card that opens
 // into this component's `"detail"` mode — so the Grill button `TriageRow`
 // already threads into `"triage"` mode has to reach here too, gated by the

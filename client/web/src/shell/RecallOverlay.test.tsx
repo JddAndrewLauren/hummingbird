@@ -226,6 +226,48 @@ describe("RecallOverlay — selecting a result (#479)", () => {
     expect(onTriage).toHaveBeenCalledWith("item-1", null, { title: "buy more stamps" });
   });
 
+  // #479 round-2 review: `useItemDraft` clears the typed edit the instant
+  // `lastTriage` reports `"ok"` for this item, falling back to whatever
+  // `row` this render was handed — so an `"ok"` that arrives BEFORE
+  // `useRecallWiring` has re-requested `Core::search` reverts the screen to
+  // the pre-edit title, which reads exactly like a discarded edit. This is
+  // the full round trip a caller behind the fixed wiring actually produces:
+  // `lastTriage` and a fresh `rows` answer carrying the saved title arrive
+  // together, and what's proved here is that the result *stays* saved once
+  // they do — not, and never, that the stale-`rows` window is fine.
+  it("an ok triage result closes Edit and the row reflects the saved title, once rows have refreshed", () => {
+    const { view } = renderOverlay({ query: "stamps", rows: [liveRow()], total: 1, onTriage: vi.fn() });
+
+    fireEvent.click(screen.getByRole("button", { name: /buy stamps/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "buy more stamps" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    view.rerender(
+      <RecallOverlay
+        open
+        query="stamps"
+        onQueryChange={vi.fn()}
+        onClose={vi.fn()}
+        rows={[liveRow({ title: "buy more stamps" })]}
+        total={1}
+        projects={[]}
+        onTriage={vi.fn()}
+        lastTriage={{ kind: "ok", seed: "s1", itemId: "item-1", error: null }}
+        nowMs={TEST_NOW}
+      />,
+    );
+
+    // Edit closed (#222's clear-on-ok) AND the saved title is what's on
+    // screen — never the pre-edit "buy stamps" a stale `rows` answer would
+    // have left behind. Two elements carry the title (the row's own summary
+    // line and `ItemPanel`'s heading), so `getAllByText` rather than
+    // `getByText`.
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    expect(screen.getAllByText("buy more stamps").length).toBeGreaterThan(0);
+    expect(screen.queryByText("buy stamps")).toBeNull();
+  });
+
   it("a write failure is stated in the overlay, and the typed edits survive it", () => {
     const { view } = renderOverlay({ query: "stamps", rows: [liveRow()], total: 1, onTriage: vi.fn() });
 

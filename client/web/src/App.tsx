@@ -236,7 +236,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // same value the overlay renders, with no second, out-of-band copy of it.
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  useRecallWiring(worker, status, searchQuery);
+  useRecallWiring(worker, status, searchQuery, task.lastTriage);
   const requestSearchOpen = () => setSearchOpen(true);
 
   // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the

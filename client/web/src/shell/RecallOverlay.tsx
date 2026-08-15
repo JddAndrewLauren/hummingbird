@@ -65,10 +65,11 @@ export interface RecallOverlayProps {
    * already does for Now and Triage. */
   lastTriage?: TaskTriageResult | null;
   /** `useSyncWiring`'s re-sampled clock (`App.tsx`'s `syncNowMs`) — the same
-   * "now" `DoneScreen`'s and `NowScreen`'s own `relativeAge` calls read,
-   * never `Date.now()` taken fresh here: a component render must stay a pure
-   * function of its props (the lint rule this app's `react-hooks/purity`
-   * config enforces), and this is the prop that keeps it one. */
+   * "now" `DoneScreen.tsx`, `TriageRow.tsx` and `LedgerScreen.tsx`'s own
+   * `relativeAge` calls read, never `Date.now()` taken fresh here: a
+   * component render must stay a pure function of its props (the lint rule
+   * this app's `react-hooks/purity` config enforces), and this is the prop
+   * that keeps it one. */
   nowMs: number;
 }
 
@@ -113,13 +114,17 @@ function RecallRow({
         opacity: row.group === "archived" ? 0.72 : 1,
       }}
     >
-      {/* The clickable summary — `role="button"` on its own element rather
-          than on the whole `Card` (the `FrontierColumns.tsx` `ItemCard`
-          reason restated): the expanded block below holds its own buttons and
-          inputs, and a click landing on any of them must not also bubble up
-          and toggle this row shut. Keeping the two as siblings rather than
-          parent/child makes that true for free, with no `stopPropagation`
-          anywhere. */}
+      {/* The clickable summary is its own `role="button"` element, a sibling
+          of the expanded content below rather than its ancestor. Unlike
+          `FrontierColumns.tsx`'s `ItemCard`, which safely puts `role="button"`
+          on the whole `Card` guarded by an `event.target === currentTarget`
+          check (its one interactive descendant is a single checkmark
+          button), the expanded block here holds a whole edit form's worth of
+          buttons and inputs — a click landing on any of them must never
+          bubble up and toggle the summary shut, and a target-equality guard
+          alone would not stop that once the click's target IS one of those
+          descendants. Two siblings instead of one ancestor makes it true for
+          free, with no guard and no `stopPropagation` needed anywhere. */}
       <div
         role="button"
         tabIndex={0}
@@ -185,6 +190,11 @@ function RecallRow({
             projects={projects}
             onTriage={row.group === "live" ? onTriage : undefined}
             lastTriage={lastTriage}
+            // This overlay has no steps wiring of its own — nothing here
+            // ever called `requestSteps` for a result row — so the block
+            // that would otherwise assert "No Steps yet." is not rendered
+            // at all rather than stating a fact it never asked `Core` for.
+            showSteps={false}
           />
         </div>
       ) : null}
