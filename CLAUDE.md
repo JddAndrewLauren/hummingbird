@@ -96,7 +96,8 @@ on claude.ai/design, mirrored at `.claude/skills/hummingbird-design/`. **All
 frontend/UI work must use it: invoke `/hummingbird-design` before styling
 anything.** Tokens are copied into `client/web/src/design/`; when the design
 project changes, re-pull the mirror first, then re-copy (that directory's
-`github.md` has the record).
+`github.md` has the record). Android hand-ports them into its Compose theme
+files under a CI drift gate instead (ADR-0026).
 
 **The build version.** `VERSION` at the repo root holds `major.minor.patch`;
 the displayed patch adds the commits on `main` since that file was last

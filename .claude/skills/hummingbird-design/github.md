@@ -140,8 +140,9 @@ Pulled 2026-08-14: `ui_kits/android/` (README.md, index.html,
 android-frame.jsx, AndroidScreens.jsx) — the Android surface started with M0
 (#141, `client/android/`). Pulled after the same-day pushes above, so the kit
 arrives with the `deadline=` fix already in it. How `client/android/`
-consumes the tokens is not settled yet; until it is, the web copy step below
-has no Android counterpart.
+consumes the tokens is ADR-0026's decision: hand-ported Compose theme files
+under a CI drift gate (#483) — deliberately no Android copy step; the gate
+reads this mirror's `tokens/colors.css` directly.
 
 Omitted (fetch on demand with `DesignSync get_file` against the projectId
 above, or view on claude.ai/design):
