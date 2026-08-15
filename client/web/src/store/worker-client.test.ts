@@ -67,9 +67,9 @@ const initialTask: TaskState = {
   lastAct: null,
   lastTriage: null,
   lastGrillCompletion: null,
-    lastGrillDraftWrite: null,
-    grillDraftItemIds: [],
-    grillDraftByItem: {},
+  lastGrillDraftWrite: null,
+  grillDraftItemIds: [],
+  grillDraftByItem: {},
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
@@ -449,7 +449,12 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.grillDraftByItem).toEqual({ "item-1": turns });
   });
 
-  it("never installs a grillDraftByItem entry when the answer says no draft exists", () => {
+  /** Reviewer finding on PR #482: an `exists: false` answer must still
+   * install an (empty) entry — `useGrillTakeoverWiring.ts`'s resume wait
+   * has no other signal that a fetch answered, and skipping this would
+   * strand a session whose bulk-list draft turned out (a race with another
+   * tab's discard) not to exist at `idle` forever. */
+  it("installs an empty entry when the answer says no draft exists, so a resume wait is not stranded", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
     attachWorkerClient(worker, store);
@@ -458,7 +463,7 @@ describe("attachWorkerClient", () => {
       data: { type: "grillDraft", itemId: "item-1", exists: false, turns: null },
     } as MessageEvent);
 
-    expect(store.getSnapshot().task.grillDraftByItem).toEqual({});
+    expect(store.getSnapshot().task.grillDraftByItem).toEqual({ "item-1": [] });
   });
 
   it("replaces the bulk grillDraftItemIds list wholesale", () => {

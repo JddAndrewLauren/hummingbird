@@ -58,12 +58,15 @@ import { useGrillWiring } from "./useGrillWiring";
 // the button's own `disabled`, not by the unmount.
 //
 // **#356's draft is owned by the core, this hook only relays it.** Every
-// completed turn (`grillWiring.turns` changing) is saved through
-// `saveGrillDraft` — Back or close needs no separate save, because by the
-// time either happens the core already has the latest turns durably.
-// `open()` resumes a draft by threading its saved turns into `onAsk`
-// exactly as `onKeepGrilling`/`onRetry` already thread the accumulated
-// ones — a fresh interview is simply the empty-turns case. Discarding is
+// completed turn (`grillWiring.turns` changing, and NOT still empty — a
+// session with nothing answered yet has nothing worth resuming, since a
+// plain re-open already reproduces the identical first question) is saved
+// through `saveGrillDraft` — Back or close needs no separate save, because
+// by the time either happens the core already has the latest turns
+// durably. `open()` resumes a draft by threading its saved turns into
+// `onAsk` exactly as `onKeepGrilling`/`onRetry` already thread the
+// accumulated ones — a fresh interview is simply the no-draft case, never
+// asked for at all. Discarding is
 // the one EXPLICIT, confirmed gesture (`discard`, below): the UI is what
 // confirms, this hook only carries out the request once asked. A
 // completed Grill's `"ok"` is the other thing that clears the draft — see
@@ -263,9 +266,18 @@ export function useGrillTakeoverWiring(
   // core, so Back or closing the tab never loses more than the answer in
   // progress. Skipped while a resume is still awaiting its fetch — saving
   // `grillWiring.turns` (still `[]` at that point, this session's `onAsk`
-  // has not run yet) would clobber the very draft being resumed.
+  // has not run yet) would clobber the very draft being resumed. Also
+  // skipped while `turns` is still empty for a genuinely fresh session
+  // (nothing answered yet): saving `[]` here would mint a draft entry for
+  // every item merely opened, which `grillDraftItemIds` — and therefore
+  // every row's "Resume grill" label — would then carry permanently, for
+  // an interview a plain re-open already reproduces identically (`grill-me`
+  // is stateless, so a fresh ask with `turns: []` is what re-opening with
+  // NO draft already does). A round actually answered is what makes a
+  // session worth resuming rather than simply re-asking.
   useEffect(() => {
     if (openItemId === null || resolvedDraftTurns === undefined) return;
+    if (grillWiring.turns.length === 0) return;
     saveGrillDraft(worker, openItemId, grillWiring.turns, Date.now());
   }, [openItemId, resolvedDraftTurns, grillWiring.turns, worker]);
 

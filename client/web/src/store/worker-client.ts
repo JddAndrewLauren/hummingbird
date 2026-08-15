@@ -265,14 +265,15 @@ export function attachWorkerClient(
         });
         return;
       case "grillDraft":
-        // Only grows entries a view actually asked about via `getGrillDraft`
-        // — `stepsByItem`'s own "not read yet vs. genuinely absent" shape.
-        // `exists: false` never installs an entry: a resumed session reads
-        // its absence from `grillDraftItemIds` before ever asking for
-        // content, so there is nothing here for it to mean.
-        if (message.exists) {
-          store.setTaskGrillDraft(message.itemId, message.turns ?? []);
-        }
+        // Every real answer installs an entry — `stepsByItem`'s own "only
+        // grows entries actually asked about" shape, but unlike that read
+        // `exists: false` is NOT skipped here: `useGrillTakeoverWiring.ts`'s
+        // resume wait has no other way to learn the wait is over, and a
+        // race (the bulk `grillDraftItemIds` list said yes, a concurrent
+        // discard in another tab made this per-item read say no by the
+        // time it landed) must resolve as "resume with nothing" rather than
+        // leave that session's interview stuck at `idle` forever.
+        store.setTaskGrillDraft(message.itemId, message.exists ? message.turns ?? [] : []);
         return;
       case "grillDraftItemIds":
         store.setTaskState({ grillDraftItemIds: message.itemIds });

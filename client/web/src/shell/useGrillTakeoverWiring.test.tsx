@@ -425,7 +425,11 @@ describe("useGrillTakeoverWiring", () => {
 
   // -- #356's device-local draft: continuous save, resume, and discard ----
 
-  it("opening a fresh item (no draft) never asks for a draft and saves the first empty turns immediately", async () => {
+  /** Reviewer finding on PR #482: saving an empty `turns` on a fresh open
+   * would mint a draft entry for every item merely opened — permanently
+   * "Resume grill" on a row nobody ever answered anything on. Nothing is
+   * saved until a round is actually answered. */
+  it("opening a fresh item (no draft) never asks for a draft and saves nothing until a round is answered", async () => {
     const fetchImpl = vi.fn(async () => ndjson(QUESTION_LINE));
     const worker = fakeWorker();
     render(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />);
@@ -436,12 +440,9 @@ describe("useGrillTakeoverWiring", () => {
     expect(worker.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "getGrillDraft" }),
     );
-    expect(worker.postMessage).toHaveBeenCalledWith({
-      type: "saveGrillDraft",
-      itemId: "item-1",
-      turns: [],
-      nowMs: expect.any(Number),
-    });
+    expect(worker.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "saveGrillDraft" }),
+    );
   });
 
   it("every completed turn re-saves the draft with the accumulated turns", async () => {

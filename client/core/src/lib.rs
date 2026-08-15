@@ -747,6 +747,25 @@ pub enum CoreCycleOutcome {
     Cycle(CycleOutcome),
 }
 
+/// #356's schema version for [`GrillDrafts`] — the same bump discipline
+/// [`sync::mirror::SYNC_MIRROR_SCHEMA_VERSION`] documents: a genuine shape
+/// change to the persisted payload gets a new number, and
+/// [`load_snapshot_at_version`] is what makes a stale envelope discarded
+/// and rebuilt (an empty draft store) rather than a boot-time crash.
+pub const GRILL_DRAFTS_SCHEMA_VERSION: u32 = 1;
+
+/// One item's in-progress Grill interview, device-local (#356, ADR-0023):
+/// every completed `{question, answer}` round so far, as the caller's own
+/// opaque JSON — `Core` never parses or interprets a turn's shape, exactly
+/// as it never interprets `GrillCompletion::transcript`. Threading it back
+/// to the runner (`grill-me`'s own `turns` argument) and rendering it are
+/// both `client/web`'s job; this crate only stores and returns it verbatim.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GrillDrafts(BTreeMap<String, serde_json::Value>);
+
+impl PersistableSealed for GrillDrafts {}
+impl Persistable for GrillDrafts {}
+
 /// Handle for the sync engine.
 ///
 /// Generic over the two [`storage::SnapshotStore`]s [`sync::SyncCycle`]
@@ -771,25 +790,6 @@ pub enum CoreCycleOutcome {
 /// save_snapshot(&store, 1, 0, &api_key).await.unwrap();
 /// # }
 /// ```
-/// #356's schema version for [`GrillDrafts`] — the same bump discipline
-/// [`sync::mirror::SYNC_MIRROR_SCHEMA_VERSION`] documents: a genuine shape
-/// change to the persisted payload gets a new number, and
-/// [`load_snapshot_at_version`] is what makes a stale envelope discarded
-/// and rebuilt (an empty draft store) rather than a boot-time crash.
-pub const GRILL_DRAFTS_SCHEMA_VERSION: u32 = 1;
-
-/// One item's in-progress Grill interview, device-local (#356, ADR-0023):
-/// every completed `{question, answer}` round so far, as the caller's own
-/// opaque JSON — `Core` never parses or interprets a turn's shape, exactly
-/// as it never interprets `GrillCompletion::transcript`. Threading it back
-/// to the runner (`grill-me`'s own `turns` argument) and rendering it are
-/// both `client/web`'s job; this crate only stores and returns it verbatim.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct GrillDrafts(BTreeMap<String, serde_json::Value>);
-
-impl PersistableSealed for GrillDrafts {}
-impl Persistable for GrillDrafts {}
-
 pub struct Core<QS = MemorySnapshotStore, MS = MemorySnapshotStore> {
     cycle: SyncCycle<QS, MS>,
     credential: AccessTokenSlot,
