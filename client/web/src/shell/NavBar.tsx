@@ -363,7 +363,10 @@ function MoreSheet({
               }}
             >
               <Icon name="search" size={18} />
-              <span style={{ flex: 1 }}>Search</span>
+              {/* Reads what the `aria-label` says, rather than an abbreviated
+                  "Search": one name on all three triggers, and a visible name
+                  a voice-control user can speak is the accessible one. */}
+              <span style={{ flex: 1 }}>Search everything</span>
             </button>
           ) : null}
           {NAV_BAR_OVERFLOW.map((item) => {

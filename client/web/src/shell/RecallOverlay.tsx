@@ -10,13 +10,16 @@ import type { ProjectDTO, RecallRowDTO } from "../store/protocol";
 import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { relativeAge } from "./sync-status";
+import { RECALL_TRIGGER_ID } from "./trigger-ids";
 import { useIsPhone } from "./useIsPhone";
 
 /** The DOM id the header's Search button carries, so this overlay can
  * measure what it hangs from — the identical trick `CapturePopover.tsx`
  * uses for `CAPTURE_TRIGGER_ID`, for the identical reason (`IconButton`
- * forwards no ref). */
-export const RECALL_TRIGGER_ID = "shell-recall-trigger";
+ * forwards no ref). Re-exported rather than defined here: it now lives in
+ * the JSX-free `trigger-ids.ts` so `visual/surfaces.spec.ts` can import it
+ * too (that file's own header says why). */
+export { RECALL_TRIGGER_ID };
 
 /** The query field's own DOM id — `capture-hotkey.ts`'s `CAPTURE_INPUT_ID`
  * pattern, reused for the identical reason: `Input` forwards no ref, so

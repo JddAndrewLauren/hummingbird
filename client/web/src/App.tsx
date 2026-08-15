@@ -224,9 +224,30 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // phone, so a stale `true` left over from a narrow window would otherwise
   // hand the desktop's Escape to a sheet that is not on screen.
   const [navSheetOpen, setNavSheetOpen] = useState(false);
+  // Closing capture is its own function because two facts have to move
+  // together: the popover's flag, and the shell's copy of whether the box
+  // inside it is dictating. `CaptureBox` reports that upward from an effect
+  // on its own `listening` state, and unmounting never runs that effect
+  // again — so a popover closed while a session was live would leave
+  // `captureDictating` stuck true, and the NEXT Escape over a reopened
+  // popover would cancel a dictation that is not happening instead of
+  // closing. (The session itself is genuinely ended: `CaptureBox`'s unmount
+  // cleanup aborts it and releases the microphone. It is only the report
+  // that cannot follow it.)
+  const closeCapture = () => {
+    setCaptureOpen(false);
+    setCaptureDictating(false);
+  };
   const requestCapture = () => {
     setCaptureOpen(true);
     setCaptureFocusRequestId((id) => id + 1);
+    // #480 follow-up: the two overlays are siblings at one z-index and
+    // neither traps focus, so both open was a reader tabbing between two
+    // things that each claimed to be modal. Opening either now closes the
+    // other — the exclusivity lives in these two openers, which every one of
+    // the six triggers already funnels through, rather than in six call
+    // sites or in an effect watching both flags.
+    setSearchOpen(false);
   };
 
   // **Recall** (#478/#480): every trigger — the header's Search button, the
@@ -237,7 +258,18 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   useRecallWiring(worker, status, searchQuery, task.lastTriage);
-  const requestSearchOpen = () => setSearchOpen(true);
+  const requestSearchOpen = () => {
+    setSearchOpen(true);
+    // The other half of the exclusivity rule — see `requestCapture` above,
+    // and note this is the one path that closes the popover while it may be
+    // DICTATING, so the flag comes down with it (`closeCapture`'s doc). The
+    // two setters are spelled out rather than calling `closeCapture()`
+    // because the `/` hotkey calls this from the shell's keydown effect, and
+    // a helper whose body is nothing but `useState` setters is the only kind
+    // that effect can call without becoming a dependency of it.
+    setCaptureOpen(false);
+    setCaptureDictating(false);
+  };
 
   // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the
   // capture box is in the shell now: a fixture capture typed in the popover
@@ -345,9 +377,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // one owner, still no second listener, just a branch on a fact
           // only `CaptureBox` has.
           capture: () =>
-            captureDictating
-              ? setCancelDictationRequestId((id) => id + 1)
-              : setCaptureOpen(false),
+            captureDictating ? setCancelDictationRequestId((id) => id + 1) : closeCapture(),
           search: () => setSearchOpen(false),
           navSheet: () => setNavSheetOpen(false),
           itemDetail: handleCloseItemDetail,
@@ -619,7 +649,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       <CapturePopover
         open={captureOpen}
         focusRequestId={captureFocusRequestId}
-        onClose={() => setCaptureOpen(false)}
+        onClose={closeCapture}
         onSubmit={handleCapture}
         projects={demo ? [] : task.projects}
         demo={demo !== null}
@@ -632,9 +662,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           the `/` hotkey, the rail's magnifier and the phone More sheet's
           entry — opens this same state; see `useRecallWiring`'s doc above.
           Rendered after `CapturePopover` as a sibling, both fixed chrome at
-          the same z-index: that DOM order is why Recall paints over capture
-          when both are open (`escape-claimants.ts`'s ordering argument),
-          not merely styling convenience. */}
+          the same z-index. That DOM order used to decide which one a reader
+          sees on top; since `requestCapture`/`requestSearchOpen` above close
+          each other, the two are never open together and it decides nothing
+          — the order is kept because it is still the one that would paint
+          correctly, and `escape-claimants.ts` explains what now rests on
+          it. */}
       <RecallOverlay
         open={searchOpen}
         query={searchQuery}

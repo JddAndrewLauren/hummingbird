@@ -2,8 +2,7 @@ import { useEffect, useRef } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { IconButton } from "../components/core/IconButton";
-import { CAPTURE_TRIGGER_ID } from "./CapturePopover";
-import { RECALL_TRIGGER_ID } from "./RecallOverlay";
+import { CAPTURE_TRIGGER_ID, RECALL_TRIGGER_ID } from "./trigger-ids";
 
 export interface HeaderProps {
   title: string;
@@ -87,9 +86,20 @@ export function Header({
       ) : null}
       {/* `id` is what `RecallOverlay` measures to hang itself under this
           button — the identical trick the New button's `CAPTURE_TRIGGER_ID`
-          plays for `CapturePopover`. */}
+          plays for `CapturePopover`.
+
+          "Search everything" is the one name all three triggers wear — this
+          button, the rail's magnifier and the phone More sheet's entry.
+          Recall is the domain and the dialog's name (CONTEXT.md); what a
+          trigger says is what it does, and it said "Search" here only
+          because a header has less room than a menu row. */}
       {onSearch ? (
-        <IconButton id={RECALL_TRIGGER_ID} icon="search" label="Search" onClick={onSearch} />
+        <IconButton
+          id={RECALL_TRIGGER_ID}
+          icon="search"
+          label="Search everything"
+          onClick={onSearch}
+        />
       ) : null}
       {onRefresh ? (
         <IconButton icon="refresh-cw" label="Refresh" onClick={onRefresh} />
