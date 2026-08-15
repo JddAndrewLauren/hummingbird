@@ -866,13 +866,23 @@ export function CaptureBox({
         // A `div` of its own rather than sharing `dictationError`'s `<p>`:
         // this state carries a control, not just a sentence.
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-          <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)", margin: 0 }}>
-            {setupPhase.phase === "installing"
-              ? "Downloading the on-device speech model…"
-              : setupPhase.phase === "failed"
-                ? setupPhase.message
+          {setupPhase.phase === "failed" ? (
+            // `role="alert"` + the danger token, matching `dictationError`/
+            // `captureError` below: this is a failure report like theirs, not
+            // the explanation/progress text the other phases render.
+            <p
+              role="alert"
+              style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)", margin: 0 }}
+            >
+              {setupPhase.message}
+            </p>
+          ) : (
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)", margin: 0 }}>
+              {setupPhase.phase === "installing"
+                ? "Downloading the on-device speech model…"
                 : "Local speech recognition needs a one-time download before dictation works."}
-          </p>
+            </p>
+          )}
           {setupPhase.phase !== "installing" ? (
             <Button size="sm" variant="secondary" onClick={beginInstall}>
               Download speech model

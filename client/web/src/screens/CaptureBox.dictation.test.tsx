@@ -617,9 +617,11 @@ describe("CaptureBox — explain, then download, the on-device speech model", ()
       deferred.resolve(false);
       await Promise.resolve();
     });
-    expect(
-      screen.getByText("The speech model couldn't be installed. Typing still works."),
-    ).toBeTruthy();
+    const installFailure = screen.getByRole("alert");
+    expect(installFailure.textContent).toBe(
+      "The speech model couldn't be installed. Typing still works.",
+    );
+    expect(installFailure.style.color).toBe("var(--status-danger-fg)");
     expect(field().value).toBe("call the vet");
     expect(field().readOnly).toBe(false);
     fireEvent.change(field(), { target: { value: "call the vet and buy milk" } });
