@@ -15,12 +15,18 @@
 //! **This is the part of the brief that "cannot forget to declare itself"**
 //! (#314's own phrasing): the poller reads *this repo's own committed
 //! workflow files* rather than a second, hand-maintained list of "which
-//! workflows are scheduled" — an eleventh `schedule:` workflow (ten exist
+//! workflows are scheduled" — a ninth `schedule:` workflow (eight exist
 //! today: `calendar-poll.yml`, `city-waste.yml`, `github-status.yml`,
-//! `gmail-poll.yml`, `graph-calendar-poll.yml`, `graph-mail-poll.yml`,
-//! `kimi-balance.yml`, `race-alert-poll.yml`, `race-schedule-poll.yml`,
-//! `uptime-probe.yml`) shows up here the moment its file lands, with no
-//! second edit anywhere in this crate.
+//! `gmail-poll.yml`, `kimi-balance.yml`, `race-alert-poll.yml`,
+//! `race-schedule-poll.yml`, `uptime-probe.yml`) shows up here the moment
+//! its file lands, with no second edit anywhere in this crate. The two
+//! graph lanes are absent because they are absent from the repo's live
+//! schedules: #487 commented their `schedule:` blocks out until #486's
+//! Phase B provisions their credentials, and the restore PR that brings
+//! each block back must re-add its row below — the coverage test will
+//! insist, but only when something runs the `server/` tests, which a
+//! workflows-only restore PR does not (path-filtered CI); do it in the
+//! same PR, not on trust.
 
 /// One workflow this build found a `schedule:` trigger on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,9 +153,6 @@ mod tests {
     const CITY_WASTE: &str = include_str!("../../../.github/workflows/city-waste.yml");
     const GITHUB_STATUS: &str = include_str!("../../../.github/workflows/github-status.yml");
     const GMAIL_POLL: &str = include_str!("../../../.github/workflows/gmail-poll.yml");
-    const GRAPH_CALENDAR_POLL: &str =
-        include_str!("../../../.github/workflows/graph-calendar-poll.yml");
-    const GRAPH_MAIL_POLL: &str = include_str!("../../../.github/workflows/graph-mail-poll.yml");
     const KIMI_BALANCE: &str = include_str!("../../../.github/workflows/kimi-balance.yml");
     const RACE_ALERT_POLL: &str = include_str!("../../../.github/workflows/race-alert-poll.yml");
     const RACE_SCHEDULE_POLL: &str =
@@ -160,15 +163,15 @@ mod tests {
 
     /// `(file name, contents, expected top-level `name:`, expected crons)`
     /// for every `schedule:`-carrying workflow committed in this repo.
-    /// Adding an eleventh scheduled workflow without adding it here fails
-    /// `the_embedded_list_covers_every_scheduled_workflow_in_the_repo`.
+    /// Adding a ninth scheduled workflow without adding it here fails
+    /// `the_embedded_list_covers_every_scheduled_workflow_in_the_repo` —
+    /// including the graph lanes when #486's Phase B restores their
+    /// blocks (see the module header on doing that in the same PR).
     const EVERY_SCHEDULED_WORKFLOW: &[(&str, &str, &str, &[&str])] = &[
         ("calendar-poll.yml", CALENDAR_POLL, "calendar-poll", &["*/15 * * * *"]),
         ("city-waste.yml", CITY_WASTE, "city-waste", &["40 13 * * *"]),
         ("github-status.yml", GITHUB_STATUS, "github-status", &["15 6 * * *"]),
         ("gmail-poll.yml", GMAIL_POLL, "gmail-poll", &["*/15 * * * *"]),
-        ("graph-calendar-poll.yml", GRAPH_CALENDAR_POLL, "graph-calendar-poll", &["*/15 * * * *"]),
-        ("graph-mail-poll.yml", GRAPH_MAIL_POLL, "graph-mail-poll", &["*/15 * * * *"]),
         ("kimi-balance.yml", KIMI_BALANCE, "kimi-balance", &["0 */6 * * *"]),
         ("race-alert-poll.yml", RACE_ALERT_POLL, "race-alert-poll", &["*/15 * * * *"]),
         ("race-schedule-poll.yml", RACE_SCHEDULE_POLL, "race-schedule-poll", &["0 */6 * * *"]),
@@ -225,10 +228,11 @@ mod tests {
         );
     }
 
-    /// The header's own count, pinned: ten today.
+    /// The header's own count, pinned: eight today (the two graph lanes
+    /// are dormant, #487, until #486's Phase B).
     #[test]
-    fn the_repo_carries_ten_scheduled_workflows_today() {
-        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 10);
+    fn the_repo_carries_eight_scheduled_workflows_today() {
+        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 8);
     }
 
     #[test]
