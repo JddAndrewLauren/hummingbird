@@ -196,10 +196,14 @@ async function show(page: Page, nav: string, projectName: string) {
  * one trigger mounted on every project (`shell/Header.tsx`'s button is
  * `isPhone`-independent, unlike the rail's magnifier and the phone More
  * sheet's own entry, which #480 wired as three more paths to the identical
- * `open`/`onClose` state). `exact` matters: the rail's own magnifier and the
- * More sheet's entry are both labelled "Search everything", a different
- * string, so this is unambiguous without it — kept anyway for the same
- * reason `show()` above keeps it on every nav button. */
+ * `open`/`onClose` state). `exact` IS load-bearing here, not a leftover
+ * habit: Playwright's accessible-name matching is substring by default, and
+ * the rail's own magnifier is labelled "Search everything" — a bare "Search"
+ * matches both it and the header's button at the three desktop widths,
+ * where `NavRail` is mounted alongside `Header`, and resolves to a
+ * strict-mode violation. `exact` is what keeps this to the one trigger the
+ * capture actually means to use, the same reason `show()` above keeps it on
+ * every nav button. */
 async function openRecall(page: Page) {
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Recall" })).toBeVisible();
@@ -466,8 +470,17 @@ for (const theme of THEMES) {
       await dialog.getByRole("button", { name: /rewrite the backup script/i }).click();
       // The live group is the one that gets `onTriage` (board mode's `demo`
       // is null, so `App.tsx` passes `handleTriage` through) — its expansion
-      // is the only one of the three that offers Edit.
-      await expect(dialog.getByRole("button", { name: "Edit" })).toBeVisible();
+      // is the only one of the three that offers Edit. `ItemPanel` gates its
+      // fields behind `editing` (`components/domain/ItemPanel.tsx`'s
+      // `showFields`), which only the Edit click flips — asserting Edit is
+      // merely visible captures the same read-only record the archived row's
+      // own capture already shows, so this must actually press it and prove
+      // the form itself is open before the screenshot.
+      await dialog.getByRole("button", { name: "Edit" }).click();
+      await expect(dialog.getByLabel("Title")).toHaveValue(
+        "Rewrite the backup script so it prunes old snapshots",
+      );
+      await expect(dialog.getByRole("button", { name: "Save" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/recall-live-expanded-${testInfo.project.name}-${theme}.png`,
