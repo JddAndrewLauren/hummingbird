@@ -164,3 +164,18 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)
 }
+
+// ColorTokenDriftTest reads tokens/colors.css and Color.kt from the repo
+// root — two levels above this Gradle root (client/android → client → repo).
+// A system property rather than `user.dir`, which differs between Gradle
+// and an IDE runner.
+val repoRoot: File = rootProject.projectDir.parentFile.parentFile
+tasks.withType<Test>().configureEach {
+    systemProperty("hummingbird.repoRoot", repoRoot.absolutePath)
+    // The CSS sits outside this Gradle project, so without this line a
+    // token change leaves testDebugUnitTest UP-TO-DATE and the drift gate
+    // silently doesn't rerun — a stale local green. (CI runs fresh either
+    // way; this is for the local loop.)
+    inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/colors.css"))
+        .withPropertyName("designTokensCss")
+}
