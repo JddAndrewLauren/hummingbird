@@ -138,13 +138,32 @@ export function resolveFallbackPending(
  * refresh (or dead-letter revert) is what makes the real value authoritative
  * again. */
 export function applyItemAction(item: TaskItemDTO, action: TaskActionName): TaskItemDTO {
-  const stage = appliedStage(action);
-  if (stage === null) {
+  // `"cancel"` is checked by name, never inferred from `appliedStage`
+  // answering `null` — the seam's `item_applied_stage` answers `null` for
+  // BOTH `"cancel"` (no stage, `archivedAt` is the write) and an
+  // unrecognised action string (the wasm side rejects it before the seam,
+  // exactly as `ItemAction::parse` does in `client/core/src/lib.rs`). Those
+  // are not the same outcome: the old switch-based implementation had no
+  // default case at all (`TaskActionName` is closed), so an action outside
+  // the vocabulary never reached a write. Collapsing both `null`s onto the
+  // archive branch would silently set `archivedAt` for a value this
+  // function does not recognise — the destructive default this review
+  // comment exists to remove.
+  if (action === "cancel") {
     // `hummingbird_domain::Item::archived_at` is `ms epoch | null` — any
     // non-null value marks it archived; the exact timestamp is never
     // read back from this projection (`Core::act`'s own enqueue call
     // carries the real one).
     return { ...item, archivedAt: Date.now(), pending: true };
+  }
+  const stage = appliedStage(action);
+  if (stage === null) {
+    // Defensive only: `TaskActionName` is a closed TS union, so this path
+    // is unreachable through a well-typed caller. If it is ever reached
+    // anyway, the item is returned unmutated rather than guessing at a
+    // write — the same "reject before the seam" discipline the wasm
+    // boundary itself applies to an unrecognised action string.
+    return item;
   }
   return { ...item, stage, pending: true };
 }

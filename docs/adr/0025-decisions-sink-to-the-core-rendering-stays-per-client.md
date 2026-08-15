@@ -186,4 +186,5 @@ not permanent — it is where the line fell for the capture/Now slice.
 | `frontier-facets.ts`'s `SIZES`/`ENERGIES` (noted at #500, unedited — M1-3/#501's file) | rendering-adjacent facet list; still a literal copy pending #501 |
 | `rules/backtest.ts:52`, `rules/deadline-picker.ts:32` | known drift — local re-derivations of the deadline reading, out of M1's rewire |
 | Calendar / #169's two doors | out of M1 entirely |
+| `item-actions.ts`'s `applyItemAction`/`resolveFallbackPending` (M1-4, #502) | screen-local optimistic UI reconciliation over `TaskItemDTO` — `Date.now()`, `archivedAt` writes and the live-vs-optimistic `pending` merge are not a decision two clients could disagree about, even though the same file's affordance rules (`availableActions`, `canMarkDone`, `canGrill`, `grillButtonLabel`, `applyItemAction`'s stage lookup) did sink |
 

@@ -298,21 +298,6 @@ fn parse_named<T>(
     }
 }
 
-/// Maps S11/#109's wire action name to [`ItemAction`] — the one place a
-/// string crossing the JS boundary becomes the closed act vocabulary, the
-/// same "reject before the seam" discipline [`TaskHostCore::capture`]
-/// already applies to `stage`. Never a raw [`hummingbird_domain::Stage`]:
-/// there is no wire action that lets a caller send an arbitrary stage id.
-fn parse_action(action: &str) -> Option<ItemAction> {
-    match action {
-        "start" => Some(ItemAction::Start),
-        "complete" => Some(ItemAction::Complete),
-        "block" => Some(ItemAction::Block),
-        "cancel" => Some(ItemAction::Cancel),
-        _ => None,
-    }
-}
-
 /// One item, plus whether it is currently overlaid by an unconfirmed local
 /// mutation (`Core::is_pending`) — S10's "a pending item is marked as such"
 /// acceptance criterion (issue #108). A wrapper around
@@ -1259,11 +1244,11 @@ impl TaskHostCore {
 
     /// Acts on an already-existing item (S11/#109: start, complete, block,
     /// cancel). `action` is the wire's snake_case action name
-    /// ([`parse_action`]); an unrecognised one fails without ever touching
-    /// [`Core::act`], the same "reject before the seam" discipline
+    /// ([`ItemAction::parse`]); an unrecognised one fails without ever
+    /// touching [`Core::act`], the same "reject before the seam" discipline
     /// [`TaskHostCore::capture`] uses for `stage`.
     pub async fn act(&mut self, seed: &str, item_id: &str, action: &str, now_ms: i64) -> ActResponse {
-        let Some(action) = parse_action(action) else {
+        let Some(action) = ItemAction::parse(action) else {
             return ActResponse {
                 kind: "failed",
                 error: Some(format!("unrecognised action {action:?}")),

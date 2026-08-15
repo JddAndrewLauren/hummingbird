@@ -149,47 +149,22 @@ pub fn frontier_axes_json() -> String {
 
 // -------------------------------------------------------------- M1-4 (#502)
 
-/// The wire vocabulary both `TaskStageName` (`client/web/src/store/protocol.ts`)
-/// and `hummingbird_domain::Stage::as_str` already spell the same way
-/// (snake_case, byte for byte the DDL `CHECK` literal) — `Stage::parse`
-/// does the actual work, this just names the boundary.
-fn parse_stage(stage: &str) -> Option<Stage> {
-    Stage::parse(stage)
-}
-
-/// S11/#109's closed act vocabulary, the same string set
-/// `client/ffi-web/src/task_host.rs`'s own `parse_action` accepts — named
-/// again here rather than reused because that one is `fn`-private to its
-/// module and this is a second, independent boundary (this file's own doc
-/// explains why a second wasm instantiation does not touch ADR-0010; the
-/// same "name the boundary shape" reasoning applies to the small string
-/// vocabularies crossing it).
-fn parse_action(action: &str) -> Option<ItemAction> {
-    match action {
-        "start" => Some(ItemAction::Start),
-        "complete" => Some(ItemAction::Complete),
-        "block" => Some(ItemAction::Block),
-        "cancel" => Some(ItemAction::Cancel),
-        _ => None,
-    }
-}
-
 /// S11/#109's act affordances for `stage` — `hummingbird_core::decisions::available_actions`
 /// verbatim, wire-vocabulary strings in, a JSON array of the same strings
 /// out. An unrecognised stage answers with an empty array rather than
 /// panicking; the TS side is typed to `TaskStageName` so this never fires
 /// in practice, but the boundary does not trust that from the wasm side.
+/// The `Stage`/`ItemAction` string vocabularies themselves are spelled once
+/// each, in `Stage::parse`/`Stage::as_str` and `ItemAction::parse`/
+/// `ItemAction::as_str` (`client/core/src/lib.rs`) — this file, and
+/// `client/ffi-web/src/task_host.rs`'s own boundary, both call those rather
+/// than carrying a second copy of either match.
 #[wasm_bindgen]
 pub fn item_available_actions(stage: &str) -> String {
-    let actions: Vec<&'static str> = match parse_stage(stage) {
+    let actions: Vec<&'static str> = match Stage::parse(stage) {
         Some(stage) => hummingbird_core::decisions::available_actions(stage)
             .iter()
-            .map(|action| match action {
-                ItemAction::Start => "start",
-                ItemAction::Complete => "complete",
-                ItemAction::Block => "block",
-                ItemAction::Cancel => "cancel",
-            })
+            .map(|action| action.as_str())
             .collect(),
         None => Vec::new(),
     };
@@ -201,7 +176,9 @@ pub fn item_available_actions(stage: &str) -> String {
 /// and an unrecognised `action` string.
 #[wasm_bindgen]
 pub fn item_applied_stage(action: &str) -> Option<String> {
-    parse_action(action).and_then(hummingbird_core::decisions::applied_stage).map(|stage| stage.as_str().to_string())
+    ItemAction::parse(action)
+        .and_then(hummingbird_core::decisions::applied_stage)
+        .map(|stage| stage.as_str().to_string())
 }
 
 /// Whether `stage` offers the one-click mark-done checkmark —
@@ -209,7 +186,7 @@ pub fn item_applied_stage(action: &str) -> Option<String> {
 /// stage answers `false`.
 #[wasm_bindgen]
 pub fn item_can_mark_done(stage: &str, archived: bool) -> bool {
-    match parse_stage(stage) {
+    match Stage::parse(stage) {
         Some(stage) => hummingbird_core::decisions::can_mark_done(stage, archived),
         None => false,
     }
@@ -219,7 +196,7 @@ pub fn item_can_mark_done(stage: &str, archived: bool) -> bool {
 /// verbatim. An unrecognised stage answers `false`.
 #[wasm_bindgen]
 pub fn item_can_grill(stage: &str) -> bool {
-    match parse_stage(stage) {
+    match Stage::parse(stage) {
         Some(stage) => hummingbird_core::decisions::can_grill(stage),
         None => false,
     }

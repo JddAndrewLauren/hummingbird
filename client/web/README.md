@@ -148,7 +148,12 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   — `frontier-order.ts`, `frontier-groups.ts`, `priority.ts`, `urgency.ts`,
   `blocked-reason.ts`, `capture-validation.ts` (as of #499 a re-export of
   the core's own rule — see `src/decisions/` below), `triage-order.ts`,
-  `item-actions.ts`, `triage-form.ts`, `bindings.ts`. Three sub-trees keep
+  `item-actions.ts` (as of #502 no longer pure — `availableActions` /
+  `canMarkDone` / `canGrill` / `grillButtonLabel` / `applyItemAction` all
+  call through the seam into the wasm core, so each throws before
+  `initDecisions()` has resolved rather than answering synchronously; only
+  `resolveFallbackPending`'s local DTO-mutation plumbing stays a plain
+  function), `triage-form.ts`, `bindings.ts`. Three sub-trees keep
   the same split at more depth: `questions/` is ADR-0015's pane shell — read
   `questions/contract.ts` first, it is what a standing question owes the
   shell — with one pane directory per question (`waste-pane/`,
