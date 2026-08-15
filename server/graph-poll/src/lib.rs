@@ -32,30 +32,33 @@
 //! binary's `main.rs` holds only `std::env`, the Graph OAuth HTTP POST,
 //! and the Graph/authority HTTP calls.
 //!
-//! **Credential posture — the open question this crate does not resolve
-//! silently.** ADR-0011's original table places the M365 credential as a
-//! **Worker secret**; #135's review round established that a GitHub
-//! Actions `schedule:` is a different trust boundary, and #135/#136 both
-//! resolved it by narrowing the credential to the least the poller's own
-//! calls need (`gmail.readonly`, then reused for calendar). The
-//! certificate credential here is narrower *in kind* the same way —
-//! `Mail.Read`/`Calendars.Read` are the brief's own named application
-//! permissions, both read-only, and neither binary in this crate ever
-//! calls a Graph write endpoint — but it is not narrower in *blast
-//! radius* the way `gmail.readonly` is: an app-only Graph permission
-//! grants read access **tenant-wide** (every mailbox/calendar the tenant
-//! has, not just the operator's own) unless the operator additionally
-//! applies an Exchange Online **Application Access Policy** scoping the
-//! app registration to one mailbox. That is an operator-side Entra/Exchange
-//! step this crate cannot perform or verify, and it changes the
-//! credential's actual worst-case abuse from "a wrong bin day" toward the
-//! `ADMIN_SECRET`/`FCM_SERVICE_ACCOUNT` side of CLAUDE.md's blast-radius
-//! line. This crate is written against the credential living in GitHub
-//! Actions secrets, on #135/#136's own precedent (out-of-process = Actions
-//! secrets is the established scaffolding this issue's brief names as its
-//! template) — but the tenant-wide-vs-scoped question is posted as an
-//! explicit operator question on issue #137, cross-referencing #135's
-//! still-open credential question, rather than decided here.
+//! **Credential posture — decided on #486 Phase B, 2026-08-15.** ADR-0011's
+//! original table places the M365 credential as a **Worker secret**; #135's
+//! review round established that a GitHub Actions `schedule:` is a
+//! different trust boundary, and #135/#136 both resolved it by narrowing
+//! the credential to the least the poller's own calls need
+//! (`gmail.readonly`, then reused for calendar). The certificate credential
+//! here is narrow on both axes:
+//!
+//! - **In kind**: `Mail.Read`/`Calendars.Read`, both read-only application
+//!   permissions, and neither binary in this crate ever calls a Graph write
+//!   endpoint.
+//! - **In reach**: an app-only Graph permission grants read **tenant-wide**
+//!   by default — every mailbox and calendar the tenant has. An Exchange
+//!   Online **Application Access Policy** now scopes the app registration
+//!   to the single operator mailbox. `Test-ApplicationAccessPolicy`
+//!   returned Granted for that mailbox and Denied for another in the same
+//!   tenant; the operator ran both, and the private key entered Actions
+//!   only afterwards.
+//!
+//! With reach bounded that way the credential sits on the
+//! `CITY_WASTE_INGEST_TOKEN` side of CLAUDE.md's blast-radius line, not the
+//! `ADMIN_SECRET`/`FCM_SERVICE_ACCOUNT` side, and the crate's own placement
+//! — Actions secrets, on #135/#136's out-of-process precedent — stands.
+//! **The policy is the load-bearing half and nothing in this repo can
+//! verify it**: if the app registration is ever re-created, or the policy
+//! removed, the same key silently becomes a tenant-wide read again. The
+//! verification record is on #486.
 //!
 //! **`original_start` — the recurring-occurrence key's second half — is
 //! populated from Graph's own occurrence `id`, not a Google-style
