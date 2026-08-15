@@ -154,6 +154,10 @@ export interface TaskHostLike {
   paneRead(source: string, nowMs: number): string;
   frontier(): string;
   triageInbox(): string;
+  /** Items already grilled once and still foggy — the "triage process"
+   * queue's second half (#357). Same `RawItemListResponse` shape as
+   * `triageInbox`. */
+  grillingItems(): string;
   /** The complete retained roster — see `RawLedgerListResponse`. `nowMs`
    * resolves the alert badge's liveness core-side. */
   ledger(nowMs: number): string;
@@ -989,6 +993,14 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "triageInbox", items: raw.items.map(mapItem) });
+      return;
+    }
+    case "getGrillingItems": {
+      const raw = JSON.parse(host.grillingItems()) as RawItemListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "grillingItems", items: raw.items.map(mapItem) });
       return;
     }
     case "getLedger": {

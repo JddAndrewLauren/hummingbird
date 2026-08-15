@@ -1,6 +1,12 @@
 import { useEffect } from "react";
 import type { CoreStatus } from "../store/store";
-import { requestBlocked, requestFrontier, requestProjects, type WorkerLike } from "../store/worker-client";
+import {
+  requestBlocked,
+  requestFrontier,
+  requestGrillingItems,
+  requestProjects,
+  type WorkerLike,
+} from "../store/worker-client";
 
 // S10's read-side wiring (issue #108): requests the frontier and the
 // relation-blocked explanation once the core is ready, and again after
@@ -28,6 +34,10 @@ export function useFrontierWiring(
     requestFrontier(worker);
     requestBlocked(worker);
     requestProjects(worker);
+    // #357: Grilling-stage items are the "triage process" queue's second
+    // half, sourced from the mirror the same as the frontier — same
+    // "refresh once ready, then per-cycle" shape.
+    requestGrillingItems(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, syncOutcomeSeq]);
 }

@@ -187,6 +187,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
   return {
     frontier: [],
     triageInbox: [],
+    grillingItems: [],
     blocked: [],
     stepsByItem: {},
     projects: [],

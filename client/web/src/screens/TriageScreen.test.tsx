@@ -209,6 +209,53 @@ describe("TriageScreen — the collapsed inbox", () => {
   });
 });
 
+// #357: the "triage process" queue — one pure function (`triage-process-order.ts`'s
+// `triageProcessQueue`) owns membership and order for both this screen and Now's
+// collapsible area, and the header states exact captured/grilling counts.
+describe("TriageScreen — the combined triage process queue (#357)", () => {
+  it("orders local drafts first, then Grilling-stage items, then captured Triage", () => {
+    renderTriage(
+      taskState({
+        triageInbox: [
+          itemDTO({ id: "captured", title: "captured item", createdAt: NOW - 1_000 }),
+          itemDTO({ id: "drafted", title: "drafted item", createdAt: NOW }),
+        ],
+        grillingItems: [itemDTO({ id: "grilling", title: "grilling item", stage: "grilling", createdAt: NOW - 2_000 })],
+        grillDraftItemIds: ["drafted"],
+      }),
+    );
+
+    const rows = screen.getAllByRole("button", { name: /(captured|drafted|grilling) item/i });
+    expect(rows.map((el) => el.textContent)).toEqual([
+      expect.stringContaining("drafted item"),
+      expect.stringContaining("grilling item"),
+      expect.stringContaining("captured item"),
+    ]);
+  });
+
+  it("states exact captured/grilling counts, never a single undifferentiated total", () => {
+    renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1" }), itemDTO({ id: "i2" })],
+        grillingItems: [itemDTO({ id: "i3", stage: "grilling" })],
+      }),
+    );
+
+    expect(screen.getByText("2 captured · 1 grilling")).toBeDefined();
+  });
+
+  it("a device with no drafts and no Grilling items renders identically to today apart from the header count", () => {
+    renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "ask dad about the trailer hitch" })],
+      }),
+    );
+
+    expect(screen.getByText("ask dad about the trailer hitch")).toBeDefined();
+    expect(screen.getByText("1 captured · 0 grilling")).toBeDefined();
+  });
+});
+
 describe("TriageScreen — the editor", () => {
   it("shows the item's own values rather than blank fields", () => {
     renderTriage(

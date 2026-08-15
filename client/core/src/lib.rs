@@ -990,6 +990,22 @@ where
             .collect()
     }
 
+    /// Items already grilled once and still foggy: CONTEXT.md's "triage
+    /// process" is the pair of pre-action stages, Triage and Grilling,
+    /// together, and this is the second half — [`Core::triage_inbox`]
+    /// deliberately stays `Stage::Triage`-only rather than widening to cover
+    /// both, so a caller that wants the combined queue reads both and
+    /// combines them itself (#357). An item reaches `Grilling` exactly one
+    /// way, a `fog_remains` verdict from a completed Grill
+    /// ([`Core::complete_grill`]) — never through [`Core::triage`] (#360).
+    pub fn grilling_items(&self) -> Vec<Item> {
+        self.overlaid_items()
+            .into_values()
+            .filter(|item| item.archived_at.is_none())
+            .filter(|item| item.stage == Stage::Grilling)
+            .collect()
+    }
+
     /// The items [`Core::frontier`] excludes because they carry an open
     /// relation blocker (ADR-0009 `blocked_by`), each paired with the
     /// blockers still open — S10's "relation-blocked items … marked and
@@ -3876,6 +3892,30 @@ mod tests {
             3,
             "no duplicates: three offline captures must never collapse into or expand past three items"
         );
+    }
+
+    // ------------------------------------------------ grilling_items (#357)
+
+    #[tokio::test]
+    async fn a_grilling_stage_item_is_readable_from_grilling_items_not_triage_inbox() {
+        let mut core = Core::new();
+        core.push_api_key("device-token");
+        let sweep = hummingbird_domain::ChangesResponse {
+            version: 1,
+            items: vec![fixture_item("item-1", Stage::Grilling)],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        };
+        let read = ScriptedRead::sweep_only(vec![Ok(serde_json::to_string(&sweep).unwrap())]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 10_000, Trigger::User, true, 0.0).await;
+
+        assert!(
+            core.triage_inbox().is_empty(),
+            "a Grilling-stage item must not appear in the triage inbox"
+        );
+        let grilling = core.grilling_items();
+        assert_eq!(grilling.len(), 1);
+        assert_eq!(grilling[0].stage, Stage::Grilling);
     }
 
     // ------------------------------------------------- blocked() (S10, issue #108)

@@ -386,6 +386,10 @@ export function buildDemoTaskState(): TaskState {
   return {
     frontier: FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
     triageInbox: TRIAGE_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
+    // Demo mode has no Grilling-stage concept of its own — every seed here
+    // is born Triage (`DemoCapture`'s own fixture shape has no draft/stage
+    // axis), so this stays empty rather than inventing a demo Grill.
+    grillingItems: [],
     // Production has no `blocked_by` edges and no projects at all — the second
     // is why grouping by Project produces exactly one column here, which is a
     // finding about the axis rather than a gap in the fixture.

@@ -867,6 +867,47 @@ describe("NowScreen — the captures in the columns", () => {
     expect(cardTitles()).toEqual(["Older capture", "Newer capture"]);
   });
 
+  // #357: Now's collapsible triage area (`FrontierColumns`) reads the same
+  // combined "triage process" queue the Triage screen does — a Grilling-stage
+  // item now appears here too, ordered the same way.
+  it("renders a Grilling-stage item as a card, marked with its own stage", () => {
+    renderWithTriage(
+      taskState({
+        grillingItems: [itemDTO({ id: "g1", title: "still foggy thing", stage: "grilling", createdAt: 500 })],
+      }),
+    );
+
+    // Grilling has no icon glyph (`StageBadge.tsx`'s `STAGES`), so it draws
+    // as the dot-and-word pill — its own word IS the mark, unlike Triage's
+    // icon-only badge.
+    expect(card("still foggy thing").textContent).toContain("Grilling");
+  });
+
+  it("puts a local draft ahead of a Grilling item, ahead of a captured Triage item", () => {
+    renderWithTriage(
+      taskState({
+        triageInbox: [
+          capture("captured", "captured thing", 100),
+          capture("drafted", "drafted thing", 900),
+        ],
+        grillingItems: [itemDTO({ id: "grilling", title: "grilling thing", stage: "grilling", createdAt: 500 })],
+        grillDraftItemIds: ["drafted"],
+      }),
+    );
+
+    expect(cardTitles()).toEqual(["drafted thing", "grilling thing", "captured thing"]);
+  });
+
+  it("renders the board for a device with only a Grilling-stage item, no triage or frontier", () => {
+    renderWithTriage(
+      taskState({
+        grillingItems: [itemDTO({ id: "g1", title: "still foggy thing", stage: "grilling" })],
+      }),
+    );
+    expect(screen.queryByText("Nothing to start")).toBeNull();
+    expect(card("still foggy thing")).toBeDefined();
+  });
+
   it("renders the board for an inbox with nothing promoted yet", () => {
     // The commonest state of a new device: captures swept in, nothing triaged.
     // "Nothing to start" would be a lie about a screen that is saying exactly

@@ -584,6 +584,17 @@ mod wasm_bindings {
             }
         }
 
+        /// Items already grilled once and still foggy, as JSON: same shape
+        /// as [`TaskHost::frontier`] (#357).
+        #[wasm_bindgen(js_name = grillingItems)]
+        pub fn grilling_items(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.grilling_items())
+                    .expect("ItemListResponse serializes"),
+                None => BUSY_ITEM_LIST.to_string(),
+            }
+        }
+
         /// Relation-blocked items with the reason visible, as JSON:
         /// `{"kind": "ok"|"busy", "entries": [{"item": Item & {"pending": bool}, "blocked_by": [Item & {"pending": bool}]}]}`.
         pub fn blocked(&self) -> String {

@@ -29,6 +29,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     paneRead: vi.fn().mockReturnValue('{"kind":"ok","snapshots":[],"alerts":[]}'),
     frontier: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
+    grillingItems: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     ledger: vi.fn().mockReturnValue('{"kind":"ok","rows":[]}'),
     done: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
@@ -716,6 +717,22 @@ describe("handleTaskRequest", () => {
       triageInbox: vi.fn().mockReturnValue('{"kind":"busy","items":[]}'),
     });
     expect(await run({ type: "getTriageInbox" }, host)).toEqual([]);
+  });
+
+  it("getGrillingItems maps every raw item to its camelCase DTO", async () => {
+    const host = fakeHost({
+      grillingItems: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", items: [rawItem] })),
+    });
+    const posted = await run({ type: "getGrillingItems" }, host);
+
+    expect(posted).toEqual([{ type: "grillingItems", items: [dtoItem] }]);
+  });
+
+  it('getGrillingItems posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      grillingItems: vi.fn().mockReturnValue('{"kind":"busy","items":[]}'),
+    });
+    expect(await run({ type: "getGrillingItems" }, host)).toEqual([]);
   });
 
   it("getBlocked maps every raw entry to its camelCase DTO", async () => {

@@ -12,7 +12,7 @@ import type { TriageEdits } from "../store/worker-client";
 import { GrillTakeover } from "./GrillTakeover";
 import { grillCompletionFailureFor } from "./write-failure";
 import { grillMeButtonId, TriageRow } from "./TriageRow";
-import { orderTriage } from "./triage-order";
+import { triageProcessQueue } from "./triage-process-order";
 import { SingleColumn } from "./layout";
 
 export interface TriageScreenProps {
@@ -74,7 +74,14 @@ export function TriageScreen({
   // being worked. `null` is the resting state — an inbox is for reading first.
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const realTriage = demo ? [] : orderTriage(task.triageInbox);
+  // #357: the "triage process" queue — local drafts, then Grilling-stage
+  // items, then captured Triage items — as one combined, ordered read.
+  // Neither this screen nor Now's collapsible area filters by stage on its
+  // own; `triageProcessQueue` is the one function both render from.
+  const triageQueue = demo
+    ? null
+    : triageProcessQueue(task.triageInbox, task.grillingItems, task.grillDraftItemIds);
+  const realTriage = triageQueue?.items ?? [];
 
   // Back restores focus to the row's own "Grill me" button — never a held
   // DOM reference, unlike `shell/CapturePopover.tsx`'s `restoreTo`: the
@@ -148,7 +155,7 @@ export function TriageScreen({
           <span className="hb-meta">
             {demo
               ? `${queue.length} unsorted · swept every 15m`
-              : `${realTriage.length} unsorted`}
+              : `${triageQueue?.capturedCount ?? 0} captured · ${triageQueue?.grillingCount ?? 0} grilling`}
           </span>
         </div>
         {demo ? (
