@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DICTATION_LANG,
   describeDictationError,
+  installDictationModel,
   isDictationApiPresent,
   probeDictationCapability,
   startLocalDictation,
@@ -98,6 +99,7 @@ function installRecognizer(options: {
   names?: string[];
   available?: (() => Promise<string>) | null;
   startThrows?: boolean;
+  install?: ((options: { langs: string[] }) => Promise<boolean>) | null;
 }): FakeRecognition[] {
   const made: FakeRecognition[] = [];
   class Ctor extends FakeRecognition {
@@ -111,6 +113,9 @@ function installRecognizer(options: {
     Object.assign(Ctor, {
       available: options.available ?? (() => Promise.resolve("available")),
     });
+  }
+  if (options.install !== null && options.install !== undefined) {
+    Object.assign(Ctor, { install: options.install });
   }
   for (const name of options.names ?? ["SpeechRecognition", "webkitSpeechRecognition"]) {
     (globalThis as Scope)[name] = Ctor;
@@ -208,6 +213,39 @@ describe("probeDictationCapability", () => {
     installRecognizer({ available: () => Promise.reject(new TypeError("nope")) });
     const capability = await probeDictationCapability();
     expect(capability.kind).toBe("unsupported");
+  });
+});
+
+describe("installDictationModel — the gesture-bound installer (#381, ADR-0022 Decision 5)", () => {
+  it("calls the constructor's install() with the required langs dictionary, synchronously", () => {
+    // "Synchronously" here means the browser call happens inside THIS
+    // function's own call stack, with no `await` first — the property that
+    // keeps a caller's user gesture alive across the call (ADR-0022, the
+    // `NotAllowedError` measurement, and the issue's added acceptance
+    // criterion).
+    const install = vi.fn(() => Promise.resolve(true));
+    installRecognizer({ install });
+    installDictationModel();
+    expect(install).toHaveBeenCalledWith({ langs: [DICTATION_LANG] });
+  });
+
+  it("resolves true on a successful install", async () => {
+    installRecognizer({ install: () => Promise.resolve(true) });
+    await expect(installDictationModel()).resolves.toBe(true);
+  });
+
+  it("resolves false, never throws, when install() rejects", async () => {
+    installRecognizer({ install: () => Promise.reject(new Error("NotAllowedError")) });
+    await expect(installDictationModel()).resolves.toBe(false);
+  });
+
+  it("resolves false with no constructor at all", async () => {
+    await expect(installDictationModel()).resolves.toBe(false);
+  });
+
+  it("resolves false for a constructor with no install() static", async () => {
+    installRecognizer({ install: null });
+    await expect(installDictationModel()).resolves.toBe(false);
   });
 });
 

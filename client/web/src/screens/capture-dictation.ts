@@ -14,10 +14,14 @@
 /** A capture draft split at the caret, held for the length of one dictation
  * session. `prefix + suffix` is what the field would say with the transcript
  * empty — a selection's contents are NOT in either half, because a dictation
- * over a selection replaces it, the same thing typing over a selection does. */
+ * over a selection replaces it, the same thing typing over a selection does.
+ * `selected` carries those contents anyway (#380): a splice never reads it,
+ * but a session that ends up cancelled (`restoreDraft`, below) needs the
+ * words back, byte-for-byte, not just the halves either side of them. */
 export interface FrozenDraft {
   prefix: string;
   suffix: string;
+  selected: string;
 }
 
 export interface SplicedDraft {
@@ -46,11 +50,11 @@ export function freezeDraft(
   selectionEnd: number | null,
 ): FrozenDraft {
   if (selectionStart === null || selectionEnd === null) {
-    return { prefix: draft, suffix: "" };
+    return { prefix: draft, suffix: "", selected: "" };
   }
   const first = clamp(Math.min(selectionStart, selectionEnd), draft.length);
   const last = clamp(Math.max(selectionStart, selectionEnd), draft.length);
-  return { prefix: draft.slice(0, first), suffix: draft.slice(last) };
+  return { prefix: draft.slice(0, first), suffix: draft.slice(last), selected: draft.slice(first, last) };
 }
 
 function clamp(index: number, length: number): number {
@@ -77,4 +81,25 @@ export function spliceTranscript(frozen: FrozenDraft, transcript: string): Splic
   const trail = suffix !== "" && !/^\s/.test(suffix) && !NO_SPACE_BEFORE.test(suffix) ? " " : "";
   const head = prefix + lead + spoken;
   return { value: head + trail + suffix, caret: head.length };
+}
+
+export interface RestoredDraft {
+  value: string;
+  selectionStart: number;
+  selectionEnd: number;
+}
+
+/** Undoes a session with no spacing rules of its own: `prefix + selected +
+ * suffix` is byte-for-byte the string `freezeDraft` split, and the caret goes
+ * back to the exact range that was selected (collapsed to a caret when there
+ * was none) — never the "no transcript" case `spliceTranscript` handles,
+ * which drops `selected` on the floor because a live session's own splice is
+ * built to replace a selection, not restore it. */
+export function restoreDraft(frozen: FrozenDraft): RestoredDraft {
+  const { prefix, suffix, selected } = frozen;
+  return {
+    value: prefix + selected + suffix,
+    selectionStart: prefix.length,
+    selectionEnd: prefix.length + selected.length,
+  };
 }

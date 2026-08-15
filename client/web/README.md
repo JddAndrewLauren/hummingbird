@@ -28,6 +28,16 @@ Worker route puts `hb.twinion.net/api/*` on the authority worker. Both halves
 are deployed as of 2026-08-10 (#237, #95's H3 gate closed); locally, with no
 `wrangler dev` running, a cycle fails its connection as `pull_failed`.
 
+Local dictation into the capture box (`src/speech/local-dictation.ts`,
+`src/screens/capture-dictation.ts`) is **Chrome/Edge desktop only, with no
+fallback.** It requires the browser's speech recognizer to run with
+processing forced local, and only Chromium's constructor supports that flag
+today — a browser that cannot establish local processing (every browser on
+iOS/iPadOS, including desktop-mode Safari; likely Firefox and Safari on
+desktop, unmeasured) renders no microphone at all, never a degraded or
+warned-about one. There is no cloud-backed fallback on any path, including
+error paths — see ADR-0022.
+
 ## Local development
 
 ```sh

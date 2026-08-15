@@ -9,6 +9,7 @@ import { Slider } from "../components/forms/Slider";
 import { Input } from "../components/forms/Input";
 import { CAPTURE_INPUT_ID } from "../shell/capture-hotkey";
 import {
+  installDictationModel,
   isDictationApiPresent,
   probeDictationCapability,
   startLocalDictation,
@@ -18,7 +19,7 @@ import {
 import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
-import { freezeDraft, spliceTranscript, type FrozenDraft } from "./capture-dictation";
+import { freezeDraft, restoreDraft, spliceTranscript, type FrozenDraft } from "./capture-dictation";
 import {
   CAPTURE_ENERGY_NAMES,
   CAPTURE_SIZE_NAMES,
@@ -91,6 +92,17 @@ export interface CaptureBoxProps {
    * is the only thing the popover is for. Optional: a surface that cannot be
    * dismissed passes nothing and no control renders. */
   onClose?: () => void;
+  /** Bumped by the shell (through `CapturePopover`) whenever an Escape while
+   * dictating should cancel the session in place rather than close the
+   * popover (#380) — the same "bumped counter" idiom `focusRequestId` already
+   * uses, for the same reason: a plain boolean can't tell a second request
+   * from a no-op. A bump while no session is live does nothing. */
+  cancelDictationRequestId?: number;
+  /** Reports every change in whether a dictation session is live, so the
+   * shell's single Escape handler (`App.tsx`) can decide whether an Escape
+   * means "cancel the dictation" or "close the popover" — see
+   * `cancelDictationRequestId` above. */
+  onDictatingChange?: (dictating: boolean) => void;
 }
 
 /** The resting capability, and the arm a browser without the API keeps
@@ -101,6 +113,24 @@ const NO_DICTATION: DictationCapability = {
   kind: "unsupported",
   reason: "This browser can't dictate on the device.",
 };
+
+/** #381's own state machine, held only while `dictation.kind ===
+ * "setup-required"` — the arm #379 deliberately left rendering nothing. It
+ * exists ONLY for the two-step gesture ADR-0022 Decision 5 made mandatory:
+ * `closed` is the setup mic's resting state (nothing shown, nothing called);
+ * the first tap moves to `explained` and calls nothing else; `installing`
+ * covers the several seconds Decision 5 measured `install()` taking; and
+ * `failed` carries the message for a rejected or `false` install, with the
+ * download control left in place so the reader can try again. A successful
+ * install never lands here at all — it re-probes and the branch that renders
+ * this whole block (`dictation.kind === "setup-required"`) stops matching. */
+type DictationSetupPhase =
+  | { phase: "closed" }
+  | { phase: "explained" }
+  | { phase: "installing" }
+  | { phase: "failed"; message: string };
+
+const SETUP_CLOSED: DictationSetupPhase = { phase: "closed" };
 
 /** The capture box — one input, three optional metadata controls, and the two
  * stages a capture may be born into (`capture-destination.ts`). Extracted
@@ -148,6 +178,19 @@ const NO_DICTATION: DictationCapability = {
  * STAYS there, so what is dropped is only the tail the recognizer had not yet
  * delivered, never the words the operator watched appear. Committing on
  * background would instead land text in a field nobody is looking at.
+ * `cancelDictation` (Escape, #380) is the one session ending that rewrites
+ * the draft on purpose, restoring it to what it said before the session
+ * started rather than leaving the last splice in place — that is the whole
+ * point of an explicit cancel, as opposed to backgrounding's silent one.
+ *
+ * A fifth ending, #367: a capture result landing `"ok"` while the NEXT
+ * capture's dictation session is still live ends that session too, because
+ * the render-phase clear-on-ok block already emptied the draft the session's
+ * frozen halves were keyed to — a further transcript would splice onto those
+ * stale halves and resurrect the capture just submitted. This one neither
+ * finalizes nor restores: it just tears the session down (`endSession`,
+ * same as backgrounding) and drops `frozenRef`, because the clear-on-ok
+ * block's state is already correct.
  *
  * Two guards are load-bearing rather than hygiene. The generation token means
  * a callback from an ended session changes nothing. And the unmount cleanup
@@ -162,6 +205,8 @@ export function CaptureBox({
   focusRequestId,
   lastCapture,
   onClose,
+  cancelDictationRequestId,
+  onDictatingChange,
 }: CaptureBoxProps) {
   const [draft, setDraft] = useState("");
   const [meta, setMeta] = useState(EMPTY_CAPTURE_META);
@@ -195,16 +240,33 @@ export function CaptureBox({
   // mount this box under a jsdom with no speech API.
   const [apiPresent] = useState(isDictationApiPresent);
   const [dictation, setDictation] = useState<DictationCapability>(NO_DICTATION);
+  const [setupPhase, setSetupPhase] = useState<DictationSetupPhase>(SETUP_CLOSED);
   const [listening, setListening] = useState(false);
   const [dictationError, setDictationError] = useState<string | null>(null);
   const sessionRef = useRef<DictationSession | null>(null);
+  // The halves frozen at session start, held here too (alongside the local
+  // `frozen` `startDictation` closes over for its own splices) so a cancel
+  // arriving from outside — the shell's Escape branch — can restore from the
+  // very same halves. Not a second saved copy of the draft: it's the one
+  // `spliceTranscript` already reads. Only two things clear it:
+  // `cancelDictation`, which restores from it first, and the #367 clear-on-ok
+  // effect below, which ends a still-live session out from under a capture
+  // that just landed and clears it WITHOUT restoring, because the clear-on-ok
+  // render-phase block already put the draft in its correct end state. Every
+  // other way a session ends (stop, an error, backgrounding, unmount) leaves
+  // whatever the recognizer last spliced in place, so there is nothing to
+  // restore and nothing to clear.
+  const frozenRef = useRef<FrozenDraft | null>(null);
   // Bumped by everything that ends a session, BEFORE the recognizer is
   // touched, so a result or an error still in flight is inert by the time it
   // lands. Teardown is keyed on session identity instead (see `endSession`),
   // because the bump would otherwise make a session's own `onEnd` inert and
   // nothing would ever clear `listening`.
   const generationRef = useRef(0);
-  const pendingCaretRef = useRef<number | null>(null);
+  // A range, not a single caret: a splice always collapses to `{start: end}`,
+  // but a cancel (#380) restores a selection, which needs both ends set in
+  // the same paint or the browser would show a collapsed caret for one frame.
+  const pendingSelectionRef = useRef<{ start: number; end: number } | null>(null);
 
   useEffect(() => {
     if (!apiPresent) {
@@ -221,10 +283,44 @@ export function CaptureBox({
     };
   }, [apiPresent]);
 
-  // `ready` only. `setup-required` is actionable but its control is #381's, and
-  // ADR-0022 forbids rendering anything at all for `unsupported` — not a
-  // disabled microphone, not one with a warning.
+  // `ready` only. ADR-0022 forbids rendering anything at all for
+  // `unsupported` — not a disabled microphone, not one with a warning.
   const canDictate = dictation.kind === "ready";
+  // #381's arm: actionable, but through the explain-then-download control
+  // below, never through the ordinary "Dictate" mic `canDictate` renders.
+  const setupRequired = dictation.kind === "setup-required";
+
+  // The download control's own click handler (#381). `installDictationModel()`
+  // is called FIRST, synchronously, before any `setState` — see ADR-0022
+  // Decision 5 and the module header of `speech/local-dictation.ts`: the
+  // browser call has to be the first thing that happens on this call stack or
+  // the still-live click gesture it depends on is gone. Nothing before this
+  // function runs an `await`, an effect, or a timer, and nothing ever will —
+  // that is the whole point of the acceptance criterion this satisfies.
+  function beginInstall(): void {
+    const install = installDictationModel();
+    setSetupPhase({ phase: "installing" });
+    install
+      .then((ok) => {
+        if (!ok) {
+          setSetupPhase({
+            phase: "failed",
+            message: "The speech model couldn't be installed. Typing still works.",
+          });
+          return;
+        }
+        return probeDictationCapability().then((capability) => {
+          setDictation(capability);
+          setSetupPhase(SETUP_CLOSED);
+        });
+      })
+      .catch(() => {
+        setSetupPhase({
+          phase: "failed",
+          message: "The speech model couldn't be installed. Typing still works.",
+        });
+      });
+  }
 
   function endSession(mode: "stop" | "abort"): void {
     const session = sessionRef.current;
@@ -249,6 +345,7 @@ export function CaptureBox({
       field?.selectionStart ?? null,
       field?.selectionEnd ?? null,
     );
+    frozenRef.current = frozen;
     setDictationError(null);
     const generation = generationRef.current + 1;
     generationRef.current = generation;
@@ -264,7 +361,7 @@ export function CaptureBox({
         }
         const spliced = spliceTranscript(frozen, transcript);
         setDraft(spliced.value);
-        pendingCaretRef.current = spliced.caret;
+        pendingSelectionRef.current = { start: spliced.caret, end: spliced.caret };
       },
       onError: (error) => {
         if (generation !== generationRef.current) {
@@ -292,6 +389,59 @@ export function CaptureBox({
     // stop the session.
     field?.focus();
   }
+
+  // Escape while dictating (#380): abort the session — same `endSession`
+  // path backgrounding takes, so the generation token already makes a
+  // trailing callback inert — then put the draft back exactly as it stood
+  // the instant dictation started, selection included. "Exactly" is not a
+  // copy: `restoreDraft` reads the same frozen halves every splice does, PLUS
+  // the `selected` text `freezeDraft` set aside rather than dropped, so a
+  // cancel with words selected restores them and re-selects the same range —
+  // never `spliceTranscript`'s empty-transcript case, which is built to
+  // collapse a selection (a live session replaces it) and would delete those
+  // words rather than give them back.
+  //
+  // Guarded on `sessionRef`, not the `listening` state, for the same reason
+  // `endSession` itself reads only refs: a stray bump (the shell's second
+  // Escape, once the popover has already closed) must be inert the instant
+  // it runs, not once a render has caught up.
+  function cancelDictation(): void {
+    if (!sessionRef.current) {
+      return;
+    }
+    const frozen = frozenRef.current;
+    endSession("abort");
+    if (frozen) {
+      const restored = restoreDraft(frozen);
+      setDraft(restored.value);
+      pendingSelectionRef.current = {
+        start: restored.selectionStart,
+        end: restored.selectionEnd,
+      };
+    }
+    frozenRef.current = null;
+  }
+
+  // The shell's ask to cancel in place, forwarded down through
+  // `CapturePopover` as a bumped counter — see `cancelDictationRequestId`'s
+  // own doc for why a counter rather than a boolean. Runs on mount too (the
+  // id starts at a fixed value), which is exactly `cancelDictation`'s own
+  // `sessionRef` guard's job: nothing is live yet, so it is inert. Deliberately
+  // keyed on the id alone, the same idiom `focusRequestId`'s effect above
+  // uses: `cancelDictation` is a new closure every render but reads nothing
+  // that isn't already re-read from refs and props on each call, so
+  // re-running it on every render would be churn with no reader.
+  useEffect(() => {
+    cancelDictation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cancelDictationRequestId]);
+
+  // Tells the shell whether a session is live, so its single Escape handler
+  // can branch between "cancel the dictation" and "close the popover"
+  // (`App.tsx`). Fires on every `listening` transition, mount included.
+  useEffect(() => {
+    onDictatingChange?.(listening);
+  }, [listening, onDictatingChange]);
 
   // Backgrounding cancels — see this component's header for why, and for what
   // that does and does not lose. Bound only while listening, so a page hidden
@@ -330,12 +480,12 @@ export function CaptureBox({
   // an early return, so ordinary typing — which sets no pending caret — is
   // never disturbed.
   useLayoutEffect(() => {
-    const caret = pendingCaretRef.current;
-    if (caret === null) {
+    const selection = pendingSelectionRef.current;
+    if (selection === null) {
       return;
     }
-    pendingCaretRef.current = null;
-    captureField()?.setSelectionRange(caret, caret);
+    pendingSelectionRef.current = null;
+    captureField()?.setSelectionRange(selection.start, selection.end);
   });
 
   // Shut on arrival, and shut again after a capture lands: the box's whole
@@ -380,6 +530,35 @@ export function CaptureBox({
       }
     }
   }
+
+  // #367: a successful result can land while a session for the NEXT capture
+  // is still live — the clear-on-ok block above just rewrote `draft` out
+  // from under the halves that session froze at its own start, so a further
+  // transcript would splice onto stale halves and resurrect the capture just
+  // submitted. An effect, not the render-phase block above: ending a session
+  // touches refs, and the render phase may only set state. Ended
+  // unconditionally on session presence, not the generation token — the
+  // token defeats a late *callback*, and this session is still genuinely
+  // live, just holding a snapshot that has quietly gone stale. `endSession`
+  // tears the recognizer down the same way backgrounding does; there is no
+  // restore here (unlike `cancelDictation`) because the clear-on-ok state
+  // above is already the correct end state — a later `cancelDictation`
+  // (guarded on `sessionRef`) finds nothing left to restore. Keyed on the
+  // seed, same as the render-phase block, not `lastCapture` identity: a
+  // replayed broadcast of a seed already handled must not kill a live
+  // next-capture session that was started after it.
+  const endedCaptureSeedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      lastCapture?.kind === "ok" &&
+      lastCapture.seed !== endedCaptureSeedRef.current &&
+      sessionRef.current
+    ) {
+      endedCaptureSeedRef.current = lastCapture.seed;
+      endSession("abort");
+      frozenRef.current = null;
+    }
+  }, [lastCapture]);
 
   // Reviewer finding on issue #222: `TaskState.lastCapture` was written on
   // every `captureResult` and read by nothing, so a failed capture left the
@@ -467,6 +646,24 @@ export function CaptureBox({
                   active={listening}
                   label={listening ? "Stop dictating" : "Dictate"}
                   onClick={() => (listening ? endSession("stop") : startDictation())}
+                />
+              ) : setupRequired ? (
+                // #381: the setup-state mic. The first tap only opens the
+                // explanation below — nothing is downloaded and no network
+                // request is made until the hint's own control is clicked.
+                <IconButton
+                  size="sm"
+                  icon="mic"
+                  active={setupPhase.phase !== "closed"}
+                  label="Set up dictation"
+                  onClick={() => {
+                    // A tap while the hint is already open (installing,
+                    // failed, or already explained) must not reset it — only
+                    // the closed->explained transition does anything.
+                    if (setupPhase.phase === "closed") {
+                      setSetupPhase({ phase: "explained" });
+                    }
+                  }}
                 />
               ) : null}
               {/* An X inside a text field usually means "clear the text", so
@@ -661,6 +858,36 @@ export function CaptureBox({
               onChange={(event) => setMeta({ ...meta, scheduledDate: event.target.value })}
             />
           </div>
+        </div>
+      ) : null}
+      {setupRequired && setupPhase.phase !== "closed" ? (
+        // #381: the explanation, and its own download control — the ONLY
+        // thing that calls `installDictationModel` (`beginInstall`, above).
+        // A `div` of its own rather than sharing `dictationError`'s `<p>`:
+        // this state carries a control, not just a sentence.
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+          {setupPhase.phase === "failed" ? (
+            // `role="alert"` + the danger token, matching `dictationError`/
+            // `captureError` below: this is a failure report like theirs, not
+            // the explanation/progress text the other phases render.
+            <p
+              role="alert"
+              style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)", margin: 0 }}
+            >
+              {setupPhase.message}
+            </p>
+          ) : (
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)", margin: 0 }}>
+              {setupPhase.phase === "installing"
+                ? "Downloading the on-device speech model…"
+                : "Local speech recognition needs a one-time download before dictation works."}
+            </p>
+          )}
+          {setupPhase.phase !== "installing" ? (
+            <Button size="sm" variant="secondary" onClick={beginInstall}>
+              Download speech model
+            </Button>
+          ) : null}
         </div>
       ) : null}
       {dictationError ? (

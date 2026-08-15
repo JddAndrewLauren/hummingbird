@@ -31,12 +31,20 @@ const seam = vi.hoisted(() => {
     handlers: null as DictationHandlers | null,
     stops: 0,
     aborts: 0,
+    /** #381: how many times the install seam was called, and what it
+     * resolves to next — the test's stand-in for the browser's installer. */
+    installs: 0,
+    installResult: Promise.resolve(true) as Promise<boolean>,
   };
 });
 
 vi.mock("../speech/local-dictation", () => ({
   isDictationApiPresent: () => seam.present,
   probeDictationCapability: () => Promise.resolve(seam.capability),
+  installDictationModel: () => {
+    seam.installs += 1;
+    return seam.installResult;
+  },
   startLocalDictation: (handlers: DictationHandlers): DictationSession => {
     seam.handlers = handlers;
     return {
@@ -60,6 +68,8 @@ beforeEach(() => {
   seam.handlers = null;
   seam.stops = 0;
   seam.aborts = 0;
+  seam.installs = 0;
+  seam.installResult = Promise.resolve(true);
 });
 
 /** Every optional field left at rest — what `resolveCaptureFields` hands
@@ -75,8 +85,9 @@ const NO_FIELDS = {
   scheduledDate: null,
 };
 
-function renderBox() {
+function renderBox(options: { onDictatingChange?: (dictating: boolean) => void } = {}) {
   const onSubmit = vi.fn();
+  const onDictatingChange = options.onDictatingChange ?? vi.fn();
   const view = render(
     <CaptureBox
       onSubmit={onSubmit}
@@ -84,9 +95,23 @@ function renderBox() {
       demo={false}
       focusRequestId={1}
       lastCapture={null}
+      cancelDictationRequestId={0}
+      onDictatingChange={onDictatingChange}
     />,
   );
-  return { onSubmit, view };
+  const bumpCancel = (id: number) =>
+    view.rerender(
+      <CaptureBox
+        onSubmit={onSubmit}
+        projects={[]}
+        demo={false}
+        focusRequestId={1}
+        lastCapture={null}
+        cancelDictationRequestId={id}
+        onDictatingChange={onDictatingChange}
+      />,
+    );
+  return { onSubmit, view, onDictatingChange, bumpCancel };
 }
 
 function field(): HTMLInputElement {
@@ -105,6 +130,27 @@ function mic(): HTMLElement {
 
 function stopMic(): HTMLElement {
   return screen.getByRole("button", { name: "Stop dictating" });
+}
+
+/** #381: the setup-state mic, distinct from the ordinary "Dictate" control. */
+function setupMic(): HTMLElement {
+  return screen.getByRole("button", { name: "Set up dictation" });
+}
+
+function downloadControl(): HTMLElement {
+  return screen.getByRole("button", { name: "Download speech model" });
+}
+
+/** Resolves or rejects the seam's `installDictationModel` on demand, so a
+ * test can assert what renders WHILE the promise is still pending. */
+function deferredInstall(): { resolve: (ok: boolean) => void; reject: (error: unknown) => void } {
+  let resolve!: (ok: boolean) => void;
+  let reject!: (error: unknown) => void;
+  seam.installResult = new Promise<boolean>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { resolve, reject };
 }
 
 /** One recognition result, as the seam would deliver it — cumulative, always. */
@@ -127,11 +173,14 @@ describe("CaptureBox — dictation", () => {
     expect(screen.queryByRole("button", { name: "Dictate" })).toBeNull();
   });
 
-  it("renders no microphone for setup-required — that arm is the setup slice's", async () => {
+  it("renders the setup mic, not the ordinary Dictate control, for setup-required", async () => {
+    // #381: `setup-required` is actionable, through its OWN control — never
+    // through the ordinary "Dictate" mic `canDictate` renders.
     seam.capability = { kind: "setup-required" };
     renderBox();
     await settleProbe();
     expect(screen.queryByRole("button", { name: "Dictate" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Set up dictation" })).toBeTruthy();
   });
 
   it("never probes when the API is absent, so nothing renders and no state settles", () => {
@@ -321,6 +370,77 @@ describe("CaptureBox — dictation", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("ends a still-live session and drops its snapshot when a capture succeeds out from under it (#367)", async () => {
+    // Not the deliberate-submit case above: here the session belongs to a
+    // NEXT capture, still listening, when an EARLIER submit's result lands.
+    // The clear-on-ok rule rewrites `draft` to "" regardless, so the session's
+    // frozen halves (built from whatever the field said before that clear)
+    // would resurrect that text if a later transcript spliced onto them.
+    const { onSubmit, view, onDictatingChange, bumpCancel } = renderBox();
+    await settleProbe();
+    // A draft already sitting in the field when the NEXT session starts — if
+    // the snapshot were wrongly restored instead of dropped, this is what
+    // would come back, distinguishing this from a cancel.
+    fireEvent.change(field(), { target: { value: "buy milk" } });
+    fireEvent.click(mic());
+    hear("call the vet");
+
+    view.rerender(
+      <CaptureBox
+        onSubmit={onSubmit}
+        projects={[]}
+        demo={false}
+        focusRequestId={1}
+        lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
+        cancelDictationRequestId={0}
+        onDictatingChange={onDictatingChange}
+      />,
+    );
+
+    // The microphone is torn down — no hot recognizer survives the capture...
+    expect(seam.aborts).toBe(1);
+    expect(field().readOnly).toBe(false);
+    expect(mic()).toBeTruthy();
+    // ...the field is exactly what the successful capture left it (empty),
+    // not the words the dead session had spliced in...
+    expect(field().value).toBe("");
+    // ...and a transcript still arriving from the dead recognizer changes
+    // nothing at all.
+    hear("something else entirely");
+    expect(field().value).toBe("");
+    // A cancel afterwards restores nothing either: `frozenRef` was dropped
+    // alongside the session, so there is nothing left for `cancelDictation`
+    // to restore from.
+    bumpCancel(1);
+    expect(field().value).toBe("");
+  });
+
+  it("keeps a voice-produced title after a failed capture, exactly as it keeps a typed one (#222, #382)", async () => {
+    const { onSubmit, view } = renderBox();
+    await startListening();
+    hear("call the vet");
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
+
+    view.rerender(
+      <CaptureBox
+        onSubmit={onSubmit}
+        projects={[]}
+        demo={false}
+        focusRequestId={1}
+        lastCapture={{ kind: "failed", seed: "seed-1", id: null, error: "Offline." }}
+      />,
+    );
+
+    // #222's rule does not know or care that this title was dictated rather
+    // than typed — the failure path reads the same `draft` state either way.
+    expect(field().value).toBe("call the vet");
+    expect(screen.getByRole("alert").textContent).toBe("Offline.");
+    expect(field().readOnly).toBe(false);
+    // Retryable: the mic is back and the draft can still be submitted.
+    expect(mic()).toBeTruthy();
+  });
+
   it("leaves the metadata controls alone across a session", async () => {
     const { onSubmit } = renderBox();
     await settleProbe();
@@ -333,5 +453,205 @@ describe("CaptureBox — dictation", () => {
       ...NO_FIELDS,
       context: "@phone",
     });
+  });
+});
+
+// #380: Escape while dictating cancels the session in place. The shell (not
+// this box) decides that an Escape means "cancel" rather than "close" — see
+// `App.tsx` — and asks by bumping `cancelDictationRequestId`, the same
+// "bumped counter" idiom `focusRequestId` already uses. What belongs here is
+// only what the restore actually does: byte-exact, from the same frozen
+// halves the splice reads (`capture-dictation.ts`), and a session ended
+// exactly the way backgrounding already ends one.
+describe("CaptureBox — cancelling a dictation session", () => {
+  it("restores the pre-session draft and caret exactly, and releases the microphone", async () => {
+    const { bumpCancel } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call today" } });
+    act(() => {
+      field().setSelectionRange(5, 5);
+    });
+    fireEvent.click(mic());
+    hear("the vet");
+    expect(field().value).toBe("call the vet today");
+
+    bumpCancel(1);
+
+    expect(seam.aborts).toBe(1);
+    expect(field().value).toBe("call today");
+    expect(field().selectionStart).toBe(5);
+    expect(field().readOnly).toBe(false);
+    expect(mic()).toBeTruthy();
+  });
+
+  it("restores a selection's words, byte-for-byte, and re-selects the same range", async () => {
+    // The reviewer's exact case on #380: starting dictation with "the vet"
+    // selected in "call the vet today" must not delete those words on cancel.
+    const { bumpCancel } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call the vet today" } });
+    act(() => {
+      field().setSelectionRange(5, 12);
+    });
+    fireEvent.click(mic());
+    hear("the dentist");
+    expect(field().value).toBe("call the dentist today");
+
+    bumpCancel(1);
+
+    expect(field().value).toBe("call the vet today");
+    expect(field().selectionStart).toBe(5);
+    expect(field().selectionEnd).toBe(12);
+  });
+
+  it("does nothing when bumped while no session is live", async () => {
+    const { bumpCancel } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call the vet" } });
+    bumpCancel(1);
+    expect(seam.aborts).toBe(0);
+    expect(field().value).toBe("call the vet");
+  });
+
+  it("ignores a callback that arrives after a cancel", async () => {
+    const { bumpCancel } = renderBox();
+    await startListening();
+    hear("call the vet");
+    bumpCancel(1);
+    hear("something else entirely");
+    act(() => {
+      seam.handlers?.onError({ code: "network", message: "late error" });
+    });
+    expect(field().value).toBe("");
+    expect(screen.queryByText("late error")).toBeNull();
+  });
+
+  it("reports whether it is dictating, for the shell's Escape handler", async () => {
+    const onDictatingChange = vi.fn();
+    renderBox({ onDictatingChange });
+    await settleProbe();
+    expect(onDictatingChange).toHaveBeenLastCalledWith(false);
+    fireEvent.click(mic());
+    expect(onDictatingChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(stopMic());
+    expect(onDictatingChange).toHaveBeenLastCalledWith(false);
+  });
+});
+
+// #381: the `setup-required` arm #379 deliberately left rendering nothing.
+// Two deliberate steps, per the issue and ADR-0022 Decision 5 — the first tap
+// explains only, and only the hint's own control calls the installer.
+describe("CaptureBox — explain, then download, the on-device speech model", () => {
+  beforeEach(() => {
+    seam.capability = { kind: "setup-required" };
+  });
+
+  it("the first tap renders the explanation and calls nothing — no install, no probe beyond mount's own", async () => {
+    renderBox();
+    await settleProbe();
+    fireEvent.click(setupMic());
+    expect(
+      screen.getByText(
+        "Local speech recognition needs a one-time download before dictation works.",
+      ),
+    ).toBeTruthy();
+    expect(seam.installs).toBe(0);
+    expect(downloadControl()).toBeTruthy();
+  });
+
+  it("only the hint's own control triggers the install", async () => {
+    renderBox();
+    await settleProbe();
+    // Tapping the setup mic itself again, once the hint is already open, must
+    // not call the installer either.
+    fireEvent.click(setupMic());
+    fireEvent.click(setupMic());
+    expect(seam.installs).toBe(0);
+    fireEvent.click(downloadControl());
+    expect(seam.installs).toBe(1);
+  });
+
+  it("shows the downloading state while the install is in flight", async () => {
+    const deferred = deferredInstall();
+    renderBox();
+    await settleProbe();
+    fireEvent.click(setupMic());
+    fireEvent.click(downloadControl());
+    expect(screen.getByText("Downloading the on-device speech model…")).toBeTruthy();
+    // No download control to click again while it is running.
+    expect(screen.queryByRole("button", { name: "Download speech model" })).toBeNull();
+    await act(async () => {
+      deferred.resolve(true);
+      await Promise.resolve();
+    });
+  });
+
+  it("re-probes to ready on a successful install, and the microphone then dictates", async () => {
+    const deferred = deferredInstall();
+    renderBox();
+    await settleProbe();
+    fireEvent.click(setupMic());
+    fireEvent.click(downloadControl());
+    seam.capability = { kind: "ready" };
+    await act(async () => {
+      deferred.resolve(true);
+      // Let the install's own `.then` chain (including the re-probe) settle.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("button", { name: "Set up dictation" })).toBeNull();
+    expect(mic()).toBeTruthy();
+    fireEvent.click(mic());
+    hear("call the vet");
+    expect(field().value).toBe("call the vet");
+  });
+
+  it("a failed install says so, preserves the draft, and leaves the field editable", async () => {
+    const deferred = deferredInstall();
+    renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call the vet" } });
+    fireEvent.click(setupMic());
+    fireEvent.click(downloadControl());
+    await act(async () => {
+      deferred.resolve(false);
+      await Promise.resolve();
+    });
+    const installFailure = screen.getByRole("alert");
+    expect(installFailure.textContent).toBe(
+      "The speech model couldn't be installed. Typing still works.",
+    );
+    expect(installFailure.style.color).toBe("var(--status-danger-fg)");
+    expect(field().value).toBe("call the vet");
+    expect(field().readOnly).toBe(false);
+    fireEvent.change(field(), { target: { value: "call the vet and buy milk" } });
+    expect(field().value).toBe("call the vet and buy milk");
+    // No network recognizer is ever reached: the only seam this component
+    // knows about is the mocked one above, and no session was ever started.
+    expect(seam.handlers).toBeNull();
+  });
+
+  it("a rejected install is treated the same as a false one", async () => {
+    const deferred = deferredInstall();
+    renderBox();
+    await settleProbe();
+    fireEvent.click(setupMic());
+    fireEvent.click(downloadControl());
+    await act(async () => {
+      deferred.reject(new Error("NotAllowedError"));
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByText("The speech model couldn't be installed. Typing still works."),
+    ).toBeTruthy();
+  });
+
+  it("never installs on mount and never installs as a side effect of a capture", async () => {
+    const { onSubmit } = renderBox();
+    await settleProbe();
+    fireEvent.change(field(), { target: { value: "call the vet" } });
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+    expect(onSubmit).toHaveBeenCalled();
+    expect(seam.installs).toBe(0);
   });
 });
