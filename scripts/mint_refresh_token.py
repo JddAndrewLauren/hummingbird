@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """One-time local OAuth consent flow: mint a Google refresh token.
 
-The token carries both sweeper scopes -- Google Tasks and Gmail modify (the
-capture-label drain needs to read labelled messages and remove the label).
-Adding a scope later means re-running this and re-setting the secret.
+The token carries three scopes, and is shared by every Google consumer in the
+repo (operator decision on #486): Google Tasks and Gmail modify for the sweeper
+(the capture-label drain needs to read labelled messages and remove the label),
+plus Calendar readonly for `calendar-poll`. `gmail-poll` reads through the same
+credential rather than a narrower dedicated one -- one consent, one secret to
+rotate. Adding a scope later means re-running this and re-setting the secret
+in all of its places (Fly, and the GitHub Actions secrets both pollers read).
 
 Run once, on your own machine, against the Internal desktop-app OAuth client
-in the twinion.net Workspace. The token it prints goes straight into
-`flyctl secrets set GOOGLE_REFRESH_TOKEN=...` and nowhere else -- never a file
-in this repo.
+in the twinion.net Workspace. The token it prints goes into
+`flyctl secrets set GOOGLE_REFRESH_TOKEN=...` and `gh secret set
+GOOGLE_REFRESH_TOKEN`, and nowhere else -- never a file in this repo.
 
     python3 scripts/mint_refresh_token.py \
         --client-id <id> --client-secret <secret>
@@ -34,6 +38,7 @@ SCOPE = " ".join(
     (
         "https://www.googleapis.com/auth/tasks",
         "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/calendar.readonly",
     )
 )
 PORT = 8765
@@ -115,7 +120,9 @@ def main():
         return 1
 
     print("\nGOOGLE_REFRESH_TOKEN=%s\n" % token)
-    print("Store it with:\n  flyctl secrets set GOOGLE_REFRESH_TOKEN='%s'" % token)
+    print("Store it in 1Password first, then in both places that read it:")
+    print("  flyctl secrets set GOOGLE_REFRESH_TOKEN='%s' --app hummingbird-sweeper" % token)
+    print("  gh secret set GOOGLE_REFRESH_TOKEN   # gmail-poll + calendar-poll")
     return 0
 
 

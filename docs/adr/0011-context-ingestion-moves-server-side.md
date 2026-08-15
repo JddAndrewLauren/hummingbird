@@ -187,6 +187,20 @@ if the operator prefers it, but that is the operator's call to make
 explicitly, not something an implementer may decide silently by shipping
 it — see the issue-135 thread for the open question.
 
+*Amended 2026-08-14 (#486): the operator made that call, and made it the
+other way — **one broad Google credential, shared by the sweeper and both
+Google poller lanes**, carrying Tasks + `gmail.modify` + `calendar.readonly`.
+No dedicated `gmail.readonly` token exists or will be minted. The reasoning
+above about kind-vs-name narrowing stands as written and was not refuted; it
+lost to operator cost in a single-operator system — a second credential is a
+second consent, a second pair of secrets, and a second rotation step, for
+credentials that live in one vault behind one account either way. What is
+accepted along with it: a leak of the Actions secret can modify the
+operator's mailbox, not merely read it, bounded by the grant being revocable
+in one gesture. This retires #135's open question; the poller workflows'
+`env` blocks carry the posture, and `docs/sweeper.md` is the mint runbook for
+all three consumers.*
+
 ## Addendum: #136 follows the same scaffolding, and the credential table above was already right
 
 *2026-08-10, from #136's implementation.*
@@ -209,6 +223,12 @@ the same reason `gmail.readonly` did — narrower in kind, not just in name.
 One credential, two scopes, one workflow secret; the still-open question on
 issue #135 (reuse the operator's broader existing token instead) covers
 this leg too and is not duplicated here.
+
+*Amended 2026-08-14 (#486): that question is now closed, and this leg
+follows it — see the #486 note in the amendment above. The shared credential
+is the sweeper's, widened by re-consent to carry `calendar.readonly`; it was
+never possible to reuse the sweeper's token as it stood, because that token
+had no calendar scope at all.*
 
 `server/calendar-poll` also writes the `busy_now` gauge — an ordinary
 server-polled *snapshot* row (the lane this ADR's "gains a row" section

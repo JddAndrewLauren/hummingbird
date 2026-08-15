@@ -35,7 +35,7 @@ retargeted off Linear in
 | `Dockerfile` | `python:3.12-slim` + supercronic pinned by version and sha256. |
 | `fly.toml` | `hummingbird-sweeper`, one 256MB always-on worker. |
 | `.github/workflows/deploy.yml` | Tests on push to `main` and on `pull_request`; `flyctl deploy` on push to `main` only. |
-| `scripts/mint_refresh_token.py` | One-time local OAuth consent helper (Tasks + Gmail scopes). |
+| `scripts/mint_refresh_token.py` | One-time local OAuth consent helper (Tasks + Gmail + Calendar scopes). |
 | `tests/test_sweep.py`, `tests/test_gmail.py` | `python3 -m unittest discover -s tests`. Cred-free. |
 
 ## How it runs
@@ -396,12 +396,23 @@ Google auth is a **Workspace Internal** OAuth app (captures land in the
 twinion.net Workspace account). Internal user type means no verification review
 and no 7-day refresh-token expiry — that footgun applies only to apps in
 Testing status. Desktop-app OAuth client, one-time local consent to mint the
-refresh token, which carries both scopes:
-`https://www.googleapis.com/auth/tasks` and
+refresh token, which carries three scopes:
+`https://www.googleapis.com/auth/tasks`,
 `https://www.googleapis.com/auth/gmail.modify` (read labelled messages +
-remove the label; there is no narrower Gmail scope that can write labels).
+remove the label; there is no narrower Gmail scope that can write labels), and
+`https://www.googleapis.com/auth/calendar.readonly`.
 Deferred alternative if token durability ever bites: a service account with
 domain-wide delegation.
+
+**This one credential is every Google consumer in the repo** (operator decision
+on [#486](https://github.com/JddAndrewLauren/hummingbird/issues/486), which also
+closed out #135's open question): the sweeper reads it from a Fly secret, and
+`gmail-poll` and `calendar-poll` read it from the GitHub Actions secret of the
+same name. The calendar scope exists for the poller, not for anything here —
+the sweeper never touches Calendar. The consequence is that **re-minting is a
+three-place operation**: 1Password, then `flyctl secrets set`, then
+`gh secret set`. Leave one behind and the lane reading it fails on a revoked
+grant, not on a missing secret, which is the harder failure to read.
 
 `HB_API_TOKEN` is a **`sweeper`-scope** token (ADR-0008/0009 `tokens` table),
 sent as `Authorization: Bearer …`. That scope reaches `POST /api/items` and
@@ -497,12 +508,16 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    go-live. Until `GMAIL_HEALTHCHECK_URL` is set the Gmail adapter fails and
    captures nothing, while Google Tasks keeps draining normally.
 4. **Re-consent.** `python3 scripts/mint_refresh_token.py --client-id …
-   --client-secret …` — the script now requests Tasks + `gmail.modify`
-   together, so the one consent covers both adapters. Grant as the twinion.net
+   --client-secret …` — the script requests Tasks + `gmail.modify` +
+   `calendar.readonly` together, so the one consent covers both sweeper
+   adapters *and* the two Google poller lanes. Grant as the twinion.net
    account.
-5. **Secrets.** `flyctl secrets set GOOGLE_REFRESH_TOKEN=<new token>
-   GMAIL_HEALTHCHECK_URL=<new ping url>`. The old Tasks-only refresh token is
-   superseded; nothing else changes.
+5. **Secrets.** Store the token on the 1Password item first and read it back,
+   then `flyctl secrets set GOOGLE_REFRESH_TOKEN=<new token>
+   GMAIL_HEALTHCHECK_URL=<new ping url>` and
+   `gh secret set GOOGLE_REFRESH_TOKEN` (plus `GOOGLE_CLIENT_ID` /
+   `GOOGLE_CLIENT_SECRET`, which `gmail-poll` and `calendar-poll` also read).
+   Any earlier, narrower refresh token is superseded; nothing else changes.
 6. **Dry run.** Label one test message, export the secrets locally, run
    `./sweep.py --dry-run`, and read both adapters' output — the Gmail adapter
    should log the labelled message and mutate nothing.
