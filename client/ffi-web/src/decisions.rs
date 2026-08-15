@@ -97,7 +97,15 @@ mod tests {
     /// binding did not grow an opinion of its own on the way across.
     #[test]
     fn the_capture_binding_is_the_core_rule_verbatim() {
-        for draft in ["", "   ", "\t\n", "buy milk", "  buy milk  "] {
+        for draft in [
+            "",
+            "   ",
+            "\t\n",
+            "\u{feff}",
+            "buy milk",
+            "  buy milk  ",
+            "\u{feff}buy milk",
+        ] {
             assert_eq!(
                 can_submit_capture(draft),
                 hummingbird_core::decisions::can_submit_capture(draft),
@@ -135,7 +143,7 @@ mod tests {
 
     #[test]
     fn the_probe_reads_the_main_threads_camel_case_shape() {
-        let payload = format!("[{}, {}]", one_item("a", "next"), one_item("b", "done"));
+        let payload = format!("[{}, {}]", one_item("a", "ready"), one_item("b", "done"));
         assert_eq!(
             decisions_probe_item_payload(&payload),
             r#"{"count":2,"open":1}"#,

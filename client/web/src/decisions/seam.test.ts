@@ -14,6 +14,12 @@ import { loadDecisionsForTest } from "../test/wasm-setup";
 // `seam.jsdom.test.ts` is the same proof under jsdom. Two files rather than
 // one parameterised suite because the environment is a per-file docblock.
 
+/** The two invisibles `str::trim` and `String.trim()` disagree about, named
+ * rather than written literally — a raw one in the source is unreadable and
+ * the next reader would delete it as an accident. */
+const BOM = "\u{feff}";
+const NEL = "\u{85}";
+
 describe("the decision seam", () => {
   it("is already instantiated by the shared setup file", () => {
     expect(decisionsReady()).toBe(true);
@@ -25,8 +31,19 @@ describe("the decision seam", () => {
     expect(canSubmitCapture("buy milk")).toBe(true);
   });
 
+  // The core states its own blank-draft alphabet rather than inheriting
+  // `str::trim`, whose set differs from `String.trim()`'s in both
+  // directions (`decisions/capture.rs`). Pinned from the JS side too,
+  // because this is the side that used to decide it and the side a reader
+  // will assume still does.
+  it("refuses a draft of nothing but invisibles, BOM included", () => {
+    expect(canSubmitCapture(BOM)).toBe(false);
+    expect(canSubmitCapture(NEL)).toBe(false);
+    expect(canSubmitCapture(`${BOM}buy milk`)).toBe(true);
+  });
+
   it("crosses a structured payload and back", () => {
-    const payload = JSON.stringify([syntheticItem("a", "next"), syntheticItem("b", "done")]);
+    const payload = JSON.stringify([syntheticItem("a", "ready"), syntheticItem("b", "done")]);
     expect(JSON.parse(probeItemPayload(payload))).toEqual({ count: 2, open: 1 });
   });
 });

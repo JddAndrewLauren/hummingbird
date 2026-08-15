@@ -6,6 +6,7 @@ import { initDecisions } from "./decisions/seam";
 import { appUpdateSignal } from "./shell/app-update";
 import { captureOAuthRedirect } from "./shell/oauth-redirect";
 import { watchForActivation } from "./shell/reload-on-activate";
+import { SeamFailure } from "./shell/SeamFailure";
 import { coreStore } from "./store/store";
 import { watchForReadyTimeout } from "./store/ready-timeout";
 import { attachWorkerClient } from "./store/worker-client";
@@ -120,21 +121,31 @@ if (!root) {
 // against a not-ready seam, so the wrapper's not-ready branch can stay a
 // throw instead of a stale TS fallback.
 //
-// A failure renders the app anyway, on the existing surface for exactly
-// this: `sharedWorker.onerror` above puts a wasm/CSP failure into the
-// store's `error`, and the shell renders "core failed". A blank page would
-// hide the one fact worth showing.
-initDecisions()
-  .catch((cause: unknown) => {
-    coreStore.setState({
-      status: "error",
-      error: cause instanceof Error ? cause.message : "decision seam failed to load",
-    });
-  })
-  .finally(() => {
+// A failure keeps the gate CLOSED and renders `SeamFailure` instead of
+// `App` — never both, and never `App` alone. Rendering the app anyway would
+// undo the paragraph above: the wrappers throw when the seam is not ready,
+// there is no error boundary here, and the throw happens inside a render
+// (`CaptureBox`'s `canSubmitCapture`), so the first capture the reader opens
+// would unmount the whole tree into a blank page. Reporting it through
+// `coreStore` is not enough either — the SharedWorker's `ready` message sets
+// `error: null` (`store/worker-client.ts`), so a worker that connects after
+// this rejection would erase the report and leave a healthy-looking shell
+// over a seam that still throws.
+initDecisions().then(
+  () => {
     createRoot(root).render(
       <StrictMode>
         <App worker={worker} />
       </StrictMode>,
     );
-  });
+  },
+  (cause: unknown) => {
+    createRoot(root).render(
+      <StrictMode>
+        <SeamFailure
+          detail={cause instanceof Error ? cause.message : "decision seam failed to load"}
+        />
+      </StrictMode>,
+    );
+  },
+);

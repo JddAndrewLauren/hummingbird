@@ -30,6 +30,10 @@
 // that nobody noticed. `main.tsx` awaits `initDecisions()` before the first
 // `createRoot().render()`, and vitest awaits it in `src/test/wasm-setup.ts`,
 // so a throw here means a new render path opened that skipped the gate.
+// A *failed* `initDecisions()` renders `shell/SeamFailure.tsx` instead of
+// `App` for the same reason: there is no error boundary in this app, so
+// mounting a decision consumer against a rejected seam would trade a stated
+// failure for a blank page on the reader's first capture.
 
 /** The wasm module's shape, named here rather than imported from the
  * generated `.d.ts`: this file is also the type the node-side test loader

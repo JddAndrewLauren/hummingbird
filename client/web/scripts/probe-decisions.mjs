@@ -80,7 +80,10 @@ const payload = JSON.stringify(
     seq: index + 1,
     title: `Draft the quarterly note about thing number ${index}`,
     description: index % 3 === 0 ? "A couple of sentences of context on this one." : null,
-    stage: ["next", "waiting", "someday", "done"][index % 4],
+    // The six-stage vocabulary, byte-for-byte (`store/protocol.ts`) — a
+    // payload claiming to be a `TaskItemDTO` should not carry stage names
+    // the schema's CHECK would reject.
+    stage: ["ready", "in_progress", "blocked", "done"][index % 4],
     size: ["quick", "normal", "deep"][index % 3],
     energy: ["low", "medium", "high"][index % 3],
     context: ["@computer", "@calls", "@errands"][index % 3],
