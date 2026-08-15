@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { NAV_BAR_OVERFLOW } from "../src/shell/nav-bar";
+import { CAPTURE_TRIGGER_ID, RECALL_TRIGGER_ID } from "../src/shell/trigger-ids";
 import { SCREEN_LABELS, SCREENS as SCREEN_ORDER, type Screen } from "../src/shell/screens";
 
 // The visual gate's one spec. Two jobs, deliberately separated:
@@ -196,16 +197,22 @@ async function show(page: Page, nav: string, projectName: string) {
  * one trigger mounted on every project (`shell/Header.tsx`'s button is
  * `isPhone`-independent, unlike the rail's magnifier and the phone More
  * sheet's own entry, which #480 wired as three more paths to the identical
- * `open`/`onClose` state). `exact` IS load-bearing here, not a leftover
- * habit: Playwright's accessible-name matching is substring by default, and
- * the rail's own magnifier is labelled "Search everything" — a bare "Search"
- * matches both it and the header's button at the three desktop widths,
- * where `NavRail` is mounted alongside `Header`, and resolves to a
- * strict-mode violation. `exact` is what keeps this to the one trigger the
- * capture actually means to use, the same reason `show()` above keeps it on
- * every nav button. */
+ * `open`/`onClose` state).
+ *
+ * Addressed by the trigger's own id, not by its accessible name. All three
+ * triggers now say "Search everything" — one gesture, one name — so no name
+ * query can pick the header's button out: at the three desktop widths
+ * `NavRail` is mounted alongside `Header` and its magnifier wears the
+ * identical name, which is a strict-mode violation whether the match is
+ * exact or not. Nor can a landmark separate them the way `show()` above
+ * separates the nav: `Header.tsx`'s `<header>` is rendered INSIDE `<main>`,
+ * and a `header` nested in `main` carries no `banner` role at all, so
+ * `getByRole("banner")` matches nothing here. `RECALL_TRIGGER_ID` is the one
+ * unambiguous handle on this button — imported from the component that owns
+ * it (the same id `RecallOverlay` measures to hang itself under), so a
+ * rename moves both ends at once. */
 async function openRecall(page: Page) {
-  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page.locator(`#${RECALL_TRIGGER_ID}`).click();
   await expect(page.getByRole("dialog", { name: "Recall" })).toBeVisible();
 }
 
@@ -517,6 +524,43 @@ for (const theme of THEMES) {
         path: `visual/.captures/recall-empty-query-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
+    });
+
+    // No screenshot: this asserts a rule, not a surface. It lives here
+    // because the rule is `App.tsx` state and there is no `App.test.tsx` —
+    // the two openers are the only thing that enforces it, and the four
+    // captures above are already the place Recall is driven end-to-end
+    // through a real shell. Both dialogs are `aria-modal` at one z-index with
+    // no focus trap between them, so "both open" was a reader tabbing between
+    // two things that each claimed to own the window.
+    //
+    // **Driven by `press("Enter")`, and that is the honest gesture, not a
+    // workaround for Playwright.** Each overlay lays a full-window scrim at
+    // `zIndex: 40` over the header, so with either one open neither trigger
+    // can be CLICKED at all — and the `/` and `c` hotkeys both refuse an
+    // editable target, which is where focus lands when either opens. Reaching
+    // the second overlay means tabbing out to the trigger behind the scrim
+    // and pressing it: keyboard focus is what the missing trap fails to
+    // contain, so the keyboard is also the only way in. That is exactly the
+    // path FINAL-GATE recorded, and the one this closes.
+    test("recall overlay: each opener closes the other overlay", async ({ page }, testInfo) => {
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      const capture = page.getByRole("dialog", { name: "New capture" });
+      const recall = page.getByRole("dialog", { name: "Recall" });
+
+      await page.locator(`#${CAPTURE_TRIGGER_ID}`).click();
+      await expect(capture).toBeVisible();
+      await page.locator(`#${RECALL_TRIGGER_ID}`).press("Enter");
+      await expect(recall).toBeVisible();
+      // The new fact: the popover is gone rather than sitting underneath.
+      await expect(capture).toBeHidden();
+
+      // And back the other way. Assertion only — nothing is typed and no
+      // capture is submitted, so this leaves no fixture behind.
+      await page.locator(`#${CAPTURE_TRIGGER_ID}`).press("Enter");
+      await expect(capture).toBeVisible();
+      await expect(recall).toBeHidden();
     });
 
     test("empty states capture", async ({ page }, testInfo) => {

@@ -5,13 +5,17 @@ import type { CaptureDestination } from "../screens/capture-destination";
 import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
+import { CAPTURE_TRIGGER_ID } from "./trigger-ids";
 import { useIsPhone } from "./useIsPhone";
 
 /** The DOM id the header's New button carries, so this popover can measure
  * what it hangs from. An id rather than a ref threaded through `Header`:
  * `Button` (the design-system component) forwards no ref, and the hotkey path
- * has no React handle on the trigger at all. */
-export const CAPTURE_TRIGGER_ID = "shell-capture-trigger";
+ * has no React handle on the trigger at all. Re-exported rather than defined
+ * here: it now lives in the JSX-free `trigger-ids.ts` so
+ * `visual/surfaces.spec.ts` can import it too (that file's own header says
+ * why). */
+export { CAPTURE_TRIGGER_ID };
 
 /** Gap between the button's bottom edge and the card, and the breathing room
  * left under the card before the window's bottom edge. */
