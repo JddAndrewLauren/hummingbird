@@ -8,6 +8,7 @@ import { ItemRow } from "../components/domain/ItemRow";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { type DemoData, demoQuestions } from "../fixtures/demo";
+import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
 import type { Screen } from "../shell/screens";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
 import type {
@@ -19,14 +20,30 @@ import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
 import { FrontierColumns } from "./FrontierColumns";
+import { GrillTakeover } from "./GrillTakeover";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 import { energyIcon, energyTitle, levelColor, sizeIcon, sizeTitle } from "./size-energy";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
-import { actFailureFor, strandedActFailure, strandedTriageFailure } from "./write-failure";
+import {
+  actFailureFor,
+  grillCompletionFailureFor,
+  strandedActFailure,
+  strandedTriageFailure,
+} from "./write-failure";
 import { TriageRow } from "./TriageRow";
+
+/** The DOM id Now's own "Grill me"/"Resume grill" button carries (#359) — the
+ * same "look it up by id rather than hold a ref across an unmount" contract
+ * `TriageRow.tsx`'s `grillMeButtonId` uses, since the takeover unmounts the
+ * whole board and the button Back has to refocus is a NEW element by the time
+ * it remounts. A distinct namespace from Triage's: the two screens are never
+ * mounted at once, but the id still ought to say which surface it is. */
+export function nowGrillMeButtonId(itemId: string): string {
+  return `now-grill-me-${itemId}`;
+}
 
 export interface NowScreenProps {
   demo: DemoData | null;
@@ -82,6 +99,12 @@ export interface NowScreenProps {
    * which is also where persistence lives (`questions/aside-prefs.ts`). This
    * screen only renders the answer. */
   asideCollapsed?: boolean;
+  /** "Grill me" reaches Now (#359, ADR-0023): the same whole-composite
+   * `GrillTakeoverWiring` `TriageScreen` gets, from the same one instance
+   * `App.tsx` owns — there is exactly one interview session for the whole
+   * app, never a second one per screen. Optional for the same demo-only
+   * reason as `onTriage`: demo mode has no real `TaskItemDTO` to grill. */
+  grill?: GrillTakeoverWiring;
 }
 
 /** The real-data half of `QuestionInputs` (never demo's) — exported so a
@@ -146,6 +169,7 @@ function RealFrontier({
   microtask,
   onTriage,
   storage,
+  grill,
 }: Pick<
   NowScreenProps,
   | "task"
@@ -157,6 +181,7 @@ function RealFrontier({
   | "microtask"
   | "onTriage"
   | "storage"
+  | "grill"
 >) {
   const allItems = [...task.frontier, ...task.blocked.map((entry) => entry.item)];
   const liveSelectedItem = selectedItemId
@@ -293,6 +318,80 @@ function RealFrontier({
     [...task.triageInbox, ...task.grillingItems],
   );
 
+  // #359: Grill reaches Now. Back restores focus to the "Grill me" button the
+  // reader pressed — never a held DOM reference (the takeover unmounts the
+  // whole centre column, so that exact button is gone by the time Back is
+  // pressed), looked up by id instead, the same contract `TriageScreen.tsx`
+  // uses for its own row.
+  const focusOnCloseRef = useRef<string | null>(null);
+
+  function handleGrillMe(itemId: string): void {
+    focusOnCloseRef.current = itemId;
+    grill?.open(itemId);
+  }
+
+  function handleGrillBack(): void {
+    grill?.back();
+  }
+
+  useEffect(() => {
+    if (grill?.openItemId !== null && grill?.openItemId !== undefined) {
+      return;
+    }
+    const itemId = focusOnCloseRef.current;
+    if (itemId === null) {
+      return;
+    }
+    focusOnCloseRef.current = null;
+    // Review round 1's non-blocking note: a `fog_remains` confirm moves this
+    // item into `task.grillingItems`, so the slot that reopens is the
+    // `selectedCapture`/`TriageRow` branch below, which carries no
+    // `nowGrillMeButtonId` — this lookup no-ops and focus drops to `<body>`.
+    // Triage's own version of this effect has the identical shape, so this
+    // is an inherited gap, not a regression this slice introduced.
+    document.getElementById(nowGrillMeButtonId(itemId))?.focus();
+  }, [grill?.openItemId]);
+
+  // Resolved against every item this screen knows about — the frontier and
+  // blocked items detail mode opens, plus the captures `TriageRow` opens —
+  // the same "the takeover's item must resolve against the combined set, not
+  // just one array" fix #357 made for `TriageScreen.tsx`'s own `openItem`.
+  // `grill.openItemId` is app-wide (`shell/useGrillTakeoverWiring.ts` — one
+  // interview session for the whole app), so a grill opened from Triage and
+  // then navigated to renders here too, over Now's centre column: intended,
+  // not a bug, since it is the same one session either screen would resume.
+  const openItem = grill?.openItemId
+    ? [...allItems, ...task.triageInbox, ...task.grillingItems].find(
+        (item) => item.id === grill.openItemId,
+      )
+    : undefined;
+
+  // The takeover replaces the centre column ONLY — never the standing-
+  // questions aside beside it, which sits in `NowScreen`'s own `TwoColumn`,
+  // a sibling of this component's own render rather than something nested
+  // inside it. That is the one thing this surface has that Triage's
+  // `SingleColumn` takeover does not, and #359 calls it out explicitly:
+  // preserving it is not a side effect of this early return, it is the
+  // reason the return stops here instead of one level up.
+  if (grill && openItem) {
+    return (
+      <GrillTakeover
+        item={openItem}
+        steps={grill.sessionSteps}
+        turn={grill.turn}
+        turns={grill.turns}
+        backLabel="Back to Now"
+        onAnswer={grill.answer}
+        onKeepGrilling={grill.keepGrilling}
+        onRetry={grill.retry}
+        onConfirm={grill.confirm}
+        onBack={handleGrillBack}
+        onDiscard={grill.discard}
+        completionError={grillCompletionFailureFor(task.lastGrillCompletion, grill.confirmSeed)}
+      />
+    );
+  }
+
   return (
     <>
       {/* Above the slot, not inside it: these lines exist precisely for the
@@ -383,6 +482,11 @@ function RealFrontier({
             onTriage={onTriage}
             lastTriage={task.lastTriage}
             microtask={microtask}
+            // #359: "Grill me" reaches Now — gated by `item-actions.ts`'s
+            // `canGrill`, the one deciding function, same as Triage's.
+            onGrillMe={grill ? handleGrillMe : undefined}
+            hasGrillDraft={task.grillDraftItemIds.includes(selectedItem.id)}
+            grillMeId={nowGrillMeButtonId(selectedItem.id)}
           />
         </SelectedItemSection>
       ) : null}
@@ -506,6 +610,7 @@ export function NowScreen({
   onTriage,
   storage,
   asideCollapsed = false,
+  grill,
 }: NowScreenProps) {
   // Resolved once, for both the ranked region and the triage section. The
   // fallback keeps every existing caller (and every test that mounts this
@@ -621,6 +726,7 @@ export function NowScreen({
             microtask={microtask}
             onTriage={onTriage}
             storage={resolvedStorage}
+            grill={grill}
           />
         )}
       </Column>

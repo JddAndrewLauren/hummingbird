@@ -27,6 +27,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{
           phase: "question",
@@ -57,6 +58,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{
           phase: "question",
@@ -87,6 +89,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{
           phase: "proposal",
@@ -118,6 +121,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[step(), step({ id: "step-2" })]}
         turn={{
           phase: "proposal",
@@ -158,6 +162,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={null}
         turn={{
           phase: "proposal",
@@ -188,6 +193,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{ phase: "declined", messages: [], reason: "The run ended without an answer.", backend: null, model: null, answered: false }}
         turns={[]}
@@ -211,6 +217,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{ phase: "asking", messages: ["reading item-1"] }}
         turns={[]}
@@ -237,6 +244,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{ phase: "asking", messages: [] }}
         turns={[]}
@@ -262,6 +270,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{ phase: "asking", messages: [] }}
         turns={[]}
@@ -285,6 +294,7 @@ describe("GrillTakeover", () => {
     const { container } = render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{ phase: "asking", messages: [] }}
         turns={[]}
@@ -305,6 +315,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{
           phase: "proposal",
@@ -335,6 +346,7 @@ describe("GrillTakeover", () => {
     render(
       <GrillTakeover
         item={item}
+        backLabel="Back to Triage"
         steps={[]}
         turn={{
           phase: "proposal",
@@ -355,5 +367,56 @@ describe("GrillTakeover", () => {
     );
 
     screen.getByText(/never applied to the item automatically/i);
+  });
+});
+
+// #359 review round 1: the "Fog remains" badge names the verdict, not its
+// consequence — for a started (Ready/In Progress) item, Confirm silently
+// took it off the frontier with nothing on screen having said so. This
+// suite pins the sentence that now says it, and exactly when it appears.
+describe("GrillTakeover — the frontier-demotion warning (#359)", () => {
+  function reviewCard(overrides: { stage: "triage" | "ready" | "in_progress"; verdict: "resolved" | "fog_remains" }) {
+    render(
+      <GrillTakeover
+        item={itemDTO({ id: "item-1", title: "book flights", stage: overrides.stage })}
+        backLabel="Back to Triage"
+        steps={[]}
+        turn={{
+          phase: "proposal",
+          messages: [],
+          proposal: { summary: "Still foggy", verdict: overrides.verdict, patch: {} },
+          backend: null,
+          model: null,
+        }}
+        turns={[]}
+        onAnswer={() => {}}
+        onKeepGrilling={() => {}}
+        onRetry={() => {}}
+        onConfirm={() => {}}
+        onBack={() => {}}
+        onDiscard={() => {}}
+        completionError={null}
+      />,
+    );
+  }
+
+  it("warns on a fog_remains verdict for a Ready item — it is about to leave the frontier", () => {
+    reviewCard({ stage: "ready", verdict: "fog_remains" });
+    screen.getByText(/takes it off the frontier/i);
+  });
+
+  it("warns on a fog_remains verdict for an In Progress item too", () => {
+    reviewCard({ stage: "in_progress", verdict: "fog_remains" });
+    screen.getByText(/takes it off the frontier/i);
+  });
+
+  it("says nothing for a resolved verdict — nothing is leaving the frontier", () => {
+    reviewCard({ stage: "ready", verdict: "resolved" });
+    expect(screen.queryByText(/takes it off the frontier/i)).toBeNull();
+  });
+
+  it("says nothing for a fog_remains verdict on a Triage item — it was never on the frontier", () => {
+    reviewCard({ stage: "triage", verdict: "fog_remains" });
+    expect(screen.queryByText(/takes it off the frontier/i)).toBeNull();
   });
 });

@@ -231,7 +231,9 @@ for (const theme of THEMES) {
       //
       // The fixture mirrors production's measured spread
       // (`fixtures/demo-task-state.ts`), so what gets photographed is the
-      // awkward real shape rather than a tidy one: 29 cards, the no-context
+      // awkward real shape rather than a tidy one: 30 cards (12 frontier + 17
+      // captured + the one fictional Grilling item `demo-task-state.ts`'s own
+      // header flags as added after the 29 was measured), the no-context
       // bucket the biggest column and pinned last, and two columns over the
       // six-card cap showing `n more`.
       await openApp(page, theme, "board");

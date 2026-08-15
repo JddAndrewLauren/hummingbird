@@ -8,7 +8,7 @@ import { Input } from "../components/forms/Input";
 import { Textarea } from "../components/forms/Textarea";
 import type { GrillProposal, GrillQuestion } from "../skills/envelope";
 import type { GrillTurnState } from "../skills/grill-turn-state";
-import { planReplacementLabel, wouldStrandPlan } from "./grill-review";
+import { demotesFromFrontier, FRONTIER_DEMOTION_WARNING, planReplacementLabel, wouldStrandPlan } from "./grill-review";
 import type { GrillCompletion } from "../store/worker-client";
 import type { StepDTO, TaskItemDTO } from "../store/protocol";
 import { formatGrillTranscript, type GrillTurn } from "../skills/grill-args";
@@ -26,6 +26,14 @@ import { formatGrillTranscript, type GrillTurn } from "../skills/grill-args";
  * belongs to `shell/useGrillTakeoverWiring.ts`. */
 export interface GrillTakeoverProps {
   item: TaskItemDTO;
+  /** The close control's accessible name (#359 review round 1): the ONLY
+   * name an icon-only button carries, so it has to name the surface Back
+   * actually returns to. This component is now mounted on two screens with
+   * two different destinations — `"Back to Triage"` from `TriageScreen.tsx`,
+   * `"Back to Now"` from `NowScreen.tsx` — and hard-coding either one lies
+   * to a screen reader on the other surface, the same standard
+   * `docs/SURFACES.md` already applies to a landmark's name. */
+  backLabel: string;
   /** This session's frozen Steps snapshot (`useGrillTakeoverWiring.ts`'s
    * `sessionSteps`) — `null` until it lands, which the review card and its
    * Confirm button both read as "not ready yet", never as "no Steps". */
@@ -54,16 +62,18 @@ const CARD_STYLE = { display: "flex", flexDirection: "column" as const, gap: "va
 
 function BackRow({
   title,
+  backLabel,
   onBack,
   onDiscard,
 }: {
   title: string;
+  backLabel: string;
   onBack: () => void;
   onDiscard: () => void;
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
-      <IconButton icon="x" label="Back to Triage" onClick={onBack} />
+      <IconButton icon="x" label={backLabel} onClick={onBack} />
       <span className="hb-meta" style={{ flex: "1 1 auto" }}>
         grilling — {title}
       </span>
@@ -193,6 +203,21 @@ function ReviewCard({
           {proposal.verdict === "resolved" ? "Resolved" : "Fog remains"}
         </Badge>
       </div>
+      {/* #359 review round 1: the badge above names the VERDICT, not its
+          consequence — for a started (Ready/In Progress) item this Confirm
+          silently takes it off the frontier, which is exactly the case the
+          brief singles out ("the review card's demotion warning matters
+          more here than it did on Triage"). `role="status"`, not `"alert"`:
+          this is a heads-up ahead of an action the reader has not yet taken,
+          not a report of something that already failed. */}
+      {demotesFromFrontier(proposal.verdict, item.stage) ? (
+        <p
+          role="status"
+          style={{ font: "var(--type-body-sm)", color: "var(--status-warn-fg)", margin: 0 }}
+        >
+          {FRONTIER_DEMOTION_WARNING}
+        </p>
+      ) : null}
       <Textarea
         label="Summary"
         rows={3}
@@ -250,6 +275,7 @@ export function GrillTakeover({
   steps,
   turn,
   turns,
+  backLabel,
   onAnswer,
   onKeepGrilling,
   onRetry,
@@ -274,7 +300,7 @@ export function GrillTakeover({
       tabIndex={-1}
       style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)", outline: "none" }}
     >
-      <BackRow title={item.title} onBack={onBack} onDiscard={onDiscard} />
+      <BackRow title={item.title} backLabel={backLabel} onBack={onBack} onDiscard={onDiscard} />
 
       {turn.phase === "asking" ? (
         <Card padding="var(--space-6)" style={CARD_STYLE}>
