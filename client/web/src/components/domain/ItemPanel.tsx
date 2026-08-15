@@ -93,8 +93,20 @@ export interface ItemPanelProps {
   mode: "detail" | "triage";
   /** Whatever `TaskState.stepsByItem[item.id]` currently holds — `[]` until
    * the request answers, same "not yet known" shape every other S9 read uses;
-   * there is no separate loading flag. Detail mode only. */
+   * there is no separate loading flag. Detail mode only, and only meaningful
+   * alongside `showSteps` (its default `true`): a caller that never asked
+   * `Core` for this item's steps has no honest "No Steps yet." to state and
+   * must pass `showSteps={false}` instead of leaving `steps` at its `[]`
+   * default, which would otherwise read as a confirmed empty checklist
+   * rather than "never asked" (#479's Recall regression — its expanded
+   * result had no steps wiring of its own and rendered exactly that false
+   * claim). */
   steps?: StepDTO[];
+  /** Whether the steps block renders at all. `true` (every existing caller)
+   * everywhere `steps`/the microtask affordance are real reads; `false` for
+   * a caller — Recall's expanded result — with no steps wiring behind this
+   * render, so nothing here states a fact it never asked `Core` for. */
+  showSteps?: boolean;
   /** Detail mode's close control. Triage mode has none: the row's own
    * collapsed header is its close control, so a second one inside the panel
    * would be two ways to do one thing. */
@@ -157,6 +169,7 @@ export function ItemPanel({
   projects,
   mode,
   steps = [],
+  showSteps = true,
   onClose,
   onAct,
   actError = null,
@@ -503,7 +516,12 @@ export function ItemPanel({
 
       {/* The microtask affordance belongs to the steps block, not the act row
           above: that row is `availableActions(item.stage)` — the funnel — and
-          asking for a checklist moves the item through nothing. */}
+          asking for a checklist moves the item through nothing.
+
+          Gated on `showSteps`: a caller that never requested this item's
+          steps (Recall's expanded result) gets no block at all here, rather
+          than a "No Steps yet." this render has no way to know is true. */}
+      {showSteps ? (
       <div>
         <div
           style={{
@@ -625,6 +643,7 @@ export function ItemPanel({
           </div>
         ) : null}
       </div>
+      ) : null}
     </Card>
   );
 }

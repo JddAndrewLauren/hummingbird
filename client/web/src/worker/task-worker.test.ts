@@ -31,6 +31,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     triageInbox: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     grillingItems: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     ledger: vi.fn().mockReturnValue('{"kind":"ok","rows":[]}'),
+    search: vi.fn().mockReturnValue('{"kind":"ok","rows":[],"total":0}'),
     done: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
     steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
@@ -683,6 +684,35 @@ describe("handleTaskRequest", () => {
       ledger: vi.fn().mockReturnValue('{"kind":"busy","rows":[]}'),
     });
     expect(await run({ type: "getLedger", nowMs: 4_000 }, host)).toEqual([]);
+  });
+
+  it("search passes the request's query and nowMs through and maps rows, item fields flat", async () => {
+    const host = fakeHost({
+      search: vi.fn().mockReturnValue(
+        JSON.stringify({
+          kind: "ok",
+          rows: [{ ...rawItem, stage: "done", archived_at: 900, group: "archived" }],
+          total: 57,
+        }),
+      ),
+    });
+    const posted = await run({ type: "search", query: "milk", nowMs: 4_000 }, host);
+
+    expect(host.search).toHaveBeenCalledWith("milk", 4_000);
+    expect(posted).toEqual([
+      {
+        type: "searchResult",
+        rows: [{ ...dtoItem, stage: "done", archivedAt: 900, group: "archived" }],
+        total: 57,
+      },
+    ]);
+  });
+
+  it('search posts nothing when the host answers "busy" — no answer, not an empty one', async () => {
+    const host = fakeHost({
+      search: vi.fn().mockReturnValue('{"kind":"busy","rows":[],"total":0}'),
+    });
+    expect(await run({ type: "search", query: "milk", nowMs: 4_000 }, host)).toEqual([]);
   });
 
   it("getDone maps every raw item to its camelCase DTO", async () => {

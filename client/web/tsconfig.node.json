@@ -34,6 +34,13 @@
     // project has no JSX; `screen-icons.ts` holds the half that does.
     "src/shell/nav-bar.ts",
     "src/shell/screens.ts",
+    // Third of the same kind: the spec has to address the header's two
+    // overlay triggers by id, because since the Recall follow-up all three
+    // Recall triggers share one accessible name and `Header`'s `<header>`
+    // sits inside `<main>`, so it carries no `banner` role to scope to.
+    // `trigger-ids.ts` is where those two constants live so that both the
+    // components and this JSX-free project can import them.
+    "src/shell/trigger-ids.ts",
     "vitest.config.ts",
     "playwright.config.ts",
     "visual/**/*.ts",

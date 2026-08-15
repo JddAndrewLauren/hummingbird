@@ -15,6 +15,26 @@ import { Header } from "./Header";
 
 afterEach(cleanup);
 
+describe("Header — the Recall trigger", () => {
+  // The name is the point of the case, not incidental to it: all three
+  // triggers — this button, `NavRail`'s magnifier and the phone More sheet's
+  // entry — say "Search everything", and only a test that spells it out
+  // catches the header drifting back to a shorter one.
+  it("opens Recall from a trigger named 'Search everything'", () => {
+    const onSearch = vi.fn();
+    render(<Header title="What's next" onCapture={() => {}} onSearch={onSearch} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search everything" }));
+    expect(onSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders no trigger when onSearch is absent — demo mode", () => {
+    render(<Header title="What's next" onCapture={() => {}} />);
+
+    expect(screen.queryByRole("button", { name: "Search everything" })).toBeNull();
+  });
+});
+
 describe("Header — the standing-questions toggle", () => {
   it("renders nothing when no toggle is supplied — every screen but Now", () => {
     render(<Header title="Triage" onCapture={() => {}} />);

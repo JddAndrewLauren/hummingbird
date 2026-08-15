@@ -11,9 +11,11 @@ import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
+import { isRecallHotkey } from "./shell/recall-hotkey";
 import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
+import { RecallOverlay } from "./shell/RecallOverlay";
 import { NavBar } from "./shell/NavBar";
 import { NavRail } from "./shell/NavRail";
 import { useIsPhone } from "./shell/useIsPhone";
@@ -37,6 +39,7 @@ import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useMicrotaskWiring } from "./shell/useMicrotaskWiring";
 import { useLedgerWiring } from "./shell/useLedgerWiring";
+import { useRecallWiring } from "./shell/useRecallWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { useAppUpdate } from "./shell/useAppUpdate";
@@ -221,9 +224,51 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // phone, so a stale `true` left over from a narrow window would otherwise
   // hand the desktop's Escape to a sheet that is not on screen.
   const [navSheetOpen, setNavSheetOpen] = useState(false);
+  // Closing capture is its own function because two facts have to move
+  // together: the popover's flag, and the shell's copy of whether the box
+  // inside it is dictating. `CaptureBox` reports that upward from an effect
+  // on its own `listening` state, and unmounting never runs that effect
+  // again — so a popover closed while a session was live would leave
+  // `captureDictating` stuck true, and the NEXT Escape over a reopened
+  // popover would cancel a dictation that is not happening instead of
+  // closing. (The session itself is genuinely ended: `CaptureBox`'s unmount
+  // cleanup aborts it and releases the microphone. It is only the report
+  // that cannot follow it.)
+  const closeCapture = () => {
+    setCaptureOpen(false);
+    setCaptureDictating(false);
+  };
   const requestCapture = () => {
     setCaptureOpen(true);
     setCaptureFocusRequestId((id) => id + 1);
+    // #480 follow-up: the two overlays are siblings at one z-index and
+    // neither traps focus, so both open was a reader tabbing between two
+    // things that each claimed to be modal. Opening either now closes the
+    // other — the exclusivity lives in these two openers, which every one of
+    // the six triggers already funnels through, rather than in six call
+    // sites or in an effect watching both flags.
+    setSearchOpen(false);
+  };
+
+  // **Recall** (#478/#480): every trigger — the header's Search button, the
+  // `/` hotkey, Escape, the rail's magnifier and the phone More sheet's entry
+  // — opens this same state. `searchQuery` lives here rather than inside
+  // `RecallOverlay` so `useRecallWiring` can key its request effect on the
+  // same value the overlay renders, with no second, out-of-band copy of it.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  useRecallWiring(worker, status, searchQuery, task.lastTriage);
+  const requestSearchOpen = () => {
+    setSearchOpen(true);
+    // The other half of the exclusivity rule — see `requestCapture` above,
+    // and note this is the one path that closes the popover while it may be
+    // DICTATING, so the flag comes down with it (`closeCapture`'s doc). The
+    // two setters are spelled out rather than calling `closeCapture()`
+    // because the `/` hotkey calls this from the shell's keydown effect, and
+    // a helper whose body is nothing but `useState` setters is the only kind
+    // that effect can call without becoming a dependency of it.
+    setCaptureOpen(false);
+    setCaptureDictating(false);
   };
 
   // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the
@@ -279,6 +324,30 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         return;
       }
 
+      // #480: the `/` hotkey people already expect from search-first apps —
+      // `recall-hotkey.ts`'s own pure matcher, guarded the identical way
+      // `isCaptureHotkey` is (no modifier, no editable target, no IME
+      // composition in progress).
+      if (
+        isRecallHotkey({
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          altKey: event.altKey,
+          targetIsEditable,
+          isComposing: event.isComposing,
+        })
+      ) {
+        event.preventDefault();
+        // Demo mode's `task` is the static fixture, same as the header's
+        // `onSearch` above and reported for the identical reason: opening it
+        // there would spin forever on "Searching…" for any typed query.
+        if (!demo) {
+          requestSearchOpen();
+        }
+        return;
+      }
+
       // Escape closes exactly one open overlay — the shallowest — and this is
       // the only place in the app that decides which. Every claimant's flag is
       // shell state, so the ordering is a lookup rather than a negotiation
@@ -294,6 +363,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         isComposing: event.isComposing,
         open: {
           capture: captureOpen,
+          search: searchOpen,
           navSheet: isPhone && navSheetOpen,
           itemDetail: selectedItemId !== null,
         },
@@ -307,9 +377,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // one owner, still no second listener, just a branch on a fact
           // only `CaptureBox` has.
           capture: () =>
-            captureDictating
-              ? setCancelDictationRequestId((id) => id + 1)
-              : setCaptureOpen(false),
+            captureDictating ? setCancelDictationRequestId((id) => id + 1) : closeCapture(),
+          search: () => setSearchOpen(false),
           navSheet: () => setNavSheetOpen(false),
           itemDetail: handleCloseItemDetail,
         };
@@ -319,8 +388,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
+    demo,
     captureOpen,
     captureDictating,
+    searchOpen,
     isPhone,
     navSheetOpen,
     selectedItemId,
@@ -416,6 +487,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           collapsed={railCollapsed}
           onToggleCollapsed={handleToggleRailCollapsed}
           onHome={handleHome}
+          onSearch={demo ? undefined : requestSearchOpen}
         />
       )}
 
@@ -436,6 +508,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // `sync-status.ts`.
           syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
+          // Demo mode's `task` is the static fixture (`demoTask`), never the
+          // live store slice `useRecallWiring`'s answer lands in — the same
+          // reason `onSetScheduledDate`/`microtask`/`onTriage` below are all
+          // `demo ? undefined : …`. Opening it there would spin forever on
+          // "Searching…" for any typed query.
+          onSearch={demo ? undefined : requestSearchOpen}
           // Only on Now — the aside exists on no other screen. Same rule as
           // `onSearch`/`onRefresh` above: the affordance appears exactly where
           // it would do something.
@@ -561,6 +639,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           onToggleTheme={() => setPreference(toggledPreference(theme))}
           sheetOpen={navSheetOpen}
           onSheetOpen={setNavSheetOpen}
+          onSearch={demo ? undefined : requestSearchOpen}
         />
       ) : null}
 
@@ -570,13 +649,40 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       <CapturePopover
         open={captureOpen}
         focusRequestId={captureFocusRequestId}
-        onClose={() => setCaptureOpen(false)}
+        onClose={closeCapture}
         onSubmit={handleCapture}
         projects={demo ? [] : task.projects}
         demo={demo !== null}
         lastCapture={demo ? null : task.lastCapture}
         cancelDictationRequestId={cancelDictationRequestId}
         onDictatingChange={setCaptureDictating}
+      />
+
+      {/* **Recall** (#478/#480): every trigger — the header's Search button,
+          the `/` hotkey, the rail's magnifier and the phone More sheet's
+          entry — opens this same state; see `useRecallWiring`'s doc above.
+          Rendered after `CapturePopover` as a sibling, both fixed chrome at
+          the same z-index. That DOM order used to decide which one a reader
+          sees on top; since `requestCapture`/`requestSearchOpen` above close
+          each other, the two are never open together and it decides nothing
+          — the order is kept because it is still the one that would paint
+          correctly, and `escape-claimants.ts` explains what now rests on
+          it. */}
+      <RecallOverlay
+        open={searchOpen}
+        query={searchQuery}
+        onQueryChange={setSearchQuery}
+        onClose={() => setSearchOpen(false)}
+        rows={task.search?.rows ?? null}
+        total={task.search?.total ?? 0}
+        // Same gating as `onSearch`/`onTriage` elsewhere in this render: demo
+        // mode's `task` is the static fixture, so an expanded live result
+        // there gets no `onTriage` at all and renders with no Edit
+        // affordance, exactly like a Done or archived one.
+        projects={demo ? [] : task.projects}
+        onTriage={demo ? undefined : handleTriage}
+        lastTriage={demo ? null : task.lastTriage}
+        nowMs={syncNowMs}
       />
     </div>
   );

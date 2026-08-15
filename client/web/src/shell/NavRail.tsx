@@ -31,6 +31,11 @@ export interface NavRailProps {
   /** The mark is the way home: it selects Now and refreshes, the same two
    * things the user would otherwise do by hand. */
   onHome: () => void;
+  /** Opens the shell's Recall overlay (#480). Absent in demo mode, the same
+   * `undefined`-means-inert rule `Header`'s own `onSearch` follows — omit it
+   * and the magnifier renders nowhere rather than opening a search with
+   * nothing behind it. */
+  onSearch?: () => void;
 }
 
 /** Collapsed width: one 36px control row centred inside the same
@@ -49,6 +54,7 @@ export function NavRail({
   collapsed,
   onToggleCollapsed,
   onHome,
+  onSearch,
 }: NavRailProps) {
   return (
     <nav
@@ -229,6 +235,19 @@ export function NavRail({
             form's More sheet, which is the only place the version is
             reachable there. */}
         {collapsed ? null : <ShellMeta statusLabel={statusLabel} style={{ flex: 1 }} />}
+        {/* Recall's rail trigger (#480) — the magnifier, reachable from any
+            screen the same way the mark and the theme toggle are. Not one of
+            `SCREENS`: it opens a gesture over whatever is showing, never a
+            navigation. */}
+        {onSearch ? (
+          <IconButton
+            icon="search"
+            label="Search everything"
+            size="sm"
+            onClick={onSearch}
+            style={{ flex: "0 0 auto", width: 30, height: 30 }}
+          />
+        ) : null}
         <IconButton
           icon={theme === "dark" ? "sun" : "moon"}
           label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}

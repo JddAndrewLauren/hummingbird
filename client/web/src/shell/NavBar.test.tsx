@@ -22,7 +22,7 @@ import { SCREEN_LABELS, type Screen } from "./screens";
 // tests supply the state `App` supplies. Escape is deliberately not exercised
 // here any more: `NavBar` binds no key handler at all, and which overlay owns
 // an Escape is `escape-claimants.test.ts`'s subject.
-function renderBar(screenName: Screen = "now") {
+function renderBar(screenName: Screen = "now", onSearch?: () => void) {
   const onScreen = vi.fn();
   const onToggleTheme = vi.fn();
   let setSheetOpen!: (open: boolean) => void;
@@ -40,6 +40,7 @@ function renderBar(screenName: Screen = "now") {
         onToggleTheme={onToggleTheme}
         sheetOpen={sheetOpen}
         onSheetOpen={setOpen}
+        onSearch={onSearch}
       />
     );
   }
@@ -104,6 +105,24 @@ describe("NavBar", () => {
     openMore();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(onScreen).toHaveBeenCalledWith("settings");
+  });
+
+  // #480: Search is a gesture in the sheet, not one of the five screens —
+  // absent (and unreachable) when the caller has no search to open, and
+  // closes the sheet the same way choosing a screen does.
+  it("opens Recall from the More sheet's Search entry, and closes the sheet", () => {
+    const onSearch = vi.fn();
+    renderBar("now", onSearch);
+    openMore();
+    fireEvent.click(screen.getByRole("button", { name: "Search everything" }));
+    expect(onSearch).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("renders no Search entry in the sheet when onSearch is absent", () => {
+    renderBar();
+    openMore();
+    expect(screen.queryByRole("button", { name: "Search everything" })).toBeNull();
   });
 
   it("choosing from the sheet closes it", () => {

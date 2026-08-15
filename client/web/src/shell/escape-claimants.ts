@@ -1,11 +1,14 @@
 // Who owns an Escape, when more than one thing is open.
 //
-// The shell stacks overlays: the capture popover sits over everything, the
-// phone's More sheet over the screen, an item detail panel beside it. Each of
-// them used to bind its own `keydown` on the document and close itself, and a
-// document listener cannot see another's intent — so on a phone with a
-// hardware keyboard, one Escape with both the sheet and an item open closed
-// both, and the reader lost something they never asked to close.
+// The shell stacks overlays: the capture popover and Recall's overlay each
+// sit over everything (#480 — fixed chrome at the same z-index, rendered as
+// siblings in `App.tsx`, and since the #507 follow-up mutually exclusive:
+// opening either closes the other), the phone's More sheet over the screen,
+// an item detail panel beside it. Each of them used to bind its own `keydown` on the
+// document and close itself, and a document listener cannot see another's
+// intent — so on a phone with a hardware keyboard, one Escape with both the
+// sheet and an item open closed both, and the reader lost something they
+// never asked to close.
 //
 // The fix is not a fourth guard bolted onto a third handler. It is this: one
 // ordered list of claimants, one place that reads it, and no component owning
@@ -26,11 +29,26 @@
 
 /** Every overlay that can claim an Escape, **shallowest first** — which is
  * the whole rule. One Escape closes the topmost open thing and nothing else.
+ * "Topmost" here is decided by actual paint order, not by which overlay feels
+ * more central: `App.tsx` renders `<CapturePopover>` before
+ * `<RecallOverlay>` as siblings, both fixed chrome at the identical
+ * z-index (40) — equal z-index plus later DOM position means the browser
+ * paints Recall over capture, so `search` comes before `capture` here.
+ *
+ * That pair can no longer both be open — `App.tsx`'s two openers close each
+ * other (the #507 follow-up), which is what stops two `aria-modal` dialogs
+ * with no focus trap from stacking. Their relative order is therefore
+ * defensive rather than load-bearing: it is the order the paint would
+ * demand if they ever stacked again, kept so that re-allowing it is a
+ * change to one function rather than a silent Escape bug. Nothing about the
+ * `navSheet`/`itemDetail` depths below depends on it either way — those
+ * genuinely do co-occur with the two above, and with each other, and are
+ * the reason this list exists.
  *
  * The Grill takeover is deliberately absent: it claims no Escape at all
  * (`GrillTakeover.tsx` — leaving an interview is a deliberate Back), and it
  * replaces the centre column rather than covering anything. */
-export const ESCAPE_CLAIMANTS = ["capture", "navSheet", "itemDetail"] as const;
+export const ESCAPE_CLAIMANTS = ["search", "capture", "navSheet", "itemDetail"] as const;
 
 export type EscapeClaimant = (typeof ESCAPE_CLAIMANTS)[number];
 
