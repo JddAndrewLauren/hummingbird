@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { NAV_BAR_OVERFLOW } from "../src/shell/nav-bar";
-import { SCREEN_LABELS } from "../src/shell/screens";
+import { SCREEN_LABELS, SCREENS as SCREEN_ORDER, type Screen } from "../src/shell/screens";
 
 // The visual gate's one spec. Two jobs, deliberately separated:
 //
@@ -224,6 +224,90 @@ async function expectNoHorizontalOverflow(page: Page) {
   expect(overflow).toBeLessThanOrEqual(1);
 }
 
+// #454: the BOARD world's own nine-screen capture pass, alongside the KIT
+// pass above. Unlike the kit pass — which only proves the nav rendered and
+// nothing overflowed — this one asserts something SPECIFIC about the seeded
+// content, one assertion per screen, so a world change that produces eight
+// blank screens cannot pass green.
+//
+// The per-screen assertions live here, keyed by the app's own `Screen` type
+// (`Record<Screen, …>` rather than an array), so a screen added to
+// `shell/screens.ts` without deciding what its board capture proves is a
+// compile error rather than a silently-skipped screen — the same discipline
+// `SCREEN_LABELS` already applies to nav names, and the reason this registry
+// imports `SCREENS`/`Screen` from the app rather than restating the list.
+//
+// Routes and Alerts are KIT-ONLY, deliberately asserted as such rather than
+// skipped: neither screen reads `TaskState` at all (`RoutesScreen` and
+// `AlertsScreen` each take only `demo: DemoData | null`, never `task`), so
+// under `?demo=board` both always render the same honest empty state an
+// unseeded device would. Asserting that specific text — not merely "the
+// screen renders" — is what would force this registry to change the day
+// either screen is wired to the board seed instead of leaving the gap
+// silently papered over.
+type ScreenAssertion = (page: Page) => Promise<void>;
+
+const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
+  now: async (page) => {
+    await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(2);
+  },
+  triage: async (page) => {
+    // `demo-task-state.test.ts` pins `triageInbox` at 17 — `TriageScreen`'s
+    // real branch (taken because `demo` is null under `?demo=board`) renders
+    // `${realTriage.length} unsorted`, never the kit branch's "swept every
+    // 15m" wording.
+    await expect(page.getByText("17 unsorted")).toBeVisible();
+  },
+  routes: async (page) => {
+    await expect(page.getByRole("heading", { level: 2, name: "No routes yet" })).toBeVisible();
+  },
+  alerts: async (page) => {
+    await expect(page.getByRole("heading", { name: "Live" })).toBeVisible();
+    await expect(page.getByText("Nothing is ringing")).toBeVisible();
+  },
+  rules: async (page) => {
+    // The absence check is the acceptance criterion's own bullet, not a
+    // nicety: `RulesScreen` renders "Loading rules…" whenever either of
+    // `rules`/`kindRegistry` is null, and only a synchronously-seeded board
+    // (the board world's `task` is a `useState` lazy initializer, never
+    // fetched) never shows it.
+    await expect(page.getByText("Loading rules…")).toHaveCount(0);
+    await expect(page.getByText("3 rules · default-deny")).toBeVisible();
+  },
+  done: async (page) => {
+    // `DONE_SEEDS` is 6 long; `DoneScreen`'s "not read yet" only shows while
+    // `task.done` is null, which the board seed never is.
+    await expect(page.getByText("6 done")).toBeVisible();
+  },
+  ledger: async (page) => {
+    // frontier (12) + triageInbox (17) + done (6) + the archived-only seeds
+    // (3) = 38 — `demo-task-state.ts`'s own header states the same count.
+    await expect(page.getByText("38 ever · derived, not recorded")).toBeVisible();
+  },
+  status: async (page) => {
+    // Ten poller-backed panes — `docs/SURFACES.md`'s own count, made
+    // executable: one `kimi-balance/v1` gauge, five `github-hummingbird/v1`
+    // workflow rows, three `uptime/v1` service rows, plus one quiet,
+    // device-local `reachability` answer. `RankedRegion` gives every pane
+    // its own toggle button (`aria-expanded`, collapsed or open) and no
+    // other per-pane hook — no `role="region"`, no test id — so that
+    // attribute, scoped to the page's one `<main>` landmark, is what gets
+    // counted.
+    await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(10);
+  },
+  settings: async (page) => {
+    // `boundTripsBinding`'s key — the one binding row #452 added that
+    // neither world had before. Bindings render only once the real core
+    // reports `status === "ready"` (board mode reads `task.bindings`
+    // because `demo` is null, and `SettingsScreen` gates that branch on the
+    // live core status, not on anything the fixture controls), which is a
+    // real async worker boot rather than fixture latency — hence the longer
+    // timeout than the rest of this file needs.
+    await expect(page.getByText("trips-calendar")).toBeVisible({ timeout: 15_000 });
+  },
+};
+
 for (const theme of THEMES) {
   test.describe(`${theme} theme`, () => {
     for (const screen of SCREENS) {
@@ -247,6 +331,19 @@ for (const theme of THEMES) {
         }
         await page.screenshot({
           path: `visual/.captures/${screen.name}-${testInfo.project.name}-${theme}.png`,
+          fullPage: false,
+        });
+      });
+    }
+
+    for (const screenId of SCREEN_ORDER) {
+      test(`board: ${screenId} renders and asserts the seed`, async ({ page }, testInfo) => {
+        await openApp(page, theme, "board");
+        await show(page, SCREEN_LABELS[screenId], testInfo.project.name);
+        await BOARD_ASSERTIONS[screenId](page);
+        await expectNoHorizontalOverflow(page);
+        await page.screenshot({
+          path: `visual/.captures/board-${screenId}-${testInfo.project.name}-${theme}.png`,
           fullPage: false,
         });
       });
