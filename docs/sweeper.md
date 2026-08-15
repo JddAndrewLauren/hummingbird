@@ -611,8 +611,11 @@ differ from what the gates above expect, and the difference is the point:
   derivation exists to protect, now checked against the owned API rather than
   argued from the code.
 
-- A dictated capture (phone/watch/speaker → Gemini → Tasks) appears in the
-  authority's Triage within ~15 minutes and is marked completed in Tasks.
+- A dictated capture on **this lane** (phone/watch/speaker → Gemini → Tasks)
+  appears in the authority's Triage within ~15 minutes and is marked completed
+  in Tasks. This is one of two dictation lanes now: the other is Hummingbird's
+  own client-local voice capture straight into the capture box (ADR-0022),
+  which never touches Tasks, Gemini, or this sweeper at all.
 - Killing the sweep between the create and the `PATCH`, then rerunning,
   produces no duplicate item and completes the task.
 - Three consecutive failed or missed sweeps produce a healthchecks alert.
