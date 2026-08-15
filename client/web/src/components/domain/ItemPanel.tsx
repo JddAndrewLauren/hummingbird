@@ -15,7 +15,7 @@ import {
   ENERGY_OPTIONS,
   SIZE_OPTIONS,
 } from "../../screens/field-vocabulary";
-import { availableActions, canGrill } from "../../screens/item-actions";
+import { availableActions, canGrill, grillButtonLabel } from "../../screens/item-actions";
 import { hasPriority, priorityLabel, PRIORITY_OPTIONS } from "../../screens/priority";
 import {
   energyIcon,
@@ -123,6 +123,11 @@ export interface ItemPanelProps {
   /** "Grill me" (#355, ADR-0023): opens the centre-column takeover over this
    * item, decided by `item-actions.ts`'s `canGrill`. Triage mode. */
   onGrillMe?: (itemId: string) => void;
+  /** Whether this item already carries a Grill draft (#356) — the button's
+   * label is `item-actions.ts`'s `grillButtonLabel(hasGrillDraft)`, never a
+   * branch drawn here. `false` in demo mode (`onGrillMe` absent there too),
+   * where there is no real draft to have read. */
+  hasGrillDraft?: boolean;
   /** The DOM id the triage row's header points `aria-controls` at. */
   id?: string;
   /** The id a triage row's own "Grill me" button carries, so the screen can
@@ -156,6 +161,7 @@ export function ItemPanel({
   onTriage,
   lastTriage = null,
   onGrillMe,
+  hasGrillDraft = false,
   id,
   grillMeId,
   microtask,
@@ -331,7 +337,7 @@ export function ItemPanel({
               disabled={item.pending}
               onClick={() => onGrillMe(item.id)}
             >
-              Grill me
+              {grillButtonLabel(hasGrillDraft)}
             </Button>
           ) : null}
           <Button

@@ -8,6 +8,7 @@ import {
   pollStart,
   pollTimer,
   clearTaskApiKey,
+  discardGrillDraft,
   initTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
@@ -18,12 +19,15 @@ import {
   requestDeadLetters,
   requestBlocked,
   requestFrontier,
+  requestGrillDraft,
+  requestGrillDraftItemIds,
   requestIsPending,
   requestMirrorSnapshot,
   requestProjects,
   requestQueueDepth,
   requestSteps,
   requestTriageInbox,
+  saveGrillDraft,
   setCalendarSelectionsOnWorker,
   setMirrorSnapshotHandler,
   triageItem,
@@ -63,6 +67,9 @@ const initialTask: TaskState = {
   lastAct: null,
   lastTriage: null,
   lastGrillCompletion: null,
+  lastGrillDraftWrite: null,
+  grillDraftItemIds: [],
+  grillDraftByItem: {},
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
@@ -395,6 +402,80 @@ describe("attachWorkerClient", () => {
       error: "item not found",
     });
     expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("records a saveGrillDraftResult keyed by itemId", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "saveGrillDraftResult", itemId: "item-1", kind: "ok", error: null },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastGrillDraftWrite).toEqual({
+      itemId: "item-1",
+      kind: "ok",
+      error: null,
+    });
+  });
+
+  it("records a discardGrillDraftResult in the same slot a saveGrillDraftResult uses", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "discardGrillDraftResult", itemId: "item-1", kind: "failed", error: "disk full" },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastGrillDraftWrite).toEqual({
+      itemId: "item-1",
+      kind: "failed",
+      error: "disk full",
+    });
+  });
+
+  it("installs an existing draft's turns into grillDraftByItem, keyed by item id", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const turns = [{ question: { prompt: "p", recommendedAnswer: "r", choices: [] }, answer: "a" }];
+    worker.onmessage?.({
+      data: { type: "grillDraft", itemId: "item-1", exists: true, turns },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.grillDraftByItem).toEqual({ "item-1": turns });
+  });
+
+  /** Reviewer finding on PR #482: an `exists: false` answer must still
+   * install an (empty) entry — `useGrillTakeoverWiring.ts`'s resume wait
+   * has no other signal that a fetch answered, and skipping this would
+   * strand a session whose bulk-list draft turned out (a race with another
+   * tab's discard) not to exist at `idle` forever. */
+  it("installs an empty entry when the answer says no draft exists, so a resume wait is not stranded", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "grillDraft", itemId: "item-1", exists: false, turns: null },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.grillDraftByItem).toEqual({ "item-1": [] });
+  });
+
+  it("replaces the bulk grillDraftItemIds list wholesale", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "grillDraftItemIds", itemIds: ["item-1", "item-2"] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.grillDraftItemIds).toEqual(["item-1", "item-2"]);
   });
 
   it("records a setBindingResult keyed by seed/key and re-reads the bindings on ok", () => {
@@ -1262,6 +1343,40 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     requestSteps(worker, "item-1");
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getSteps", itemId: "item-1" });
+  });
+
+  it("saveGrillDraft posts a saveGrillDraft request carrying the item id, turns and clock", () => {
+    const worker = fakeWorker();
+    const turns = [{ question: { prompt: "p", recommendedAnswer: "r", choices: [] }, answer: "a" }];
+    saveGrillDraft(worker, "item-1", turns, 1_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "saveGrillDraft",
+      itemId: "item-1",
+      turns,
+      nowMs: 1_000,
+    });
+  });
+
+  it("discardGrillDraft posts a discardGrillDraft request carrying the item id and clock", () => {
+    const worker = fakeWorker();
+    discardGrillDraft(worker, "item-1", 2_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "discardGrillDraft",
+      itemId: "item-1",
+      nowMs: 2_000,
+    });
+  });
+
+  it("requestGrillDraft posts a getGrillDraft request carrying the item id", () => {
+    const worker = fakeWorker();
+    requestGrillDraft(worker, "item-1");
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getGrillDraft", itemId: "item-1" });
+  });
+
+  it("requestGrillDraftItemIds posts a getGrillDraftItemIds request", () => {
+    const worker = fakeWorker();
+    requestGrillDraftItemIds(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getGrillDraftItemIds" });
   });
 
   it("requestProjects posts a getProjects request", () => {

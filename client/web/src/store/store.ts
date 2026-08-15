@@ -9,6 +9,7 @@ import type {
   CalendarListEntryDTO,
   CalendarReadDTO,
   DeadLetterEntryDTO,
+  GrillDraftTurnDTO,
   KindRegistryDTO,
   LedgerRowDTO,
   PaneReadDTO,
@@ -117,6 +118,15 @@ export interface TaskGrillCompletionResult {
   error: string | null;
 }
 
+/** The result of the most recent `saveGrillDraft`/`discardGrillDraft`
+ * request this view issued (#356, ADR-0023), matched back by `itemId` — no
+ * `seed` (see `TaskWorkerRequest`'s `"saveGrillDraft"` doc for why). */
+export interface TaskGrillDraftWriteResult {
+  itemId: string;
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
 /** The result of the most recent `setBinding` request this view issued
  * (#118), matched back by `seed` — same broadcast-recognition contract as
  * [`TaskActResult`]. `key` is echoed so a per-row editor can tell which of
@@ -201,6 +211,22 @@ export interface TaskState {
   /** The result of the most recent `completeGrill` request this view issued
    * (#355/ADR-0023) — `null` until the first one resolves. */
   lastGrillCompletion: TaskGrillCompletionResult | null;
+  /** The result of the most recent `saveGrillDraft`/`discardGrillDraft`
+   * request this view issued (#356) — `null` until the first one resolves. */
+  lastGrillDraftWrite: TaskGrillDraftWriteResult | null;
+  /** Every item id carrying a Grill draft (#356) — the Triage inbox's
+   * "Resume grill" labels, one bulk list rather than one read per row.
+   * `[]` until the first `grillDraftItemIds` answer arrives; an empty
+   * array is also the real, steady-state answer once no item has a draft,
+   * so there is nothing here for a `null` to distinguish. */
+  grillDraftItemIds: string[];
+  /** One item's saved Grill draft turns (#356), keyed by item id — the
+   * `stepsByItem` shape: starts `{}` and only ever grows the items a view
+   * actually asked about via `getGrillDraft` (the takeover's own resume
+   * read), never a full mirror of every drafted item. A missing entry
+   * means "not read yet", which the takeover reads as a gap, never as "no
+   * draft" — `grillDraftItemIds` is what answers that question. */
+  grillDraftByItem: Record<string, GrillDraftTurnDTO[]>;
   /** The result of the most recent `setBinding` request this view issued
    * (#118) — `null` until the first one resolves. */
   lastBindingWrite: TaskBindingResult | null;
@@ -316,6 +342,9 @@ const initialTaskState: TaskState = {
   lastAct: null,
   lastTriage: null,
   lastGrillCompletion: null,
+  lastGrillDraftWrite: null,
+  grillDraftItemIds: [],
+  grillDraftByItem: {},
   lastBindingWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
@@ -386,6 +415,12 @@ export function createCoreStore() {
     setTaskState({ paneReads: { ...state.task.paneReads, [source]: read } });
   }
 
+  // And for `grillDraftByItem` (#356, ADR-0023), same "only grows entries a
+  // view actually asked about" idiom `setTaskSteps` uses for its own map.
+  function setTaskGrillDraft(itemId: string, turns: GrillDraftTurnDTO[]): void {
+    setTaskState({ grillDraftByItem: { ...state.task.grillDraftByItem, [itemId]: turns } });
+  }
+
   // A stable reference: this closure is created once, when the store is
   // created, and never reallocated per call. useSyncExternalStore relies on
   // that stability to avoid resubscribing every render.
@@ -405,6 +440,7 @@ export function createCoreStore() {
     setTaskPending,
     setTaskSteps,
     setTaskPaneRead,
+    setTaskGrillDraft,
     subscribe,
   };
 }

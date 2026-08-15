@@ -5,6 +5,7 @@ import type {
   ConditionDTO,
   DeadLetterEntryDTO,
   FieldTypeName,
+  GrillDraftTurnDTO,
   KindEntryDTO,
   KindRegistryDTO,
   LedgerRowDTO,
@@ -89,6 +90,21 @@ export interface TaskHostLike {
     deleteUntickedPlan: boolean,
     nowMs: number,
   ): Promise<string>;
+  /** #356/ADR-0023's draft save. Mirrors `hummingbird-ffi-web`'s
+   * `TaskHost::saveGrillDraft`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "error": string|null}`. `turnsJson` is
+   * the caller's own opaque `GrillTurn[]`, stringified whole — the core
+   * never parses its shape, only stores and returns it verbatim. */
+  saveGrillDraft(itemId: string, turnsJson: string, nowMs: number): Promise<string>;
+  /** #356's explicit "Discard" gesture. Mirrors `TaskHost::discardGrillDraft`,
+   * resolved to JSON: `{"kind": "ok"|"failed"|"busy", "error": string|null}`. */
+  discardGrillDraft(itemId: string, nowMs: number): Promise<string>;
+  /** #356's resume read. Mirrors `TaskHost::grillDraft`, resolved to JSON:
+   * `{"kind": "ok"|"busy", "exists": bool, "turns": array|null}`. */
+  grillDraft(itemId: string): string;
+  /** #356's bulk read. Mirrors `TaskHost::grillDraftItemIds`, resolved to
+   * JSON: `{"kind": "ok"|"busy", "item_ids": [string]}`. */
+  grillDraftItemIds(): string;
   /** #118's binding write. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::setBinding`, resolved to JSON:
    * `{"kind": "ok"|"unknown_key"|"failed"|"busy", "error": string|null}`. */
@@ -384,6 +400,27 @@ interface RawCompleteGrillResponse {
   kind: "ok" | "not_found" | "item_done" | "needs_re_review" | "failed" | "busy";
   id: string | null;
   error: string | null;
+}
+
+interface RawSaveGrillDraftResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawDiscardGrillDraftResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawGrillDraftResponse {
+  kind: "ok" | "busy";
+  exists: boolean;
+  turns: unknown[] | null;
+}
+
+interface RawGrillDraftItemIdsResponse {
+  kind: "ok" | "busy";
+  item_ids: string[];
 }
 
 interface RawTaskEvent {
@@ -759,6 +796,70 @@ export async function handleTaskRequest(
         grillId: raw.id,
         error: raw.error,
       });
+      return;
+    }
+    case "saveGrillDraft": {
+      const raw = JSON.parse(
+        await host.saveGrillDraft(request.itemId, JSON.stringify(request.turns), request.nowMs),
+      ) as RawSaveGrillDraftResponse;
+      post({
+        type: "saveGrillDraftResult",
+        itemId: request.itemId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      if (raw.kind === "ok") {
+        // A tab's own save is exactly what makes another tab's row learn a
+        // draft now exists — #356's "two tabs see one draft, no lock, no
+        // arbitration": the broadcast every connected port gets is the
+        // whole mechanism, not a second cross-tab channel.
+        const idsRaw = JSON.parse(host.grillDraftItemIds()) as RawGrillDraftItemIdsResponse;
+        if (idsRaw.kind !== "busy") {
+          post({ type: "grillDraftItemIds", itemIds: idsRaw.item_ids });
+        }
+      }
+      return;
+    }
+    case "discardGrillDraft": {
+      const raw = JSON.parse(
+        await host.discardGrillDraft(request.itemId, request.nowMs),
+      ) as RawDiscardGrillDraftResponse;
+      post({
+        type: "discardGrillDraftResult",
+        itemId: request.itemId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      if (raw.kind === "ok") {
+        const idsRaw = JSON.parse(host.grillDraftItemIds()) as RawGrillDraftItemIdsResponse;
+        if (idsRaw.kind !== "busy") {
+          post({ type: "grillDraftItemIds", itemIds: idsRaw.item_ids });
+        }
+      }
+      return;
+    }
+    case "getGrillDraft": {
+      const raw = JSON.parse(host.grillDraft(request.itemId)) as RawGrillDraftResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({
+        type: "grillDraft",
+        itemId: request.itemId,
+        exists: raw.exists,
+        // Opaque, structurally-identical pass-through — this module never
+        // interprets a turn's shape, only relays it (same discipline
+        // `Core::grill_draft`'s own doc states for the Rust side).
+        turns: raw.turns as GrillDraftTurnDTO[] | null,
+      });
+      return;
+    }
+    case "getGrillDraftItemIds": {
+      const raw = JSON.parse(host.grillDraftItemIds()) as RawGrillDraftItemIdsResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "grillDraftItemIds", itemIds: raw.item_ids });
       return;
     }
     case "setBinding": {

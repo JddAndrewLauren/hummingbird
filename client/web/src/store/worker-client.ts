@@ -9,6 +9,7 @@ import type {
   CalendarSelectionDTO,
   CalendarWorkerRequest,
   ConditionDTO,
+  GrillDraftTurnDTO,
   GrillVerdictName,
   RuleDTO,
   StepDTO,
@@ -89,6 +90,7 @@ type Store = Pick<
   | "setTaskPending"
   | "setTaskSteps"
   | "setTaskPaneRead"
+  | "setTaskGrillDraft"
 >;
 
 // Wires a worker's response messages into the store. This is the only place
@@ -249,6 +251,32 @@ export function attachWorkerClient(
           // now-deleted rows would sit stale until the next sync cycle.
           requestSteps(worker, message.itemId);
         }
+        return;
+      // Save and discard share one result slot — a caller only ever cares
+      // "did my last draft write land", not which kind of write it was.
+      case "saveGrillDraftResult":
+      case "discardGrillDraftResult":
+        store.setTaskState({
+          lastGrillDraftWrite: {
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        return;
+      case "grillDraft":
+        // Every real answer installs an entry — `stepsByItem`'s own "only
+        // grows entries actually asked about" shape, but unlike that read
+        // `exists: false` is NOT skipped here: `useGrillTakeoverWiring.ts`'s
+        // resume wait has no other way to learn the wait is over, and a
+        // race (the bulk `grillDraftItemIds` list said yes, a concurrent
+        // discard in another tab made this per-item read say no by the
+        // time it landed) must resolve as "resume with nothing" rather than
+        // leave that session's interview stuck at `idle` forever.
+        store.setTaskGrillDraft(message.itemId, message.exists ? message.turns ?? [] : []);
+        return;
+      case "grillDraftItemIds":
+        store.setTaskState({ grillDraftItemIds: message.itemIds });
         return;
       case "setBindingResult":
         store.setTaskState({
@@ -635,6 +663,34 @@ export function completeGrill(
     deleteUntickedPlan: completion.deleteUntickedPlan,
     nowMs,
   });
+}
+
+/** #356/ADR-0023's draft save — the takeover's own continuous "Back or
+ * close saves automatically" write, called after every completed turn.
+ * Device-local: never enqueued, never touches the outbound queue. */
+export function saveGrillDraft(
+  worker: WorkerLike,
+  itemId: string,
+  turns: GrillDraftTurnDTO[],
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "saveGrillDraft", itemId, turns, nowMs });
+}
+
+/** #356's explicit, confirmed "Discard" gesture. */
+export function discardGrillDraft(worker: WorkerLike, itemId: string, nowMs: number): void {
+  worker.postMessage({ type: "discardGrillDraft", itemId, nowMs });
+}
+
+/** #356's resume read: one item's saved draft, if any. */
+export function requestGrillDraft(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "getGrillDraft", itemId });
+}
+
+/** #356's bulk read: every item id carrying a draft — the Triage inbox's
+ * "Resume grill" labels. */
+export function requestGrillDraftItemIds(worker: WorkerLike): void {
+  worker.postMessage({ type: "getGrillDraftItemIds" });
 }
 
 /** #118's binding write: one absolute-value CAS `PUT`, enqueued durably.

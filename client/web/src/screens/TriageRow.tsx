@@ -48,6 +48,10 @@ export interface TriageRowProps {
    * is no longer a triage gesture at all: this is the only way an item gets
    * there. */
   onGrillMe?: (itemId: string) => void;
+  /** Whether this item already carries a Grill draft (#356) — decides
+   * `item-actions.ts`'s `grillButtonLabel`. `false` in demo mode, same as
+   * `onGrillMe`. */
+  hasGrillDraft?: boolean;
   /** The most recent triage result any row got back (`TaskState.lastTriage`)
    * — matched here by the item id the result itself carries, the same
    * broadcast-recognition contract `NowScreen`'s `actError` uses for
@@ -80,6 +84,7 @@ export function TriageRow({
   onTriage,
   onComplete,
   onGrillMe,
+  hasGrillDraft = false,
   lastTriage,
 }: TriageRowProps) {
   const editorId = `triage-editor-${item.id}`;
@@ -215,6 +220,7 @@ export function TriageRow({
           onTriage={onTriage}
           lastTriage={lastTriage}
           onGrillMe={onGrillMe}
+          hasGrillDraft={hasGrillDraft}
           grillMeId={grillMeButtonId(item.id)}
         />
       ) : null}

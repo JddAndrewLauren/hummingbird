@@ -200,6 +200,17 @@ export type TaskActionName = "start" | "complete" | "block" | "cancel";
  * a second one. */
 export type GrillVerdictName = "resolved" | "fog_remains";
 
+/** #356/ADR-0023's Grill draft turn — the same shape `skills/grill-args.ts`'s
+ * `GrillTurn` is (`{question: {prompt, recommendedAnswer, choices}, answer}`),
+ * restated here rather than imported so this file keeps its own convention:
+ * no imports, the wire shape spelled out in one self-contained place. The
+ * two are structurally identical, so a caller passes a real `GrillTurn[]`
+ * here with no conversion. */
+export interface GrillDraftTurnDTO {
+  question: { prompt: string; recommendedAnswer: string; choices: string[] };
+  answer: string;
+}
+
 /** Every field of an item a triage may edit, and the vocabulary of the three
  * instructions each one can carry: **an absent key leaves the field alone, an
  * explicit `null` clears it, and a value sets it.** That is
@@ -685,6 +696,26 @@ export type TaskWorkerRequest =
       deleteUntickedPlan: boolean;
       nowMs: number;
     }
+  /** #356/ADR-0023's draft save — the takeover's own continuous "Back or
+   * close saves automatically" write, sent after every completed turn, not
+   * just on Back. Device-local: never reaches the outbound queue, the
+   * mirror, or any sweep/delta payload (`Core::save_grill_draft`'s own
+   * doc). No `seed`: unlike a sync mutation, a draft write has no queue
+   * entry to mint an id for — its result is matched back by `itemId`
+   * alone, the same shape `getSteps`/`steps` already use. */
+  | { type: "saveGrillDraft"; itemId: string; turns: GrillDraftTurnDTO[]; nowMs: number }
+  /** #356's explicit, confirmed "Discard" gesture — and the one place a
+   * completed Grill's `"ok"` clears the interview that produced it
+   * (`worker-client.ts`'s `completeGrillResult` handling). */
+  | { type: "discardGrillDraft"; itemId: string; nowMs: number }
+  /** #356's resume read: this item's saved turns, if any — asked for once
+   * when opening an item this build already knows (via
+   * `getGrillDraftItemIds`) carries a draft. */
+  | { type: "getGrillDraft"; itemId: string }
+  /** #356's bulk read: every item id carrying a draft — the Triage inbox's
+   * "Resume grill" labels, one request for the whole list rather than one
+   * per row. */
+  | { type: "getGrillDraftItemIds" }
   /** #118's binding write: one absolute-value CAS `PUT /api/settings/:key`,
    * enqueued durably like every other mutation. `key` is the kebab-case,
    * unversioned binding name (ADR-0015), resolved by name in
@@ -868,6 +899,30 @@ export type TaskWorkerResponse =
       grillId: string | null;
       error: string | null;
     }
+  /** #356's draft save result, matched back by `itemId` (no `seed` — see
+   * `"saveGrillDraft"`'s own doc). `"failed"` covers a durability failure
+   * writing the draft store; unreadable turns never reach this side (they
+   * are always a real `GrillDraftTurnDTO[]` array here, not JSON text). */
+  | {
+      type: "saveGrillDraftResult";
+      itemId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** #356's discard result, matched back by `itemId`. */
+  | {
+      type: "discardGrillDraftResult";
+      itemId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getGrillDraft` (#356) — `exists: false`/`turns: null` is a
+   * genuine "no draft", never "not read yet" (a gap `TaskState
+   * .grillDraftByItem`'s own doc names). */
+  | { type: "grillDraft"; itemId: string; exists: boolean; turns: GrillDraftTurnDTO[] | null }
+  /** Answers `getGrillDraftItemIds` (#356) — every item id carrying a draft,
+   * as of the last broadcast. */
+  | { type: "grillDraftItemIds"; itemIds: string[] }
   /** #118's binding write result, matched back by `seed` — same
    * broadcast-not-reply contract as `actResult`. `"unknown_key"` is a caller
    * mistake the seam refused (not in ADR-0015's closed vocabulary);

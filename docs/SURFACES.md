@@ -136,6 +136,16 @@ of it *looks*: the not-ready, disconnected and error states still owe
 #355's acceptance its own hand pass on a device with a real foggy
 capture — not yet performed as of this PR, and worth doing before or
 shortly after this lands, since none of it is exercised by `pnpm visual`.
+**The draft's own two surfaces join the same exclusion, for the same
+reason** (#356): the takeover's **Discard** button — the app's first
+`window.confirm` dialog, so its native chrome is unstyled and unphotographed
+by construction, not merely by the demo gate — and a Triage row's
+**Resume grill** label (`item-actions.ts`'s `grillButtonLabel`, replacing
+"Grill me" once `TaskState.grillDraftItemIds` names the item) both only
+render over a real, drafted `TaskItemDTO`. `screens/GrillTakeover.test.tsx`
+covers the Discard confirm/cancel branches and `item-actions.test.ts`
+covers the label function; a hand pass confirming how the confirm dialog
+and the resumed label actually read is owed alongside #355's own.
 **Now's
 frontier columns** join the list for that same reason and are settled up front
 rather than discovered mid-slice (ADR-0021 decision 8, #400): because

@@ -482,6 +482,13 @@ mod wasm_bindings {
     const BUSY_ACT: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_TRIAGE: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_COMPLETE_GRILL: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    const BUSY_SAVE_GRILL_DRAFT: &str = r#"{"kind":"busy","error":null}"#;
+    const BUSY_DISCARD_GRILL_DRAFT: &str = r#"{"kind":"busy","error":null}"#;
+    // #356: no answer, not an empty one — an item with no draft and an item
+    // this core has not loaded yet must not read the same, same "no answer,
+    // not an empty answer" contract BUSY_BINDINGS documents.
+    const BUSY_GRILL_DRAFT: &str = r#"{"kind":"busy","exists":false,"turns":null}"#;
+    const BUSY_GRILL_DRAFT_ITEM_IDS: &str = r#"{"kind":"busy","item_ids":[]}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
     const BUSY_QUEUE_DEPTH: &str = r#"{"kind":"busy","depth":0}"#;
     const BUSY_DEAD_LETTERS: &str = r#"{"kind":"busy","entries":[]}"#;
@@ -1027,6 +1034,68 @@ mod wasm_bindings {
                     &serde_json::to_string(&response).expect("CompleteGrillResponse serializes"),
                 ))
             })
+        }
+
+        /// Saves (or replaces) `item_id`'s Grill draft (#356, ADR-0023) —
+        /// the takeover's own continuous save, called after every completed
+        /// turn. `turns` is the caller's own opaque JSON array; unreadable
+        /// JSON resolves to `"failed"` before the host is ever checked out.
+        /// Resolves to JSON: `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+        #[wasm_bindgen(js_name = saveGrillDraft)]
+        pub fn save_grill_draft(&self, item_id: String, turns: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_SAVE_GRILL_DRAFT));
+                };
+                let response = host.save_grill_draft(&item_id, &turns, now_ms as i64).await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("SaveGrillDraftResponse serializes"),
+                ))
+            })
+        }
+
+        /// Discards `item_id`'s Grill draft (#356) — the takeover's
+        /// explicit, confirmed "Discard" gesture. Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+        #[wasm_bindgen(js_name = discardGrillDraft)]
+        pub fn discard_grill_draft(&self, item_id: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_DISCARD_GRILL_DRAFT));
+                };
+                let response = host.discard_grill_draft(&item_id, now_ms as i64).await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("DiscardGrillDraftResponse serializes"),
+                ))
+            })
+        }
+
+        /// `item_id`'s Grill draft, if any (#356). Resolves to JSON:
+        /// `{"kind": "ok"|"busy", "exists": bool, "turns": array|null}`.
+        #[wasm_bindgen(js_name = grillDraft)]
+        pub fn grill_draft(&self, item_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.grill_draft(&item_id)).expect("GrillDraftResponse serializes")
+                }
+                None => BUSY_GRILL_DRAFT.to_string(),
+            }
+        }
+
+        /// Every item id carrying a draft (#356) — the Triage inbox's
+        /// "Resume grill" labels. Resolves to JSON:
+        /// `{"kind": "ok"|"busy", "item_ids": [string]}`.
+        #[wasm_bindgen(js_name = grillDraftItemIds)]
+        pub fn grill_draft_item_ids(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.grill_draft_item_ids())
+                    .expect("GrillDraftItemIdsResponse serializes"),
+                None => BUSY_GRILL_DRAFT_ITEM_IDS.to_string(),
+            }
         }
 
         /// Runs one sync cycle. Resolves to JSON:

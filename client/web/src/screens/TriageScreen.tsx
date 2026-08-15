@@ -124,6 +124,7 @@ export function TriageScreen({
           onRetry={grill.retry}
           onConfirm={grill.confirm}
           onBack={handleGrillBack}
+          onDiscard={grill.discard}
           completionError={grillCompletionFailureFor(task.lastGrillCompletion, grill.confirmSeed)}
         />
       </SingleColumn>
@@ -242,6 +243,7 @@ export function TriageScreen({
                 onTriage={onTriage}
                 onComplete={onComplete}
                 onGrillMe={grill ? handleGrillMe : undefined}
+                hasGrillDraft={task.grillDraftItemIds.includes(item.id)}
                 lastTriage={task.lastTriage}
               />
             ))}

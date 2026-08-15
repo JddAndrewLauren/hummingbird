@@ -69,6 +69,15 @@ export function canGrill(stage: TaskStageName): boolean {
   return stage === "triage";
 }
 
+/** The Grill button's own label (#356, ADR-0023): "Resume grill" when this
+ * item already carries a draft, "Grill me" otherwise — decided by this ONE
+ * function rather than a per-screen branch on `hasDraft`, the same "one
+ * deciding function" discipline `canGrill`/`canMarkDone` document for their
+ * own affordance. */
+export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill" {
+  return hasDraft ? "Resume grill" : "Grill me";
+}
+
 /** Mirrors `hummingbird_core::ItemAction::stage`'s mapping — the same
  * closed action-to-stage vocabulary, restated here only for the UI's own
  * optimistic display (`NowScreen.tsx`'s `RealFrontier`).

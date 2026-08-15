@@ -244,6 +244,41 @@ pub struct CompleteGrillResponse {
     pub error: Option<String>,
 }
 
+/// What [`TaskHostCore::save_grill_draft`]/[`TaskHostCore::discard_grill_draft`]
+/// resolve to (#356, ADR-0023): `"failed"` covers unreadable `turns` JSON
+/// (save only) and a durability failure writing the draft store.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SaveGrillDraftResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DiscardGrillDraftResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// One item's draft read (#356). `exists` is `false` and `turns` is
+/// `None` when the item has no draft — distinct from an item this build
+/// merely has not asked about yet, which is `client/web`'s own "not read
+/// yet" gap (`TaskState.grillDraftByItem`'s doc), not a state this
+/// response has any business naming.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GrillDraftResponse {
+    pub kind: &'static str,
+    pub exists: bool,
+    pub turns: Option<serde_json::Value>,
+}
+
+/// Every item id carrying a draft (#356) — the bulk read a Triage-inbox-wide
+/// "Resume grill" label needs without one request per row.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GrillDraftItemIdsResponse {
+    pub kind: &'static str,
+    pub item_ids: Vec<String>,
+}
+
 /// Resolves a touched size/energy field by name: `None` stays untouched,
 /// `Some(None)` stays a clear, and a value is looked up in the vocabulary —
 /// an unrecognised name is an `Err` the caller turns into a rejection,
@@ -1418,6 +1453,81 @@ impl TaskHostCore {
         }
     }
 
+    /// Saves (or replaces) `item_id`'s Grill draft (#356, ADR-0023) — the
+    /// takeover's own continuous "Back or close saves automatically" write,
+    /// called after every completed turn, not just on Back. `turns` is the
+    /// caller's own opaque JSON array, rejected here — never reaching
+    /// [`Core::save_grill_draft`] — if it is not even valid JSON, the same
+    /// "reject before the seam" discipline `complete_grill`'s
+    /// `session_steps` uses.
+    pub async fn save_grill_draft(
+        &mut self,
+        item_id: &str,
+        turns: &str,
+        now_ms: i64,
+    ) -> SaveGrillDraftResponse {
+        let turns: serde_json::Value = match serde_json::from_str(turns) {
+            Ok(turns) => turns,
+            Err(error) => {
+                return SaveGrillDraftResponse {
+                    kind: "failed",
+                    error: Some(format!("unreadable grill draft turns: {error}")),
+                };
+            }
+        };
+        match self.core.save_grill_draft(item_id, turns, now_ms).await {
+            Ok(()) => SaveGrillDraftResponse { kind: "ok", error: None },
+            Err(error) => SaveGrillDraftResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Discards `item_id`'s Grill draft (#356) — the takeover's explicit,
+    /// confirmed "Discard" gesture, and the one place a completed Grill's
+    /// local `"ok"` clears the interview that produced it.
+    pub async fn discard_grill_draft(
+        &mut self,
+        item_id: &str,
+        now_ms: i64,
+    ) -> DiscardGrillDraftResponse {
+        match self.core.discard_grill_draft(item_id, now_ms).await {
+            Ok(()) => DiscardGrillDraftResponse { kind: "ok", error: None },
+            Err(error) => DiscardGrillDraftResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// `item_id`'s Grill draft, if any (#356) — the takeover's own "resume"
+    /// read, asked for once when opening an item this build already knows
+    /// (via `grill_draft_item_ids`) carries a draft.
+    pub fn grill_draft(&self, item_id: &str) -> GrillDraftResponse {
+        match self.core.grill_draft(item_id) {
+            Some(turns) => GrillDraftResponse {
+                kind: "ok",
+                exists: true,
+                turns: Some(turns.clone()),
+            },
+            None => GrillDraftResponse {
+                kind: "ok",
+                exists: false,
+                turns: None,
+            },
+        }
+    }
+
+    /// Every item id carrying a draft (#356) — one bulk read for the whole
+    /// Triage inbox's "Resume grill" labels.
+    pub fn grill_draft_item_ids(&self) -> GrillDraftItemIdsResponse {
+        GrillDraftItemIdsResponse {
+            kind: "ok",
+            item_ids: self.core.grill_draft_item_ids(),
+        }
+    }
+
     /// Runs one [`Core::run`] cycle against the live `reqwest` transports.
     pub async fn run(
         &mut self,
@@ -2203,6 +2313,82 @@ mod grill_tests {
 
         assert_eq!(response.kind, "ok");
         assert_eq!(host.frontier().items.len(), 0, "Grilling never appears on the frontier");
+    }
+
+    // -------------------------------------------- grill drafts (#356, ADR-0023)
+
+    #[tokio::test]
+    async fn a_saved_draft_is_readable_and_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let saved = host
+            .save_grill_draft(&item_id, r#"[{"question":{"prompt":"p","recommendedAnswer":"r","choices":[]},"answer":"a"}]"#, 1_000)
+            .await;
+        assert_eq!(saved.kind, "ok");
+        assert!(saved.error.is_none());
+
+        let read = host.grill_draft(&item_id);
+        assert_eq!(read.kind, "ok");
+        assert!(read.exists);
+        assert!(read.turns.is_some());
+
+        let ids = host.grill_draft_item_ids();
+        assert_eq!(ids.kind, "ok");
+        assert_eq!(ids.item_ids, vec![item_id]);
+    }
+
+    #[tokio::test]
+    async fn unreadable_turns_json_is_rejected_before_reaching_core_save_grill_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let saved = host.save_grill_draft(&item_id, "not json", 1_000).await;
+        assert_eq!(saved.kind, "failed");
+        assert!(saved.error.is_some());
+        assert!(!host.grill_draft(&item_id).exists, "a rejected save must not reach the core");
+    }
+
+    #[tokio::test]
+    async fn discarding_removes_the_draft_and_is_a_no_op_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-3");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+        host.save_grill_draft(&item_id, "[]", 1_000).await;
+
+        let discarded = host.discard_grill_draft(&item_id, 2_000).await;
+        assert_eq!(discarded.kind, "ok");
+        assert!(!host.grill_draft(&item_id).exists);
+
+        // A second discard, with nothing left to discard, is still "ok".
+        let discarded_again = host.discard_grill_draft(&item_id, 3_000).await;
+        assert_eq!(discarded_again.kind, "ok");
+    }
+
+    #[tokio::test]
+    async fn an_item_with_no_draft_reads_as_not_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-4");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+
+        let read = host.grill_draft("no-such-item");
+        assert_eq!(read.kind, "ok");
+        assert!(!read.exists);
+        assert!(read.turns.is_none());
+        assert!(host.grill_draft_item_ids().item_ids.is_empty());
     }
 }
 

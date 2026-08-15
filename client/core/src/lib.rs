@@ -58,7 +58,11 @@ use hummingbird_domain::{
     Project, Rule, RulePatch, Setting, Size, Stage, Step, Tier,
 };
 
-use storage::{MemorySnapshotStore, SnapshotError, SnapshotStore};
+use serde::{Deserialize, Serialize};
+use storage::{
+    load_snapshot_at_version, save_snapshot, MemorySnapshotStore, Persistable, PersistableSealed,
+    SnapshotError, SnapshotStore,
+};
 use sync::queue::{MutationIntent, QueueEntry};
 use sync::transport::ChangesTransport;
 use sync::write::transport::{HttpMethod, MutationTransport};
@@ -83,6 +87,20 @@ fn queue_store(namespace: &str) -> CoreStore {
 fn mirror_store(namespace: &str) -> CoreStore {
     CoreStore::new(format!("{namespace}::mirror"))
 }
+/// #356's device-local Grill draft store — a THIRD core-owned snapshot,
+/// alongside `queue_store`/`mirror_store`, never reached by
+/// [`sync::SyncCycle`] and therefore never carried by a sweep or a delta
+/// payload. Core-owned per ADR-0010 ("what only the core has": the
+/// IndexedDB snapshot handle), not a per-view IndexedDB database — the
+/// rejected alternative the issue's brief names — so this is an addition
+/// alongside the existing two databases, not the "new IndexedDB database"
+/// that brief's anti-goal rules out (that anti-goal is about a *view*
+/// reaching into IndexedDB on its own, `client/web/src`'s own
+/// `rg "indexedDB"` check).
+#[cfg(target_arch = "wasm32")]
+fn grill_draft_store(namespace: &str) -> CoreStore {
+    CoreStore::new(format!("{namespace}::grill-drafts"))
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn queue_store(namespace: &str) -> CoreStore {
@@ -91,6 +109,10 @@ fn queue_store(namespace: &str) -> CoreStore {
 #[cfg(not(target_arch = "wasm32"))]
 fn mirror_store(namespace: &str) -> CoreStore {
     CoreStore::new(std::path::Path::new(namespace).join("mirror.json"))
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn grill_draft_store(namespace: &str) -> CoreStore {
+    CoreStore::new(std::path::Path::new(namespace).join("grill-drafts.json"))
 }
 
 /// The `std::fs` leg stores the queue and mirror as sibling files under
@@ -725,6 +747,25 @@ pub enum CoreCycleOutcome {
     Cycle(CycleOutcome),
 }
 
+/// #356's schema version for [`GrillDrafts`] — the same bump discipline
+/// [`sync::mirror::SYNC_MIRROR_SCHEMA_VERSION`] documents: a genuine shape
+/// change to the persisted payload gets a new number, and
+/// [`load_snapshot_at_version`] is what makes a stale envelope discarded
+/// and rebuilt (an empty draft store) rather than a boot-time crash.
+pub const GRILL_DRAFTS_SCHEMA_VERSION: u32 = 1;
+
+/// One item's in-progress Grill interview, device-local (#356, ADR-0023):
+/// every completed `{question, answer}` round so far, as the caller's own
+/// opaque JSON — `Core` never parses or interprets a turn's shape, exactly
+/// as it never interprets `GrillCompletion::transcript`. Threading it back
+/// to the runner (`grill-me`'s own `turns` argument) and rendering it are
+/// both `client/web`'s job; this crate only stores and returns it verbatim.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GrillDrafts(BTreeMap<String, serde_json::Value>);
+
+impl PersistableSealed for GrillDrafts {}
+impl Persistable for GrillDrafts {}
+
 /// Handle for the sync engine.
 ///
 /// Generic over the two [`storage::SnapshotStore`]s [`sync::SyncCycle`]
@@ -759,6 +800,15 @@ pub struct Core<QS = MemorySnapshotStore, MS = MemorySnapshotStore> {
     /// the shape. Both follow the identical lifecycle in [`Core::run`].
     binding_overlay: BTreeMap<String, SettingOverlayEntry>,
     events: Vec<CoreEvent>,
+    /// #356's device-local Grill draft store handle — a fresh instance of
+    /// the SAME store type `MS` already is (real host: a third IndexedDB
+    /// database beside queue/mirror; tests: another `MemorySnapshotStore`),
+    /// never the mirror's own handle. See [`grill_draft_store`].
+    grill_draft_store: MS,
+    /// The in-memory cache [`grill_draft_store`] persists — loaded once at
+    /// [`Core::init`], mutated and re-saved by
+    /// [`Core::save_grill_draft`]/[`Core::discard_grill_draft`].
+    grill_drafts: GrillDrafts,
 }
 
 impl Core<MemorySnapshotStore, MemorySnapshotStore> {
@@ -773,6 +823,8 @@ impl Core<MemorySnapshotStore, MemorySnapshotStore> {
             overlay: BTreeMap::new(),
             binding_overlay: BTreeMap::new(),
             events: Vec::new(),
+            grill_draft_store: MemorySnapshotStore::default(),
+            grill_drafts: GrillDrafts::default(),
         }
     }
 }
@@ -804,12 +856,23 @@ impl Core<CoreStore, CoreStore> {
         credential.push(api_key.into());
         let overlay = overlay_from_queue(cycle.queue())?;
         let binding_overlay = binding_overlay_from_queue(cycle.queue())?;
+        let grill_draft_store = grill_draft_store(&namespace);
+        let grill_drafts = load_snapshot_at_version::<GrillDrafts, _>(
+            &grill_draft_store,
+            GRILL_DRAFTS_SCHEMA_VERSION,
+        )
+        .await
+        .map_err(|error| CoreInitError(error.to_string()))?
+        .map(|envelope| envelope.payload)
+        .unwrap_or_default();
         Ok(Self {
             cycle,
             credential,
             overlay,
             binding_overlay,
             events: Vec::new(),
+            grill_draft_store,
+            grill_drafts,
         })
     }
 }
@@ -1837,6 +1900,74 @@ where
         );
 
         Ok(grill_id)
+    }
+
+    /// #356's device-local draft read: this item's saved Grill turns, as the
+    /// caller's own opaque JSON, or `None` when the item has no draft. Never
+    /// touches the outbound queue or the mirror — a draft is device-local and
+    /// never syncs (ADR-0023's own "device-local... never a Grill record").
+    pub fn grill_draft(&self, item_id: &str) -> Option<&serde_json::Value> {
+        self.grill_drafts.0.get(item_id)
+    }
+
+    /// Whether `item_id` has a saved draft — the one function a row's
+    /// "Grill me"/"Resume grill" label is decided by (#356), the same "one
+    /// deciding function" discipline `item-actions.ts`'s `canGrill` already
+    /// documents for its own affordance.
+    pub fn has_grill_draft(&self, item_id: &str) -> bool {
+        self.grill_drafts.0.contains_key(item_id)
+    }
+
+    /// Every item id carrying a draft — the bulk read a Triage-inbox-wide
+    /// "Resume grill" label needs without one request per row.
+    pub fn grill_draft_item_ids(&self) -> Vec<String> {
+        self.grill_drafts.0.keys().cloned().collect()
+    }
+
+    /// Saves (or replaces) `item_id`'s draft — #356's "Back or close saves
+    /// automatically" contract: the caller re-saves after every completed
+    /// turn, not just on Back, so the draft is never more than one round
+    /// stale. Two tabs on one origin write through this ONE `Core` (ADR-0010)
+    /// — the last save wins, with no lock and no arbitration, exactly the
+    /// issue's own "so there is no cross-tab lock to build."
+    pub async fn save_grill_draft(
+        &mut self,
+        item_id: &str,
+        turns: serde_json::Value,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<MS::Error>> {
+        self.grill_drafts.0.insert(item_id.to_string(), turns);
+        save_snapshot(
+            &self.grill_draft_store,
+            GRILL_DRAFTS_SCHEMA_VERSION,
+            now_ms as u64,
+            &self.grill_drafts,
+        )
+        .await
+    }
+
+    /// Discards `item_id`'s draft — #356's explicit, confirmed "Discard"
+    /// gesture, and the one place a completed Grill's `"ok"` clears the
+    /// interview that produced it (the caller's job to call this only then,
+    /// never on enqueue of a completion that might still dead-letter — see
+    /// `GrillCompletion`'s own doc on why a dead-lettered completion still
+    /// has everything it needs, separately from this draft). A no-op, not an
+    /// error, when no draft exists.
+    pub async fn discard_grill_draft(
+        &mut self,
+        item_id: &str,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<MS::Error>> {
+        if self.grill_drafts.0.remove(item_id).is_none() {
+            return Ok(());
+        }
+        save_snapshot(
+            &self.grill_draft_store,
+            GRILL_DRAFTS_SCHEMA_VERSION,
+            now_ms as u64,
+            &self.grill_drafts,
+        )
+        .await
     }
 
     /// The host calls this at init and on every credential rotation.
@@ -3270,6 +3401,8 @@ mod tests {
             overlay: BTreeMap::new(),
             binding_overlay: BTreeMap::new(),
             events: Vec::new(),
+            grill_draft_store: storage::InstrumentedSnapshotStore::new(),
+            grill_drafts: GrillDrafts::default(),
         };
         core.push_api_key("token-1");
         let id = core
@@ -4315,6 +4448,120 @@ mod tests {
             "expected_version is drain's to fill in per attempt, not enqueued here"
         );
         assert_eq!(item_base["version"], serde_json::json!(1));
+    }
+
+    // ------------------------------------------------- grill drafts (#356, ADR-0023)
+
+    fn sample_turns() -> serde_json::Value {
+        serde_json::json!([
+            {"question": {"prompt": "what's blocking it?", "recommendedAnswer": "nothing", "choices": []}, "answer": "waiting on a callback"},
+        ])
+    }
+
+    #[test]
+    fn a_fresh_core_has_no_grill_draft_for_any_item() {
+        let core = Core::new();
+        assert!(!core.has_grill_draft("a-1"));
+        assert_eq!(core.grill_draft("a-1"), None);
+        assert!(core.grill_draft_item_ids().is_empty());
+    }
+
+    #[tokio::test]
+    async fn saving_a_draft_makes_it_readable_and_lists_the_item() {
+        let mut core = Core::new();
+        core.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
+
+        assert!(core.has_grill_draft("a-1"));
+        assert_eq!(core.grill_draft("a-1"), Some(&sample_turns()));
+        assert_eq!(core.grill_draft_item_ids(), vec!["a-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn saving_a_second_time_replaces_rather_than_appends() {
+        let mut core = Core::new();
+        core.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
+        core.save_grill_draft("a-1", serde_json::json!([]), 2_000).await.unwrap();
+
+        assert_eq!(core.grill_draft("a-1"), Some(&serde_json::json!([])));
+    }
+
+    #[tokio::test]
+    async fn discarding_a_draft_removes_it_and_is_a_no_op_when_absent() {
+        let mut core = Core::new();
+        core.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
+
+        core.discard_grill_draft("a-1", 2_000).await.unwrap();
+        assert!(!core.has_grill_draft("a-1"));
+        assert_eq!(core.grill_draft("a-1"), None);
+
+        // Discarding an item with no draft is a no-op, not an error.
+        core.discard_grill_draft("no-such-item", 3_000).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_items_hold_two_independent_drafts() {
+        let mut core = Core::new();
+        core.save_grill_draft("a-1", serde_json::json!(["one"]), 1_000).await.unwrap();
+        core.save_grill_draft("a-2", serde_json::json!(["two"]), 1_000).await.unwrap();
+
+        assert_eq!(core.grill_draft("a-1"), Some(&serde_json::json!(["one"])));
+        assert_eq!(core.grill_draft("a-2"), Some(&serde_json::json!(["two"])));
+
+        core.discard_grill_draft("a-1", 2_000).await.unwrap();
+        assert!(!core.has_grill_draft("a-1"));
+        assert!(core.has_grill_draft("a-2"), "discarding one item's draft must not touch another's");
+    }
+
+    /// #356's whole point: a draft survives the `SharedWorker` (and this
+    /// `Core` with it) terminating and restarting — the same "survives a
+    /// reload" contract `a_queued_act_survives_a_reload_and_still_reads_as_pending`
+    /// already proves for the queue.
+    #[tokio::test]
+    async fn a_saved_draft_survives_a_core_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        first.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        assert!(second.has_grill_draft("a-1"), "reopening must resume the same draft");
+        assert_eq!(second.grill_draft("a-1"), Some(&sample_turns()));
+    }
+
+    /// A discard is itself durable — a reload after discarding must not
+    /// resurrect the draft it removed.
+    #[tokio::test]
+    async fn a_discarded_draft_stays_gone_after_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-draft-discard-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        first.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
+        first.discard_grill_draft("a-1", 2_000).await.unwrap();
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        assert!(!second.has_grill_draft("a-1"));
+    }
+
+    /// A draft is device-local: it must never ride along on
+    /// [`Core::mirror_snapshot`], the debug export a sweep/delta payload's
+    /// own shape is drawn from — #356's "the draft never appears in any
+    /// sweep or delta payload" acceptance.
+    #[tokio::test]
+    async fn a_grill_draft_never_appears_in_the_mirror_snapshot() {
+        let mut core = Core::new();
+        core.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
+
+        let snapshot = serde_json::to_string(&core.mirror_snapshot()).unwrap();
+        assert!(
+            !snapshot.contains("waiting on a callback"),
+            "a draft's content must never reach the mirror snapshot: {snapshot}"
+        );
     }
 
     // ------------------------------------------------- projects() (S10, #108 review)
