@@ -23,6 +23,9 @@ on:
       # The wire DTOs both sides compile — a schema change must rebuild the
       # binding (same reasoning as client.yml's fixture path).
       - "server/domain/**"
+      # The token CSS the drift gate (#483) checks Color.kt against — the
+      # PRs that change tokens are exactly the ones that must run it.
+      - ".claude/skills/hummingbird-design/tokens/**"
       - "rust-toolchain.toml"
       - ".github/workflows/android.yml"
   pull_request:
@@ -31,6 +34,7 @@ on:
       - "client/ffi-mobile/**"
       - "client/core/**"
       - "server/domain/**"
+      - ".claude/skills/hummingbird-design/tokens/**"
       - "rust-toolchain.toml"
       - ".github/workflows/android.yml"
 
