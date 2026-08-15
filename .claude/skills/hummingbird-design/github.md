@@ -27,7 +27,42 @@ date: 2026-08-09T20:05:16Z
 
 ## Last push (mirror -> design project)
 
-date: 2026-08-13
+date: 2026-08-14
+direction: this mirror and `batch-dictation` were the sources; 7 files written
+to the design project
+
+- `README.md` -> `readme.md` — the Slider size scale reads `quick / normal /
+  deep` again (#446, ADR-0024). This closes the "Pending push" that was
+  recorded here: the 2026-08-13 correction *to* `quick / short / deep`
+  tracked a schema word ADR-0024 has since reversed. The corrected line was
+  pulled back into this mirror in the same session, so `README.md:242` is no
+  longer known-stale.
+- `components/domain/ItemRow.prompt.md`, `ItemRow.jsx`, `ItemRow.d.ts` and
+  `ui_kits/web/data.js` — the `due` -> `deadline` prop rename plus the
+  "Deadline soon"/"Deadline now" tooltip copy, from #472 (closes the push
+  half of #436). Pushed from the merged content on `batch-dictation`, not
+  from this mirror: the mirror copies on `main` still carry the old prop
+  until that batch's final PR lands. Re-pulling these four is safe again —
+  upstream now matches the batch.
+- `ui_kits/android/AndroidScreens.jsx` and `ui_kits/ios/IOSScreens.jsx` —
+  one `due="Fri"` -> `deadline="Fri"` each. Both are direct callers of the
+  renamed ItemRow prop that #472's grep could not see (neither file was in
+  the mirror at the time); left alone, the deadline flag would silently drop
+  from both kit previews — the same failure #472 caught in `data.js`.
+
+The five mirror-tracked files were byte-identical to this mirror's copies on
+`main` before the write; the two kit files were edited on top of same-session
+`get_file` reads, changing one word each. Nothing authored in the design
+project was overwritten.
+
+Known terminology lag, deliberately not pushed: `IOSScreens.jsx`'s badge copy
+"Due Fri" and `WearScreens.jsx`'s meta line "due fri · size:quick" are
+user-facing copy rather than the domain term — the same call #433/#408 made
+for the web app's own URGENCY_LABEL. If that call is ever reversed, those are
+the two remaining sites.
+
+### Previous push (2026-08-13)
+
 direction: this mirror was the source; 2 files written to the design project
 
 Terminology corrections made in the repo (docs-only slices) and pushed up so
@@ -54,9 +89,8 @@ still says "Due dates take colour from urgency". That line predates the
 2026-08-09 push, so the mirror and the design project agree on it — it needs
 an in-repo fix (#436) before there is anything to push.
 
-### Previous push
+### Previous push (2026-08-09)
 
-date: 2026-08-09
 direction: this mirror was the source; 23 files written to the design project
 
 Accessibility and type-contract fixes found reviewing the app's shell rebuild
@@ -92,21 +126,29 @@ then pushed, so the mirror and the design project do not fork:
 
 ## Local pull (this copy)
 
-date: 2026-08-09
+date: 2026-08-09 (base pull) · 2026-08-14 (`ui_kits/android/`)
 designProjectId: dcdceb10-7954-425a-903c-aa8b13bbb158 ("Hummingbird Design System" on claude.ai/design)
 account: the design project is connected to the WORK Claude account (as of
 2026-08-09) — DesignSync pulls/pushes need a session authorized on it
 pulled into: `.claude/skills/hummingbird-design/` — the repo-local mirror of the design project
 
-Pulled: SKILL.md, readme.md (as README.md), github.md, styles.css, `tokens/`,
-all 16 components (`components/**` jsx + d.ts + prompt.md), `ui_kits/web/`.
+Pulled 2026-08-09: SKILL.md, readme.md (as README.md), github.md, styles.css,
+`tokens/`, all 16 components (`components/**` jsx + d.ts + prompt.md),
+`ui_kits/web/`.
+
+Pulled 2026-08-14: `ui_kits/android/` (README.md, index.html,
+android-frame.jsx, AndroidScreens.jsx) — the Android surface started with M0
+(#141, `client/android/`). Pulled after the same-day pushes above, so the kit
+arrives with the `deadline=` fix already in it. How `client/android/`
+consumes the tokens is ADR-0026's decision: hand-ported Compose theme files
+under a CI drift gate (#483) — deliberately no Android copy step; the gate
+reads this mirror's `tokens/colors.css` directly.
 
 Omitted (fetch on demand with `DesignSync get_file` against the projectId
 above, or view on claude.ai/design):
 - `guidelines/*.card.html` and `components/*.card.html` — Design System pane
   preview cards; the values they render live in `tokens/` and README.md
-- `ui_kits/ios/`, `ui_kits/android/`, `ui_kits/wear/` — pull when those
-  surfaces start
+- `ui_kits/ios/`, `ui_kits/wear/` — pull when those surfaces start
 - `assets/*.png` (app icons, concept sheet) — binary; download from the
   design project when needed
 - pane infra: `_ds_bundle.js`, `_ds_manifest.json`, `thumbnail.html`,
@@ -115,18 +157,3 @@ above, or view on claude.ai/design):
 App consumption: `tokens/` + `styles.css` are copied to
 `client/web/src/design/` (see repo CLAUDE.md). When the design project
 changes, re-pull here first, then re-copy into the app.
-
-## Pending push: the size scale is `quick / normal / deep` after all
-
-**Owed to the design project, not yet pushed** (#446, 2026-08-14).
-`README.md:242` describes `Slider`'s size scale as `quick / short / deep`,
-and the entry above records that being corrected *to* that spelling
-deliberately, because it was the schema's word at the time. ADR-0024 reverses
-it: the middle size is `normal` everywhere now, including the DDL — the
-glossary was the thing that was wrong, and the slider's original display word
-was right.
-
-Not edited here. The mirror is a copy of the upstream project and a local
-edit would be undone by the next re-pull, so the correction has to be made in
-the design project itself and pulled back. Until it is, `README.md:242` is
-known-stale in exactly one line.
