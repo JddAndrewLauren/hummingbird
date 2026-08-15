@@ -244,6 +244,21 @@ describe("TriageScreen — the combined triage process queue (#357)", () => {
     expect(screen.getByText("2 captured · 1 grilling")).toBeDefined();
   });
 
+  it("marks a Grilling row with its own stage badge, not Triage's", () => {
+    // `TriageRow.tsx` used to hardcode `<StageBadge stage="triage" />` — a
+    // latent bug only visible once a Grilling item could reach this row.
+    renderTriage(
+      taskState({
+        grillingItems: [itemDTO({ id: "g1", title: "still foggy thing", stage: "grilling" })],
+      }),
+    );
+
+    // Grilling has no icon glyph (`StageBadge.tsx`'s `STAGES`), so it draws
+    // as the dot-and-word pill — the word IS the mark, unlike Triage's
+    // icon-only badge, which carries no word at all.
+    expect(row("still foggy thing").textContent).toContain("Grilling");
+  });
+
   it("a device with no drafts and no Grilling items renders identically to today apart from the header count", () => {
     renderTriage(
       taskState({

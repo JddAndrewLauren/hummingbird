@@ -362,12 +362,12 @@ export function FrontierColumns({
   storage,
 }: {
   frontier: readonly TaskItemDTO[];
-  /** `TaskState.triageInbox` — the unsorted captures, grouped into the same
-   * columns as the frontier rather than into a section of their own. They
-   * carry no axis value until somebody triages them, so on every axis they
-   * land in the no-value column; a capture a sweeper *did* set a context on
-   * lands in that context's column, which is the point of grouping them at
-   * all rather than stacking them somewhere separate. */
+  /** `TaskState.triageInbox` — the captured Triage items, grouped into the
+   * same columns as the frontier rather than into a section of their own.
+   * They carry no axis value until somebody triages them, so on every axis
+   * they land in the no-value column; a capture a sweeper *did* set a
+   * context on lands in that context's column, which is the point of
+   * grouping them at all rather than stacking them somewhere separate. */
   triage: readonly TaskItemDTO[];
   /** `TaskState.grillingItems` — the "triage process" queue's second half
    * (#357, CONTEXT.md), grouped into the same columns as `triage`: this is

@@ -114,8 +114,13 @@ export function TriageScreen({
     document.getElementById(grillMeButtonId(itemId))?.focus();
   }, [grill?.openItemId]);
 
+  // #357: `realTriage` is the combined queue (Triage AND Grilling), so the
+  // takeover's item must resolve against it too — resolving against
+  // `task.triageInbox` alone would leave a Grilling row's "Grill me"/"Resume
+  // grill" opening a takeover with no item to render, and no reachable
+  // Back/Discard.
   const openItem = grill?.openItemId
-    ? task.triageInbox.find((item) => item.id === grill.openItemId)
+    ? realTriage.find((item) => item.id === grill.openItemId)
     : undefined;
 
   if (grill && openItem) {
