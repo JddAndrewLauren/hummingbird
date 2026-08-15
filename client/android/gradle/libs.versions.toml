@@ -23,6 +23,15 @@ compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+# CaptureViewModel (M1-5/#503): the "ViewModel over CoreHolder" pattern the
+# brief names — `androidx.lifecycle.ViewModel` itself, nothing Compose- or
+# LiveData-specific.
+lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
+# `viewModel()` — how a composable reaches the Activity's `ViewModelStore`
+# instead of holding its ViewModel in a `remember` that a fold/unfold throws
+# away (see `CaptureViewModel.factory`'s doc for the defect that motivated
+# this; the Pixel Fold is the only install target).
+lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
 security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }

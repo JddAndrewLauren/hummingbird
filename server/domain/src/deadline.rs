@@ -12,9 +12,10 @@
 //! "sometime the 15th" ahead of "the 15th at 14:30" — backwards.
 //! [`deadline_sort_key`] is the one comparison key ADR-0013 calls for to fix
 //! this: it resolves a day-only value to that day's `T23:59` before
-//! comparing, so the client's `by_priority_then_due` sort and #133's rule
-//! evaluator share the exact same notion of "when this deadline is" and can
-//! never disagree on the same pair of rows.
+//! comparing, so the client's frontier ordering
+//! (`client/core/src/decisions/frontier.rs`) and #133's rule evaluator
+//! share the exact same notion of "when this deadline is" and can never
+//! disagree on the same pair of rows.
 
 /// `true` for `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`; `false` for anything
 /// else, including a value with seconds, a `Z`/offset suffix, a bare time,
@@ -188,6 +189,59 @@ pub fn shift(base: &str, amount: i64, unit: DurationUnit) -> Option<String> {
     } else {
         format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}")
     })
+}
+
+/// Minutes from `now` until `deadline` — both deadline-shaped
+/// (`is_valid_deadline`-accepted) strings — for urgency banding
+/// (`hummingbird_core::decisions::urgency`). Positive while `deadline` is
+/// still ahead of `now`; negative once it has passed.
+///
+/// Both arguments are resolved through [`deadline_sort_key`] first, so a
+/// day-only value on either side means "by the end of that day" here too —
+/// the same convention the sort and the rule evaluator already share, never
+/// a third one. Deliberately no epoch-ms arithmetic and no timezone: both
+/// strings are naive civil wall-clock values, and per the ADR-0015
+/// amendment this crate resolves no civil date to an instant — the caller
+/// (in its own zone) is who turns a real clock reading into the
+/// deadline-shaped `now` string this takes. Delegates entirely to
+/// [`days_from_civil`], the one calendar-arithmetic implementation
+/// [`shift`] already uses — no second "how many days between two calendar
+/// dates".
+///
+/// **The DST residue is known and accepted.** Civil minutes are not elapsed
+/// minutes across an offset change: `2026-03-07T12:00` → `2026-03-08T12:30`
+/// in Los Angeles is 23.5 real hours but 1,470 civil ones, so a deadline
+/// sitting within an hour of a band boundary can read one band off, twice a
+/// year, for readers in a zone that shifts. Measuring elapsed time instead
+/// would mean resolving both civil values to instants *here* — a tzdb in
+/// this crate, which the ADR-0015 amendment forbids by name and which the
+/// wasm32-thinness rule (`CLAUDE.md`) forbids again for the worker build.
+/// The band a reader sees is a read-time reading, not a stored fact, and no
+/// routing decision hangs on it (`CONTEXT.md`), so an hour of skew at the
+/// edge is cheaper than either prohibition. Anything needing true elapsed
+/// time belongs in the caller that already owns the reader's zone.
+///
+/// `None` if either string is not `is_valid_deadline`-accepted.
+pub fn minutes_until(deadline: &str, now: &str) -> Option<i64> {
+    let deadline_minutes = civil_minutes(&deadline_sort_key(deadline))?;
+    let now_minutes = civil_minutes(&deadline_sort_key(now))?;
+    deadline_minutes.checked_sub(now_minutes)
+}
+
+/// Minutes since the epoch for a deadline-shaped, minute-precision string
+/// (`YYYY-MM-DDTHH:MM` — [`deadline_sort_key`]'s own output shape).
+fn civil_minutes(deadline_shaped: &str) -> Option<i64> {
+    if !is_valid_deadline(deadline_shaped) || deadline_shaped.len() != 16 {
+        return None;
+    }
+    let (year, month, day) = (
+        digits(&deadline_shaped[0..4])?,
+        digits(&deadline_shaped[5..7])?,
+        digits(&deadline_shaped[8..10])?,
+    );
+    let (hour, minute) = (digits(&deadline_shaped[11..13])?, digits(&deadline_shaped[14..16])?);
+    let days = days_from_civil(year as i64, month as i64, day as i64);
+    days.checked_mul(1440)?.checked_add(hour as i64 * 60 + minute as i64)
 }
 
 /// Howard Hinnant's `days_from_civil`: days since the epoch (1970-01-01) for
@@ -444,5 +498,31 @@ mod tests {
         let shifted = shift("2026-08-15", 1, DurationUnit::Days).unwrap();
         assert_eq!(shifted, "2026-08-16");
         assert_eq!(deadline_sort_key(&shifted), deadline_sort_key("2026-08-16T23:59"));
+    }
+
+    #[test]
+    fn minutes_until_is_positive_before_the_deadline() {
+        assert_eq!(minutes_until("2026-08-15T14:00", "2026-08-15T12:00"), Some(120));
+    }
+
+    #[test]
+    fn minutes_until_is_negative_after_the_deadline() {
+        assert_eq!(minutes_until("2026-08-15T10:00", "2026-08-15T12:00"), Some(-120));
+    }
+
+    #[test]
+    fn minutes_until_resolves_a_day_only_deadline_to_end_of_day() {
+        assert_eq!(minutes_until("2026-08-15", "2026-08-15T12:00"), Some(11 * 60 + 59));
+    }
+
+    #[test]
+    fn minutes_until_crosses_a_day_boundary() {
+        assert_eq!(minutes_until("2026-08-16T00:30", "2026-08-15T23:45"), Some(45));
+    }
+
+    #[test]
+    fn minutes_until_rejects_an_invalid_deadline_or_now() {
+        assert_eq!(minutes_until("not-a-date", "2026-08-15T12:00"), None);
+        assert_eq!(minutes_until("2026-08-15T12:00", "not-a-date"), None);
     }
 }

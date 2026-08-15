@@ -7,10 +7,12 @@
 //      `hummingbird_ffi_web` binary, which is what `main.tsx` awaits before
 //      the first render. Flip condition: >~300 ms p50.
 //   2. **One structured payload** — ~100 `TaskItemDTO`s crossing into wasm
-//      as JSON and an answer coming back, which is what M1-3's per-render
-//      `orderFrontier`/`applyFacets` calls would pay on every facet toggle.
-//      Flip condition: worse than single-digit ms per call. Instantiation
-//      timing cannot see this cost at all — hence a second number.
+//      as JSON and an ordered-ids answer coming back, exactly what M1-3's
+//      (#501) per-render `orderFrontier`/`applyFacets` calls pay on every
+//      facet toggle (`order_frontier_ids`, the real ordering call this
+//      probe now measures rather than a synthetic count). Flip condition:
+//      worse than single-digit ms per call. Instantiation timing cannot see
+//      this cost at all — hence a second number.
 //
 // Node, not a browser: same V8, and it is the number CI or any reviewer can
 // reproduce with `node scripts/probe-decisions.mjs`. It is a FLOOR for the
@@ -109,9 +111,11 @@ console.log(`payload: ${ITEMS} items, ${(payload.length / 1024).toFixed(1)} KiB 
 const roundTrip = [];
 for (let run = 0; run < 200; run += 1) {
   const started = performance.now();
-  const answer = JSON.parse(module.decisions_probe_item_payload(payload));
+  const orderedIds = JSON.parse(module.order_frontier_ids(payload));
   roundTrip.push(performance.now() - started);
-  if (answer.count !== ITEMS) throw new Error(`probe disagreed: ${JSON.stringify(answer)}`);
+  if (orderedIds.length !== ITEMS) {
+    throw new Error(`probe disagreed: got ${orderedIds.length} ids`);
+  }
 }
 report("100-item JSON round trip", roundTrip);
 
@@ -119,7 +123,7 @@ const withStringify = [];
 const items = JSON.parse(payload);
 for (let run = 0; run < 200; run += 1) {
   const started = performance.now();
-  JSON.parse(module.decisions_probe_item_payload(JSON.stringify(items)));
+  JSON.parse(module.order_frontier_ids(JSON.stringify(items)));
   withStringify.push(performance.now() - started);
 }
 report("…including the caller's JSON.stringify", withStringify);

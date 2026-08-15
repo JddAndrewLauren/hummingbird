@@ -2,4 +2,11 @@
     <!-- The product name is lowercase everywhere (design system, content
          fundamentals). -->
     <string name="app_name">hummingbird</string>
+
+    <!-- The second launcher icon's label (activity-alias) and the static
+         shortcut's pair (M1-5/#503) — "Capture" is a verb, the one
+         exception content fundamentals already carries for an action name. -->
+    <string name="capture_launcher_label">Capture</string>
+    <string name="capture_shortcut_short_label">Capture</string>
+    <string name="capture_shortcut_long_label">Quick capture</string>
 </resources>

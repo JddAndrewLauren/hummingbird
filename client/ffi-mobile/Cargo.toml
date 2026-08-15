@@ -9,6 +9,11 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
 hummingbird-core = { path = "../core" }
+# The owned-schema `Stage` enum `MobileTaskHost::capture` (M1-5/#503) takes —
+# the same cross-workspace dependency `hummingbird-core` itself already
+# carries, needed here only to *name* the type (`ffi-web`'s Cargo.toml
+# carries the identical dependency for the identical reason).
+hummingbird-domain = { path = "../../server/domain" }
 # `tokio` on uniffi because the exported async surface runs under
 # `async_runtime = "tokio"` — `Core::run`'s reqwest transports need a tokio
 # reactor, and the generated Kotlin suspend functions poll futures on the
@@ -21,6 +26,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 # default-featured `reqwest` here would silently re-add the `native-tls`/
 # `openssl-sys` stack that has no Android NDK build (see core's Cargo.toml).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# OS randomness for `mint_mutation_seed` (see its doc): a mobile mutation
+# seed becomes an entity id the authority creates idempotently, so it has to
+# be unique across process restarts, not just within one process. Already in
+# this workspace's tree transitively; named directly here because this crate
+# depends on it for a decision, not incidentally.
+getrandom = "0.2"
 
 [features]
 # The Kotlin/Swift binding generator, behind a feature so the `cdylib`

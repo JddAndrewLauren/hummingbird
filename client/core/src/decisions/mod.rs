@@ -20,6 +20,12 @@
 //! here that needs any of those does not belong here — it belongs behind
 //! the SharedWorker's existing request protocol.
 
+pub mod actions;
 pub mod capture;
+pub mod frontier;
+pub mod queue;
+pub mod urgency;
+pub mod vocabulary;
 
+pub use actions::{applied_stage, available_actions, can_grill, can_mark_done, grill_button_label};
 pub use capture::can_submit_capture;

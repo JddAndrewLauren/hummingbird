@@ -9,13 +9,40 @@
 // vocabulary, not a fixed enum … because the set of places a person works is
 // theirs."* So `CONTEXTS` feeds a `Combobox` and constrains nothing.
 //
-// It did not use to. Both forms rendered a `<select>` over these six, which
-// meant no surface in the app could enter a seventh — while `frontier-facets.ts`
-// built its filter chips from the contexts actually present and sorted
-// unrecognised ones in alphabetically, and `server/domain/src/item.rs` gave
-// `@calls` as an example of a context nobody could type. The read side had
-// always believed the glossary; only the write side disagreed, so this is the
-// write side being corrected rather than a decision being made.
+// **The canonical copy moved to Rust at M1-2 (ADR-0025, #141/#500):**
+// `hummingbird_core::decisions::vocabulary` now owns the size/energy option
+// values and the suggested `CONTEXTS` list, reusing `hummingbird_domain::
+// {Size, Energy}::ALL` rather than re-deriving them, and `field-vocabulary
+// .test.ts` is ported to Rust there as the canonical suite.
+//
+// **The arrays below stay literal TS, not a live call through the seam.**
+// `SIZE_OPTIONS`/`ENERGY_OPTIONS`/`CONTEXTS` are read directly as values at
+// React-render time by `ItemPanel.tsx` and `CaptureBox.tsx` — but they are
+// *exported as plain constants*, and a plain `export const` computed by
+// calling into wasm runs at MODULE EVALUATION, which for every file
+// statically reachable from `main.tsx`'s `import { App }` happens before
+// `initDecisions()` is ever awaited (`main.tsx`'s own top-level imports
+// resolve before its first `await` runs). A `const` built that way would
+// throw the seam's "used before ready" guard on every page load. So this
+// module keeps hand-written arrays, now pinned against
+// `hummingbird_core::decisions::vocabulary`'s real, seam-exposed functions
+// (`sizeOptionsFromCore`/`energyOptionsFromCore`/`contextsFromCore` in
+// `decisions/seam.ts`) by `field-vocabulary.test.ts`'s own pinning cases —
+// the same "held together by a test" mechanism the header below used to
+// warn about, except the other side of the test is now Rust rather than a
+// second hand-typed TS array. `urgency.ts`/`deadline-parts.ts`/
+// `capture-meta.ts`'s decision half sink fully because every one of *their*
+// exports is a function, called from event handlers and render bodies —
+// never at module-evaluation time — so the same seam call there is safe.
+//
+// It did not use to be pinned at all. Both forms rendered a `<select>` over
+// these six, which meant no surface in the app could enter a seventh — while
+// `frontier-facets.ts` built its filter chips from the contexts actually
+// present and sorted unrecognised ones alphabetically, and
+// `server/domain/src/item.rs` gave `@calls` as an example of a context nobody
+// could type. The read side had always believed the glossary; only the write
+// side disagreed, so this is the write side being corrected rather than a
+// decision being made.
 //
 // `@waiting` is gone from the list. It failed Context's own test — *where or
 // with what* an item can be done — and CONTEXT.md is flat that "External wait
@@ -28,23 +55,15 @@
 // One module because two forms offer the same choices — the capture box and
 // the item editor — and a context added to one copy and not the other is a
 // list that quietly disagrees with itself depending on where you sort from.
-// `frontier-facets.ts` reads `CONTEXTS` too, for its chip *order*, which is
-// the third copy this consolidation finally removed.
+// `frontier-facets.ts` reads `CONTEXTS` too, for its chip *order*.
 //
 // **Not the capture box's sliders.** Those are indexed by *position* rather
 // than by value — `capture-meta.ts`'s `CAPTURE_SIZE_NAMES`/
-// `CAPTURE_ENERGY_NAMES` own that correspondence, and its test pins it.
-// They used to differ in wording too, displaying "normal" where the wire said
-// `short`; ADR-0024 made those the same word, so position is now the only
-// thing separating the two representations.
-//
-// That leaves three unlinked copies of the size vocabulary in this directory —
-// these options, `capture-meta.ts`'s names, and `size-energy.ts`'s level map —
-// and nothing mechanical holds them together. That is not hypothetical: when
-// ADR-0024 renamed the middle size, this file was the copy that did not get
-// renamed, and because the server still accepts `short` as a serde alias it
-// went on writing a dead value successfully while displaying the old word.
-// `field-vocabulary.test.ts` is the assertion that would have caught it.
+// `CAPTURE_ENERGY_NAMES` own that correspondence, and its test pins it. A
+// slider stop index is a rendering concern (ADR-0025's verdict table:
+// "capture-meta's form-adapter half … slider indices"), so it stays a
+// second, deliberately TS-only array rather than routing through the seam
+// — see that module's own header for the full argument.
 
 import type { TaskItemDTO } from "../store/protocol";
 
