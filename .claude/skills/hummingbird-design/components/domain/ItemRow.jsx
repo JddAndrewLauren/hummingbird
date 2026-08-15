@@ -5,9 +5,9 @@ import { StageBadge } from "./StageBadge.jsx";
 const URGENCY = { calm: "var(--urgency-calm)", soon: "var(--urgency-soon)", now: "var(--urgency-now)", overdue: "var(--urgency-overdue)" };
 // The dot carries urgency in colour alone, so its tooltip says it in words —
 // the stored enum is not what a reader wants hovering a coloured dot.
-const URGENCY_LABEL = { calm: "Calm", soon: "Due soon", now: "Due now", overdue: "Overdue" };
+const URGENCY_LABEL = { calm: "Calm", soon: "Deadline soon", now: "Deadline now", overdue: "Overdue" };
 
-export function ItemRow({ title, stage = "ready", urgency = "calm", due, scheduled, size, blockedBy, steps, selected = false, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }) {
+export function ItemRow({ title, stage = "ready", urgency = "calm", deadline, scheduled, size, blockedBy, steps, selected = false, onClick, onKeyDown, onMouseEnter, onMouseLeave, style = {}, ...rest }) {
   const [hover, setHover] = React.useState(false);
   // No onClick, no affordance: a row that does nothing must not take focus,
   // announce itself as a button, or claim a pointer.
@@ -52,10 +52,10 @@ export function ItemRow({ title, stage = "ready", urgency = "calm", due, schedul
           <Icon name="calendar" size={13} />{scheduled}
         </span>
       ) : null}
-      {due ? (
+      {deadline ? (
         <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)", font: "var(--type-meta)",
           color: urgency === "overdue" ? "var(--urgency-overdue)" : urgency === "now" ? "var(--urgency-now)" : "var(--text-secondary)" }}>
-          <Icon name="flag" size={13} />{due}
+          <Icon name="flag" size={13} />{deadline}
         </span>
       ) : null}
       <StageBadge stage={stage} />
