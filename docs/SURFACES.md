@@ -114,15 +114,22 @@ joins that exclusion under that same cover; the picker it belongs to lives on
 matrix even though the decline that offers it does not. **Item detail's core
 render is no longer unphotographed** (#481): Recall's own board-world
 captures mount the identical `components/domain/ItemPanel.tsx` in `"detail"`
-mode — a live result's read-only record, its Edit form once pressed, and a
-Done/archived result's read-only record with no Edit at all — so those three
-states are in the matrix now, reached through Recall rather than through
-`RealFrontier`. What stays unphotographed is everything above that Recall
+mode — a live result's Edit form once pressed
+(`recall-live-expanded-*`), and a Done/archived result's read-only record
+with no Edit at all (`recall-readonly-expanded-*`) — so those two states are
+in the matrix now, reached through Recall rather than through
+`RealFrontier`. (The live row's own pre-Edit render is deliberately not a
+third capture: it shows the same read-only record the archived capture
+already photographs, plus an Edit button — the spec's own comment on the
+live test says why it presses Edit instead.) What stays unphotographed is
+everything above that Recall
 never wires: `showSteps={false}` and no `microtask` prop at all on
 `RecallOverlay`'s own `ItemPanel` call means the microtask affordances, the
 streaming narration, the stamp badge and the decline are still reachable
-only through Now's or Triage's own item panel, which still branches to
-`RealFrontier` only when demo is off. **Now's
+only through Now's or Triage's own item panel — Now's because
+`NowScreen.tsx` still branches to `RealFrontier` only when demo is off,
+Triage's for its own reason stated above (`?demo` renders the fixture rows,
+so nothing real is ever mounted there). **Now's
 captures in the columns** join that list for the same reason one more level up:
 `NowScreen.tsx` branches to `RealFrontier` only when demo is off, so a capture's
 card, its `triage` chip, its place under a column's startable actions and the
