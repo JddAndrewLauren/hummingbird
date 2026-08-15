@@ -1,11 +1,15 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Card } from "../components/core/Card";
 import { IconButton } from "../components/core/IconButton";
+import { ItemPanel } from "../components/domain/ItemPanel";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { Input } from "../components/forms/Input";
-import type { RecallRowDTO } from "../store/protocol";
+import type { ProjectDTO, RecallRowDTO } from "../store/protocol";
+import type { TaskTriageResult } from "../store/store";
+import type { TriageEdits } from "../store/worker-client";
+import { relativeAge } from "./sync-status";
 import { useIsPhone } from "./useIsPhone";
 
 /** The DOM id the header's Search button carries, so this overlay can
@@ -44,6 +48,29 @@ export interface RecallOverlayProps {
    * more" line reads this directly, never `rows.length` (decision 8: the
    * cap and the count are core-decided). */
   total: number;
+  /** The Project select an expanded live result's edit form offers — the
+   * same list `ItemPanel` takes everywhere else. `[]` (never omitted) is a
+   * legitimate value, same as there. */
+  projects: ProjectDTO[];
+  /** #122's stage-agnostic edit, the exact mutation `ItemPanel`'s detail-mode
+   * Save already calls — this overlay mints no second write path. Absent in
+   * demo mode (`App.tsx`'s `demo ? undefined : …`), which is what keeps a
+   * demo result from offering an editor that could not send anything; a
+   * result row simply renders with no Edit affordance in that case, same as
+   * a Done or archived one. */
+  onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
+  /** The most recent triage result any editor got back (`TaskState.lastTriage`)
+   * — what clears a live result's typing on an `"ok"` naming it (#222) and
+   * what an expanded live result renders as a failure, exactly as `ItemPanel`
+   * already does for Now and Triage. */
+  lastTriage?: TaskTriageResult | null;
+  /** `useSyncWiring`'s re-sampled clock (`App.tsx`'s `syncNowMs`) — the same
+   * "now" `DoneScreen.tsx`, `TriageRow.tsx` and `LedgerScreen.tsx`'s own
+   * `relativeAge` calls read, never `Date.now()` taken fresh here: a
+   * component render must stay a pure function of its props (the lint rule
+   * this app's `react-hooks/purity` config enforces), and this is the prop
+   * that keeps it one. */
+  nowMs: number;
 }
 
 /** One label for a [`RecallRowDTO`]'s `group` — the same three buckets
@@ -54,49 +81,139 @@ const GROUP_LABEL: Record<RecallRowDTO["group"], string> = {
   archived: "archived",
 };
 
-function RecallRow({ row }: { row: RecallRowDTO }) {
+/** #479's selection: clicking a row expands it inline, in place — the result
+ * list stays on screen and nothing here ever navigates away (decision 5).
+ * `expanded`/`onToggle` are owned by `RecallOverlay`, keyed on `row.id`, so
+ * at most one result is open at a time. */
+function RecallRow({
+  row,
+  expanded,
+  onToggle,
+  projects,
+  onTriage,
+  lastTriage,
+  nowMs,
+}: {
+  row: RecallRowDTO;
+  expanded: boolean;
+  onToggle: () => void;
+  projects: ProjectDTO[];
+  onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
+  lastTriage?: TaskTriageResult | null;
+  nowMs: number;
+}) {
   return (
     <Card
       padding="var(--space-5)"
       style={{
         display: "flex",
-        alignItems: "center",
-        gap: "var(--space-5)",
-        flexWrap: "wrap",
+        flexDirection: "column",
+        gap: "var(--space-4)",
         // Recede, never hide — the same "labelled, not hidden" reasoning
         // `LedgerScreen`'s row applies to an archived row.
         opacity: row.group === "archived" ? 0.72 : 1,
       }}
     >
-      <StageBadge stage={row.stage} />
-      <span
+      {/* The clickable summary is its own `role="button"` element, a sibling
+          of the expanded content below rather than its ancestor. Unlike
+          `FrontierColumns.tsx`'s `ItemCard`, which safely puts `role="button"`
+          on the whole `Card` guarded by an `event.target === currentTarget`
+          check (its one interactive descendant is a single checkmark
+          button), the expanded block here holds a whole edit form's worth of
+          buttons and inputs — a click landing on any of them must never
+          bubble up and toggle the summary shut, and a target-equality guard
+          alone would not stop that once the click's target IS one of those
+          descendants. Two siblings instead of one ancestor makes it true for
+          free, with no guard and no `stopPropagation` needed anywhere. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
         style={{
-          flex: "1 1 220px",
-          minWidth: 0,
-          font: "var(--type-body)",
-          color: "var(--text-primary)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-5)",
+          flexWrap: "wrap",
+          cursor: "pointer",
         }}
       >
-        {row.title}
-      </span>
-      <Badge mono tone="neutral">
-        {GROUP_LABEL[row.group]}
-      </Badge>
+        <StageBadge stage={row.stage} />
+        <span
+          style={{
+            flex: "1 1 220px",
+            minWidth: 0,
+            font: "var(--type-body)",
+            color: "var(--text-primary)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {row.title}
+        </span>
+        <Badge mono tone="neutral">
+          {GROUP_LABEL[row.group]}
+        </Badge>
+      </div>
+
+      {expanded ? (
+        <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "var(--space-4)" }}>
+          {/* Timestamps: the one fact `ItemPanel` doesn't already state (it
+              shows the HB handle and the description itself, in both its
+              read-only and edit-mode renders). Read off `nowMs`, the same
+              re-sampled clock `DoneScreen` uses for its own `relativeAge` —
+              never a fresh `Date.now()` here, which a component render must
+              stay pure of. */}
+          <p className="hb-meta" style={{ marginBottom: "var(--space-4)" }}>
+            created {relativeAge(Math.max(0, nowMs - row.createdAt))} · updated{" "}
+            {relativeAge(Math.max(0, nowMs - row.updatedAt))}
+          </p>
+          {/* The same edit form the rest of the app uses (#479's acceptance),
+              over the same `useItemDraft` state and the same `Core::triage`
+              mutation — never a second copy. `onTriage` is only handed down
+              for a `"live"` result: a Done or archived row gets no `onTriage`
+              at all, which is exactly what makes `ItemPanel` render with no
+              Edit affordance (its own "offers no Edit at all without an
+              onTriage" rule) rather than a second read-only mode invented
+              here. */}
+          <ItemPanel
+            key={row.id}
+            mode="detail"
+            item={row}
+            projects={projects}
+            onTriage={row.group === "live" ? onTriage : undefined}
+            lastTriage={lastTriage}
+            // This overlay has no steps wiring of its own — nothing here
+            // ever called `requestSteps` for a result row — so the block
+            // that would otherwise assert "No Steps yet." is not rendered
+            // at all rather than stating a fact it never asked `Core` for.
+            showSteps={false}
+          />
+        </div>
+      ) : null}
     </Card>
   );
 }
 
 /** **Recall** (#478, CONTEXT.md): the lookup gesture over everything the
  * mirror has ever known — never a ranking or attention surface, never a
- * per-screen filter. Read-only in this slice: a result row states its
- * stage and nothing here reaches `Core::act` or any other mutation —
- * selecting a row is #479's slice. Every trigger (the header's Search
- * button, the `/` hotkey, the rail's magnifier, the phone More sheet's
- * entry) and the Escape wiring are #480's, all landing on the same
- * `open`/`onClose` this component already took.
+ * per-screen filter. Reachable from four triggers (#480): the header's
+ * Search button, the `/` hotkey, the rail's magnifier and the phone More
+ * sheet's entry, all landing on the same `open`/`onClose` this component
+ * already took.
+ *
+ * Selecting a row opens it in place (#479): a live result's expansion
+ * reaches `Core::triage` through `ItemPanel`, the same mutation path detail
+ * mode everywhere else uses; a Done or archived result's expansion never
+ * reaches `Core::act` or any other mutation, since it is handed no
+ * `onTriage` at all.
  *
  * Built in the exact shape `CapturePopover` is (decision 4): a scrim, a
  * `role="dialog"` card hung off the control that opened it
@@ -108,12 +225,44 @@ function RecallRow({ row }: { row: RecallRowDTO }) {
  * `useRecallWiring.ts`) — this component only renders whatever `rows` and
  * `total` it is handed, plus the one client-only rule an empty query never
  * needs a round trip to state: blank `query` renders nothing to type
- * against, whatever `rows` last held. */
-export function RecallOverlay({ open, query, onQueryChange, onClose, rows, total }: RecallOverlayProps) {
+ * against, whatever `rows` last held.
+ *
+ * **#479's selection.** Which result is expanded is local, device-only UI
+ * state — nothing about "which row is open" is a fact the mirror or any
+ * other screen needs, so it is never lifted to `App.tsx` the way `query` is.
+ * It resets to nothing whenever the overlay opens fresh, so a stale
+ * expansion from a previous search session never survives the close/reopen
+ * — the same "own it or reset it" rule `CapturePopover`'s focus restoration
+ * follows. */
+export function RecallOverlay({
+  open,
+  query,
+  onQueryChange,
+  onClose,
+  rows,
+  total,
+  projects,
+  onTriage,
+  lastTriage,
+  nowMs,
+}: RecallOverlayProps) {
   const restoreTo = useRef<Element | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const isPhone = useIsPhone();
   const trimmed = query.trim();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // A fresh open starts fully collapsed (this component's own doc: the
+  // expansion never survives a close/reopen). Derived from the previous
+  // render's `open` rather than an effect — React's own "adjusting state
+  // when a prop changes" pattern — so nothing here calls `setState`
+  // synchronously inside an effect body.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setSelectedId(null);
+    }
+  }
 
   useLayoutEffect(() => {
     if (!open) {
@@ -232,7 +381,16 @@ export function RecallOverlay({ open, query, onQueryChange, onClose, rows, total
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
               {rows.map((row) => (
-                <RecallRow key={row.id} row={row} />
+                <RecallRow
+                  key={row.id}
+                  row={row}
+                  expanded={row.id === selectedId}
+                  onToggle={() => setSelectedId((current) => (current === row.id ? null : row.id))}
+                  projects={projects}
+                  onTriage={onTriage}
+                  lastTriage={lastTriage}
+                  nowMs={nowMs}
+                />
               ))}
               {more > 0 ? (
                 <span className="hb-meta">{more} more matched — narrow the words to see them</span>
