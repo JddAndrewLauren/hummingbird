@@ -14,7 +14,6 @@ import type {
   CalendarReadDTO,
   TaskActionName,
   TaskItemDTO,
-  TriageDestinationName,
 } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
@@ -70,7 +69,7 @@ export interface NowScreenProps {
    * point into it. `undefined` in demo mode. */
   onTriage?: (
     itemId: string,
-    destination: TriageDestinationName | null,
+    destination: "ready" | null,
     edits: TriageEdits,
   ) => void;
   /** Injected storage for this screen's device-local view preferences —

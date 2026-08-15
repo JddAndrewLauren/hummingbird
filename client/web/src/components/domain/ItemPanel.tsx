@@ -35,7 +35,6 @@ import type {
   StepDTO,
   TaskActionName,
   TaskItemDTO,
-  TriageDestinationName,
 } from "../../store/protocol";
 import type { TaskTriageResult } from "../../store/store";
 import type { TriageEdits } from "../../store/worker-client";
@@ -52,10 +51,12 @@ import { StageBadge } from "./StageBadge";
 // field is drawn:
 //
 // - `"triage"` — the capture is unsorted, so the fields are the point and
-//   stand open, and the row ends in the two promotions plus Grill me. There is
-//   no act row (`item-actions.ts`: "Triage and Grilling are pre-action by
-//   definition") and no steps checklist, because there is nothing to act on or
-//   break down yet.
+//   stand open, and the row ends in the promotion to Ready plus Grill me
+//   (#360: Ready is triage's only destination — an item reaches Grilling
+//   exactly one way, a `fog_remains` Grill verdict). There is no act row
+//   (`item-actions.ts`: "Triage and Grilling are pre-action by definition")
+//   and no steps checklist, because there is nothing to act on or break down
+//   yet.
 // - `"detail"` — the item is minted, so it reads as a record: badges, act row,
 //   steps. **Edit** reveals the same fields the triage mode shows, saving
 //   through `Core::triage` with `destination: null` (#122's stage-agnostic
@@ -112,7 +113,7 @@ export interface ItemPanelProps {
    * an editor that could not send anything. */
   onTriage?: (
     itemId: string,
-    destination: TriageDestinationName | null,
+    destination: "ready" | null,
     edits: TriageEdits,
   ) => void;
   /** The most recent triage result any editor got back
@@ -335,15 +336,6 @@ export function ItemPanel({
           ) : null}
           <Button
             size="sm"
-            variant="secondary"
-            iconLeft="help-circle"
-            disabled={item.pending || blocked}
-            onClick={() => onTriage?.(item.id, "grilling", buildTriageEdits(draft, item))}
-          >
-            Send to grilling
-          </Button>
-          <Button
-            size="sm"
             variant="primary"
             iconLeft="check"
             disabled={item.pending || blocked}
@@ -403,8 +395,8 @@ export function ItemPanel({
               iconLeft="check"
               // `destination: null` (#122): this edits the fields and leaves
               // the stage exactly where it is. An item in detail is already
-              // past triage, and `TriageDestinationName` has no word for
-              // "where it already was".
+              // past triage, and there is no destination for "where it
+              // already was".
               disabled={item.pending || blocked || !hasTriageEdits(draft, item)}
               onClick={() => onTriage?.(item.id, null, buildTriageEdits(draft, item))}
             >

@@ -7,7 +7,6 @@ import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import type { DemoCapture, DemoData } from "../fixtures/demo";
 import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
-import type { TriageDestinationName } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { GrillTakeover } from "./GrillTakeover";
@@ -35,7 +34,7 @@ export interface TriageScreenProps {
    * has to pass a real one. */
   onTriage?: (
     itemId: string,
-    destination: TriageDestinationName | null,
+    destination: "ready" | null,
     edits: TriageEdits,
   ) => void;
   /** The row checkmark's `Core::act` complete — see `TriageRow`'s own prop

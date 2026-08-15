@@ -329,7 +329,7 @@ describe("ItemPanel — detail mode's Edit", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     // `null` destination: an item in detail is already past triage, and
-    // `TriageDestinationName` has no word for "where it already was".
+    // there is no destination for "where it already was".
     expect(onTriage).toHaveBeenCalledWith("item-1", null, { description: "the far bay" });
   });
 

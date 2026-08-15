@@ -4,7 +4,7 @@ import { ItemPanel } from "../components/domain/ItemPanel";
 import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { relativeAge } from "../shell/sync-status";
-import type { ProjectDTO, TaskItemDTO, TriageDestinationName } from "../store/protocol";
+import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { canMarkDone } from "./item-actions";
@@ -32,7 +32,7 @@ export interface TriageRowProps {
    * editor that could not send anything. */
   onTriage?: (
     itemId: string,
-    destination: TriageDestinationName | null,
+    destination: "ready" | null,
     edits: TriageEdits,
   ) => void;
   /** The one-click "mark done" checkmark — `Core::act`'s `complete`, NOT a
@@ -44,8 +44,9 @@ export interface TriageRowProps {
   onComplete?: (itemId: string) => void;
   /** "Grill me" (#355, ADR-0023): opens the center-column takeover over
    * this item, decided by `item-actions.ts`'s `canGrill`. Absent in demo
-   * mode, same as `onTriage` — beside "Send to grilling", never a
-   * replacement for it. */
+   * mode, same as `onTriage`. Since #360, promoting straight into Grilling
+   * is no longer a triage gesture at all: this is the only way an item gets
+   * there. */
   onGrillMe?: (itemId: string) => void;
   /** The most recent triage result any row got back (`TaskState.lastTriage`)
    * — matched here by the item id the result itself carries, the same

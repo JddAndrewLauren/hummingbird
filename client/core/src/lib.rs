@@ -538,32 +538,6 @@ impl ItemAction {
     }
 }
 
-/// S13/#111's triage destination — the only two stages triage itself may
-/// promote an item into. Deliberately not a raw [`Stage`] the caller picks
-/// (same "resolved by name from the vocabulary, never hardcoded" discipline
-/// [`ItemAction::stage`] documents): `Grilling` is where a captured item
-/// goes to have its fog worked before it can be minted, `Ready` is where it
-/// goes once it is already startable outright. There is no `Backlog`
-/// destination — the owned schema's six-stage vocabulary
-/// (`hummingbird_domain::Stage`) has no such stage; a triaged item that
-/// is not yet ready to promote simply stays in `Triage` (never calling
-/// [`Core::triage`] at all) rather than moving to a stage the schema
-/// cannot express.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriageDestination {
-    Grilling,
-    Ready,
-}
-
-impl TriageDestination {
-    fn stage(self) -> Stage {
-        match self {
-            TriageDestination::Grilling => Stage::Grilling,
-            TriageDestination::Ready => Stage::Ready,
-        }
-    }
-}
-
 /// S13/#111's multi-field triage edit — every field of an item the triage
 /// form may set alongside the destination stage. `None` on every field is a
 /// legal call: a bare promotion with no other edit is still exactly one
@@ -1620,10 +1594,11 @@ where
     }
 
     /// Triages an already-existing (captured) item (S13/#111): edits
-    /// whatever fields `patch` sets, and promotes it to `destination`, as
-    /// **one** CAS `PATCH` — enqueued the same way [`Core::act`] enqueues
-    /// its own single-field patch (durably, via [`sync::SyncCycle::enqueue`],
-    /// never [`sync::queue::OutboundQueue::enqueue`] directly), never four
+    /// whatever fields `patch` sets, and — when `promote_to_ready` is `true`
+    /// — promotes it to `Ready`, as **one** CAS `PATCH` — enqueued the same
+    /// way [`Core::act`] enqueues its own single-field patch (durably, via
+    /// [`sync::SyncCycle::enqueue`], never
+    /// [`sync::queue::OutboundQueue::enqueue`] directly), never four
     /// separate mutations for four separate fields. Fewer conflict surfaces
     /// is the point: a 409 on this triage rebases (or dead-letters) the
     /// whole edit together, not one field at a time.
@@ -1634,23 +1609,30 @@ where
     /// reasoning — see that method's doc; nothing about combining several
     /// fields into one patch changes it.
     ///
-    /// A triaged item leaves [`Core::triage_inbox`] and — for
-    /// [`TriageDestination::Ready`] — appears on [`Core::frontier`] the
-    /// instant this returns, through the same overlay every other read here
-    /// goes through, never a separate local bookkeeping list.
+    /// A triaged item leaves [`Core::triage_inbox`] and — when promoted —
+    /// appears on [`Core::frontier`] the instant this returns, through the
+    /// same overlay every other read here goes through, never a separate
+    /// local bookkeeping list. `Ready` is triage's only destination
+    /// (#360): an item that reaches `Grilling` does so exactly one way — a
+    /// `fog_remains` verdict from a completed Grill ([`Core::complete_grill`]),
+    /// never through this entry point. An item not yet ready to promote
+    /// simply stays in `Triage` — `promote_to_ready: false` — which is not a
+    /// destination at all, only "leave `stage` alone".
     ///
-    /// `destination` is `Option` (#122) so this same entry point can carry a
-    /// pure field edit — the weekend-plans pane's do-date chip — on an item
-    /// that is not going through the triage promotion at all: `Core::frontier`
-    /// only ever holds `Ready`/`InProgress` items, and `TriageDestination`'s
-    /// two-value vocabulary has no way to *name* `InProgress`, so a call
-    /// that always promoted would demote an in-progress item back to Ready
-    /// the moment its do-date changed. `None` leaves `stage` off the patch
+    /// `promote_to_ready` is a plain `bool` rather than an enum of stage
+    /// destinations because, with `Grilling` gone, there is only ever one
+    /// stage this call may promote an item *into* — so the only remaining
+    /// question is whether it does. `false` leaves `stage` off the patch
     /// entirely — the authority's `ItemPatch.stage` is already `Option`, so
     /// an absent field there is genuinely untouched, not defaulted — and the
-    /// optimistic overlay keeps the item's current stage. This is still the
-    /// one triage mutation entry point, never a second one: every caller
-    /// still enqueues through this same CAS `PATCH`.
+    /// optimistic overlay keeps the item's current stage. This is what lets
+    /// the same entry point carry a pure field edit — the weekend-plans
+    /// pane's do-date chip — on an item that is not going through the triage
+    /// promotion at all: `Core::frontier` only ever holds
+    /// `Ready`/`InProgress` items, so a call that always promoted would
+    /// demote an in-progress item back to Ready the moment its do-date
+    /// changed. Every caller still enqueues through this same CAS `PATCH` —
+    /// never a second mutation entry point.
     ///
     /// `seed` mints this mutation's own queue-entry id
     /// ([`sync::write::deterministic_id`]) — caller-supplied, same reasoning
@@ -1659,7 +1641,7 @@ where
         &mut self,
         seed: &str,
         item_id: &str,
-        destination: Option<TriageDestination>,
+        promote_to_ready: bool,
         patch: TriagePatch,
         now_ms: i64,
     ) -> Result<(), ActError<QS::Error>> {
@@ -1672,11 +1654,11 @@ where
         let mut optimistic = current.clone();
         let mut patch_fields = serde_json::Map::new();
 
-        if let Some(destination) = destination {
-            optimistic.stage = destination.stage();
+        if promote_to_ready {
+            optimistic.stage = Stage::Ready;
             patch_fields.insert(
                 "stage".to_string(),
-                serde_json::to_value(destination.stage()).expect("Stage always serializes"),
+                serde_json::to_value(Stage::Ready).expect("Stage always serializes"),
             );
         }
 
@@ -2413,7 +2395,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            Some(TriageDestination::Ready),
+            true,
             TriagePatch::default(),
             2_000,
         )
@@ -2424,30 +2406,6 @@ mod tests {
         let frontier = core.frontier();
         assert_eq!(frontier.len(), 1);
         assert_eq!(frontier[0].stage, Stage::Ready);
-    }
-
-    /// Grilling is pre-action too (`CONTEXT.md`) — a triage into Grilling
-    /// leaves the triage inbox but never lands on the frontier.
-    #[tokio::test]
-    async fn sending_to_grilling_leaves_triage_without_reaching_the_frontier() {
-        let mut core = Core::new();
-        let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
-            .await
-            .unwrap();
-
-        core.triage(
-            "seed-triage-1",
-            &id,
-            Some(TriageDestination::Grilling),
-            TriagePatch::default(),
-            2_000,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(core.triage_inbox().len(), 0);
-        assert_eq!(core.frontier().len(), 0);
     }
 
     /// This issue's "a multi-field triage is one mutation, not four" —
@@ -2465,7 +2423,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            Some(TriageDestination::Ready),
+            true,
             TriagePatch {
                 title: Some("buy milk".to_string()),
                 description: Some(Some("oat, not dairy".to_string())),
@@ -2513,7 +2471,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            Some(TriageDestination::Grilling),
+            true,
             TriagePatch {
                 context: Some(Some("@computer".to_string())),
                 ..TriagePatch::default()
@@ -2526,7 +2484,7 @@ mod tests {
         core.triage(
             "seed-triage-2",
             &id,
-            Some(TriageDestination::Ready),
+            true,
             TriagePatch::default(),
             3_000,
         )
@@ -2558,7 +2516,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            Some(TriageDestination::Grilling),
+            true,
             TriagePatch {
                 context: Some(Some("@computer".to_string())),
                 deadline: Some(Some("2026-08-14".to_string())),
@@ -2573,7 +2531,7 @@ mod tests {
         core.triage(
             "seed-triage-2",
             &id,
-            Some(TriageDestination::Ready),
+            true,
             TriagePatch {
                 deadline: Some(None),
                 ..TriagePatch::default()
@@ -2615,7 +2573,7 @@ mod tests {
             .triage(
                 "seed-triage-1",
                 "no-such-item",
-                Some(TriageDestination::Ready),
+                true,
                 TriagePatch::default(),
                 1_000,
             )
@@ -2640,7 +2598,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            Some(TriageDestination::Ready),
+            true,
             TriagePatch {
                 title: Some("buy milk".to_string()),
                 ..TriagePatch::default()
@@ -2654,11 +2612,11 @@ mod tests {
         assert_eq!(core.frontier()[0].title, "buy milk");
     }
 
-    /// #122: a `None` destination is a pure field edit — it must never
+    /// #122: `promote_to_ready: false` is a pure field edit — it must never
     /// touch `stage`, which is what lets the weekend-plans pane's do-date
     /// chip triage an `InProgress` item without demoting it back to `Ready`.
     #[tokio::test]
-    async fn a_none_destination_edits_fields_without_touching_stage() {
+    async fn promote_to_ready_false_edits_fields_without_touching_stage() {
         let mut core = Core::new();
         let id = core
             .capture("seed-1", "someday maybe", Stage::Ready, 1_000, CaptureOptions::default())
@@ -2670,7 +2628,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            None,
+            false,
             TriagePatch {
                 scheduled_date: Some(Some("2026-08-15".to_string())),
                 ..TriagePatch::default()
@@ -2681,7 +2639,7 @@ mod tests {
         .unwrap();
 
         let item = &core.frontier()[0];
-        assert_eq!(item.stage, Stage::InProgress, "a None destination must never change stage");
+        assert_eq!(item.stage, Stage::InProgress, "promote_to_ready: false must never change stage");
         assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-15"));
     }
 
@@ -2698,7 +2656,7 @@ mod tests {
         core.triage(
             "seed-triage-1",
             &id,
-            None,
+            false,
             TriagePatch {
                 scheduled_date: Some(Some("2026-08-15".to_string())),
                 ..TriagePatch::default()
@@ -2713,7 +2671,7 @@ mod tests {
         core.triage(
             "seed-triage-2",
             &id,
-            None,
+            false,
             TriagePatch { title: Some("buy milk".to_string()), ..TriagePatch::default() },
             1_600,
         )
@@ -2729,7 +2687,7 @@ mod tests {
         core.triage(
             "seed-triage-3",
             &id,
-            None,
+            false,
             TriagePatch { scheduled_date: Some(None), ..TriagePatch::default() },
             1_700,
         )
@@ -2800,7 +2758,7 @@ mod tests {
             .triage(
                 "seed-triage-1",
                 &id,
-                Some(TriageDestination::Ready),
+                true,
                 TriagePatch {
                     title: Some("buy milk".to_string()),
                     ..TriagePatch::default()

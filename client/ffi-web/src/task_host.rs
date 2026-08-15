@@ -17,7 +17,7 @@ use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
 use hummingbird_core::{
     ActError, CaptureOptions, CompleteGrillError, Core, CoreCycleOutcome, CoreEvent,
-    CoreInitError, GrillCompletion, ItemAction, TriageDestination, TriagePatch,
+    CoreInitError, GrillCompletion, ItemAction, TriagePatch,
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, Alert, Condition, Energy, EventKindEntry, FieldType, Item,
@@ -274,22 +274,6 @@ fn parse_action(action: &str) -> Option<ItemAction> {
         "complete" => Some(ItemAction::Complete),
         "block" => Some(ItemAction::Block),
         "cancel" => Some(ItemAction::Cancel),
-        _ => None,
-    }
-}
-
-/// Maps S13/#111's wire destination name to [`TriageDestination`] — the one
-/// place a triage promotion's target crosses the JS boundary and becomes
-/// the closed destination vocabulary, same "reject before the seam"
-/// discipline [`parse_action`] applies to its own wire strings. Never a raw
-/// [`hummingbird_domain::Stage`]: there is no wire name that lets a caller
-/// send an arbitrary stage id, and there is deliberately no `"backlog"`
-/// spelling here — the owned schema has no such stage (see
-/// [`TriageDestination`]'s own doc).
-fn parse_destination(destination: &str) -> Option<TriageDestination> {
-    match destination {
-        "grilling" => Some(TriageDestination::Grilling),
-        "ready" => Some(TriageDestination::Ready),
         _ => None,
     }
 }
@@ -1248,15 +1232,18 @@ impl TaskHostCore {
     }
 
     /// Triages an already-captured item (S13/#111): edits whatever
-    /// `edits` sets and promotes it to `destination`, as one CAS `PATCH`
-    /// (never one mutation per field — [`Core::triage`]'s own doc).
-    /// `destination` is the wire's snake_case destination name
-    /// ([`parse_destination`]), or `None` (#122) to leave `stage` untouched
-    /// entirely — the weekend-plans pane's do-date chip triages an item that
-    /// may already be `InProgress`, which `TriageDestination`'s two-value
-    /// vocabulary cannot name, so a caller that only wants
-    /// `edits.scheduled_date` applied passes no destination at all rather
-    /// than one that would silently demote the item back to `Ready`.
+    /// `edits` sets and, when `destination` is `Some("ready")`, promotes it
+    /// to Ready, as one CAS `PATCH` (never one mutation per field —
+    /// [`Core::triage`]'s own doc). `"ready"` is the only recognised wire
+    /// destination (#360) — an item reaches Grilling exactly one way, a
+    /// `fog_remains` verdict from a completed Grill
+    /// ([`TaskHostCore::complete_grill`]), never through this seam. Any other
+    /// non-`None` string is rejected before [`Core::triage`] is ever called.
+    /// `None` (#122) leaves `stage` untouched entirely — the weekend-plans
+    /// pane's do-date chip triages an item that may already be `InProgress`,
+    /// which a promotion would silently demote back to `Ready`, so a caller
+    /// that only wants `edits.scheduled_date` applied passes no destination
+    /// at all.
     ///
     /// Everything else a wire value could get wrong is rejected HERE, before
     /// [`Core::triage`] is ever called, the same "reject before the seam"
@@ -1277,14 +1264,12 @@ impl TaskHostCore {
         edits: TriageEdits,
         now_ms: i64,
     ) -> TriageResponse {
-        let destination = match destination {
-            Some(raw) => match parse_destination(raw) {
-                Some(destination) => Some(destination),
-                None => {
-                    return reject(format!("unrecognised triage destination {raw:?}"));
-                }
-            },
-            None => None,
+        let promote_to_ready = match destination {
+            Some("ready") => true,
+            Some(raw) => {
+                return reject(format!("unrecognised triage destination {raw:?}"));
+            }
+            None => false,
         };
         if edits.title.as_deref() == Some("") {
             // The authority answers 400 on an empty title; a `NOT NULL`
@@ -1332,7 +1317,7 @@ impl TaskHostCore {
             deadline: edits.deadline,
             scheduled_date: edits.scheduled_date,
         };
-        match self.core.triage(seed, item_id, destination, patch, now_ms).await {
+        match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms).await {
             Ok(()) => TriageResponse { kind: "ok", error: None },
             Err(ActError::ItemNotFound) => TriageResponse {
                 kind: "not_found",
@@ -1617,8 +1602,12 @@ mod triage_tests {
         host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
+        // "grilling" (#360) is now rejected exactly like any other
+        // unrecognised spelling — promoting straight into Grilling is no
+        // longer a triage gesture at all; an item reaches Grilling only via
+        // a `fog_remains` Grill verdict, never through this seam.
         let response = host
-            .triage("seed-triage-1", &id, Some("backlog"), TriageEdits::default(), 2_000)
+            .triage("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
             .await;
 
         assert_eq!(response.kind, "failed");
@@ -1891,7 +1880,7 @@ mod triage_tests {
         host.triage(
             "seed-triage-1",
             &id,
-            Some("grilling"),
+            Some("ready"),
             TriageEdits {
                 context: Some(Some("@computer".to_string())),
                 size: Some(Some("deep".to_string())),
@@ -1980,24 +1969,12 @@ mod triage_tests {
         assert!(frontier.items[0].pending, "an unconfirmed triage must read as pending");
     }
 
-    #[tokio::test]
-    async fn sending_to_grilling_leaves_the_triage_inbox_without_reaching_the_frontier() {
-        let dir = tempfile::tempdir().unwrap();
-        let namespace = dir.path().join("ns-triage-5");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
-            .await
-            .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
-        let id = host.triage_inbox().items[0].item.id.clone();
-
-        let response = host
-            .triage("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
-            .await;
-
-        assert_eq!(response.kind, "ok");
-        assert_eq!(host.triage_inbox().items.len(), 0);
-        assert_eq!(host.frontier().items.len(), 0);
-    }
+    // Send-to-grilling through this seam is gone (#360): an item reaches
+    // Grilling exactly one way now, a `fog_remains` verdict from a completed
+    // Grill (`grill_tests::fog_remains_demotes_a_triage_item_to_grilling`).
+    // `"grilling"` is simply an unrecognised destination here, re-pinned by
+    // `triaging_with_an_unrecognised_destination_never_reaches_core_triage`
+    // above.
 
     /// #122: `destination: None` at this seam must reach `Core::triage` as
     /// a genuine `None`, not accidentally coerced into some destination —
