@@ -50,7 +50,8 @@
  *  - `unsupported`: a browser fact nothing on the page can change. Renders as
  *    nothing at all, never as a disabled or warned-about microphone.
  *  - `setup-required`: the on-device pack is absent or still downloading.
- *    Actionable, and #381's to act on; #379 renders no microphone for it.
+ *    Actionable, and #381's to act on; #379 rendered no microphone for it,
+ *    before #381 gave it the setup mic.
  *  - `ready`: local processing has been confirmed for `DICTATION_LANG`. */
 export type DictationCapability =
   | { kind: "unsupported"; reason: string }
