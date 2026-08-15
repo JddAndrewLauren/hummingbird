@@ -6,13 +6,30 @@
 # A fourth Actions `schedule:`, on `gmail-poll.yml`/`calendar-poll.yml`'s own
 # reasoning: this lane has no competing clock (ADR-0011 assigns this
 # cadence to nothing else, and nothing else polls M365 mail).
+#
+# **Dormant since 2026-08-14 (#486).** All 73 runs this lane has ever had failed
+# on `HB_INGEST_TOKEN is not set`: `M365_MAIL_INGEST_TOKEN` was never minted,
+# nor the `GRAPH_*` vars and `GRAPH_CLIENT_PRIVATE_KEY` below. The `schedule:`
+# is commented out so that red stops masking real failures;
+# `workflow_dispatch:` stays, so the lane is runnable once provisioned. Same
+# one-owner rule read the other way — the commented-out block is where this
+# cadence's ownership stays legible, and re-enabling is restoring exactly it.
+#
+# **This lane is gated on more than a mint.** `src/lib.rs`'s header records the
+# unresolved question: an app-only Graph permission reads **tenant-wide** unless
+# the operator applies an Exchange Application Access Policy, which puts
+# `GRAPH_CLIENT_PRIVATE_KEY` on the `ADMIN_SECRET`/`FCM_SERVICE_ACCOUNT` side of
+# CLAUDE.md's blast-radius rule rather than the `CITY_WASTE_INGEST_TOKEN` side.
+# That question was posted to #137, which is now closed; it lives on #486.
+# Settle it before provisioning, not after.
 name: graph-mail-poll
 
 on:
-  # Every 15 minutes — `hummingbird_graph_poll::mail_cursor::POLLED_EVERY_MS`
-  # must match this interval.
-  schedule:
-    - cron: "*/15 * * * *"
+  # Every 15 minutes, when live — `hummingbird_graph_poll::mail_cursor::POLLED_EVERY_MS`
+  # must match this interval. That coupling outlives the dormancy: re-check the
+  # constant against the cron before restoring the block, not after.
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same
