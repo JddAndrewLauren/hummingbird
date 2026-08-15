@@ -15,6 +15,7 @@ import type {
   PaneReadDTO,
   PollOutcomeName,
   ProjectDTO,
+  RecallRowDTO,
   RuleDTO,
   StepDTO,
   TaskActionName,
@@ -177,6 +178,12 @@ export interface TaskState {
    * array is a real answer ("nothing has ever been tracked"), and the
    * screen must not render that claim before one exists. */
   ledger: LedgerRowDTO[] | null;
+  /** **Recall**'s last answer (#478, `search`). `null` until the first
+   * answer arrives for a query — never set for an empty/whitespace query,
+   * which the overlay resolves locally without asking the worker at all
+   * (decision: "an empty query lists nothing" is a UI fact, not a fetched
+   * one). `total` is the un-capped match count the "N more" line reads. */
+  search: { rows: RecallRowDTO[]; total: number } | null;
   /** Every live `Done` item (`getDone`). `null` until the first answer, for
    * the same reason as `ledger`: "nothing completed yet" is a claim. */
   done: TaskItemDTO[] | null;
@@ -337,6 +344,7 @@ const initialTaskState: TaskState = {
   stepsByItem: {},
   projects: [],
   ledger: null,
+  search: null,
   done: null,
   bindings: null,
   kindRegistry: null,

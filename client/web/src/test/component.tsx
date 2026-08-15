@@ -192,6 +192,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     stepsByItem: {},
     projects: [],
     ledger: null,
+    search: null,
     done: null,
     bindings: null,
     kindRegistry: null,

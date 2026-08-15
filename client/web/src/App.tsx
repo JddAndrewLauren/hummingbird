@@ -14,6 +14,7 @@ import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
+import { RecallOverlay } from "./shell/RecallOverlay";
 import { NavBar } from "./shell/NavBar";
 import { NavRail } from "./shell/NavRail";
 import { useIsPhone } from "./shell/useIsPhone";
@@ -37,6 +38,7 @@ import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useMicrotaskWiring } from "./shell/useMicrotaskWiring";
 import { useLedgerWiring } from "./shell/useLedgerWiring";
+import { useRecallWiring } from "./shell/useRecallWiring";
 import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { useAppUpdate } from "./shell/useAppUpdate";
@@ -225,6 +227,15 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     setCaptureOpen(true);
     setCaptureFocusRequestId((id) => id + 1);
   };
+
+  // **Recall** (#478): the header's Search button is the one trigger this
+  // slice wires — the `/` hotkey, Escape and the rail/More-sheet entries
+  // are #480's. `searchQuery` lives here rather than inside `RecallOverlay`
+  // so `useRecallWiring` can key its request effect on the same value the
+  // overlay renders, with no second, out-of-band copy of it.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  useRecallWiring(worker, status, searchQuery);
 
   // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the
   // capture box is in the shell now: a fixture capture typed in the popover
@@ -436,6 +447,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // `sync-status.ts`.
           syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
+          // Demo mode's `task` is the static fixture (`demoTask`), never the
+          // live store slice `useRecallWiring`'s answer lands in — the same
+          // reason `onSetScheduledDate`/`microtask`/`onTriage` below are all
+          // `demo ? undefined : …`. Opening it there would spin forever on
+          // "Searching…" for any typed query.
+          onSearch={demo ? undefined : () => setSearchOpen(true)}
           // Only on Now — the aside exists on no other screen. Same rule as
           // `onSearch`/`onRefresh` above: the affordance appears exactly where
           // it would do something.
@@ -577,6 +594,20 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         lastCapture={demo ? null : task.lastCapture}
         cancelDictationRequestId={cancelDictationRequestId}
         onDictatingChange={setCaptureDictating}
+      />
+
+      {/* **Recall** (#478): the header's Search button is the only trigger
+          wired in this slice — see `Header`'s `onSearch` doc and
+          `useRecallWiring`'s above. Rendered beside `CapturePopover` for the
+          same reason: fixed chrome over the whole window, not screen
+          content. */}
+      <RecallOverlay
+        open={searchOpen}
+        query={searchQuery}
+        onQueryChange={setSearchQuery}
+        onClose={() => setSearchOpen(false)}
+        rows={task.search?.rows ?? null}
+        total={task.search?.total ?? 0}
       />
     </div>
   );

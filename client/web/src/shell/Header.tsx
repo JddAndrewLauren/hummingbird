@@ -3,6 +3,7 @@ import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { IconButton } from "../components/core/IconButton";
 import { CAPTURE_TRIGGER_ID } from "./CapturePopover";
+import { RECALL_TRIGGER_ID } from "./RecallOverlay";
 
 export interface HeaderProps {
   title: string;
@@ -10,8 +11,10 @@ export interface HeaderProps {
    * outbound queue exists yet, and a permanent "synced" pill would claim a
    * cycle that never ran. */
   syncLabel?: string;
-  /** Search has no implementation yet; the affordance appears only where it
-   * would work. */
+  /** Opens the shell's Recall overlay (#478) over whatever screen is
+   * showing — the same "the affordance appears only where it would work"
+   * rule every other optional control here follows. `App.tsx` is what
+   * decides where this renders (every screen, same as capture). */
   onSearch?: () => void;
   /** Refresh polls the worker, and `worker-client.ts` may only be called once
    * the core reports `ready`. The affordance appears only where it would
@@ -82,7 +85,12 @@ export function Header({
           {syncLabel}
         </Badge>
       ) : null}
-      {onSearch ? <IconButton icon="search" label="Search" onClick={onSearch} /> : null}
+      {/* `id` is what `RecallOverlay` measures to hang itself under this
+          button — the identical trick the New button's `CAPTURE_TRIGGER_ID`
+          plays for `CapturePopover`. */}
+      {onSearch ? (
+        <IconButton id={RECALL_TRIGGER_ID} icon="search" label="Search" onClick={onSearch} />
+      ) : null}
       {onRefresh ? (
         <IconButton icon="refresh-cw" label="Refresh" onClick={onRefresh} />
       ) : null}
