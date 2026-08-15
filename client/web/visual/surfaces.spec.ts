@@ -192,6 +192,19 @@ async function show(page: Page, nav: string, projectName: string) {
   await page.getByRole("navigation").getByRole("button", { name: nav, exact: true }).click();
 }
 
+/** #481's Recall overlay: opens it through the header's Search button — the
+ * one trigger mounted on every project (`shell/Header.tsx`'s button is
+ * `isPhone`-independent, unlike the rail's magnifier and the phone More
+ * sheet's own entry, which #480 wired as three more paths to the identical
+ * `open`/`onClose` state). `exact` matters: the rail's own magnifier and the
+ * More sheet's entry are both labelled "Search everything", a different
+ * string, so this is unambiguous without it — kept anyway for the same
+ * reason `show()` above keeps it on every nav button. */
+async function openRecall(page: Page) {
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Recall" })).toBeVisible();
+}
+
 /** The Rules screen's own capture prep: open the first rule card's editor
  * so condition rows and the backtest panel — otherwise hidden behind an
  * "Edit" click (#140 review: backtest moved into the draft editor, so it
@@ -405,6 +418,91 @@ for (const theme of THEMES) {
       await page.screenshot({
         path: `visual/.captures/now-columns-${testInfo.project.name}-${theme}.png`,
         fullPage: true,
+      });
+    });
+
+    // #481: the search overlay joins the registry as a photographed surface,
+    // closing #331's "the busiest new surface shipping unphotographed"
+    // finding. Board world only — the header's Search button (and every
+    // other trigger #480 wired) is inert under `?demo` (`App.tsx`'s
+    // `onSearch={demo ? undefined : requestSearchOpen}`), because the kit
+    // world's `task` is a static fixture with no real `Core::search` to
+    // answer against. `task.search` is itself a fixed seed even in board
+    // mode (`fixtures/demo-task-state.ts`'s `recallRow` doc) — board's
+    // `TaskState` is the lazy-initializer fixture `App.tsx`'s `task` always
+    // resolves to, never the live store slice a real answer would land in —
+    // so what is typed into the query field does not change which rows
+    // render; these four captures are of the states themselves, not of a
+    // live search loop.
+    test("recall overlay: results listed", async ({ page }, testInfo) => {
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      await openRecall(page);
+      const dialog = page.getByRole("dialog", { name: "Recall" });
+      await dialog.getByRole("textbox").fill("the");
+      // One row per group the seed carries — live, done and archived — so
+      // this single capture proves all three render together, not just one.
+      // Scoped to the dialog throughout: `b-f7`'s own board card sits behind
+      // the overlay (Now's frontier renders it too) and carries the same
+      // title, which a page-wide query would resolve ambiguously.
+      await expect(
+        dialog.getByRole("button", { name: /rewrite the backup script/i }),
+      ).toBeVisible();
+      await expect(dialog.getByText("Reply to the HOA about the fence colour")).toBeVisible();
+      await expect(dialog.getByText("Chase the warranty claim")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/recall-results-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+    });
+
+    test("recall overlay: live result expanded with edit form", async ({ page }, testInfo) => {
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      await openRecall(page);
+      const dialog = page.getByRole("dialog", { name: "Recall" });
+      await dialog.getByRole("textbox").fill("the");
+      await dialog.getByRole("button", { name: /rewrite the backup script/i }).click();
+      // The live group is the one that gets `onTriage` (board mode's `demo`
+      // is null, so `App.tsx` passes `handleTriage` through) — its expansion
+      // is the only one of the three that offers Edit.
+      await expect(dialog.getByRole("button", { name: "Edit" })).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/recall-live-expanded-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+    });
+
+    test("recall overlay: archived result expanded read-only", async ({ page }, testInfo) => {
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      await openRecall(page);
+      const dialog = page.getByRole("dialog", { name: "Recall" });
+      await dialog.getByRole("textbox").fill("the");
+      await dialog.getByRole("button", { name: /chase the warranty claim/i }).click();
+      // No `onTriage` for a `"done"`/`"archived"` group (`RecallRow`'s own
+      // rule) — the expansion shows the record with no Edit affordance at
+      // all, rather than a second read-only mode invented for this overlay.
+      await expect(dialog.getByText(/created .* ago/)).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "Edit" })).toHaveCount(0);
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/recall-readonly-expanded-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+    });
+
+    test("recall overlay: empty query", async ({ page }, testInfo) => {
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      await openRecall(page);
+      await expect(page.getByText("Type to search")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/recall-empty-query-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
       });
     });
 
