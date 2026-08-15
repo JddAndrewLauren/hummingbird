@@ -4,11 +4,10 @@
 //! materialized view. ADR-0002 puts urgency — and everything derived from it
 //! — on the read side by design: "no context materialization, ever". So this
 //! module holds no state, caches nothing, and returns borrowed records in the
-//! mirror's own stable id order. Ranking is a separate, explicit step
-//! ([`by_priority_then_due`]) that consumers opt into, rather than an order
-//! silently baked into the query.
-
-use hummingbird_domain::deadline_sort_key;
+//! mirror's own stable id order. Ranking used to be a separate, explicit
+//! step this module offered for consumers to opt into; #501 moved that step
+//! to `decisions::frontier` (ADR-0021 decision 1), so this module is
+//! queries only.
 
 use super::item::{Item, Stage};
 use super::mirror::Mirror;
@@ -96,36 +95,19 @@ impl Mirror {
     }
 }
 
-/// A stable display order: most urgent priority first, then soonest
-/// deadline, then identifier as the tie-break.
-///
-/// Separate from the queries on purpose (ADR-0002 — consumers rank). Sorts on
-/// [`super::item::Priority::rank`], never the raw wire value, which is
-/// inverted and holed. Deadlines compare on [`deadline_sort_key`], not the
-/// raw string: ADR-0013 requires a day-only deadline to resolve to end of
-/// day before comparing, so it ranks after an explicit same-day time rather
-/// than before it — the one comparison key `domain` defines, shared with
-/// #133's rule evaluator so the two can never disagree on the same rows.
-pub fn by_priority_then_due(items: &mut [&Item]) {
-    items.sort_by(|a, b| {
-        a.priority
-            .rank()
-            .cmp(&b.priority.rank())
-            // `None` sorts last: no deadline is not an infinitely near one.
-            .then_with(|| match (&a.deadline, &b.deadline) {
-                (Some(x), Some(y)) => deadline_sort_key(x).cmp(&deadline_sort_key(y)),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            })
-            .then_with(|| a.identifier.cmp(&b.identifier))
-    });
-}
+// The stable priority/deadline display order this S1/Linear-era mirror used
+// to rank with moved to `client/core/src/decisions/frontier.rs` at #501
+// (ADR-0021 decision 1 — one spelling of frontier order, not a second one
+// over this mirror's own `Priority` enum). This mirror is not extended past
+// the owned-schema
+// migration (`sync::mirror`'s header), so nothing here ranks its own
+// `frontier()`/`triage_inbox()` reads any more; a caller wanting a ranked
+// list uses the owned-schema equivalent through `decisions::frontier`.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::item::{Presence, Priority};
+    use crate::task::item::Presence;
     use crate::task::mirror::Sweep;
 
     fn item(id: &str, stage: Stage) -> Item {
@@ -295,60 +277,10 @@ mod tests {
         assert_eq!(mirror.get("nope"), None);
     }
 
-    #[test]
-    fn ranking_sorts_urgent_first_none_last_and_undated_after_dated() {
-        let mut none = item("1", Stage::Ready);
-        none.priority = Priority::None;
-        let mut urgent = item("2", Stage::Ready);
-        urgent.priority = Priority::Urgent;
-        let mut low_soon = item("3", Stage::Ready);
-        low_soon.priority = Priority::Low;
-        low_soon.deadline = Some("2026-08-09".to_string());
-        let mut low_undated = item("4", Stage::Ready);
-        low_undated.priority = Priority::Low;
-
-        let mirror = mirror_of(vec![none, urgent, low_soon, low_undated]);
-        let mut items = mirror.frontier();
-        by_priority_then_due(&mut items);
-
-        assert_eq!(ids(&items), vec!["2", "3", "4", "1"]);
-    }
-
-    /// The ordering comparison goes through [`deadline_sort_key`], not a
-    /// raw string `cmp` — this pins that the widened field (a calendar
-    /// date, or a minute-precision date-time — #153) keeps sorting
-    /// chronologically per ADR-0013: a day-only deadline means *end* of
-    /// day, so it ranks *after* an explicit same-day time, not before it,
-    /// and chronological order otherwise holds across the mixed set.
-    #[test]
-    fn same_priority_items_sort_chronologically_across_mixed_deadline_forms() {
-        let mut same_day_early = item("2", Stage::Ready);
-        same_day_early.priority = Priority::Low;
-        same_day_early.deadline = Some("2026-08-09T00:01".to_string());
-
-        let mut same_day_late = item("3", Stage::Ready);
-        same_day_late.priority = Priority::Low;
-        same_day_late.deadline = Some("2026-08-09T18:00".to_string());
-
-        // Day-only: resolves to 23:59 that day, so it ranks after every
-        // explicit same-day time, however late.
-        let mut same_day_dated = item("1", Stage::Ready);
-        same_day_dated.priority = Priority::Low;
-        same_day_dated.deadline = Some("2026-08-09".to_string());
-
-        let mut next_day = item("4", Stage::Ready);
-        next_day.priority = Priority::Low;
-        next_day.deadline = Some("2026-08-10".to_string());
-
-        let mirror = mirror_of(vec![next_day, same_day_dated, same_day_late, same_day_early]);
-        let mut items = mirror.frontier();
-        by_priority_then_due(&mut items);
-
-        assert_eq!(
-            ids(&items),
-            vec!["2", "3", "1", "4"],
-            "an explicit same-day time sorts before a day-only deadline (which means end \
-             of day), and chronological order otherwise holds across the mixed set",
-        );
-    }
+    // `ranking_sorts_urgent_first_none_last_and_undated_after_dated` and
+    // `same_priority_items_sort_chronologically_across_mixed_deadline_forms`
+    // pinned this module's own priority/deadline ranking over this
+    // S1/Linear-era `Item`. That rank moved to `decisions::frontier` at
+    // #501 (over the owned-schema shape); its own test module ports the
+    // same two cases against the new shape.
 }

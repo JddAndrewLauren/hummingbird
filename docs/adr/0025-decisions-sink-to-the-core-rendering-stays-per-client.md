@@ -22,6 +22,19 @@ hand-written arrays, now pinned against `hummingbird_core::decisions::
 vocabulary`'s real, seam-exposed functions by `field-vocabulary.test.ts`
 rather than sunk at runtime — see that module's own header for the full
 argument and #500's PR description for the trade-off as it was decided.
+**Amended 2026-08-15 (#501):** M1-3 sank the frontier's ordering, grouping
+and faceting (`decisions::frontier`, replacing `client/core/src/task/
+query.rs`'s `by_priority_then_due` — ADR-0021 decision 1's one spelling)
+and the combined Now/Triage queue (`decisions::queue`). The same
+module-evaluation-order constraint #500 found applies again to three more
+constants — `frontier-columns.ts`'s `FRONTIER_AXES`/`DEFAULT_FRONTIER_AXIS`
+and `frontier-facets.ts`'s `FACETS`/`SIZES`/`ENERGIES`, all read at
+React-render time by components statically reachable from `main.tsx` — so
+those five stay literal TS in `seam.ts`, pinned against the core by
+`seam.test.ts` rather than sunk at runtime, the same shape as
+`field-vocabulary.ts`'s own arrays. `frontier-facets.ts`'s `SIZES`/
+`ENERGIES` was the one surviving unpinned vocabulary copy the #500 review
+flagged; it is pinned now, not sunk further, for the reason just stated.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -183,7 +196,8 @@ not permanent — it is where the line fell for the capture/Now slice.
 | `capture-destination.ts` | type-only |
 | `FrontierColumns.tsx`'s `URGENCY_EDGE`/`LABEL` maps | presentation of the band, not the band |
 | `field-vocabulary.ts`'s `SIZE_OPTIONS`/`ENERGY_OPTIONS`/`CONTEXTS` (added at #500) | stays a literal TS array, module-evaluation-order constraint (see the amendment above); pinned against `hummingbird_core::decisions::vocabulary` by a test, not sunk at runtime |
-| `frontier-facets.ts`'s `SIZES`/`ENERGIES` (noted at #500, unedited — M1-3/#501's file) | rendering-adjacent facet list; still a literal copy pending #501 |
+| `frontier-facets.ts`'s `SIZES`/`ENERGIES`/`FACETS` (sunk at #501) | the rule sank (`decisions::frontier`'s `Facet`, `NO_CONTEXT`, `matches_facets`, `apply_facets`); the three arrays stay literal in `seam.ts` for the same module-evaluation-order reason as `field-vocabulary.ts`'s, pinned against the core by `seam.test.ts` rather than sunk at runtime — no longer the surviving unpinned copy the #500 review flagged |
+| `frontier-columns.ts`'s `FRONTIER_AXES`/`DEFAULT_FRONTIER_AXIS` (sunk at #501) | the grouping rule sank (`decisions::frontier`'s `FrontierAxis`, `group_frontier`); the two constants stay literal in `seam.ts`, same reason and same pinning pattern |
 | `rules/backtest.ts:52`, `rules/deadline-picker.ts:32` | known drift — local re-derivations of the deadline reading, out of M1's rewire |
 | Calendar / #169's two doors | out of M1 entirely |
 | `item-actions.ts`'s `applyItemAction`/`resolveFallbackPending` (M1-4, #502) | screen-local optimistic UI reconciliation over `TaskItemDTO` — `Date.now()`, `archivedAt` writes and the live-vs-optimistic `pending` merge are not a decision two clients could disagree about, even though the same file's affordance rules (`availableActions`, `canMarkDone`, `canGrill`, `grillButtonLabel`, `applyItemAction`'s stage lookup) did sink |

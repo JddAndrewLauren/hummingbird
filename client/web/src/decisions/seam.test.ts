@@ -3,11 +3,18 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   canSubmitCapture,
   decisionsReady,
+  ENERGIES,
+  energyOptionsFromCore,
+  FACETS,
+  frontierAxesFromCore,
   initDecisions,
-  probeItemPayload,
+  orderFrontier,
   resetDecisionsForTest,
+  SIZES,
+  sizeOptionsFromCore,
 } from "./seam";
 import { loadDecisionsForTest } from "../test/wasm-setup";
+import type { TaskItemDTO } from "../store/protocol";
 
 // The node half of "vitest executes the seam in both environments" — this
 // file runs under the default `environment: "node"`, and
@@ -42,9 +49,31 @@ describe("the decision seam", () => {
     expect(canSubmitCapture(`${BOM}buy milk`)).toBe(true);
   });
 
-  it("crosses a structured payload and back", () => {
-    const payload = JSON.stringify([syntheticItem("a", "ready"), syntheticItem("b", "done")]);
-    expect(JSON.parse(probeItemPayload(payload))).toEqual({ count: 2, open: 1 });
+  it("crosses a whole frontier's worth of items and back, ordered", () => {
+    const a = syntheticItem("a", "ready");
+    const b = { ...syntheticItem("b", "ready"), priority: 1 };
+    expect(orderFrontier([a, b]).map((item) => item.id)).toEqual(["b", "a"]);
+  });
+});
+
+// M1-3 (#501): `SIZES`/`ENERGIES`/`FACETS` stay literal TS arrays in
+// `frontier-facets.ts`'s shim (the same module-evaluation-order constraint
+// `field-vocabulary.ts`'s header states), pinned here against the crate
+// that cannot drift from `hummingbird_domain::Size`/`Energy` or
+// `decisions::vocabulary::FRONTIER_AXES` because it is built on them — the
+// M1-2 review's own note that this was "the one surviving unpinned
+// vocabulary copy".
+describe("the seam's literal frontier-facet vocabulary, pinned against the core", () => {
+  it("SIZES matches the core's size vocabulary", () => {
+    expect([...SIZES]).toEqual(sizeOptionsFromCore().map((option) => option.value));
+  });
+
+  it("ENERGIES matches the core's energy vocabulary", () => {
+    expect([...ENERGIES]).toEqual(energyOptionsFromCore().map((option) => option.value));
+  });
+
+  it("FACETS matches the core's frontier facet axes", () => {
+    expect([...FACETS]).toEqual(frontierAxesFromCore());
   });
 });
 
@@ -78,7 +107,7 @@ describe("the loading gate", () => {
 
 /** The main thread's own `TaskItemDTO` shape (camelCase, `store/protocol.ts`)
  * — what M1-3's per-render calls would actually cross. */
-function syntheticItem(id: string, stage: string) {
+function syntheticItem(id: string, stage: TaskItemDTO["stage"]): TaskItemDTO {
   return {
     id,
     seq: 42,

@@ -73,12 +73,12 @@ fn capitalize(word: &str) -> String {
 /// name was the Blocked stage wearing a hard filter's clothes.
 pub const CONTEXTS: [&str; 5] = ["@home", "@computer", "@phone", "@errands", "@garden"];
 
-/// The frontier's facet/grouping axis names (M1-3, #501's `frontier-facets.ts`
-/// `Facet` type) — defined here, ahead of M1-3, because #501 and #503 both
-/// depend on this module existing (`to-goal` scope card, wave 2) and a
-/// second, independently-typed axis list in `frontier-facets.ts` is exactly
-/// the drift this module exists to prevent. M1-3 is the module's first web
-/// consumer; nothing in M1-2 calls it.
+/// The frontier's *facet* axis names — [`super::frontier::Facet`]'s own
+/// wire spelling, in the order the filter panel offers them. Not the
+/// grouping axes ([`super::frontier::FrontierAxis`]): grouping swaps
+/// `urgency` for `project`, since a project column already isolates one
+/// project and colour already carries urgency across whatever grouping
+/// axis is live.
 pub const FRONTIER_AXES: [&str; 4] = ["context", "size", "energy", "urgency"];
 
 #[cfg(test)]

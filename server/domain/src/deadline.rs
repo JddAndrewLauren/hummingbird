@@ -12,9 +12,10 @@
 //! "sometime the 15th" ahead of "the 15th at 14:30" — backwards.
 //! [`deadline_sort_key`] is the one comparison key ADR-0013 calls for to fix
 //! this: it resolves a day-only value to that day's `T23:59` before
-//! comparing, so the client's `by_priority_then_due` sort and #133's rule
-//! evaluator share the exact same notion of "when this deadline is" and can
-//! never disagree on the same pair of rows.
+//! comparing, so the client's frontier ordering
+//! (`client/core/src/decisions/frontier.rs`) and #133's rule evaluator
+//! share the exact same notion of "when this deadline is" and can never
+//! disagree on the same pair of rows.
 
 /// `true` for `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`; `false` for anything
 /// else, including a value with seconds, a `Z`/offset suffix, a bare time,

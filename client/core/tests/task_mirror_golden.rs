@@ -6,8 +6,8 @@
 
 use hummingbird_core::storage::{load_snapshot, save_snapshot, MemorySnapshotStore};
 use hummingbird_core::task::{
-    by_priority_then_due, DeadLetterEntry, DeadLetterReason, Item, Mirror, Presence, Priority,
-    Route, Stage, Sweep, MIRROR_SCHEMA_VERSION,
+    DeadLetterEntry, DeadLetterReason, Item, Mirror, Presence, Priority, Route, Stage, Sweep,
+    MIRROR_SCHEMA_VERSION,
 };
 
 /// A small but complete team: one of every funnel stage, a blocked chain, a
@@ -208,16 +208,20 @@ fn the_snapshot_is_human_readable_json() {
     assert!(json.contains("\"Triage\""), "{json}");
 }
 
+// `ranking_the_frontier_is_stable_and_priority_correct` pinned this golden
+// sweep's frontier through this mirror's own priority/deadline ranking
+// step. That rank moved to `decisions::frontier` at #501 (ADR-0021
+// decision 1: one spelling, over the owned schema); this S1 mirror is not
+// extended past the migration (`sync::mirror`'s header), so nothing here
+// ranks its own `frontier()` read any more.
 #[test]
-fn ranking_the_frontier_is_stable_and_priority_correct() {
+fn the_frontier_holds_exactly_the_startable_items_this_golden_sweep_carries() {
     let mut mirror = Mirror::new();
     mirror.reconcile(golden_sweep(), 1_000);
 
-    let mut items = mirror.frontier();
-    by_priority_then_due(&mut items);
-
-    // Urgent before High, and neither sorted on the raw wire number.
-    assert_eq!(ids(&items), vec!["id-blocker", "id-started"]);
+    let mut found = ids(&mirror.frontier());
+    found.sort();
+    assert_eq!(found, vec!["id-blocker", "id-started"]);
 }
 
 /// ADR-0001 seam rule 1, enforced mechanically rather than by convention:

@@ -22,5 +22,4 @@ pub mod route;
 pub use deadletter::{DeadLetterEntry, DeadLetterJournal, DeadLetterReason};
 pub use item::{Item, ItemId, Presence, Priority, Stage};
 pub use mirror::{Mirror, ReconcileReport, Sweep, MIRROR_SCHEMA_VERSION};
-pub use query::by_priority_then_due;
 pub use route::Route;
