@@ -7,29 +7,29 @@
 # reasoning: this lane has no competing clock (ADR-0011 assigns this
 # cadence to nothing else, and nothing else polls M365 mail).
 #
-# **Dormant since 2026-08-14 (#486).** All 73 runs this lane has ever had failed
-# on `HB_INGEST_TOKEN is not set`: `M365_MAIL_INGEST_TOKEN` was never minted,
-# nor the `GRAPH_*` vars and `GRAPH_CLIENT_PRIVATE_KEY` below. The `schedule:`
-# is commented out so that red stops masking real failures;
-# `workflow_dispatch:` stays, so the lane is runnable once provisioned. Same
-# one-owner rule read the other way — the commented-out block is where this
-# cadence's ownership stays legible, and re-enabling is restoring exactly it.
+# **Live since 2026-08-15 (#486 Phase B).** It was dormant from 2026-08-14:
+# all 73 runs it had ever had failed on `HB_INGEST_TOKEN is not set`, because
+# `M365_MAIL_INGEST_TOKEN`, the `GRAPH_*` vars and `GRAPH_CLIENT_PRIVATE_KEY`
+# were never provisioned. All of them now are, and the lane has run green on
+# both paths (first-run resync and cursor resume) before this `schedule:` was
+# restored.
 #
-# **This lane is gated on more than a mint.** `src/lib.rs`'s header records the
-# unresolved question: an app-only Graph permission reads **tenant-wide** unless
-# the operator applies an Exchange Application Access Policy, which puts
+# **The blast-radius question this lane was gated on is settled.** An app-only
+# Graph permission reads tenant-wide by default, which put
 # `GRAPH_CLIENT_PRIVATE_KEY` on the `ADMIN_SECRET`/`FCM_SERVICE_ACCOUNT` side of
-# CLAUDE.md's blast-radius rule rather than the `CITY_WASTE_INGEST_TOKEN` side.
-# That question was posted to #137, which is now closed; it lives on #486.
-# Settle it before provisioning, not after.
+# CLAUDE.md's rule rather than the `CITY_WASTE_INGEST_TOKEN` side. An Exchange
+# Application Access Policy now scopes this app registration to the one
+# operator mailbox, verified by `Test-ApplicationAccessPolicy` returning
+# Granted for it and Denied for another mailbox in the same tenant; the key
+# went into Actions only after that. The record is on #486.
 name: graph-mail-poll
 
 on:
-  # Every 15 minutes, when live — `hummingbird_graph_poll::mail_cursor::POLLED_EVERY_MS`
-  # must match this interval. That coupling outlives the dormancy: re-check the
-  # constant against the cron before restoring the block, not after.
-  # schedule:
-  #   - cron: "*/15 * * * *"
+  # Every 15 minutes — `hummingbird_graph_poll::mail_cursor::POLLED_EVERY_MS`
+  # must match this interval, and was re-checked against this cron when the
+  # block was restored (#486 Phase B): both are 15 minutes.
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same
@@ -71,16 +71,14 @@ jobs:
           GRAPH_CERT_THUMBPRINT_B64URL: ${{ vars.GRAPH_CERT_THUMBPRINT_B64URL }}
           # The certificate's PRIVATE key (ADR-0011: "certificate preferred
           # over a client secret, since secrets are portal-capped at 24
-          # months"). **Posture note, not yet fully resolved — see
-          # `server/graph-poll/src/lib.rs`'s module doc and the open
-          # operator question on issue #137**: this credential is narrower
-          # in *kind* than a full mail/calendar admin credential (only
-          # `Mail.Read`/`Calendars.Read`, both read-only, per the brief's
-          # own named application permissions) — a narrowing the Google lanes
+          # months"). Its blast radius is bounded on two axes, both now
+          # decided (#486 Phase B): by *kind*, only `Mail.Read` and
+          # `Calendars.Read`, both read-only — a narrowing the Google lanes
           # did NOT take, since #486 put those on one broad shared refresh
-          # token instead — but an app-only Graph grant
-          # is tenant-wide by default — bounding it to one mailbox needs an
-          # operator-side Exchange Application Access Policy, which this
-          # workflow cannot verify is in place.
+          # token instead — and by *reach*, an Exchange Application Access
+          # Policy scoping the app registration to the single operator
+          # mailbox. This workflow still cannot verify the policy is in
+          # place; that verification is the operator's, recorded on #486,
+          # and it is the precondition for this secret existing at all.
           GRAPH_CLIENT_PRIVATE_KEY: ${{ secrets.GRAPH_CLIENT_PRIVATE_KEY }}
         run: cargo run -q -p hummingbird-graph-poll --bin graph-mail-poll
