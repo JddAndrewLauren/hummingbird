@@ -194,31 +194,42 @@ is worth a hand pass at 390 in particular, where it is the tallest thing the
 popover can become.
 
 **The capture popover's dictation microphone (#379) is unphotographed, and no
-capture will ever contain it.** It renders only where local speech recognition
-has been *confirmed* — `available({langs:["en-US"], processLocally: true})`
-answering `"available"` (ADR-0022) — which is a browser with the on-device pack
-installed. The gate's Chromium has no such pack, so the popover photographs
-exactly as it did before this slice, and that is the correct output rather than
-a missing state: ADR-0022's `unsupported` and `setup-required` arms both render
-nothing at all. The cover is `screens/CaptureBox.dictation.test.tsx` (the seam
-mocked wholesale, which is the only way any gate here reaches the listening
-state), `speech/local-dictation.test.ts` and
-`screens/capture-dictation.test.ts`. **The gate deletes the speech
-constructor before the app loads** (`openApp`'s second init script), and that is
-not tidiness: headless Chromium 151.0.7922.34 **crashes the renderer** when
+capture will ever contain it — not the resting mic, and not one of its
+lifecycle states.** The ordinary "Dictate" mic renders only where local speech
+recognition has been *confirmed* — `available({langs:["en-US"],
+processLocally: true})` answering `"available"` (ADR-0022) — which is a
+browser with the on-device pack installed; #381's setup mic (and its
+explain-then-download control) renders instead for `"downloadable"` /
+`"downloading"`. **The gate deletes the speech constructor before the app
+loads** (`openApp`'s second init script), so neither arm is reached at all —
+`isDictationApiPresent()` reads false and the capability never leaves
+`unsupported`, which is ADR-0022's ordinary ship-nothing arm. That is not
+tidiness: headless Chromium 151.0.7922.34 **crashes the renderer** when
 `SpeechRecognition.available()` is called, so mounting the capture box killed
 the tab and all eight capture-popover cases failed on the click that opens it.
 Measured both ways in the same build — headless crashes, `headless: false`
-returns `"downloadable"`. Deleting it changes no pixel, since the gate's browser
-has no language pack and ADR-0022 renders nothing for either non-`ready` arm. A
-renderer crash is not catchable from the page that provokes it, which is why the
-defence is in the harness and not a `navigator.webdriver` check in product
-code.
+returns `"downloadable"`. Deleting the constructor changes no pixel either
+way: the gate's browser was never going to have a language pack, so the
+popover photographs exactly as it did before #379, #381 or this slice. A
+renderer crash is not catchable from the page that provokes it, which is why
+the defence is in the harness and not a `navigator.webdriver` check in
+product code.
 
-The microphone's idle and listening
-appearance is reviewed by hand on the desk Chrome, which is the only browser
-this repo has measured it on and — until the phone is probed — the only one it
-is known to appear in at all.
+**None of the states past "nothing renders" are photographable, and none of
+them ever will be**, since they all need either a live microphone or an
+on-device model download, neither of which headless Chromium has: the
+ordinary listening mic (`active` treatment, "Stop dictating"), #381's
+explain/download hint in its three phases (explained, downloading, failed),
+the on-device-model-installed re-probe to `ready`, and a dictation error —
+including a denied-microphone ("Microphone access is blocked for this site.")
+— stated in the field's own alert paragraph. Every one of those is covered
+instead by `screens/CaptureBox.dictation.test.tsx` (the seam mocked
+wholesale, which is the only way any gate here reaches the listening or
+setup states), `speech/local-dictation.test.ts` (the error-code-to-message
+map, including `not-allowed`) and `screens/capture-dictation.test.ts`, and
+reviewed by hand on the desk Chrome — the only browser this repo has
+measured any of it on, and — until the phone is probed — the only one any of
+it is known to appear in at all.
 
 **Since #420 the columns, the captures among them and #418's stranded-write
 alerts ARE photographed** (both of them — the board fixture seeds a failed
