@@ -6,7 +6,7 @@ export interface ItemRowProps extends Omit<React.HTMLAttributes<HTMLDivElement>,
   /** Derived at read time, never stored — see CONTEXT.md "Urgency". */
   urgency?: "calm" | "soon" | "now" | "overdue";
   /** Deadline the world imposes. Rendered with a flag. */
-  due?: string;
+  deadline?: string;
   /** Do-date the human chose. Rendered with a calendar glyph, always muted. */
   scheduled?: string;
   /** Size label: quick · normal · deep. */
