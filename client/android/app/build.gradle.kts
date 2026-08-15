@@ -152,6 +152,7 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.lifecycle.viewmodel.ktx)
     implementation(libs.coroutines.android)
     implementation(libs.work.runtime.ktx)
     implementation(libs.security.crypto)
