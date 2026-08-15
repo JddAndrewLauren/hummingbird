@@ -38,7 +38,7 @@
 //! — the run is retried as a whole next poll rather than half-landing.
 //!
 //! **`SHARED_LIST_PARAMS` is the sync and full builders' one shared
-//! identity** (`singleEvents=true`, `showDeleted=false`), built once and
+//! identity** (`singleEvents=true`, `showDeleted=true`), built once and
 //! used by both — Google binds a `syncToken` to the parameters of the full
 //! sync that minted it, so the two must never drift. The bug this exists to
 //! prevent (round 1 of PR #268's review: the incremental builder alone
@@ -256,7 +256,20 @@ fn calendar_get(access_token: &str, query: &[(&str, &str)]) -> Result<String, Ca
 /// [`calendar_events_list_sync`] and [`calendar_events_list_full`] so a
 /// third builder can never drift from it — these are part of the cursor's
 /// identity, not per-call tuning.
-const SHARED_LIST_PARAMS: [(&str, &str); 2] = [("singleEvents", "true"), ("showDeleted", "false")];
+///
+/// `showDeleted` must be `true`, and the constraint flows in the opposite
+/// direction from the one above: it is the *incremental* request that
+/// forces it, and the full sync that follows along to keep the identity.
+/// An incremental sync always includes deletions — the reference states
+/// "it is not allowed to set `showDeleted` to False" alongside
+/// `syncToken`, and Google enforces that with an HTTP 400. `false` here
+/// passed every `workflow_dispatch` smoke run (a first run is a full
+/// sync, where `false` is legal) and then failed the lane's first real
+/// incremental tick — the go-live bug of #486. The extra tombstones the
+/// full sync now returns are already a named non-fatal skip
+/// (`stream.rs`'s `Cancelled` arm), because incremental pages always
+/// could carry them.
+const SHARED_LIST_PARAMS: [(&str, &str); 2] = [("singleEvents", "true"), ("showDeleted", "true")];
 
 /// The incremental request's own query, built on top of
 /// [`SHARED_LIST_PARAMS`] — pure, so the class of bug that dropped
@@ -479,6 +492,14 @@ mod tests {
             assert!(sync.contains(&pair), "sync_query missing {pair:?}: {sync:?}");
             assert!(full.contains(&pair), "full_query missing {pair:?}: {full:?}");
         }
+    }
+
+    /// Not a style choice: `showDeleted=false` alongside `syncToken` is an
+    /// HTTP 400 ("it is not allowed to set showDeleted to False"), and a
+    /// full-sync-only smoke run cannot catch it — see `SHARED_LIST_PARAMS`.
+    #[test]
+    fn show_deleted_is_true_because_the_incremental_sync_forbids_false() {
+        assert!(SHARED_LIST_PARAMS.contains(&("showDeleted", "true")));
     }
 
     #[test]
