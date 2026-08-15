@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEMO_DATA } from "./demo-data";
-import { demoData, demoQuestions, demoTaskState } from "./demo";
+import { demoCalendar, demoData, demoQuestions, demoTaskState } from "./demo";
 
 /** The region's fixtures are clock-relative (`wasteRead` computes "tomorrow at
  * the address"), so the accessor takes a clock. Any fixed instant will do
@@ -114,5 +114,30 @@ describe("demoTaskState", () => {
     expect(demoTaskState()).toBeNull();
     withSearch("");
     expect(demoTaskState()).toBeNull();
+  });
+});
+
+describe("demoCalendar", () => {
+  it("seeds Settings' calendar card for ?demo=board", () => {
+    vi.stubEnv("DEV", true);
+    withSearch("?demo=board");
+    const calendar = demoCalendar();
+    expect(calendar).not.toBeNull();
+    expect(calendar?.connected).toBe(true);
+    expect(calendar?.availableCalendars.length).toBeGreaterThan(0);
+  });
+
+  it("returns nothing in a production build, so no fixture calendar can reach a real device", () => {
+    vi.stubEnv("DEV", false);
+    withSearch("?demo=board");
+    expect(demoCalendar()).toBeNull();
+  });
+
+  it("stands down for the kit world and for no query string at all", () => {
+    vi.stubEnv("DEV", true);
+    withSearch("?demo");
+    expect(demoCalendar()).toBeNull();
+    withSearch("");
+    expect(demoCalendar()).toBeNull();
   });
 });

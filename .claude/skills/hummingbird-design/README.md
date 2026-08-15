@@ -239,7 +239,7 @@ notes on how it was chosen:
   generic: they encode ADR-0009's stage vocabulary and ADR-0012's alert
   lane. Prefer them over a generic list row.
 - `Slider` exists for the capture form's optional metadata — **energy**
-  (`low / medium / high`), **size** (`quick / short / deep`) — alongside a
+  (`low / medium / high`), **size** (`quick / normal / deep`) — alongside a
   `Select` for **context** (`@home`, `@computer`, `@phone`, `@errands`,
   `@garden`, `@waiting`). All three are optional on every surface: unset is
   the default and a legitimate resting state, because deciding is mint-time

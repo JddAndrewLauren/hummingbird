@@ -1,0 +1,4 @@
+<resources>
+    <!-- ink-950: the dark plate / theme-color (#0f141a), tokens/colors.css -->
+    <color name="ic_launcher_background">#0f141a</color>
+</resources>

@@ -132,3 +132,81 @@ describe("buildDemoTaskState — ages stay honest", () => {
     expect(new Set(board.map((i) => i.id)).size).toBe(board.length);
   });
 });
+
+describe("buildDemoTaskState — #452 grows the seed past the frontier and the inbox", () => {
+  it("seeds Rules with both fields the screen gates on", () => {
+    expect(state.rules).not.toBeNull();
+    expect(state.rules?.length).toBeGreaterThan(0);
+    expect(state.kindRegistry).not.toBeNull();
+  });
+
+  it("keeps projects and blocked at production's own measured zero", () => {
+    expect(state.projects).toEqual([]);
+    expect(state.blocked).toEqual([]);
+  });
+
+  it("seeds Done with real, populated items — not the honest empty state", () => {
+    expect(state.done).not.toBeNull();
+    expect(state.done?.length).toBeGreaterThan(0);
+    expect(state.done?.every((i) => i.stage === "done")).toBe(true);
+  });
+
+  it("seeds the Ledger as a superset of the frontier, the inbox, Grilling and Done, plus archived-only rows", () => {
+    expect(state.ledger).not.toBeNull();
+    const ledgerIds = new Set(state.ledger?.map((row) => row.id));
+    for (const item of [
+      ...state.frontier,
+      ...state.triageInbox,
+      ...state.grillingItems,
+      ...(state.done ?? []),
+    ]) {
+      expect(ledgerIds.has(item.id)).toBe(true);
+    }
+    // At least one archived-only row: present in the Ledger, absent from every
+    // live list.
+    const archivedOnly = state.ledger?.filter(
+      (row) =>
+        row.archivedAt !== null &&
+        !state.frontier.some((i) => i.id === row.id) &&
+        !state.triageInbox.some((i) => i.id === row.id) &&
+        !state.grillingItems.some((i) => i.id === row.id) &&
+        !(state.done ?? []).some((i) => i.id === row.id),
+    );
+    expect(archivedOnly?.length).toBeGreaterThan(0);
+  });
+
+  it("counts the seeded Grilling item into lastSyncOutcome.activeItemCount, mirroring SyncMirror::active_item_count's every-stage-but-Done filter", () => {
+    expect(state.lastSyncOutcome?.activeItemCount).toBe(
+      state.frontier.length + state.triageInbox.length + state.grillingItems.length,
+    );
+  });
+
+  it("gives the Ledger at least one deadLettered row and one hasLiveAlert row, so both badges render", () => {
+    expect(state.ledger?.some((row) => row.deadLettered)).toBe(true);
+    expect(state.ledger?.some((row) => row.hasLiveAlert)).toBe(true);
+  });
+
+  it("seeds every known binding key this build actually uses, all set", () => {
+    const keys = state.bindings?.map((b) => b.key).sort();
+    expect(keys).toEqual(["city-waste-page", "race-series", "trips-calendar"]);
+    expect(state.bindings?.every((b) => b.known)).toBe(true);
+  });
+
+  it("seeds a pane read for every standing-question source the ranked region reads", () => {
+    expect(Object.keys(state.paneReads).sort()).toEqual(
+      [
+        "city-waste/v2",
+        "race-schedule/v1",
+        "github-hummingbird/v1",
+        "kimi-balance/v1",
+        "uptime/v1",
+      ].sort(),
+    );
+  });
+
+  it("seeds a recent completed sync, so the reachability pane answers rather than saying never synced", () => {
+    expect(state.lastSyncOutcome?.kind).toBe("completed");
+    expect(state.lastSyncAtMs).not.toBeNull();
+    expect(state.lastSuccessfulSyncAtMs).not.toBeNull();
+  });
+});

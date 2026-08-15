@@ -24,12 +24,18 @@ hummingbird-domain = { path = "../../server/domain" }
 # The live HTTP transports, and the ONLY thing in this crate that reaches
 # outside the process. Optional (see `[features]` below) because
 # `client/next-up` compiles this crate for `rank()` alone — a pure function
-# — and reqwest's default TLS backend is `native-tls`, i.e. `openssl-sys`,
-# i.e. a `pkg-config` + `libssl-dev` build dependency and a `libssl.so.3`
-# *runtime* dependency the runner image (`node:22-slim`, which carries
-# neither) cannot satisfy. Nothing about the ranker needs a TLS stack; the
-# feature is what lets it not have one.
-reqwest = { version = "0.12", features = ["json"], optional = true }
+# — and no TLS stack at all is still the right build for it.
+# `rustls-tls` rather than the default `native-tls`, since the Android
+# client (#141): `native-tls` means `openssl-sys`, which has no NDK build —
+# the cross-compile to `aarch64-linux-android` fails unless OpenSSL is
+# vendored and compiled from source per ABI. rustls is pure Rust, compiles
+# on every native target this crate serves (macOS/Linux tests, Android via
+# `ffi-mobile`), and on `wasm32` the TLS feature is moot either way (the
+# browser's own fetch stack carries TLS). This also removes the
+# `pkg-config` + `libssl-dev` build dependency and the `libssl.so.3`
+# *runtime* dependency that the runner image (`node:22-slim`) could not
+# satisfy — the original reason this dependency went behind a feature.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The write adapter's deterministic id derivation (#101) ports sweep.py's

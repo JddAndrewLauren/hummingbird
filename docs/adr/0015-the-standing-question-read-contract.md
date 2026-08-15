@@ -10,6 +10,13 @@ are true of Now specifically, not of every surface that will ever exist.
 Context aside" is renamed **Standing questions** — the `Context` label has been
 stale since this ADR replaced the calendar context tile with the ranked region,
 and the word is needed for the frontier's grouping axis in the centre column.
+· **amended 2026-08-14 by
+[ADR-0025](0025-decisions-sink-to-the-core-rendering-stays-per-client.md):** the
+Rust/TS carve-out is redrawn for the multi-client world — decision logic
+(orderings, urgency/priority, band functions with their thresholds) sinks
+into the core behind the generated bindings; only rendering stays
+per-client. The threshold-beside-band reasoning survives; the pair moves
+together.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on
