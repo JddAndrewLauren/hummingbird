@@ -77,7 +77,11 @@ function columnHeadings(): HTMLElement[] {
     .filter((heading) => heading.closest("aside") === null);
 }
 
-function renderNow(task: TaskState, selectedItemId: string | null = null) {
+function renderNow(
+  task: TaskState,
+  selectedItemId: string | null = null,
+  grill?: import("../shell/useGrillTakeoverWiring").GrillTakeoverWiring,
+) {
   const onAct = vi.fn();
   const onOpenItem = vi.fn();
   const onCloseItemDetail = vi.fn();
@@ -95,9 +99,14 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
       calendarReads={{}}
       calendarConnected={false}
       storage={storage}
+      grill={grill}
     />,
   );
-  const rerender = (next: TaskState, nextSelected: string | null = selectedItemId) =>
+  const rerender = (
+    next: TaskState,
+    nextSelected: string | null = selectedItemId,
+    nextGrill: typeof grill = grill,
+  ) =>
     view.rerender(
       <NowScreen
         demo={null}
@@ -111,6 +120,7 @@ function renderNow(task: TaskState, selectedItemId: string | null = null) {
         calendarReads={{}}
         calendarConnected={false}
         storage={storage}
+        grill={nextGrill}
       />,
     );
   return { onAct, onOpenItem, onCloseItemDetail, rerender, storage };
@@ -1691,5 +1701,108 @@ describe("NowScreen — selection above the columns (#404)", () => {
     } finally {
       Element.prototype.scrollIntoView = original;
     }
+  });
+});
+
+// #359: Grill reaches Now. Mirrors `TriageScreen.test.tsx`'s own "the Grill
+// takeover" suite almost verbatim — same wiring shape, same focus-restore
+// contract — with one addition neither surface needed before: the aside has
+// to be asserted STILL mounted while the takeover is up, since Now is the
+// one surface with a standing-question aside to lose.
+describe("NowScreen — the Grill takeover (#359)", () => {
+  const IDLE_TURN = { phase: "idle" as const };
+
+  function fakeGrill(overrides: Partial<import("../shell/useGrillTakeoverWiring").GrillTakeoverWiring> = {}) {
+    return {
+      openItemId: null,
+      sessionSteps: null,
+      open: vi.fn(),
+      back: vi.fn(),
+      discard: vi.fn(),
+      turn: IDLE_TURN,
+      turns: [],
+      answer: vi.fn(),
+      keepGrilling: vi.fn(),
+      retry: vi.fn(),
+      confirm: vi.fn(),
+      confirmSeed: null,
+      ...overrides,
+    };
+  }
+
+  const spread = () =>
+    taskState({
+      frontier: [
+        itemDTO({ id: "i1", title: "Email the council", context: "@computer", stage: "ready" }),
+        itemDTO({ id: "i2", title: "Prune the hedge", context: "@garden", stage: "ready" }),
+      ],
+    });
+
+  it("offers no Grill me button without a grill prop (demo mode's own reason)", () => {
+    renderNow(spread(), "i1");
+    expect(screen.queryByRole("button", { name: /grill me/i })).toBeNull();
+  });
+
+  it("Grill me calls grill.open with the item id", () => {
+    const grill = fakeGrill();
+    renderNow(spread(), "i1", grill);
+
+    fireEvent.click(screen.getByRole("button", { name: /grill me/i }));
+    expect(grill.open).toHaveBeenCalledWith("i1");
+  });
+
+  it("replaces the centre column with the takeover once grill.openItemId names a real item", () => {
+    renderNow(
+      spread(),
+      "i1",
+      fakeGrill({
+        openItemId: "i1",
+        turn: {
+          phase: "question",
+          messages: [],
+          question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] },
+          backend: null,
+          model: null,
+        },
+      }),
+    );
+
+    screen.getByText("Which airport?");
+    // The ordinary board is gone — this is a takeover, not an addition.
+    expect(screen.queryByText("Email the council")).toBeNull();
+    expect(screen.queryByText("Prune the hedge")).toBeNull();
+  });
+
+  it("keeps the standing-questions aside mounted while the takeover is open — the one thing Now has that Triage does not", () => {
+    renderNow(
+      spread(),
+      "i1",
+      fakeGrill({ openItemId: "i1", turn: { phase: "asking", messages: [] } }),
+    );
+    expect(screen.getByRole("complementary", { name: "Standing questions" })).toBeDefined();
+  });
+
+  it("Back calls grill.back and restores focus to Now's own Grill me button once the takeover closes", () => {
+    const grill = fakeGrill();
+    const { rerender } = renderNow(spread(), "i1", grill);
+    fireEvent.click(screen.getByRole("button", { name: /grill me/i }));
+
+    // The takeover renders once `openItemId` is set — the same `grill`
+    // object, so `back` below is the mock the click is asserted against.
+    rerender(spread(), "i1", { ...grill, openItemId: "i1", turn: { phase: "asking", messages: [] } });
+
+    fireEvent.click(screen.getByLabelText("Back to Triage"));
+    expect(grill.back).toHaveBeenCalledTimes(1);
+
+    // The real hook would now report `openItemId: null` — simulated here
+    // since `grill` is a plain fake, not the reactive hook itself.
+    rerender(spread(), "i1", grill);
+
+    expect(document.activeElement?.textContent).toContain("Grill me");
+  });
+
+  it("offers Resume grill for an item already carrying a draft", () => {
+    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Email the council", stage: "ready" })], grillDraftItemIds: ["i1"] }), "i1", fakeGrill());
+    expect(screen.getByRole("button", { name: "Resume grill" })).toBeDefined();
   });
 });

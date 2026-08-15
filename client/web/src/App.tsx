@@ -463,6 +463,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               // second view of one inbox, never a second entry point into it.
               onTriage={demo ? undefined : handleTriage}
               asideCollapsed={asideCollapsed}
+              // #359: the SAME `grillTakeover` instance the Triage screen gets
+              // below — one interview session for the whole app, not a second
+              // one per screen.
+              grill={demo ? undefined : grillTakeover}
             />
           )}
           {screen === "triage" && (

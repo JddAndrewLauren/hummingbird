@@ -120,8 +120,9 @@ export interface ItemPanelProps {
    * (`TaskState.lastTriage`) — what clears the typing on an `"ok"` naming this
    * item (#222), and what detail mode renders as a failure. */
   lastTriage?: TaskTriageResult | null;
-  /** "Grill me" (#355, ADR-0023): opens the centre-column takeover over this
-   * item, decided by `item-actions.ts`'s `canGrill`. Triage mode. */
+  /** "Grill me" (#355, ADR-0023; widened to `"detail"` mode by #359): opens
+   * the centre-column takeover over this item, decided by `item-actions.ts`'s
+   * `canGrill`. Both modes now. */
   onGrillMe?: (itemId: string) => void;
   /** Whether this item already carries a Grill draft (#356) — the button's
    * label is `item-actions.ts`'s `grillButtonLabel(hasGrillDraft)`, never a
@@ -130,8 +131,9 @@ export interface ItemPanelProps {
   hasGrillDraft?: boolean;
   /** The DOM id the triage row's header points `aria-controls` at. */
   id?: string;
-  /** The id a triage row's own "Grill me" button carries, so the screen can
-   * re-focus it after the takeover unmounts the list. */
+  /** The id this mode's own "Grill me" button carries, so the screen can
+   * re-focus it after the takeover unmounts and remounts the row (Triage) or
+   * the columns (Now, #359). */
   grillMeId?: string;
   /** #273's microtask affordance. `undefined` in demo mode, which is what
    * guarantees a demo detail view cannot issue a real request. */
@@ -452,6 +454,24 @@ export function ItemPanel({
               </Button>
             );
           })}
+        </div>
+      ) : null}
+
+      {/* #359: Grill reaches Now. Its own row, not folded into the act row
+          above — a Grill is not an `ItemAction` (`item-actions.ts`'s own
+          doc), and the two rows are gated by independent conditions. */}
+      {onGrillMe && canGrill(item.stage) ? (
+        <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
+          <Button
+            id={grillMeId}
+            size="sm"
+            variant="secondary"
+            iconLeft="sparkles"
+            disabled={item.pending}
+            onClick={() => onGrillMe(item.id)}
+          >
+            {grillButtonLabel(hasGrillDraft)}
+          </Button>
         </div>
       ) : null}
 

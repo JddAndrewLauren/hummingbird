@@ -414,6 +414,87 @@ describe("ItemPanel — detail mode's Edit", () => {
   });
 });
 
+// #359: Grill reaches Now, and Now's own "row" is a selected card that opens
+// into this component's `"detail"` mode — so the Grill button `TriageRow`
+// already threads into `"triage"` mode has to reach here too, gated by the
+// same `item-actions.ts`'s `canGrill`.
+describe("ItemPanel — detail mode's Grill me (#359)", () => {
+  it("offers Grill me for a Ready item", () => {
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1", stage: "ready" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+        onGrillMe={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /grill me/i })).toBeDefined();
+  });
+
+  it("calls onGrillMe with the item id", () => {
+    const onGrillMe = vi.fn();
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1", stage: "in_progress" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+        onGrillMe={onGrillMe}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /grill me/i }));
+    expect(onGrillMe).toHaveBeenCalledWith("item-1");
+  });
+
+  it("reads Resume grill once the item carries a draft", () => {
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1", stage: "ready" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+        onGrillMe={vi.fn()}
+        hasGrillDraft
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Resume grill" })).toBeDefined();
+  });
+
+  it("offers no Grill me for a Blocked or Done item — not reachable from either frontier row", () => {
+    for (const stage of ["blocked", "done"] as const) {
+      const { unmount } = render(
+        <ItemPanel
+          mode="detail"
+          item={itemDTO({ id: "item-1", stage })}
+          projects={[]}
+          steps={[]}
+          onClose={() => {}}
+          onGrillMe={vi.fn()}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: /grill me/i })).toBeNull();
+      unmount();
+    }
+  });
+
+  it("offers no Grill me at all without an onGrillMe — demo mode has no real item to grill", () => {
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1", stage: "ready" })}
+        projects={[]}
+        steps={[]}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /grill me/i })).toBeNull();
+  });
+});
+
 // #446 verification step 7, as a test rather than a screenshot: unset is a
 // legitimate resting state, and a green build plus a capture both miss a
 // state-gated call site. This panel is the one surface that draws an
