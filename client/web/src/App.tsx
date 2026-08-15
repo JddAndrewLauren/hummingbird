@@ -28,6 +28,7 @@ import { tripsCalendarId } from "./calendar/selection";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
+import { useGrillDraftListWiring } from "./shell/useGrillDraftListWiring";
 import { useGrillTakeoverWiring } from "./shell/useGrillTakeoverWiring";
 import { useItemActions } from "./shell/useItemActions";
 import { useTriageWiring } from "./shell/useTriageWiring";
@@ -322,7 +323,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // the turn lane and the Confirm mutation (`useGrillTakeoverWiring.ts`'s
   // own doc). Absent in demo mode, same reason `onTriage` is: demo has no
   // real `TaskItemDTO` to grill.
-  const grillTakeover = useGrillTakeoverWiring(worker, task.stepsByItem, task.lastGrillCompletion);
+  useGrillDraftListWiring(worker, status);
+  const grillTakeover = useGrillTakeoverWiring(
+    worker,
+    task.stepsByItem,
+    task.lastGrillCompletion,
+    task.grillDraftItemIds,
+    task.grillDraftByItem,
+  );
   // #122's do-date write: the same triage mutation entry point every other
   // triage edit uses, with `destination: null` (leave `stage` untouched —
   // `useTriageWiring.ts`'s own doc) and only `scheduledDate` set. Not its

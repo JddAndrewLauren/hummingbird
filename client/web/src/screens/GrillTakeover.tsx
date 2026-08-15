@@ -15,14 +15,15 @@ import { formatGrillTranscript, type GrillTurn } from "../skills/grill-args";
 
 /** The Triage row's center-column takeover (#355, ADR-0023): the interview,
  * one typed turn at a time (ADR-0023 decision 1), ending in the editable
- * review card. Deliberately without comforts, per the brief: no draft
- * persistence, no cross-tab lock, no history — leaving mid-interview loses
- * the conversation. A decline is NOT a dead end, though: "Try again" (below)
- * re-asks with the transcript already threaded, which is what makes the
- * transcript "resumable" a real property rather than a claim. This
- * component renders the current `GrillTurnState` and nothing else; every
- * decision about turns, transcripts, the Steps snapshot and the Confirm
- * mutation belongs to `shell/useGrillTakeoverWiring.ts`. */
+ * review card. Leaving mid-interview (Back, or closing the tab) never loses
+ * the conversation: it is saved automatically through the core, device-local
+ * (#356) — `Discard`, below, is the one EXPLICIT, confirmed way to actually
+ * drop it. A decline is NOT a dead end either: "Try again" (below) re-asks
+ * with the transcript already threaded, which is what makes the transcript
+ * "resumable" a real property rather than a claim. This component renders
+ * the current `GrillTurnState` and nothing else; every decision about turns,
+ * transcripts, the draft, the Steps snapshot and the Confirm mutation
+ * belongs to `shell/useGrillTakeoverWiring.ts`. */
 export interface GrillTakeoverProps {
   item: TaskItemDTO;
   /** This session's frozen Steps snapshot (`useGrillTakeoverWiring.ts`'s
@@ -40,6 +41,10 @@ export interface GrillTakeoverProps {
   onRetry: () => void;
   onConfirm: (completion: GrillCompletion) => void;
   onBack: () => void;
+  /** #356's explicit, confirmed "Discard" gesture — `useGrillTakeoverWiring
+   * .ts`'s `discard`, only ever called after this component confirms with
+   * the human first (below). */
+  onDiscard: () => void;
   /** `write-failure.ts`'s `grillCompletionFailureFor`, read by the caller —
    * this component only renders it. */
   completionError: string | null;
@@ -47,11 +52,37 @@ export interface GrillTakeoverProps {
 
 const CARD_STYLE = { display: "flex", flexDirection: "column" as const, gap: "var(--space-5)" };
 
-function BackRow({ title, onBack }: { title: string; onBack: () => void }) {
+function BackRow({
+  title,
+  onBack,
+  onDiscard,
+}: {
+  title: string;
+  onBack: () => void;
+  onDiscard: () => void;
+}) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
       <IconButton icon="x" label="Back to Triage" onClick={onBack} />
-      <span className="hb-meta">grilling — {title}</span>
+      <span className="hb-meta" style={{ flex: "1 1 auto" }}>
+        grilling — {title}
+      </span>
+      {/* #356's explicit, confirmed "Discard": a native confirm dialog is
+          the whole of "confirmed" here — the simplest thing that actually
+          stops an accidental tap, and this app has no modal system to
+          build a second one on top of for a single, rare button. */}
+      <Button
+        size="sm"
+        variant="ghost"
+        iconLeft="trash-2"
+        onClick={() => {
+          if (window.confirm("Discard this grill? The interview so far will be lost.")) {
+            onDiscard();
+          }
+        }}
+      >
+        Discard
+      </Button>
     </div>
   );
 }
@@ -224,6 +255,7 @@ export function GrillTakeover({
   onRetry,
   onConfirm,
   onBack,
+  onDiscard,
   completionError,
 }: GrillTakeoverProps) {
   // Focus moves into the takeover the moment it mounts — otherwise it opens
@@ -242,7 +274,7 @@ export function GrillTakeover({
       tabIndex={-1}
       style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)", outline: "none" }}
     >
-      <BackRow title={item.title} onBack={onBack} />
+      <BackRow title={item.title} onBack={onBack} onDiscard={onDiscard} />
 
       {turn.phase === "asking" ? (
         <Card padding="var(--space-6)" style={CARD_STYLE}>

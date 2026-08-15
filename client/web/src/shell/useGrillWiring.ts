@@ -37,10 +37,14 @@ export interface GrillWiring {
    * formats into `Core::complete_grill`'s `transcript`
    * (`skills/grill-args.ts`'s `formatGrillTranscript`). */
   turns: GrillTurn[];
-  /** Opens the interview: sends an empty `turns` array. A no-op while a
-   * turn for this item is already asking — the same duplicate-tap rule
-   * `useMicrotaskWiring.ts` documents. */
-  onAsk: (itemId: string, ref: string) => void;
+  /** Opens the interview: sends `initialTurns` (empty by default). A no-op
+   * while a turn for this item is already asking — the same duplicate-tap
+   * rule `useMicrotaskWiring.ts` documents. `initialTurns` is #356's
+   * "Resume grill" seam: a caller resuming a saved draft threads its
+   * turns back in here exactly as `onKeepGrilling`/`onRetry` already
+   * thread the accumulated ones — a fresh "Grill me" open is simply the
+   * default, empty case. */
+  onAsk: (itemId: string, ref: string, initialTurns?: GrillTurn[]) => void;
   /** Answers the open question: appends `{question, answer}` to the
    * item's own turns and asks again. */
   onAnswer: (itemId: string, ref: string, answer: string) => void;
@@ -129,9 +133,9 @@ export function useGrillWiring(selectedItemId: string | null, deps: GrillWiringD
   );
 
   const onAsk = useCallback(
-    (itemId: string, ref: string) => {
-      setHistoryByItem((current) => ({ ...current, [itemId]: [] }));
-      ask(itemId, ref, []);
+    (itemId: string, ref: string, initialTurns: GrillTurn[] = []) => {
+      setHistoryByItem((current) => ({ ...current, [itemId]: initialTurns }));
+      ask(itemId, ref, initialTurns);
     },
     [ask],
   );

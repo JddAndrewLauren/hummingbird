@@ -59,21 +59,32 @@ function Harness({
   fetchImpl,
   stepsByItem,
   lastGrillCompletion = null,
+  grillDraftItemIds = [],
+  grillDraftByItem = {},
 }: {
   worker: WorkerLike;
   fetchImpl: typeof globalThis.fetch;
   stepsByItem: Record<string, StepDTO[]>;
   lastGrillCompletion?: TaskGrillCompletionResult | null;
+  grillDraftItemIds?: string[];
+  grillDraftByItem?: Record<string, unknown>;
 }) {
-  const { openItemId, sessionSteps, open, back, confirm, keepGrilling, confirmSeed, turn } =
-    useGrillTakeoverWiring(worker, stepsByItem, lastGrillCompletion, {
-      fetch: fetchImpl,
-      tokenStore: {
-        read: async () => ({ token: "hb_device_token", enteredAtMs: 1_000 }),
-        write: async () => {},
-        clear: async () => {},
+  const { openItemId, sessionSteps, open, back, discard, confirm, keepGrilling, answer, confirmSeed, turn } =
+    useGrillTakeoverWiring(
+      worker,
+      stepsByItem,
+      lastGrillCompletion,
+      grillDraftItemIds,
+      grillDraftByItem as never,
+      {
+        fetch: fetchImpl,
+        tokenStore: {
+          read: async () => ({ token: "hb_device_token", enteredAtMs: 1_000 }),
+          write: async () => {},
+          clear: async () => {},
+        },
       },
-    });
+    );
   return (
     <>
       <span data-testid="open">{openItemId ?? "none"}</span>
@@ -82,7 +93,9 @@ function Harness({
       <span data-testid="confirm-seed">{confirmSeed ?? "none"}</span>
       <button type="button" onClick={() => open("item-1")}>open</button>
       <button type="button" onClick={back}>back</button>
+      <button type="button" onClick={discard}>discard</button>
       <button type="button" onClick={keepGrilling}>keep-grilling</button>
+      <button type="button" onClick={() => answer("SEA")}>answer</button>
       <button
         type="button"
         onClick={() =>
@@ -408,6 +421,190 @@ describe("useGrillTakeoverWiring", () => {
 
     expect(screen.getByTestId("confirm-seed").textContent).toBe("none");
     expect(grillCompletionFailureFor(stale, null)).toBeNull();
+  });
+
+  // -- #356's device-local draft: continuous save, resume, and discard ----
+
+  it("opening a fresh item (no draft) never asks for a draft and saves the first empty turns immediately", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(QUESTION_LINE));
+    const worker = fakeWorker();
+    render(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />);
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+
+    expect(worker.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "getGrillDraft" }),
+    );
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "saveGrillDraft",
+      itemId: "item-1",
+      turns: [],
+      nowMs: expect.any(Number),
+    });
+  });
+
+  it("every completed turn re-saves the draft with the accumulated turns", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(ndjson(QUESTION_LINE))
+      .mockResolvedValueOnce(ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    render(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />);
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    fireEvent.click(screen.getByText("answer"));
+    await settle();
+
+    const saves = worker.postMessage.mock.calls
+      .map(([m]) => m)
+      .filter((m) => m.type === "saveGrillDraft");
+    expect(saves.at(-1)?.turns).toEqual([
+      { question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] }, answer: "SEA" },
+    ]);
+  });
+
+  it("opening an item the bulk list names a draft for asks for its content before asking the runner anything", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(QUESTION_LINE));
+    const worker = fakeWorker();
+    render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{}}
+        grillDraftItemIds={["item-1"]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getGrillDraft", itemId: "item-1" });
+    // No interview request yet — still waiting on the draft's content.
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("resumes by threading the fetched draft's turns into the runner request", async () => {
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      // Threading straight back what it was asked with proves the resume,
+      // not a fresh empty interview.
+      return ndjson(
+        JSON.stringify({
+          ok: true,
+          skill: "grill-me",
+          result: body.args.turns.length > 0 ? { kind: "proposal", proposal: { summary: "s", verdict: "resolved", patch: {} } } : { kind: "question", question: { prompt: "x", recommendedAnswer: "y", choices: [] } },
+          backend: "cloud",
+          model: "opus",
+        }),
+      );
+    });
+    const worker = fakeWorker();
+    const savedTurns = [
+      { question: { prompt: "Which airport?", recommendedAnswer: "SEA", choices: ["SEA", "PDX"] }, answer: "SEA" },
+    ];
+    const { rerender } = render(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{}}
+        grillDraftItemIds={["item-1"]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    // The fresh `getGrillDraft` answer lands.
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{}}
+        grillDraftItemIds={["item-1"]}
+        grillDraftByItem={{ "item-1": savedTurns }}
+      />,
+    );
+    await settle();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String((fetchImpl.mock.calls[0] as [unknown, RequestInit])[1].body));
+    expect(body.args.turns).toEqual(savedTurns);
+    expect(screen.getByTestId("phase").textContent).toBe("proposal");
+  });
+
+  it("discard sends discardGrillDraft for the open item and closes the takeover", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(QUESTION_LINE));
+    const worker = fakeWorker();
+    render(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />);
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+
+    fireEvent.click(screen.getByText("discard"));
+
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "discardGrillDraft",
+      itemId: "item-1",
+      nowMs: expect.any(Number),
+    });
+    expect(screen.getByTestId("open").textContent).toBe("none");
+    expect(screen.getByTestId("phase").textContent).toBe("idle");
+  });
+
+  it("discard is a no-op while nothing is open", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(QUESTION_LINE));
+    const worker = fakeWorker();
+    render(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />);
+
+    fireEvent.click(screen.getByText("discard"));
+    expect(
+      worker.postMessage.mock.calls.some(([m]) => m.type === "discardGrillDraft"),
+    ).toBe(false);
+  });
+
+  /** #356's "retained until completion is acknowledged": only an `"ok"`
+   * discards the core-owned draft — a refusal (like `needs_re_review`)
+   * must leave it standing, so the interview it produced stays resumable. */
+  it("an ok confirm also discards the core-owned draft; a refused confirm never does", async () => {
+    const fetchImpl = vi.fn(async () => ndjson(PROPOSAL_LINE));
+    const worker = fakeWorker();
+    const { rerender } = render(
+      <Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{}} />,
+    );
+
+    fireEvent.click(screen.getByText("open"));
+    await settle();
+    rerender(<Harness worker={worker} fetchImpl={fetchImpl as never} stepsByItem={{ "item-1": [] }} />);
+    fireEvent.click(screen.getByText("confirm"));
+
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={resultFor(worker, "needs_re_review", "unticked steps changed")}
+      />,
+    );
+    expect(
+      worker.postMessage.mock.calls.some(([m]) => m.type === "discardGrillDraft"),
+    ).toBe(false);
+
+    rerender(
+      <Harness
+        worker={worker}
+        fetchImpl={fetchImpl as never}
+        stepsByItem={{ "item-1": [] }}
+        lastGrillCompletion={resultFor(worker, "ok")}
+      />,
+    );
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "discardGrillDraft",
+      itemId: "item-1",
+      nowMs: expect.any(Number),
+    });
   });
 
   it("keep grilling clears a failed confirm's error along with its proposal", async () => {

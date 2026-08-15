@@ -396,6 +396,7 @@ describe("TriageScreen — the Grill takeover", () => {
       sessionSteps: null,
       open: vi.fn(),
       back: vi.fn(),
+      discard: vi.fn(),
       turn: IDLE_TURN,
       turns: [],
       answer: vi.fn(),

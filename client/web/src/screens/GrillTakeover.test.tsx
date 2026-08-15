@@ -41,6 +41,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
@@ -70,6 +71,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
@@ -99,6 +101,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
@@ -129,6 +132,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={onConfirm}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
@@ -168,6 +172,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={onConfirm}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
@@ -191,6 +196,7 @@ describe("GrillTakeover", () => {
         onRetry={onRetry}
         onConfirm={() => {}}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
@@ -213,12 +219,65 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={() => {}}
         onBack={onBack}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
 
     fireEvent.click(screen.getByLabelText("Back to Triage"));
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  /** #356's explicit, confirmed "Discard": a `window.confirm` dialog is
+   * the confirmation, and `onDiscard` fires only when the human accepts
+   * it — a cancelled dialog must leave the interview standing. */
+  it("Discard confirms with the human before calling onDiscard", () => {
+    const onDiscard = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <GrillTakeover
+        item={item}
+        steps={[]}
+        turn={{ phase: "asking", messages: [] }}
+        turns={[]}
+        onAnswer={() => {}}
+        onKeepGrilling={() => {}}
+        onRetry={() => {}}
+        onConfirm={() => {}}
+        onBack={() => {}}
+        onDiscard={onDiscard}
+        completionError={null}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Discard"));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+  });
+
+  it("Discard never calls onDiscard when the human cancels the confirm dialog", () => {
+    const onDiscard = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <GrillTakeover
+        item={item}
+        steps={[]}
+        turn={{ phase: "asking", messages: [] }}
+        turns={[]}
+        onAnswer={() => {}}
+        onKeepGrilling={() => {}}
+        onRetry={() => {}}
+        onConfirm={() => {}}
+        onBack={() => {}}
+        onDiscard={onDiscard}
+        completionError={null}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Discard"));
+    expect(onDiscard).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 
   /** Non-blocking fix: focus moves into the takeover on mount. */
@@ -234,6 +293,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );
@@ -259,6 +319,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError="unticked steps changed since this review was last shown"
       />,
     );
@@ -288,6 +349,7 @@ describe("GrillTakeover", () => {
         onRetry={() => {}}
         onConfirm={() => {}}
         onBack={() => {}}
+        onDiscard={() => {}}
         completionError={null}
       />,
     );

@@ -5,6 +5,7 @@ import {
   availableActions,
   canGrill,
   canMarkDone,
+  grillButtonLabel,
   resolveFallbackPending,
 } from "./item-actions";
 
@@ -90,6 +91,18 @@ describe("canGrill", () => {
     for (const stage of ["grilling", "ready", "in_progress", "blocked", "done"] as const) {
       expect(canGrill(stage)).toBe(false);
     }
+  });
+});
+
+// #356/ADR-0023's "Grill me"/"Resume grill" label: one deciding function,
+// never a per-screen branch on whether a draft exists.
+describe("grillButtonLabel", () => {
+  it("reads Grill me when the item has no draft", () => {
+    expect(grillButtonLabel(false)).toBe("Grill me");
+  });
+
+  it("reads Resume grill when the item already carries a draft", () => {
+    expect(grillButtonLabel(true)).toBe("Resume grill");
   });
 });
 

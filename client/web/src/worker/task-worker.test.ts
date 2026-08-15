@@ -12,6 +12,10 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     completeGrill: vi.fn().mockResolvedValue('{"kind":"ok","id":"grill-1","error":null}'),
+    saveGrillDraft: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    discardGrillDraft: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    grillDraft: vi.fn().mockReturnValue('{"kind":"ok","exists":false,"turns":null}'),
+    grillDraftItemIds: vi.fn().mockReturnValue('{"kind":"ok","item_ids":[]}'),
     setBinding: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
     kindRegistry: vi
@@ -494,6 +498,96 @@ describe("handleTaskRequest", () => {
         error: "unticked steps changed since this review was last shown",
       },
     ]);
+  });
+
+  it("saveGrillDraft stringifies turns whole and posts an ok result, then refreshes the bulk item-id list", async () => {
+    const host = fakeHost({
+      grillDraftItemIds: vi.fn().mockReturnValue('{"kind":"ok","item_ids":["item-1"]}'),
+    });
+    const posted = await run(
+      {
+        type: "saveGrillDraft",
+        itemId: "item-1",
+        turns: [{ question: { prompt: "p", recommendedAnswer: "r", choices: [] }, answer: "a" }],
+        nowMs: 1_000,
+      },
+      host,
+    );
+
+    expect(host.saveGrillDraft).toHaveBeenCalledWith(
+      "item-1",
+      '[{"question":{"prompt":"p","recommendedAnswer":"r","choices":[]},"answer":"a"}]',
+      1_000,
+    );
+    expect(posted).toEqual([
+      { type: "saveGrillDraftResult", itemId: "item-1", kind: "ok", error: null },
+      { type: "grillDraftItemIds", itemIds: ["item-1"] },
+    ]);
+  });
+
+  it("saveGrillDraft does not refresh the bulk list on a failed save", async () => {
+    const host = fakeHost({
+      saveGrillDraft: vi.fn().mockResolvedValue('{"kind":"failed","error":"disk full"}'),
+    });
+    const posted = await run(
+      { type: "saveGrillDraft", itemId: "item-1", turns: [], nowMs: 1_000 },
+      host,
+    );
+
+    expect(posted).toEqual([
+      { type: "saveGrillDraftResult", itemId: "item-1", kind: "failed", error: "disk full" },
+    ]);
+    expect(host.grillDraftItemIds).not.toHaveBeenCalled();
+  });
+
+  it("discardGrillDraft posts an ok result and refreshes the bulk item-id list", async () => {
+    const host = fakeHost({
+      grillDraftItemIds: vi.fn().mockReturnValue('{"kind":"ok","item_ids":[]}'),
+    });
+    const posted = await run(
+      { type: "discardGrillDraft", itemId: "item-1", nowMs: 2_000 },
+      host,
+    );
+
+    expect(host.discardGrillDraft).toHaveBeenCalledWith("item-1", 2_000);
+    expect(posted).toEqual([
+      { type: "discardGrillDraftResult", itemId: "item-1", kind: "ok", error: null },
+      { type: "grillDraftItemIds", itemIds: [] },
+    ]);
+  });
+
+  it("getGrillDraft answers with the item's saved turns", async () => {
+    const host = fakeHost({
+      grillDraft: vi.fn().mockReturnValue(
+        '{"kind":"ok","exists":true,"turns":[{"question":{"prompt":"p","recommendedAnswer":"r","choices":[]},"answer":"a"}]}',
+      ),
+    });
+    const posted = await run({ type: "getGrillDraft", itemId: "item-1" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "grillDraft",
+        itemId: "item-1",
+        exists: true,
+        turns: [{ question: { prompt: "p", recommendedAnswer: "r", choices: [] }, answer: "a" }],
+      },
+    ]);
+  });
+
+  it("getGrillDraft posts nothing while the host reports busy — no answer, not an empty one", async () => {
+    const host = fakeHost({
+      grillDraft: vi.fn().mockReturnValue('{"kind":"busy","exists":false,"turns":null}'),
+    });
+    const posted = await run({ type: "getGrillDraft", itemId: "item-1" }, host);
+    expect(posted).toEqual([]);
+  });
+
+  it("getGrillDraftItemIds answers with every item id carrying a draft", async () => {
+    const host = fakeHost({
+      grillDraftItemIds: vi.fn().mockReturnValue('{"kind":"ok","item_ids":["item-1","item-2"]}'),
+    });
+    const posted = await run({ type: "getGrillDraftItemIds" }, host);
+    expect(posted).toEqual([{ type: "grillDraftItemIds", itemIds: ["item-1", "item-2"] }]);
   });
 
   it("capture also drains and posts any credential event the cycle recorded", async () => {

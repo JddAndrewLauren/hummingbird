@@ -36,6 +36,7 @@ import {
   Siren,
   Sparkles,
   Sun,
+  Trash2,
   X,
   Zap,
 } from "lucide-react";
@@ -97,6 +98,7 @@ export const ICON_MAP = {
   siren: Siren,
   sparkles: Sparkles,
   sun: Sun,
+  "trash-2": Trash2,
   x: X,
   zap: Zap,
   // The two families Lucide has no glyph for, drawn in `custom-glyphs.tsx`
