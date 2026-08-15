@@ -772,6 +772,10 @@ export type TaskWorkerRequest =
   | { type: "getPaneRead"; source: string; nowMs: number }
   | { type: "getFrontier" }
   | { type: "getTriageInbox" }
+  /** Items already grilled once and still foggy — the "triage process"
+   * queue's second half (#357, CONTEXT.md); `getTriageInbox` deliberately
+   * stays Triage-stage-only. */
+  | { type: "getGrillingItems" }
   /** The complete retained roster — every item the mirror has ever known,
    * archived rows included and labelled. `nowMs` is the request's own clock,
    * resolving the alert badge's liveness core-side, same contract as
@@ -974,6 +978,9 @@ export type TaskWorkerResponse =
   | { type: "paneRead"; read: PaneReadDTO }
   | { type: "frontier"; items: TaskItemDTO[] }
   | { type: "triageInbox"; items: TaskItemDTO[] }
+  /** Answers `getGrillingItems` (#357). Same drop-on-busy contract as
+   * `frontier`. */
+  | { type: "grillingItems"; items: TaskItemDTO[] }
   /** Answers `getLedger`. Never posted for a `"busy"` read — an empty
    * ledger renders as "nothing has ever been tracked", a claim a core that
    * has not loaded may not make (same contract as `paneRead`). Not replayed

@@ -11,7 +11,11 @@ import { computeUrgency, isValidDeadline } from "../screens/urgency";
 // Built once here rather than per test: `buildDemoTaskState` reads the clock,
 // and every assertion below is about shape, which no two calls disagree on.
 const state = buildDemoTaskState();
-const board = [...state.frontier, ...state.triageInbox];
+// #357: the one seeded Grilling item is departure 3, not part of production's
+// measured shape (the header's table stays the 29-card measurement) — but it
+// IS on Now's board (`triageProcessQueue` combines it with `triageInbox`), so
+// it belongs in every assertion below that is about what actually renders.
+const board = [...state.frontier, ...state.triageInbox, ...state.grillingItems];
 
 const tally = (values: Array<string | null>) =>
   values.reduce<Record<string, number>>((acc, value) => {
@@ -21,15 +25,17 @@ const tally = (values: Array<string | null>) =>
   }, {});
 
 describe("buildDemoTaskState — production's shape, none of its content", () => {
-  it("puts 29 cards on the board, 12 startable and 17 unsorted", () => {
+  it("puts 30 cards on the board: 12 startable, 17 captured, 1 grilling", () => {
     expect(state.frontier).toHaveLength(12);
     expect(state.triageInbox).toHaveLength(17);
-    expect(board).toHaveLength(29);
+    expect(state.grillingItems).toHaveLength(1);
+    expect(board).toHaveLength(30);
   });
 
   it("mirrors the context spread, so the no-context column really is the biggest", () => {
+    // The seeded Grilling item carries no context, same as most of production.
     expect(tally(board.map((i) => i.context))).toEqual({
-      "(none)": 12,
+      "(none)": 13,
       "@computer": 8,
       "@errands": 4,
       "@phone": 3,
@@ -38,14 +44,15 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
   });
 
   it("mirrors the size and energy spread, both dominated by unset", () => {
+    // The seeded Grilling item is `size: "deep"`, `energy` unset.
     expect(tally(board.map((i) => i.size))).toEqual({
       "(none)": 13,
-      deep: 8,
+      deep: 9,
       quick: 4,
       normal: 4,
     });
     expect(tally(board.map((i) => i.energy))).toEqual({
-      "(none)": 17,
+      "(none)": 18,
       high: 5,
       medium: 4,
       low: 3,
@@ -54,7 +61,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
 
   it("mirrors the capture sources — most typed, seven swept from mail", () => {
     expect(tally(board.map((i) => i.source))).toEqual({
-      "(none)": 21,
+      "(none)": 22,
       "gmail/v1": 7,
       "google-tasks/v1": 1,
     });
@@ -78,7 +85,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
   });
 });
 
-describe("buildDemoTaskState — the two deliberate departures from production", () => {
+describe("buildDemoTaskState — the three deliberate departures from production", () => {
   it("carries one deadline per urgency band, which production's single deadline cannot", () => {
     const nowMs = Date.now();
     const bands = board
@@ -103,6 +110,11 @@ describe("buildDemoTaskState — the two deliberate departures from production",
     // alert to its un-named fallback — the fixture would still "work" and
     // would stop demonstrating the sentence it exists to demonstrate.
     expect(state.triageInbox.some((i) => i.id === failure?.itemId)).toBe(true);
+  });
+
+  it("seeds one Grilling-stage item, so #357's queue and its badge both render", () => {
+    expect(state.grillingItems).toHaveLength(1);
+    expect(state.grillingItems[0].stage).toBe("grilling");
   });
 });
 

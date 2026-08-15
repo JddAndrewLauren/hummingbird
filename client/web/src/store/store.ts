@@ -155,6 +155,11 @@ export interface TaskRuleResult {
 export interface TaskState {
   frontier: TaskItemDTO[];
   triageInbox: TaskItemDTO[];
+  /** Items already grilled once and still foggy — the "triage process"
+   * queue's second half (#357, CONTEXT.md). `triageInbox` deliberately
+   * stays Triage-stage-only; a caller wanting the combined queue reads both
+   * and combines them (`screens/triage-process-order.ts`). */
+  grillingItems: TaskItemDTO[];
   /** Relation-blocked items with the reason visible — S10's frontier list
    * (issue #108). Populated by `getBlocked`, same "last full answer wins"
    * contract as `frontier`. */
@@ -327,6 +332,7 @@ const initialCalendarState: CalendarState = {
 const initialTaskState: TaskState = {
   frontier: [],
   triageInbox: [],
+  grillingItems: [],
   blocked: [],
   stepsByItem: {},
   projects: [],

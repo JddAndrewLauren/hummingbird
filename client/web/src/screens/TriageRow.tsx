@@ -120,7 +120,10 @@ export function TriageRow({
             cursor: "pointer",
           }}
         >
-          <StageBadge stage="triage" />
+          {/* #357: the combined queue can carry a Grilling-stage item
+              alongside Triage ones, so the badge reads the item's own stage
+              rather than assuming "triage". */}
+          <StageBadge stage={item.stage} />
           {/* Wrap-then-ellipsis, the same contract `ItemRow` and the demo rows
               use: the `220px` basis is a floor, so the meta wraps onto its own
               line before the title is starved. */}

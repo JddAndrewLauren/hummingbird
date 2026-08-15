@@ -173,8 +173,12 @@ function RealFrontier({
   // columns, so ADR-0021 decision 7's "selecting a card is not a takeover" now
   // covers captures too, and S13/#111's "two editors are never open at once"
   // survives for free — the slot holds one thing.
+  // #357: a Grilling-stage item lands in the same columns as a Triage one
+  // (`triageProcessQueue`), so it is just as much a "capture" for selection
+  // purposes here — same `TriageRow` editor, same pre-action vocabulary.
   const selectedCapture = selectedItemId
-    ? (task.triageInbox.find((item) => item.id === selectedItemId) ?? null)
+    ? ([...task.triageInbox, ...task.grillingItems].find((item) => item.id === selectedItemId) ??
+      null)
     : null;
 
   // Reviewer finding on PR #207: a failed `actResult` used to be recorded in
@@ -197,7 +201,7 @@ function RealFrontier({
   const strandedAct = strandedActFailure(
     task.lastAct,
     selectedCapture ? null : selectedItemId,
-    [...allItems, ...task.triageInbox],
+    [...allItems, ...task.triageInbox, ...task.grillingItems],
   );
 
   // S11/#109's item detail panel must stay open (reviewer finding on PR
@@ -286,7 +290,7 @@ function RealFrontier({
   const strandedTriage = strandedTriageFailure(
     task.lastTriage,
     selectedCapture?.id ?? selectedItem?.id ?? null,
-    task.triageInbox,
+    [...task.triageInbox, ...task.grillingItems],
   );
 
   return (
@@ -404,7 +408,8 @@ function RealFrontier({
       selectedCapture === null &&
       task.frontier.length === 0 &&
       task.blocked.length === 0 &&
-      task.triageInbox.length === 0 ? (
+      task.triageInbox.length === 0 &&
+      task.grillingItems.length === 0 ? (
         <Card padding="var(--space-3)">
           <EmptyState
             icon="zap"
@@ -423,10 +428,12 @@ function RealFrontier({
           ordered under the startable actions of whichever column they land in
           — Now no longer has a triage section of its own, so an inbox with an
           empty frontier still renders the board. */}
-      {task.frontier.length > 0 || task.triageInbox.length > 0 ? (
+      {task.frontier.length > 0 || task.triageInbox.length > 0 || task.grillingItems.length > 0 ? (
         <FrontierColumns
           frontier={task.frontier}
           triage={task.triageInbox}
+          grilling={task.grillingItems}
+          draftItemIds={task.grillDraftItemIds}
           projects={task.projects}
           nowMs={nowMs}
           selectedItemId={selectedItemId}

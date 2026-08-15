@@ -860,6 +860,22 @@ impl TaskHostCore {
         }
     }
 
+    /// Items already grilled once and still foggy, per
+    /// [`Core::grilling_items`] — the "triage process" queue's second half
+    /// (#357, CONTEXT.md). Same per-item `pending` stamp as
+    /// [`TaskHostCore::frontier`].
+    pub fn grilling_items(&self) -> ItemListResponse {
+        ItemListResponse {
+            kind: "ok",
+            items: self
+                .core
+                .grilling_items()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
+        }
+    }
+
     /// Relation-blocked items with the reason visible, per [`Core::blocked`].
     /// Same per-item `pending` stamp as [`TaskHostCore::frontier`], on both
     /// the blocked item and the blockers it is paired with.
@@ -2313,6 +2329,39 @@ mod grill_tests {
 
         assert_eq!(response.kind, "ok");
         assert_eq!(host.frontier().items.len(), 0, "Grilling never appears on the frontier");
+    }
+
+    /// #357: `grilling_items` is the "triage process" queue's second half —
+    /// a demoted item leaves `triage_inbox` and appears here instead, never
+    /// in both and never in neither.
+    #[tokio::test]
+    async fn fog_remains_moves_the_item_from_triage_inbox_to_grilling_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grill-6");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+            .await
+            .unwrap();
+        let item_id = captured_item(&mut host).await;
+
+        let response = host
+            .complete_grill(
+                "seed-grill-6",
+                &item_id,
+                "[]",
+                "transcript".to_string(),
+                "still foggy".to_string(),
+                "fog_remains",
+                "{}".to_string(),
+                "{}".to_string(),
+                false,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(host.triage_inbox().items.is_empty());
+        assert_eq!(host.grilling_items().items.len(), 1);
+        assert_eq!(host.grilling_items().items[0].item.id, item_id);
     }
 
     // -------------------------------------------- grill drafts (#356, ADR-0023)

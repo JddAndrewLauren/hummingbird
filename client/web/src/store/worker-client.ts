@@ -188,6 +188,10 @@ export function attachWorkerClient(
           // included — so an act can now remove an item from the triage
           // inbox, the same immediate re-read `triageResult` does.
           requestTriageInbox(worker);
+          // A Grilling item is just as actable (`canMarkDone`/`item-actions.ts`
+          // gates on stage, not this read) — same immediate re-read for the
+          // same reason.
+          requestGrillingItems(worker);
           // The Ledger/Done refresh an act also warrants is NOT here:
           // `getLedger` carries a `nowMs` this module deliberately never
           // samples (see this function's doc), so `useLedgerWiring.ts` keys
@@ -217,6 +221,7 @@ export function attachWorkerClient(
           // triaged item leaves the triage query and appears on the
           // frontier through the mirror, not local bookkeeping).
           requestTriageInbox(worker);
+          requestGrillingItems(worker);
           requestFrontier(worker);
           // #122: a `null`-destination triage (the weekend-plans pane's
           // do-date chip) can touch an item sitting in `task.blocked` —
@@ -243,6 +248,10 @@ export function attachWorkerClient(
           // triggers, so a confirmed Grill is visible right away, offline
           // or not.
           requestTriageInbox(worker);
+          // A `fog_remains` verdict demotes the item straight into Grilling
+          // (`task_host.rs`'s `complete_grill` doc) — same immediate
+          // re-read as `triageInbox` above.
+          requestGrillingItems(worker);
           requestFrontier(worker);
           requestBlocked(worker);
           // A ticked `deleteUntickedPlan` soft-deletes the item's live
@@ -334,6 +343,9 @@ export function attachWorkerClient(
         return;
       case "triageInbox":
         store.setTaskState({ triageInbox: message.items });
+        return;
+      case "grillingItems":
+        store.setTaskState({ grillingItems: message.items });
         return;
       case "ledger":
         store.setTaskState({ ledger: message.rows });
@@ -795,6 +807,12 @@ export function requestFrontier(worker: WorkerLike): void {
 
 export function requestTriageInbox(worker: WorkerLike): void {
   worker.postMessage({ type: "getTriageInbox" });
+}
+
+/** Items already grilled once and still foggy — the "triage process"
+ * queue's second half (#357). */
+export function requestGrillingItems(worker: WorkerLike): void {
+  worker.postMessage({ type: "getGrillingItems" });
 }
 
 /** The complete retained roster — the Ledger screen's read. `nowMs` is the

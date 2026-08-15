@@ -14,7 +14,8 @@
 // invented. What *is* taken from production is the SHAPE — measured once from
 // `GET /api/changes?since=0` on 2026-08-13, when the authority held 37 items:
 //
-//   board cards      29  (12 frontier + 17 unsorted captures)
+//   board cards      29  (12 frontier + 17 captured) — before departure 3 below
+//                        adds one fictional Grilling item, never measured
 //   by context       no context 12 · @computer 8 · @errands 4 · @phone 3 · @home 2
 //   by size          no size 13 · deep 8 · quick 4 · normal 4
 //   by energy        no energy 17 · high 5 · medium 4 · low 3
@@ -29,7 +30,7 @@
 // column** because production has no projects at all. A tidier fixture would
 // photograph a system nobody has.
 //
-// Two deliberate departures, both so the gate keeps covering states production
+// Three deliberate departures, all so the gate keeps covering states production
 // happens not to be in today:
 //
 //   1. Production holds ONE deadline, so a faithful mirror would paint every
@@ -44,6 +45,13 @@
 //      surface that looks like it has a single failure slot when it has one
 //      per mutation kind. Expect both when eyeballing `?demo=board` by hand —
 //      they are the fixture, not a real fault.
+//   3. Production has never grilled anything into Grilling yet, so a faithful
+//      mirror would leave the "triage process" queue's second half (#357,
+//      CONTEXT.md) unphotographed by `visual/surfaces.spec.ts:224`'s "now's
+//      columns" capture — exactly the surface this fixture exists to cover.
+//      One item is seeded `stage: "grilling"` so its own `StageBadge` and its
+//      place in `triageProcessQueue`'s combined order both render somewhere
+//      the gate actually looks.
 //
 // Dev-only, gated twice, same as the kit world — see `demo.ts`.
 //
@@ -369,6 +377,22 @@ const TRIAGE_SEEDS: Seed[] = [
   },
 ];
 
+/** Departure 3 in the header: the one item already grilled once and still
+ * foggy — `TaskState.grillingItems`, `Core::grilling_items`'s (#357) own
+ * query. Sorts ahead of `TRIAGE_SEEDS` in `triageProcessQueue`'s combined
+ * order, behind any local draft (none seeded here — a draft is device-local
+ * state this fixture makes no claim about). */
+const GRILLING_SEEDS: Seed[] = [
+  {
+    id: "b-g1",
+    title: "book the removals van",
+    stage: "grilling",
+    agoMs: 10 * HOUR,
+    size: "deep",
+    description: "Grilled once already; still can't settle on a date range.",
+  },
+];
+
 /** The seeded state, typed as the real `TaskState` so a field added to that
  * interface fails this file at build time rather than shipping a fixture that
  * silently omits it. Every "not read yet" field is left at its honest `null` —
@@ -386,6 +410,10 @@ export function buildDemoTaskState(): TaskState {
   return {
     frontier: FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
     triageInbox: TRIAGE_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
+    // Departure 3 in the header: production has never grilled anything into
+    // Grilling, so this seeds one anyway — the surface this fixture exists
+    // to keep photographed.
+    grillingItems: GRILLING_SEEDS.map((seed, index) => item(seed, index, loadedAt)),
     // Production has no `blocked_by` edges and no projects at all — the second
     // is why grouping by Project produces exactly one column here, which is a
     // finding about the axis rather than a gap in the fixture.

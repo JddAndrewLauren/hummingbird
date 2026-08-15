@@ -16,6 +16,7 @@ const initialCalendar: CalendarState = {
 const initialTask: TaskState = {
   frontier: [],
   triageInbox: [],
+  grillingItems: [],
   blocked: [],
   stepsByItem: {},
   projects: [],
