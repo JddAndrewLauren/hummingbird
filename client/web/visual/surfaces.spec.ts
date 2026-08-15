@@ -20,7 +20,8 @@ import { SCREEN_LABELS } from "../src/shell/screens";
 //
 // 2. ASSERT the few things a machine can decide without a baseline — that
 //    nothing overflows horizontally, that the brand tokens actually resolve,
-//    and that the theme switch reaches the page. These fail the run.
+//    that the theme switch reaches the page, and (#453) that the page
+//    actually loaded the world `openApp` asked for. These fail the run.
 //
 // Everything renders in `?demo` mode: the fixtures are deterministic and
 // populated, where real data on a dev machine is an empty mirror — the shell
@@ -85,9 +86,10 @@ type World = "kit" | "board" | null;
 const KIT_ONLY_TEXT = "Rewrite the sweeper's Gmail adapter";
 const BOARD_ONLY_TEXT = "@computer";
 
-/** Which world's marker(s) the page currently shows — `"both"` and `"none"`
- * are both failures of the instrument itself, named rather than collapsed
- * into a boolean, so a broken dispatch reads as what it is. */
+/** Which world's marker(s) the page currently shows — `"both"` and `null`
+ * (no marker, i.e. "none") are both failures of the instrument itself, named
+ * rather than collapsed into a boolean, so a broken dispatch reads as what
+ * it is. */
 async function loadedWorld(page: Page): Promise<World | "both"> {
   const hasKit = (await page.getByText(KIT_ONLY_TEXT).count()) > 0;
   const hasBoard = (await page.getByRole("heading", { name: BOARD_ONLY_TEXT }).count()) > 0;

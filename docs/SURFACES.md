@@ -260,8 +260,9 @@ no baseline history, and a pixel gate with nobody to arbitrate it produces
 noise rather than findings. The captures are the deliverable — review them
 for clipping, overlap, broken wrapping, and sticky/scroll or focus glitches.
 What the spec *does* fail on is the machine-decidable subset: horizontal
-overflow at any width, unresolved brand tokens, and a theme switch that does
-not reach the page.
+overflow at any width, unresolved brand tokens, a theme switch that does not
+reach the page, and (#453) the page loading a different demo world than the
+one `openApp` asked for.
 
 **Be clear how little the overflow assertion proves.** `App.tsx`'s root is
 `overflow: hidden`, so content wider than the shell is *clipped* rather than
