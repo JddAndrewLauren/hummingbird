@@ -1,0 +1,9 @@
+<resources>
+    <!-- Pre-Compose window theme only: the page surface (sand-50 light) so
+         the first frame doesn't flash a wrong color before setContent.
+         Everything visible is Compose + the Hummingbird MaterialTheme. -->
+    <style name="Theme.Hummingbird" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#fdfaf6</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>
