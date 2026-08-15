@@ -1,6 +1,11 @@
 # ADR-0008: The authority is an app-owned server
 
-**Status:** accepted · 2026-08-08
+**Status:** accepted · 2026-08-08 · **amended 2026-08-14 by
+[ADR-0022](0022-voice-capture-is-client-local-only.md):** voice capture is now
+two lanes, not one — this ADR's Google Tasks adapter (below) stays the
+unattended phone/watch/speaker → Gemini → Tasks lane, and ADR-0022 adds a
+second, client-local lane straight into the capture box that never reaches
+this authority's sweeper at all.
 **Context:** the backend reconsideration of 2026-08-08 — a from-scratch
 tradeoff analysis (Linear-stays vs owned server vs CRDT local-first) followed
 by the authority-move grilling. Supersedes the authority designation of
