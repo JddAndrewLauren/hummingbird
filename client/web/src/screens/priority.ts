@@ -10,6 +10,15 @@
 // a pure function and is unit-tested") lives on this side of the wire, not
 // in `hummingbird_domain` — the owned schema keeps `priority` a bare `i64`
 // and leaves the display-rank opinion to consumers (ADR-0002).
+//
+// **Stays a literal TS function, not a live seam call — pinned instead.**
+// `priorityRank` is read at module-evaluation time by `PRIORITY_OPTIONS`
+// above, before `initDecisions()` is guaranteed to have resolved (the same
+// constraint `field-vocabulary.ts`'s header states for its own literal
+// arrays), so this cannot become a call through `decisions/seam.ts`.
+// `hummingbird_core::decisions::frontier::priority_rank` is the ADR-0025
+// canonical copy (M1-3, #501); `seam.test.ts` pins the two against each
+// other via `priorityRankFromCore` so this copy cannot drift silently.
 
 const LABELS: Record<number, string> = {
   0: "No priority",
