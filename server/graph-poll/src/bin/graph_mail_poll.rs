@@ -12,26 +12,36 @@
 //! POST /api/snapshots                                → the advanced deltaLink, last
 //! ```
 //!
-//! **The bounded resync is two Graph calls, not one** — unlike
-//! `gmail_poll`/`calendar_poll`, where a single bounded query both supplies
-//! the catch-up items and (via `getProfile`/`updatedMin`) a place to anchor
-//! the fresh cursor. Microsoft Graph's mail **delta** query does not accept
-//! `$filter`/`$orderby` (only `$select`/`$top`/`$expand` — documented Graph
-//! behavviour, unconfirmed against a live tenant by this crate, since no
-//! live check was possible per the brief), so a bounded catch-up requires
-//! the **ordinary** (non-delta) messages listing, which does support
-//! `$filter`: `bounded_resync` first mints a fresh `deltaLink` via Graph's
-//! own `$deltatoken=latest` (an initial delta request that returns no
-//! items, only an immediate `@odata.deltaLink` anchored at "now"), then
-//! fetches recent messages via an ordinary `$filter=receivedDateTime ge …`
-//! query — in that order, for the reason `bounded_resync`'s own doc gives:
-//! it is what makes the boundary between the two calls an overlap rather
-//! than a hole. Any overlap between the two (a message the bounded
-//! listing already evaluated also appearing once the delta cursor starts
-//! advancing) is harmless: `alert::plan`'s never-sent `raised_at` plus the
-//! ingest upsert's no-op-on-identical-payload rule make a re-evaluation
-//! safe, never a duplicate alert — the same tolerance `gmail_poll`/
-//! `calendar_poll` already rely on for their own resync overlap.
+//! **The bounded resync is one bounded `delta` chain** — the shape
+//! `graph_calendar_poll::bounded_resync` already uses: an initial delta
+//! request bounded by `$filter=receivedDateTime ge …`, followed to the end
+//! of its `@odata.nextLink` chain, whose last page carries the
+//! `@odata.deltaLink` this run stores.
+//!
+//! It was two calls until #486 Phase B — a `$deltatoken=latest` anchor plus
+//! an ordinary (non-delta) `$filter` listing — resting on a belief that
+//! design stated but, in its own words, could not check against a live
+//! tenant. Checked on 2026-08-15, both halves of it are false:
+//!
+//! - the mail delta query **does** accept `$filter=receivedDateTime ge …`,
+//!   and the bounded chain terminates with a `deltaLink` — one page for a
+//!   two-day window on a 14k-message inbox;
+//! - `$deltatoken=latest` is **silently ignored** on this resource. It
+//!   anchors nothing: the response is byte-identical to an unparameterized
+//!   initial delta — the first page of a full enumeration of the folder,
+//!   carrying items and a `$skiptoken`, no `deltaLink`. Following *that*
+//!   chain to its end would page the whole mailbox (~1,400 requests here),
+//!   which is why the fix was a different query, not a missing loop.
+//!
+//! One chain also dissolves the ordering hazard the two-call design had to
+//! reason about: with no boundary between an anchor and a listing there is
+//! no hole to convert into an overlap, and the cursor comes from the same
+//! chain that produced the items. The overlap that remains (a message
+//! evaluated here reappearing once the cursor advances) is harmless:
+//! `alert::plan`'s never-sent `raised_at` plus the ingest upsert's
+//! no-op-on-identical-payload rule make a re-evaluation safe, never a
+//! duplicate alert — the same tolerance `gmail_poll`/`calendar_poll`
+//! already rely on for their own resync overlap.
 //!
 //! Exit codes: `0` success, `1` anything else. **The cursor is written
 //! last** — a crash before it lands makes the *next* run re-fetch and
@@ -55,7 +65,12 @@ const GRAPH_API: &str = "https://graph.microsoft.com/v1.0";
 /// own reasoning, bounded on both axes so a resync can never balloon into
 /// "fetch the whole mailbox."
 const RESYNC_LOOKBACK_MS: i64 = 2 * 24 * 60 * 60 * 1000;
-const RESYNC_MAX_RESULTS: u32 = 200;
+
+/// Graph's mail delta pages hold ten items by default, and this lane's
+/// window is routinely a few dozen messages — asking for a bigger page
+/// turns a handful of round trips into one. It is a request, not a
+/// guarantee: `bounded_resync` follows `@odata.nextLink` regardless.
+const MAX_PAGE_SIZE: (&str, &str) = ("Prefer", "odata.maxpagesize=100");
 
 fn main() -> ExitCode {
     match run() {
@@ -121,48 +136,44 @@ fn run() -> Result<Summary, String> {
     Ok(Summary { events_fetched: batch.candidates.len(), alerts_posted: matches.len(), new_delta_link })
 }
 
-/// The bounded catch-up (this file's own module doc): an ordinary
-/// `$filter`-bounded messages listing for the items, and a separate
-/// `$deltatoken=latest` call for the fresh cursor.
+/// The bounded catch-up (this file's own module doc): one initial `delta`
+/// request bounded by `$filter=receivedDateTime ge …`, followed to the end
+/// of its `@odata.nextLink` chain. The items and the fresh cursor both come
+/// out of that one chain.
 ///
-/// **The `$deltatoken=latest` anchor is minted first, and that ordering is
-/// load-bearing** — `gmail_poll::bounded_resync`'s own reasoning, and the
-/// reason the module doc's "any overlap is harmless" tolerance is worth
-/// anything here. Listing first leaves a *hole*: mail arriving after the
-/// bounded listing but before the anchor is absent from this run's batch
-/// and already behind the cursor this run stores, so no later delta page
-/// ever carries it. Anchoring first turns the same gap into the overlap
-/// the module doc already accounts for — the message misses this batch and
-/// arrives on the next poll's delta page instead.
+/// `$filter` is stated on the **first** request only — every `nextLink`
+/// Graph hands back already carries the window forward, exactly as
+/// `graph_calendar_poll::bounded_resync` treats its `startDateTime`/
+/// `endDateTime` bounds. A `deltaLink` is kept once seen rather than
+/// re-set to `None` by a later page (that lane's own rule): Graph emits it
+/// on the final page, anchored at the end of the sync.
 fn bounded_resync(access_token: &str, upn: &str) -> Result<(Vec<String>, String), String> {
-    let latest_url = format!("{GRAPH_API}/users/{upn}/mailFolders/inbox/messages/delta");
-    let body =
-        graph_get(access_token, &latest_url, &[("$deltatoken".to_string(), "latest".to_string())], &[]).map_err(|e| e.to_string())?;
-    let page = parse_delta_page(&body).map_err(|e| e.to_string())?;
-    let delta_link = page
-        .delta_link
-        .ok_or_else(|| "graph mail: $deltatoken=latest returned no @odata.deltaLink".to_string())?;
-
     let cutoff = rfc3339_ms(now_ms()? - RESYNC_LOOKBACK_MS)?;
-    let filter = format!("receivedDateTime ge {cutoff}");
-    let max_results = RESYNC_MAX_RESULTS.to_string();
+    let query = vec![("$filter".to_string(), format!("receivedDateTime ge {cutoff}"))];
+
+    let mut url = format!("{GRAPH_API}/users/{upn}/mailFolders/inbox/messages/delta");
+    let mut first = true;
     let mut raw_items = Vec::new();
-    let mut url = format!("{GRAPH_API}/users/{upn}/mailFolders/inbox/messages");
-    let mut query: Vec<(String, String)> =
-        vec![("$filter".to_string(), filter), ("$top".to_string(), max_results), ("$orderby".to_string(), "receivedDateTime desc".to_string())];
+    let mut delta_link = None;
     loop {
-        let body = graph_get(access_token, &url, &query, &[]).map_err(|e| e.to_string())?;
+        let body = if first {
+            graph_get(access_token, &url, &query, &[MAX_PAGE_SIZE]).map_err(|e| e.to_string())?
+        } else {
+            graph_get(access_token, &url, &[], &[MAX_PAGE_SIZE]).map_err(|e| e.to_string())?
+        };
+        first = false;
         let page = parse_delta_page(&body).map_err(|e| e.to_string())?;
         raw_items.extend(page.raw_items);
+        if page.delta_link.is_some() {
+            delta_link = page.delta_link;
+        }
         match page.next_link {
-            Some(next) => {
-                url = next;
-                query = Vec::new();
-            }
+            Some(next) => url = next,
             None => break,
         }
     }
 
+    let delta_link = delta_link.ok_or_else(|| "graph mail: bounded resync's final page carried no @odata.deltaLink".to_string())?;
     Ok((raw_items, delta_link))
 }
 
