@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { demoData, demoTaskState } from "./fixtures/demo";
+import { demoCalendar, demoData, demoTaskState } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
@@ -104,6 +104,15 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // does not apply here because `demoData()` is null in this mode.
   const [demoTask] = useState(demoTaskState);
   const task = demoTask ?? liveTask;
+
+  // The board world's Settings calendar card (#452, piece 4), same
+  // lazy-initializer reason as `demoTask`. Injected ONLY into
+  // `SettingsScreen`'s `calendar` prop below — `useCalendarWiring` two lines
+  // down keeps reading `calendar` (the live store slice) unconditionally, and
+  // so does everything else in this component that reads `calendar`. See
+  // `fixtures/demo-calendar.ts`'s header for why a store-level override would
+  // start a real poll timer against a worker with no token.
+  const [settingsDemoCalendar] = useState(demoCalendar);
 
   const [screen, setScreen] = useState<Screen>("now");
   // Device-local view preference, same storage guard `NowScreen`'s ranked
@@ -484,7 +493,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               coreId={coreId}
               viewOrdinal={viewOrdinal}
               error={error}
-              calendar={calendar}
+              calendar={settingsDemoCalendar ?? calendar}
               themePreference={preference}
               onThemePreference={setPreference}
               backendSelection={backendSelection}

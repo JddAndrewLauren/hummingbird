@@ -35,11 +35,18 @@ const SENTINELS = [
   // fixtures/demo-data.ts — the kit world.
   { fixture: "demo-data.ts", needle: "Order the replacement sensor" },
   { fixture: "demo-data.ts", needle: "ask dad about the trailer hitch" },
-  // fixtures/demo-task-state.ts — the board world (#420).
+  // fixtures/demo-task-state.ts — the board world (#420, grown by #452 to
+  // seed the whole of TaskState rather than just the frontier).
   { fixture: "demo-task-state.ts", needle: "Fit the new tap washer" },
   { fixture: "demo-task-state.ts", needle: "the authority refused that edit" },
-  // fixtures/demo-questions.ts — the standing-question world.
-  { fixture: "demo-questions.ts", needle: "example.gov/waste/collection-day" },
+  { fixture: "demo-task-state.ts", needle: "File the storm drain report with the city" },
+  // fixtures/demo-pane-reads.ts — the standing-question reads both demo
+  // worlds share (#452 moved these out of demo-questions.ts so the board
+  // world could reuse them rather than hand-authoring a second copy).
+  { fixture: "demo-pane-reads.ts", needle: "example.gov/waste/collection-day" },
+  // fixtures/demo-calendar.ts — the board world's Settings calendar card
+  // (#452).
+  { fixture: "demo-calendar.ts", needle: "Fictional (personal)" },
   // fixtures/demo-data.ts again — the route checklist, which lived in
   // RoutesScreen.tsx as a module-level literal until it was moved here.
   { fixture: "demo-data.ts", needle: "Regenerate the Gmail fixture set" },
