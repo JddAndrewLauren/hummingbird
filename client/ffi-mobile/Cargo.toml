@@ -9,4 +9,31 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
 hummingbird-core = { path = "../core" }
-uniffi = "0.28"
+# `tokio` on uniffi because the exported async surface runs under
+# `async_runtime = "tokio"` — `Core::run`'s reqwest transports need a tokio
+# reactor, and the generated Kotlin suspend functions poll futures on the
+# runtime uniffi manages, not on any host thread.
+uniffi = { version = "0.28", features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+# For the one `reqwest::Client` the host constructs and hands to both
+# transports. `default-features = false` + `rustls-tls` deliberately
+# mirrors `../core`'s declaration — cargo unifies features per crate, so a
+# default-featured `reqwest` here would silently re-add the `native-tls`/
+# `openssl-sys` stack that has no Android NDK build (see core's Cargo.toml).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[features]
+# The Kotlin/Swift binding generator, behind a feature so the `cdylib`
+# `cargo ndk` cross-compiles never carry the CLI's dependency tree
+# (clap et al.) into the .so. `client/android`'s build script enables it
+# only for the host-side `uniffi-bindgen` run.
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["rt", "macros"] }

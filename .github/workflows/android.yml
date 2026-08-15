@@ -1,0 +1,82 @@
+# Android client CI (#141, M0): the Gradle side of client/android — JVM
+# unit tests and a debug-keyed APK artifact. The Rust side (ffi-mobile's
+# own tests, clippy) is client.yml's job already — `client/**` matches this
+# directory too, so both workflows run on an android PR and each gates its
+# own half. This file exists in the same PR that created `client/android/`
+# on purpose: a new top-level dir that matches no `paths:` filter merges
+# green with zero checks (the path-filtered-CI trap), and `client.yml`
+# alone would leave every Gradle-side break invisible.
+#
+# Release builds are NOT made here, deliberately: the signing keystore is
+# operator-only (ADMIN_SECRET-class handling — grilling 2026-08-14 on
+# #141), so CI's artifact is debug-keyed, a smoke check and an emulator
+# convenience, never an installable release.
+name: android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "client/android/**"
+      - "client/ffi-mobile/**"
+      - "client/core/**"
+      # The wire DTOs both sides compile — a schema change must rebuild the
+      # binding (same reasoning as client.yml's fixture path).
+      - "server/domain/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "client/android/**"
+      - "client/ffi-mobile/**"
+      - "client/core/**"
+      - "server/domain/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/android.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to match root `rust-toolchain.toml`, as every other workflow
+      # here is.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner image ships the Android SDK; the NDK cargo-ndk needs is
+      # resolved from ANDROID_NDK_LATEST_HOME, present on ubuntu-latest.
+      - name: Point cargo-ndk at the runner's NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      - name: Unit tests
+        working-directory: client/android
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Assemble debug APK
+        working-directory: client/android
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hummingbird-debug-apk
+          path: client/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
