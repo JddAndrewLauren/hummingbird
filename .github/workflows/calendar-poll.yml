@@ -65,22 +65,25 @@ jobs:
           # deploy-time step the brief calls out, not an implementation
           # step of this issue.
           HB_INGEST_TOKEN: ${{ secrets.CALENDAR_INGEST_TOKEN }}
-          # THE SAME refresh token `gmail-poll.yml` already uses — ADR-0011's
-          # original table names "same OAuth app, scope re-mint" for the
-          # calendar leg, and the brief's own operator step is exactly that:
-          # "the refresh token must be re-minted adding `calendar.readonly`,
-          # per the scope-re-mint runbook." This is a narrower ask than
-          # #135's own resolution (a second, wholly separate credential)
-          # would have been: one dedicated readonly token, now carrying BOTH
-          # `gmail.readonly` and `calendar.readonly`, rather than either
-          # scope living on the sweeper's broader `gmail.modify` credential.
-          # Every Calendar call this poller makes (`events.list`, read-only)
-          # stays inside `calendar.readonly` — nothing here ever writes to
-          # the operator's calendar. See ADR-0011's amendment for the
-          # blast-radius reasoning this restates, and issue #135's thread
-          # for the still-open question of whether the operator prefers the
-          # broader `gmail.modify`-and-full-`calendar`-scope token instead —
-          # this workflow does not decide that silently.
+          # THE SAME refresh token `gmail-poll.yml` and the sweeper use — one
+          # broad Google credential for the whole repo, decided by the
+          # operator on #486 (the decision that closed #135's open question).
+          # ADR-0011's table always named "same OAuth app, scope re-mint" for
+          # the calendar leg, and that re-mint is what happened: the one
+          # credential now carries Tasks + `gmail.modify` +
+          # `calendar.readonly`, minted by `scripts/mint_refresh_token.py`.
+          # Without the third scope this lane could not run at all — the
+          # sweeper's pre-#486 token had no calendar scope, so there was
+          # never a "just reuse it" option that skipped a re-consent.
+          #
+          # Every Calendar call this poller makes (`events.list`) is a read
+          # and stays inside `calendar.readonly` — nothing here ever writes to
+          # the operator's calendar. The scope this lane does not need is the
+          # Gmail one it inherits from sharing; `gmail-poll.yml`'s env block
+          # carries the full argument for accepting that breadth.
+          #
+          # Rotating it is a THREE-place operation: 1Password, the Fly secret
+          # on `hummingbird-sweeper`, and this Actions secret.
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}

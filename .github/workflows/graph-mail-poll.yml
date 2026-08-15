@@ -74,10 +74,11 @@ jobs:
           # months"). **Posture note, not yet fully resolved — see
           # `server/graph-poll/src/lib.rs`'s module doc and the open
           # operator question on issue #137**: this credential is narrower
-          # in *kind* than a full mail/calendar admin credential the same
-          # way #135/#136's dedicated readonly OAuth tokens are (only
+          # in *kind* than a full mail/calendar admin credential (only
           # `Mail.Read`/`Calendars.Read`, both read-only, per the brief's
-          # own named application permissions), but an app-only Graph grant
+          # own named application permissions) — a narrowing the Google lanes
+          # did NOT take, since #486 put those on one broad shared refresh
+          # token instead — but an app-only Graph grant
           # is tenant-wide by default — bounding it to one mailbox needs an
           # operator-side Exchange Application Access Policy, which this
           # workflow cannot verify is in place.

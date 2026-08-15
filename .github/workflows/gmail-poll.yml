@@ -71,20 +71,32 @@ jobs:
           # operator's terminal against `ADMIN_SECRET` — the deploy-time step
           # the brief calls out, not an implementation step of this issue.
           HB_INGEST_TOKEN: ${{ secrets.GMAIL_INGEST_TOKEN }}
-          # A DEDICATED `gmail.readonly`-scope refresh token — deliberately
-          # NOT the sweeper's existing `gmail.modify` one (ADR-0011's
-          # amendment: "the poller runs out-of-process, and its credential is
-          # narrowed accordingly"). Every Gmail call this poller makes
-          # (`history.list`, `messages.get`, `messages.list`, `getProfile`)
-          # is a read; `gmail.modify` — read *and modify* the whole
-          # mailbox — is on the `ADMIN_SECRET` side of CLAUDE.md's Actions
-          # blast-radius rule, not the `CITY_WASTE_INGEST_TOKEN` side, and a
-          # GitHub Actions secret is a different trust boundary than the
-          # Worker secrets ADR-0011's credential table names. Minting this
-          # is a one-time, deploy-time operator step (a fresh consent for the
-          # narrower scope, distinct from the sweeper's) — see issue #135 for
-          # the open question of whether the operator instead prefers to
-          # reuse the broader token here.
+          # ONE broad Google credential, shared with the sweeper and with
+          # `calendar-poll` — the operator's decision on #486, which is what
+          # settled #135's open question. It carries Tasks + `gmail.modify` +
+          # `calendar.readonly`; `scripts/mint_refresh_token.py` is the one
+          # place that mints it, and `docs/sweeper.md` is its runbook.
+          #
+          # This lane needs strictly less than it holds: every Gmail call it
+          # makes (`history.list`, `messages.get`, `messages.list`,
+          # `getProfile`) is a read, so `gmail.readonly` would cover it, and
+          # ADR-0011's amendment preferred exactly that narrowing. The
+          # decision went the other way on operator cost: a second dedicated
+          # credential is a second consent to grant, a second secret in two
+          # places, and a second thing to remember on every rotation, in a
+          # single-operator system where both credentials would anyway sit in
+          # the same 1Password vault behind the same account. The scope
+          # breadth is real and is accepted, not overlooked — `gmail.modify`
+          # here means a leak of this Actions secret can modify the mailbox,
+          # not just read it. What bounds it is that the grant is revocable in
+          # one gesture (revoke the OAuth grant, re-mint, set three places),
+          # and that this is the operator's own Workspace account rather than
+          # a tenant-wide reach.
+          #
+          # Rotating it is a THREE-place operation: 1Password, the Fly secret
+          # on `hummingbird-sweeper`, and this Actions secret. Missing one
+          # leaves that consumer failing on a revoked grant rather than on a
+          # missing secret.
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
