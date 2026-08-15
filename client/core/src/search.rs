@@ -42,8 +42,9 @@
 //! # Ordering and the cap (decision 8)
 //!
 //! Live before `Done` before archived; within a group, `updated_at`
-//! descending, then `seq` ascending (`Item::seq` is an `Option`, so a
-//! handle-less row sorts after every handled one at that step), then the
+//! descending, then `seq` ascending (`Item::seq` is an `Option`, and `None` is
+//! `Ord`-less-than `Some`, so a handle-less row sorts *before* every handled
+//! one at that step), then the
 //! item's `id` as the final, total tie-break — always a total order, the
 //! same discipline [`crate::rank`]'s own sort keeps. At most [`CAP`] rows
 //! are returned; [`Outcome::total`] is the *un-capped* match count, so a
@@ -412,6 +413,26 @@ mod tests {
 
         let outcome = search(&candidates, "shared");
         assert_eq!(ids(&outcome), vec!["a-id".to_string(), "z-id".to_string()]);
+    }
+
+    #[test]
+    fn a_handle_less_row_sorts_before_a_handled_one_at_the_seq_tiebreak() {
+        // `Option<i64>`'s derived `Ord` puts `None` before `Some(_)`.
+        let mut handled = item("handled", Some(3), "shared");
+        handled.updated_at = 1_000;
+        let mut handle_less = item("handle-less", None, "shared");
+        handle_less.updated_at = 1_000;
+
+        let candidates = vec![
+            candidate(handled, Group::Live),
+            candidate(handle_less, Group::Live),
+        ];
+
+        let outcome = search(&candidates, "shared");
+        assert_eq!(
+            ids(&outcome),
+            vec!["handle-less".to_string(), "handled".to_string()]
+        );
     }
 
     // -- cap ------------------------------------------------------------------
