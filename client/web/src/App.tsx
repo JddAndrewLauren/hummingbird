@@ -642,6 +642,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onClose={() => setSearchOpen(false)}
         rows={task.search?.rows ?? null}
         total={task.search?.total ?? 0}
+        // Same gating as `onSearch`/`onTriage` elsewhere in this render: demo
+        // mode's `task` is the static fixture, so an expanded live result
+        // there gets no `onTriage` at all and renders with no Edit
+        // affordance, exactly like a Done or archived one.
+        projects={demo ? [] : task.projects}
+        onTriage={demo ? undefined : handleTriage}
+        lastTriage={demo ? null : task.lastTriage}
+        nowMs={syncNowMs}
       />
     </div>
   );

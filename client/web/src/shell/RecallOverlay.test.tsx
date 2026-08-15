@@ -10,7 +10,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { RecallOverlay } from "./RecallOverlay";
 import type { RecallRowDTO } from "../store/protocol";
-import { render, screen } from "../test/component";
+import type { TaskTriageResult } from "../store/store";
+import { fireEvent, render, screen } from "../test/component";
 
 function row(overrides: Partial<RecallRowDTO> = {}): RecallRowDTO {
   return {
@@ -40,16 +41,23 @@ function row(overrides: Partial<RecallRowDTO> = {}): RecallRowDTO {
   };
 }
 
+// A fixed instant this suite's `nowMs` prop always reads — `useSyncWiring`'s
+// re-sampled clock in production, never a fresh `Date.now()` taken here (the
+// same reason the component itself never calls it during render).
+const TEST_NOW = Date.parse("2026-08-15T12:00:00Z");
+
 function renderOverlay(
   options: {
     query?: string;
     rows?: RecallRowDTO[] | null;
     total?: number;
+    onTriage?: ReturnType<typeof vi.fn>;
+    lastTriage?: TaskTriageResult | null;
   } = {},
 ) {
   const onQueryChange = vi.fn();
   const onClose = vi.fn();
-  render(
+  const view = render(
     <RecallOverlay
       open
       query={options.query ?? ""}
@@ -57,15 +65,28 @@ function renderOverlay(
       onClose={onClose}
       rows={options.rows ?? null}
       total={options.total ?? 0}
+      projects={[]}
+      onTriage={options.onTriage}
+      lastTriage={options.lastTriage}
+      nowMs={TEST_NOW}
     />,
   );
-  return { onQueryChange, onClose };
+  return { onQueryChange, onClose, view };
 }
 
 describe("RecallOverlay", () => {
   it("renders nothing over the closed prop", () => {
     render(
-      <RecallOverlay open={false} query="" onQueryChange={vi.fn()} onClose={vi.fn()} rows={null} total={0} />,
+      <RecallOverlay
+        open={false}
+        query=""
+        onQueryChange={vi.fn()}
+        onClose={vi.fn()}
+        rows={null}
+        total={0}
+        projects={[]}
+        nowMs={TEST_NOW}
+      />,
     );
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -124,5 +145,136 @@ describe("RecallOverlay", () => {
   it('the cap line reads the un-capped total, not rows.length', () => {
     renderOverlay({ query: "shared", rows: [row()], total: 58 });
     expect(screen.getByText("57 more matched — narrow the words to see them")).toBeTruthy();
+  });
+});
+
+// #479: selecting a result opens it in place — editable if live, read-only if
+// history. `ItemPanel` (detail mode) already carries its own exhaustive Edit
+// suite; what is proved here is that this overlay reaches it correctly — a
+// live result gets an `onTriage`, a Done/archived one does not — and that
+// expanding never disturbs the rest of the list.
+describe("RecallOverlay — selecting a result (#479)", () => {
+  // Offsets from `TEST_NOW`, the same fixed instant `renderOverlay` hands the
+  // component as `nowMs`.
+  function liveRow(overrides: Partial<RecallRowDTO> = {}): RecallRowDTO {
+    return row({
+      id: "item-1",
+      seq: 42,
+      title: "buy stamps",
+      description: "the blue ones",
+      group: "live",
+      createdAt: TEST_NOW - 3 * 24 * 60 * 60 * 1000,
+      updatedAt: TEST_NOW - 65 * 60 * 1000,
+      ...overrides,
+    });
+  }
+
+  it("expands a row inline on click: description, HB handle and timestamps, list intact", () => {
+    renderOverlay({
+      query: "stamps",
+      rows: [liveRow(), row({ id: "item-2", title: "second result" })],
+      total: 2,
+    });
+
+    expect(screen.queryByText("the blue ones")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /buy stamps/i }));
+
+    expect(screen.getByText("the blue ones")).toBeTruthy();
+    expect(screen.getByText("HB-42")).toBeTruthy();
+    expect(screen.getByText(/created 3d ago/)).toBeTruthy();
+    expect(screen.getByText(/updated 1h ago/)).toBeTruthy();
+    // Selecting never navigates away — the rest of the result list is still
+    // on screen, and the overlay is still the same dialog.
+    expect(screen.getByText("second result")).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("a second click on the same row collapses it again", () => {
+    renderOverlay({ query: "stamps", rows: [liveRow()], total: 1 });
+    const summary = screen.getByRole("button", { name: /buy stamps/i });
+
+    fireEvent.click(summary);
+    expect(screen.getByText("the blue ones")).toBeTruthy();
+
+    fireEvent.click(summary);
+    expect(screen.queryByText("the blue ones")).toBeNull();
+  });
+
+  it("a live result exposes the full edit form, over the shared draft state and the existing mutation path", () => {
+    const onTriage = vi.fn();
+    renderOverlay({ query: "stamps", rows: [liveRow()], total: 1, onTriage });
+
+    fireEvent.click(screen.getByRole("button", { name: /buy stamps/i }));
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("buy stamps");
+  });
+
+  it("editing a live result's title saves through the same triage mutation every other edit uses", () => {
+    const onTriage = vi.fn();
+    renderOverlay({ query: "stamps", rows: [liveRow()], total: 1, onTriage });
+
+    fireEvent.click(screen.getByRole("button", { name: /buy stamps/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "buy more stamps" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // `null` destination (#122): editing from Recall leaves the item's stage
+    // exactly where it is, the same as every other detail-mode edit.
+    expect(onTriage).toHaveBeenCalledWith("item-1", null, { title: "buy more stamps" });
+  });
+
+  it("a write failure is stated in the overlay, and the typed edits survive it", () => {
+    const { view } = renderOverlay({ query: "stamps", rows: [liveRow()], total: 1, onTriage: vi.fn() });
+
+    fireEvent.click(screen.getByRole("button", { name: /buy stamps/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "buy more stamps" } });
+
+    view.rerender(
+      <RecallOverlay
+        open
+        query="stamps"
+        onQueryChange={vi.fn()}
+        onClose={vi.fn()}
+        rows={[liveRow()]}
+        total={1}
+        projects={[]}
+        onTriage={vi.fn()}
+        lastTriage={{ kind: "failed", seed: "s1", itemId: "item-1", error: "could not save" }}
+        nowMs={TEST_NOW}
+      />,
+    );
+
+    expect(screen.getByText("could not save")).toBeTruthy();
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("buy more stamps");
+  });
+
+  it("a Done result renders read-only, with no edit affordance", () => {
+    renderOverlay({
+      query: "stamps",
+      rows: [liveRow({ id: "item-3", group: "done" })],
+      total: 1,
+      onTriage: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /buy stamps/i }));
+    expect(screen.getByText("the blue ones")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  it("an archived result renders read-only, with no edit affordance", () => {
+    renderOverlay({
+      query: "stamps",
+      rows: [liveRow({ id: "item-4", group: "archived" })],
+      total: 1,
+      onTriage: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /buy stamps/i }));
+    expect(screen.getByText("the blue ones")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
 });
