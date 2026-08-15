@@ -56,8 +56,9 @@ pnpm dev            # build the wasm core, then vite dev
 - `pnpm visual` — the Playwright visual gate: nine screens x four widths
   (1440 / 1024 / 768 / 390) x two themes, plus the capture popover and Now's
   empty state, captured to `visual/.captures/` for review. Fails on
-  horizontal overflow, an unresolved brand token, or a theme switch that does
-  not reach the page; everything else is for human eyes, since there is no
+  horizontal overflow, an unresolved brand token, a theme switch that does
+  not reach the page, or (#453) the page loading a different demo world than
+  the one `openApp` asked for; everything else is for human eyes, since there is no
   committed golden — and the overflow assertion proves much less than it
   sounds like (the shell is `overflow: hidden`, so it mostly measures what
   cannot happen; `docs/SURFACES.md` and the spec's own docstring say how
