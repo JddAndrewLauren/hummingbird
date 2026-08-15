@@ -21,5 +21,7 @@
 //! the SharedWorker's existing request protocol.
 
 pub mod capture;
+pub mod urgency;
+pub mod vocabulary;
 
 pub use capture::can_submit_capture;

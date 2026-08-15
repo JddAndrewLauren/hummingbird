@@ -28,6 +28,123 @@ pub fn can_submit_capture(draft: &str) -> bool {
     hummingbird_core::decisions::can_submit_capture(draft)
 }
 
+// -------------------------------------------------------------- M1-2 (#500)
+// The capture decision set: urgency, the deadline-field grammar, and the
+// capture/triage field problems. Every function below is a thin
+// `#[wasm_bindgen]` door onto `hummingbird_core::decisions::{urgency,
+// capture}` — see those modules for the rules themselves. Structured
+// values cross as JSON, the same convention `decisions_probe_item_payload`
+// established: `wasm_bindgen` has no derive for an arbitrary struct without
+// pulling in `serde-wasm-bindgen`, and JSON is what `seam.ts` already
+// parses for the probe.
+
+use hummingbird_core::decisions::{capture, urgency};
+
+/// [`urgency::compute_urgency`], with the band returned by its wire name
+/// (`urgency::UrgencyBand::as_str`) rather than a JS enum binding neither
+/// wasm-bindgen exposes cheaply nor a free function needs. `now` is
+/// deadline-shaped — see `urgency.rs`'s module header for why this takes a
+/// string rather than an epoch millisecond count.
+#[wasm_bindgen]
+pub fn compute_urgency(deadline: Option<String>, now: &str) -> String {
+    urgency::compute_urgency(deadline.as_deref(), now).as_str().to_string()
+}
+
+#[wasm_bindgen]
+pub fn is_valid_deadline(deadline: &str) -> bool {
+    urgency::is_valid_deadline_field(deadline)
+}
+
+#[wasm_bindgen]
+pub fn is_valid_scheduled_date(scheduled_date: &str) -> bool {
+    urgency::is_valid_scheduled_date(scheduled_date)
+}
+
+#[wasm_bindgen]
+pub fn deadline_sort_key(deadline: &str) -> String {
+    urgency::deadline_sort_key_field(deadline)
+}
+
+/// [`urgency::split_deadline`], JSON-encoded: `{"date":"...","time":"..."|null}`.
+#[wasm_bindgen]
+pub fn split_deadline(value: &str) -> String {
+    let parts = urgency::split_deadline(value);
+    serde_json::json!({ "date": parts.date, "time": parts.time }).to_string()
+}
+
+#[wasm_bindgen]
+pub fn join_deadline(date: &str, time: Option<String>) -> String {
+    urgency::join_deadline(date, time.as_deref())
+}
+
+/// [`capture::capture_meta_problems`], JSON-encoded:
+/// `{"deadline":"..."|absent,"scheduledDate":"..."|absent}` — camelCase to
+/// match `CaptureMetaProblems` (`capture-meta.ts`) and `TriageDraftProblems`
+/// (`triage-form.ts`), both of which read this without a remapping step.
+#[wasm_bindgen]
+pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> String {
+    let problems = capture::capture_meta_problems(deadline, scheduled_date);
+    serde_json::json!({
+        "deadline": problems.deadline,
+        "scheduledDate": problems.scheduled_date,
+    })
+    .to_string()
+}
+
+/// [`capture::priority_from_select`] — the capture box's `"0"` -> "not
+/// sent" priority rule. `i32`, not the core function's own `i64`:
+/// wasm-bindgen crosses `i64` as a JS `BigInt`, and `CaptureFields.priority`
+/// (`store/worker-client.ts`) is a plain `number` — the wire's `priority`
+/// column is `0..=4`, nowhere near `i32`'s range, so narrowing here loses
+/// nothing and keeps the boundary type the caller already expects.
+#[wasm_bindgen]
+pub fn priority_from_select(raw: &str) -> Option<i32> {
+    capture::priority_from_select(raw).map(|value| value as i32)
+}
+
+use hummingbird_core::decisions::vocabulary;
+
+/// [`vocabulary::size_options`]/[`vocabulary::energy_options`], JSON-encoded
+/// as `[{"value":"...","label":"..."}, ...]` — the vocabulary's real values
+/// only, no leading "Not set" entry (that is the TS form-adapter's own
+/// resting-state concern, prepended client-side).
+#[wasm_bindgen]
+pub fn size_options_json() -> String {
+    serde_json::to_string(&vocab_json(vocabulary::size_options())).unwrap()
+}
+
+#[wasm_bindgen]
+pub fn energy_options_json() -> String {
+    serde_json::to_string(&vocab_json(vocabulary::energy_options())).unwrap()
+}
+
+fn vocab_json(options: Vec<vocabulary::VocabOption>) -> serde_json::Value {
+    serde_json::Value::Array(
+        options
+            .into_iter()
+            .map(|o| serde_json::json!({ "value": o.value, "label": o.label }))
+            .collect(),
+    )
+}
+
+/// [`vocabulary::CONTEXTS`], JSON-encoded as a plain string array — see
+/// that constant's doc comment for why the web's own `field-vocabulary.ts`
+/// export stays a literal array pinned against this rather than a live
+/// call through this function in M1-2 (a module-evaluation-order
+/// constraint, recorded in #500's PR). M1-5's Android capture surface is
+/// this function's first production caller.
+#[wasm_bindgen]
+pub fn contexts_json() -> String {
+    serde_json::to_string(&vocabulary::CONTEXTS).unwrap()
+}
+
+/// [`vocabulary::FRONTIER_AXES`], JSON-encoded — M1-3's (#501) first
+/// consumer; nothing in M1-2 calls this in production.
+#[wasm_bindgen]
+pub fn frontier_axes_json() -> String {
+    serde_json::to_string(&vocabulary::FRONTIER_AXES).unwrap()
+}
+
 /// One item as the *main thread* holds it: `TaskItemDTO`
 /// (`client/web/src/store/protocol.ts`), camelCase, already mapped out of
 /// the worker's snake_case wire shape by `task-worker.ts`.

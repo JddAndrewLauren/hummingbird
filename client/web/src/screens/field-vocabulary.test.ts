@@ -16,6 +16,7 @@
 // resting "not set" entry is where the forms expect it.
 
 import { describe, expect, it } from "vitest";
+import { contextsFromCore, energyOptionsFromCore, sizeOptionsFromCore } from "../decisions/seam";
 import { CAPTURE_ENERGY_NAMES, CAPTURE_SIZE_NAMES } from "./capture-meta";
 import { CONTEXTS, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
 
@@ -75,5 +76,27 @@ describe("field-vocabulary — the context suggestions", () => {
     // expresses it by being empty, so a `""` in here would be an offered
     // suggestion of nothing.
     expect([...CONTEXTS]).not.toContain("");
+  });
+});
+
+// M1-2 (#500): the canonical copy of this vocabulary moved to
+// `hummingbird_core::decisions::vocabulary`. The literal arrays above stay
+// TS (`field-vocabulary.ts`'s own header says why — a module-evaluation-
+// order constraint), so these are the pinning cases that keep them provably
+// equal to the Rust source rather than merely a second hand-typed list next
+// to it: this is the exact assertion that was missing when ADR-0024 renamed
+// the middle size, now checked against the crate that cannot drift from
+// `hummingbird_domain::Size`/`Energy` because it is built on them.
+describe("field-vocabulary — pinned against hummingbird_core::decisions::vocabulary", () => {
+  it("SIZE_OPTIONS' real values match the core's size vocabulary", () => {
+    expect(SIZE_OPTIONS.slice(1)).toEqual(sizeOptionsFromCore());
+  });
+
+  it("ENERGY_OPTIONS' real values match the core's energy vocabulary", () => {
+    expect(ENERGY_OPTIONS.slice(1)).toEqual(energyOptionsFromCore());
+  });
+
+  it("CONTEXTS matches the core's suggested context list", () => {
+    expect([...CONTEXTS]).toEqual(contextsFromCore());
   });
 });

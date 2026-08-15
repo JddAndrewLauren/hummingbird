@@ -32,7 +32,8 @@ pub use api::{
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
 pub use deadline::{
-    deadline_sort_key, is_valid_deadline, now_as_deadline, parse_duration, shift, DurationUnit,
+    deadline_sort_key, is_valid_deadline, minutes_until, now_as_deadline, parse_duration, shift,
+    DurationUnit,
 };
 pub use event::{
     core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
