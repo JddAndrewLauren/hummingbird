@@ -10,7 +10,7 @@ function escape(open: Partial<Record<EscapeClaimant, boolean>> = {}): EscapeInpu
   return {
     key: "Escape",
     isComposing: false,
-    open: { capture: false, navSheet: false, itemDetail: false, ...open },
+    open: { capture: false, search: false, navSheet: false, itemDetail: false, ...open },
   };
 }
 
@@ -29,16 +29,21 @@ describe("escapeClaimant", () => {
   // sheet and an item panel were both open and one Escape closed both, because
   // each bound its own document listener and neither could see the other.
   it("closes exactly one thing when every claimant is open", () => {
-    expect(escapeClaimant(escape({ capture: true, navSheet: true, itemDetail: true }))).toBe(
-      "capture",
-    );
+    expect(
+      escapeClaimant(
+        escape({ capture: true, search: true, navSheet: true, itemDetail: true }),
+      ),
+    ).toBe("capture");
   });
 
   // Every pair, so the order is pinned rather than sampled — a later
   // reordering of `ESCAPE_CLAIMANTS` has to break a named case here.
   it.each([
+    [["capture", "search"], "capture"],
     [["capture", "navSheet"], "capture"],
     [["capture", "itemDetail"], "capture"],
+    [["search", "navSheet"], "search"],
+    [["search", "itemDetail"], "search"],
     [["navSheet", "itemDetail"], "navSheet"],
   ] as const)("with %s open, %s wins", (open, winner) => {
     const flags = Object.fromEntries(open.map((claimant) => [claimant, true]));
@@ -58,7 +63,7 @@ describe("escapeClaimant", () => {
   // The list is the contract every caller is a `Record` over. If a claimant is
   // added or removed, `App.tsx`'s closer map and `EscapeInput["open"]` stop
   // compiling — this asserts the list itself was a deliberate edit.
-  it("is the three shell overlays, shallowest first", () => {
-    expect(ESCAPE_CLAIMANTS).toEqual(["capture", "navSheet", "itemDetail"]);
+  it("is the four shell overlays, shallowest first", () => {
+    expect(ESCAPE_CLAIMANTS).toEqual(["capture", "search", "navSheet", "itemDetail"]);
   });
 });

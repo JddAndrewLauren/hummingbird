@@ -93,16 +93,16 @@ function RecallRow({ row }: { row: RecallRowDTO }) {
  * mirror has ever known — never a ranking or attention surface, never a
  * per-screen filter. Read-only in this slice: a result row states its
  * stage and nothing here reaches `Core::act` or any other mutation —
- * selecting a row is #479's slice, and every other trigger besides the
- * header's Search button (the `/` hotkey, Escape, the rail, the More
- * sheet) is #480's.
+ * selecting a row is #479's slice. Every trigger (the header's Search
+ * button, the `/` hotkey, the rail's magnifier, the phone More sheet's
+ * entry) and the Escape wiring are #480's, all landing on the same
+ * `open`/`onClose` this component already took.
  *
  * Built in the exact shape `CapturePopover` is (decision 4): a scrim, a
  * `role="dialog"` card hung off the control that opened it
- * (`RECALL_TRIGGER_ID`), the close button and a scrim click as the two ways
- * out. Unlike that popover, there is no Escape claimant registered here —
- * `escape-claimants.ts`'s three-edit wiring is #480's to add; until then
- * this overlay only closes by its own button or the scrim.
+ * (`RECALL_TRIGGER_ID`), the close button, a scrim click, and Escape
+ * (`escape-claimants.ts`'s `search` claimant, wired in `App.tsx`) as the
+ * ways out.
  *
  * Matching, ordering and the cap are entirely `Core::search`'s (via
  * `useRecallWiring.ts`) — this component only renders whatever `rows` and
