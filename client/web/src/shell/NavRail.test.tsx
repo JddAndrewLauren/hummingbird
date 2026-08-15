@@ -11,7 +11,7 @@ import { fireEvent, render, screen } from "../test/component";
 import { APP_VERSION } from "./build-version";
 import { NavRail } from "./NavRail";
 
-function renderRail(collapsed: boolean) {
+function renderRail(collapsed: boolean, onSearch?: () => void) {
   const onScreen = vi.fn();
   const onToggleCollapsed = vi.fn();
   const onHome = vi.fn();
@@ -26,6 +26,7 @@ function renderRail(collapsed: boolean) {
       collapsed={collapsed}
       onToggleCollapsed={onToggleCollapsed}
       onHome={onHome}
+      onSearch={onSearch}
     />,
   );
   return { onScreen, onToggleCollapsed, onHome };
@@ -76,5 +77,19 @@ describe("NavRail — collapsed", () => {
     const { onHome } = renderRail(collapsed);
     fireEvent.click(screen.getByRole("button", { name: "hummingbird — go to Now and refresh" }));
     expect(onHome).toHaveBeenCalledTimes(1);
+  });
+
+  // #480: the magnifier is `onSearch`'s own affordance — absent when the
+  // caller has no search to open (demo mode), same rule as `Header`'s.
+  it("opens Recall from the magnifier when onSearch is supplied", () => {
+    const onSearch = vi.fn();
+    renderRail(false, onSearch);
+    fireEvent.click(screen.getByRole("button", { name: "Search everything" }));
+    expect(onSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders no magnifier when onSearch is absent", () => {
+    renderRail(false);
+    expect(screen.queryByRole("button", { name: "Search everything" })).toBeNull();
   });
 });

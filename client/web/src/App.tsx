@@ -11,6 +11,7 @@ import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
+import { isRecallHotkey } from "./shell/recall-hotkey";
 import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
 import { CapturePopover } from "./shell/CapturePopover";
 import { Header } from "./shell/Header";
@@ -228,14 +229,15 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     setCaptureFocusRequestId((id) => id + 1);
   };
 
-  // **Recall** (#478): the header's Search button is the one trigger this
-  // slice wires — the `/` hotkey, Escape and the rail/More-sheet entries
-  // are #480's. `searchQuery` lives here rather than inside `RecallOverlay`
-  // so `useRecallWiring` can key its request effect on the same value the
-  // overlay renders, with no second, out-of-band copy of it.
+  // **Recall** (#478/#480): every trigger — the header's Search button, the
+  // `/` hotkey, Escape, the rail's magnifier and the phone More sheet's entry
+  // — opens this same state. `searchQuery` lives here rather than inside
+  // `RecallOverlay` so `useRecallWiring` can key its request effect on the
+  // same value the overlay renders, with no second, out-of-band copy of it.
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   useRecallWiring(worker, status, searchQuery);
+  const requestSearchOpen = () => setSearchOpen(true);
 
   // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the
   // capture box is in the shell now: a fixture capture typed in the popover
@@ -290,6 +292,30 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         return;
       }
 
+      // #480: the `/` hotkey people already expect from search-first apps —
+      // `recall-hotkey.ts`'s own pure matcher, guarded the identical way
+      // `isCaptureHotkey` is (no modifier, no editable target, no IME
+      // composition in progress).
+      if (
+        isRecallHotkey({
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          altKey: event.altKey,
+          targetIsEditable,
+          isComposing: event.isComposing,
+        })
+      ) {
+        event.preventDefault();
+        // Demo mode's `task` is the static fixture, same as the header's
+        // `onSearch` above and reported for the identical reason: opening it
+        // there would spin forever on "Searching…" for any typed query.
+        if (!demo) {
+          requestSearchOpen();
+        }
+        return;
+      }
+
       // Escape closes exactly one open overlay — the shallowest — and this is
       // the only place in the app that decides which. Every claimant's flag is
       // shell state, so the ordering is a lookup rather than a negotiation
@@ -305,6 +331,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         isComposing: event.isComposing,
         open: {
           capture: captureOpen,
+          search: searchOpen,
           navSheet: isPhone && navSheetOpen,
           itemDetail: selectedItemId !== null,
         },
@@ -321,6 +348,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
             captureDictating
               ? setCancelDictationRequestId((id) => id + 1)
               : setCaptureOpen(false),
+          search: () => setSearchOpen(false),
           navSheet: () => setNavSheetOpen(false),
           itemDetail: handleCloseItemDetail,
         };
@@ -330,8 +358,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
+    demo,
     captureOpen,
     captureDictating,
+    searchOpen,
     isPhone,
     navSheetOpen,
     selectedItemId,
@@ -427,6 +457,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           collapsed={railCollapsed}
           onToggleCollapsed={handleToggleRailCollapsed}
           onHome={handleHome}
+          onSearch={demo ? undefined : requestSearchOpen}
         />
       )}
 
@@ -452,7 +483,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           // reason `onSetScheduledDate`/`microtask`/`onTriage` below are all
           // `demo ? undefined : …`. Opening it there would spin forever on
           // "Searching…" for any typed query.
-          onSearch={demo ? undefined : () => setSearchOpen(true)}
+          onSearch={demo ? undefined : requestSearchOpen}
           // Only on Now — the aside exists on no other screen. Same rule as
           // `onSearch`/`onRefresh` above: the affordance appears exactly where
           // it would do something.
@@ -578,6 +609,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           onToggleTheme={() => setPreference(toggledPreference(theme))}
           sheetOpen={navSheetOpen}
           onSheetOpen={setNavSheetOpen}
+          onSearch={demo ? undefined : requestSearchOpen}
         />
       ) : null}
 
@@ -596,11 +628,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onDictatingChange={setCaptureDictating}
       />
 
-      {/* **Recall** (#478): the header's Search button is the only trigger
-          wired in this slice — see `Header`'s `onSearch` doc and
-          `useRecallWiring`'s above. Rendered beside `CapturePopover` for the
-          same reason: fixed chrome over the whole window, not screen
-          content. */}
+      {/* **Recall** (#478/#480): every trigger — the header's Search button,
+          the `/` hotkey, the rail's magnifier and the phone More sheet's
+          entry — opens this same state; see `useRecallWiring`'s doc above.
+          Rendered after `CapturePopover` as a sibling, both fixed chrome at
+          the same z-index: that DOM order is why Recall paints over capture
+          when both are open (`escape-claimants.ts`'s ordering argument),
+          not merely styling convenience. */}
       <RecallOverlay
         open={searchOpen}
         query={searchQuery}
