@@ -20,7 +20,8 @@ import { SCREEN_LABELS } from "../src/shell/screens";
 //
 // 2. ASSERT the few things a machine can decide without a baseline — that
 //    nothing overflows horizontally, that the brand tokens actually resolve,
-//    and that the theme switch reaches the page. These fail the run.
+//    that the theme switch reaches the page, and (#453) that the page
+//    actually loaded the world `openApp` asked for. These fail the run.
 //
 // Everything renders in `?demo` mode: the fixtures are deterministic and
 // populated, where real data on a dev machine is an empty mirror — the shell
@@ -69,6 +70,51 @@ const THEMES = ["light", "dark"] as const;
  * honest empty states. */
 type World = "kit" | "board" | null;
 
+// World-identity markers (#453). `demoMode()` (`src/fixtures/demo-mode.ts`)
+// maps every unrecognised `?demo=` spelling onto the kit world, so a typo in
+// a URL here — or a stale arm in this file's own world dispatch — used to
+// silently fall back to a world the caller never asked for, and every
+// assertion downstream still held because it never checked WHICH world
+// loaded. These two strings exist only in their own world's fixture: the kit
+// world's hero item (`demo-data.ts`'s `ION-118`, always the "top pick" since
+// its stage is `in_progress`) and the board world's `@computer` column
+// heading (`demo-task-state.ts` — the kit world's `DemoItem` has no
+// `context` at all, so this string cannot appear there by construction).
+// Checked in both directions, on purpose — a one-directional check (kit
+// string present) passes for a page that loaded neither world, e.g. a
+// silent 404 or a blank shell.
+const KIT_ONLY_TEXT = "Rewrite the sweeper's Gmail adapter";
+const BOARD_ONLY_TEXT = "@computer";
+
+/** Which world's marker(s) the page currently shows — `"both"` and `null`
+ * (no marker, i.e. "none") are both failures of the instrument itself, named
+ * rather than collapsed into a boolean, so a broken dispatch reads as what
+ * it is. */
+async function loadedWorld(page: Page): Promise<World | "both"> {
+  const hasKit = (await page.getByText(KIT_ONLY_TEXT).count()) > 0;
+  const hasBoard = (await page.getByRole("heading", { name: BOARD_ONLY_TEXT }).count()) > 0;
+  if (hasKit && hasBoard) return "both";
+  if (hasKit) return "kit";
+  if (hasBoard) return "board";
+  return null;
+}
+
+/** Fails the run, naming both worlds, when the page did not load the world
+ * `openApp` asked for. This is the instrument #453 exists to add: without
+ * it, `demoMode()`'s fallback-to-kit behaviour (or a stale arm in the
+ * `page.goto` dispatch below) leaves every later assertion in this file
+ * photographing whichever world it silently got, still green. */
+async function assertWorldLoaded(page: Page, asked: World) {
+  const got = await loadedWorld(page);
+  expect(
+    got,
+    `openApp asked for the "${asked ?? "none"}" world but the page loaded ` +
+      `"${got ?? "none"}" (kit marker "${KIT_ONLY_TEXT}" ` +
+      `${got === "kit" || got === "both" ? "present" : "absent"}, board marker ` +
+      `"${BOARD_ONLY_TEXT}" heading ${got === "board" || got === "both" ? "present" : "absent"})`,
+  ).toBe(asked);
+}
+
 /** The app resolves `light | dark | system` onto `[data-theme]` from
  * `hb.theme` (see `src/theme/`). Seeding the key before the first paint is
  * what avoids capturing a flash of the other theme. */
@@ -104,6 +150,9 @@ async function openApp(page: Page, theme: (typeof THEMES)[number], world: World)
   // on the core would hang on a machine with no authority to reach.
   await expect(page.getByRole("navigation")).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
+  // #453: prove the URL above actually resolved to the world asked for,
+  // before any caller's assertions build on that assumption.
+  await assertWorldLoaded(page, world);
 }
 
 /** The five screens the phone's bottom bar cannot hold, by their nav name.
