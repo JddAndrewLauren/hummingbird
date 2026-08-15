@@ -7,9 +7,11 @@
 //! rule 2: both FFI crates surface `Core` verbatim, neither reimplements
 //! it). The surface grows one screen at a time with the Android build
 //! (#141), each screen's decision modules arriving in `core` first
-//! (ADR-0025); today it carries exactly the M0 walking-skeleton needs:
-//! init, credential push, one sync cycle, and the counters the proof
-//! screen shows.
+//! (ADR-0025); M0 carried init, credential push, one sync cycle, and the
+//! counters the proof screen shows. M1-5 (#503) added the free
+//! [`can_submit_capture`] door onto [`hummingbird_core::decisions`] and
+//! [`MobileTaskHost::capture`] — `CaptureActivity`'s whole surface, title
+//! only, no capture-meta fields (out of scope until a later screen).
 //!
 //! **Async runs under uniffi's tokio runtime** (`async_runtime = "tokio"`),
 //! because `Core::run`'s reqwest transports need a reactor and the host
@@ -17,12 +19,44 @@
 //! providing one. Interior state is a `tokio::sync::Mutex` for the same
 //! reason: it is held across the cycle's awaits.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
-use hummingbird_core::{Core, CoreCycleOutcome, CoreEvent};
+use hummingbird_core::{CaptureOptions, Core, CoreCycleOutcome, CoreEvent};
+use hummingbird_domain::Stage;
+
+/// Whether `draft` is worth submitting — the free door onto
+/// [`hummingbird_core::decisions::can_submit_capture`] (ADR-0025), the
+/// mobile twin of `ffi-web::decisions::can_submit_capture`. `CaptureActivity`
+/// calls this before ever calling [`MobileTaskHost::capture`], and it is the
+/// *only* place the refusal may be decided: a Kotlin `isBlank()` copy of
+/// this rule is banned (M1-5/#503's own trap) precisely because it disagrees
+/// with the real rule on a BOM-only draft — see
+/// `hummingbird_core::decisions::capture`'s doc for that case.
+#[uniffi::export]
+pub fn can_submit_capture(draft: &str) -> bool {
+    hummingbird_core::decisions::can_submit_capture(draft)
+}
+
+/// Mints a fresh seed for one [`MobileTaskHost::capture`] call. Only
+/// uniqueness matters here, never unpredictability — the same "no clock or
+/// RNG that panics on bare wasm32" story `sync::write::deterministic_id`'s
+/// callers already tell, adapted for a host that supplies no seed of its own
+/// (`useCaptureWiring.ts`'s `mintSeed` is the web's equivalent, reached from
+/// JS instead of from here because that door takes a caller-supplied seed —
+/// `MobileTaskHost::capture`'s narrower signature does not, so the mint moves
+/// behind the seam). An in-process monotonic counter, paired with the
+/// caller's own `now_ms`, is enough: two captures can never collide within
+/// one process, and a fresh process starts the counter over only alongside a
+/// fresh `now_ms`.
+static CAPTURE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn mint_capture_seed(now_ms: i64) -> String {
+    format!("mobile-capture:{now_ms}:{}", CAPTURE_SEQ.fetch_add(1, Ordering::Relaxed))
+}
 
 uniffi::setup_scaffolding!();
 
@@ -57,6 +91,24 @@ impl std::fmt::Display for MobileInitError {
 }
 
 impl std::error::Error for MobileInitError {}
+
+/// [`MobileTaskHost::capture`] failed to enqueue — a [`hummingbird_core`]
+/// `SnapshotError`, surfaced the same message-wrapping way
+/// [`MobileInitError`] is (see its doc for why `detail`, not `message`).
+#[derive(Debug, uniffi::Error)]
+pub enum MobileCaptureError {
+    CaptureFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileCaptureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileCaptureError::CaptureFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileCaptureError {}
 
 /// One drained [`CoreEvent`], as the mobile hosts' shape — the same
 /// `kind`/`at_ms` pair `ffi-web`'s `TaskEventDTO` carries, so the two FFI
@@ -268,6 +320,30 @@ impl MobileTaskHost {
         map_run_outcome(outcome)
     }
 
+    /// Captures `title` — `CaptureActivity`'s whole surface (M1-5/#503).
+    /// **Local-first** (#128's own criterion): reaches
+    /// [`hummingbird_core::Core::capture`], which durably enqueues via
+    /// `SyncCycle::enqueue` and overlays the optimistic [`Item`] before any
+    /// transport is ever touched, so the item exists in the local mirror the
+    /// instant this returns — sync or no sync, online or offline. Always
+    /// captures into `Stage::Triage` with every [`CaptureOptions`] field
+    /// absent: raw text only, no capture-meta surface in M1 (say so at every
+    /// call site rather than only here). Mints its own seed
+    /// ([`mint_capture_seed`]) since the host supplies only `title`/`now_ms`.
+    ///
+    /// [`Item`]: hummingbird_domain::Item
+    pub async fn capture(&self, title: String, now_ms: i64) -> Result<String, MobileCaptureError> {
+        let seed = mint_capture_seed(now_ms);
+        let mut inner = self.inner.lock().await;
+        inner
+            .core
+            .capture(&seed, title, Stage::Triage, now_ms, CaptureOptions::default())
+            .await
+            .map_err(|error| MobileCaptureError::CaptureFailed {
+                detail: error.to_string(),
+            })
+    }
+
     /// Drains queued [`CoreEvent`]s (today: `credential_needed`) — a
     /// pull-based drain, never a host-implemented callback (ADR-0003).
     pub async fn take_events(&self) -> Vec<MobileEvent> {
@@ -332,5 +408,97 @@ mod tests {
         let outcome = host.run(1_000, "user".to_string(), false, 0.0).await;
         assert_eq!(outcome.kind, "no_credential");
         assert!(host.take_events().await.is_empty());
+    }
+
+    // ------------------------------------------------------- M1-5 (#503)
+
+    /// The exposure is a pass-through and nothing more — the rule itself is
+    /// tested in `hummingbird_core::decisions::capture`. Mirrors
+    /// `ffi-web::decisions`' identical pin, so the two FFI surfaces are
+    /// proven to agree, not just each proven separately.
+    #[test]
+    fn the_capture_binding_is_the_core_rule_verbatim() {
+        for draft in [
+            "",
+            "   ",
+            "\t\n",
+            "\u{feff}",
+            "buy milk",
+            "  buy milk  ",
+            "\u{feff}buy milk",
+        ] {
+            assert_eq!(
+                can_submit_capture(draft),
+                hummingbird_core::decisions::can_submit_capture(draft),
+                "{draft:?} disagreed across the binding",
+            );
+        }
+    }
+
+    /// #128's local-first criterion, proved the same way the M0 test above
+    /// proves "no network reached": a base URL that would fail DNS, yet the
+    /// capture still succeeds and is durably enqueued (`queue_depth`) — the
+    /// mutation exists before any transport is ever reached.
+    /// `active_item_count`/`frontier` stay at zero on purpose: a capture is
+    /// born into `Stage::Triage`, which `Core::frontier`'s own
+    /// Ready/InProgress filter never surfaces — `Core::triage_inbox` is the
+    /// query that would show it, not yet exposed to a mobile host (deferred
+    /// to the Now-list screen, M1-6).
+    #[tokio::test]
+    async fn capture_is_durable_before_any_network_is_touched() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m1-5-capture-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let id = host.capture("buy milk".to_string(), 1_000).await.unwrap();
+        assert!(!id.is_empty());
+        assert_eq!(host.queue_depth().await, 1);
+    }
+
+    /// Two captures at the identical `now_ms` must mint distinct ids — the
+    /// whole reason [`mint_capture_seed`] carries its own counter rather than
+    /// deriving the seed from `now_ms` alone.
+    #[tokio::test]
+    async fn two_captures_in_the_same_millisecond_mint_distinct_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m1-5-capture-ns-2");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let a = host.capture("first".to_string(), 5_000).await.unwrap();
+        let b = host.capture("second".to_string(), 5_000).await.unwrap();
+        assert_ne!(a, b);
+        assert_eq!(host.queue_depth().await, 2);
+    }
+
+    /// `Core::capture` still has no opinion of its own on an empty title
+    /// (`hummingbird_core::decisions::capture`'s own doc) — the refusal is
+    /// entirely `CaptureActivity`'s job, reached through
+    /// [`can_submit_capture`] before this is ever called. Pinned here so
+    /// nobody "fixes" that by adding a check inside this method instead.
+    #[tokio::test]
+    async fn capture_itself_has_no_opinion_on_a_blank_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m1-5-capture-ns-3");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        assert!(host.capture("   ".to_string(), 1_000).await.is_ok());
     }
 }

@@ -9,6 +9,11 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
 hummingbird-core = { path = "../core" }
+# The owned-schema `Stage` enum `MobileTaskHost::capture` (M1-5/#503) takes —
+# the same cross-workspace dependency `hummingbird-core` itself already
+# carries, needed here only to *name* the type (`ffi-web`'s Cargo.toml
+# carries the identical dependency for the identical reason).
+hummingbird-domain = { path = "../../server/domain" }
 # `tokio` on uniffi because the exported async surface runs under
 # `async_runtime = "tokio"` — `Core::run`'s reqwest transports need a tokio
 # reactor, and the generated Kotlin suspend functions poll futures on the

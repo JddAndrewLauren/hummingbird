@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The second launcher icon's adaptive-icon wrapper (M1-5/#503) — same
+     background plate as ic_launcher.xml, distinct foreground (see
+     ic_launcher_capture_foreground.xml's own comment). -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_capture_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_capture_foreground" />
+</adaptive-icon>

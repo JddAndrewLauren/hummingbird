@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One static shortcut (long-press the launcher icon): jumps straight to
+     CaptureActivity, the same destination CaptureLauncher's second icon
+     resolves to (M1-5/#503). Declared on MainActivity per platform
+     convention (see AndroidManifest.xml's meta-data comment). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="quick_capture"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_capture"
+        android:shortcutShortLabel="@string/capture_shortcut_short_label"
+        android:shortcutLongLabel="@string/capture_shortcut_long_label">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="net.twinion.hummingbird"
+            android:targetClass="net.twinion.hummingbird.CaptureActivity" />
+    </shortcut>
+</shortcuts>

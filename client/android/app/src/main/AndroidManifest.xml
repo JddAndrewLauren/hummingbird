@@ -5,6 +5,10 @@
          HTTP per ADR-0003; this is its permission). -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- CaptureActivity's mic button: on-device SpeechRecognizer needs this
+         to record, requested at tap-time (M1-5/#503), never at launch. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <application
         android:name=".HummingbirdApp"
         android:allowBackup="false"
@@ -20,7 +24,42 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Static shortcuts (long-press the launcher icon) declare
+                 against the primary launcher activity per platform
+                 convention; CaptureLauncher below is the second, always-on
+                 entry point the same target resolves to. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- CaptureActivity: capture's whole surface (M1-5/#503). Reached
+             directly via the CaptureLauncher alias below, the static
+             shortcut above, or MainActivity in a later screen — never
+             its own LAUNCHER intent-filter, which lives on the alias so
+             there is exactly one entry point per icon. -->
+        <activity
+            android:name=".CaptureActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Hummingbird"
+            android:windowSoftInputMode="stateVisible|adjustResize" />
+
+        <!-- The second launcher icon (#128's own scope, resolved by the
+             2026-08-14 grilling): a distinct icon and label over the same
+             CaptureActivity, so the OS shows two app entries that share one
+             process and one core. -->
+        <activity-alias
+            android:name=".CaptureLauncher"
+            android:targetActivity=".CaptureActivity"
+            android:label="@string/capture_launcher_label"
+            android:icon="@mipmap/ic_launcher_capture"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
     </application>
 
