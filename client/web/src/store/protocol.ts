@@ -799,9 +799,12 @@ export type TaskWorkerRequest =
   /** **Recall** (#478): re-find one item across the whole retained roster
    * by remembered words or by handle. `nowMs` resolves the same
    * alert-liveness read `getLedger` does — `search` shares its corpus with
-   * `getLedger`. An empty/whitespace-only `query` is answered with zero
-   * rows, core-side (never a client-side short-circuit, so a caller never
-   * has to know the empty-query rule itself). */
+   * `getLedger`. `Core::search` itself answers an empty/whitespace-only
+   * `query` with zero rows — the rule is core-decided, not re-implemented
+   * here — but in practice no caller in this codebase sends one:
+   * `useRecallWiring.ts` short-circuits locally and never posts this
+   * message for a blank query, so `TaskState.search` stays `null` rather
+   * than a fetched empty answer (see that field's own doc). */
   | { type: "search"; query: string; nowMs: number }
   /** Every live `Done` item — the Done screen's read. */
   | { type: "getDone" }

@@ -650,10 +650,11 @@ mod wasm_bindings {
 
         /// **Recall** (#478): re-find one item across the whole retained
         /// roster by remembered words or by handle, as JSON: `{"kind":
-        /// "ok"|"busy", "rows": [Item & {"group": "live"|"done"|"archived"}],
-        /// "total": number}`. `busy` carries an empty list and a zero
-        /// `total` because the shape demands both, and the host drops the
-        /// whole answer on it rather than storing it, same contract as
+        /// "ok"|"busy", "rows": [Item & {"pending": bool, "group":
+        /// "live"|"done"|"archived"}], "total": number}`. `busy` carries an
+        /// empty list and a zero `total` because the shape demands both,
+        /// and the host drops the whole answer on it rather than storing
+        /// it, same contract as
         /// [`TaskHost::ledger`]. `now_ms` is host-supplied and resolves the
         /// same alert-liveness read `ledger` does (`search` shares its
         /// corpus with `ledger`).

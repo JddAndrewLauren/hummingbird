@@ -829,11 +829,13 @@ export function requestLedger(worker: WorkerLike, nowMs: number): void {
 /** **Recall** (#478): re-find one item across the whole retained roster by
  * remembered words or by handle. `nowMs` is the request's own clock,
  * resolving the same alert-liveness read `requestLedger` does — `search`
- * shares its corpus with `getLedger`. An empty/whitespace-only `query` is
- * answered with zero rows core-side; this function still sends the
- * request rather than short-circuiting, so the overlay's "no results"
- * state and its "nothing typed yet" state can be told apart by whether a
- * result has arrived at all. */
+ * shares its corpus with `getLedger`. This function sends whatever `query`
+ * it is given, blank or not — it is `useRecallWiring.ts`'s job to withhold
+ * the call for an empty/whitespace-only query, not this one's; that hook is
+ * this function's only caller today. `RecallOverlay` tells "nothing typed
+ * yet" apart from "no results" on its own `query` prop directly
+ * (`trimmed.length === 0`, checked before it ever looks at `rows`), not by
+ * whether a request was sent. */
 export function requestSearch(worker: WorkerLike, query: string, nowMs: number): void {
   worker.postMessage({ type: "search", query, nowMs });
 }

@@ -42,10 +42,12 @@
 //! # Ordering and the cap (decision 8)
 //!
 //! Live before `Done` before archived; within a group, `updated_at`
-//! descending, `seq` ascending as the final, total tie-break (mirroring
-//! [`crate::rank`]'s own "always a total order" discipline). At most
-//! [`CAP`] rows are returned; [`Outcome::total`] is the *un-capped* match
-//! count, so a caller can render "N more" without inventing a second query.
+//! descending, then `seq` ascending (`Item::seq` is an `Option`, so a
+//! handle-less row sorts after every handled one at that step), then the
+//! item's `id` as the final, total tie-break — always a total order, the
+//! same discipline [`crate::rank`]'s own sort keeps. At most [`CAP`] rows
+//! are returned; [`Outcome::total`] is the *un-capped* match count, so a
+//! caller can render "N more" without inventing a second query.
 
 use hummingbird_domain::Item;
 use serde::{Deserialize, Serialize};
