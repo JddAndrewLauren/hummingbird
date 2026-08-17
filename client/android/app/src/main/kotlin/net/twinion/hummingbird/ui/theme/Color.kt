@@ -48,6 +48,11 @@ val Amber500 = Color(0xFFD99A06) // --urgency-soon (light)
 val BorderDefaultLight = Color(0xFFE2D9D0) // --border-default (light)
 val SurfaceSunkenDark = Color(0xFF0A0E13) // --surface-sunken (dark)
 val StatusInfoFgDark = Color(0xFF5CB6D8) // --status-info-fg (dark)
+// The alerts surface's `normal` tier chip in dark mode. Its light twin is
+// `Sky100` (`--status-info-bg` light is `var(--sky-100)`), but the dark
+// scope declares a translucent literal instead of aliasing the ramp — the
+// same divergence `UrgencySoonDark` below documents.
+val StatusInfoBgDark = Color(0x331E7FA8) // --status-info-bg (dark): sky 20%
 val BorderDefaultDark = Color(0x1FFFFFFF) // --border-default (dark): white 12%
 val BorderSubtleDark = Color(0x12FFFFFF) // --border-subtle (dark): white 7%
 val StatusDangerBgDark = Color(0x38B3261E) // --status-danger-bg (dark)
