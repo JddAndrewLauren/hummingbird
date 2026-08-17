@@ -98,3 +98,50 @@ at the first newline. Pipe it minified.
 
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
+
+## Proving the lane on hardware
+
+CI cannot cover any of this: there is no emulator in `android.yml` and no FCM
+delivery without a real device, so the twelve checks below are the only
+evidence the lane works end to end. They were run in full on 2026-08-17
+(Pixel 10 Pro Fold, SDK 37, #517) and every one passed. Re-run them after any
+change to `notify/`, `push/`, or the deep link.
+
+You need the device on USB, a `device`-scope token for **this** device (there
+is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
+paste another device's), and an `ingest`-scope token to raise test alerts
+with. `POST /api/alerts` requires `Scope::Ingest` and a device token gets a
+403 (`handlers/auth.rs`), so minting one is unavoidable — bind it to an
+enrolled `Writes::Alerts` source with no live token, and revoke it afterwards.
+Rules matter too: an ingested alert raises kind **`alert_raised`**, not
+`email` — the `email` kind fires inside the poller (ADR-0011) — so the test
+needs rules on `alert_raised` keyed on `source` and `severity`.
+
+1. `./gradlew installDebug`, launch, grant `POST_NOTIFICATIONS`.
+2. Paste the device token on Status; confirm it reads `Synced`.
+3. Confirm `fcm_token` exists: `adb shell run-as net.twinion.hummingbird cat
+   shared_prefs/hummingbird-push.xml`. Its absence means Firebase never
+   initialised.
+4. Grant Do Not Disturb access, **then return to the app** — the resume is
+   what creates the bypassing generation (see `NotificationChannels`).
+   Verify with `adb shell dumpsys notification --noredact`: `urgent` should
+   now be `mDeleted=true` and `urgent.dnd` live with `mBypassDnd=true`.
+5. Ring urgent. Confirm `channel=urgent.dnd`, `importance=4`, heads-up.
+6. Ring normal. Confirm `channel=normal`, `importance=3`, no bypass.
+7. Confirm `actions=1` on both — that is the Ack action, and it is what a
+   full-hybrid payload would have cost (ADR-0012's amendment).
+8. Ack from the notification shade; confirm `dismissed_at` on the authority.
+9. Ack from the alert detail screen; confirm `dismissed_at` again. **Give the
+   mutation queue a moment** — this one goes through the queue, not
+   `AckWorker`, so an immediate read of the authority still shows `null`.
+10. Tap a notification with the app running: lands on that alert's detail.
+11. Tap one cold. Kill with `adb shell am kill net.twinion.hummingbird`, not
+    `force-stop` — a force-stopped app receives no FCM at all.
+12. Swipe a notification away and confirm **nothing** is acked (ADR-0012).
+
+Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
+adb writes a warning banner into the PNG, and the ids differ inner vs cover
+(`adb shell dumpsys SurfaceFlinger --display-id`).
+
+Afterwards: revoke the ingest token, disable the test rules (there is no
+DELETE for rules, only PATCH), and dismiss the test alerts.
