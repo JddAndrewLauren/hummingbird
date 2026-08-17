@@ -184,47 +184,79 @@ pub fn send_url(project_id: &str) -> String {
 
 /// The FCM v1 request body for one notification aimed at one device token.
 ///
-/// ADR-0012's two tiers map onto Android's two levers at once: the FCM
-/// transport `priority` (whether the message wakes a dozing device at all)
-/// and the `channel_id` (which channel's user-controlled behaviour it
-/// adopts). The **urgent channel's Do-Not-Disturb bypass is requested on
-/// the device**, at channel creation — a channel's behaviour is fixed by
-/// whoever created it and cannot be changed by a later message — so all the
-/// server can do, and all it should do, is name the right channel.
+/// **Data-only, deliberately** (#141, amending #139's shipped shape; the
+/// note is inline in ADR-0012 per `docs/adr/README.md` rule 2). There is no
+/// top-level `notification` block and there must never be one again. FCM's
+/// contract is that a message carrying one is rendered by the *system* when
+/// the app is backgrounded, and `onMessageReceived` is never called — so
+/// the app process never wakes. That forecloses all three things ADR-0012's
+/// "Ack: swipe is not a gesture" section depends on:
 ///
-/// `data` carries the identifiers the client needs to act without a round
-/// trip: `alert_id` is what the notification's Ack action stamps
-/// `dismissed_at` on (ADR-0012's "swipe is not a gesture" — the swipe ends
-/// the delivery, the Ack ends the alert). FCM requires every `data` value
-/// to be a string.
+/// 1. the Ack action itself — a system-rendered tray entry has no action
+///    the client could attach `dismissed_at` to;
+/// 2. the same Ack **on the wrist** — a Wear OS action is bridged from the
+///    notification the phone app posted, and under a hybrid payload the
+///    phone app posts nothing;
+/// 3. **sync-on-push** — and with it the ack's `expected_version`. The
+///    payload carries no version (deliberately: it would be stale by the
+///    time it was read), so acking is sync-then-CAS against the mirror. If
+///    the push never wakes the app, the alert row can still be unsynced
+///    when the human taps through, and even the *in-app* ack races.
+///
+/// So the client builds every notification, always, from `data` alone.
+///
+/// **What survives the change and what does not.** `android.priority` is
+/// transport configuration — whether FCM wakes a dozing device at all — and
+/// applies to a data-only message exactly as before, so ADR-0012's two
+/// tiers keep their two wake behaviours. `android.notification` does *not*:
+/// it configures FCM's own rendering, which no longer happens, and a block
+/// left there would be dead config that reads like a live decision. Its
+/// `channel_id` therefore moves into `data`, where the client actually
+/// reads it — the routing stays the **server's** decision rather than
+/// becoming a `tier`→channel mapping Kotlin re-derives and can drift on.
+/// Its `notification_priority` is simply gone: it was the pre-O legacy
+/// lever, and on a client-built notification the channel's own importance
+/// (set at creation, alongside the urgent channel's DND bypass) is what
+/// governs.
+///
+/// The **urgent channel's Do-Not-Disturb bypass is still requested on the
+/// device**, at channel creation — a channel's behaviour is fixed by
+/// whoever created it and cannot be changed by a later message. That was
+/// true under the hybrid payload and is true here; all the server can do,
+/// and all it should do, is name the right channel.
+///
+/// The client must create channels with **exactly** the `channel_id`
+/// strings sent here (`"urgent"`, `"normal"`) or Android silently drops the
+/// notification to the default channel.
+///
+/// FCM requires every `data` value to be a string — the test below pins
+/// that for the whole map, not just the ids.
 pub fn message_json(notification: &PushNotification, fcm_token: &str) -> String {
-    let (transport_priority, channel_id, notification_priority) = match notification.tier {
-        Tier::Urgent => ("high", "urgent", "PRIORITY_MAX"),
-        Tier::Normal => ("normal", "normal", "PRIORITY_DEFAULT"),
+    let (transport_priority, channel_id) = match notification.tier {
+        Tier::Urgent => ("high", "urgent"),
+        Tier::Normal => ("normal", "normal"),
     };
 
-    let mut notification_block = serde_json::Map::new();
-    notification_block.insert("title".into(), notification.title.clone().into());
+    let mut data = serde_json::Map::new();
+    data.insert("alert_id".into(), notification.alert_id.clone().into());
+    data.insert("severity".into(), notification.severity.clone().into());
+    data.insert("tier".into(), notification.tier.as_str().into());
+    data.insert("channel_id".into(), channel_id.into());
+    data.insert("title".into(), notification.title.clone().into());
+    // Absent rather than an empty string: the client renders a bodyless
+    // notification differently from one with a blank line, and `data` has
+    // no null to express "no body" with.
     if let Some(body) = &notification.body {
-        notification_block.insert("body".into(), body.clone().into());
+        data.insert("body".into(), body.clone().into());
     }
 
     serde_json::json!({
         "message": {
             "token": fcm_token,
-            "notification": notification_block,
             "android": {
                 "priority": transport_priority,
-                "notification": {
-                    "channel_id": channel_id,
-                    "notification_priority": notification_priority,
-                },
             },
-            "data": {
-                "alert_id": notification.alert_id,
-                "severity": notification.severity,
-                "tier": notification.tier.as_str(),
-            },
+            "data": data,
         }
     })
     .to_string()
@@ -504,20 +536,44 @@ mod tests {
         }
     }
 
+    /// **The load-bearing test of the whole lane (#141).** A top-level
+    /// `notification` block means FCM renders the tray entry itself and
+    /// `onMessageReceived` never fires when the app is backgrounded — which
+    /// costs ADR-0012 its Ack action, the wrist Ack, and the sync-on-push
+    /// the ack's `expected_version` depends on. Re-adding one would break
+    /// no other test here: every remaining assertion would still pass, and
+    /// the lane would simply stop working on a real device. Hence this.
+    #[test]
+    fn the_message_is_data_only_so_the_client_always_builds_the_notification() {
+        for tier in [Tier::Urgent, Tier::Normal] {
+            let json: serde_json::Value =
+                serde_json::from_str(&message_json(&notification(tier), "tok-1")).unwrap();
+            let message = &json["message"];
+            assert!(
+                message.get("notification").is_none(),
+                "a notification block stops onMessageReceived from ever firing",
+            );
+            assert!(
+                message["android"].get("notification").is_none(),
+                "android.notification only configures FCM's own rendering, which no longer happens",
+            );
+        }
+    }
+
     #[test]
     fn urgent_maps_to_high_transport_priority_and_the_urgent_channel() {
         let json: serde_json::Value =
             serde_json::from_str(&message_json(&notification(Tier::Urgent), "tok-1")).unwrap();
         let message = &json["message"];
         assert_eq!(message["token"], "tok-1");
-        assert_eq!(message["notification"]["title"], "Ship the thing");
-        assert_eq!(message["notification"]["body"], "due in 2 days");
+        // Transport priority — whether FCM wakes a dozing device — is the
+        // one `android` lever a data-only message still carries.
         assert_eq!(message["android"]["priority"], "high");
-        assert_eq!(message["android"]["notification"]["channel_id"], "urgent");
-        assert_eq!(
-            message["android"]["notification"]["notification_priority"],
-            "PRIORITY_MAX",
-        );
+        // Channel routing stays the server's decision; it just travels in
+        // `data` now, because that is where the client can read it.
+        assert_eq!(message["data"]["channel_id"], "urgent");
+        assert_eq!(message["data"]["title"], "Ship the thing");
+        assert_eq!(message["data"]["body"], "due in 2 days");
     }
 
     #[test]
@@ -525,11 +581,7 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&message_json(&notification(Tier::Normal), "tok-1")).unwrap();
         assert_eq!(json["message"]["android"]["priority"], "normal");
-        assert_eq!(json["message"]["android"]["notification"]["channel_id"], "normal");
-        assert_eq!(
-            json["message"]["android"]["notification"]["notification_priority"],
-            "PRIORITY_DEFAULT",
-        );
+        assert_eq!(json["message"]["data"]["channel_id"], "normal");
     }
 
     /// The Ack action needs the alert id, and FCM requires every `data`
@@ -548,13 +600,38 @@ mod tests {
         }
     }
 
+    /// Everything the client needs to build the notification without a
+    /// round trip now rides in `data` — pinned as a whole, since a field
+    /// dropped from here is a field the client cannot render and has no
+    /// other way to get.
+    #[test]
+    fn data_carries_the_whole_renderable_notification() {
+        let json: serde_json::Value =
+            serde_json::from_str(&message_json(&notification(Tier::Urgent), "tok-1")).unwrap();
+        assert_eq!(
+            json["message"]["data"],
+            serde_json::json!({
+                "alert_id": "alert-1",
+                "severity": "high",
+                "tier": "urgent",
+                "channel_id": "urgent",
+                "title": "Ship the thing",
+                "body": "due in 2 days",
+            })
+        );
+    }
+
     #[test]
     fn a_bodyless_notification_omits_the_body_rather_than_sending_null() {
         let mut n = notification(Tier::Normal);
         n.body = None;
         let json: serde_json::Value = serde_json::from_str(&message_json(&n, "tok-1")).unwrap();
-        assert_eq!(json["message"]["notification"]["title"], "Ship the thing");
-        assert!(json["message"]["notification"].get("body").is_none());
+        let data = &json["message"]["data"];
+        assert_eq!(data["title"], "Ship the thing");
+        assert!(
+            data.get("body").is_none(),
+            "`data` has no null — absent is how 'no body' is expressed"
+        );
     }
 
     #[test]

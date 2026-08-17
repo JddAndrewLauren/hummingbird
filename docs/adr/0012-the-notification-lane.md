@@ -213,6 +213,30 @@ the top of the stack. A reflexive swipe must not be able to silently
 discharge an urgent alert; the whole lane exists on the promise that what
 rang was worth addressing.
 
+*Amended 2026-08-17 (#141): this decision fixes the FCM payload shape, which
+the lane's server half (#139) had shipped as a hybrid — a `notification`
+block alongside `data`. FCM renders a message carrying a `notification`
+block itself when the app is backgrounded and never calls
+`onMessageReceived`, so the app process never wakes; the hybrid payload
+therefore could not produce the Ack action at all, could not bridge one to
+the wrist (a Wear OS action comes from the notification the phone app
+posted), and could not trigger the sync-on-push that the ack's
+`expected_version` depends on — the payload deliberately carries no version,
+so acking is sync-then-CAS against the mirror, and an unwoken app can still
+be missing the row when the human taps through. The payload is now
+**data-only**: `title`, `body` and `channel_id` moved into `data`, the
+`notification` and `android.notification` blocks are gone, and the client
+builds every notification itself. `android.priority` is transport
+configuration and is unaffected, so this section's two tiers keep their two
+wake behaviours. The shape and the reasoning live at
+`server/authority/src/fcm.rs::message_json`. The DND-bypass rule is
+unchanged: a channel's behaviour was always fixed at creation, on the
+device. The accepted cost is that a push arriving when the OS will not let
+the app process start now renders nothing at all, where the hybrid payload
+would have shown a tray entry — mitigated by the alerts surface reading the
+synced mirror, so a notification that never rendered is still there on next
+open.*
+
 ### Sequencing: notifications ship in their final home
 
 **Task-parity cutover (ADR-0008) → full Android client (embedded core,
