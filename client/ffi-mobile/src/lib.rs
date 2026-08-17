@@ -24,7 +24,7 @@
 //! providing one. Interior state is a `tokio::sync::Mutex` for the same
 //! reason: it is held across the cycle's awaits.
 //!
-//! **Android never calls a per-item decision function** (M1-6/#504) — this
+//! **Android never calls a per-row decision function** (M1-6/#504) — this
 //! is the designed asymmetry with the web seam. `client/ffi-web/src/decisions.rs`
 //! exposes `hummingbird_core::decisions` as a free-function door a *second*,
 //! main-thread wasm instance calls per keystroke/per row (that module's own
@@ -40,6 +40,13 @@
 //! [`AlertRecord`] is M2's instance of the same rule: it ships `is_live`
 //! and `can_ack` as answers, so no Kotlin `dismissedAt == null` test can
 //! disagree with ADR-0014's predicate.
+//!
+//! The rule is *per row*, and **free doors are per gesture**: the cost it
+//! guards against is a JNI crossing multiplied by a list, which a gesture
+//! taken once does not incur. [`can_submit_capture`] runs once per submit
+//! and [`notification_tap_target`] once per notification tap — the latter
+//! could not be a record at all, since the tap holds two payload strings
+//! and no row to hang a decided answer on.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,6 +73,44 @@ use hummingbird_domain::{Alert, CreatePushTarget, Item, Platform, Stage};
 #[uniffi::export]
 pub fn can_submit_capture(draft: &str) -> bool {
     hummingbird_core::decisions::can_submit_capture(draft)
+}
+
+/// [`decisions::TapTarget`], mirrored as a `uniffi::Enum` for
+/// [`notification_tap_target`] — a second definition rather than an
+/// annotation on the core type, for [`MobileUrgencyBand`]'s reason
+/// (ADR-0003 keeps `hummingbird-core` binding-agnostic), and mapped
+/// exhaustively with no wildcard arm so a third destination cannot reach
+/// Kotlin unnoticed.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileTapTarget {
+    Item { item_id: String },
+    Alert,
+}
+
+/// Where a tapped notification lands, from the push payload's `source` and
+/// `source_key` (ADR-0027) — the second free door on this seam, and the
+/// second instance of the per-gesture carve-out the module header states.
+///
+/// `MainActivity`'s deep-link collector calls this **synchronously**,
+/// before navigating. That is the whole reason it is a free function and
+/// not a [`MobileTaskHost`] method: a method would take the interior mutex
+/// and make the answer async, for a decision that reads no state. A Kotlin
+/// `removePrefix("item:")` is banned here exactly as `isBlank()` is banned
+/// for capture — the key recipe has one owner in
+/// `hummingbird_domain`, and a hand-copy would keep compiling after the
+/// recipe moved while silently routing every tap to the wrong place.
+///
+/// Kotlin passes empty strings for a payload that carried neither field
+/// (an older server); that opens alert detail, which is the permanent
+/// contract for every alert naming no item.
+#[uniffi::export]
+pub fn notification_tap_target(source: &str, source_key: &str) -> MobileTapTarget {
+    match hummingbird_core::decisions::notification_tap_target(source, source_key) {
+        hummingbird_core::decisions::TapTarget::Item { item_id } => {
+            MobileTapTarget::Item { item_id }
+        }
+        hummingbird_core::decisions::TapTarget::Alert => MobileTapTarget::Alert,
+    }
 }
 
 /// Mints a fresh seed for one durable mutation ([`MobileTaskHost::capture`]
@@ -908,6 +953,29 @@ mod tests {
                 can_submit_capture(draft),
                 hummingbird_core::decisions::can_submit_capture(draft),
                 "{draft:?} disagreed across the binding",
+            );
+        }
+    }
+
+    /// The tap-target binding, pinned the same way: the mapping is the
+    /// only place the seam enum and the core enum may drift, so both arms
+    /// are crossed here against the real key recipe.
+    #[test]
+    fn the_tap_target_binding_is_the_core_rule_verbatim() {
+        let key = hummingbird_domain::item_threshold_v1_key("item-42");
+        assert_eq!(
+            notification_tap_target(hummingbird_domain::ITEM_THRESHOLD_V1, &key),
+            MobileTapTarget::Item { item_id: "item-42".into() }
+        );
+        for (source, source_key) in [
+            (hummingbird_domain::ITEM_THRESHOLD_V1, "not-an-item-key"),
+            ("city-waste/v2", key.as_str()),
+            ("", ""),
+        ] {
+            assert_eq!(
+                notification_tap_target(source, source_key),
+                MobileTapTarget::Alert,
+                "({source:?}, {source_key:?}) should open the alert",
             );
         }
     }
