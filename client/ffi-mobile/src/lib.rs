@@ -572,6 +572,11 @@ pub struct ItemDetailRecord {
     pub size: Option<String>,
     pub energy: Option<String>,
     pub context: Option<String>,
+    /// `CONTEXT.md`'s **Delegation axis**, the fourth axis alongside size,
+    /// energy and context. Read-only here: it is set and cleared
+    /// deliberately elsewhere, and `TriagePatch` carries no field for it,
+    /// so [`MobileTaskHost::edit_item`] cannot touch it either.
+    pub agent: bool,
     pub priority: i64,
     pub project_id: Option<String>,
     /// The project's name, or `None` when this device has not synced the
@@ -606,6 +611,7 @@ fn to_item_detail_record(
         size: item.size.map(|size| size.as_str().to_string()),
         energy: item.energy.map(|energy| energy.as_str().to_string()),
         context: item.context.clone(),
+        agent: item.agent,
         priority: item.priority,
         project_id: detail.project.as_ref().map(|project| project.id.clone()),
         project_name: detail.project.as_ref().and_then(|project| project.name.clone()),
@@ -1792,6 +1798,7 @@ mod tests {
         assert_eq!(record.size.as_deref(), Some("quick"));
         assert_eq!(record.energy.as_deref(), Some("low"));
         assert_eq!(record.project_name.as_deref(), Some("Kitchen"));
+        assert!(!record.agent, "the delegation axis is carried, absence and all");
         assert_eq!(record.available_actions, vec!["start", "complete"]);
         assert!(record.is_editable);
         assert_eq!(
