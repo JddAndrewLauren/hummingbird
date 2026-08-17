@@ -14,7 +14,11 @@ lifecycle; `deliveries.generation` is the alert's `raised_at` at send, and
 still ring as two; re-entering live-unacked after a dismissal *or a
 resolution* works by the `raised_at >` comparison rather than by clearing the column; and two
 rules matching one event mint one alert whose severity ratchets up, never
-down.
+down. · **amended 2026-08-17 by
+[ADR-0027](0027-an-alert-opens-the-thing-it-is-about.md):** the data-only
+payload fixed by the #141 amendment below gains `source` and `source_key`, so
+a tap can decide what the alert is about without reading the mirror; a
+notification whose alert names an item opens the item, not the alert.
 **Context:** the push-notifications grilling of 2026-08-09. Companion to
 [ADR-0011](0011-context-ingestion-moves-server-side.md), which owns how
 stream events reach the rule engine; this ADR owns what a rule is, what a
@@ -236,6 +240,9 @@ the app process start now renders nothing at all, where the hybrid payload
 would have shown a tray entry — mitigated by the alerts surface reading the
 synced mirror, so a notification that never rendered is still there on next
 open.*
+
+*The `data` field set above is amended by a later ADR — see the Status
+header.*
 
 ### Sequencing: notifications ship in their final home
 

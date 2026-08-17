@@ -1,0 +1,517 @@
+package net.twinion.hummingbird
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
+import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
+import uniffi.hummingbird_ffi_mobile.MetaProblems
+
+// One item, in full (#141's last slice, ADR-0027) — where a tapped
+// `item-threshold/v1` notification lands, because a state source's alert is
+// a reading of the item's condition and landing on the alert would show a
+// reading of a thing while withholding the thing.
+//
+// This file decides nothing. `availableActions` gates the act buttons,
+// `isEditable` gates the edit affordance, `canAck` gates the Ack, and the
+// open-blocker list is rendered exactly as the core assembled it — a
+// titleless row means an id this device has not synced, and it is shown as
+// the bare id rather than dropped, because a count that understates what
+// holds an item back is worse than an ugly row.
+//
+// **The one dialog in the app, and why.** The house is dialog-wary
+// (`AlertsScreen`'s own note). This one guards a draft: content a person
+// wrote by hand. The repo's standing rule — the dead-letter journal keeps
+// the words a person wrote, "parse is additive" never discards input — is
+// that human-authored content is never silently thrown away, and Back out
+// of a changed edit form would do exactly that. An *unchanged* draft is
+// never fought over: the `BackHandler` is conditional on the draft
+// actually differing from the record.
+
+@Composable
+fun ItemDetailScreen(
+    itemId: String,
+    syncTick: Int = 0,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val viewModel: ItemDetailViewModel =
+        viewModel(factory = ItemDetailViewModel.factory(context))
+    val state by viewModel.state.collectAsState()
+    val statusLine by viewModel.statusLine.collectAsState()
+    val draft by viewModel.draft.collectAsState()
+    val dark = isSystemInDarkTheme()
+    // Saveable: an Activity recreation mid-question must not silently
+    // answer it.
+    var confirmingDiscard by rememberSaveable { mutableStateOf(false) }
+
+    suspend fun reload() {
+        viewModel.load(itemId, System.currentTimeMillis())
+    }
+
+    LaunchedEffect(itemId) { reload() }
+
+    LifecycleResumeEffect(itemId) {
+        val resumed = scope.launch { reload() }
+        onPauseOrDispose { resumed.cancel() }
+    }
+
+    LaunchedEffect(syncTick) {
+        if (syncTick > 0) reload()
+    }
+
+    // Only while there is something to lose. An idle Back is never fought.
+    BackHandler(enabled = draft != null && viewModel.isDirty) {
+        confirmingDiscard = true
+    }
+
+    if (confirmingDiscard) {
+        DiscardConfirmation(
+            onKeep = { confirmingDiscard = false },
+            onDiscard = {
+                confirmingDiscard = false
+                viewModel.discardEdit()
+            },
+        )
+    }
+
+    Scaffold { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            TextButton(
+                onClick = {
+                    if (draft != null && viewModel.isDirty) confirmingDiscard = true
+                    else if (draft != null) viewModel.discardEdit()
+                    else onBack()
+                },
+            ) {
+                Text(if (draft != null) "Cancel" else "Back")
+            }
+
+            statusLine?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            when (val current = state) {
+                ItemDetailState.Loading -> CircularProgressIndicator()
+                ItemDetailState.NotSynced -> ItemNotSyncedBody(
+                    onRetry = { scope.launch { reload() } },
+                )
+                is ItemDetailState.Loaded -> {
+                    val editing = draft
+                    if (editing == null) {
+                        ReadBody(
+                            record = current.record,
+                            dark = dark,
+                            onEdit = { viewModel.beginEdit() },
+                            onAct = { action ->
+                                scope.launch {
+                                    viewModel.act(itemId, action, System.currentTimeMillis())
+                                }
+                            },
+                            onAck = { alertId ->
+                                scope.launch {
+                                    viewModel.ack(itemId, alertId, System.currentTimeMillis())
+                                }
+                            },
+                        )
+                    } else {
+                        EditBody(
+                            draft = editing,
+                            problems = viewModel.metaProblems,
+                            canSave = viewModel.canSave,
+                            onChange = viewModel::updateDraft,
+                            onSave = {
+                                scope.launch {
+                                    viewModel.save(itemId, System.currentTimeMillis())
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ItemNotSyncedBody(onRetry: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Not synced yet", style = MaterialTheme.typography.headlineLarge)
+        Text(
+            "This device hasn't got this item yet. A sync has already run " +
+                "once; try again in a moment.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(onClick = onRetry) {
+            Text("Try again")
+        }
+    }
+}
+
+@Composable
+private fun ReadBody(
+    record: ItemDetailRecord,
+    dark: Boolean,
+    onEdit: () -> Unit,
+    onAct: (String) -> Unit,
+    onAck: (String) -> Unit,
+) {
+    if (record.isArchived) {
+        // Honesty over reassurance: history is readable here, and says so.
+        Text(
+            "ARCHIVED · READ ONLY",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(6.dp),
+                )
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            record.stage.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        record.seq?.let {
+            Text(
+                "HB-$it",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        record.projectName?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } ?: record.projectId?.let {
+            // The name is unsynced, not the project: show the id rather
+            // than pretending the item belongs to nothing.
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    Text(record.title, style = MaterialTheme.typography.headlineLarge)
+
+    record.description?.let {
+        Text(it, style = MaterialTheme.typography.bodyLarge)
+    }
+
+    // The four axes and the two dates, in the mono meta style: values the
+    // system holds, not words a human wrote.
+    val axes = buildList {
+        record.size?.let { add("SIZE:${it.uppercase()}") }
+        record.energy?.let { add("ENERGY:${it.uppercase()}") }
+        record.context?.let { add(it.uppercase()) }
+        if (record.agent) add("AGENT")
+        add("PRIORITY:${record.priority}")
+        record.deadline?.let { add("DUE:$it") }
+        record.scheduledDate?.let { add("SCHEDULED:$it") }
+    }
+    Text(
+        axes.joinToString(" · "),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (record.openBlockers.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "BLOCKED BY",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (blocker in record.openBlockers) {
+                // A titleless blocker renders as its id — never dropped.
+                Text(
+                    blocker.title ?: blocker.itemId,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
+
+    if (record.steps.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "STEPS",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (step in record.steps) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // Read-only: no step mutation crosses the seam yet, and
+                    // a tickable-looking checkbox that did nothing would be
+                    // a lie about what this build can do.
+                    Text(
+                        if (step.done) "DONE" else "TODO",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(step.body, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+
+    record.liveAlert?.let { alert ->
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val (fg, bg) = severityTone(alert.severity, dark)
+                    Text(
+                        severityLabel(alert.severity),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = fg,
+                        modifier = Modifier
+                            .background(bg, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+                Text(alert.title, style = MaterialTheme.typography.bodyLarge)
+                alert.body?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // The Ack lives here, one tap from where the notification
+                // landed (ADR-0027 part 3) — and stays offered on an
+                // archived item, since silencing something still ringing is
+                // not editing history.
+                if (alert.canAck) {
+                    Button(onClick = { onAck(alert.id) }) {
+                        Text("Ack")
+                    }
+                }
+            }
+        }
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (action in record.availableActions) {
+            OutlinedButton(onClick = { onAct(action) }) {
+                Text(ACTION_LABEL[action] ?: action)
+            }
+        }
+    }
+
+    if (record.isEditable) {
+        OutlinedButton(onClick = onEdit) {
+            Text("Edit")
+        }
+    }
+}
+
+@Composable
+private fun EditBody(
+    draft: ItemDraft,
+    problems: MetaProblems?,
+    canSave: Boolean,
+    onChange: (ItemDraft) -> Unit,
+    onSave: () -> Unit,
+) {
+    OutlinedTextField(
+        value = draft.title,
+        onValueChange = { onChange(draft.copy(title = it)) },
+        label = { Text("Title") },
+        // An item must have a title (`NOT NULL`), so an empty one is
+        // refused here rather than saved as a silent no-op. Whether it
+        // *is* empty is the core's answer, never this file's.
+        isError = !canSave && draft.title.isEmpty(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = draft.description,
+        onValueChange = { onChange(draft.copy(description = it)) },
+        label = { Text("Notes") },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = draft.context,
+        onValueChange = { onChange(draft.copy(context = it)) },
+        // Free text, not a picker: the set of places a person works is
+        // theirs (CONTEXT.md's Context — an open vocabulary).
+        label = { Text("Context") },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    // The two free-text dates are the only fields that can be malformed —
+    // everything else is a closed vocabulary offered as choices, or the
+    // title. The problem strings are the core's, shared with the web's
+    // capture box and triage form, so a bad date is refused with the same
+    // words everywhere instead of being sent for the authority to 400.
+    OutlinedTextField(
+        value = draft.deadline,
+        onValueChange = { onChange(draft.copy(deadline = it)) },
+        label = { Text("Deadline") },
+        isError = problems?.deadline != null,
+        supportingText = problems?.deadline?.let { { Text(it) } },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = draft.scheduledDate,
+        onValueChange = { onChange(draft.copy(scheduledDate = it)) },
+        label = { Text("Scheduled date") },
+        isError = problems?.scheduledDate != null,
+        supportingText = problems?.scheduledDate?.let { { Text(it) } },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    // Closed vocabularies, so a choice row rather than a text field: an
+    // unrecognised word is refused at the seam, and offering one to type
+    // would invite exactly that refusal.
+    VocabularyRow(
+        label = "SIZE",
+        options = listOf("quick", "normal", "deep"),
+        selected = draft.size,
+        onSelect = { onChange(draft.copy(size = it)) },
+    )
+    VocabularyRow(
+        label = "ENERGY",
+        options = listOf("low", "medium", "high"),
+        selected = draft.energy,
+        onSelect = { onChange(draft.copy(energy = it)) },
+    )
+    VocabularyRow(
+        label = "PRIORITY",
+        options = listOf("0", "1", "2", "3", "4"),
+        selected = draft.priority,
+        // Priority is `NOT NULL`: re-tapping the current value cannot
+        // clear it, so this row never sends an empty string.
+        onSelect = { onChange(draft.copy(priority = it)) },
+        clearable = false,
+    )
+
+    Button(onClick = onSave, enabled = canSave) {
+        Text("Save")
+    }
+}
+
+/** One closed-vocabulary field as a row of words. Tapping the selected
+ * word again clears the field — which is a real edit (an explicit null),
+ * distinct from leaving it alone, and the only way to say "this item has
+ * no size after all". */
+@Composable
+private fun VocabularyRow(
+    label: String,
+    options: List<String>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    clearable: Boolean = true,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (option in options) {
+                val isSelected = option == selected
+                if (isSelected) {
+                    Button(onClick = { if (clearable) onSelect("") }) {
+                        Text(option)
+                    }
+                } else {
+                    OutlinedButton(onClick = { onSelect(option) }) {
+                        Text(option)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The discard confirmation — the app's first dialog, and deliberately its
+ * only one. See this file's header for why a draft earns it. */
+@Composable
+private fun DiscardConfirmation(onKeep: () -> Unit, onDiscard: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onKeep,
+        title = { Text("Discard changes?") },
+        text = {
+            Text("This edit hasn't been saved. Going back will lose it.")
+        },
+        confirmButton = {
+            TextButton(onClick = onDiscard) { Text("Discard") }
+        },
+        dismissButton = {
+            TextButton(onClick = onKeep) { Text("Keep editing") }
+        },
+    )
+}

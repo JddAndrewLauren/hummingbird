@@ -32,6 +32,10 @@ class ScreenStateRetentionTest {
         "NowScreen.kt" to "NowViewModel",
         "AlertsScreen.kt" to "AlertsViewModel",
         "AlertDetailScreen.kt" to "AlertDetailViewModel",
+        // The item screen has the most to lose of any of them: its edit
+        // draft is content a person typed, and a fold mid-edit is exactly
+        // the transition this gate exists for.
+        "ItemDetailScreen.kt" to "ItemDetailViewModel",
     )
 
     @Test

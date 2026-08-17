@@ -243,6 +243,13 @@ pub fn message_json(notification: &PushNotification, fcm_token: &str) -> String 
     data.insert("tier".into(), notification.tier.as_str().into());
     data.insert("channel_id".into(), channel_id.into());
     data.insert("title".into(), notification.title.clone().into());
+    // Unconditional, unlike `body` below: ADR-0027 has the client decide
+    // what a tap opens from these two, and an absent pair is a *different*
+    // answer (open the alert) than a present one naming no item. Both are
+    // non-optional on the alert row, so there is nothing to express as
+    // absence here.
+    data.insert("source".into(), notification.source.clone().into());
+    data.insert("source_key".into(), notification.source_key.clone().into());
     // Absent rather than an empty string: the client renders a bodyless
     // notification differently from one with a blank line, and `data` has
     // no null to express "no body" with.
@@ -533,6 +540,10 @@ mod tests {
             body: Some("due in 2 days".into()),
             severity: "high".into(),
             tier,
+            source: hummingbird_domain::ITEM_THRESHOLD_V1.into(),
+            // Built through the recipe, never spelled as a literal — the
+            // key convention has one owner (ADR-0027 part 2).
+            source_key: hummingbird_domain::item_threshold_v1_key("item-7"),
         }
     }
 
@@ -617,6 +628,8 @@ mod tests {
                 "channel_id": "urgent",
                 "title": "Ship the thing",
                 "body": "due in 2 days",
+                "source": "item-threshold/v1",
+                "source_key": "item:item-7",
             })
         );
     }

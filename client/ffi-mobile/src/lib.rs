@@ -24,7 +24,7 @@
 //! providing one. Interior state is a `tokio::sync::Mutex` for the same
 //! reason: it is held across the cycle's awaits.
 //!
-//! **Android never calls a per-item decision function** (M1-6/#504) — this
+//! **Android never calls a per-row decision function** (M1-6/#504) — this
 //! is the designed asymmetry with the web seam. `client/ffi-web/src/decisions.rs`
 //! exposes `hummingbird_core::decisions` as a free-function door a *second*,
 //! main-thread wasm instance calls per keystroke/per row (that module's own
@@ -40,6 +40,13 @@
 //! [`AlertRecord`] is M2's instance of the same rule: it ships `is_live`
 //! and `can_ack` as answers, so no Kotlin `dismissedAt == null` test can
 //! disagree with ADR-0014's predicate.
+//!
+//! The rule is *per row*, and **free doors are per gesture**: the cost it
+//! guards against is a JNI crossing multiplied by a list, which a gesture
+//! taken once does not incur. [`can_submit_capture`] runs once per submit
+//! and [`notification_tap_target`] once per notification tap — the latter
+//! could not be a record at all, since the tap holds two payload strings
+//! and no row to hang a decided answer on.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,7 +60,7 @@ use hummingbird_core::sync::write::transport::{
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::{CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
-use hummingbird_domain::{Alert, CreatePushTarget, Item, Platform, Stage};
+use hummingbird_domain::{Alert, CreatePushTarget, Energy, Item, Platform, Size, Stage};
 
 /// Whether `draft` is worth submitting — the free door onto
 /// [`hummingbird_core::decisions::can_submit_capture`] (ADR-0025), the
@@ -66,6 +73,74 @@ use hummingbird_domain::{Alert, CreatePushTarget, Item, Platform, Stage};
 #[uniffi::export]
 pub fn can_submit_capture(draft: &str) -> bool {
     hummingbird_core::decisions::can_submit_capture(draft)
+}
+
+/// [`hummingbird_core::decisions::CaptureMetaProblems`], mirrored as a
+/// `uniffi::Record` — what is wrong with a draft's two free-text date
+/// fields, `None` per field meaning nothing is.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MetaProblems {
+    pub deadline: Option<String>,
+    pub scheduled_date: Option<String>,
+}
+
+/// The third free door on this seam, and the item edit form's first caller
+/// (ADR-0027): the same rule the web's capture box and triage form both
+/// read, so a malformed date is refused with the same words on every
+/// client rather than being sent for the authority to 400 into the
+/// dead-letter journal.
+///
+/// Only the free-text dates can be wrong here — every other editable field
+/// is a closed vocabulary the form offers as choices, or the title, which
+/// [`can_submit_capture`] already answers for.
+#[uniffi::export]
+pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> MetaProblems {
+    let problems = hummingbird_core::decisions::capture::capture_meta_problems(
+        deadline,
+        scheduled_date,
+    );
+    MetaProblems {
+        deadline: problems.deadline,
+        scheduled_date: problems.scheduled_date,
+    }
+}
+
+/// [`decisions::TapTarget`], mirrored as a `uniffi::Enum` for
+/// [`notification_tap_target`] — a second definition rather than an
+/// annotation on the core type, for [`MobileUrgencyBand`]'s reason
+/// (ADR-0003 keeps `hummingbird-core` binding-agnostic), and mapped
+/// exhaustively with no wildcard arm so a third destination cannot reach
+/// Kotlin unnoticed.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileTapTarget {
+    Item { item_id: String },
+    Alert,
+}
+
+/// Where a tapped notification lands, from the push payload's `source` and
+/// `source_key` (ADR-0027) — the second free door on this seam, and the
+/// second instance of the per-gesture carve-out the module header states.
+///
+/// `MainActivity`'s deep-link collector calls this **synchronously**,
+/// before navigating. That is the whole reason it is a free function and
+/// not a [`MobileTaskHost`] method: a method would take the interior mutex
+/// and make the answer async, for a decision that reads no state. A Kotlin
+/// `removePrefix("item:")` is banned here exactly as `isBlank()` is banned
+/// for capture — the key recipe has one owner in
+/// `hummingbird_domain`, and a hand-copy would keep compiling after the
+/// recipe moved while silently routing every tap to the wrong place.
+///
+/// Kotlin passes empty strings for a payload that carried neither field
+/// (an older server); that opens alert detail, which is the permanent
+/// contract for every alert naming no item.
+#[uniffi::export]
+pub fn notification_tap_target(source: &str, source_key: &str) -> MobileTapTarget {
+    match hummingbird_core::decisions::notification_tap_target(source, source_key) {
+        hummingbird_core::decisions::TapTarget::Item { item_id } => {
+            MobileTapTarget::Item { item_id }
+        }
+        hummingbird_core::decisions::TapTarget::Alert => MobileTapTarget::Alert,
+    }
 }
 
 /// Mints a fresh seed for one durable mutation ([`MobileTaskHost::capture`]
@@ -479,6 +554,218 @@ fn to_alert_record(alert: &Alert, now_ms: i64) -> AlertRecord {
     }
 }
 
+// ----------------------------------------------------------- item detail
+// ADR-0027's last slice. Mapping only, zero assembly: every answer here was
+// decided by `hummingbird_core::Core::item_detail` — see
+// `hummingbird_core::item_detail` for what each field means and why.
+
+/// One checklist row. Read-only on this seam: no step mutation crosses it
+/// yet, which is why [`hummingbird_core::item_detail::ItemDetail::steps`]
+/// is deliberately un-overlaid on the other side.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ItemStepRecord {
+    pub id: String,
+    pub body: String,
+    pub done: bool,
+    pub position: i64,
+}
+
+/// One open blocker. `title` is `None` for an id this device has not
+/// synced — the row is still listed, and the screen renders the bare id
+/// rather than dropping a blocker the reader would never learn about.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct OpenBlockerRecord {
+    pub item_id: String,
+    pub title: Option<String>,
+}
+
+/// One item, decided — the item screen's whole read (`CONTEXT.md`'s **Item
+/// detail**). Carries the wire columns the screen renders plus the verdicts
+/// Kotlin must never re-derive: `is_archived`, `is_editable` (Recall's
+/// rule, #478) and `available_actions`, which is **empty for an archived
+/// row** whatever `stage` still says.
+///
+/// `live_alert` reuses [`AlertRecord`] rather than restating it: that
+/// record already ships `is_live` and `can_ack` as answers, and the item
+/// screen offers exactly the same Ack the alert screen does.
+///
+/// `size` and `energy` cross as their wire vocabulary
+/// ([`Size::as_str`]/[`Energy::as_str`]), the same closed-vocabulary
+/// discipline the act strings already follow.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ItemDetailRecord {
+    pub id: String,
+    pub seq: Option<i64>,
+    pub title: String,
+    pub description: Option<String>,
+    pub stage: String,
+    pub size: Option<String>,
+    pub energy: Option<String>,
+    pub context: Option<String>,
+    /// `CONTEXT.md`'s **Delegation axis**, the fourth axis alongside size,
+    /// energy and context. Read-only here: it is set and cleared
+    /// deliberately elsewhere, and `TriagePatch` carries no field for it,
+    /// so [`MobileTaskHost::edit_item`] cannot touch it either.
+    pub agent: bool,
+    pub priority: i64,
+    pub project_id: Option<String>,
+    /// The project's name, or `None` when this device has not synced the
+    /// project row — never a reason to hide `project_id`.
+    pub project_name: Option<String>,
+    pub deadline: Option<String>,
+    pub scheduled_date: Option<String>,
+    pub source_url: Option<String>,
+    pub updated_at: i64,
+    /// CAS target for the edit, exactly as [`AlertRecord::version`] is for
+    /// the ack.
+    pub version: i64,
+    pub steps: Vec<ItemStepRecord>,
+    pub open_blockers: Vec<OpenBlockerRecord>,
+    pub live_alert: Option<AlertRecord>,
+    pub is_archived: bool,
+    pub is_editable: bool,
+    pub available_actions: Vec<String>,
+}
+
+fn to_item_detail_record(
+    detail: &hummingbird_core::item_detail::ItemDetail,
+    now_ms: i64,
+) -> ItemDetailRecord {
+    let item = &detail.item;
+    ItemDetailRecord {
+        id: item.id.clone(),
+        seq: item.seq,
+        title: item.title.clone(),
+        description: item.description.clone(),
+        stage: item.stage.as_str().to_string(),
+        size: item.size.map(|size| size.as_str().to_string()),
+        energy: item.energy.map(|energy| energy.as_str().to_string()),
+        context: item.context.clone(),
+        agent: item.agent,
+        priority: item.priority,
+        project_id: detail.project.as_ref().map(|project| project.id.clone()),
+        project_name: detail.project.as_ref().and_then(|project| project.name.clone()),
+        deadline: item.deadline.clone(),
+        scheduled_date: item.scheduled_date.clone(),
+        source_url: item.source_url.clone(),
+        updated_at: item.updated_at,
+        version: item.version,
+        steps: detail
+            .steps
+            .iter()
+            .map(|step| ItemStepRecord {
+                id: step.id.clone(),
+                body: step.body.clone(),
+                done: step.done,
+                position: step.position,
+            })
+            .collect(),
+        open_blockers: detail
+            .open_blockers
+            .iter()
+            .map(|blocker| OpenBlockerRecord {
+                item_id: blocker.item_id.clone(),
+                title: blocker.title.clone(),
+            })
+            .collect(),
+        live_alert: detail
+            .live_alert
+            .as_ref()
+            .map(|alert| to_alert_record(alert, now_ms)),
+        is_archived: detail.is_archived,
+        is_editable: detail.is_editable,
+        available_actions: detail
+            .available_actions
+            .iter()
+            .map(|action| action.as_str().to_string())
+            .collect(),
+    }
+}
+
+/// What an edit does to one nullable field.
+///
+/// [`hummingbird_core::TriagePatch`] carries these as double-`Option`s —
+/// outer `None` "leave it alone", `Some(None)` "clear it", `Some(Some(v))`
+/// "set it" — and a double-`Option` does not cross UniFFI. Collapsing it to
+/// a single `Option` would lose the distinction that matters most to an
+/// editor: **"this deadline is now gone" is not the same as "I did not
+/// touch the deadline"**, and a single `Option` can only ever add.
+///
+/// Every clearable field crosses as a string, including `size` and
+/// `energy` in their wire vocabulary — a value the closed vocabulary does
+/// not contain is refused at the seam, never sent.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FieldPatch {
+    Untouched,
+    Clear,
+    Set { value: String },
+}
+
+impl FieldPatch {
+    fn to_text(&self) -> Option<Option<String>> {
+        match self {
+            FieldPatch::Untouched => None,
+            FieldPatch::Clear => Some(None),
+            FieldPatch::Set { value } => Some(Some(value.clone())),
+        }
+    }
+
+    /// The same three answers over a closed vocabulary. `Err` is an
+    /// unrecognised word — rejected before the seam, like every other
+    /// vocabulary string crossing here.
+    fn to_vocabulary<T>(&self, parse: impl Fn(&str) -> Option<T>) -> Result<Option<Option<T>>, String> {
+        match self {
+            FieldPatch::Untouched => Ok(None),
+            FieldPatch::Clear => Ok(Some(None)),
+            FieldPatch::Set { value } => parse(value)
+                .map(|parsed| Some(Some(parsed)))
+                .ok_or_else(|| format!("unrecognised value: {value}")),
+        }
+    }
+}
+
+/// One edit of an item's fields, as the item screen's edit mode collects
+/// it. The mirror of [`hummingbird_core::TriagePatch`] across the seam —
+/// minus `stage`, which is [`MobileTaskHost::act`]'s, and minus the
+/// promotion, which [`MobileTaskHost::edit_item`] pins `false`.
+///
+/// `title` and `priority` are `NOT NULL` columns and so are plain
+/// `Option`s: absent means untouched, and neither can be cleared. That is
+/// the same asymmetry the authority enforces with a 400.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ItemEdit {
+    pub title: Option<String>,
+    pub priority: Option<i64>,
+    pub description: FieldPatch,
+    pub size: FieldPatch,
+    pub energy: FieldPatch,
+    pub context: FieldPatch,
+    pub project_id: FieldPatch,
+    pub deadline: FieldPatch,
+    pub scheduled_date: FieldPatch,
+}
+
+/// [`MobileTaskHost::edit_item`] failed. `ItemNotFound` covers the archived
+/// case too, and deliberately: the core's edit path reads the *live* view,
+/// so history is unreachable from here by construction rather than by a
+/// seam-side check Kotlin could be tempted to duplicate.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileEditError {
+    ItemNotFound,
+    EditFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileEditError::ItemNotFound => write!(f, "item not found"),
+            MobileEditError::EditFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileEditError {}
+
 struct Inner {
     core: Core<FsSnapshotStore, FsSnapshotStore>,
     read_transport: ReqwestSyncTransport,
@@ -691,6 +978,14 @@ impl MobileTaskHost {
     /// [`ItemAction::parse`]'s own doc states, since uniffi crosses the
     /// action as a plain string and Kotlin has no closed enum of its own to
     /// enforce it first.
+    ///
+    /// Routed through [`hummingbird_core::Core::act_acking_alert`] rather
+    /// than `Core::act` since ADR-0027: completing or cancelling an item
+    /// acks the alert about it, and `CONTEXT.md`'s amended **Ack** makes
+    /// that a property of the *gesture*, not of the screen it was taken
+    /// from — so the Now list's checkmark silences the ring exactly as the
+    /// item screen's does. With nothing ringing, or on an action that
+    /// settles nothing, the composition is `Core::act` unchanged.
     pub async fn act(
         &self,
         item_id: String,
@@ -706,11 +1001,77 @@ impl MobileTaskHost {
         let mut inner = self.inner.lock().await;
         inner
             .core
-            .act(&seed, &item_id, parsed, now_ms)
+            .act_acking_alert(&seed, &item_id, parsed, now_ms)
             .await
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileActError::ItemNotFound,
                 other => MobileActError::ActFailed {
+                    detail: other.to_string(),
+                },
+            })
+    }
+
+    /// One item's whole read (ADR-0027) —
+    /// [`hummingbird_core::Core::item_detail`] verbatim, mapped. `None`
+    /// means this device has not synced the item, which is a real state on
+    /// a deep link from a push: the payload can arrive before the cycle
+    /// carrying the row. The host runs a cycle and re-reads, exactly as
+    /// [`MobileTaskHost::alert`]'s callers already do.
+    ///
+    /// Archived items answer here rather than `None` — history stays
+    /// readable, and the record says so with `is_archived`/`is_editable`.
+    pub async fn item_detail(&self, item_id: String, now_ms: i64) -> Option<ItemDetailRecord> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .item_detail(&item_id, now_ms)
+            .map(|detail| to_item_detail_record(&detail, now_ms))
+    }
+
+    /// Edits an item's fields —
+    /// [`hummingbird_core::Core::triage`] with `promote_to_ready` pinned
+    /// **`false`** at this seam, because promotion is triage's gesture and
+    /// this is not triage: `CONTEXT.md` reserves that word for promoting a
+    /// captured item, and an edit made from item detail must never
+    /// silently move an item's stage.
+    ///
+    /// One CAS `PATCH` for the whole edit, never one per field — see the
+    /// core method's own doc for why fewer conflict surfaces is the point.
+    /// Only fields the caller actually touched ride on it, and a cleared
+    /// field is sent as an explicit `null` rather than omitted.
+    pub async fn edit_item(
+        &self,
+        item_id: String,
+        edit: ItemEdit,
+        now_ms: i64,
+    ) -> Result<(), MobileEditError> {
+        let patch = hummingbird_core::TriagePatch {
+            title: edit.title.clone(),
+            priority: edit.priority,
+            description: edit.description.to_text(),
+            size: edit
+                .size
+                .to_vocabulary(Size::parse)
+                .map_err(|detail| MobileEditError::EditFailed { detail })?,
+            energy: edit
+                .energy
+                .to_vocabulary(Energy::parse)
+                .map_err(|detail| MobileEditError::EditFailed { detail })?,
+            context: edit.context.to_text(),
+            project_id: edit.project_id.to_text(),
+            deadline: edit.deadline.to_text(),
+            scheduled_date: edit.scheduled_date.to_text(),
+        };
+        let seed = mint_mutation_seed("edit", now_ms);
+        let mut inner = self.inner.lock().await;
+        inner
+            .core
+            .triage(&seed, &item_id, false, patch, now_ms)
+            .await
+            .map_err(|error| match error {
+                hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
+                other => MobileEditError::EditFailed {
                     detail: other.to_string(),
                 },
             })
@@ -908,6 +1269,29 @@ mod tests {
                 can_submit_capture(draft),
                 hummingbird_core::decisions::can_submit_capture(draft),
                 "{draft:?} disagreed across the binding",
+            );
+        }
+    }
+
+    /// The tap-target binding, pinned the same way: the mapping is the
+    /// only place the seam enum and the core enum may drift, so both arms
+    /// are crossed here against the real key recipe.
+    #[test]
+    fn the_tap_target_binding_is_the_core_rule_verbatim() {
+        let key = hummingbird_domain::item_threshold_v1_key("item-42");
+        assert_eq!(
+            notification_tap_target(hummingbird_domain::ITEM_THRESHOLD_V1, &key),
+            MobileTapTarget::Item { item_id: "item-42".into() }
+        );
+        for (source, source_key) in [
+            (hummingbird_domain::ITEM_THRESHOLD_V1, "not-an-item-key"),
+            ("city-waste/v2", key.as_str()),
+            ("", ""),
+        ] {
+            assert_eq!(
+                notification_tap_target(source, source_key),
+                MobileTapTarget::Alert,
+                "({source:?}, {source_key:?}) should open the alert",
             );
         }
     }
@@ -1372,5 +1756,186 @@ mod tests {
                 "fcm_token": "fcm-1",
             })
         );
+    }
+
+    // ------------------------------------------------- item detail (#141)
+
+    fn fixture_detail(archived: bool) -> hummingbird_core::item_detail::ItemDetail {
+        let mut item = Item {
+            id: "a-1".into(),
+            seq: Some(42),
+            title: "ship the thing".into(),
+            description: Some("with notes".into()),
+            stage: Stage::Ready,
+            size: Some(Size::Quick),
+            energy: Some(Energy::Low),
+            context: Some("@computer".into()),
+            priority: 3,
+            project_id: Some("p-1".into()),
+            project_pos: None,
+            deadline: Some("2026-08-20".into()),
+            scheduled_date: None,
+            source: None,
+            source_key: None,
+            source_url: Some("https://example.test/x".into()),
+            archived_at: None,
+            agent: false,
+            created_at: 1,
+            updated_at: 7,
+            version: 4,
+        };
+        if archived {
+            item.archived_at = Some(900);
+        }
+        hummingbird_core::item_detail::ItemDetail {
+            item,
+            project: Some(hummingbird_core::item_detail::ProjectRef {
+                id: "p-1".into(),
+                name: Some("Kitchen".into()),
+            }),
+            steps: vec![hummingbird_domain::Step {
+                id: "s-1".into(),
+                item_id: "a-1".into(),
+                body: "first".into(),
+                done: false,
+                position: 1,
+                deleted_at: None,
+                version: 1,
+            }],
+            open_blockers: vec![hummingbird_core::item_detail::BlockerEntry {
+                item_id: "b-unseen".into(),
+                title: None,
+            }],
+            live_alert: None,
+            is_archived: archived,
+            is_editable: !archived,
+            available_actions: if archived {
+                vec![]
+            } else {
+                vec![ItemAction::Start, ItemAction::Complete]
+            },
+        }
+    }
+
+    /// The seam maps and decides nothing: every verdict on the record is
+    /// the core's, carried across unchanged — including the empty action
+    /// list an archived row gets, which Kotlin must never re-derive from
+    /// `stage`.
+    #[test]
+    fn the_item_detail_record_carries_the_cores_verdicts_verbatim() {
+        let record = to_item_detail_record(&fixture_detail(false), 1_000);
+        assert_eq!(record.stage, "ready");
+        assert_eq!(record.size.as_deref(), Some("quick"));
+        assert_eq!(record.energy.as_deref(), Some("low"));
+        assert_eq!(record.project_name.as_deref(), Some("Kitchen"));
+        assert!(!record.agent, "the delegation axis is carried, absence and all");
+        assert_eq!(record.available_actions, vec!["start", "complete"]);
+        assert!(record.is_editable);
+        assert_eq!(
+            record.open_blockers,
+            vec![OpenBlockerRecord { item_id: "b-unseen".into(), title: None }],
+            "an unseen blocker crosses as a titleless row, never dropped"
+        );
+
+        let archived = to_item_detail_record(&fixture_detail(true), 1_000);
+        assert!(archived.is_archived);
+        assert!(!archived.is_editable);
+        assert!(archived.available_actions.is_empty());
+    }
+
+    /// The double-`Option` that cannot cross UniFFI, pinned at the one
+    /// place it is reconstructed: "clear it" must stay distinguishable
+    /// from "I did not touch it", or an editor can only ever add.
+    #[test]
+    fn a_field_patch_keeps_clear_and_untouched_apart() {
+        assert_eq!(FieldPatch::Untouched.to_text(), None);
+        assert_eq!(FieldPatch::Clear.to_text(), Some(None));
+        assert_eq!(
+            FieldPatch::Set { value: "2026-08-20".into() }.to_text(),
+            Some(Some("2026-08-20".to_string()))
+        );
+    }
+
+    /// A vocabulary field is rejected before the seam, exactly as an
+    /// unrecognised act string is — never sent for the authority to 400.
+    #[test]
+    fn an_unrecognised_vocabulary_word_never_reaches_the_queue() {
+        assert_eq!(
+            FieldPatch::Set { value: "quick".into() }.to_vocabulary(Size::parse),
+            Ok(Some(Some(Size::Quick)))
+        );
+        assert_eq!(FieldPatch::Clear.to_vocabulary(Size::parse), Ok(Some(None)));
+        assert!(FieldPatch::Set { value: "enormous".into() }
+            .to_vocabulary(Size::parse)
+            .is_err());
+    }
+
+    fn untouched_edit() -> ItemEdit {
+        ItemEdit {
+            title: None,
+            priority: None,
+            description: FieldPatch::Untouched,
+            size: FieldPatch::Untouched,
+            energy: FieldPatch::Untouched,
+            context: FieldPatch::Untouched,
+            project_id: FieldPatch::Untouched,
+            deadline: FieldPatch::Untouched,
+            scheduled_date: FieldPatch::Untouched,
+        }
+    }
+
+    /// An edit is durable before any network is touched, like every other
+    /// mutation on this seam — and it reads back through `item_detail`
+    /// immediately, through the core's overlay.
+    #[tokio::test]
+    async fn an_edit_is_durable_and_reads_back_before_any_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("edit-ns").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let id = host.capture("buy milk".to_string(), 1_000).await.unwrap();
+
+        host.edit_item(
+            id.clone(),
+            ItemEdit {
+                title: Some("buy oat milk".into()),
+                deadline: FieldPatch::Set { value: "2026-08-20".into() },
+                ..untouched_edit()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.title, "buy oat milk");
+        assert_eq!(detail.deadline.as_deref(), Some("2026-08-20"));
+        assert_eq!(
+            host.queue_depth().await,
+            2,
+            "the capture and the edit are two durable entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn editing_an_item_this_device_has_never_seen_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("edit-ns-2").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            host.edit_item("nope".to_string(), untouched_edit(), 1_000).await,
+            Err(MobileEditError::ItemNotFound)
+        ));
+        assert!(host.item_detail("nope".to_string(), 1_000).await.is_none());
     }
 }

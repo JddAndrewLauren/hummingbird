@@ -102,8 +102,11 @@ private fun urgencyLabel(band: MobileUrgencyBand): String = when (band) {
  * the design README's voice rule; "Blocked" means an external wait and
  * nothing else). Which actions a row *offers* is decided
  * entirely core-side ([NowItemRecord.availableActions]) — this map only
- * ever renders whatever that list already contains. */
-private val ACTION_LABEL: Map<String, String> = mapOf(
+ * ever renders whatever that list already contains. Shared with
+ * `ItemDetailScreen`, which offers the same vocabulary from the same
+ * core-decided list — two spellings of "Mark blocked" would be two
+ * spellings of one domain word. */
+internal val ACTION_LABEL: Map<String, String> = mapOf(
     "start" to "Start",
     "complete" to "Complete",
     "block" to "Mark blocked",

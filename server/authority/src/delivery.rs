@@ -62,6 +62,13 @@ pub struct PushNotification {
     pub body: Option<String>,
     pub severity: String,
     pub tier: Tier,
+    /// What the alert is *about*, carried so a tap can decide where to
+    /// land without reading the mirror (ADR-0027). Both are non-optional
+    /// because both are non-optional on the alert row this is built from —
+    /// the client's "I cannot tell what this is about" case is a
+    /// *recognised* source naming no item, not a missing field.
+    pub source: String,
+    pub source_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,6 +172,8 @@ pub fn deliver(
         body: alert.body.clone(),
         severity: severity.to_string(),
         tier,
+        source: alert.source.clone(),
+        source_key: alert.source_key.clone(),
     };
     Ok(DeliveryOutcome::Logged { delivery_id, targets, notification })
 }

@@ -53,6 +53,7 @@ pub mod capture;
 pub mod context;
 pub mod decisions;
 pub mod freshness;
+pub mod item_detail;
 pub mod pane;
 pub mod rank;
 pub mod search;
@@ -990,6 +991,25 @@ where
         items
     }
 
+    /// [`Core::overlaid_items`] over the *retained* roster — every item the
+    /// mirror has ever known, archived and swept-away rows included, with
+    /// the same overlay on top. The read behind [`Core::item_detail`],
+    /// which must answer for history: an archived row is
+    /// [`task::Presence::Absent`], so the live view above cannot see one at
+    /// all, and **Recall**'s rule is that history stays readable.
+    fn overlaid_items_including_absent(&self) -> BTreeMap<String, Item> {
+        let mut items: BTreeMap<String, Item> = self
+            .cycle
+            .mirror()
+            .all_items_including_absent()
+            .map(|(item, _)| (item.id.clone(), item.clone()))
+            .collect();
+        for overlay in self.overlay.values() {
+            items.insert(overlay.item.id.clone(), overlay.item.clone());
+        }
+        items
+    }
+
     /// What can actually be started right now — the owned-schema mirror's
     /// live `Ready`/`InProgress` items, not blocked on an open blocker,
     /// with the overlay from [`Core::overlaid_items`] applied.
@@ -1132,7 +1152,8 @@ where
     ///   first read to surface the retained history ADR-0007 keeps);
     /// - whether a dead-lettered edit targets it (honestly device-local:
     ///   the journal never syncs, so another device's Ledger won't show it);
-    /// - whether a live alert names it (`source_key == "item:<id>"`,
+    /// - whether a live alert names it (the key
+    ///   [`hummingbird_domain::item_threshold_v1_key`] builds,
     ///   ADR-0014's item-threshold convention, joined across every source —
     ///   alerts *do* sync, so this badge agrees between devices).
     ///
@@ -1177,11 +1198,90 @@ where
         rows.into_values()
             .map(|(item, absent_since_ms)| LedgerEntry {
                 dead_lettered: dead_lettered.contains(&item.id),
-                has_live_alert: live_alert_keys.contains(&format!("item:{}", item.id)),
+                has_live_alert: live_alert_keys
+                    .contains(&hummingbird_domain::item_threshold_v1_key(&item.id)),
                 item,
                 absent_since_ms,
             })
             .collect()
+    }
+
+    /// Everything known about one item, joined — `CONTEXT.md`'s **Item
+    /// detail** and the read behind the phone's item screen (ADR-0027).
+    /// `None` for an id this device's mirror has never seen, which the
+    /// caller answers by running a cycle and re-reading rather than by
+    /// rendering an empty shell.
+    ///
+    /// The first *per-id assembling* read on `Core`, and deliberately not a
+    /// new mirror entity: every part of it is a read the mirror already
+    /// served ([`Core::overlaid_items_including_absent`], [`Core::steps_for`],
+    /// [`sync::SyncMirror::blockers_of`], [`sync::SyncMirror::project`],
+    /// [`sync::SyncMirror::alerts_for_source`]), joined here so two clients
+    /// cannot join them differently. See [`item_detail::ItemDetail`] for
+    /// what each field decides and why.
+    ///
+    /// Archived rows are included, not filtered: **Recall** makes history
+    /// readable, and a notification about an item cancelled since is
+    /// exactly the tap that lands here. `now_ms` resolves only alert
+    /// liveness, caller-injected as everywhere in this crate.
+    pub fn item_detail(&self, item_id: &str, now_ms: i64) -> Option<item_detail::ItemDetail> {
+        let items = self.overlaid_items_including_absent();
+        let item = items.get(item_id)?.clone();
+        let mirror = self.cycle.mirror();
+
+        let project = item.project_id.as_ref().map(|id| item_detail::ProjectRef {
+            id: id.clone(),
+            name: mirror.project(id).map(|project| project.name.clone()),
+        });
+
+        let open_blockers = mirror
+            .blockers_of(item_id)
+            .filter_map(|blocker_id| match items.get(blocker_id) {
+                // Settled: neither archived nor Done still holds anything
+                // back, so it is not listed at all.
+                Some(blocker)
+                    if blocker.archived_at.is_some() || blocker.stage == Stage::Done =>
+                {
+                    None
+                }
+                Some(blocker) => Some(item_detail::BlockerEntry {
+                    item_id: blocker.id.clone(),
+                    title: Some(blocker.title.clone()),
+                }),
+                // Unseen, and listed anyway — see the field's own doc.
+                None => Some(item_detail::BlockerEntry {
+                    item_id: blocker_id.to_string(),
+                    title: None,
+                }),
+            })
+            .collect();
+
+        // Constructed through the domain recipe, never parsed: the key
+        // convention has one owner (ADR-0027 part 2), and this direction
+        // never needs the inverse.
+        let source_key = hummingbird_domain::item_threshold_v1_key(item_id);
+        let live_alert = mirror
+            .alerts_for_source(hummingbird_domain::ITEM_THRESHOLD_V1)
+            .find(|alert| alert.source_key == source_key && alert.is_live(now_ms))
+            .cloned();
+
+        let is_archived = item.archived_at.is_some();
+        let available_actions = if is_archived {
+            Vec::new()
+        } else {
+            decisions::available_actions(item.stage).to_vec()
+        };
+
+        Some(item_detail::ItemDetail {
+            project,
+            steps: self.steps_for(item_id),
+            open_blockers,
+            live_alert,
+            is_archived,
+            is_editable: !is_archived,
+            available_actions,
+            item,
+        })
     }
 
     /// Every live `Done` item — the Done screen's read, and the first query
@@ -1871,6 +1971,55 @@ where
             },
         );
 
+        Ok(())
+    }
+
+    /// Acts on an item and, when the action *settles the matter*, acks the
+    /// live alert about it in the same gesture (ADR-0027 part 3,
+    /// `CONTEXT.md`'s amended **Ack**).
+    ///
+    /// **Which actions ack.** Completing or cancelling says the matter was
+    /// dealt with, so the alert raised about it is dealt with too. Starting
+    /// it or declaring an external wait are *not* acks: neither claims the
+    /// matter is settled, and an alert that keeps ringing through a stalled
+    /// start is the lane working, not failing. That rule is held here
+    /// because two clients answering it differently would be a bug.
+    ///
+    /// **Two queue entries, deliberately not one.** ADR-0027 refuses to
+    /// invent an authority-side combined mutation to serve a client-side
+    /// gesture; what it forbids is that, not this helper. The `act` is
+    /// enqueued **first** and the ack second, so the ordered, durable queue
+    /// drains them in the order the human's intent happened — and a
+    /// dead-letter on one and not the other lands in the journal, which
+    /// names what each change was about.
+    ///
+    /// One `seed` mints both entry ids: the ack's is derived from it, so a
+    /// caller cannot accidentally hand the two entries the same id, and a
+    /// replay of the same gesture is idempotent across both.
+    ///
+    /// No live alert, or an action that does not settle the matter, makes
+    /// this exactly [`Core::act`].
+    pub async fn act_acking_alert(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        action: ItemAction,
+        now_ms: i64,
+    ) -> Result<(), ActError<QS::Error>> {
+        let alert_to_ack = match action {
+            ItemAction::Complete | ItemAction::Cancel => self
+                .item_detail(item_id, now_ms)
+                .and_then(|detail| detail.live_alert),
+            ItemAction::Start | ItemAction::Block => None,
+        };
+
+        self.act(seed, item_id, action, now_ms).await?;
+
+        if let Some(alert) = alert_to_ack {
+            self.dismiss_alert(&format!("{seed}-ack"), &alert, Some(now_ms), now_ms)
+                .await
+                .map_err(ActError::Snapshot)?;
+        }
         Ok(())
     }
 
@@ -5866,5 +6015,317 @@ mod tests {
             sync::write::deterministic_id("seed-1"),
             "the entry id is the caller's seed, so a replayed ack is the same entry"
         );
+    }
+
+    // ------------------------------------------------- item detail (#141)
+    // ADR-0027's assembled read. Seeded through a scripted sweep like every
+    // other mirror-backed test here — `SyncCycle` exposes no `mirror_mut`.
+
+    async fn core_with_item_detail_fixtures(
+        items: Vec<hummingbird_domain::Item>,
+        projects: Vec<hummingbird_domain::Project>,
+        steps: Vec<hummingbird_domain::Step>,
+        blocked_by: Vec<hummingbird_domain::BlockedBy>,
+        alerts: Vec<hummingbird_domain::Alert>,
+    ) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items,
+            projects,
+            steps,
+            blocked_by,
+            alerts,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    /// The alert an item-threshold row raises about `item_id`, keyed
+    /// through the domain recipe — never a literal, so a recipe move
+    /// breaks the join here instead of only on a device.
+    fn fixture_item_alert(id: &str, item_id: &str, raised_at: i64) -> hummingbird_domain::Alert {
+        hummingbird_domain::Alert {
+            source: hummingbird_domain::ITEM_THRESHOLD_V1.to_string(),
+            source_key: hummingbird_domain::item_threshold_v1_key(item_id),
+            ..fixture_alert(id, hummingbird_domain::ITEM_THRESHOLD_V1, None, raised_at)
+        }
+    }
+
+    fn fixture_detail_step(id: &str, item_id: &str, position: i64) -> hummingbird_domain::Step {
+        hummingbird_domain::Step {
+            id: id.to_string(),
+            item_id: item_id.to_string(),
+            body: format!("step {id}"),
+            done: false,
+            position,
+            deleted_at: None,
+            version: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_id_the_mirror_has_never_seen_has_no_detail() {
+        let core = core_with_item_detail_fixtures(vec![], vec![], vec![], vec![], vec![]).await;
+        assert!(core.item_detail("nope", 1_000).is_none());
+    }
+
+    #[tokio::test]
+    async fn item_detail_joins_the_project_steps_blockers_and_live_alert() {
+        let mut item = fixture_item("a-1", Stage::Ready);
+        item.project_id = Some("p-1".to_string());
+        let core = core_with_item_detail_fixtures(
+            vec![item, fixture_item("b-1", Stage::Ready)],
+            vec![hummingbird_domain::Project {
+                id: "p-1".to_string(),
+                name: "Kitchen".to_string(),
+                archived_at: None,
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }],
+            vec![
+                fixture_detail_step("s-2", "a-1", 2),
+                fixture_detail_step("s-1", "a-1", 1),
+                fixture_detail_step("elsewhere", "b-1", 1),
+            ],
+            vec![fixture_blocked_by("a-1", "b-1")],
+            vec![fixture_item_alert("al-1", "a-1", 500)],
+        )
+        .await;
+
+        let detail = core.item_detail("a-1", 1_000).expect("seeded item");
+        assert_eq!(detail.item.id, "a-1");
+        assert_eq!(
+            detail.project,
+            Some(item_detail::ProjectRef {
+                id: "p-1".to_string(),
+                name: Some("Kitchen".to_string()),
+            })
+        );
+        assert_eq!(
+            detail.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["s-1", "s-2"],
+            "position order, and only this item's steps"
+        );
+        assert_eq!(
+            detail.open_blockers,
+            vec![item_detail::BlockerEntry {
+                item_id: "b-1".to_string(),
+                title: Some("item b-1".to_string()),
+            }]
+        );
+        assert_eq!(
+            detail.live_alert.map(|alert| alert.id),
+            Some("al-1".to_string()),
+            "the state-source alert keyed on this item, joined by the built key"
+        );
+        assert!(!detail.is_archived);
+        assert!(detail.is_editable);
+    }
+
+    /// The one-directional narrowness of the join: an alert keyed on a
+    /// *different* item never reaches this record, and a dismissed one is
+    /// no longer live.
+    #[tokio::test]
+    async fn only_a_live_alert_about_this_item_is_carried() {
+        let mut acked = fixture_item_alert("al-mine", "a-1", 500);
+        acked.dismissed_at = Some(600);
+        let core = core_with_item_detail_fixtures(
+            vec![fixture_item("a-1", Stage::Ready)],
+            vec![],
+            vec![],
+            vec![],
+            vec![acked, fixture_item_alert("al-theirs", "a-2", 500)],
+        )
+        .await;
+
+        assert_eq!(core.item_detail("a-1", 1_000).unwrap().live_alert, None);
+    }
+
+    /// The count must not understate what holds an item back: a blocker id
+    /// this device has never synced is listed with no title, never dropped.
+    /// A settled blocker (Done, or archived) is not a blocker at all.
+    #[tokio::test]
+    async fn an_unseen_blocker_is_listed_and_a_settled_one_is_not() {
+        let mut archived = fixture_item("b-archived", Stage::Ready);
+        archived.archived_at = Some(900);
+        let core = core_with_item_detail_fixtures(
+            vec![
+                fixture_item("a-1", Stage::Ready),
+                fixture_item("b-done", Stage::Done),
+                archived,
+            ],
+            vec![],
+            vec![],
+            vec![
+                fixture_blocked_by("a-1", "b-done"),
+                fixture_blocked_by("a-1", "b-archived"),
+                fixture_blocked_by("a-1", "b-unseen"),
+            ],
+            vec![],
+        )
+        .await;
+
+        assert_eq!(
+            core.item_detail("a-1", 1_000).unwrap().open_blockers,
+            vec![item_detail::BlockerEntry {
+                item_id: "b-unseen".to_string(),
+                title: None,
+            }]
+        );
+    }
+
+    /// A project id the mirror has no row for names itself rather than
+    /// disappearing — the same "never understate" rule the blockers get.
+    #[tokio::test]
+    async fn an_unseen_project_keeps_its_id_and_loses_only_its_name() {
+        let mut item = fixture_item("a-1", Stage::Ready);
+        item.project_id = Some("p-unseen".to_string());
+        let core =
+            core_with_item_detail_fixtures(vec![item], vec![], vec![], vec![], vec![]).await;
+
+        assert_eq!(
+            core.item_detail("a-1", 1_000).unwrap().project,
+            Some(item_detail::ProjectRef {
+                id: "p-unseen".to_string(),
+                name: None,
+            })
+        );
+    }
+
+    /// `CONTEXT.md`'s Recall rule (#478) through the second door: history
+    /// is readable and ackable, never editable, and offers no act
+    /// vocabulary whatever stage its row still carries.
+    #[tokio::test]
+    async fn an_archived_item_is_readable_and_ackable_but_not_editable() {
+        let mut archived = fixture_item("a-1", Stage::Ready);
+        archived.archived_at = Some(900);
+        let core = core_with_item_detail_fixtures(
+            vec![archived],
+            vec![],
+            vec![],
+            vec![],
+            vec![fixture_item_alert("al-1", "a-1", 500)],
+        )
+        .await;
+
+        let detail = core.item_detail("a-1", 1_000).expect("archived rows stay readable");
+        assert!(detail.is_archived);
+        assert!(!detail.is_editable);
+        assert!(
+            detail.available_actions.is_empty(),
+            "an archived row is not a live item in a stage"
+        );
+        assert!(
+            detail.live_alert.is_some(),
+            "silencing something still ringing is not editing history"
+        );
+    }
+
+    /// The overlay wins here exactly as it does on the frontier: an act
+    /// taken offline shows on the detail the instant it is enqueued.
+    #[tokio::test]
+    async fn a_pending_act_shows_on_the_detail_before_it_is_confirmed() {
+        let mut core = core_with_item_detail_fixtures(
+            vec![fixture_item("a-1", Stage::Ready)],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .await;
+        core.act("seed-1", "a-1", ItemAction::Start, 2_000).await.unwrap();
+
+        assert_eq!(core.item_detail("a-1", 2_000).unwrap().item.stage, Stage::InProgress);
+    }
+
+    /// ADR-0027 part 3: completing the item acks the alert about it, as
+    /// two ordered queue entries with the act first — never one invented
+    /// authority-side mutation.
+    #[tokio::test]
+    async fn completing_an_item_acks_its_alert_act_first() {
+        let mut core = core_with_item_detail_fixtures(
+            vec![fixture_item("a-1", Stage::Ready)],
+            vec![],
+            vec![],
+            vec![],
+            vec![fixture_item_alert("al-1", "a-1", 500)],
+        )
+        .await;
+
+        core.act_acking_alert("seed-1", "a-1", ItemAction::Complete, 3_000)
+            .await
+            .unwrap();
+
+        let paths: Vec<String> = core
+            .cycle
+            .queue()
+            .entries()
+            .map(|entry| match &entry.intent {
+                MutationIntent::Patch { path, .. } => path.clone(),
+                other => panic!("expected two patches, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["/api/items/a-1".to_string(), "/api/alerts/al-1".to_string()],
+            "the act is enqueued first, in the order the intent happened"
+        );
+        assert_eq!(core.item_detail("a-1", 3_000).unwrap().item.stage, Stage::Done);
+    }
+
+    /// Starting an item, or declaring an external wait, is not an ack:
+    /// neither claims the matter is settled, so the alert keeps ringing.
+    #[tokio::test]
+    async fn starting_or_blocking_an_item_does_not_ack_its_alert() {
+        for action in [ItemAction::Start, ItemAction::Block] {
+            let mut core = core_with_item_detail_fixtures(
+                vec![fixture_item("a-1", Stage::Ready)],
+                vec![],
+                vec![],
+                vec![],
+                vec![fixture_item_alert("al-1", "a-1", 500)],
+            )
+            .await;
+
+            core.act_acking_alert("seed-1", "a-1", action, 3_000).await.unwrap();
+
+            assert_eq!(
+                core.cycle.queue().entries().count(),
+                1,
+                "{action:?} enqueues the act alone"
+            );
+        }
+    }
+
+    /// With nothing ringing, the composition is plain `act` — no empty
+    /// second entry, no special case at the call site.
+    #[tokio::test]
+    async fn acting_with_no_live_alert_enqueues_only_the_act() {
+        let mut core = core_with_item_detail_fixtures(
+            vec![fixture_item("a-1", Stage::Ready)],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .await;
+
+        core.act_acking_alert("seed-1", "a-1", ItemAction::Complete, 3_000)
+            .await
+            .unwrap();
+
+        assert_eq!(core.cycle.queue().entries().count(), 1);
     }
 }

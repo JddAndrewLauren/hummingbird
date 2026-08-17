@@ -75,8 +75,95 @@ carries the full reasoning. The credential that can actually *send* is
 `FCM_SERVICE_ACCOUNT`, a Cloudflare Worker secret that never enters this repo
 or Actions (ADR-0011); it must be a service-account key **from the same Firebase
 project**, since `server/worker/src/fcm.rs` builds the send URL from the
-`project_id` inside it. A mismatch fails silently — the device registers, the
-server sends, nothing arrives.
+`project_id` inside it. A mismatch is invisible from here — the device
+registers, the server accepts the alert, and nothing arrives.
+
+**When a push does not arrive, read the Worker log first.** Nothing on this
+side can tell you why: `POST /api/alerts` answers 201 with no delivery
+information (`deliveries` rides the internal `ApiResponse`, not the body),
+and #219's no-retry policy logs a failed send once and drops it. One line of
+`wrangler tail` distinguishes rule-did-not-match, no-live-push-target and
+credential-broken, and no client-side evidence can:
+
+```
+npx wrangler@latest tail hummingbird-authority --format json
+```
+
+(the worker name is positional; `--name` is a `secret` flag and errors here).
+`FCM_SERVICE_ACCOUNT is set but unusable (Malformed)` means the secret's
+*contents* are wrong even though `wrangler secret list` shows it — either
+`google-services.json` was uploaded by mistake, or a pretty-printed key was
+pasted into `wrangler secret put`, whose prompt reads one line and truncates
+at the first newline. Pipe it minified.
 
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
+
+## Proving the lane on hardware
+
+CI cannot cover any of this: there is no emulator in `android.yml` and no FCM
+delivery without a real device, so the checks below are the only evidence the
+lane works end to end. Checks 1–12 were run in full on 2026-08-17 (Pixel 10
+Pro Fold, SDK 37, #517) and every one passed; 13–18 are ADR-0027's second
+destination and are **not yet run on hardware**. Re-run all of them after any
+change to `notify/`, `push/`, or the deep link.
+
+You need the device on USB, a `device`-scope token for **this** device (there
+is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
+paste another device's), and an `ingest`-scope token to raise test alerts
+with. `POST /api/alerts` requires `Scope::Ingest` and a device token gets a
+403 (`handlers/auth.rs`), so minting one is unavoidable — bind it to an
+enrolled `Writes::Alerts` source with no live token, and revoke it afterwards.
+Rules matter too: an ingested alert raises kind **`alert_raised`**, not
+`email` — the `email` kind fires inside the poller (ADR-0011) — so the test
+needs rules on `alert_raised` keyed on `source` and `severity`.
+
+1. `./gradlew installDebug`, launch, grant `POST_NOTIFICATIONS`.
+2. Paste the device token on Status; confirm it reads `Synced`.
+3. Confirm `fcm_token` exists: `adb shell run-as net.twinion.hummingbird cat
+   shared_prefs/hummingbird-push.xml`. Its absence means Firebase never
+   initialised.
+4. Grant Do Not Disturb access, **then return to the app** — the resume is
+   what creates the bypassing generation (see `NotificationChannels`).
+   Verify with `adb shell dumpsys notification --noredact`: `urgent` should
+   now be `mDeleted=true` and `urgent.dnd` live with `mBypassDnd=true`.
+5. Ring urgent. Confirm `channel=urgent.dnd`, `importance=4`, heads-up.
+6. Ring normal. Confirm `channel=normal`, `importance=3`, no bypass.
+7. Confirm `actions=1` on both — that is the Ack action, and it is what a
+   full-hybrid payload would have cost (ADR-0012's amendment).
+8. Ack from the notification shade; confirm `dismissed_at` on the authority.
+9. Ack from the alert detail screen; confirm `dismissed_at` again. **Give the
+   mutation queue a moment** — this one goes through the queue, not
+   `AckWorker`, so an immediate read of the authority still shows `null`.
+10. Tap a notification with the app running: lands on that alert's detail.
+11. Tap one cold. Kill with `adb shell am kill net.twinion.hummingbird`, not
+    `force-stop` — a force-stopped app receives no FCM at all.
+12. Swipe a notification away and confirm **nothing** is acked (ADR-0012).
+
+The item door (ADR-0027). These need an **`item-threshold/v1`** alert, which
+is not raised by `POST /api/alerts` at all: it is minted by the Durable
+Object's alarm sweep over items with near deadlines
+(`authority/src/sweep.rs`). So give an item a deadline inside the sweep
+threshold and let the alarm ring, rather than ingesting one by hand.
+
+13. Tap that notification warm: lands on the **item**, not the alert. One
+    Back lands on `Now`.
+14. Tap it cold (`am kill` again): same destination, and still one Back to
+    `Now` — the second door has its own `popUpTo`, and this is what proves
+    it.
+15. Ack from the item's live-alert card; confirm `dismissed_at` on the
+    authority. **Give the mutation queue a moment**, as in check 9.
+16. Complete the item from item detail: two queue entries drain, the `act`
+    first, and the alert leaves live without a second gesture (ADR-0027
+    part 3).
+17. Degrade check: ring a *non-item* alert (`POST /api/alerts`, ingest
+    scope) and confirm the tap still opens **alert** detail unchanged.
+18. Open an archived item through a stale notification: readable, the Ack
+    still offered, and **no edit affordance** (Recall's rule, #478).
+
+Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
+adb writes a warning banner into the PNG, and the ids differ inner vs cover
+(`adb shell dumpsys SurfaceFlinger --display-id`).
+
+Afterwards: revoke the ingest token, disable the test rules (there is no
+DELETE for rules, only PATCH), and dismiss the test alerts.

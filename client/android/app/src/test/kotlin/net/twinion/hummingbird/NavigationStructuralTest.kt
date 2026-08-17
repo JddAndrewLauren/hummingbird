@@ -66,6 +66,51 @@ class NavigationStructuralTest {
     }
 
     @Test
+    fun `a notification-opened alert sits directly on top of Now`() {
+        // The cold-tap defect (hardware, 2026-08-17): `am kill` means
+        // `onCreate` gets a saved instance state, `rememberNavController`
+        // restores the killed session's back stack, and a plain `navigate`
+        // pushed the alert on top of it — four Backs to leave, the first
+        // landing on an unrelated alert. The policy is `now ->
+        // alert/{id}`, cold or warm, so the deep link must pop to Now.
+        // Both doors, not just the alert one: ADR-0027 added a second
+        // notification destination onto the same restored stack, and a
+        // door that skipped the pop would regress #518 through the new
+        // route while every existing assertion here stayed green.
+        for (door in listOf("openAlertFromNotification", "openItemFromNotification")) {
+            val open = src.indexOf("fun NavHostController.$door")
+            assertTrue("the deep link must go through $door", open >= 0)
+            val body = src.substring(open, src.indexOf("\n}", open))
+            assertTrue(
+                "$door must pop back to Now, not push onto the restored stack",
+                body.contains("popUpTo(Routes.NOW)"),
+            )
+            assertTrue(
+                "Now is the start destination and must survive $door's pop",
+                body.contains("inclusive = false"),
+            )
+            assertTrue(
+                "a re-tap of what is already on screen must not stack a second copy",
+                body.contains("launchSingleTop = true"),
+            )
+        }
+
+        // And nothing else may reach the detail route from the intent: a
+        // bare `navigate` in the collector is exactly the defect.
+        val collect = src.indexOf("deepLinkedAlertId.collect")
+        assertTrue("the deep-link collector is missing", collect >= 0)
+        val collector = src.substring(collect, src.indexOf("\n    }", collect))
+        assertFalse(
+            "the collector must not navigate to the detail route without popping to Now",
+            collector.contains("navigate(Routes.alertDetail"),
+        )
+        assertFalse(
+            "nor to the item route",
+            collector.contains("navigate(Routes.itemDetail"),
+        )
+    }
+
+    @Test
     fun `the M1 showStatus toggle is gone`() {
         // It was the stand-in for exactly this NavHost; leaving both would
         // give Status two ways to be reached and one of them no back stack.
@@ -73,8 +118,56 @@ class NavigationStructuralTest {
             "the showStatus toggle must be replaced by the status route",
             src.contains("showStatus ="),
         )
-        for (route in listOf("\"now\"", "\"status\"", "\"alerts\"", "\"alert/{alertId}\"")) {
+        for (route in listOf(
+            "\"now\"",
+            "\"status\"",
+            "\"alerts\"",
+            "\"alert/{alertId}\"",
+            "\"item/{itemId}\"",
+        )) {
             assertTrue("route $route is missing", src.contains(route))
         }
+    }
+
+    @Test
+    fun `the tap destination is the core's answer, never parsed in Kotlin`() {
+        // ADR-0027 part 2: `item:` is a key convention with one owner in
+        // `hummingbird_domain`. A Kotlin copy would keep compiling after
+        // the recipe moved and fail silently — the alert would simply
+        // stop opening its item, with nothing failing anywhere.
+        assertTrue(
+            "the collector must ask the core where a tap leads",
+            src.contains("notificationTapTarget("),
+        )
+        assertFalse(
+            "the item id must never be parsed out of the key in Kotlin",
+            src.contains("removePrefix(\"item:\")") || src.contains("\"item:\""),
+        )
+    }
+
+    @Test
+    fun `the tap extras decide the destination, never the data URI`() {
+        // The URI stays `hummingbird://alert/{id}`, uniqueness-only: it
+        // exists so two alerts do not share one PendingIntent. Navigation
+        // rides the extras, which is the same one-encoding rule the
+        // navDeepLink assertion above holds.
+        val notifier = File(
+            System.getProperty("hummingbird.repoRoot"),
+            "client/android/app/src/main/kotlin/net/twinion/hummingbird/notify/AlertNotifier.kt",
+        ).readText()
+            .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+            .replace(Regex("""(?m)^\s*//.*$"""), "")
+        assertTrue(
+            "the tap intent must carry what the alert is about",
+            notifier.contains("EXTRA_SOURCE") && notifier.contains("EXTRA_SOURCE_KEY"),
+        )
+        assertTrue(
+            "the data URI stays the alert's, for PendingIntent uniqueness only",
+            notifier.contains("hummingbird://alert/"),
+        )
+        assertFalse(
+            "no item URI — the extras decide the destination",
+            notifier.contains("hummingbird://item/"),
+        )
     }
 }

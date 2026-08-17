@@ -28,6 +28,11 @@ fn entry_into_live_unacked_sends_exactly_once() {
             assert_eq!(notification.title, "seeded alert");
             assert_eq!(notification.severity, "high");
             assert_eq!(notification.tier, rule.tier);
+            // What the alert is about rides along, copied from the row
+            // (ADR-0027): the tap decides its destination from these two
+            // without waiting for a sync cycle to land the alert.
+            assert_eq!(notification.source, "test-source/v1");
+            assert_eq!(notification.source_key, "al-1");
         }
         other => panic!("expected Logged, got {other:?}"),
     }

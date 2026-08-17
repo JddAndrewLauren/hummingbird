@@ -31,6 +31,14 @@ class CaptureSubmitRefusalTest {
         repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureActivity.kt")
     }
 
+    private val itemDetailViewModelSrc by lazy {
+        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailViewModel.kt")
+    }
+
+    private val itemDetailScreenSrc by lazy {
+        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailScreen.kt")
+    }
+
     @Test
     fun `CaptureViewModel imports the real uniffi canSubmitCapture binding`() {
         assertTrue(
@@ -51,6 +59,37 @@ class CaptureSubmitRefusalTest {
         )
     }
 
+    /** The item edit form is the second surface to ask the same question
+     * — a title it must refuse to save empty, and two free-text dates that
+     * can be malformed. Both rules already exist in
+     * `hummingbird_core::decisions::capture`; this pins that it reaches
+     * for them rather than growing its own. */
+    @Test
+    fun `ItemDetailViewModel wires both draft rules to the real bindings`() {
+        assertTrue(
+            "expected an import of the generated canSubmitCapture binding",
+            itemDetailViewModelSrc.contains("import uniffi.hummingbird_ffi_mobile.canSubmitCapture"),
+        )
+        assertTrue(
+            "expected an import of the generated captureMetaProblems binding",
+            itemDetailViewModelSrc.contains(
+                "import uniffi.hummingbird_ffi_mobile.captureMetaProblems",
+            ),
+        )
+        val factory = Regex("""fun create\(context: Context\)[\s\S]*?\n {4}}""")
+            .find(itemDetailViewModelSrc)
+            ?.value
+            ?: error("could not locate ItemDetailViewModel.create in the source")
+        assertTrue(
+            "the production factory must pass ::canSubmitCapture",
+            factory.contains("hasContentFn = ::canSubmitCapture"),
+        )
+        assertTrue(
+            "the production factory must pass ::captureMetaProblems",
+            factory.contains("metaProblemsFn = ::captureMetaProblems"),
+        )
+    }
+
     @Test
     fun `neither CaptureViewModel nor CaptureActivity re-derives the blank rule locally`() {
         // A Kotlin isBlank()/trim() copy of the refusal is the exact trap
@@ -60,6 +99,10 @@ class CaptureSubmitRefusalTest {
         for ((name, src) in listOf(
             "CaptureViewModel.kt" to captureViewModelSrc,
             "CaptureActivity.kt" to captureActivitySrc,
+            // The item edit form asks the same question of the same rule,
+            // so the same ban applies to it.
+            "ItemDetailViewModel.kt" to itemDetailViewModelSrc,
+            "ItemDetailScreen.kt" to itemDetailScreenSrc,
         )) {
             assertFalse("$name must not call isBlank()", src.contains("isBlank("))
             assertFalse("$name must not call isNotBlank()", src.contains("isNotBlank("))

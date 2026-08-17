@@ -31,6 +31,16 @@ data class AlertNotification(
     /** Null when the payload carried no `body` key at all — never coerced
      * to `""`, which would render as an empty second line. */
     val body: String?,
+    /** What the alert is *about* (ADR-0027), carried through to the tap
+     * intent so the destination can be decided without reading the mirror.
+     *
+     * Null for a payload from a server older than ADR-0027. Nothing here
+     * interprets either string — `item:` is a convention with one owner in
+     * `hummingbird_domain`, and the only sanctioned reader is the core's
+     * `notificationTapTarget`, called at tap time. A `removePrefix` here
+     * would be that convention hand-copied into Kotlin. */
+    val source: String?,
+    val sourceKey: String?,
 ) {
     companion object {
         /** The tier an unroutable payload lands on. `normal` rather than
@@ -56,6 +66,8 @@ data class AlertNotification(
                 channelKey = channelKey,
                 title = title,
                 body = data["body"],
+                source = data["source"],
+                sourceKey = data["source_key"],
             )
         }
     }

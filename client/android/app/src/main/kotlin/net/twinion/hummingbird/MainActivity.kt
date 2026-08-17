@@ -52,7 +52,9 @@ import net.twinion.hummingbird.notify.AlertNotifier
 import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.RegistrationWorker
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
+import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
+import uniffi.hummingbird_ffi_mobile.notificationTapTarget
 import uniffi.hummingbird_ffi_mobile.RunOutcome
 
 // `NowScreen` (M1-6/#504) is this activity's start destination — the
@@ -68,26 +70,28 @@ import uniffi.hummingbird_ffi_mobile.RunOutcome
 // would add. That milestone is this one, and the forcing function is the
 // notification deep link: a tapped alert has to land on *that alert's*
 // detail screen with a back stack that returns somewhere sensible, and
-// `alert/{alertId}` is an argument a boolean cannot carry. Four routes,
-// no nested graphs.
+// `alert/{alertId}` is an argument a boolean cannot carry. Five routes
+// since ADR-0027 added `item/{itemId}`, the second notification
+// destination; no nested graphs.
 //
-// The intent extra, not `navDeepLink`, carries the alert id. Android 12+
-// bans notification trampolines, so the tap already arrives as an Activity
-// intent (`AlertNotifier`) — reading its extra is the direct expression of
-// what actually happens, where a URI deep link would be a second encoding
-// of the same fact.
+// The intent extras, not `navDeepLink`, carry the tap. Android 12+ bans
+// notification trampolines, so it already arrives as an Activity intent
+// (`AlertNotifier`) — reading its extras is the direct expression of what
+// actually happens, where a URI deep link would be a second encoding of the
+// same fact. Which destination those extras lead to is the core's answer
+// (ADR-0027), never parsed here.
 class MainActivity : ComponentActivity() {
 
-    /** The alert id from the launching (or newly delivered) intent. A flow
-     * rather than a Compose state because `onNewIntent` fires outside
-     * composition — the Activity is already running when a second
-     * notification is tapped. */
-    private val deepLinkedAlertId = MutableStateFlow<String?>(null)
+    /** The launching (or newly delivered) notification intent, as the
+     * three strings the tap decision needs. A flow rather than a Compose
+     * state because `onNewIntent` fires outside composition — the Activity
+     * is already running when a second notification is tapped. */
+    private val deepLinkedAlertId = MutableStateFlow<NotificationTap?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        deepLinkedAlertId.value = intent?.getStringExtra(AlertNotifier.EXTRA_ALERT_ID)
+        deepLinkedAlertId.value = NotificationTap.from(intent)
         setContent {
             HummingbirdTheme {
                 AppRoot(deepLinkedAlertId = deepLinkedAlertId)
@@ -98,13 +102,35 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent.getStringExtra(AlertNotifier.EXTRA_ALERT_ID)?.let {
+        NotificationTap.from(intent)?.let {
             deepLinkedAlertId.value = it
         }
     }
 }
 
-/** The four routes. Strings, because that is what `NavHost` takes; kept in
+/** One tapped notification, as the extras `AlertNotifier` put on the
+ * intent. Nothing here interprets `source`/`sourceKey`: they are handed
+ * to the core's `notificationTapTarget`, which owns the answer (ADR-0027).
+ * Absent extras cross as empty strings, which that function answers with
+ * alert detail — the permanent contract for an alert naming no item. */
+private data class NotificationTap(
+    val alertId: String,
+    val source: String,
+    val sourceKey: String,
+) {
+    companion object {
+        fun from(intent: Intent?): NotificationTap? {
+            val alertId = intent?.getStringExtra(AlertNotifier.EXTRA_ALERT_ID) ?: return null
+            return NotificationTap(
+                alertId = alertId,
+                source = intent.getStringExtra(AlertNotifier.EXTRA_SOURCE).orEmpty(),
+                sourceKey = intent.getStringExtra(AlertNotifier.EXTRA_SOURCE_KEY).orEmpty(),
+            )
+        }
+    }
+}
+
+/** The five routes. Strings, because that is what `NavHost` takes; kept in
  * one place so a typo is a compile error at the use site rather than a
  * silently unreachable screen. */
 private object Routes {
@@ -112,8 +138,11 @@ private object Routes {
     const val STATUS = "status"
     const val ALERTS = "alerts"
     const val ALERT_DETAIL = "alert/{alertId}"
+    const val ITEM_DETAIL = "item/{itemId}"
 
     fun alertDetail(alertId: String) = "alert/$alertId"
+
+    fun itemDetail(itemId: String) = "item/$itemId"
 }
 
 // The always-composed content root. The #141 sync cadence (one `user` cycle
@@ -132,7 +161,7 @@ private object Routes {
 // once per completed sync cycle so they re-read the mirror after each one,
 // not only on their own resume.
 @Composable
-private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
+private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val navController = rememberNavController()
@@ -177,9 +206,18 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
     // tap is what creates it — and because a second tap while the app is
     // already open arrives through `onNewIntent`, outside any composition.
     LaunchedEffect(navController) {
-        deepLinkedAlertId.collect { alertId ->
-            if (alertId != null) {
-                navController.navigate(Routes.alertDetail(alertId))
+        deepLinkedAlertId.collect { tap ->
+            if (tap != null) {
+                // The destination is the core's answer, not this file's:
+                // a Kotlin `removePrefix("item:")` would hand-copy a key
+                // convention that has one owner (ADR-0027). Synchronous
+                // and clock-free, so it runs before navigating.
+                when (val target = notificationTapTarget(tap.source, tap.sourceKey)) {
+                    is MobileTapTarget.Item ->
+                        navController.openItemFromNotification(target.itemId)
+                    MobileTapTarget.Alert ->
+                        navController.openAlertFromNotification(tap.alertId)
+                }
                 // Consumed: a configuration change must not re-navigate.
                 deepLinkedAlertId.value = null
             }
@@ -267,6 +305,13 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
                 },
             )
         }
+        composable(Routes.ITEM_DETAIL) { entry ->
+            ItemDetailScreen(
+                itemId = entry.arguments?.getString("itemId").orEmpty(),
+                syncTick = syncTick,
+                onBack = { navController.popBackStackOrHome(Routes.NOW) },
+            )
+        }
         composable(Routes.ALERT_DETAIL) { entry ->
             AlertDetailScreen(
                 alertId = entry.arguments?.getString("alertId").orEmpty(),
@@ -277,10 +322,50 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
     }
 }
 
-/** Back from a deep-linked destination. A notification tap can make the
- * detail screen the *only* entry on the stack, and popping the last one
- * leaves a blank Activity; landing on Now instead is the honest answer to
- * "back from an alert I arrived at cold". */
+/** A tapped notification lands its alert directly on top of Now — the back
+ * stack is exactly `now -> alert/{id}`, cold or warm.
+ *
+ * The `popUpTo` is the whole fix (found on hardware 2026-08-17). A cold tap
+ * is not a fresh start: the process was killed, so Android hands
+ * `onCreate` a saved instance state and `rememberNavController` faithfully
+ * restores the *previous* session's back stack — Now, Status, some other
+ * alert — and a plain `navigate` pushes this alert on top of that debris.
+ * Four Backs to leave, the first landing on an alert nobody asked for.
+ * Popping to Now (never inclusive: it is the start destination and the one
+ * thing that must survive) discards the restored entries and makes the
+ * stack the same shape whichever way the app was entered.
+ *
+ * `launchSingleTop` covers the warm re-tap of the alert already on screen,
+ * which would otherwise stack a second identical copy of it. */
+private fun NavHostController.openAlertFromNotification(alertId: String) {
+    navigate(Routes.alertDetail(alertId)) {
+        popUpTo(Routes.NOW) { inclusive = false }
+        launchSingleTop = true
+    }
+}
+
+/** A tapped notification whose alert names an item lands that *item*
+ * directly on top of Now (ADR-0027) — the same policy
+ * [openAlertFromNotification] holds, and deliberately the same body: the
+ * cold-tap defect it fixes (#518) is a property of the restored back
+ * stack, not of which destination is being pushed onto it, so a second
+ * door that skipped the `popUpTo` would regress the fix through the new
+ * route. `NavigationStructuralTest` asserts both bodies for that reason. */
+private fun NavHostController.openItemFromNotification(itemId: String) {
+    navigate(Routes.itemDetail(itemId)) {
+        popUpTo(Routes.NOW) { inclusive = false }
+        launchSingleTop = true
+    }
+}
+
+/** Back from a deep-linked destination.
+ *
+ * The fallback is now unreachable by the notification path:
+ * [openAlertFromNotification] pops to Now before pushing, so a deep-linked
+ * alert always has Now beneath it and `popBackStack` always succeeds. Kept
+ * anyway — it costs one branch, it is the correct answer for any *future*
+ * caller that reaches a destination without a stack under it, and the
+ * alternative to landing on Now is a blank Activity. */
 private fun NavHostController.popBackStackOrHome(home: String) {
     if (!popBackStack()) navigate(home)
 }
