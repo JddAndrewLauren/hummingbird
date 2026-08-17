@@ -66,12 +66,17 @@ gain it. `ACCESS_NOTIFICATION_POLICY` in the manifest is what puts the app in
 that Settings list at all, and `ensure` re-runs on every resume — returning
 from Settings is the only signal the grant changed.
 
-**`google-services.json` is not in the repo and the
-`com.google.gms.google-services` plugin is not applied.** The
-`firebase-messaging` dependency links without either, and every Firebase
-touch is guarded (`push/PushBootstrap`), so the app builds and runs with no
-push until the operator adds the file and the plugin line — one commit,
-kept out of CI because the key is an operator credential.
+**`google-services.json` is committed at `app/google-services.json`** (Firebase
+project `hummingbird-e2b01`) and the `com.google.gms.google-services` plugin
+is applied. The json is in the repo on purpose: every value in it ships inside
+every APK, so it discloses nothing, and the plugin fails the build without it —
+gitignoring it would break CI's `assembleDebug` for no secrecy. `app/build.gradle.kts`
+carries the full reasoning. The credential that can actually *send* is
+`FCM_SERVICE_ACCOUNT`, a Cloudflare Worker secret that never enters this repo
+or Actions (ADR-0011); it must be a service-account key **from the same Firebase
+project**, since `server/worker/src/fcm.rs` builds the send URL from the
+`project_id` inside it. A mismatch fails silently — the device registers, the
+server sends, nothing arrives.
 
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).

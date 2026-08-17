@@ -20,7 +20,7 @@ class HummingbirdApp : Application() {
         // channel id that does not exist is dropped to a default channel
         // with no warning on a release build (see NotificationChannels).
         NotificationChannels.ensure(this)
-        // A no-op until google-services.json lands (see PushBootstrap's
+        // A no-op if Firebase is somehow unconfigured (see PushBootstrap's
         // own note on the getApps guard).
         PushBootstrap.refreshToken(this)
     }
