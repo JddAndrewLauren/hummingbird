@@ -423,10 +423,19 @@ fn build_now_queue(items: &[Item], now: &str) -> Vec<NowItemRecord> {
 ///   `dismissedAt == null` test is the exact bug that predicate exists to
 ///   prevent — it cannot tell an expired-then-re-raised occurrence from an
 ///   acked one, and `expires_at` is never written back as a dismissal.
-/// - `can_ack` is whether the Ack action should be offered at all: a live,
-///   not-yet-dismissed alert. Acking a settled row is legal (the authority
-///   treats setting the stored value as a version-preserving no-op) but is
-///   not a gesture worth showing.
+/// - `can_ack` is whether the Ack action should be offered at all. It is
+///   `is_live` and nothing further, because ADR-0014's predicate already
+///   contains the dismissal clause it is tempting to re-state here:
+///   `raised_at > dismissed_at`. Re-stating it as `dismissed_at.is_none()`
+///   is the same bug one line up in Kotlin dress — a re-raised occurrence
+///   carries the *old* dismissal stamp (ADR-0014 keeps it deliberately;
+///   nothing ever clears the column), so the column test hides the Ack on
+///   the very row that most needs it. The two fields are kept separate
+///   anyway: they answer different questions, and `is_live` is about to
+///   grow display uses that have nothing to do with the action.
+///   Acking a settled row is legal (the authority treats setting the
+///   stored value as a version-preserving no-op) but is not a gesture
+///   worth showing.
 ///
 /// `version` rides along because the ack is CAS and the detail screen is
 /// where a 409 retry re-reads from — the push payload carries no version.
@@ -466,7 +475,7 @@ fn to_alert_record(alert: &Alert, now_ms: i64) -> AlertRecord {
         expires_at: alert.expires_at,
         version: alert.version,
         is_live,
-        can_ack: is_live && alert.dismissed_at.is_none(),
+        can_ack: is_live,
     }
 }
 
@@ -1254,6 +1263,33 @@ mod tests {
         let acked = to_alert_record(&acked, 1_000);
         assert!(!acked.is_live);
         assert!(!acked.can_ack, "no second Ack action on an already-acked row");
+    }
+
+    /// The case a `dismissed_at` column test cannot see: the same row,
+    /// acked once, then raised again by its source (ADR-0014's lifecycle
+    /// axis — a state source re-enters live on the row it already has, and
+    /// the old dismissal stamp is never cleared). It is live, so the Ack
+    /// must be on offer; otherwise the new occurrence renders as one the
+    /// human has already dealt with and can never be settled from a phone.
+    #[test]
+    fn a_re_raised_occurrence_carries_its_old_dismissal_and_is_still_ackable() {
+        let mut re_raised = alert("a-4", 900);
+        re_raised.dismissed_at = Some(600);
+
+        let record = to_alert_record(&re_raised, 1_000);
+        assert!(record.is_live, "raised since the dismissal — ADR-0014's clause");
+        assert!(record.can_ack, "a live alert is ackable, whatever it settled as before");
+        assert_eq!(
+            record.dismissed_at,
+            Some(600),
+            "the stamp stays on the wire; it is history, not a verdict"
+        );
+
+        // The resolution half of the same axis (ADR-0014 corrected the
+        // re-raise path for resolution as well as dismissal).
+        let mut recovered = alert("a-5", 900);
+        recovered.resolved_at = Some(700);
+        assert!(to_alert_record(&recovered, 1_000).can_ack);
     }
 
     #[tokio::test]
