@@ -1,9 +1,14 @@
 package net.twinion.hummingbird
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,53 +35,106 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import kotlin.random.Random
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.TokenStore
 import net.twinion.hummingbird.core.TokenValidation
+import net.twinion.hummingbird.notify.AlertNotifier
 import net.twinion.hummingbird.push.RegistrationWorker
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.RunOutcome
 
-// `NowScreen` (M1-6/#504) is this activity's content — the frontier,
-// decided core-side and rendered verbatim (`NowScreen.kt`'s own doc). M0's
-// proof screen (#141: the embedded core's API version, the mirror's
-// active-item count, and one live sync against the authority) moves behind
-// the "Status" action rather than being deleted — still the cheapest manual
-// check that the generated binding and the loaded `.so` agree. No nav
-// library in M1 (recorded deferral, M1-6's brief): a plain `showStatus`
-// toggle stands in for the `NavHost` a later milestone would add.
+// `NowScreen` (M1-6/#504) is this activity's start destination — the
+// frontier, decided core-side and rendered verbatim (`NowScreen.kt`'s own
+// doc). M0's proof screen (#141: the embedded core's API version, the
+// mirror's active-item count, and one live sync against the authority)
+// lives behind the "Status" action rather than being deleted — still the
+// cheapest manual check that the generated binding and the loaded `.so`
+// agree.
+//
+// **M1 deferred a nav library; M2 adopts one.** The recorded deferral was
+// that a `showStatus` boolean stood in for the `NavHost` a later milestone
+// would add. That milestone is this one, and the forcing function is the
+// notification deep link: a tapped alert has to land on *that alert's*
+// detail screen with a back stack that returns somewhere sensible, and
+// `alert/{alertId}` is an argument a boolean cannot carry. Four routes,
+// no nested graphs.
+//
+// The intent extra, not `navDeepLink`, carries the alert id. Android 12+
+// bans notification trampolines, so the tap already arrives as an Activity
+// intent (`AlertNotifier`) — reading its extra is the direct expression of
+// what actually happens, where a URI deep link would be a second encoding
+// of the same fact.
 class MainActivity : ComponentActivity() {
+
+    /** The alert id from the launching (or newly delivered) intent. A flow
+     * rather than a Compose state because `onNewIntent` fires outside
+     * composition — the Activity is already running when a second
+     * notification is tapped. */
+    private val deepLinkedAlertId = MutableStateFlow<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        deepLinkedAlertId.value = intent?.getStringExtra(AlertNotifier.EXTRA_ALERT_ID)
         setContent {
             HummingbirdTheme {
-                AppRoot()
+                AppRoot(deepLinkedAlertId = deepLinkedAlertId)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra(AlertNotifier.EXTRA_ALERT_ID)?.let {
+            deepLinkedAlertId.value = it
         }
     }
 }
 
+/** The four routes. Strings, because that is what `NavHost` takes; kept in
+ * one place so a typo is a compile error at the use site rather than a
+ * silently unreachable screen. */
+private object Routes {
+    const val NOW = "now"
+    const val STATUS = "status"
+    const val ALERTS = "alerts"
+    const val ALERT_DETAIL = "alert/{alertId}"
+
+    fun alertDetail(alertId: String) = "alert/$alertId"
+}
+
 // The always-composed content root. The #141 sync cadence (one `user` cycle
 // on every foreground resume, plus the 60-second `timer` tick while
-// resumed) lives here rather than inside `ProofScreen` — it must run
-// whichever of Now/Status is on screen, since Now's own mirror is what it
-// keeps fresh and an act taken there is what it flushes. `ProofScreen` was
-// the cadence's original, and wrong, home: it only composes while the
-// "Status" toggle is on, so hoisting the toggle's *content* without hoisting
-// the cadence would leave Now unrefreshed and an act unflushed for up to an
-// hour, until `SyncWorker`'s background leg. `syncTick` is this root's only
-// hand-off to `NowScreen`: it increments once per completed sync cycle so
-// Now re-reads `now_queue` after each one, not only on its own resume.
+// resumed) lives here rather than inside any one screen — it must run
+// whichever route is on screen, since Now's own mirror is what it keeps
+// fresh and an act taken there is what it flushes. `ProofScreen` was the
+// cadence's original, and wrong, home: it only composed while the "Status"
+// toggle was on, so hoisting the toggle's *content* without hoisting the
+// cadence would leave Now unrefreshed and an act unflushed for up to an
+// hour, until `SyncWorker`'s background leg. That reasoning (#514) is
+// route-independent, which is why adopting a `NavHost` moves nothing here:
+// the cadence stays above it, not inside a destination.
+//
+// `syncTick` is this root's only hand-off to the screens: it increments
+// once per completed sync cycle so they re-read the mirror after each one,
+// not only on their own resume.
 @Composable
-private fun AppRoot() {
+private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val navController = rememberNavController()
 
     var core by remember { mutableStateOf<MobileTaskHost?>(null) }
     var facts by remember { mutableStateOf<CoreFacts?>(null) }
@@ -84,7 +142,6 @@ private fun AppRoot() {
     var syncing by remember { mutableStateOf(false) }
     var needsToken by remember { mutableStateOf(false) }
     var syncTick by remember { mutableIntStateOf(0) }
-    var showStatus by remember { mutableStateOf(false) }
 
     suspend fun sync(trigger: String) {
         val host = core ?: return
@@ -112,11 +169,27 @@ private fun AppRoot() {
         needsToken = TokenStore.load(context) == null
     }
 
+    NotificationPermissionRequest()
+
+    // The notification deep link. Collected here rather than in a
+    // destination because the target destination may not exist yet — the
+    // tap is what creates it — and because a second tap while the app is
+    // already open arrives through `onNewIntent`, outside any composition.
+    LaunchedEffect(navController) {
+        deepLinkedAlertId.collect { alertId ->
+            if (alertId != null) {
+                navController.navigate(Routes.alertDetail(alertId))
+                // Consumed: a configuration change must not re-navigate.
+                deepLinkedAlertId.value = null
+            }
+        }
+    }
+
     // Foreground legs of the #141 sync model: one deliberate cycle on
     // every return to the app, plus the 60-second cadence tick while
     // resumed (ADR-0007's foreground timer, exactly the web client's) —
-    // hoisted to this root (not `ProofScreen`) so it runs regardless of
-    // which screen is showing (#514 review).
+    // hoisted to this root so it runs regardless of which route is
+    // showing (#514 review).
     LifecycleResumeEffect(core) {
         val resumed = scope.launch {
             if (core != null) {
@@ -130,40 +203,97 @@ private fun AppRoot() {
         onPauseOrDispose { resumed.cancel() }
     }
 
-    if (showStatus) {
-        ProofScreen(
-            facts = facts,
-            statusLine = statusLine,
-            syncing = syncing,
-            needsToken = needsToken,
-            onBack = { showStatus = false },
-            onSync = { scope.launch { sync("user") } },
-            onSaveToken = { token ->
-                scope.launch {
-                    TokenStore.save(context, token)
-                    core?.pushApiKey(token)
-                    needsToken = false
-                    // Registration follows the credential (M2/#141):
-                    // `registerPushTarget` is the one authority call that
-                    // needs the bearer token in hand rather than riding the
-                    // sync queue, so an attempt made before a token existed
-                    // returned `Unauthorized` and stopped. This arrival is
-                    // the event that makes it worth trying again.
-                    RegistrationWorker.enqueue(context)
-                    sync("user")
-                }
-            },
-            onForgetToken = {
-                scope.launch {
-                    TokenStore.clear(context)
-                    core?.clearApiKey()
-                    needsToken = true
-                    statusLine = "No device token — paste one to sync."
-                }
-            },
-        )
-    } else {
-        NowScreen(onShowStatus = { showStatus = true }, syncTick = syncTick)
+    NavHost(navController = navController, startDestination = Routes.NOW) {
+        composable(Routes.NOW) {
+            NowScreen(
+                onShowStatus = { navController.navigate(Routes.STATUS) },
+                onShowAlerts = { navController.navigate(Routes.ALERTS) },
+                syncTick = syncTick,
+            )
+        }
+        composable(Routes.STATUS) {
+            ProofScreen(
+                facts = facts,
+                statusLine = statusLine,
+                syncing = syncing,
+                needsToken = needsToken,
+                onBack = { navController.popBackStack() },
+                onSync = { scope.launch { sync("user") } },
+                onSaveToken = { token ->
+                    scope.launch {
+                        TokenStore.save(context, token)
+                        core?.pushApiKey(token)
+                        needsToken = false
+                        // Registration follows the credential (M2/#141):
+                        // `registerPushTarget` is the one authority call
+                        // that needs the bearer token in hand rather than
+                        // riding the sync queue, so an attempt made before
+                        // a token existed returned `Unauthorized` and
+                        // stopped. This arrival is the event that makes it
+                        // worth trying again.
+                        RegistrationWorker.enqueue(context)
+                        sync("user")
+                    }
+                },
+                onForgetToken = {
+                    scope.launch {
+                        TokenStore.clear(context)
+                        core?.clearApiKey()
+                        needsToken = true
+                        statusLine = "No device token — paste one to sync."
+                    }
+                },
+            )
+        }
+        composable(Routes.ALERTS) {
+            AlertsScreen(
+                syncTick = syncTick,
+                onBack = { navController.popBackStack() },
+                onOpenAlert = { alertId ->
+                    navController.navigate(Routes.alertDetail(alertId))
+                },
+            )
+        }
+        composable(Routes.ALERT_DETAIL) { entry ->
+            AlertDetailScreen(
+                alertId = entry.arguments?.getString("alertId").orEmpty(),
+                syncTick = syncTick,
+                onBack = { navController.popBackStackOrHome(Routes.NOW) },
+            )
+        }
+    }
+}
+
+/** Back from a deep-linked destination. A notification tap can make the
+ * detail screen the *only* entry on the stack, and popping the last one
+ * leaves a blank Activity; landing on Now instead is the honest answer to
+ * "back from an alert I arrived at cold". */
+private fun NavHostController.popBackStackOrHome(home: String) {
+    if (!popBackStack()) navigate(home)
+}
+
+/** Asks for `POST_NOTIFICATIONS` once per composition of the root, if it is
+ * not already granted. minSdk is 35, so this is always a runtime grant and
+ * there is no version branch to take.
+ *
+ * A refusal is not argued with — no rationale dialog, no second ask. The
+ * alert lane simply does not ring, and `AlertsScreen`'s health row says so
+ * where the user is already looking at alerts. Honesty over reassurance,
+ * and it keeps the one thing a permission dialog is for (asking) separate
+ * from the thing a nagging dialog does (asking again). */
+@Composable
+private fun NotificationPermissionRequest() {
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* Granted or not, the health row is what reports it. */ }
+
+    LaunchedEffect(Unit) {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
 
@@ -197,7 +327,7 @@ private fun describe(outcome: RunOutcome): String = when (outcome.kind) {
 }
 
 // The M0 proof screen's display, with no state or cadence of its own — both
-// live in `AppRoot` now (#514 review), since the cadence must keep running
+// live in `AppRoot` (#514 review), since the cadence must keep running
 // while this screen isn't the one on top.
 @Composable
 private fun ProofScreen(

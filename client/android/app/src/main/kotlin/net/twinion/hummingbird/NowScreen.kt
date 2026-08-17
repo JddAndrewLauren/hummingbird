@@ -111,7 +111,7 @@ private val ACTION_LABEL: Map<String, String> = mapOf(
 )
 
 @Composable
-fun NowScreen(onShowStatus: () -> Unit, syncTick: Int = 0) {
+fun NowScreen(onShowStatus: () -> Unit, onShowAlerts: () -> Unit, syncTick: Int = 0) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // Activity-scoped, not composition-scoped: see NowViewModel.factory.
@@ -162,8 +162,13 @@ fun NowScreen(onShowStatus: () -> Unit, syncTick: Int = 0) {
                 // title is the one exception the design system already
                 // carries (a verb/noun, not the brand).
                 Text("Now", style = MaterialTheme.typography.headlineLarge)
-                TextButton(onClick = onShowStatus) {
-                    Text("Status")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onShowAlerts) {
+                        Text("Alerts")
+                    }
+                    TextButton(onClick = onShowStatus) {
+                        Text("Status")
+                    }
                 }
             }
 
