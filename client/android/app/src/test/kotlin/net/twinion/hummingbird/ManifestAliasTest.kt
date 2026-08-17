@@ -85,6 +85,74 @@ class ManifestAliasTest {
     }
 
     @Test
+    fun `POST_NOTIFICATIONS is requested for the alert lane`() {
+        // minSdk 35 — this is always a runtime grant, but the manifest
+        // declaration is what makes the request legal at all; without it
+        // `requestPermissions` returns an immediate denial.
+        val permissions = manifest().children("uses-permission").mapNotNull { it.attr("name") }
+        assertTrue(
+            "POST_NOTIFICATIONS permission missing",
+            permissions.contains("android.permission.POST_NOTIFICATIONS"),
+        )
+    }
+
+    @Test
+    fun `ACCESS_NOTIFICATION_POLICY is declared, or urgent can never bypass DND`() {
+        // Declaring it grants nothing — the grant is the user's, in
+        // Settings > Do Not Disturb access — but an app that does not
+        // declare it never appears in that list, so
+        // `NotificationChannel.setBypassDnd(true)` stays inert for the
+        // life of the install and ADR-0012's "must not get caught in
+        // blanket silencing" quietly fails.
+        val permissions = manifest().children("uses-permission").mapNotNull { it.attr("name") }
+        assertTrue(
+            "ACCESS_NOTIFICATION_POLICY permission missing",
+            permissions.contains("android.permission.ACCESS_NOTIFICATION_POLICY"),
+        )
+    }
+
+    @Test
+    fun `the FCM service is declared exactly once, unexported, on the MESSAGING_EVENT action`() {
+        val application = manifest().children("application").single()
+        val services = application.children("service")
+            .filter { it.attr("name") == ".push.HbMessagingService" }
+        assertEquals("HbMessagingService must be declared exactly once", 1, services.size)
+        val service = services.single()
+
+        // Play services binds it through the action, not through export —
+        // an exported service here would be a needless attack surface.
+        assertEquals("false", service.attr("exported"))
+        val actions = service.children("intent-filter")
+            .flatMap { it.children("action") }
+            .mapNotNull { it.attr("name") }
+        assertTrue(
+            "the FCM service must filter on com.google.firebase.MESSAGING_EVENT",
+            actions.contains("com.google.firebase.MESSAGING_EVENT"),
+        )
+    }
+
+    @Test
+    fun `the Ack receiver is declared exactly once, unexported, on its own action`() {
+        val application = manifest().children("application").single()
+        val receivers = application.children("receiver")
+            .filter { it.attr("name") == ".push.AckReceiver" }
+        assertEquals("AckReceiver must be declared exactly once", 1, receivers.size)
+        val receiver = receivers.single()
+
+        // Exported, any app on the device could settle alerts on the
+        // authority; the only legitimate sender is this app's own
+        // PendingIntent.
+        assertEquals("false", receiver.attr("exported"))
+        val actions = receiver.children("intent-filter")
+            .flatMap { it.children("action") }
+            .mapNotNull { it.attr("name") }
+        assertTrue(
+            "the Ack receiver must filter on net.twinion.hummingbird.action.ACK_ALERT",
+            actions.contains("net.twinion.hummingbird.action.ACK_ALERT"),
+        )
+    }
+
+    @Test
     fun `static shortcuts are wired on the primary launcher activity, and the resource exists`() {
         val application = manifest().children("application").single()
         val mainActivity = application.children("activity").single { it.attr("name") == ".MainActivity" }

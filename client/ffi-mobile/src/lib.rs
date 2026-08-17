@@ -11,7 +11,12 @@
 //! counters the proof screen shows. M1-5 (#503) added the free
 //! [`can_submit_capture`] door onto [`hummingbird_core::decisions`] and
 //! [`MobileTaskHost::capture`] — `CaptureActivity`'s whole surface, title
-//! only, no capture-meta fields (out of scope until a later screen).
+//! only, no capture-meta fields (out of scope until a later screen). M2
+//! (#141, ADR-0012) adds the notification lane's client side:
+//! [`MobileTaskHost::alerts`]/[`MobileTaskHost::alert`] as decided
+//! [`AlertRecord`]s, [`MobileTaskHost::ack_alert`] (the Ack gesture — swipe
+//! is not one), and [`MobileTaskHost::register_push_target`], the one
+//! authority call here that bypasses the sync queue entirely.
 //!
 //! **Async runs under uniffi's tokio runtime** (`async_runtime = "tokio"`),
 //! because `Core::run`'s reqwest transports need a reactor and the host
@@ -32,6 +37,9 @@
 //! list. `NowScreen` never calls `by_priority_then_due`, `compute_urgency`
 //! or `available_actions` itself, and never could: those functions are not
 //! exported to Kotlin at all, only their already-applied results are.
+//! [`AlertRecord`] is M2's instance of the same rule: it ships `is_live`
+//! and `can_ack` as answers, so no Kotlin `dismissedAt == null` test can
+//! disagree with ADR-0014's predicate.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,10 +47,13 @@ use std::sync::Arc;
 
 use hummingbird_core::decisions::{available_actions, frontier, urgency};
 use hummingbird_core::storage::FsSnapshotStore;
+use hummingbird_core::sync::write::transport::{
+    HttpMethod, MutationRequest, MutationTransport,
+};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::{CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
-use hummingbird_domain::{Item, Stage};
+use hummingbird_domain::{Alert, CreatePushTarget, Item, Platform, Stage};
 
 /// Whether `draft` is worth submitting — the free door onto
 /// [`hummingbird_core::decisions::can_submit_capture`] (ADR-0025), the
@@ -169,6 +180,51 @@ impl std::fmt::Display for MobileActError {
 }
 
 impl std::error::Error for MobileActError {}
+
+/// [`MobileTaskHost::ack_alert`] failed. `AlertNotFound` is the one that
+/// matters operationally: a push payload names an alert this device has not
+/// synced yet, so the ack has no `expected_version` to CAS against (the
+/// payload carries none — `server/authority/src/fcm.rs`). The host's answer
+/// is to run a cycle and retry, not to invent a version.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileAlertError {
+    AlertNotFound,
+    AckFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileAlertError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileAlertError::AlertNotFound => write!(f, "alert not found"),
+            MobileAlertError::AckFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileAlertError {}
+
+/// [`MobileTaskHost::register_push_target`] failed (#141/#139). Split the
+/// way the host's retry differs: `Unauthorized` means the device token is
+/// wrong or missing and retrying the same call is pointless until a fresh
+/// one is pushed, while `RegisterFailed` covers a transport failure or a
+/// non-2xx the host should simply retry on next launch — registration is
+/// idempotent by the client-supplied id, so a retry is free.
+#[derive(Debug, uniffi::Error)]
+pub enum MobilePushRegistrationError {
+    Unauthorized,
+    RegisterFailed { detail: String },
+}
+
+impl std::fmt::Display for MobilePushRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobilePushRegistrationError::Unauthorized => write!(f, "unauthorized"),
+            MobilePushRegistrationError::RegisterFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobilePushRegistrationError {}
 
 /// One drained [`CoreEvent`], as the mobile hosts' shape — the same
 /// `kind`/`at_ms` pair `ffi-web`'s `TaskEventDTO` carries, so the two FFI
@@ -354,10 +410,94 @@ fn build_now_queue(items: &[Item], now: &str) -> Vec<NowItemRecord> {
         .collect()
 }
 
+// ----------------------------------------------------------------- M2 (#141)
+// The notification lane's read side. Same asymmetry as the M1-6 section
+// above: Kotlin receives decided records, never a predicate to apply.
+
+/// One alert, decided — the row behind the alerts surface and the alert
+/// detail screen (ADR-0012). Carries the wire columns the screens render
+/// *plus* the two verdicts Kotlin must never re-derive:
+///
+/// - `is_live` is ADR-0014's three-clause predicate ([`Alert::is_live`])
+///   already applied against the caller's clock. A Kotlin
+///   `dismissedAt == null` test is the exact bug that predicate exists to
+///   prevent — it cannot tell an expired-then-re-raised occurrence from an
+///   acked one, and `expires_at` is never written back as a dismissal.
+/// - `can_ack` is whether the Ack action should be offered at all. It is
+///   `is_live` and nothing further, because ADR-0014's predicate already
+///   contains the dismissal clause it is tempting to re-state here:
+///   `raised_at > dismissed_at`. Re-stating it as `dismissed_at.is_none()`
+///   is the same bug one line up in Kotlin dress — a re-raised occurrence
+///   carries the *old* dismissal stamp (ADR-0014 keeps it deliberately;
+///   nothing ever clears the column), so the column test hides the Ack on
+///   the very row that most needs it. The two fields are kept separate
+///   anyway: they answer different questions, and `is_live` is about to
+///   grow display uses that have nothing to do with the action.
+///   Acking a settled row is legal (the authority treats setting the
+///   stored value as a version-preserving no-op) but is not a gesture
+///   worth showing.
+///
+/// `version` rides along because the ack is CAS and the detail screen is
+/// where a 409 retry re-reads from — the push payload carries no version.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct AlertRecord {
+    pub id: String,
+    pub source: String,
+    pub source_key: String,
+    pub subject_key: Option<String>,
+    pub title: String,
+    pub body: Option<String>,
+    pub url: Option<String>,
+    pub severity: Option<String>,
+    pub raised_at: i64,
+    pub resolved_at: Option<i64>,
+    pub dismissed_at: Option<i64>,
+    pub expires_at: Option<i64>,
+    pub version: i64,
+    pub is_live: bool,
+    pub can_ack: bool,
+}
+
+fn to_alert_record(alert: &Alert, now_ms: i64) -> AlertRecord {
+    let is_live = alert.is_live(now_ms);
+    AlertRecord {
+        id: alert.id.clone(),
+        source: alert.source.clone(),
+        source_key: alert.source_key.clone(),
+        subject_key: alert.subject_key.clone(),
+        title: alert.title.clone(),
+        body: alert.body.clone(),
+        url: alert.url.clone(),
+        severity: alert.severity.clone(),
+        raised_at: alert.raised_at,
+        resolved_at: alert.resolved_at,
+        dismissed_at: alert.dismissed_at,
+        expires_at: alert.expires_at,
+        version: alert.version,
+        is_live,
+        can_ack: is_live,
+    }
+}
+
 struct Inner {
     core: Core<FsSnapshotStore, FsSnapshotStore>,
     read_transport: ReqwestSyncTransport,
     write_transport: ReqwestMutationTransport,
+    /// The device token, shadowing the one `Core` holds in memory (it
+    /// exposes no getter, and never persists it — `Core::init`'s doc).
+    ///
+    /// It exists because [`MobileTaskHost::register_push_target`] is the
+    /// one authority call here that does **not** go through the sync cycle:
+    /// `push_targets` carry no `version` and never delta-pull (`api.rs`'s
+    /// `ChangesResponse` doc), so registration is a direct one-shot POST on
+    /// the write transport rather than a durable queue entry — and a direct
+    /// send needs the bearer token in hand.
+    ///
+    /// Kept in lockstep with the core's copy under the same lock, by the
+    /// same three methods that set it there ([`MobileTaskHost::push_api_key`],
+    /// `rehydrate_api_key`, `clear_api_key`), so there is no second
+    /// credential lifecycle to reason about. Memory only, like the core's.
+    api_key: Option<String>,
 }
 
 /// The native hosts' handle on one durable `Core` — `TaskHostCore`'s
@@ -385,6 +525,7 @@ impl MobileTaskHost {
         api_key: String,
     ) -> Result<Arc<Self>, MobileInitError> {
         let empty_key = api_key.is_empty();
+        let shadow_key = (!empty_key).then(|| api_key.clone());
         let mut core = Core::init(namespace, api_key)
             .await
             .map_err(|error| MobileInitError::InitFailed {
@@ -406,6 +547,7 @@ impl MobileTaskHost {
                 core,
                 read_transport,
                 write_transport,
+                api_key: shadow_key,
             }),
         }))
     }
@@ -433,19 +575,25 @@ impl MobileTaskHost {
     /// after a `credential_needed` event). Always resumes a hold — see
     /// [`Core::push_api_key`].
     pub async fn push_api_key(&self, api_key: String) {
-        self.inner.lock().await.core.push_api_key(api_key);
+        let mut inner = self.inner.lock().await;
+        inner.api_key = Some(api_key.clone());
+        inner.core.push_api_key(api_key);
     }
 
     /// The host reloading a token it already had stored (app start), never
     /// resuming a hold — see [`Core::rehydrate_api_key`].
     pub async fn rehydrate_api_key(&self, api_key: String) {
-        self.inner.lock().await.core.rehydrate_api_key(api_key);
+        let mut inner = self.inner.lock().await;
+        inner.api_key = Some(api_key.clone());
+        inner.core.rehydrate_api_key(api_key);
     }
 
     /// "Forget token": clears the in-memory credential. Nothing durable to
     /// clean up — the core never persisted it.
     pub async fn clear_api_key(&self) {
-        self.inner.lock().await.core.clear_api_key();
+        let mut inner = self.inner.lock().await;
+        inner.api_key = None;
+        inner.core.clear_api_key();
     }
 
     /// Runs one sync cycle against the live transports. `trigger` is the
@@ -566,6 +714,124 @@ impl MobileTaskHost {
                     detail: other.to_string(),
                 },
             })
+    }
+
+    /// The alerts surface's whole read (M2/#141): every live alert across
+    /// every source, newest raise first —
+    /// [`hummingbird_core::Core::live_alerts`] verbatim, each row decided
+    /// into an [`AlertRecord`]. `now_ms` is the host's wall clock in
+    /// milliseconds (unlike [`MobileTaskHost::now_queue`]'s civil-time
+    /// `now`: alert liveness is instants throughout, no civil date to
+    /// resolve).
+    pub async fn alerts(&self, now_ms: i64) -> Vec<AlertRecord> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .live_alerts(now_ms)
+            .iter()
+            .map(|alert| to_alert_record(alert, now_ms))
+            .collect()
+    }
+
+    /// One alert by id, live or not — the alert-detail screen's read, and
+    /// the read a notification's deep link lands on. Deliberately not
+    /// liveness-filtered ([`hummingbird_core::Core::alert`]'s own doc): the
+    /// row the human just acked must still render. `None` means this device
+    /// has not synced that alert — which is a real state on a deep link
+    /// from a push, since the payload can arrive before the cycle that
+    /// carries the row.
+    pub async fn alert(&self, alert_id: String, now_ms: i64) -> Option<AlertRecord> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .alert(&alert_id)
+            .map(|alert| to_alert_record(&alert, now_ms))
+    }
+
+    /// Acks an alert (ADR-0012's Ack action): sync-then-CAS —
+    /// [`hummingbird_core::Core::alert`] for the `expected_version` the
+    /// push payload does not carry, then
+    /// [`hummingbird_core::Core::dismiss_alert`] to enqueue the durable
+    /// `PATCH /api/alerts/:id`. Durable before it returns, like every
+    /// mutation here, so an ack tapped in the notification shade survives
+    /// the process being killed a moment later.
+    ///
+    /// **Swipe must never reach this.** ADR-0012 is explicit that swiping a
+    /// notification away is not a gesture — the delete-intent does nothing
+    /// to the alert. Only the Ack action calls this.
+    ///
+    /// A row this device has not synced answers
+    /// [`MobileAlertError::AlertNotFound`]; the host runs a cycle and
+    /// retries rather than inventing a version.
+    pub async fn ack_alert(&self, alert_id: String, now_ms: i64) -> Result<(), MobileAlertError> {
+        let seed = mint_mutation_seed("ack", now_ms);
+        let mut inner = self.inner.lock().await;
+        let Some(current) = inner.core.alert(&alert_id) else {
+            return Err(MobileAlertError::AlertNotFound);
+        };
+        inner
+            .core
+            .dismiss_alert(&seed, &current, Some(now_ms), now_ms)
+            .await
+            .map_err(|error| MobileAlertError::AckFailed {
+                detail: error.to_string(),
+            })
+    }
+
+    /// Registers this install for push (#139/#141): `POST /api/push_targets`,
+    /// `device` scope, idempotent by the client-supplied `id`.
+    ///
+    /// **`id` is a device *slot*, not a token id** — mint one stable value
+    /// per install, persist it, and re-send that same id from
+    /// `onNewToken`. A replay with a changed `fcm_token` adopts the new
+    /// token and clears `revoked_at`; a fresh id every call would instead
+    /// accumulate dead slots that each get a copy of every alert.
+    ///
+    /// Sent directly on the write transport rather than through the sync
+    /// queue: `push_targets` are server-side machinery with no `version`
+    /// and no delta-pull, so they are not a mirror entity and a queue entry
+    /// for one would have nothing to rebase against. Idempotency is what
+    /// makes that safe — the host simply retries on next launch.
+    pub async fn register_push_target(
+        &self,
+        id: String,
+        name: String,
+        fcm_token: String,
+    ) -> Result<(), MobilePushRegistrationError> {
+        let inner = self.inner.lock().await;
+        let Some(api_key) = inner.api_key.clone() else {
+            return Err(MobilePushRegistrationError::Unauthorized);
+        };
+        let body = serde_json::to_string(&CreatePushTarget {
+            id,
+            name,
+            platform: Platform::Android,
+            fcm_token,
+        })
+        .expect("CreatePushTarget always serializes");
+        let response = inner
+            .write_transport
+            .send(
+                &api_key,
+                MutationRequest {
+                    method: HttpMethod::Post,
+                    path: "/api/push_targets".to_string(),
+                    body,
+                },
+            )
+            .await
+            .map_err(|error| MobilePushRegistrationError::RegisterFailed {
+                detail: error.to_string(),
+            })?;
+        match response.status {
+            200..=299 => Ok(()),
+            401 | 403 => Err(MobilePushRegistrationError::Unauthorized),
+            status => Err(MobilePushRegistrationError::RegisterFailed {
+                detail: format!("push target registration failed: {status} {}", response.body),
+            }),
+        }
     }
 }
 
@@ -932,5 +1198,179 @@ mod tests {
 
         let result = host.act("no-such-id".to_string(), "start".to_string(), 1_000).await;
         assert!(matches!(result, Err(MobileActError::ItemNotFound)));
+    }
+
+    // ------------------------------------------------------- M2 (#141)
+
+    fn alert(id: &str, raised_at: i64) -> Alert {
+        Alert {
+            id: id.to_string(),
+            source: "race/v1".to_string(),
+            source_key: format!("occurrence:{id}"),
+            subject_key: None,
+            title: format!("alert {id}"),
+            body: Some("body".to_string()),
+            url: Some("https://example.invalid/a".to_string()),
+            severity: Some("high".to_string()),
+            raised_at,
+            resolved_at: None,
+            dismissed_at: None,
+            expires_at: None,
+            version: 3,
+        }
+    }
+
+    async fn host_at(namespace: &str, api_key: &str) -> Arc<MobileTaskHost> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(namespace);
+        // The tempdir outlives the host only within one test body; leaking
+        // it here keeps the durable namespace alive for the whole test
+        // without threading the guard through every call site.
+        std::mem::forget(dir);
+        MobileTaskHost::init(
+            path.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            api_key.to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The two verdicts this record exists to carry. A settled row is not
+    /// live and cannot be acked; the same row under an earlier clock is
+    /// both — which is exactly what a Kotlin `dismissedAt == null` test
+    /// would get wrong for the expiry case below.
+    #[test]
+    fn the_record_decides_liveness_and_ackability_at_the_callers_clock() {
+        let live = to_alert_record(&alert("a-1", 500), 1_000);
+        assert!(live.is_live);
+        assert!(live.can_ack);
+        assert_eq!(live.version, 3, "the CAS version rides along for the retry");
+
+        let mut expiring = alert("a-2", 500);
+        expiring.expires_at = Some(2_000);
+        assert!(to_alert_record(&expiring, 1_500).is_live);
+        let expired = to_alert_record(&expiring, 3_000);
+        assert!(!expired.is_live, "ADR-0014's expiry clause, not a column test");
+        assert!(!expired.can_ack);
+        assert_eq!(
+            expired.dismissed_at, None,
+            "expiry is never written back as a dismissal — the column stays clear"
+        );
+
+        let mut acked = alert("a-3", 500);
+        acked.dismissed_at = Some(600);
+        let acked = to_alert_record(&acked, 1_000);
+        assert!(!acked.is_live);
+        assert!(!acked.can_ack, "no second Ack action on an already-acked row");
+    }
+
+    /// The case a `dismissed_at` column test cannot see: the same row,
+    /// acked once, then raised again by its source (ADR-0014's lifecycle
+    /// axis — a state source re-enters live on the row it already has, and
+    /// the old dismissal stamp is never cleared). It is live, so the Ack
+    /// must be on offer; otherwise the new occurrence renders as one the
+    /// human has already dealt with and can never be settled from a phone.
+    #[test]
+    fn a_re_raised_occurrence_carries_its_old_dismissal_and_is_still_ackable() {
+        let mut re_raised = alert("a-4", 900);
+        re_raised.dismissed_at = Some(600);
+
+        let record = to_alert_record(&re_raised, 1_000);
+        assert!(record.is_live, "raised since the dismissal — ADR-0014's clause");
+        assert!(record.can_ack, "a live alert is ackable, whatever it settled as before");
+        assert_eq!(
+            record.dismissed_at,
+            Some(600),
+            "the stamp stays on the wire; it is history, not a verdict"
+        );
+
+        // The resolution half of the same axis (ADR-0014 corrected the
+        // re-raise path for resolution as well as dismissal).
+        let mut recovered = alert("a-5", 900);
+        recovered.resolved_at = Some(700);
+        assert!(to_alert_record(&recovered, 1_000).can_ack);
+    }
+
+    #[tokio::test]
+    async fn a_device_that_has_synced_nothing_answers_the_alert_reads_empty() {
+        let host = host_at("m2-empty-ns", "").await;
+        assert!(host.alerts(1_000).await.is_empty());
+        assert_eq!(host.alert("a-1".to_string(), 1_000).await, None);
+    }
+
+    /// The deep-link race: a push names an alert whose row has not been
+    /// pulled yet. The ack refuses rather than inventing an
+    /// `expected_version` — the payload carries none.
+    #[tokio::test]
+    async fn acking_an_unsynced_alert_refuses_instead_of_guessing_a_version() {
+        let host = host_at("m2-ack-unknown-ns", "device-token").await;
+        let result = host.ack_alert("a-not-synced".to_string(), 1_000).await;
+        assert!(matches!(result, Err(MobileAlertError::AlertNotFound)));
+        assert_eq!(host.queue_depth().await, 0, "nothing was enqueued");
+    }
+
+    #[tokio::test]
+    async fn registering_without_a_credential_is_unauthorized_and_touches_no_network() {
+        // `""` at init means "no token yet" — the same mapping `run`
+        // makes. The base_url is unresolvable, so reaching the transport
+        // at all would surface as `RegisterFailed`, not `Unauthorized`.
+        let host = host_at("m2-register-nokey-ns", "").await;
+        let result = host
+            .register_push_target("slot-1".to_string(), "fold".to_string(), "fcm-1".to_string())
+            .await;
+        assert!(matches!(
+            result,
+            Err(MobilePushRegistrationError::Unauthorized)
+        ));
+    }
+
+    /// The shadow token's whole job: a key pushed after init has to reach
+    /// registration, which does not go through `Core`. Proven by the error
+    /// *changing* — with a key in hand the call reaches the (unresolvable)
+    /// transport and fails there instead of short-circuiting.
+    #[tokio::test]
+    async fn a_pushed_key_reaches_registration_and_clearing_it_takes_it_away() {
+        let host = host_at("m2-register-key-ns", "").await;
+        host.push_api_key("device-token".to_string()).await;
+        let result = host
+            .register_push_target("slot-1".to_string(), "fold".to_string(), "fcm-1".to_string())
+            .await;
+        assert!(
+            matches!(result, Err(MobilePushRegistrationError::RegisterFailed { .. })),
+            "with a credential the call reaches the transport, {result:?}"
+        );
+
+        host.clear_api_key().await;
+        let after = host
+            .register_push_target("slot-1".to_string(), "fold".to_string(), "fcm-1".to_string())
+            .await;
+        assert!(matches!(
+            after,
+            Err(MobilePushRegistrationError::Unauthorized)
+        ));
+    }
+
+    /// The wire body the authority's `deny_unknown_fields` DTO will accept
+    /// — pinned here because this is the one request body assembled at this
+    /// seam rather than inside `hummingbird-core`.
+    #[test]
+    fn the_registration_body_is_exactly_the_authoritys_dto() {
+        let body = serde_json::to_value(CreatePushTarget {
+            id: "slot-1".to_string(),
+            name: "fold".to_string(),
+            platform: Platform::Android,
+            fcm_token: "fcm-1".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "id": "slot-1",
+                "name": "fold",
+                "platform": "android",
+                "fcm_token": "fcm-1",
+            })
+        );
     }
 }

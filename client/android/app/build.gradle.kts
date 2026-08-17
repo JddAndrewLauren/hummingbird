@@ -157,6 +157,17 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.work.runtime.ktx)
     implementation(libs.security.crypto)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.core.ktx)
+    // M2/#141's push half. The BoM versions `firebase-messaging` below;
+    // note there is deliberately **no** `com.google.gms.google-services`
+    // plugin here — that plugin, not this dependency, is what requires a
+    // `google-services.json`, and the json is an operator step that lands
+    // after this code. Everything in `push/` guards its Firebase touches
+    // with `FirebaseApp.getApps(...).isNotEmpty()` so the app runs
+    // normally (just without push) until then.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
     implementation("${libs.jna.get()}@aar")
 
     debugImplementation(libs.compose.ui.tooling)

@@ -30,6 +30,8 @@ class ScreenStateRetentionTest {
     private val screens = listOf(
         "CaptureActivity.kt" to "CaptureViewModel",
         "NowScreen.kt" to "NowViewModel",
+        "AlertsScreen.kt" to "AlertsViewModel",
+        "AlertDetailScreen.kt" to "AlertDetailViewModel",
     )
 
     @Test

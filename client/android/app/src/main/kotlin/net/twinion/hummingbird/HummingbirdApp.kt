@@ -7,6 +7,8 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
+import net.twinion.hummingbird.notify.NotificationChannels
+import net.twinion.hummingbird.push.PushBootstrap
 import net.twinion.hummingbird.sync.SyncWorker
 
 class HummingbirdApp : Application() {
@@ -14,6 +16,13 @@ class HummingbirdApp : Application() {
     override fun onCreate() {
         super.onCreate()
         scheduleHourlySync()
+        // Before any push can arrive: a notification posted against a
+        // channel id that does not exist is dropped to a default channel
+        // with no warning on a release build (see NotificationChannels).
+        NotificationChannels.ensure(this)
+        // A no-op until google-services.json lands (see PushBootstrap's
+        // own note on the getApps guard).
+        PushBootstrap.refreshToken(this)
     }
 
     // The ~hourly OS-deferred refresh (#141 sync model). KEEP: rescheduling

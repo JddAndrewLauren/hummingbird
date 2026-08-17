@@ -28,6 +28,10 @@ class ColorTokenDriftTest {
         "BorderDefaultLight" to ScopedToken("--border-default", Scope.LIGHT),
         "SurfaceSunkenDark" to ScopedToken("--surface-sunken", Scope.DARK),
         "StatusInfoFgDark" to ScopedToken("--status-info-fg", Scope.DARK),
+        // `--status-info-bg` diverges between scopes the same way
+        // `--urgency-soon` does — light aliases `--sky-100`, dark is its
+        // own translucent literal.
+        "StatusInfoBgDark" to ScopedToken("--status-info-bg", Scope.DARK),
         "BorderDefaultDark" to ScopedToken("--border-default", Scope.DARK),
         "BorderSubtleDark" to ScopedToken("--border-subtle", Scope.DARK),
         "StatusDangerBgDark" to ScopedToken("--status-danger-bg", Scope.DARK),

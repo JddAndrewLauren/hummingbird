@@ -9,6 +9,22 @@
          to record, requested at tap-time (M1-5/#503), never at launch. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- The alert lane's ring (M2/#141, ADR-0012). minSdk is 35, so this is
+         always a runtime grant — `MainActivity` asks on first composition,
+         and `AlertsScreen`'s health row surfaces a refusal rather than
+         letting alerts silently not arrive. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- The urgent channel's DND bypass (M2/#141, ADR-0012: "a filter built
+         to cut through blanket silencing must not get caught in it"). Not a
+         permission the app is granted by declaring it — the grant is the
+         user's, in Settings > Do Not Disturb access — but declaring it is
+         what puts hummingbird in that list at all. Without this line
+         `NotificationChannel.setBypassDnd(true)` is inert forever, and
+         `AlertsScreen`'s health row points at a screen where the app cannot
+         be found. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <application
         android:name=".HummingbirdApp"
         android:allowBackup="false"
@@ -60,6 +76,28 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity-alias>
+
+        <!-- The FCM entry point (M2/#141). `exported="false"`: the only
+             caller is Google Play services, which binds it through the
+             MESSAGING_EVENT action rather than by export. -->
+        <service
+            android:name=".push.HbMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- The notification's Ack action (ADR-0012). `exported="false"`:
+             the only sender is this app's own PendingIntent, and an
+             exported receiver would let any app settle alerts. -->
+        <receiver
+            android:name=".push.AckReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="net.twinion.hummingbird.action.ACK_ALERT" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

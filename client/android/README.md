@@ -38,11 +38,40 @@ an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
 ## Sync model (grilling 2026-08-14)
 
 Foreground: one `user` cycle on resume plus the 60-second `timer` cadence
-while open, owned by `MainActivity`'s always-composed `AppRoot` (not by
-either individual screen, so it runs the same whether Now or Status is
-showing). Background: an OS-deferred hourly WorkManager refresh
+while open, owned by `MainActivity`'s always-composed `AppRoot` — declared
+above the `NavHost`, not inside a destination, so it runs the same whichever
+route is showing. Background: an OS-deferred hourly WorkManager refresh
 (`sync/SyncWorker.kt`) — the middle leg only; correctness never depends on
-it. Sync-on-FCM-push arrives with M2 (the notification surface).
+it. Sync-on-push is the third leg (M2): every arriving FCM message enqueues
+a one-shot `SyncWorker` with the `"push"` trigger, which the seam maps to
+`Trigger::User` and so past the core's backoff gate. Still one clock per
+cadence (issue #8): the push leg is event-driven and schedules nothing.
+
+## The notification lane (M2, #141)
+
+The payload is data-only, so the client builds every notification itself
+(`notify/`) and the Ack action is a broadcast to `push/AckReceiver`, never a
+swipe — dismissing a notification acks nothing (ADR-0012). `push/` also owns
+registration: a stable install id in plain SharedPreferences is a device
+*slot*, replayed on every rotation, and `RegistrationWorker` retries a
+transport failure but not a missing device token.
+
+`notify/NotificationChannels.SPECS` keys must byte-match the `channel_id`
+values `server/authority/src/fcm.rs` emits; nothing links the two literals at
+compile time, so `NotificationChannelSpecTest` is what does. A key is a
+*tier*, not a channel id: the urgent tier resolves to a second id once the
+user grants Do-Not-Disturb access, because Android fixes `bypassDnd` at
+channel creation and a channel first created without the grant can never
+gain it. `ACCESS_NOTIFICATION_POLICY` in the manifest is what puts the app in
+that Settings list at all, and `ensure` re-runs on every resume — returning
+from Settings is the only signal the grant changed.
+
+**`google-services.json` is not in the repo and the
+`com.google.gms.google-services` plugin is not applied.** The
+`firebase-messaging` dependency links without either, and every Firebase
+touch is guarded (`push/PushBootstrap`), so the app builds and runs with no
+push until the operator adds the file and the plugin line — one commit,
+kept out of CI because the key is an operator credential.
 
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).

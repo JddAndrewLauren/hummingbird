@@ -1,12 +1,18 @@
-//! The write vocabulary (#101): exactly ADR-0009's schema minus alerts —
-//! items, steps, blocked_by edges, projects, routes, fog, settings — plus
-//! #140's rules addition (ADR-0012/0013, `device`-scope like every entry
-//! here — `POST /api/rules`/`PATCH /api/rules/:id` carry no `ingest`
-//! restriction, unlike alert ingest below). Alert ingest (`POST
-//! /api/alerts`) is deliberately absent: it is `ingest`-scope only
-//! (`auth::permitted` on the authority), and this client surface is
-//! `device`-scope end to end, so there is no path constructor here that
-//! could ever target it.
+//! The write vocabulary (#101): exactly ADR-0009's schema minus alert
+//! *ingest* — items, steps, blocked_by edges, projects, routes, fog,
+//! settings — plus #140's rules addition (ADR-0012/0013, `device`-scope
+//! like every entry here — `POST /api/rules`/`PATCH /api/rules/:id` carry
+//! no `ingest` restriction, unlike alert ingest below).
+//!
+//! **Alert ingest (`POST /api/alerts`) is deliberately absent** and stays
+//! absent: it is `ingest`-scope only (`auth::permitted` on the authority),
+//! and this client surface is `device`-scope end to end, so there is no
+//! collection constructor here that could ever target it. That exclusion
+//! was always about ingest, not about the row: `PATCH /api/alerts/:id` is
+//! `device`-scope (it writes the one human-owned column, `dismissed_at`)
+//! and joined this vocabulary with M2's Ack action (#141, ADR-0012 —
+//! acking is a gesture, so it has to be a write). Hence [`alert`] exists
+//! and [`alerts`] does not.
 //!
 //! Path-only — the request method and body are the caller's, built from
 //! `hummingbird_domain`'s create/patch DTOs.
@@ -67,6 +73,14 @@ pub fn rule(id: &str) -> String {
     format!("/api/rules/{id}")
 }
 
+/// `PATCH /api/alerts/:id` (#141, `device` scope) — the Ack write, and the
+/// only alert route this vocabulary names. There is deliberately no
+/// `alerts()` collection constructor to pair with it: that would be the
+/// `ingest`-scope raise, which this surface can never reach (module doc).
+pub fn alert(id: &str) -> String {
+    format!("/api/alerts/{id}")
+}
+
 /// `POST /api/grills` (#354, ADR-0023) — the one atomic Grill-completion
 /// route. No by-id constructor here: unlike every other entity in this
 /// vocabulary, a Grill has no client-issued PATCH (ADR-0023 decision 2: it
@@ -81,10 +95,10 @@ mod tests {
     use super::*;
 
     /// Pins the whole path vocabulary at once: adding an entity to
-    /// ADR-0009's write surface without adding it here — or accidentally
-    /// adding alerts — is the drift this test exists to catch.
+    /// ADR-0009's write surface without adding it here is the drift this
+    /// test exists to catch.
     #[test]
-    fn the_vocabulary_is_exactly_adr_0009s_write_surface_minus_alerts() {
+    fn the_vocabulary_is_exactly_adr_0009s_write_surface_minus_alert_ingest() {
         let paths = [
             items(),
             item("x"),
@@ -100,12 +114,26 @@ mod tests {
             setting("x"),
             rules(),
             rule("x"),
+            alert("x"),
             grills(),
         ];
         for path in paths {
             assert!(path.starts_with("/api/"));
+        }
+    }
+
+    /// The alert exclusion, restated precisely now that [`alert`] exists:
+    /// what this surface may never name is the `ingest`-scope *collection*.
+    /// A bare `/api/alerts` — with no id after it — is the raise route, so
+    /// every alert path here must carry an id segment.
+    #[test]
+    fn the_only_alert_path_is_the_by_id_patch_never_the_ingest_collection() {
+        assert_eq!(alert("a-1"), "/api/alerts/a-1");
+        let alert_paths = [alert("x")];
+        for path in alert_paths {
             assert!(
-                !path.contains("alerts"),
+                path.strip_prefix("/api/alerts/")
+                    .is_some_and(|id| !id.is_empty()),
                 "alert ingest is out of scope: {path}"
             );
         }

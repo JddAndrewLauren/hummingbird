@@ -10,6 +10,14 @@ lifecycle = "2.9.1"
 coroutines = "1.10.2"
 work = "2.10.2"
 securityCrypto = "1.1.0-alpha06"
+# M2/#141's three additions. `firebaseBom` is the BoM that versions every
+# Firebase artifact in lockstep — the one place an FCM version is stated.
+firebaseBom = "34.17.0"
+navigationCompose = "2.9.8"
+# `core-ktx` is already on the classpath transitively (Compose pulls it),
+# but `NotificationCompat` is a direct compile dependency of the notify/
+# package now, so it gets a direct pin rather than an inherited one.
+coreKtx = "1.17.0"
 jna = "5.17.0"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
@@ -38,6 +46,20 @@ security-crypto = { group = "androidx.security", name = "security-crypto", versi
 # The UniFFI-generated binding's one runtime dependency; `@aar` packaging
 # is what ships the Android-native JNI dispatch library.
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+# M2/#141, the push half. `firebase-messaging` deliberately carries **no
+# version** — it rides `firebase-bom` above, which is the whole point of a
+# BoM and the only way the transitive Firebase artifacts stay consistent.
+# The *dependency* compiles and links with no `google-services.json`
+# present; only the `com.google.gms.google-services` **plugin** requires
+# that file, and this build does not apply it (the json is an operator
+# one-liner landing after this work).
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+# The NavHost M2 adopted (the deferral recorded in `MainActivity.kt` is
+# overridden: the notification deep link needs a real back stack, and a
+# `showStatus` boolean cannot express `alert/{alertId}`).
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }

@@ -62,8 +62,8 @@ pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
-    resulting_stage, Condition, CreateGrill, CreateItem, CreateRule, Energy, GrillVerdict, Item,
-    Project, Rule, RulePatch, Setting, Size, Stage, Step, Tier,
+    resulting_stage, Alert, AlertPatch, Condition, CreateGrill, CreateItem, CreateRule, Energy,
+    GrillVerdict, Item, Project, Rule, RulePatch, Setting, Size, Stage, Step, Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1324,6 +1324,45 @@ where
         }
     }
 
+    /// Every live alert across every source, newest raise first — the read
+    /// behind M2's alerts surface (#141, ADR-0012). The third alert read
+    /// here, and the first that is neither scoped to one source
+    /// ([`Core::pane_read`]) nor joined onto an item (the Ledger badge).
+    ///
+    /// Liveness is ADR-0014's three-clause predicate applied with the
+    /// caller's clock ([`Alert::is_live`]), never a naive `dismissed_at`
+    /// column test: an expired-then-re-raised occurrence and an acked one
+    /// differ only under the full predicate, and `expires_at` is never
+    /// written back as a dismissal.
+    ///
+    /// The order is the decision this read sinks into core rather than
+    /// leaving to each client (ADR-0025): `raised_at` descending, ties
+    /// broken by id so two devices showing the same rows show them in the
+    /// same order. No overlay — an in-flight ack is not projected
+    /// optimistically here, the same contract [`Core::rules`] documents;
+    /// the notification surface that acks is a fire-and-forget gesture, and
+    /// the row leaves this list once the next completed cycle pulls the
+    /// dismissal back.
+    pub fn live_alerts(&self, now_ms: i64) -> Vec<Alert> {
+        let mut alerts: Vec<Alert> = self
+            .cycle
+            .mirror()
+            .all_alerts()
+            .filter(|alert| alert.is_live(now_ms))
+            .cloned()
+            .collect();
+        alerts.sort_by(|a, b| b.raised_at.cmp(&a.raised_at).then_with(|| a.id.cmp(&b.id)));
+        alerts
+    }
+
+    /// One alert by id, live or not — the read behind M2's alert-detail
+    /// screen, where a row the human just acked must still render rather
+    /// than vanish mid-look. Callers that want the liveness verdict ask
+    /// [`Alert::is_live`] themselves with their own clock.
+    pub fn alert(&self, id: &str) -> Option<Alert> {
+        self.cycle.mirror().alert(id).cloned()
+    }
+
     /// Every standing-question binding (#118, ADR-0015): each
     /// [`BindingKey`] this build knows — set or not — in vocabulary order,
     /// then every other live `settings` row this device has pulled, in key
@@ -1592,6 +1631,69 @@ where
                 method: HttpMethod::Patch,
                 base,
                 base_updated_at: current.updated_at,
+                patch_fields,
+                rebase_fields: None,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(())
+    }
+
+    /// Acks an alert (#141, ADR-0012): enqueues a `PATCH /api/alerts/:id`
+    /// setting the human-owned `dismissed_at`, the one alert column a
+    /// `device` token may write. Pass `dismissed_at: None` to un-dismiss —
+    /// the DTO's double-`Option` sends an explicit JSON `null`, which the
+    /// authority reads as "clear it", distinct from not touching the field.
+    ///
+    /// **Why this takes `current` rather than just an id.** A push payload
+    /// carries no `version` (`server/authority/src/fcm.rs`), and the write
+    /// is CAS: the `expected_version` has to come from the synced mirror,
+    /// so an ack from a notification is sync-then-CAS. Reading the row
+    /// through [`Core::alert`] is that read; a 409 lands in the ordinary
+    /// dead-letter journal like every other CAS write here, and the caller
+    /// re-reads and re-acks. Setting `dismissed_at` to the value already
+    /// stored is a version-preserving no-op server-side, so a replayed ack
+    /// is harmless.
+    ///
+    /// **Swipe is not a gesture** (ADR-0012): a dismissed notification
+    /// must not reach this method. Only an explicit Ack does.
+    ///
+    /// `seed` mints the queue-entry id ([`sync::write::deterministic_id`]),
+    /// caller-supplied for the same no-clock/no-RNG reasoning as every
+    /// other mutation entry point here. No optimistic overlay — see
+    /// [`Core::live_alerts`].
+    pub async fn dismiss_alert(
+        &mut self,
+        seed: &str,
+        current: &Alert,
+        dismissed_at: Option<i64>,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("Alert always serializes");
+        let patch = AlertPatch {
+            expected_version: current.version,
+            dismissed_at: Some(dismissed_at),
+        };
+
+        let mut patch_fields = serde_json::to_value(&patch).expect("AlertPatch always serializes");
+        // `expected_version` rides on the wire body but is not a "touched
+        // field" for rebase purposes — `drain` refills it from whatever
+        // version is live at send time (see `MutationIntent::Patch`).
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::alert(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                // Alerts have no `updated_at` column (ADR-0009): `raised_at`
+                // is the row's own last content stamp — a source-owned
+                // change restamps it (`restamp_on_change`) — so it is what
+                // this ADR-0007 S5 conflict-metadata slot carries here.
+                base_updated_at: current.raised_at,
                 patch_fields,
                 rebase_fields: None,
             },
@@ -5617,6 +5719,152 @@ mod tests {
         assert!(
             patch_fields.get("expected_version").is_none(),
             "expected_version is not a touched field — drain fills it at send time"
+        );
+    }
+
+    // ---- M2's alert surface (#141, ADR-0012) ----
+
+    #[tokio::test]
+    async fn live_alerts_crosses_every_source_and_applies_adr_0014s_predicate() {
+        // The whole-table read `pane_read` is not: the notification surface
+        // shows what rang, whichever source raised it.
+        let mut resolved = fixture_alert("a-resolved", "race/v1", None, 500);
+        resolved.resolved_at = Some(600);
+        let mut dismissed = fixture_alert("a-dismissed", "city-waste/v2", None, 500);
+        dismissed.dismissed_at = Some(600);
+        let mut expired = fixture_alert("a-expired", "race/v1", None, 500);
+        expired.expires_at = Some(2_000);
+
+        let core = core_with_context(
+            vec![],
+            vec![
+                resolved,
+                dismissed,
+                expired,
+                fixture_alert("a-waste", "city-waste/v2", None, 500),
+                fixture_alert("a-race", "race/v1", None, 700),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            core.live_alerts(3_000).iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            vec!["a-race", "a-waste"],
+            "both sources ride this read, newest raise first; settled rows do not"
+        );
+        // The same mirror, an earlier clock: the expiring one is still live,
+        // and still ordered by `raised_at` descending.
+        assert_eq!(
+            core.live_alerts(1_500).iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            vec!["a-race", "a-expired", "a-waste"]
+        );
+    }
+
+    #[tokio::test]
+    async fn equal_raises_break_ties_by_id_so_two_devices_agree() {
+        let core = core_with_context(
+            vec![],
+            vec![
+                fixture_alert("a-zzz", "race/v1", None, 500),
+                fixture_alert("a-aaa", "city-waste/v2", None, 500),
+            ],
+        )
+        .await;
+        assert_eq!(
+            core.live_alerts(1_000).iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            vec!["a-aaa", "a-zzz"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_core_answers_the_alerts_reads_empty_rather_than_failing() {
+        let core = Core::new();
+        assert!(core.live_alerts(1_000).is_empty());
+        assert_eq!(core.alert("a-1"), None);
+    }
+
+    /// The detail read is deliberately *not* liveness-filtered: acking an
+    /// alert from its own detail screen must not make the screen's subject
+    /// disappear out from under the reader.
+    #[tokio::test]
+    async fn the_by_id_read_still_answers_for_a_settled_alert() {
+        let mut dismissed = fixture_alert("a-1", "city-waste/v2", None, 500);
+        dismissed.dismissed_at = Some(600);
+        let core = core_with_context(vec![], vec![dismissed]).await;
+
+        assert!(core.live_alerts(1_000).is_empty());
+        let found = core.alert("a-1").expect("the row is still in the mirror");
+        assert_eq!(found.dismissed_at, Some(600));
+        assert!(!found.is_live(1_000), "the caller applies the predicate");
+        assert_eq!(core.alert("a-nope"), None);
+    }
+
+    /// ADR-0012's Ack: one CAS patch on the one human-owned column, at the
+    /// `device`-scope by-id route. `dismissed_at` is the only touched field
+    /// — the client never writes `resolved_at` or `expires_at`, which are
+    /// the source's and ADR-0014's respectively.
+    #[tokio::test]
+    async fn acking_an_alert_is_one_cas_patch_touching_only_dismissed_at() {
+        let mut core = core_with_context(vec![], vec![fixture_alert("a-1", "race/v1", None, 500)]).await;
+        let current = core.alert("a-1").unwrap();
+
+        core.dismiss_alert("seed-1", &current, Some(3_000), 3_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch {
+            path,
+            method,
+            base,
+            base_updated_at,
+            patch_fields,
+            ..
+        } = &entries[0].intent
+        else {
+            panic!("an ack is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/alerts/a-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(base.get("version").and_then(serde_json::Value::as_i64), Some(1));
+        assert_eq!(*base_updated_at, 500, "alerts have no updated_at; raised_at stands in");
+        assert_eq!(patch_fields, &serde_json::json!({"dismissed_at": 3_000}));
+        assert!(
+            patch_fields.get("expected_version").is_none(),
+            "expected_version is not a touched field — drain fills it at send time"
+        );
+    }
+
+    /// The double-`Option` earns its keep: un-dismissing sends an explicit
+    /// JSON `null`, which the authority reads as "clear it" — distinct from
+    /// omitting the field, which means "don't touch it".
+    #[tokio::test]
+    async fn un_dismissing_sends_an_explicit_null_not_an_absent_field() {
+        let mut acked = fixture_alert("a-1", "race/v1", None, 500);
+        acked.dismissed_at = Some(600);
+        let mut core = core_with_context(vec![], vec![acked]).await;
+        let current = core.alert("a-1").unwrap();
+
+        core.dismiss_alert("seed-1", &current, None, 3_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("an un-ack is a CAS patch");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({"dismissed_at": serde_json::Value::Null}));
+    }
+
+    /// The ack path is the same durable queue every other mutation uses, so
+    /// a push-triggered ack survives the process dying before the send.
+    #[tokio::test]
+    async fn the_ack_lands_in_the_durable_queue_like_every_other_mutation() {
+        let mut core = core_with_context(vec![], vec![fixture_alert("a-1", "race/v1", None, 500)]).await;
+        let current = core.alert("a-1").unwrap();
+        core.dismiss_alert("seed-1", &current, Some(3_000), 3_000).await.unwrap();
+
+        assert_eq!(
+            core.cycle.queue().entries().next().unwrap().id,
+            sync::write::deterministic_id("seed-1"),
+            "the entry id is the caller's seed, so a replayed ack is the same entry"
         );
     }
 }

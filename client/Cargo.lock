@@ -732,6 +732,7 @@ dependencies = [
  "hummingbird-core",
  "hummingbird-domain",
  "reqwest",
+ "serde_json",
  "tempfile",
  "tokio",
  "uniffi",
