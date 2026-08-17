@@ -55,7 +55,9 @@ jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 # BoM and the only way the transitive Firebase artifacts stay consistent.
 # The *dependency* compiles and links with no `google-services.json`
 # present; only the `com.google.gms.google-services` **plugin** requires
-# that file. Both landed together in the operator commit below.
+# that file. Both are present: the plugin is pinned as `googleServices`
+# above and applied in `app/build.gradle.kts`, whose `dependencies` note
+# says why the json is committed rather than gitignored.
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 # The NavHost M2 adopted (the deferral recorded in `MainActivity.kt` is

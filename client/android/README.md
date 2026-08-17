@@ -75,8 +75,26 @@ carries the full reasoning. The credential that can actually *send* is
 `FCM_SERVICE_ACCOUNT`, a Cloudflare Worker secret that never enters this repo
 or Actions (ADR-0011); it must be a service-account key **from the same Firebase
 project**, since `server/worker/src/fcm.rs` builds the send URL from the
-`project_id` inside it. A mismatch fails silently — the device registers, the
-server sends, nothing arrives.
+`project_id` inside it. A mismatch is invisible from here — the device
+registers, the server accepts the alert, and nothing arrives.
+
+**When a push does not arrive, read the Worker log first.** Nothing on this
+side can tell you why: `POST /api/alerts` answers 201 with no delivery
+information (`deliveries` rides the internal `ApiResponse`, not the body),
+and #219's no-retry policy logs a failed send once and drops it. One line of
+`wrangler tail` distinguishes rule-did-not-match, no-live-push-target and
+credential-broken, and no client-side evidence can:
+
+```
+npx wrangler@latest tail hummingbird-authority --format json
+```
+
+(the worker name is positional; `--name` is a `secret` flag and errors here).
+`FCM_SERVICE_ACCOUNT is set but unusable (Malformed)` means the secret's
+*contents* are wrong even though `wrangler secret list` shows it — either
+`google-services.json` was uploaded by mistake, or a pretty-printed key was
+pasted into `wrangler secret put`, whose prompt reads one line and truncates
+at the first newline. Pipe it minified.
 
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
