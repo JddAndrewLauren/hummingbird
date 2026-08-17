@@ -52,7 +52,11 @@
 //! frozen test vector below, so changing the recipe fails `cargo test`
 //! rather than failing silently in production. **Adapters must compute
 //! every `source_key` through one of the functions in this module — there
-//! is no other sanctioned way to build one.**
+//! is no other sanctioned way to build one.** The opacity above is opacity
+//! *to the server*, which never routes on a key's contents; where a client
+//! must read one back — only [`item_threshold_v1_item_id`] today, for
+//! ADR-0027's tap target — the inverse lives here beside its builder, so
+//! recipe and inverse are one thing that moves together.
 //!
 //! The only sanctioned change to a shipped recipe is retiring the source
 //! and minting a new versioned one (`city-waste/v1` → `city-waste/v2`),
@@ -598,6 +602,21 @@ pub fn race_schedule_v1_key(series: &str, starts_at_ms: i64) -> String {
 /// row, never mint a second (ADR-0014).
 pub fn item_threshold_v1_key(item_id: &str) -> String {
     format!("item:{item_id}")
+}
+
+/// The one sanctioned inverse of [`item_threshold_v1_key`] (ADR-0027 part
+/// 2), returning the item id an `item-threshold/v1` alert is about, or
+/// `None` for a key that does not carry one.
+///
+/// **The server never calls this.** It lives here, beside the builder,
+/// because the recipe and its inverse are one convention and must move
+/// together: a client that hand-rolled `removePrefix("item:")` would hold a
+/// second copy that keeps compiling after the recipe moves, and would fail
+/// by silently routing a tap to the wrong place. Its caller is
+/// `hummingbird-core`'s notification tap-target decision, which turns a
+/// push payload into a destination without reading the mirror.
+pub fn item_threshold_v1_item_id(source_key: &str) -> Option<&str> {
+    source_key.strip_prefix("item:").filter(|id| !id.is_empty())
 }
 
 /// `healthchecks/v1`: the check id, authored in the webhook body.
@@ -1184,6 +1203,25 @@ mod tests {
     #[test]
     fn item_threshold_v1_keys_on_the_item_id_alone() {
         assert_eq!(item_threshold_v1_key("item-42"), "item:item-42");
+    }
+
+    #[test]
+    fn item_threshold_v1_item_id_inverts_the_builder() {
+        assert_eq!(
+            item_threshold_v1_item_id(&item_threshold_v1_key("item-42")),
+            Some("item-42")
+        );
+    }
+
+    #[test]
+    fn item_threshold_v1_item_id_is_none_for_a_key_carrying_no_item() {
+        // The honest fallback ADR-0027 makes the permanent contract: a key
+        // this recipe did not build names no item, and the tap opens the
+        // alert instead of guessing one.
+        assert_eq!(item_threshold_v1_item_id("item"), None);
+        assert_eq!(item_threshold_v1_item_id(""), None);
+        assert_eq!(item_threshold_v1_item_id("item:"), None);
+        assert_eq!(item_threshold_v1_item_id("binary_sensor.front_door"), None);
     }
 
     #[test]

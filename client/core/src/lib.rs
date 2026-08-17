@@ -1132,7 +1132,8 @@ where
     ///   first read to surface the retained history ADR-0007 keeps);
     /// - whether a dead-lettered edit targets it (honestly device-local:
     ///   the journal never syncs, so another device's Ledger won't show it);
-    /// - whether a live alert names it (`source_key == "item:<id>"`,
+    /// - whether a live alert names it (the key
+    ///   [`hummingbird_domain::item_threshold_v1_key`] builds,
     ///   ADR-0014's item-threshold convention, joined across every source —
     ///   alerts *do* sync, so this badge agrees between devices).
     ///
@@ -1177,7 +1178,8 @@ where
         rows.into_values()
             .map(|(item, absent_since_ms)| LedgerEntry {
                 dead_lettered: dead_lettered.contains(&item.id),
-                has_live_alert: live_alert_keys.contains(&format!("item:{}", item.id)),
+                has_live_alert: live_alert_keys
+                    .contains(&hummingbird_domain::item_threshold_v1_key(&item.id)),
                 item,
                 absent_since_ms,
             })
