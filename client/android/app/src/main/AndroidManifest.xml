@@ -9,6 +9,12 @@
          to record, requested at tap-time (M1-5/#503), never at launch. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- The alert lane's ring (M2/#141, ADR-0012). minSdk is 35, so this is
+         always a runtime grant — `MainActivity` asks on first composition,
+         and `AlertsScreen`'s health row surfaces a refusal rather than
+         letting alerts silently not arrive. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".HummingbirdApp"
         android:allowBackup="false"
@@ -60,6 +66,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity-alias>
+
+        <!-- The FCM entry point (M2/#141). `exported="false"`: the only
+             caller is Google Play services, which binds it through the
+             MESSAGING_EVENT action rather than by export. -->
+        <service
+            android:name=".push.HbMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
 
     </application>
 

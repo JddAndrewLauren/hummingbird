@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.TokenStore
 import net.twinion.hummingbird.core.TokenValidation
+import net.twinion.hummingbird.push.RegistrationWorker
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.RunOutcome
@@ -142,6 +143,13 @@ private fun AppRoot() {
                     TokenStore.save(context, token)
                     core?.pushApiKey(token)
                     needsToken = false
+                    // Registration follows the credential (M2/#141):
+                    // `registerPushTarget` is the one authority call that
+                    // needs the bearer token in hand rather than riding the
+                    // sync queue, so an attempt made before a token existed
+                    // returned `Unauthorized` and stopped. This arrival is
+                    // the event that makes it worth trying again.
+                    RegistrationWorker.enqueue(context)
                     sync("user")
                 }
             },

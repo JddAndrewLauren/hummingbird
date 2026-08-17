@@ -85,6 +85,38 @@ class ManifestAliasTest {
     }
 
     @Test
+    fun `POST_NOTIFICATIONS is requested for the alert lane`() {
+        // minSdk 35 — this is always a runtime grant, but the manifest
+        // declaration is what makes the request legal at all; without it
+        // `requestPermissions` returns an immediate denial.
+        val permissions = manifest().children("uses-permission").mapNotNull { it.attr("name") }
+        assertTrue(
+            "POST_NOTIFICATIONS permission missing",
+            permissions.contains("android.permission.POST_NOTIFICATIONS"),
+        )
+    }
+
+    @Test
+    fun `the FCM service is declared exactly once, unexported, on the MESSAGING_EVENT action`() {
+        val application = manifest().children("application").single()
+        val services = application.children("service")
+            .filter { it.attr("name") == ".push.HbMessagingService" }
+        assertEquals("HbMessagingService must be declared exactly once", 1, services.size)
+        val service = services.single()
+
+        // Play services binds it through the action, not through export —
+        // an exported service here would be a needless attack surface.
+        assertEquals("false", service.attr("exported"))
+        val actions = service.children("intent-filter")
+            .flatMap { it.children("action") }
+            .mapNotNull { it.attr("name") }
+        assertTrue(
+            "the FCM service must filter on com.google.firebase.MESSAGING_EVENT",
+            actions.contains("com.google.firebase.MESSAGING_EVENT"),
+        )
+    }
+
+    @Test
     fun `static shortcuts are wired on the primary launcher activity, and the resource exists`() {
         val application = manifest().children("application").single()
         val mainActivity = application.children("activity").single { it.attr("name") == ".MainActivity" }
