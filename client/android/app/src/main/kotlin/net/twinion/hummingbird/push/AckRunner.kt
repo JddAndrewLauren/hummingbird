@@ -28,14 +28,26 @@ enum class AckOutcome {
 // either loses a concurrent change or fails a CAS that then looks like a
 // transport error.
 //
-// Still not found after the sync is not an error worth retrying. It means
-// the authority does not have that alert for this device — retired,
-// expired, or belonging to a slot this install no longer holds — and a
-// backoff cannot change that. The user's gesture is honoured by retiring
-// the notification, not by looping.
+// Still not found *after a cycle that actually completed* is not an error
+// worth retrying. It means the authority does not have that alert for this
+// device — retired, expired, or belonging to a slot this install no longer
+// holds — and a backoff cannot change that. The user's gesture is honoured
+// by retiring the notification, not by looping.
+//
+// **Which is why the sync leg reports whether it ran.** `MobileTaskHost.run`
+// *returns* its failure (`pull_failed`, `blocked`, `no_credential`, …)
+// rather than throwing, so a discarded return value turns "the device is
+// offline" into the same silence as "the row is gone": the second
+// `AlertNotFound` would read as authoritative, [AckWorker] would cancel the
+// notification, and the ack the person made would exist nowhere — no CAS
+// queued, no ring left to try again from. Offline is the *common* case for
+// a lock-screen Ack, so [syncFn] answers `true` only for a completed cycle
+// and anything else retries on WorkManager's backoff.
 class AckRunner(
     private val ackFn: suspend (alertId: String) -> Unit,
-    private val syncFn: suspend () -> Unit,
+    /** Runs one cycle; `true` iff it completed, i.e. the mirror is now as
+     * current as the authority could make it. */
+    private val syncFn: suspend () -> Boolean,
 ) {
 
     suspend fun run(alertId: String): AckOutcome =
@@ -43,12 +55,12 @@ class AckRunner(
             ackFn(alertId)
             AckOutcome.DONE
         } catch (_: MobileAlertException.AlertNotFound) {
-            syncFn()
+            val synced = syncFn()
             try {
                 ackFn(alertId)
                 AckOutcome.DONE
             } catch (_: MobileAlertException.AlertNotFound) {
-                AckOutcome.DONE
+                if (synced) AckOutcome.DONE else AckOutcome.RETRY
             } catch (_: MobileAlertException.AckFailed) {
                 AckOutcome.RETRY
             }
@@ -73,12 +85,16 @@ class AckRunner(
                     CoreHolder.get(app).ackAlert(alertId, System.currentTimeMillis())
                 },
                 syncFn = {
+                    // `completed` and nothing else: `skipped` and `held`
+                    // mean this cycle pulled nothing, which is exactly as
+                    // uninformative about the missing row as a transport
+                    // failure is.
                     CoreHolder.get(app).run(
                         System.currentTimeMillis(),
                         net.twinion.hummingbird.sync.SyncWorker.TRIGGER_PUSH,
                         false,
                         Random.nextDouble(),
-                    )
+                    ).kind == "completed"
                 },
             )
         }

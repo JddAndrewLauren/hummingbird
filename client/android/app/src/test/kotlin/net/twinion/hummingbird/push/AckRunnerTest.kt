@@ -24,7 +24,7 @@ class AckRunnerTest {
         val trace = Trace()
         val runner = AckRunner(
             ackFn = { trace.calls += "ack" },
-            syncFn = { trace.calls += "sync" },
+            syncFn = { trace.calls += "sync"; true },
         )
 
         assertEquals(AckOutcome.DONE, runner.run("alert-1"))
@@ -40,7 +40,7 @@ class AckRunnerTest {
                 trace.calls += "ack"
                 if (attempts++ == 0) throw MobileAlertException.AlertNotFound()
             },
-            syncFn = { trace.calls += "sync" },
+            syncFn = { trace.calls += "sync"; true },
         )
 
         assertEquals(AckOutcome.DONE, runner.run("alert-1"))
@@ -48,14 +48,14 @@ class AckRunnerTest {
     }
 
     @Test
-    fun `still not found after the sync gives up rather than looping`() = runBlocking {
+    fun `still not found after a completed sync gives up rather than looping`() = runBlocking {
         val trace = Trace()
         val runner = AckRunner(
             ackFn = {
                 trace.calls += "ack"
                 throw MobileAlertException.AlertNotFound()
             },
-            syncFn = { trace.calls += "sync" },
+            syncFn = { trace.calls += "sync"; true },
         )
 
         // The authority does not have this alert for this device. A
@@ -74,7 +74,7 @@ class AckRunnerTest {
                 trace.calls += "ack"
                 throw MobileAlertException.AckFailed("timeout")
             },
-            syncFn = { trace.calls += "sync" },
+            syncFn = { trace.calls += "sync"; true },
         )
 
         assertEquals(AckOutcome.RETRY, runner.run("alert-1"))
@@ -89,16 +89,35 @@ class AckRunnerTest {
                 if (attempts++ == 0) throw MobileAlertException.AlertNotFound()
                 throw MobileAlertException.AckFailed("503")
             },
-            syncFn = { },
+            syncFn = { true },
         )
 
         assertEquals(AckOutcome.RETRY, runner.run("alert-1"))
     }
 
     @Test
+    fun `a sync that did not complete makes not-found inconclusive, so it retries`() = runBlocking {
+        val trace = Trace()
+        val runner = AckRunner(
+            ackFn = {
+                trace.calls += "ack"
+                throw MobileAlertException.AlertNotFound()
+            },
+            // `run` reports `pull_failed`/`blocked`/`no_credential` by
+            // returning, never by throwing. The row may well exist; this
+            // device simply never got to look. Retiring the notification
+            // here would drop the person's ack with nothing queued.
+            syncFn = { trace.calls += "sync"; false },
+        )
+
+        assertEquals(AckOutcome.RETRY, runner.run("alert-1"))
+        assertEquals(listOf("ack", "sync", "ack"), trace.calls)
+    }
+
+    @Test
     fun `the alert id reaches the ack fn unchanged`() = runBlocking {
         var seen: String? = null
-        AckRunner(ackFn = { seen = it }, syncFn = { }).run("alert-xyz")
+        AckRunner(ackFn = { seen = it }, syncFn = { true }).run("alert-xyz")
 
         assertEquals("alert-xyz", seen)
     }
