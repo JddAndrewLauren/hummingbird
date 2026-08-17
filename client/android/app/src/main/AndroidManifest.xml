@@ -78,6 +78,17 @@
             </intent-filter>
         </service>
 
+        <!-- The notification's Ack action (ADR-0012). `exported="false"`:
+             the only sender is this app's own PendingIntent, and an
+             exported receiver would let any app settle alerts. -->
+        <receiver
+            android:name=".push.AckReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="net.twinion.hummingbird.action.ACK_ALERT" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

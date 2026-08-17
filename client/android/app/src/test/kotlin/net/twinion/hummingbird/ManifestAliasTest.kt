@@ -117,6 +117,27 @@ class ManifestAliasTest {
     }
 
     @Test
+    fun `the Ack receiver is declared exactly once, unexported, on its own action`() {
+        val application = manifest().children("application").single()
+        val receivers = application.children("receiver")
+            .filter { it.attr("name") == ".push.AckReceiver" }
+        assertEquals("AckReceiver must be declared exactly once", 1, receivers.size)
+        val receiver = receivers.single()
+
+        // Exported, any app on the device could settle alerts on the
+        // authority; the only legitimate sender is this app's own
+        // PendingIntent.
+        assertEquals("false", receiver.attr("exported"))
+        val actions = receiver.children("intent-filter")
+            .flatMap { it.children("action") }
+            .mapNotNull { it.attr("name") }
+        assertTrue(
+            "the Ack receiver must filter on net.twinion.hummingbird.action.ACK_ALERT",
+            actions.contains("net.twinion.hummingbird.action.ACK_ALERT"),
+        )
+    }
+
+    @Test
     fun `static shortcuts are wired on the primary launcher activity, and the resource exists`() {
         val application = manifest().children("application").single()
         val mainActivity = application.children("activity").single { it.attr("name") == ".MainActivity" }
