@@ -4,6 +4,12 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    // Reads `google-services.json` (committed alongside this line) and
+    // generates the resources `FirebaseApp` initialises itself from. Hard
+    // requirement: this plugin *fails the build* if the json is absent,
+    // which is why the two are one commit and why the json is not
+    // gitignored — see the `dependencies` note below.
+    alias(libs.plugins.google.services)
 }
 
 // The `client/` cargo workspace, one level above this Gradle root — the
@@ -159,13 +165,18 @@ dependencies {
     implementation(libs.security.crypto)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.core.ktx)
-    // M2/#141's push half. The BoM versions `firebase-messaging` below;
-    // note there is deliberately **no** `com.google.gms.google-services`
-    // plugin here — that plugin, not this dependency, is what requires a
-    // `google-services.json`, and the json is an operator step that lands
-    // after this code. Everything in `push/` guards its Firebase touches
-    // with `FirebaseApp.getApps(...).isNotEmpty()` so the app runs
-    // normally (just without push) until then.
+    // M2/#141's push half. The BoM versions `firebase-messaging` below.
+    //
+    // **`google-services.json` is committed, deliberately.** It is not a
+    // credential in the sense CLAUDE.md's blast-radius rule means: every
+    // value in it (project id, app id, API key) is embedded in every APK,
+    // including the debug artifact `android.yml` already publishes, so
+    // committing it discloses nothing a build consumer does not hold. The
+    // credential that *can* send is `FCM_SERVICE_ACCOUNT`, which stays a
+    // Worker secret (ADR-0011). The deciding factor was CI: the plugin
+    // above fails the build without the json, so gitignoring it would put
+    // `:app:assembleDebug` permanently red or force a placeholder-json
+    // step, buying build complexity for no secrecy.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     implementation("${libs.jna.get()}@aar")

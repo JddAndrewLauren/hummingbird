@@ -13,6 +13,10 @@ securityCrypto = "1.1.0-alpha06"
 # M2/#141's three additions. `firebaseBom` is the BoM that versions every
 # Firebase artifact in lockstep — the one place an FCM version is stated.
 firebaseBom = "34.17.0"
+# The plugin that reads `app/google-services.json` and generates the
+# `FirebaseApp` init resources from it. Versioned independently of the BoM
+# — it tracks Google Play services, not Firebase — so it gets its own pin.
+googleServices = "4.5.0"
 navigationCompose = "2.9.8"
 # `core-ktx` is already on the classpath transitively (Compose pulls it),
 # but `NotificationCompat` is a direct compile dependency of the notify/
@@ -51,8 +55,7 @@ jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 # BoM and the only way the transitive Firebase artifacts stay consistent.
 # The *dependency* compiles and links with no `google-services.json`
 # present; only the `com.google.gms.google-services` **plugin** requires
-# that file, and this build does not apply it (the json is an operator
-# one-liner landing after this work).
+# that file. Both landed together in the operator commit below.
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 # The NavHost M2 adopted (the deferral recorded in `MainActivity.kt` is
@@ -68,3 +71,4 @@ androidx-test-runner = { group = "androidx.test", name = "runner", version.ref =
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

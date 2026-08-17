@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "620564687569",
+    "project_id": "hummingbird-e2b01",
+    "storage_bucket": "hummingbird-e2b01.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:620564687569:android:e190cd8267ba4ff032b3f0",
+        "android_client_info": {
+          "package_name": "net.twinion.hummingbird"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAKNjKHdgBiL-6PPtHQt_juV1Ht9tYDyzg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
