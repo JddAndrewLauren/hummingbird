@@ -66,6 +66,44 @@ class NavigationStructuralTest {
     }
 
     @Test
+    fun `a notification-opened alert sits directly on top of Now`() {
+        // The cold-tap defect (hardware, 2026-08-17): `am kill` means
+        // `onCreate` gets a saved instance state, `rememberNavController`
+        // restores the killed session's back stack, and a plain `navigate`
+        // pushed the alert on top of it — four Backs to leave, the first
+        // landing on an unrelated alert. The policy is `now ->
+        // alert/{id}`, cold or warm, so the deep link must pop to Now.
+        val open = src.indexOf("fun NavHostController.openAlertFromNotification")
+        assertTrue(
+            "the deep link must go through openAlertFromNotification",
+            open >= 0,
+        )
+        val body = src.substring(open, src.indexOf("\n}", open))
+        assertTrue(
+            "the deep link must pop back to Now, not push onto the restored stack",
+            body.contains("popUpTo(Routes.NOW)"),
+        )
+        assertTrue(
+            "Now is the start destination and must survive the pop",
+            body.contains("inclusive = false"),
+        )
+        assertTrue(
+            "a re-tap of the alert already on screen must not stack a second copy",
+            body.contains("launchSingleTop = true"),
+        )
+
+        // And nothing else may reach the detail route from the intent: a
+        // bare `navigate` in the collector is exactly the defect.
+        val collect = src.indexOf("deepLinkedAlertId.collect")
+        assertTrue("the deep-link collector is missing", collect >= 0)
+        val collector = src.substring(collect, src.indexOf("\n    }", collect))
+        assertFalse(
+            "the collector must not navigate to the detail route without popping to Now",
+            collector.contains("navigate(Routes.alertDetail"),
+        )
+    }
+
+    @Test
     fun `the M1 showStatus toggle is gone`() {
         // It was the stand-in for exactly this NavHost; leaving both would
         // give Status two ways to be reached and one of them no back stack.

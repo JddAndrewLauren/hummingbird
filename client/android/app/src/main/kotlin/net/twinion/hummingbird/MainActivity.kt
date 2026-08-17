@@ -179,7 +179,7 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
     LaunchedEffect(navController) {
         deepLinkedAlertId.collect { alertId ->
             if (alertId != null) {
-                navController.navigate(Routes.alertDetail(alertId))
+                navController.openAlertFromNotification(alertId)
                 // Consumed: a configuration change must not re-navigate.
                 deepLinkedAlertId.value = null
             }
@@ -277,10 +277,36 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
     }
 }
 
-/** Back from a deep-linked destination. A notification tap can make the
- * detail screen the *only* entry on the stack, and popping the last one
- * leaves a blank Activity; landing on Now instead is the honest answer to
- * "back from an alert I arrived at cold". */
+/** A tapped notification lands its alert directly on top of Now — the back
+ * stack is exactly `now -> alert/{id}`, cold or warm.
+ *
+ * The `popUpTo` is the whole fix (found on hardware 2026-08-17). A cold tap
+ * is not a fresh start: the process was killed, so Android hands
+ * `onCreate` a saved instance state and `rememberNavController` faithfully
+ * restores the *previous* session's back stack — Now, Status, some other
+ * alert — and a plain `navigate` pushes this alert on top of that debris.
+ * Four Backs to leave, the first landing on an alert nobody asked for.
+ * Popping to Now (never inclusive: it is the start destination and the one
+ * thing that must survive) discards the restored entries and makes the
+ * stack the same shape whichever way the app was entered.
+ *
+ * `launchSingleTop` covers the warm re-tap of the alert already on screen,
+ * which would otherwise stack a second identical copy of it. */
+private fun NavHostController.openAlertFromNotification(alertId: String) {
+    navigate(Routes.alertDetail(alertId)) {
+        popUpTo(Routes.NOW) { inclusive = false }
+        launchSingleTop = true
+    }
+}
+
+/** Back from a deep-linked destination.
+ *
+ * The fallback is now unreachable by the notification path:
+ * [openAlertFromNotification] pops to Now before pushing, so a deep-linked
+ * alert always has Now beneath it and `popBackStack` always succeeds. Kept
+ * anyway — it costs one branch, it is the correct answer for any *future*
+ * caller that reaches a destination without a stack under it, and the
+ * alternative to landing on Now is a blank Activity. */
 private fun NavHostController.popBackStackOrHome(home: String) {
     if (!popBackStack()) navigate(home)
 }
