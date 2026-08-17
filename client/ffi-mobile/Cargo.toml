@@ -32,6 +32,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # this workspace's tree transitively; named directly here because this crate
 # depends on it for a decision, not incidentally.
 getrandom = "0.2"
+# Serializing the one wire body this crate builds itself: M2's
+# `CreatePushTarget` (`MobileTaskHost::register_push_target`). Every other
+# mutation here is built inside `hummingbird-core`; push targets are not a
+# mirror entity, so their POST is assembled at this seam instead.
+serde_json = "1"
 
 [features]
 # The Kotlin/Swift binding generator, behind a feature so the `cdylib`
