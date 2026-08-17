@@ -13,7 +13,7 @@ touched — see "Brand-token bindings" below.
 
 ## Surface: web
 
-The only built surface, in **two forms**: desktop, and — since the mobile pass
+The only surface with a *visual* gate, in **two forms**: desktop, and — since the mobile pass
 — a phone form below 640px. `hb.twinion.net` (ADR-0006), a PWA offline shell
 served from Cloudflare Workers static assets, deployed from `main` by
 `.github/workflows/deploy-client.yml` — live since 2026-08-10.
@@ -418,11 +418,40 @@ recipe that runs `server/scripts/smoke.sh`, called by
 `.github/workflows/deploy-server.yml` on `main` — not by anything in this
 file.
 
+## Surface: native Android
+
+**Built, and deliberately ungated here.** `client/android/` has had a code
+root since M0 (#141) and now renders five screens — Now, Status, Alerts,
+alert detail and item detail — plus the notification lane's own shade UI.
+None of it is photographed by anything.
+
+That is a real gap, not an oversight to fix casually: `android.yml` runs no
+emulator (its own header says why), so a screenshot matrix would need one
+stood up in CI before it could gate anything. Until then this surface's
+evidence is of two other kinds, and both are named so nobody mistakes them
+for a visual gate:
+
+- **Structural tests**, JVM, reading the Compose source as text —
+  `NavigationStructuralTest`, `NowScreenStructuralTest`,
+  `AlertsScreenStructuralTest`, `CaptureSubmitRefusalTest`,
+  `ScreenStateRetentionTest`. They answer "is it wired the way the ADRs
+  say", never "does it look right".
+- **`ColorTokenDriftTest`** (#483, ADR-0026), which pins `ui/theme/Color.kt`
+  against the design system's token CSS. It is the one thing here that
+  *is* about appearance, and it covers the palette only — never layout,
+  never a screen.
+- **Hardware runs**, recorded in `client/android/README.md`'s "Proving the
+  lane on hardware". Operator-run, not CI, and currently the only evidence
+  any of these screens has ever rendered.
+
+Add the emulator matrix here when one exists; do not quietly treat the
+structural tests as covering this row.
+
 ## Planned, not built
 
-The design system carries UI kits for **native Android**, **Wear OS** and
-**iOS** (`.claude/skills/hummingbird-design/ui_kits/`). None has code in this
-repo, so none has a gate here. Add a surface section when one gets a code
+The design system carries UI kits for **Wear OS** and **iOS**
+(`.claude/skills/hummingbird-design/ui_kits/`). Neither has code in this
+repo, so neither has a gate here. Add a surface section when one gets a code
 root — an emulator/simulator matrix, per the `/wrapup` reference.
 
 ---

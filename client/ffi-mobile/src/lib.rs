@@ -75,6 +75,36 @@ pub fn can_submit_capture(draft: &str) -> bool {
     hummingbird_core::decisions::can_submit_capture(draft)
 }
 
+/// [`hummingbird_core::decisions::CaptureMetaProblems`], mirrored as a
+/// `uniffi::Record` — what is wrong with a draft's two free-text date
+/// fields, `None` per field meaning nothing is.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MetaProblems {
+    pub deadline: Option<String>,
+    pub scheduled_date: Option<String>,
+}
+
+/// The third free door on this seam, and the item edit form's first caller
+/// (ADR-0027): the same rule the web's capture box and triage form both
+/// read, so a malformed date is refused with the same words on every
+/// client rather than being sent for the authority to 400 into the
+/// dead-letter journal.
+///
+/// Only the free-text dates can be wrong here — every other editable field
+/// is a closed vocabulary the form offers as choices, or the title, which
+/// [`can_submit_capture`] already answers for.
+#[uniffi::export]
+pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> MetaProblems {
+    let problems = hummingbird_core::decisions::capture::capture_meta_problems(
+        deadline,
+        scheduled_date,
+    );
+    MetaProblems {
+        deadline: problems.deadline,
+        scheduled_date: problems.scheduled_date,
+    }
+}
+
 /// [`decisions::TapTarget`], mirrored as a `uniffi::Enum` for
 /// [`notification_tap_target`] — a second definition rather than an
 /// annotation on the core type, for [`MobileUrgencyBand`]'s reason

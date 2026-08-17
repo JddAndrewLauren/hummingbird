@@ -14,6 +14,9 @@ import net.twinion.hummingbird.sync.SyncWorker
 import uniffi.hummingbird_ffi_mobile.FieldPatch
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.ItemEdit
+import uniffi.hummingbird_ffi_mobile.MetaProblems
+import uniffi.hummingbird_ffi_mobile.canSubmitCapture
+import uniffi.hummingbird_ffi_mobile.captureMetaProblems
 
 /** What the item screen is showing — the three states
  * [AlertDetailState] has, for the same reason: "this device has not synced
@@ -73,25 +76,44 @@ data class ItemDraft(
      * [FieldPatch.Clear], an explicit null, because "this deadline is now
      * gone" is a real edit and not the same as silence.
      *
-     * `title` and `priority` cannot be cleared (`NOT NULL` columns), so a
-     * blank title or an unparseable priority is left untouched rather than
-     * sent for the authority to refuse. The form does not offer either.
+     * **What counts as empty is [hasContent]'s answer, never Kotlin's.**
+     * A hand-written blank check is an automatic reject in this repo
+     * (M1-5/#503, gated by `CaptureSubmitRefusalTest`, which is why the
+     * banned spellings do not appear even in this comment): the standard
+     * library's disagrees with the real rule on a pasted BOM, the single
+     * likeliest invisible to arrive in a text field. The rule has one
+     * owner in
+     * `hummingbird_core::decisions::capture`, and it arrives here as a
+     * function rather than a copy.
+     *
+     * Nothing is trimmed on the caller's behalf either — #110's "raw
+     * string reaches the mutation unmodified" — so what the human typed is
+     * what is sent.
+     *
+     * `title` and `priority` cannot be cleared (`NOT NULL` columns). A
+     * blank title never reaches here: [ItemDetailViewModel.canSave]
+     * refuses the save while one is showing, rather than dropping the
+     * field silently and reporting success.
      */
-    fun toEdit(from: ItemDetailRecord): ItemEdit = ItemEdit(
-        title = title.takeIf { it.isNotBlank() && it != from.title },
+    fun toEdit(from: ItemDetailRecord, hasContent: (String) -> Boolean): ItemEdit = ItemEdit(
+        title = title.takeIf { hasContent(it) && it != from.title },
         priority = priority.toLongOrNull()?.takeIf { it != from.priority },
-        description = patch(description, from.description),
-        size = patch(size, from.size),
-        energy = patch(energy, from.energy),
-        context = patch(context, from.context),
+        description = patch(description, from.description, hasContent),
+        size = patch(size, from.size, hasContent),
+        energy = patch(energy, from.energy, hasContent),
+        context = patch(context, from.context, hasContent),
         // Not editable from this screen — see the class doc.
         projectId = FieldPatch.Untouched,
-        deadline = patch(deadline, from.deadline),
-        scheduledDate = patch(scheduledDate, from.scheduledDate),
+        deadline = patch(deadline, from.deadline, hasContent),
+        scheduledDate = patch(scheduledDate, from.scheduledDate, hasContent),
     )
 
-    private fun patch(drafted: String, original: String?): FieldPatch {
-        val value = drafted.trim().takeIf { it.isNotEmpty() }
+    private fun patch(
+        drafted: String,
+        original: String?,
+        hasContent: (String) -> Boolean,
+    ): FieldPatch {
+        val value = drafted.takeIf(hasContent)
         return when {
             value == original -> FieldPatch.Untouched
             value == null -> FieldPatch.Clear
@@ -122,6 +144,14 @@ class ItemDetailViewModel(
     private val ackFn: suspend (alertId: String, nowMs: Long) -> Unit,
     private val editFn: suspend (itemId: String, edit: ItemEdit, nowMs: Long) -> Unit,
     private val syncFn: suspend () -> Unit,
+    /** The core's blank rule, injected rather than called directly so a
+     * plain JVM test can drive this ViewModel — there is no native library
+     * in that process (`CaptureViewModel`'s own doc). The production
+     * wiring is the real binding, and `CaptureSubmitRefusalTest` gates
+     * that it stays the real one. */
+    private val hasContentFn: (String) -> Boolean,
+    /** The core's date-field rule, injected for the same reason. */
+    private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ItemDetailState>(ItemDetailState.Loading)
@@ -133,6 +163,26 @@ class ItemDetailViewModel(
     /** The edit in progress, or null in read mode. */
     private val _draft = MutableStateFlow<ItemDraft?>(null)
     val draft: StateFlow<ItemDraft?> = _draft.asStateFlow()
+
+    /** What is wrong with the draft's two free-text dates right now, by
+     * field — the core's answer, shown next to the field it belongs to. */
+    val metaProblems: MetaProblems?
+        get() = _draft.value?.let { metaProblemsFn(it.deadline, it.scheduledDate) }
+
+    /** Whether the draft can be saved at all.
+     *
+     * A blank title is the case that matters: `title` is `NOT NULL`, so it
+     * cannot be cleared, and a save that silently dropped the field would
+     * report success while changing nothing — the one outcome worse than a
+     * refusal. A malformed date is refused here rather than sent for the
+     * authority to 400 into the dead-letter journal. */
+    val canSave: Boolean
+        get() {
+            val draft = _draft.value ?: return false
+            if (!hasContentFn(draft.title)) return false
+            val problems = metaProblemsFn(draft.deadline, draft.scheduledDate)
+            return problems.deadline == null && problems.scheduledDate == null
+        }
 
     /** Whether the draft differs from the record it started from — what
      * decides whether Back must ask before discarding. An untouched draft
@@ -199,8 +249,13 @@ class ItemDetailViewModel(
     suspend fun save(itemId: String, nowMs: Long) {
         val record = (_state.value as? ItemDetailState.Loaded)?.record ?: return
         val draft = _draft.value ?: return
+        if (!canSave) {
+            _statusLine.value = "This edit can't be saved yet — an item needs a title, " +
+                "and a date must be the shape shown."
+            return
+        }
         try {
-            editFn(itemId, draft.toEdit(record), nowMs)
+            editFn(itemId, draft.toEdit(record, hasContentFn), nowMs)
             _draft.value = null
         } catch (error: Exception) {
             _statusLine.value = "Couldn't save — ${error.message}"
@@ -261,6 +316,8 @@ class ItemDetailViewModel(
                         Random.nextDouble(),
                     )
                 },
+                hasContentFn = ::canSubmitCapture,
+                metaProblemsFn = ::captureMetaProblems,
             )
 
         fun factory(context: Context): ViewModelProvider.Factory = viewModelFactory {

@@ -3,12 +3,14 @@ package net.twinion.hummingbird
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.FieldPatch
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.ItemEdit
+import uniffi.hummingbird_ffi_mobile.MetaProblems
 
 // `ItemDetailViewModel`'s load/edit/save control flow, with fakes only.
 // Two things here are worth more than the rest: the draft must survive
@@ -28,6 +30,20 @@ class ItemDetailViewModelTest {
         ackFn = ack,
         editFn = edit,
         syncFn = sync,
+        // Stand-ins for the two core rules: no native library exists in a
+        // plain JVM process, so the real bindings cannot be called here.
+        // `CaptureSubmitRefusalTest` is what proves production wires the
+        // real ones — the two gates are complementary, as they are for
+        // capture.
+        hasContentFn = { it.isNotEmpty() },
+        metaProblemsFn = { deadline, scheduledDate ->
+            MetaProblems(
+                deadline = "Use YYYY-MM-DD or YYYY-MM-DDTHH:MM"
+                    .takeIf { deadline.isNotEmpty() && !deadline.startsWith("2026-") },
+                scheduledDate = "Use YYYY-MM-DD"
+                    .takeIf { scheduledDate.isNotEmpty() && !scheduledDate.startsWith("2026-") },
+            )
+        },
     )
 
     @Test
@@ -192,7 +208,76 @@ class ItemDetailViewModelTest {
 
         assertEquals(listOf("fetch", "act:complete", "fetch"), calls)
     }
+
+    /** The gap this closed: `title` is `NOT NULL`, so an emptied one used
+     * to be dropped from the patch and the save reported success having
+     * changed nothing — a silent no-op is worse than a refusal. */
+    @Test
+    fun `a blank title refuses the save instead of silently dropping it`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(edit = { _, edit, _ -> sent = edit })
+        model.load("i-1", 1_000)
+        model.beginEdit()
+        model.updateDraft(model.draft.value!!.copy(title = ""))
+
+        assertFalse(model.canSave)
+        model.save("i-1", 2_000)
+
+        assertNull("nothing may reach the queue", sent)
+        assertNotNull("the draft is kept", model.draft.value)
+        assertTrue(
+            "the refusal must say so",
+            model.statusLine.value?.contains("can't be saved") == true,
+        )
+    }
+
+    /** A malformed date is refused with the core's own words rather than
+     * sent for the authority to 400 into the dead-letter journal. */
+    @Test
+    fun `a malformed date refuses the save and names the problem`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(edit = { _, edit, _ -> sent = edit })
+        model.load("i-1", 1_000)
+        model.beginEdit()
+        model.updateDraft(model.draft.value!!.copy(deadline = "next tuesday"))
+
+        assertFalse(model.canSave)
+        assertEquals("Use YYYY-MM-DD or YYYY-MM-DDTHH:MM", model.metaProblems?.deadline)
+        model.save("i-1", 2_000)
+
+        assertNull("nothing may reach the queue", sent)
+    }
+
+    /** Clearing a date is not a malformed date: an empty field is a real
+     * edit and must stay saveable. */
+    @Test
+    fun `an emptied date is saveable, not a problem`() = runBlocking {
+        val model = vm()
+        model.load("i-1", 1_000)
+        model.beginEdit()
+        model.updateDraft(model.draft.value!!.copy(deadline = ""))
+
+        assertTrue(model.canSave)
+        assertNull(model.metaProblems?.deadline)
+    }
+
+    /** Nothing is trimmed on the caller's behalf (#110's "raw string
+     * reaches the mutation unmodified"), and what counts as empty is the
+     * injected rule's answer, never Kotlin's. */
+    @Test
+    fun `what the human typed is what is sent`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(edit = { _, edit, _ -> sent = edit })
+        model.load("i-1", 1_000)
+        model.beginEdit()
+        model.updateDraft(model.draft.value!!.copy(context = "@errands "))
+
+        model.save("i-1", 2_000)
+
+        assertEquals(FieldPatch.Set("@errands "), sent?.context)
+    }
 }
+
 
 /** An [ItemDetailRecord] in the shape the seam hands over — every verdict
  * is a set field, exactly as Kotlin receives it. */

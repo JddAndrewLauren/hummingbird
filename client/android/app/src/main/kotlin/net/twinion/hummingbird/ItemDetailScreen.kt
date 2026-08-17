@@ -39,6 +39,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
+import uniffi.hummingbird_ffi_mobile.MetaProblems
 
 // One item, in full (#141's last slice, ADR-0027) — where a tapped
 // `item-threshold/v1` notification lands, because a state source's alert is
@@ -162,6 +163,8 @@ fun ItemDetailScreen(
                     } else {
                         EditBody(
                             draft = editing,
+                            problems = viewModel.metaProblems,
+                            canSave = viewModel.canSave,
                             onChange = viewModel::updateDraft,
                             onSave = {
                                 scope.launch {
@@ -378,6 +381,8 @@ private fun ReadBody(
 @Composable
 private fun EditBody(
     draft: ItemDraft,
+    problems: MetaProblems?,
+    canSave: Boolean,
     onChange: (ItemDraft) -> Unit,
     onSave: () -> Unit,
 ) {
@@ -385,6 +390,10 @@ private fun EditBody(
         value = draft.title,
         onValueChange = { onChange(draft.copy(title = it)) },
         label = { Text("Title") },
+        // An item must have a title (`NOT NULL`), so an empty one is
+        // refused here rather than saved as a silent no-op. Whether it
+        // *is* empty is the core's answer, never this file's.
+        isError = !canSave && draft.title.isEmpty(),
         modifier = Modifier.fillMaxWidth(),
     )
     OutlinedTextField(
@@ -401,16 +410,25 @@ private fun EditBody(
         label = { Text("Context") },
         modifier = Modifier.fillMaxWidth(),
     )
+    // The two free-text dates are the only fields that can be malformed —
+    // everything else is a closed vocabulary offered as choices, or the
+    // title. The problem strings are the core's, shared with the web's
+    // capture box and triage form, so a bad date is refused with the same
+    // words everywhere instead of being sent for the authority to 400.
     OutlinedTextField(
         value = draft.deadline,
         onValueChange = { onChange(draft.copy(deadline = it)) },
         label = { Text("Deadline") },
+        isError = problems?.deadline != null,
+        supportingText = problems?.deadline?.let { { Text(it) } },
         modifier = Modifier.fillMaxWidth(),
     )
     OutlinedTextField(
         value = draft.scheduledDate,
         onValueChange = { onChange(draft.copy(scheduledDate = it)) },
         label = { Text("Scheduled date") },
+        isError = problems?.scheduledDate != null,
+        supportingText = problems?.scheduledDate?.let { { Text(it) } },
         modifier = Modifier.fillMaxWidth(),
     )
 
@@ -439,7 +457,7 @@ private fun EditBody(
         clearable = false,
     )
 
-    Button(onClick = onSave) {
+    Button(onClick = onSave, enabled = canSave) {
         Text("Save")
     }
 }
