@@ -49,6 +49,7 @@ import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.TokenStore
 import net.twinion.hummingbird.core.TokenValidation
 import net.twinion.hummingbird.notify.AlertNotifier
+import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.RegistrationWorker
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
@@ -201,6 +202,18 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
             }
         }
         onPauseOrDispose { resumed.cancel() }
+    }
+
+    // The channels are asserted at app start too (`HummingbirdApp`), but
+    // the DND-access grant is made *outside* the app, in Settings, and a
+    // bypassing channel can only be created while the grant is held
+    // (NotificationChannels' third note). Coming back is the only signal
+    // this process gets that the answer may have changed, so re-assert
+    // here. Cheap and idempotent; it is not a second clock, it is a
+    // response to an event.
+    LifecycleResumeEffect(Unit) {
+        NotificationChannels.ensure(context)
+        onPauseOrDispose { }
     }
 
     NavHost(navController = navController, startDestination = Routes.NOW) {

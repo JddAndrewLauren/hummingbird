@@ -69,7 +69,15 @@ object AlertNotifier {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val builder = NotificationCompat.Builder(app, alert.channelId)
+        // The payload names a tier; which channel that tier currently
+        // resolves to depends on whether the app holds DND-access, and the
+        // answer can change between two arrivals of the same alert (see
+        // NotificationChannels). Falling back to the key itself keeps a
+        // notification postable even if `ensure` has somehow not run.
+        val channelId = NotificationChannels.channelIdFor(app, alert.channelKey)
+            ?: alert.channelKey
+
+        val builder = NotificationCompat.Builder(app, channelId)
             .setSmallIcon(R.drawable.ic_alert)
             .setContentTitle(alert.title)
             .setContentIntent(tap)

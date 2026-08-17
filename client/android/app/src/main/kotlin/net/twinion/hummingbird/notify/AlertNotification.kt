@@ -20,18 +20,24 @@ package net.twinion.hummingbird.notify
 // defect. Anything time-shaped belongs on the screens, which re-render.
 data class AlertNotification(
     val alertId: String,
-    val channelId: String,
+    /** The payload's tier key — `"urgent"` or `"normal"`, validated
+     * against [NotificationChannels.SPECS]. Not the channel id: which
+     * channel the tier resolves to depends on the device's DND-access
+     * grant, which is a live reading and so belongs at post time
+     * ([NotificationChannels.channelIdFor]), not in this clock-free,
+     * value-equal mapping. */
+    val channelKey: String,
     val title: String,
     /** Null when the payload carried no `body` key at all — never coerced
      * to `""`, which would render as an empty second line. */
     val body: String?,
 ) {
     companion object {
-        /** The channel an unroutable payload lands on. `normal` rather
-         * than `urgent`: guessing upward would let a malformed or
-         * future-tier payload bypass DND, and being under-loud is the
-         * recoverable failure. */
-        const val FALLBACK_CHANNEL = "normal"
+        /** The tier an unroutable payload lands on. `normal` rather than
+         * `urgent`: guessing upward would let a malformed or future-tier
+         * payload bypass DND, and being under-loud is the recoverable
+         * failure. */
+        const val FALLBACK_KEY = "normal"
 
         /** Maps a raw `data` map, or null if it is not an alert push.
          *
@@ -42,12 +48,12 @@ data class AlertNotification(
         fun from(data: Map<String, String>): AlertNotification? {
             val alertId = data["alert_id"]?.takeIf { it.isNotBlank() } ?: return null
             val title = data["title"]?.takeIf { it.isNotBlank() } ?: return null
-            val channelId = data["channel_id"]
-                ?.takeIf { spec -> NotificationChannels.SPECS.any { it.id == spec } }
-                ?: FALLBACK_CHANNEL
+            val channelKey = data["channel_id"]
+                ?.takeIf { key -> NotificationChannels.SPECS.any { it.key == key } }
+                ?: FALLBACK_KEY
             return AlertNotification(
                 alertId = alertId,
-                channelId = channelId,
+                channelKey = channelKey,
                 title = title,
                 body = data["body"],
             )

@@ -97,6 +97,21 @@ class ManifestAliasTest {
     }
 
     @Test
+    fun `ACCESS_NOTIFICATION_POLICY is declared, or urgent can never bypass DND`() {
+        // Declaring it grants nothing — the grant is the user's, in
+        // Settings > Do Not Disturb access — but an app that does not
+        // declare it never appears in that list, so
+        // `NotificationChannel.setBypassDnd(true)` stays inert for the
+        // life of the install and ADR-0012's "must not get caught in
+        // blanket silencing" quietly fails.
+        val permissions = manifest().children("uses-permission").mapNotNull { it.attr("name") }
+        assertTrue(
+            "ACCESS_NOTIFICATION_POLICY permission missing",
+            permissions.contains("android.permission.ACCESS_NOTIFICATION_POLICY"),
+        )
+    }
+
+    @Test
     fun `the FCM service is declared exactly once, unexported, on the MESSAGING_EVENT action`() {
         val application = manifest().children("application").single()
         val services = application.children("service")

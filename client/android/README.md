@@ -56,9 +56,15 @@ registration: a stable install id in plain SharedPreferences is a device
 *slot*, replayed on every rotation, and `RegistrationWorker` retries a
 transport failure but not a missing device token.
 
-`notify/NotificationChannels.SPECS` must byte-match the `channel_id` values
-`server/authority/src/fcm.rs` emits; nothing links the two literals at
-compile time, so `NotificationChannelSpecTest` is what does.
+`notify/NotificationChannels.SPECS` keys must byte-match the `channel_id`
+values `server/authority/src/fcm.rs` emits; nothing links the two literals at
+compile time, so `NotificationChannelSpecTest` is what does. A key is a
+*tier*, not a channel id: the urgent tier resolves to a second id once the
+user grants Do-Not-Disturb access, because Android fixes `bypassDnd` at
+channel creation and a channel first created without the grant can never
+gain it. `ACCESS_NOTIFICATION_POLICY` in the manifest is what puts the app in
+that Settings list at all, and `ensure` re-runs on every resume — returning
+from Settings is the only signal the grant changed.
 
 **`google-services.json` is not in the repo and the
 `com.google.gms.google-services` plugin is not applied.** The

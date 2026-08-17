@@ -15,6 +15,16 @@
          letting alerts silently not arrive. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- The urgent channel's DND bypass (M2/#141, ADR-0012: "a filter built
+         to cut through blanket silencing must not get caught in it"). Not a
+         permission the app is granted by declaring it — the grant is the
+         user's, in Settings > Do Not Disturb access — but declaring it is
+         what puts hummingbird in that list at all. Without this line
+         `NotificationChannel.setBypassDnd(true)` is inert forever, and
+         `AlertsScreen`'s health row points at a screen where the app cannot
+         be found. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <application
         android:name=".HummingbirdApp"
         android:allowBackup="false"

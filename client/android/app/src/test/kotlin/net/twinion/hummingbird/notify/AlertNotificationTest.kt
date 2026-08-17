@@ -17,13 +17,13 @@ class AlertNotificationTest {
         alertId: String? = "alert-1",
         title: String? = "Sweeper run failed",
         body: String? = "Google Tasks adapter returned 503 twice.",
-        channelId: String? = "urgent",
+        channelKey: String? = "urgent",
         extra: Map<String, String> = emptyMap(),
     ): Map<String, String> = buildMap {
         alertId?.let { put("alert_id", it) }
         title?.let { put("title", it) }
         body?.let { put("body", it) }
-        channelId?.let { put("channel_id", it) }
+        channelKey?.let { put("channel_id", it) }
         put("severity", "error")
         put("tier", "urgent")
         putAll(extra)
@@ -34,7 +34,7 @@ class AlertNotificationTest {
         val mapped = AlertNotification.from(payload())!!
 
         assertEquals("alert-1", mapped.alertId)
-        assertEquals("urgent", mapped.channelId)
+        assertEquals("urgent", mapped.channelKey)
         assertEquals("Sweeper run failed", mapped.title)
         assertEquals("Google Tasks adapter returned 503 twice.", mapped.body)
     }
@@ -67,18 +67,18 @@ class AlertNotificationTest {
     fun `an unknown or missing channel falls back to normal, never up to urgent`() {
         // Guessing upward would let a malformed or future-tier payload
         // bypass DND. Under-loud is the recoverable failure.
-        assertEquals("normal", AlertNotification.from(payload(channelId = null))!!.channelId)
-        assertEquals("normal", AlertNotification.from(payload(channelId = "critical"))!!.channelId)
-        assertEquals("normal", AlertNotification.from(payload(channelId = ""))!!.channelId)
+        assertEquals("normal", AlertNotification.from(payload(channelKey = null))!!.channelKey)
+        assertEquals("normal", AlertNotification.from(payload(channelKey = "critical"))!!.channelKey)
+        assertEquals("normal", AlertNotification.from(payload(channelKey = ""))!!.channelKey)
     }
 
     @Test
-    fun `both server-emitted channel ids survive the mapping`() {
+    fun `both server-emitted tier keys survive the mapping`() {
         for (spec in NotificationChannels.SPECS) {
             assertEquals(
-                "channel ${spec.id} must map to itself",
-                spec.id,
-                AlertNotification.from(payload(channelId = spec.id))!!.channelId,
+                "tier ${spec.key} must map to itself",
+                spec.key,
+                AlertNotification.from(payload(channelKey = spec.key))!!.channelKey,
             )
         }
     }
