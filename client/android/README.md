@@ -102,9 +102,10 @@ CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 ## Proving the lane on hardware
 
 CI cannot cover any of this: there is no emulator in `android.yml` and no FCM
-delivery without a real device, so the twelve checks below are the only
-evidence the lane works end to end. They were run in full on 2026-08-17
-(Pixel 10 Pro Fold, SDK 37, #517) and every one passed. Re-run them after any
+delivery without a real device, so the checks below are the only evidence the
+lane works end to end. Checks 1–12 were run in full on 2026-08-17 (Pixel 10
+Pro Fold, SDK 37, #517) and every one passed; 13–18 are ADR-0027's second
+destination and are **not yet run on hardware**. Re-run all of them after any
 change to `notify/`, `push/`, or the deep link.
 
 You need the device on USB, a `device`-scope token for **this** device (there
@@ -138,6 +139,27 @@ needs rules on `alert_raised` keyed on `source` and `severity`.
 11. Tap one cold. Kill with `adb shell am kill net.twinion.hummingbird`, not
     `force-stop` — a force-stopped app receives no FCM at all.
 12. Swipe a notification away and confirm **nothing** is acked (ADR-0012).
+
+The item door (ADR-0027). These need an **`item-threshold/v1`** alert, which
+is not raised by `POST /api/alerts` at all: it is minted by the Durable
+Object's alarm sweep over items with near deadlines
+(`authority/src/sweep.rs`). So give an item a deadline inside the sweep
+threshold and let the alarm ring, rather than ingesting one by hand.
+
+13. Tap that notification warm: lands on the **item**, not the alert. One
+    Back lands on `Now`.
+14. Tap it cold (`am kill` again): same destination, and still one Back to
+    `Now` — the second door has its own `popUpTo`, and this is what proves
+    it.
+15. Ack from the item's live-alert card; confirm `dismissed_at` on the
+    authority. **Give the mutation queue a moment**, as in check 9.
+16. Complete the item from item detail: two queue entries drain, the `act`
+    first, and the alert leaves live without a second gesture (ADR-0027
+    part 3).
+17. Degrade check: ring a *non-item* alert (`POST /api/alerts`, ingest
+    scope) and confirm the tap still opens **alert** detail unchanged.
+18. Open an archived item through a stale notification: readable, the Ack
+    still offered, and **no edit affordance** (Recall's rule, #478).
 
 Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
 adb writes a warning banner into the PNG, and the ids differ inner vs cover
