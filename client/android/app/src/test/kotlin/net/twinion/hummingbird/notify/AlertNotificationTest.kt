@@ -18,12 +18,16 @@ class AlertNotificationTest {
         title: String? = "Sweeper run failed",
         body: String? = "Google Tasks adapter returned 503 twice.",
         channelKey: String? = "urgent",
+        source: String? = "item-threshold/v1",
+        sourceKey: String? = "item:item-42",
         extra: Map<String, String> = emptyMap(),
     ): Map<String, String> = buildMap {
         alertId?.let { put("alert_id", it) }
         title?.let { put("title", it) }
         body?.let { put("body", it) }
         channelKey?.let { put("channel_id", it) }
+        source?.let { put("source", it) }
+        sourceKey?.let { put("source_key", it) }
         put("severity", "error")
         put("tier", "urgent")
         putAll(extra)
@@ -37,6 +41,26 @@ class AlertNotificationTest {
         assertEquals("urgent", mapped.channelKey)
         assertEquals("Sweeper run failed", mapped.title)
         assertEquals("Google Tasks adapter returned 503 twice.", mapped.body)
+    }
+
+    @Test
+    fun `what the alert is about is carried through, uninterpreted`() {
+        // ADR-0027: these two decide where a tap lands, and the decision
+        // is the core's — this mapper only carries them.
+        val mapped = AlertNotification.from(payload())!!
+        assertEquals("item-threshold/v1", mapped.source)
+        assertEquals("item:item-42", mapped.sourceKey)
+    }
+
+    @Test
+    fun `a payload from a server older than ADR-0027 still maps`() {
+        // The degrade path, and the permanent contract for the seven
+        // sources naming no item: no `source_key` means the tap opens the
+        // alert, which is M2's proven behaviour — never a failure to map.
+        val mapped = AlertNotification.from(payload(source = null, sourceKey = null))!!
+        assertNull(mapped.source)
+        assertNull(mapped.sourceKey)
+        assertEquals("alert-1", mapped.alertId)
     }
 
     @Test

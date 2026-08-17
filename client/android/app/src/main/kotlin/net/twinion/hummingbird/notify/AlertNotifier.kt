@@ -23,7 +23,9 @@ import net.twinion.hummingbird.push.AckReceiver
 // - **The tap is an Activity intent, not a trampoline.** Android 12+ bans
 //   starting an Activity from a broadcast receiver or service woken by a
 //   notification tap, so the tap goes straight to [MainActivity] carrying
-//   [EXTRA_ALERT_ID]; `MainActivity` reads the extra and navigates.
+//   [EXTRA_ALERT_ID] — plus [EXTRA_SOURCE]/[EXTRA_SOURCE_KEY], which say
+//   what the alert is about (ADR-0027); `MainActivity` reads the extras,
+//   asks the core where they lead, and navigates.
 // - **No delete intent, deliberately.** Swiping the notification away does
 //   nothing to the alert (ADR-0012: dismissing a *notification* is not an
 //   Ack, and inferring one would silently settle alerts the user only
@@ -39,6 +41,14 @@ object AlertNotifier {
      * the Ack broadcast into [AckReceiver]. */
     const val EXTRA_ALERT_ID = "net.twinion.hummingbird.extra.ALERT_ID"
 
+    /** What the alert is about, carried on the tap intent alongside the id
+     * (ADR-0027). **The extras decide the destination; the data URI never
+     * does** — the URI exists only to keep two alerts' `PendingIntent`s
+     * distinct (see below), and encoding navigation in it would be a
+     * second encoding of the same fact, which the structural test forbids. */
+    const val EXTRA_SOURCE = "net.twinion.hummingbird.extra.SOURCE"
+    const val EXTRA_SOURCE_KEY = "net.twinion.hummingbird.extra.SOURCE_KEY"
+
     fun post(context: Context, alert: AlertNotification) {
         val app = context.applicationContext
 
@@ -50,6 +60,8 @@ object AlertNotifier {
             // open the first alert.
             .setData(android.net.Uri.parse("hummingbird://alert/${alert.alertId}"))
             .putExtra(EXTRA_ALERT_ID, alert.alertId)
+            .putExtra(EXTRA_SOURCE, alert.source)
+            .putExtra(EXTRA_SOURCE_KEY, alert.sourceKey)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val tap = PendingIntent.getActivity(
             app,

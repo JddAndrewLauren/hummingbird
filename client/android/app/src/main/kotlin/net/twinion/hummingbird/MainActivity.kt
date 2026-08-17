@@ -52,7 +52,9 @@ import net.twinion.hummingbird.notify.AlertNotifier
 import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.RegistrationWorker
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
+import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
+import uniffi.hummingbird_ffi_mobile.notificationTapTarget
 import uniffi.hummingbird_ffi_mobile.RunOutcome
 
 // `NowScreen` (M1-6/#504) is this activity's start destination — the
@@ -78,16 +80,16 @@ import uniffi.hummingbird_ffi_mobile.RunOutcome
 // of the same fact.
 class MainActivity : ComponentActivity() {
 
-    /** The alert id from the launching (or newly delivered) intent. A flow
-     * rather than a Compose state because `onNewIntent` fires outside
-     * composition — the Activity is already running when a second
-     * notification is tapped. */
-    private val deepLinkedAlertId = MutableStateFlow<String?>(null)
+    /** The launching (or newly delivered) notification intent, as the
+     * three strings the tap decision needs. A flow rather than a Compose
+     * state because `onNewIntent` fires outside composition — the Activity
+     * is already running when a second notification is tapped. */
+    private val deepLinkedAlertId = MutableStateFlow<NotificationTap?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        deepLinkedAlertId.value = intent?.getStringExtra(AlertNotifier.EXTRA_ALERT_ID)
+        deepLinkedAlertId.value = NotificationTap.from(intent)
         setContent {
             HummingbirdTheme {
                 AppRoot(deepLinkedAlertId = deepLinkedAlertId)
@@ -98,13 +100,35 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent.getStringExtra(AlertNotifier.EXTRA_ALERT_ID)?.let {
+        NotificationTap.from(intent)?.let {
             deepLinkedAlertId.value = it
         }
     }
 }
 
-/** The four routes. Strings, because that is what `NavHost` takes; kept in
+/** One tapped notification, as the extras `AlertNotifier` put on the
+ * intent. Nothing here interprets `source`/`sourceKey`: they are handed
+ * to the core's `notificationTapTarget`, which owns the answer (ADR-0027).
+ * Absent extras cross as empty strings, which that function answers with
+ * alert detail — the permanent contract for an alert naming no item. */
+private data class NotificationTap(
+    val alertId: String,
+    val source: String,
+    val sourceKey: String,
+) {
+    companion object {
+        fun from(intent: Intent?): NotificationTap? {
+            val alertId = intent?.getStringExtra(AlertNotifier.EXTRA_ALERT_ID) ?: return null
+            return NotificationTap(
+                alertId = alertId,
+                source = intent.getStringExtra(AlertNotifier.EXTRA_SOURCE).orEmpty(),
+                sourceKey = intent.getStringExtra(AlertNotifier.EXTRA_SOURCE_KEY).orEmpty(),
+            )
+        }
+    }
+}
+
+/** The five routes. Strings, because that is what `NavHost` takes; kept in
  * one place so a typo is a compile error at the use site rather than a
  * silently unreachable screen. */
 private object Routes {
@@ -112,8 +136,11 @@ private object Routes {
     const val STATUS = "status"
     const val ALERTS = "alerts"
     const val ALERT_DETAIL = "alert/{alertId}"
+    const val ITEM_DETAIL = "item/{itemId}"
 
     fun alertDetail(alertId: String) = "alert/$alertId"
+
+    fun itemDetail(itemId: String) = "item/$itemId"
 }
 
 // The always-composed content root. The #141 sync cadence (one `user` cycle
@@ -132,7 +159,7 @@ private object Routes {
 // once per completed sync cycle so they re-read the mirror after each one,
 // not only on their own resume.
 @Composable
-private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
+private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val navController = rememberNavController()
@@ -177,9 +204,18 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
     // tap is what creates it — and because a second tap while the app is
     // already open arrives through `onNewIntent`, outside any composition.
     LaunchedEffect(navController) {
-        deepLinkedAlertId.collect { alertId ->
-            if (alertId != null) {
-                navController.openAlertFromNotification(alertId)
+        deepLinkedAlertId.collect { tap ->
+            if (tap != null) {
+                // The destination is the core's answer, not this file's:
+                // a Kotlin `removePrefix("item:")` would hand-copy a key
+                // convention that has one owner (ADR-0027). Synchronous
+                // and clock-free, so it runs before navigating.
+                when (val target = notificationTapTarget(tap.source, tap.sourceKey)) {
+                    is MobileTapTarget.Item ->
+                        navController.openItemFromNotification(target.itemId)
+                    MobileTapTarget.Alert ->
+                        navController.openAlertFromNotification(tap.alertId)
+                }
                 // Consumed: a configuration change must not re-navigate.
                 deepLinkedAlertId.value = null
             }
@@ -267,6 +303,15 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<String?>) {
                 },
             )
         }
+        composable(Routes.ITEM_DETAIL) { entry ->
+            // Placeholder until the item screen lands (#141's last slice,
+            // G2). The route and its pop policy ship first so the second
+            // notification door is testable on its own.
+            ItemDetailPlaceholder(
+                itemId = entry.arguments?.getString("itemId").orEmpty(),
+                onBack = { navController.popBackStackOrHome(Routes.NOW) },
+            )
+        }
         composable(Routes.ALERT_DETAIL) { entry ->
             AlertDetailScreen(
                 alertId = entry.arguments?.getString("alertId").orEmpty(),
@@ -299,6 +344,20 @@ private fun NavHostController.openAlertFromNotification(alertId: String) {
     }
 }
 
+/** A tapped notification whose alert names an item lands that *item*
+ * directly on top of Now (ADR-0027) — the same policy
+ * [openAlertFromNotification] holds, and deliberately the same body: the
+ * cold-tap defect it fixes (#518) is a property of the restored back
+ * stack, not of which destination is being pushed onto it, so a second
+ * door that skipped the `popUpTo` would regress the fix through the new
+ * route. `NavigationStructuralTest` asserts both bodies for that reason. */
+private fun NavHostController.openItemFromNotification(itemId: String) {
+    navigate(Routes.itemDetail(itemId)) {
+        popUpTo(Routes.NOW) { inclusive = false }
+        launchSingleTop = true
+    }
+}
+
 /** Back from a deep-linked destination.
  *
  * The fallback is now unreachable by the notification path:
@@ -309,6 +368,22 @@ private fun NavHostController.openAlertFromNotification(alertId: String) {
  * alternative to landing on Now is a blank Activity. */
 private fun NavHostController.popBackStackOrHome(home: String) {
     if (!popBackStack()) navigate(home)
+}
+
+/** The item route's temporary body, replaced by `ItemDetailScreen` in
+ * #141's last slice. It exists so the second notification door — the tap
+ * decision, the route and its pop policy — can ship and be gated on its
+ * own; it renders no item data and makes no visual decisions, so nothing
+ * here is a design choice the real screen would have to undo. */
+@Composable
+private fun ItemDetailPlaceholder(itemId: String, onBack: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(text = itemId, style = MaterialTheme.typography.bodyMedium)
+        TextButton(onClick = onBack) { Text("Back") }
+    }
 }
 
 /** Asks for `POST_NOTIFICATIONS` once per composition of the root, if it is
