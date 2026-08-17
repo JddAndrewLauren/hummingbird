@@ -70,14 +70,16 @@ import uniffi.hummingbird_ffi_mobile.RunOutcome
 // would add. That milestone is this one, and the forcing function is the
 // notification deep link: a tapped alert has to land on *that alert's*
 // detail screen with a back stack that returns somewhere sensible, and
-// `alert/{alertId}` is an argument a boolean cannot carry. Four routes,
-// no nested graphs.
+// `alert/{alertId}` is an argument a boolean cannot carry. Five routes
+// since ADR-0027 added `item/{itemId}`, the second notification
+// destination; no nested graphs.
 //
-// The intent extra, not `navDeepLink`, carries the alert id. Android 12+
-// bans notification trampolines, so the tap already arrives as an Activity
-// intent (`AlertNotifier`) — reading its extra is the direct expression of
-// what actually happens, where a URI deep link would be a second encoding
-// of the same fact.
+// The intent extras, not `navDeepLink`, carry the tap. Android 12+ bans
+// notification trampolines, so it already arrives as an Activity intent
+// (`AlertNotifier`) — reading its extras is the direct expression of what
+// actually happens, where a URI deep link would be a second encoding of the
+// same fact. Which destination those extras lead to is the core's answer
+// (ADR-0027), never parsed here.
 class MainActivity : ComponentActivity() {
 
     /** The launching (or newly delivered) notification intent, as the
@@ -304,11 +306,9 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
             )
         }
         composable(Routes.ITEM_DETAIL) { entry ->
-            // Placeholder until the item screen lands (#141's last slice,
-            // G2). The route and its pop policy ship first so the second
-            // notification door is testable on its own.
-            ItemDetailPlaceholder(
+            ItemDetailScreen(
                 itemId = entry.arguments?.getString("itemId").orEmpty(),
+                syncTick = syncTick,
                 onBack = { navController.popBackStackOrHome(Routes.NOW) },
             )
         }
@@ -368,22 +368,6 @@ private fun NavHostController.openItemFromNotification(itemId: String) {
  * alternative to landing on Now is a blank Activity. */
 private fun NavHostController.popBackStackOrHome(home: String) {
     if (!popBackStack()) navigate(home)
-}
-
-/** The item route's temporary body, replaced by `ItemDetailScreen` in
- * #141's last slice. It exists so the second notification door — the tap
- * decision, the route and its pop policy — can ship and be gated on its
- * own; it renders no item data and makes no visual decisions, so nothing
- * here is a design choice the real screen would have to undo. */
-@Composable
-private fun ItemDetailPlaceholder(itemId: String, onBack: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(text = itemId, style = MaterialTheme.typography.bodyMedium)
-        TextButton(onClick = onBack) { Text("Back") }
-    }
 }
 
 /** Asks for `POST_NOTIFICATIONS` once per composition of the root, if it is
