@@ -23,17 +23,23 @@
 //! hardcoded at the render site" a property of the code on every client at
 //! once rather than a review note per shell.
 
+pub mod affordance;
 pub mod args;
+pub mod backend;
 pub mod decline;
 pub mod envelope;
 pub mod grill;
+pub mod review;
 pub mod run;
 
+pub use affordance::{live_undone_steps, microtask_affordance, MicrotaskAffordance};
 pub use args::{format_grill_transcript, grill_run_body, microtask_run_body, GrillTurn, MicrotaskRunInput};
+pub use backend::{fallback_backend_id, resolve_backend_selection, AUTO_SELECTION};
 pub use decline::{decline_for_response, decline_for_transport, NO_TERMINAL_LINE, NO_TOKEN};
 pub use envelope::{
     classify_line, grill_result, microtask_result, GrillProposal, GrillQuestion, GrillTurnResult,
     MicrotaskResult, SkillLine,
 };
 pub use grill::{reduce_grill_turn, GrillTurnState, OUTSIDE_SCHEMA};
+pub use review::{demotes_from_frontier, plan_replacement_label, would_strand_plan, FRONTIER_DEMOTION_WARNING};
 pub use run::{is_running, reduce_run, stamp_label, SkillEvent, SkillRunState};

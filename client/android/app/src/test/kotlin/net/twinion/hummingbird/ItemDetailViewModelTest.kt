@@ -24,12 +24,14 @@ class ItemDetailViewModelTest {
         ack: suspend (String, Long) -> Unit = { _, _ -> },
         edit: suspend (String, ItemEdit, Long) -> Unit = { _, _, _ -> },
         sync: suspend () -> Unit = { },
+        hasGrillDraft: suspend (String) -> Boolean = { false },
     ) = ItemDetailViewModel(
         fetchFn = fetch,
         actFn = act,
         ackFn = ack,
         editFn = edit,
         syncFn = sync,
+        hasGrillDraftFn = hasGrillDraft,
         // Stand-ins for the two core rules: no native library exists in a
         // plain JVM process, so the real bindings cannot be called here.
         // `CaptureSubmitRefusalTest` is what proves production wires the
@@ -309,4 +311,5 @@ internal fun itemDetail(
     isArchived = isArchived,
     isEditable = isEditable,
     availableActions = listOf("start", "complete"),
+    microtaskAffordance = null,
 )

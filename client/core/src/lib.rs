@@ -1271,15 +1271,19 @@ where
         } else {
             decisions::available_actions(item.stage).to_vec()
         };
+        let steps = self.steps_for(item_id);
+        let microtask_affordance =
+            (!is_archived).then(|| decisions::skills::microtask_affordance(&steps));
 
         Some(item_detail::ItemDetail {
             project,
-            steps: self.steps_for(item_id),
+            steps,
             open_blockers,
             live_alert,
             is_archived,
             is_editable: !is_archived,
             available_actions,
+            microtask_affordance,
             item,
         })
     }

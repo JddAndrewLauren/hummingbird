@@ -35,6 +35,7 @@ import net.twinion.hummingbird.ui.forms.LevelSlider
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.TriageItemRecord
+import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 
 // The Triage screen (#531): one queue holding both captured and Grilling
 // items in the core's own order, headed by the two record-field counts
@@ -43,13 +44,15 @@ import uniffi.hummingbird_ffi_mobile.TriageItemRecord
 // destination this screen offers, and the row checkmark going through the
 // existing `act` path — never a triage.
 //
-// **The Grill button renders, gated off.** The takeover arrives at M4/#539;
-// recording its place here is deliberate — this screen offers no partial
-// interview behind it.
+// **The Grill button is live (#539).** It navigates to the standalone
+// takeover (`GrillTakeoverScreen.kt`) rather than opening an interview
+// inline — this screen holds no turn/draft state of its own, gated on the
+// row's own `canGrill`/`hasGrillDraft` facts from the seam.
 @Composable
 fun TriageScreen(
     syncTick: Int = 0,
     onBack: () -> Unit,
+    onGrill: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -152,6 +155,7 @@ fun TriageScreen(
                                         viewModel.promote(item.id, System.currentTimeMillis())
                                     }
                                 },
+                                onGrill = { onGrill(item.id) },
                                 canSave = viewModel.canSave,
                                 metaProblems = viewModel.metaProblems,
                             )
@@ -173,6 +177,7 @@ private fun TriageRow(
     onDraftChange: (TriageDraft) -> Unit,
     onComplete: () -> Unit,
     onPromote: () -> Unit,
+    onGrill: () -> Unit,
     canSave: Boolean,
     metaProblems: MetaProblems?,
 ) {
@@ -246,11 +251,13 @@ private fun TriageRow(
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Grill renders, gated off (#539 lands the takeover):
-                    // no partial interview behind it, ever — `enabled =
-                    // false` is the whole gate.
-                    OutlinedButton(onClick = {}, enabled = false) {
-                        Text("Grill")
+                    // Live (#539): navigates to the standalone takeover.
+                    // `item.canGrill` is the seam's own decided fact — both
+                    // Triage and Grilling rows on this board offer it.
+                    if (item.canGrill) {
+                        OutlinedButton(onClick = onGrill) {
+                            Text(itemGrillButtonLabel(item.hasGrillDraft))
+                        }
                     }
                     // Promoting to Ready is the only destination this
                     // screen offers — the web triage panel's own

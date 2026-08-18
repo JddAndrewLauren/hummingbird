@@ -932,6 +932,114 @@ pub fn outside_schema_decline() -> String {
     skills::OUTSIDE_SCHEMA.to_string()
 }
 
+// ---- #539: the microtask affordance, the backend picker's tier fallback,
+// and the Grill review card's predicates, sunk out of
+// `client/web/src/skills/microtask-affordance.ts`,
+// `client/web/src/skills/backend-registry.ts`/`backend-selection.ts`, and
+// `client/web/src/screens/grill-review.ts`.
+
+/// [`StepDTO`]'s own wire shape — the seven fields `microtask-affordance.ts`
+/// and `grill-review.ts` both already read a `StepDTO[]` as. Defined here
+/// rather than shared from anywhere else in this crate: it is the one Step
+/// shape this seam ever needs, and every field but `deleted_at`/`done` is
+/// unread by either predicate family.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StepDTO {
+    id: String,
+    item_id: String,
+    body: String,
+    done: bool,
+    position: i64,
+    deleted_at: Option<i64>,
+    version: i64,
+}
+
+fn to_domain_step(dto: StepDTO) -> hummingbird_domain::Step {
+    hummingbird_domain::Step {
+        id: dto.id,
+        item_id: dto.item_id,
+        body: dto.body,
+        done: dto.done,
+        position: dto.position,
+        deleted_at: dto.deleted_at,
+        version: dto.version,
+    }
+}
+
+fn to_domain_steps(steps_json: &str) -> Vec<hummingbird_domain::Step> {
+    serde_json::from_str::<Vec<StepDTO>>(steps_json)
+        .unwrap_or_default()
+        .into_iter()
+        .map(to_domain_step)
+        .collect()
+}
+
+/// [`skills::microtask_affordance`], JSON-encoded — the same
+/// `{ kind: "break" }`/`{ kind: "rewrite", undoneCount }` shape
+/// `microtask-affordance.ts`'s own `MicrotaskAffordance` already is.
+#[wasm_bindgen]
+pub fn microtask_affordance_json(steps_json: &str) -> String {
+    serde_json::to_string(&skills::microtask_affordance(&to_domain_steps(steps_json))).unwrap()
+}
+
+/// [`skills::fallback_backend_id`] — the one-tap fallback offered when a
+/// pin declines. `registry_ids_json` is a bare `string[]` of ids, the only
+/// part of a `BackendEntry` this rule reads.
+#[wasm_bindgen]
+pub fn fallback_backend_id(registry_ids_json: &str, dead_id: &str) -> Option<String> {
+    let ids: Vec<String> = serde_json::from_str(registry_ids_json).unwrap_or_default();
+    skills::fallback_backend_id(&ids, dead_id)
+}
+
+/// [`skills::resolve_backend_selection`] — Auto when nothing is stored, or
+/// when the stored id no longer names a registered entry.
+#[wasm_bindgen]
+pub fn resolve_backend_selection(stored: Option<String>, registry_ids_json: &str) -> String {
+    let ids: Vec<String> = serde_json::from_str(registry_ids_json).unwrap_or_default();
+    skills::resolve_backend_selection(stored.as_deref(), &ids)
+}
+
+#[wasm_bindgen]
+pub fn backend_auto_selection() -> String {
+    skills::AUTO_SELECTION.to_string()
+}
+
+fn parse_verdict(verdict: &str) -> Option<hummingbird_domain::GrillVerdict> {
+    serde_json::from_value(serde_json::Value::String(verdict.to_string())).ok()
+}
+
+/// [`skills::would_strand_plan`] — `false` for a `verdict` this build
+/// cannot parse, the safe reading for a value only ever produced by
+/// [`hummingbird_domain::GrillVerdict`]'s own wire spelling.
+#[wasm_bindgen]
+pub fn grill_would_strand_plan(verdict: &str, steps_json: &str) -> bool {
+    match parse_verdict(verdict) {
+        Some(verdict) => skills::would_strand_plan(verdict, &to_domain_steps(steps_json)),
+        None => false,
+    }
+}
+
+#[wasm_bindgen]
+pub fn grill_plan_replacement_label(steps_json: &str) -> String {
+    skills::plan_replacement_label(&to_domain_steps(steps_json))
+}
+
+/// [`skills::demotes_from_frontier`] — `false` for a `verdict` or `stage`
+/// this build cannot parse.
+#[wasm_bindgen]
+pub fn grill_demotes_from_frontier(verdict: &str, stage: &str) -> bool {
+    match (parse_verdict(verdict), hummingbird_domain::Stage::parse(stage)) {
+        (Some(verdict), Some(stage)) => skills::demotes_from_frontier(verdict, stage),
+        _ => false,
+    }
+}
+
+#[wasm_bindgen]
+pub fn grill_frontier_demotion_warning() -> String {
+    skills::FRONTIER_DEMOTION_WARNING.to_string()
+}
+
 // ----------------------------------------------------------------- M4 (#533)
 // The standing-question panes: the pane shell contract's decided half, the
 // cross-pane sort, the zone bridge, and the waste pane. Same house style as
@@ -2485,6 +2593,56 @@ mod tests {
         }
         assert_eq!(decline_for_transport("  boom  "), "Could not reach the server: boom");
         assert_eq!(decline_for_transport(""), "Could not reach the server.");
+    }
+
+    fn step_json(id: &str, done: bool, deleted_at: Option<i64>) -> String {
+        format!(
+            r#"{{"id":"{id}","itemId":"item-1","body":"pack","done":{done},"position":0,"deletedAt":{},"version":1}}"#,
+            deleted_at.map(|ms| ms.to_string()).unwrap_or_else(|| "null".to_string()),
+        )
+    }
+
+    #[test]
+    fn microtask_affordance_json_is_the_core_rule_verbatim() {
+        assert_eq!(microtask_affordance_json("[]"), r#"{"kind":"break"}"#);
+        let steps = format!("[{}]", step_json("a", false, None));
+        assert_eq!(
+            microtask_affordance_json(&steps),
+            r#"{"kind":"rewrite","undoneCount":1}"#,
+        );
+    }
+
+    #[test]
+    fn the_backend_picker_doors_are_the_core_rules_verbatim() {
+        assert_eq!(backend_auto_selection(), skills::AUTO_SELECTION);
+        assert_eq!(
+            fallback_backend_id(r#"["a","b"]"#, "a").as_deref(),
+            Some("b"),
+        );
+        assert_eq!(fallback_backend_id(r#"["cloud"]"#, "cloud"), None);
+        assert_eq!(
+            resolve_backend_selection(Some("retired".to_string()), r#"["cloud"]"#),
+            skills::AUTO_SELECTION,
+        );
+        assert_eq!(resolve_backend_selection(None, r#"["cloud"]"#), skills::AUTO_SELECTION);
+    }
+
+    #[test]
+    fn the_grill_review_predicates_are_the_core_rules_verbatim() {
+        let undone = format!("[{}]", step_json("a", false, None));
+        assert!(grill_would_strand_plan("fog_remains", &undone));
+        assert!(!grill_would_strand_plan("fog_remains", "[]"));
+        assert!(!grill_would_strand_plan("resolved", &undone));
+        assert!(!grill_would_strand_plan("not-a-verdict", &undone));
+
+        assert_eq!(grill_plan_replacement_label(&undone), "Also delete 1 unfinished step");
+
+        assert!(grill_demotes_from_frontier("fog_remains", "ready"));
+        assert!(!grill_demotes_from_frontier("fog_remains", "triage"));
+        assert!(!grill_demotes_from_frontier("resolved", "ready"));
+        assert!(!grill_demotes_from_frontier("fog_remains", "not-a-stage"));
+
+        assert_eq!(grill_frontier_demotion_warning(), skills::FRONTIER_DEMOTION_WARNING);
     }
 
     #[test]

@@ -241,4 +241,6 @@ private fun triageItemFixture(
     source = null,
     createdAt = 0,
     canMarkDone = canMarkDone,
+    canGrill = true,
+    hasGrillDraft = false,
 )

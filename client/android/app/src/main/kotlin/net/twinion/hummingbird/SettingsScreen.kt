@@ -39,6 +39,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.NetworkStatus
+import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.theme.ThemePreference
 import net.twinion.hummingbird.ui.theme.Amber600
 import net.twinion.hummingbird.ui.theme.Moss600
@@ -198,6 +199,24 @@ fun SettingsScreen(
                             }
                         }
                     }
+                }
+            }
+
+            SectionTitle("Skills backend")
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        "Which runner a Grill turn or a microtask run is attempted against.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    BackendPicker(context = context)
                 }
             }
 
@@ -371,6 +390,52 @@ private fun DeadLetterRow(entry: MobileDeadLetterRecord) {
         }
     }
 }
+
+/** #274's picker, landed here at #539 — Auto plus every entry
+ * [BackendPreference.REGISTRY] carries (this slice's one, the cloud
+ * runner). The stored selection is [BackendPreference]'s own
+ * degrade-to-Auto rule ([uniffi.hummingbird_ffi_mobile.resolveBackendSelection],
+ * sunk to the core so a stale pin naming a retired tier never renders a
+ * selection this picker cannot label. */
+@Composable
+private fun BackendPicker(context: android.content.Context) {
+    var selection by remember { mutableStateOf(BackendPreference.read(context)) }
+
+    fun select(next: String) {
+        BackendPreference.write(context, next)
+        selection = next
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        BackendOption(
+            label = "Auto",
+            selected = selection == BackendPreference.AUTO,
+            onClick = { select(BackendPreference.AUTO) },
+        )
+        for (entry in BackendPreference.REGISTRY) {
+            BackendOption(
+                label = backendLabel(entry),
+                selected = selection == entry,
+                onClick = { select(entry) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun BackendOption(label: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick) { Text(label) }
+    }
+}
+
+/** The picker's own rendering, never a decision — [BackendPreference
+ * .REGISTRY] carries ids only, and the label a picker shows for one is
+ * per-client wording, the same line ADR-0025's verdict table already draws
+ * for `rules/operators.ts`'s `OPERATOR_LABELS`. */
+private fun backendLabel(id: String): String = if (id == "cloud") "Cloud runner" else id
 
 @Composable
 private fun TokenEntry(onSave: (String) -> Unit) {

@@ -40,6 +40,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.MetaProblems
+import uniffi.hummingbird_ffi_mobile.MobileMicrotaskAffordance
+import uniffi.hummingbird_ffi_mobile.MobileSkillRunState
+import uniffi.hummingbird_ffi_mobile.itemCanGrill
+import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
+import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 
 // One item, in full (#141's last slice, ADR-0027) — where a tapped
 // `item-threshold/v1` notification lands, because a state source's alert is
@@ -67,14 +72,19 @@ fun ItemDetailScreen(
     itemId: String,
     syncTick: Int = 0,
     onBack: () -> Unit,
+    onGrill: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val viewModel: ItemDetailViewModel =
         viewModel(factory = ItemDetailViewModel.factory(context))
+    val microtaskViewModel: MicrotaskViewModel =
+        viewModel(factory = MicrotaskViewModel.factory(context))
     val state by viewModel.state.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
     val draft by viewModel.draft.collectAsState()
+    val microtaskRun by microtaskViewModel.run.collectAsState()
+    val hasGrillDraft by viewModel.hasGrillDraft.collectAsState()
     val dark = isSystemInDarkTheme()
     // Saveable: an Activity recreation mid-question must not silently
     // answer it.
@@ -159,6 +169,18 @@ fun ItemDetailScreen(
                                     viewModel.ack(itemId, alertId, System.currentTimeMillis())
                                 }
                             },
+                            onGrill = { onGrill(itemId) },
+                            hasGrillDraft = hasGrillDraft,
+                            microtaskRun = microtaskRun,
+                            onMicrotaskRun = { replace, grain ->
+                                // `model` is `null` for every selection
+                                // this slice's one-entry backend registry
+                                // (Settings' picker, `BackendPreference`)
+                                // can resolve to — see that object's own
+                                // header for why a second tier changes
+                                // nothing here when it lands.
+                                microtaskViewModel.run(itemId, replace, grain, null)
+                            },
                         )
                     } else {
                         EditBody(
@@ -202,6 +224,10 @@ private fun ReadBody(
     onEdit: () -> Unit,
     onAct: (String) -> Unit,
     onAck: (String) -> Unit,
+    onGrill: () -> Unit,
+    hasGrillDraft: Boolean,
+    microtaskRun: MobileSkillRunState,
+    onMicrotaskRun: (replace: Boolean, grain: Long?) -> Unit,
 ) {
     if (record.isArchived) {
         // Honesty over reassurance: history is readable here, and says so.
@@ -385,9 +411,109 @@ private fun ReadBody(
         }
     }
 
+    // Live (#539): `itemCanGrill` is the seam's own rule, the same one
+    // `TriageItemRecord.canGrill` reads per row.
+    if (itemCanGrill(record.stage)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onGrill) {
+                Text(itemGrillButtonLabel(hasGrillDraft))
+            }
+        }
+    }
+
+    // #539's microtask affordance: an *applied result*, not a re-derived
+    // one — `record.microtaskAffordance` is `null` for a non-editable
+    // (archived) item and `Break`/`Rewrite` otherwise, decided by
+    // `hummingbird_core::decisions::skills::microtask_affordance`. This
+    // block offers nothing of its own eligibility logic.
+    record.microtaskAffordance?.let { affordance ->
+        MicrotaskSection(
+            affordance = affordance,
+            run = microtaskRun,
+            onRun = onMicrotaskRun,
+        )
+    }
+
     if (record.isEditable) {
         OutlinedButton(onClick = onEdit) {
             Text("Edit")
+        }
+    }
+}
+
+/** The microtask affordance's own render — narrates as it streams, and a
+ * decline is shown verbatim (#539's own AC), never paraphrased: #307 made
+ * the seam's decline prose-only, with no reason code, precisely so nothing
+ * string-matches it, here as on the web. */
+@Composable
+private fun MicrotaskSection(
+    affordance: MobileMicrotaskAffordance,
+    run: MobileSkillRunState,
+    onRun: (replace: Boolean, grain: Long?) -> Unit,
+) {
+    var grain by rememberSaveable { mutableStateOf(2L) }
+    val running = run is MobileSkillRunState.Running
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                enabled = !running,
+                onClick = {
+                    when (affordance) {
+                        MobileMicrotaskAffordance.Break -> onRun(false, null)
+                        is MobileMicrotaskAffordance.Rewrite -> onRun(true, grain)
+                    }
+                },
+            ) {
+                Text(
+                    when (affordance) {
+                        MobileMicrotaskAffordance.Break -> "Break into steps"
+                        is MobileMicrotaskAffordance.Rewrite ->
+                            "Rewrite ${affordance.undoneCount} step" +
+                                if (affordance.undoneCount == 1u) "" else "s"
+                    },
+                )
+            }
+        }
+
+        if (run !is MobileSkillRunState.Idle) {
+            val messages = when (run) {
+                MobileSkillRunState.Idle -> emptyList()
+                is MobileSkillRunState.Running -> run.messages
+                is MobileSkillRunState.Done -> run.messages
+                is MobileSkillRunState.Declined -> run.messages
+            }
+            Narration(messages)
+
+            val stamp = skillRunStampLabel(run)
+            if (stamp != null) {
+                Text(stamp, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            if (run is MobileSkillRunState.Done && run.note.isNotEmpty()) {
+                Text(run.note, style = MaterialTheme.typography.bodyMedium)
+            }
+
+            // Verbatim, unprefixed, unbranched.
+            if (run is MobileSkillRunState.Declined) {
+                Text(run.reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Narration(messages: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        for (message in messages) {
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

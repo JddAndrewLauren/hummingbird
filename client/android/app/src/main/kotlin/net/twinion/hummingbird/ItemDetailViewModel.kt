@@ -144,6 +144,9 @@ class ItemDetailViewModel(
     private val ackFn: suspend (alertId: String, nowMs: Long) -> Unit,
     private val editFn: suspend (itemId: String, edit: ItemEdit, nowMs: Long) -> Unit,
     private val syncFn: suspend () -> Unit,
+    /** #539's "Grill me"/"Resume grill" label source — whether this item
+     * already carries a saved Grill draft. */
+    private val hasGrillDraftFn: suspend (itemId: String) -> Boolean,
     /** The core's blank rule, injected rather than called directly so a
      * plain JVM test can drive this ViewModel — there is no native library
      * in that process (`CaptureViewModel`'s own doc). The production
@@ -163,6 +166,9 @@ class ItemDetailViewModel(
     /** The edit in progress, or null in read mode. */
     private val _draft = MutableStateFlow<ItemDraft?>(null)
     val draft: StateFlow<ItemDraft?> = _draft.asStateFlow()
+
+    private val _hasGrillDraft = MutableStateFlow(false)
+    val hasGrillDraft: StateFlow<Boolean> = _hasGrillDraft.asStateFlow()
 
     /** What is wrong with the draft's two free-text dates right now, by
      * field — the core's answer, shown next to the field it belongs to. */
@@ -207,6 +213,7 @@ class ItemDetailViewModel(
             fetchFn(itemId, nowMs)?.let {
                 _state.value = ItemDetailState.Loaded(it)
                 _statusLine.value = null
+                _hasGrillDraft.value = hasGrillDraftFn(itemId)
                 return
             }
             syncFn()
@@ -215,6 +222,7 @@ class ItemDetailViewModel(
                 ?.let { ItemDetailState.Loaded(it) }
                 ?: ItemDetailState.NotSynced
             _statusLine.value = null
+            _hasGrillDraft.value = afterSync?.let { hasGrillDraftFn(itemId) } ?: false
         } catch (error: Exception) {
             _state.value = ItemDetailState.NotSynced
             _statusLine.value = "Couldn't read this item — ${error.message}"
@@ -304,6 +312,9 @@ class ItemDetailViewModel(
                 },
                 editFn = { itemId, edit, nowMs ->
                     CoreHolder.get(context.applicationContext).editItem(itemId, edit, nowMs)
+                },
+                hasGrillDraftFn = { itemId ->
+                    CoreHolder.get(context.applicationContext).hasGrillDraft(itemId)
                 },
                 // `"push"`, not `"timer"`: a deep link landing during a
                 // backoff window must still be able to fetch its row —

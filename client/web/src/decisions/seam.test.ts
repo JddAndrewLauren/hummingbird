@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  backendAutoSelectionFromCore,
   canSubmitCapture,
   declineForResponseFromCore,
   declineForTransportFromCore,
@@ -9,10 +10,16 @@ import {
   ENERGIES,
   energyOptionsFromCore,
   FACETS,
+  fallbackBackendIdFromCore,
   frontierAxesFromCore,
   githubConstantsFromCore,
+  grillDemotesFromFrontierFromCore,
+  grillFrontierDemotionWarningFromCore,
+  grillPlanReplacementLabelFromCore,
+  grillWouldStrandPlanFromCore,
   initDecisions,
   kimiConstantsFromCore,
+  microtaskAffordanceFromCore,
   noTerminalLineDeclineFromCore,
   noTokenDeclineFromCore,
   orderFrontier,
@@ -21,6 +28,7 @@ import {
   raceConstantsFromCore,
   reachabilityConstantsFromCore,
   resetDecisionsForTest,
+  resolveBackendSelectionFromCore,
   paneBandOrderFromCore,
   paneQuestionOrderFromCore,
   SIZES,
@@ -31,8 +39,17 @@ import {
   weekendConstantsFromCore,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
+import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry } from "../skills/backend-registry";
+import { readBackendSelection } from "../skills/backend-selection";
 import { declineForResponse, declineForTransport, NO_TERMINAL_LINE, NO_TOKEN } from "../skills/decline";
 import { OUTSIDE_SCHEMA } from "../skills/grill-turn-state";
+import { microtaskAffordance } from "../skills/microtask-affordance";
+import {
+  demotesFromFrontier,
+  FRONTIER_DEMOTION_WARNING,
+  planReplacementLabel,
+  wouldStrandPlan,
+} from "../screens/grill-review";
 import { BAND_ORDER, QUESTION_ORDER } from "../screens/questions/contract";
 import {
   BINDING_KEY,
@@ -81,7 +98,7 @@ import {
 } from "../screens/vacation-pane/vacation";
 import { DEVICE_ZONE } from "../screens/questions/zone-bridge";
 import { loadDecisionsForTest } from "../test/wasm-setup";
-import type { TaskItemDTO } from "../store/protocol";
+import type { StepDTO, TaskItemDTO } from "../store/protocol";
 
 // The node half of "vitest executes the seam in both environments" — this
 // file runs under the default `environment: "node"`, and
@@ -180,6 +197,79 @@ describe("the skills lane's literal decline prose, pinned against the core", () 
     expect(declineForResponse(401)).toBe(declineForResponseFromCore(401));
     expect(declineForResponse(503)).toBe(declineForResponseFromCore(503));
     expect(declineForTransport("boom")).toBe(declineForTransportFromCore("boom"));
+  });
+});
+
+// M4 (#539): the microtask affordance, the backend picker's tier fallback
+// and degrade-to-Auto rule, and the Grill review card's predicates —
+// `microtask-affordance.ts`, `backend-registry.ts`/`backend-selection.ts`
+// and `grill-review.ts` are now thin wrappers over the seam. `AUTO_SELECTION`
+// and `FRONTIER_DEMOTION_WARNING` stay literal TS for the same
+// module-evaluation-order reason the three decline constants above do
+// (`backend-registry.ts`'s and `grill-review.ts`'s own headers).
+describe("the microtask affordance, the backend fallback and the Grill review predicates, out of the core", () => {
+  function step(overrides: Partial<StepDTO> = {}): StepDTO {
+    return {
+      id: "step-1",
+      itemId: "item-1",
+      body: "pack",
+      done: false,
+      position: 0,
+      deletedAt: null,
+      version: 1,
+      ...overrides,
+    };
+  }
+
+  it("microtaskAffordance answers out of the core", () => {
+    expect(microtaskAffordance([])).toEqual(microtaskAffordanceFromCore([]));
+    const steps = [step()];
+    expect(microtaskAffordance(steps)).toEqual(microtaskAffordanceFromCore(steps));
+  });
+
+  it("AUTO_SELECTION matches the core's sentinel", () => {
+    expect(AUTO_SELECTION).toBe(backendAutoSelectionFromCore());
+  });
+
+  it("fallbackEntry answers out of the core's fallback_backend_id", () => {
+    const registry = [
+      { id: "a", label: "A", model: null, endpoint: "/a", connectTimeoutMs: 1 },
+      { id: "b", label: "B", model: null, endpoint: "/b", connectTimeoutMs: 1 },
+    ];
+    expect(fallbackEntry(registry, "a")?.id).toBe(fallbackBackendIdFromCore(["a", "b"], "a"));
+    expect(fallbackEntry(BACKEND_REGISTRY, "cloud")).toBe(null);
+    expect(fallbackBackendIdFromCore(["cloud"], "cloud")).toBeUndefined();
+  });
+
+  it("readBackendSelection answers out of the core's resolve_backend_selection", () => {
+    const storage = {
+      store: { "hb.backend-selection": "retired" } as Record<string, string>,
+      getItem(key: string) {
+        return this.store[key] ?? null;
+      },
+      setItem(key: string, value: string) {
+        this.store[key] = value;
+      },
+      removeItem(key: string) {
+        delete this.store[key];
+      },
+    };
+    expect(readBackendSelection(storage, BACKEND_REGISTRY)).toBe(
+      resolveBackendSelectionFromCore("retired", ["cloud"]),
+    );
+  });
+
+  it("wouldStrandPlan/planReplacementLabel/demotesFromFrontier answer out of the core", () => {
+    const steps = [step()];
+    expect(wouldStrandPlan("fog_remains", steps)).toBe(grillWouldStrandPlanFromCore("fog_remains", steps));
+    expect(planReplacementLabel(steps)).toBe(grillPlanReplacementLabelFromCore(steps));
+    expect(demotesFromFrontier("fog_remains", "ready")).toBe(
+      grillDemotesFromFrontierFromCore("fog_remains", "ready"),
+    );
+  });
+
+  it("FRONTIER_DEMOTION_WARNING matches the core's words", () => {
+    expect(FRONTIER_DEMOTION_WARNING).toBe(grillFrontierDemotionWarningFromCore());
   });
 });
 
