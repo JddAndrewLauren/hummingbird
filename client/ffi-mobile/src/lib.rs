@@ -11,7 +11,11 @@
 //! counters the proof screen shows. M1-5 (#503) added the free
 //! [`can_submit_capture`] door onto [`hummingbird_core::decisions`] and
 //! [`MobileTaskHost::capture`] — `CaptureActivity`'s whole surface, title
-//! only, no capture-meta fields (out of scope until a later screen). M2
+//! only, no capture-meta fields (out of scope until a later screen). M3/#529
+//! widened [`MobileTaskHost::capture`] to take a whole [`CaptureDraft`] and
+//! added the free [`capture_form_meta`] door, a pure expose over decisions
+//! already sunk at M1-2/#500: no new core logic, just the rest of the
+//! capture box's field set reaching the same seam. M2
 //! (#141, ADR-0012) adds the notification lane's client side:
 //! [`MobileTaskHost::alerts`]/[`MobileTaskHost::alert`] as decided
 //! [`AlertRecord`]s, [`MobileTaskHost::ack_alert`] (the Ack gesture — swipe
@@ -103,6 +107,158 @@ pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> MetaProble
         deadline: problems.deadline,
         scheduled_date: problems.scheduled_date,
     }
+}
+
+/// [`hummingbird_core::decisions::vocabulary::VocabOption`], mirrored as a
+/// `uniffi::Record` — one `<select>`-equivalent option's wire value and
+/// display label, crossed to Kotlin so no size/energy word is ever a
+/// literal in `CaptureScreen`'s source (M3/#529's own structural-test
+/// criterion).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct VocabOption {
+    pub value: String,
+    pub label: String,
+}
+
+fn to_vocab_option(option: hummingbird_core::decisions::vocabulary::VocabOption) -> VocabOption {
+    VocabOption {
+        value: option.value,
+        label: option.label,
+    }
+}
+
+/// The capture form's whole metadata bundle — sizes, energies and the
+/// suggested (open-vocabulary) contexts — as one applied result
+/// (M3/#529). This is a *per-gesture* free door, not a per-row one (the
+/// module doc's asymmetry rule): `CaptureScreen` reads it once, on mount,
+/// never once per row or per keystroke, so a single JNI crossing here is
+/// the whole cost this ever incurs.
+///
+/// `suggestedContexts` is not a closed vocabulary — CONTEXT.md: "the set of
+/// places a person works is theirs" — so it is offered only as suggestions;
+/// [`CaptureDraft::context`] accepts any string, including one absent from
+/// this list.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CaptureFormMeta {
+    pub sizes: Vec<VocabOption>,
+    pub energies: Vec<VocabOption>,
+    pub suggested_contexts: Vec<String>,
+}
+
+/// One project, as the details disclosure's Project picker needs it —
+/// [`MobileTaskHost::projects`]'s row, carrying only what a picker reads
+/// (see that method's own doc for why not the whole [`hummingbird_domain::Project`]).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileProject {
+    pub id: String,
+    pub name: String,
+}
+
+/// [`MobileTaskHost::capture`]'s form metadata read — the vocabulary and
+/// context suggestions `CaptureScreen` needs to render its fields, with no
+/// vocabulary literal of its own. Free rather than a method on
+/// [`MobileTaskHost`]: it needs no durable state, the same reason
+/// [`can_submit_capture`] and [`capture_meta_problems`] are free functions.
+#[uniffi::export]
+pub fn capture_form_meta() -> CaptureFormMeta {
+    CaptureFormMeta {
+        sizes: hummingbird_core::decisions::vocabulary::size_options()
+            .into_iter()
+            .map(to_vocab_option)
+            .collect(),
+        energies: hummingbird_core::decisions::vocabulary::energy_options()
+            .into_iter()
+            .map(to_vocab_option)
+            .collect(),
+        suggested_contexts: hummingbird_core::decisions::vocabulary::CONTEXTS
+            .iter()
+            .map(|context| context.to_string())
+            .collect(),
+    }
+}
+
+/// [`frontier::priority_rank`], the mobile twin of `ffi-web::decisions::
+/// priority_rank` — review finding on #529's own PR (note 5): `PriorityRow`
+/// (`CaptureActivity.kt`) keeps its five labels literal per ADR-0025's own
+/// verdict table (`priority.ts`'s labels stay client-side TS), but that row
+/// of the table records the *rank* itself as pinned against the core by
+/// `seam.test.ts`'s `priorityRankFromCore`, and the Kotlin literal order
+/// (`1,2,3,4,0`) had no equivalent pin. This free door plus
+/// `the_priority_row_order_matches_priority_rank` below is that pin's
+/// mobile half: a plain JVM test cannot call the generated JNI binding
+/// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
+/// process), so the guard lives here, on the Rust side of the seam, rather
+/// than in Kotlin — if `priority_rank`'s ordering ever moves, this test
+/// breaks and names the Kotlin literal that needs updating to match.
+#[uniffi::export]
+pub fn priority_rank(raw: i64) -> i64 {
+    frontier::priority_rank(raw)
+}
+
+/// The capture box's destination choice — Triage (the default funnel entry)
+/// or Ready (skip the funnel because the item is already decided). A closed
+/// two-value vocabulary, so a `uniffi::Enum` rather than a string: unlike
+/// size/energy/context, this one is never open, and there is no third
+/// destination capture can name (`Stage`'s other four values are reachable
+/// only by later action, never at mint time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CaptureDestination {
+    Triage,
+    Ready,
+}
+
+/// The capture box's whole draft, as the form collects it (M3/#529) — the
+/// mobile twin of [`hummingbird_core::CaptureOptions`] plus the title and
+/// the destination [`MobileTaskHost::capture`] needs
+/// [`hummingbird_core::Core::capture`]'s own `stage` argument for.
+///
+/// Every optional field crosses as a plain `String`, `""` meaning "not
+/// set" — the form's own resting state — never a nested `Option`: capture
+/// is a create, so there is no stored value a "clear" could mean anything
+/// different from "absent" for (the same reasoning
+/// [`hummingbird_core::CaptureOptions`]'s own doc gives, carried across the
+/// seam). `size`/`energy` cross as their wire vocabulary word; an
+/// unrecognised, non-empty value is refused at
+/// [`MobileTaskHost::capture`] rather than silently treated as unset, the
+/// same "reject before the seam" rule [`FieldPatch::to_vocabulary`] already
+/// applies to the item-edit form.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CaptureDraft {
+    pub title: String,
+    pub destination: CaptureDestination,
+    pub size: String,
+    pub energy: String,
+    pub context: String,
+    pub description: String,
+    pub project_id: String,
+    /// The priority `Select`'s raw value (`""`..`"4"`) — resolved through
+    /// [`hummingbird_core::decisions::capture::priority_from_select`],
+    /// never re-derived here.
+    pub priority: String,
+    pub deadline: String,
+    pub scheduled_date: String,
+}
+
+/// Resolves one optional vocabulary field: `""` is "not set", anything else
+/// must parse or the whole capture is refused before it ever reaches the
+/// core — mirrors [`FieldPatch::to_vocabulary`]'s "reject before the seam"
+/// rule for the item-edit form.
+fn parse_optional_vocabulary<T>(
+    raw: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<T>, String> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    parse(raw)
+        .map(Some)
+        .ok_or_else(|| format!("unrecognised value: {raw}"))
+}
+
+/// A free-text optional field: `""` is "not set", anything else is sent
+/// verbatim.
+fn some_if_present(raw: &str) -> Option<String> {
+    (!raw.is_empty()).then(|| raw.to_string())
 }
 
 /// [`decisions::TapTarget`], mirrored as a `uniffi::Enum` for
@@ -914,26 +1070,89 @@ impl MobileTaskHost {
         map_run_outcome(outcome)
     }
 
-    /// Captures `title` — `CaptureActivity`'s whole surface (M1-5/#503).
-    /// **Local-first** (#128's own criterion): reaches
+    /// Captures a whole [`CaptureDraft`] — `CaptureScreen`'s full field set
+    /// (M3/#529), widened from M1-5/#503's title-only surface. **Still
+    /// local-first** (#128's own criterion): reaches
     /// [`hummingbird_core::Core::capture`], which durably enqueues via
     /// `SyncCycle::enqueue` and overlays the optimistic [`Item`] before any
     /// transport is ever touched, so the item exists in the local mirror the
-    /// instant this returns — sync or no sync, online or offline. Always
-    /// captures into `Stage::Triage` with every [`CaptureOptions`] field
-    /// absent: raw text only, no capture-meta surface in M1 (say so at every
-    /// call site rather than only here). Mints its own seed
-    /// ([`mint_mutation_seed`]) since the host supplies only `title`/`now_ms`.
-    pub async fn capture(&self, title: String, now_ms: i64) -> Result<String, MobileCaptureError> {
+    /// instant this returns — sync or no sync, online or offline.
+    ///
+    /// `draft.destination` picks [`hummingbird_core::Core::capture`]'s
+    /// `stage` argument; every other field resolves into a
+    /// [`CaptureOptions`] the same way [`MobileTaskHost::edit_item`]
+    /// resolves an [`ItemEdit`] into a `TriagePatch` — an unrecognised
+    /// `size`/`energy` word is refused here, before the core is ever
+    /// reached, rather than silently treated as absent. Mints its own seed
+    /// ([`mint_mutation_seed`]) since the host supplies only
+    /// `draft`/`now_ms`.
+    ///
+    /// This is a pure expose (#529's own framing): every decision here —
+    /// what counts as a valid date, what a priority `"0"` means, which
+    /// words are valid size/energy — already lives in
+    /// `hummingbird_core::decisions`; this method only assembles their
+    /// answers into the one [`CaptureOptions`] the core's own `capture`
+    /// takes. `Core::capture` itself still refuses no title (that stays
+    /// [`can_submit_capture`]'s job, called before this ever is).
+    pub async fn capture(
+        &self,
+        draft: CaptureDraft,
+        now_ms: i64,
+    ) -> Result<String, MobileCaptureError> {
+        let stage = match draft.destination {
+            CaptureDestination::Triage => Stage::Triage,
+            CaptureDestination::Ready => Stage::Ready,
+        };
+        let size = parse_optional_vocabulary(&draft.size, Size::parse)
+            .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
+        let energy = parse_optional_vocabulary(&draft.energy, Energy::parse)
+            .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
+        let options = CaptureOptions {
+            size,
+            energy,
+            context: some_if_present(&draft.context),
+            description: some_if_present(&draft.description),
+            priority: hummingbird_core::decisions::capture::priority_from_select(&draft.priority),
+            project_id: some_if_present(&draft.project_id),
+            deadline: some_if_present(&draft.deadline),
+            scheduled_date: some_if_present(&draft.scheduled_date),
+        };
+
         let seed = mint_mutation_seed("capture", now_ms);
         let mut inner = self.inner.lock().await;
         inner
             .core
-            .capture(&seed, title, Stage::Triage, now_ms, CaptureOptions::default())
+            .capture(&seed, draft.title, stage, now_ms, options)
             .await
             .map_err(|error| MobileCaptureError::CaptureFailed {
                 detail: error.to_string(),
             })
+    }
+
+    /// Every live project — the details disclosure's Project picker's read
+    /// (review finding on #529's own PR): the brief's "one new door" clause
+    /// governs [`capture_form_meta`]'s vocabulary/context bundle, not this
+    /// one, and this read needs the live mirror ([`hummingbird_core::Core::projects`]),
+    /// which a free function cannot reach. Shaped like [`MobileTaskHost::alerts`]
+    /// — a plain state-bearing read, not a `"busy"`-wrapped one, since a
+    /// checked-out mid-poll host still answers a synchronous method call
+    /// truthfully (`Core::projects`'s own doc: "id order, for a stable list
+    /// a caller can diff against its own").
+    ///
+    /// Only `id`/`name` cross, not the whole [`hummingbird_domain::Project`] row: a picker reads
+    /// nothing else, and `ffi-web::task_host::TaskHostCore::projects`
+    /// crosses the full row only because the web's `ProjectDTO` already
+    /// carries the rest for other callers (the frontier's "grouped by
+    /// project" display) that this seam has no equivalent of yet.
+    pub async fn projects(&self) -> Vec<MobileProject> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .projects()
+            .into_iter()
+            .map(|project| MobileProject { id: project.id, name: project.name })
+            .collect()
     }
 
     /// Drains queued [`CoreEvent`]s (today: `credential_needed`) — a
@@ -1207,6 +1426,25 @@ fn reqwest_client() -> reqwest::Client {
 mod tests {
     use super::*;
 
+    /// A [`CaptureDraft`] with only `title` set — every M1-5-era test below
+    /// pins behaviour that predates the rest of the field set, so this
+    /// keeps those cases unchanged rather than growing nine-field literals
+    /// that have nothing to do with what each test actually asserts.
+    fn title_only_draft(title: &str) -> CaptureDraft {
+        CaptureDraft {
+            title: title.to_string(),
+            destination: CaptureDestination::Triage,
+            size: String::new(),
+            energy: String::new(),
+            context: String::new(),
+            description: String::new(),
+            project_id: String::new(),
+            priority: String::new(),
+            deadline: String::new(),
+            scheduled_date: String::new(),
+        }
+    }
+
     #[test]
     fn exported_stub_matches_core_api_version() {
         assert_eq!(core_api_version(), hummingbird_core::API_VERSION);
@@ -1317,7 +1555,7 @@ mod tests {
         .await
         .unwrap();
 
-        let id = host.capture("buy milk".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
         assert!(!id.is_empty());
         assert_eq!(host.queue_depth().await, 1);
     }
@@ -1337,8 +1575,8 @@ mod tests {
         .await
         .unwrap();
 
-        let a = host.capture("first".to_string(), 5_000).await.unwrap();
-        let b = host.capture("second".to_string(), 5_000).await.unwrap();
+        let a = host.capture(title_only_draft("first"), 5_000).await.unwrap();
+        let b = host.capture(title_only_draft("second"), 5_000).await.unwrap();
         assert_ne!(a, b);
         assert_eq!(host.queue_depth().await, 2);
     }
@@ -1375,7 +1613,224 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(host.capture("   ".to_string(), 1_000).await.is_ok());
+        assert!(host.capture(title_only_draft("   "), 1_000).await.is_ok());
+    }
+
+    // ------------------------------------------------------------- M3 (#529)
+
+    /// [`capture_form_meta`] is a pure expose over
+    /// `hummingbird_core::decisions::vocabulary` (#500) — this pins that it
+    /// hands across the real values rather than some other list, so a
+    /// vocabulary rename (ADR-0024's own history: `short` -> `normal`)
+    /// cannot silently stop reaching Kotlin.
+    #[test]
+    fn capture_form_meta_carries_the_real_vocabulary_values() {
+        let meta = capture_form_meta();
+        assert_eq!(
+            meta.sizes,
+            vec![
+                VocabOption { value: "quick".to_string(), label: "Quick".to_string() },
+                VocabOption { value: "normal".to_string(), label: "Normal".to_string() },
+                VocabOption { value: "deep".to_string(), label: "Deep".to_string() },
+            ],
+        );
+        assert_eq!(
+            meta.energies,
+            vec![
+                VocabOption { value: "low".to_string(), label: "Low".to_string() },
+                VocabOption { value: "medium".to_string(), label: "Medium".to_string() },
+                VocabOption { value: "high".to_string(), label: "High".to_string() },
+            ],
+        );
+        assert_eq!(
+            meta.suggested_contexts,
+            vec!["@home", "@computer", "@phone", "@errands", "@garden"],
+        );
+    }
+
+    /// [`MobileTaskHost::projects`] on a mirror that has never synced
+    /// anything — the same "empty is a real, honest answer" case
+    /// `ffi-web::task_host`'s own
+    /// `a_fresh_host_reports_no_blocked_items_and_no_steps`-adjacent
+    /// `projects()` test pins on the web seam.
+    #[tokio::test]
+    async fn projects_on_a_fresh_mirror_is_empty_not_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-projects-empty");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(host.projects().await, Vec::<MobileProject>::new());
+    }
+
+    /// [`priority_rank`] pass-through, pinned against the core rule — the
+    /// same shape `ffi-web::decisions`'s own
+    /// `priority_rank_binding_is_the_core_rule_verbatim` pins on the web
+    /// side.
+    #[test]
+    fn priority_rank_binding_is_the_core_rule_verbatim() {
+        for raw in [0, 1, 2, 3, 4, 5, -1] {
+            assert_eq!(
+                priority_rank(raw),
+                hummingbird_core::decisions::frontier::priority_rank(raw),
+                "{raw} disagreed across the binding",
+            );
+        }
+    }
+
+    /// `CaptureActivity.kt`'s `PriorityRow` hardcodes its display order as
+    /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
+    /// JVM test cannot call the generated JNI binding directly
+    /// (`priority_rank`'s own doc). This is that pin's other half: if
+    /// `decisions::frontier::priority_rank`'s ordering ever changes, this
+    /// test breaks and names the Kotlin literal (`PriorityRow`,
+    /// `CaptureActivity.kt`) that must change to match.
+    #[test]
+    fn the_priority_row_order_matches_priority_rank() {
+        let mut wire_values = vec![0i64, 1, 2, 3, 4];
+        wire_values.sort_by_key(|raw| priority_rank(*raw));
+        assert_eq!(
+            wire_values,
+            vec![1, 2, 3, 4, 0],
+            "PriorityRow's hardcoded Kotlin order (CaptureActivity.kt) must match this",
+        );
+    }
+
+    /// The whole field set reaches the captured [`Item`] in one mutation —
+    /// the mobile twin of `ffi-web::task_host`'s
+    /// `everything_the_capture_box_can_set_reaches_the_item_in_one_capture_mutation`.
+    #[tokio::test]
+    async fn a_full_draft_reaches_the_captured_item_in_one_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-full-draft");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let draft = CaptureDraft {
+            title: "renew the passport".to_string(),
+            destination: CaptureDestination::Ready,
+            size: "deep".to_string(),
+            energy: "high".to_string(),
+            context: "@computer".to_string(),
+            description: "before the trip".to_string(),
+            project_id: "proj-1".to_string(),
+            priority: "2".to_string(),
+            deadline: "2026-09-01".to_string(),
+            scheduled_date: "2026-08-30".to_string(),
+        };
+        let id = host.capture(draft, 1_000).await.unwrap();
+
+        let inner = host.inner.lock().await;
+        let item = inner.core.frontier().into_iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.stage, Stage::Ready);
+        assert_eq!(item.size, Some(Size::Deep));
+        assert_eq!(item.energy, Some(Energy::High));
+        assert_eq!(item.context, Some("@computer".to_string()));
+        assert_eq!(item.description, Some("before the trip".to_string()));
+        assert_eq!(item.project_id, Some("proj-1".to_string()));
+        assert_eq!(item.priority, 2);
+        assert_eq!(item.deadline, Some("2026-09-01".to_string()));
+        assert_eq!(item.scheduled_date, Some("2026-08-30".to_string()));
+    }
+
+    /// `destination: Triage` never reaches [`Core::frontier`] (Triage is
+    /// filtered out of it, the same fact
+    /// `capture_is_durable_before_any_network_is_touched` already leans on)
+    /// — proved instead through the queue depth plus a `Ready` capture
+    /// alongside it landing on the frontier, so both arms of the enum are
+    /// pinned in one test.
+    #[tokio::test]
+    async fn destination_picks_the_captured_items_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-destination");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        host.capture(title_only_draft("stays in triage"), 1_000).await.unwrap();
+        let ready_id = host
+            .capture(
+                CaptureDraft { destination: CaptureDestination::Ready, ..title_only_draft("goes to ready") },
+                1_000,
+            )
+            .await
+            .unwrap();
+
+        let inner = host.inner.lock().await;
+        let frontier = inner.core.frontier();
+        assert_eq!(frontier.len(), 1, "only the Ready capture should be on the frontier");
+        assert_eq!(frontier[0].id, ready_id);
+        drop(inner);
+        assert_eq!(host.queue_depth().await, 2, "the Triage capture is still durably queued");
+    }
+
+    /// An unrecognised size/energy word is refused before
+    /// [`hummingbird_core::Core::capture`] is ever reached — the same
+    /// "reject before the seam" discipline `FieldPatch::to_vocabulary`
+    /// already applies to the item-edit form, proved here by the queue
+    /// depth staying at zero.
+    #[tokio::test]
+    async fn an_unrecognised_size_or_energy_word_is_refused_before_the_core_is_reached() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-bad-vocab");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let bad_size = CaptureDraft { size: "gigantic".to_string(), ..title_only_draft("x") };
+        assert!(host.capture(bad_size, 1_000).await.is_err());
+
+        let bad_energy = CaptureDraft { energy: "extreme".to_string(), ..title_only_draft("y") };
+        assert!(host.capture(bad_energy, 1_000).await.is_err());
+
+        assert_eq!(host.queue_depth().await, 0);
+    }
+
+    /// `"0"` is the priority `Select`'s own resting value — "not sent",
+    /// never a sent zero (`priority_from_select`'s own doc) — pinned here
+    /// at the seam so a capture with no priority chosen never asserts one.
+    #[tokio::test]
+    async fn priority_zero_is_not_sent_through_the_seam() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-priority-zero");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let draft = CaptureDraft {
+            destination: CaptureDestination::Ready,
+            priority: "0".to_string(),
+            ..title_only_draft("no priority chosen")
+        };
+        let id = host.capture(draft, 1_000).await.unwrap();
+
+        let inner = host.inner.lock().await;
+        let item = inner.core.frontier().into_iter().find(|item| item.id == id).unwrap();
+        // The server's own default, never an asserted zero — same check
+        // `hummingbird_core::decisions::capture`'s own doc gives.
+        assert_eq!(item.priority, 0);
     }
 
     // ------------------------------------------------------- M1-6 (#504)
@@ -1480,8 +1935,8 @@ mod tests {
         .await
         .unwrap();
 
-        let low_id = host.capture("low priority".to_string(), 1_000).await.unwrap();
-        let urgent_id = host.capture("urgent thing".to_string(), 1_000).await.unwrap();
+        let low_id = host.capture(title_only_draft("low priority"), 1_000).await.unwrap();
+        let urgent_id = host.capture(title_only_draft("urgent thing"), 1_000).await.unwrap();
 
         {
             let mut inner = host.inner.lock().await;
@@ -1534,7 +1989,7 @@ mod tests {
         .await
         .unwrap();
 
-        let id = host.capture("do it".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("do it"), 1_000).await.unwrap();
         {
             let mut inner = host.inner.lock().await;
             inner
@@ -1563,7 +2018,7 @@ mod tests {
         .await
         .unwrap();
 
-        let id = host.capture("whatever".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("whatever"), 1_000).await.unwrap();
         let result = host.act(id, "not-a-real-action".to_string(), 1_000).await;
         assert!(matches!(result, Err(MobileActError::ActFailed { .. })));
     }
@@ -1897,7 +2352,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let id = host.capture("buy milk".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
 
         host.edit_item(
             id.clone(),
