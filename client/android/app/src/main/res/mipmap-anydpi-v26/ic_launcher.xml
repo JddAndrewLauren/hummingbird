@@ -1,10 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- M0 placeholder mark: the brand's real app icon (light/dark plates) is
-     artwork in the design project's assets, not yet mirrored into the repo
-     — pulled with the Android UI kit before M1 styling (#141's folded-in
-     setup step). Until then: the ink-950 plate with the capture verb's
-     feather glyph, monochrome, matching the icon-concept's plate idea
-     without pretending to be the artwork. -->
+<!-- The real app icon (#528): the light plate from the repo's only brand
+     mark, client/web/public/app-icon-512.png, hand-ported into a foreground
+     bitmap inset in the adaptive-icon safe zone, on a solid sand-50
+     background matching the artwork's own plate. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />

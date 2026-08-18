@@ -1,4 +1,11 @@
 <resources>
-    <!-- ink-950: the dark plate / theme-color (#0f141a), tokens/colors.css -->
-    <color name="ic_launcher_background">#0f141a</color>
+    <!-- sand-50: the light plate, tokens/colors.css — the main launcher
+         icon's background, matching the light-plate bird artwork it wraps
+         (client/web/public/app-icon-512.png, the repo's only brand mark). -->
+    <color name="ic_launcher_background">#fdfaf6</color>
+    <!-- ink-950: the dark plate / theme-color (#0f141a), tokens/colors.css —
+         the capture alias's background, matching the dark-plate bird
+         artwork it wraps (client/web/src/design/brand/app-icon-dark-*.png),
+         so the two launcher entries are tellable apart at a glance. -->
+    <color name="ic_launcher_capture_background">#0f141a</color>
 </resources>
