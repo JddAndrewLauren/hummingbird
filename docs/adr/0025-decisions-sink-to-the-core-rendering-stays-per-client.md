@@ -35,6 +35,37 @@ those five stay literal TS in `seam.ts`, pinned against the core by
 `field-vocabulary.ts`'s own arrays. `frontier-facets.ts`'s `SIZES`/
 `ENERGIES` was the one surviving unpinned vocabulary copy the #500 review
 flagged; it is pinned now, not sunk further, for the reason just stated.
+**Amended 2026-08-18 (#533):** M4's gating probe fixed the mechanism for the
+standing-question panes, whose obstacle is unique — panes are **civil-date
+reasoning** and the core owns no tzdb. The answer is a **two-phase zone
+bridge**: the core names every `(zone, civil-date)` fact it needs, the host
+resolves them (`Intl` on web, `java.time` on Android), and the core ranks
+against the result; a zone the host cannot resolve crosses back **absent**,
+and what an absent fact means stays a core decision. One pane (waste) was
+sunk with it, and the verdict on whether two phases are tolerable gates
+#534 and the rest of the pane lane. See [The zone bridge, fixed by M4's
+probe](#the-zone-bridge-fixed-by-m4s-probe) below.
+**Amended 2026-08-18 (#538):** M4's probe sank the *skills runner lane*'s
+decision half — `decisions::skills` (`envelope`, `run`, `grill`, `decline`,
+`args`) — and rewired `client/web/src/skills/`'s six rule modules onto it in
+the same slice, so the phone could drive `POST /api/skills/run` without a
+second copy of any of it. Three things this ADR had not had to say before,
+each now a verdict-table row: **line splitting stays per-client** (a
+byte-level stream reader is a platform fact, not a decision — the web's
+`TextDecoder` + `takeLines`, okio's `readUtf8Line` on Android); **the
+transport stays per-client** (`run-skill.ts`, `route-run.ts` and the Kotlin
+`SkillRunner`, none of which decides anything); and **three decline
+constants stay literal TS** — `NO_TOKEN`, `NO_TERMINAL_LINE`,
+`OUTSIDE_SCHEMA` — for exactly the module-evaluation-order reason #500 and
+#501 already recorded, pinned against the core by `seam.test.ts`. This slice
+also invented the repo's first **cross-language shared fixture**
+(`client/core/tests/fixtures/skills-run-bodies.json`, read by Rust,
+TypeScript and the Android instrumented suite), and took the per-gesture
+free-door carve-out one step further on the mobile seam: the reducers are
+per-*event* doors, admissible because the events arrive seconds apart on a
+stream and the alternative is a Kotlin copy of the reducer. #274's
+routing/registry/memo and `microtask-affordance.ts` are deliberately not
+sunk here — they are #539's.
 **Amended 2026-08-18 (#540):** M4 sank the rules-editor decision set —
 `decisions::rules::{operators,duration,validity,deadline,editor,backtest}`
 — which retires both drifts this ADR's own verdict table had recorded as
@@ -58,7 +89,6 @@ in `decisions::rules::backtest`. The frames are named at the boundary
 (`BacktestClock`), never inferred. The M1 module-evaluation-order
 constraint did not bite here: every export of the seven `screens/rules/`
 modules is a function called from an event handler or a render body.
-
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -231,5 +261,88 @@ not permanent — it is where the line fell for the capture/Now slice.
 | `rules/operators.ts`'s `OPERATOR_LABELS`, `registry.ts`'s `kindLabel`/`kindOptions` (#540) | **stays** — display copy plus the registry's own declared order. Two clients wording "is within the next" or "Calendar event" differently is a difference, not a bug |
 | The epoch ⇄ civil wall-clock conversion, at each host's edge (#540) | **stays per-client, deliberately.** `client/core` holds no tzdb (its `Cargo.toml` argues this at length), so every rules function takes an already-resolved deadline-shaped `now`, exactly as `decisions::urgency` does. The backtest needs *two* readings of one instant — `occurred_at` is stamped UTC by the authority, `deadline`/`scheduled_date` are device-local civil strings — so `BacktestClock` names both frames at the boundary rather than letting the core infer either |
 | Calendar / #169's two doors | out of M1 entirely |
+| the NDJSON **line splitting** (`skills/ndjson.ts`'s `takeLines`, okio's `readUtf8Line`) (M4, #538) | stays per-client: a byte-level stream reader is a platform fact, not a decision. The web decodes a `ReadableStream` with a streaming `TextDecoder`; Android reads okio's buffered source. What each *line means* did sink (`decisions::skills::envelope`) |
+| the **transport** — `run-skill.ts`, `route-run.ts`, `skills/SkillRunner.kt` (M4, #538) | stays per-client: `fetch` + `AbortSignal` vs OkHttp + `Call.cancel()` have no shared expression, and neither decides anything. Each reports what happened to *its* socket (no token / never resolved / a status / the stream ended) and the core answers with the next state |
+| `skills/decline.ts`'s `NO_TOKEN`/`NO_TERMINAL_LINE` and `grill-turn-state.ts`'s `OUTSIDE_SCHEMA` (M4, #538) | the rule sank (`decisions::skills::decline`, `grill::OUTSIDE_SCHEMA`); the three constants stay literal TS for the same module-evaluation-order constraint as `field-vocabulary.ts`'s arrays — `route-run.ts`/`useMicrotaskWiring.ts`/`useGrillWiring.ts` read them at module evaluation, statically reachable from `main.tsx` — pinned against the core by `seam.test.ts`. Kotlin needs no equivalent: it never holds the strings at all |
+| #274's `backend-registry.ts`/`backend-selection.ts`/`route-plan.ts`/`reachability-memo.ts`, and `microtask-affordance.ts` (M4, #538) | out of #538 deliberately — the probe needed one lane end to end, not the whole surface. #539 decides them with a real second caller in hand |
 | `item-actions.ts`'s `applyItemAction`/`resolveFallbackPending` (M1-4, #502) | screen-local optimistic UI reconciliation over `TaskItemDTO` — `Date.now()`, `archivedAt` writes and the live-vs-optimistic `pending` merge are not a decision two clients could disagree about, even though the same file's affordance rules (`availableActions`, `canMarkDone`, `canGrill`, `grillButtonLabel`, `applyItemAction`'s stage lookup) did sink |
 
+
+## The zone bridge, fixed by M4's probe
+
+*Amended 2026-08-18 ([#533](https://github.com/JddAndrewLauren/hummingbird/issues/533)):
+the standing-question panes were the last big body of web-only decision
+logic, and the one obstacle no earlier M1 slice hit. This section is the
+probe's outcome.*
+
+**The obstacle.** A pane is **civil-date reasoning**. A bin collection
+happens on a day at an address, not at an instant on a device; "tonight"
+must flip at the address's midnight, not the reader's. So every pane rule
+that touches a day needs `(zone, instant) -> civil date` and
+`(zone, civil date) -> instant`, and `hummingbird-core` has no zone table
+to answer either with — deliberately, and at a measured price
+(`client/core/Cargo.toml`: the table took the release wasm from 525 KB to
+1.41 MB, brotli 175 KB -> 247 KB over the wire).
+
+**The mechanism.** A **two-phase crossing**
+(`client/core/src/decisions/panes/zone.rs`). Phase one: the core names
+every fact it needs as a `ZoneQuery`, each carrying a deterministic
+`key()`. Phase two: the host resolves what it can — `Intl.DateTimeFormat`
+on the web (`client/web/src/screens/questions/zone-bridge.ts`, over the
+existing `waste-pane/zoned-day.ts`), `java.time.ZoneId` on Android — and
+hands back a `key -> fact` table the core ranks against.
+
+**A zone the host cannot resolve crosses back absent.** Not a null, not an
+empty string, not a `known: false` flag: the host simply omits that key.
+Every reader goes through `ZoneFacts::civil_date`/`midnight_ms`, which
+answer `None`, and the rule turning `None` into a gap
+(`WasteGap::UnresolvableZone`) is a core decision like every other one.
+There is no accessor that fabricates a fallback, which is what stops a call
+site inventing one. The host contributes a lookup and no judgement.
+
+**What is not a zone question.** Calendar arithmetic over `YYYY-MM-DD`
+strings needs no tzdb, so it is Rust: `is_civil_date`,
+`civil_days_between`, `add_civil_days`, `weekday_index`. That mirrors
+`zoned-day.ts`'s calendar half while its `Intl` half stays TS — and
+`weekday_index` is deliberately an *index*, `0` = Sunday: which day it is,
+is a decision; what that day is called is a rendering.
+
+**The cross-host pin.** `client/core/tests/fixtures/panes/*.json` is read by
+both suites (`client/core/tests/pane_fixtures.rs` and
+`client/web/src/screens/questions/shared-fixtures.test.ts`), on the
+`race.test.ts` precedent. Each scenario carries the resolved `zoneFacts`
+table, which is what makes a tzdb-free Rust suite possible at all; the TS
+side additionally asserts **its own `Intl` resolver reproduces that table
+exactly** before running a scenario. That assertion is the actual cross-host
+pin, and it is what a `java.time` resolver is held to at #536.
+
+**The ergonomics verdict, and the flip condition.** Two phases were
+tolerable: the core-side pair (`zone_queries` / `rank_panes`) is one extra
+function per surface, the web-side resolver is a 12-line module with no
+opinion in it, and the whole crossing is JSON over the existing stateless
+seam — no new mechanism, no state, no ADR-0010 exposure. The flip condition
+stands and is unchanged: **if the two-phase shape proves intolerable, the
+answer is a tz library in the core via a further amendment to this ADR**,
+not a per-client re-derivation of the day.
+
+**Scope of this slice.** Waste alone. `zone_queries`/`rank_panes` ship with
+a one-question list (`decisions::panes::SUNK`) so #534 grows a list rather
+than an API, and the web deliberately keeps ranking per-question — hoisting
+onto the batched path would change `contract.ts`'s `QuestionDef`,
+`registry.ts`, `RankedRegion.tsx` and all seven unsunk panes, which is a
+rewrite rather than a probe.
+
+### What does *not* sink with the panes (#533)
+
+| Module | Verdict |
+|---|---|
+| `waste.ts`'s `wasteHeadline`/`wasteCollapsedHeadline` | headline wording; a second client phrasing "Trash tonight" differently is a design choice, not a bug |
+| `waste.ts`'s `wasteGapReason` | the one place a `WasteGap` **kind** becomes a sentence — the kinds sank, the words did not |
+| `waste.ts`'s `BIN`/`wasteGlyphs`, `contract.ts`'s `PaneGlyph`/`MAX_GLYPHS`/`boundedGlyphs` | glyphs and their colours are rendering; the cap is the shell's own furniture rule |
+| `WastePaneExpanded.tsx` and every other `*-pane/` `Expanded` | whole renderings |
+| `contract.ts`'s `QuestionDef`, `registry.ts` | the web's own wiring shape (a React `ComponentType` cannot cross) |
+| `collapse.ts`, `aside-prefs.ts`, `RankedRegion`'s sampling state | device-local view state, on `frontier-prefs.ts`'s existing verdict |
+| `zoned-day.ts`'s `Intl` half | **becomes the web's zone resolver** for the bridge rather than a pane rule — unchanged file, its own suite passes as-is |
+| `contract.ts`'s `BAND_ORDER`/`QUESTION_ORDER` | the vocabularies sank (`decisions::panes::contract`); the two arrays stay literal TS for a *harder* version of #500's module-evaluation-order constraint — `registry.ts` builds `QUESTIONS` at module evaluation and reads `QUESTION_ORDER` there — pinned against the core by `seam.test.ts` |
+| `waste.ts`'s `SOURCE`/`SNAPSHOT_KEY`/`BINDING_KEY`/`STALE_AFTER_MS`/`STREAM_ORDER` | same constraint via `question.ts`'s `sources: [SOURCE]`; pinned by `seam.test.ts`, not sunk at runtime |
+| The weekday *word* | per-client, from `WasteFacts.weekdayIndex` — the core decides which day, the client names it |

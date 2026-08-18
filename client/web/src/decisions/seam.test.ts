@@ -2,19 +2,37 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   canSubmitCapture,
+  declineForResponseFromCore,
+  declineForTransportFromCore,
   decisionsReady,
   ENERGIES,
   energyOptionsFromCore,
   FACETS,
   frontierAxesFromCore,
   initDecisions,
+  noTerminalLineDeclineFromCore,
+  noTokenDeclineFromCore,
   orderFrontier,
+  outsideSchemaDeclineFromCore,
   priorityRankFromCore,
   resetDecisionsForTest,
+  paneBandOrderFromCore,
+  paneQuestionOrderFromCore,
   SIZES,
   sizeOptionsFromCore,
+  wasteConstantsFromCore,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
+import { declineForResponse, declineForTransport, NO_TERMINAL_LINE, NO_TOKEN } from "../skills/decline";
+import { OUTSIDE_SCHEMA } from "../skills/grill-turn-state";
+import { BAND_ORDER, QUESTION_ORDER } from "../screens/questions/contract";
+import {
+  BINDING_KEY,
+  SNAPSHOT_KEY,
+  SOURCE,
+  STALE_AFTER_MS,
+  STREAM_ORDER,
+} from "../screens/waste-pane/waste";
 import { loadDecisionsForTest } from "../test/wasm-setup";
 import type { TaskItemDTO } from "../store/protocol";
 
@@ -86,6 +104,68 @@ describe("the seam's literal frontier-facet vocabulary, pinned against the core"
     for (const raw of [0, 1, 2, 3, 4, 5, -1]) {
       expect(priorityRank(raw)).toEqual(priorityRankFromCore(raw));
     }
+  });
+});
+
+// M4 (#538): the skills lane's three module-evaluation-time constants. Same
+// carve-out, same reason, same pin — `NO_TOKEN` and `NO_TERMINAL_LINE` are
+// read at module-evaluation time by `route-run.ts` and
+// `useMicrotaskWiring.ts`, and `OUTSIDE_SCHEMA` by `useGrillWiring.ts`, all
+// statically reachable from `main.tsx`, so a seam call there would throw the
+// "used before ready" guard on every page load. Everything else in that lane
+// calls across; only these three stay literal, and only because they cannot.
+describe("the skills lane's literal decline prose, pinned against the core", () => {
+  it("NO_TOKEN matches the core's words", () => {
+    expect(NO_TOKEN).toBe(noTokenDeclineFromCore());
+  });
+
+  it("NO_TERMINAL_LINE matches the core's words", () => {
+    expect(NO_TERMINAL_LINE).toBe(noTerminalLineDeclineFromCore());
+  });
+
+  it("OUTSIDE_SCHEMA matches the core's words", () => {
+    expect(OUTSIDE_SCHEMA).toBe(outsideSchemaDeclineFromCore());
+  });
+
+  /** The two that are *not* constants — proof they were not quietly copied
+   * alongside the three that had to be. */
+  it("the two decline functions answer out of the core, not a TS copy", () => {
+    expect(declineForResponse(401)).toBe(declineForResponseFromCore(401));
+    expect(declineForResponse(503)).toBe(declineForResponseFromCore(503));
+    expect(declineForTransport("boom")).toBe(declineForTransportFromCore("boom"));
+  });
+});
+
+// M4 (#533): the panes' vocabularies. `BAND_ORDER` and `QUESTION_ORDER`
+// stay literal TS in `contract.ts` for a HARDER version of the same
+// module-evaluation-order constraint as above — `registry.ts` builds its
+// `QUESTIONS` map at module evaluation and reads `QUESTION_ORDER` there, so
+// a seam call would throw the "used before ready" guard on every page load,
+// not merely in a test. The waste pane's four constants are the same story
+// via `question.ts`'s `sources: [SOURCE]`. All of them are pinned here
+// instead.
+describe("the seam's literal pane vocabulary, pinned against the core", () => {
+  it("BAND_ORDER matches the core's salience vocabulary, in order", () => {
+    expect([...BAND_ORDER]).toEqual(paneBandOrderFromCore());
+  });
+
+  it("QUESTION_ORDER matches the core's declared question order", () => {
+    // Declaration order, not alphabetical — a question's place must not
+    // move when another is renamed, and the two clients must agree which
+    // order that is.
+    expect([...QUESTION_ORDER]).toEqual(paneQuestionOrderFromCore());
+  });
+
+  it("the waste pane's constants match the core's", () => {
+    const constants = wasteConstantsFromCore();
+    expect(SOURCE).toBe(constants.source);
+    expect(SNAPSHOT_KEY).toBe(constants.snapshotKey);
+    expect(BINDING_KEY).toBe(constants.bindingKey);
+    // ADR-0015 puts the threshold beside the band function, and ADR-0025
+    // moved the pair into the core — this is the copy that must not drift
+    // from it.
+    expect(STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect([...STREAM_ORDER]).toEqual(constants.streamOrder);
   });
 });
 

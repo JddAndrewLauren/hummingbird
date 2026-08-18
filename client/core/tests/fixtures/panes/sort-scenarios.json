@@ -1,0 +1,145 @@
+{
+  "readme": [
+    "The cross-pane sort's scenarios, read by BOTH clients' suites (#533/M4):",
+    "`client/core/tests/pane_fixtures.rs` and",
+    "`client/web/src/screens/questions/shared-fixtures.test.ts`. Ported from",
+    "`screens/questions/sort.test.ts`, synthetic question names and all — the sort",
+    "is total over whatever `questionOrder` it is handed, and a fixture using the",
+    "real registry's names would hide that.",
+    "",
+    "`order` scenarios assert the whole ordered list of pane keys; `identity`",
+    "scenarios assert `samePaneIdentity`, which is deliberately NOT full equality —",
+    "band and withinBand move with the clock, and re-sorting on those is the",
+    "under-the-cursor reordering the captured order exists to prevent."
+  ],
+  "order": [
+    {
+      "name": "an answer beats a gap, and a gap beats an unbound question",
+      "questionOrder": ["alpha", "beta"],
+      "panes": [
+        { "question": "alpha", "subjectKey": "unbound", "answerState": "unbound", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "gap", "answerState": "bound-but-unacquired", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "answered", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "expected": ["alpha:answered", "alpha:gap", "alpha:unbound"]
+    },
+    {
+      "name": "band before anything the panes say about themselves",
+      "questionOrder": ["alpha", "beta"],
+      "panes": [
+        { "question": "alpha", "subjectKey": "dormant", "answerState": "answered", "band": "dormant", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "distant", "answerState": "answered", "band": "distant", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "live", "answerState": "answered", "band": "live", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "near", "answerState": "answered", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "imminent", "answerState": "answered", "band": "imminent", "withinBand": 0 }
+      ],
+      "expected": [
+        "alpha:live",
+        "alpha:imminent",
+        "alpha:near",
+        "alpha:distant",
+        "alpha:dormant"
+      ]
+    },
+    {
+      "name": "a band tie breaks on withinBand, soonest first",
+      "questionOrder": ["alpha", "beta"],
+      "panes": [
+        { "question": "alpha", "subjectKey": "later", "answerState": "answered", "band": "near", "withinBand": 900 },
+        { "question": "alpha", "subjectKey": "sooner", "answerState": "answered", "band": "near", "withinBand": -50 },
+        { "question": "alpha", "subjectKey": "middle", "answerState": "answered", "band": "near", "withinBand": 10 }
+      ],
+      "expected": ["alpha:sooner", "alpha:middle", "alpha:later"]
+    },
+    {
+      "name": "nothing to order by sorts after every real instant, not before",
+      "questionOrder": ["alpha", "beta"],
+      "panes": [
+        { "question": "alpha", "subjectKey": "none", "answerState": "answered", "band": "near", "withinBand": null },
+        { "question": "alpha", "subjectKey": "huge", "answerState": "answered", "band": "near", "withinBand": 9007199254740991 }
+      ],
+      "expected": ["alpha:huge", "alpha:none"]
+    },
+    {
+      "name": "declared question order beats alphabetical, then the subject key decides",
+      "questionOrder": ["alpha", "beta"],
+      "panes": [
+        { "question": "beta", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "b", "answerState": "answered", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "expected": ["alpha:a", "alpha:b", "beta:a"]
+    },
+    {
+      "name": "a question outside the declared order sorts last, never first",
+      "questionOrder": ["alpha", "beta"],
+      "panes": [
+        { "question": "omega", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "expected": ["alpha:a", "omega:a"]
+    },
+    {
+      "name": "an answered pane with nothing to say is not a gap",
+      "questionOrder": ["alpha", "beta"],
+      "panes": [
+        { "question": "alpha", "subjectKey": "gap", "answerState": "bound-but-unacquired", "band": "dormant", "withinBand": null },
+        { "question": "alpha", "subjectKey": "quiet", "answerState": "answered", "band": "dormant", "withinBand": null }
+      ],
+      "expected": ["alpha:quiet", "alpha:gap"]
+    }
+  ],
+  "identity": [
+    {
+      "name": "true when only band and withinBand moved",
+      "a": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "dormant", "withinBand": 900 }
+      ],
+      "b": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "imminent", "withinBand": 5 }
+      ],
+      "expected": true
+    },
+    {
+      "name": "false when a pane appears",
+      "a": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "b": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "b", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "expected": false
+    },
+    {
+      "name": "false when every pane disappears",
+      "a": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "b": [],
+      "expected": false
+    },
+    {
+      "name": "false when a pane flips between an answer and a gap",
+      "a": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "b": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "bound-but-unacquired", "band": "near", "withinBand": 0 }
+      ],
+      "expected": false
+    },
+    {
+      "name": "compares by pane key, not by position",
+      "a": [
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "b", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "b": [
+        { "question": "alpha", "subjectKey": "b", "answerState": "answered", "band": "near", "withinBand": 0 },
+        { "question": "alpha", "subjectKey": "a", "answerState": "answered", "band": "near", "withinBand": 0 }
+      ],
+      "expected": true
+    }
+  ]
+}

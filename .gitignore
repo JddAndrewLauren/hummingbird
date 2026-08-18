@@ -8,6 +8,7 @@ server/target/
 server/worker/build/
 server/worker/.wrangler/
 /.wrangler/
+HANDOFF.md
 
 # Throwaway prototypes are their own cargo workspaces (deliberately outside
 # `server/`'s, so CI's `--workspace` never gates on them), so they have their

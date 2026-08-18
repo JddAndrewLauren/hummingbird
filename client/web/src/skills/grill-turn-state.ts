@@ -5,12 +5,16 @@
 // `note`, so the "done" phase there has no equivalent here — this reducer
 // grows a `"question"` and a `"proposal"` phase in its place.
 //
+// **The rules are `hummingbird_core::decisions::skills::grill`'s** since
+// #538 sank them there (ADR-0025); this module is the call and the types.
 // Same four invariants `run-state.ts` documents for its own reducer: "in
 // flight", "declined" and each of the two answered shapes are
 // distinguishable phases, and the duplicate-tap rule (a `"started"` while
-// already `"asking"` is a no-op) lives here rather than in a click handler.
+// already `"asking"` is a no-op) lives in the reducer rather than in a
+// click handler.
 
-import { grillResult, type GrillProposal, type GrillQuestion } from "./envelope";
+import { reduceGrillTurn as reduceGrillTurnThroughCore } from "../decisions/seam";
+import type { GrillProposal, GrillQuestion } from "./envelope";
 import type { SkillEvent } from "./run-state";
 
 /** A run that answered `ok:true` with a result outside `grill-me`'s own
@@ -18,7 +22,16 @@ import type { SkillEvent } from "./run-state";
  * unreachable in practice (`.claude/skills/grill-me/SKILL.md`: "Your only
  * failure mode is answering outside the schema") — this is the client's
  * own backstop for that promise not holding, not a case this reducer
- * expects to exercise against a well-behaved runner. */
+ * expects to exercise against a well-behaved runner.
+ *
+ * **A literal, pinned against the core rather than read from it.** This is
+ * a module-evaluation-time `const` on a path statically reachable from
+ * `main.tsx`, where a seam call would throw the "used before ready" guard
+ * on every page load — the same constraint `priority.ts`'s `priorityRank`
+ * and `field-vocabulary.ts`'s arrays live under. `seam.test.ts` pins it
+ * equal to `hummingbird_core::decisions::skills::grill::OUTSIDE_SCHEMA`, so
+ * the copy cannot drift silently; ADR-0025's #538 amendment records the
+ * carve-out as a verdict-table row. */
 export const OUTSIDE_SCHEMA = "The run answered outside the schema.";
 
 export type GrillTurnState =
@@ -53,52 +66,5 @@ export type GrillTurnState =
 export const IDLE: GrillTurnState = { phase: "idle" };
 
 export function reduceGrillTurn(state: GrillTurnState, event: SkillEvent): GrillTurnState {
-  switch (event.kind) {
-    case "started":
-      return state.phase === "asking" ? state : { phase: "asking", messages: [] };
-
-    case "progress":
-      if (state.phase !== "asking") return state;
-      return { phase: "asking", messages: append(state.messages, event.message) };
-
-    case "ok": {
-      if (state.phase !== "asking") return state;
-      const result = grillResult(event.result);
-      if (result === null) {
-        return declined(state.messages, OUTSIDE_SCHEMA, event.backend, event.model, true);
-      }
-      return result.kind === "question"
-        ? { phase: "question", messages: state.messages, question: result.question, backend: event.backend, model: event.model }
-        : { phase: "proposal", messages: state.messages, proposal: result.proposal, backend: event.backend, model: event.model };
-    }
-
-    case "failed":
-      if (state.phase !== "asking") return state;
-      return declined(
-        state.messages,
-        event.error,
-        event.backend,
-        event.model,
-        "answered" in event ? event.answered : false,
-      );
-
-    case "unreadable":
-      return state;
-  }
-}
-
-function declined(
-  messages: string[],
-  reason: string,
-  backend: string | null,
-  model: string | null,
-  answered: boolean,
-): GrillTurnState {
-  return { phase: "declined", messages, reason, backend, model, answered };
-}
-
-/** The runner heartbeats `"still running"` every 20s — same de-duplication
- * `run-state.ts`'s own `append` applies. */
-function append(messages: string[], message: string): string[] {
-  return messages[messages.length - 1] === message ? messages : [...messages, message];
+  return reduceGrillTurnThroughCore(state, event);
 }

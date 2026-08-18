@@ -127,7 +127,20 @@ lane works end to end. Checks 1–12 were run in full on 2026-08-17 (Pixel 10
 Pro Fold, SDK 37, #517) and every one passed. **13–18 were run on
 2026-08-17 against merged `2ea76b5` on the same device and every one
 passed** — the lane is proven end to end, sweep to pixel. Re-run all of
-them after any change to `notify/`, `push/`, or the tap intent.
+them after any change to `notify/`, `push/`, or the tap intent. **Check 19
+(#538's skills-runner probe) was run on 2026-08-18 against `5f23ec8` on the
+same device and all three cases passed** (evidence in #560); it shares
+nothing with 1–18 but the device token.
+
+**Check 19 costs you the device token.** `connectedDebugAndroidTest`
+uninstalls both APKs when it finishes, and the token rests in
+`EncryptedSharedPreferences` (`core/TokenStore.kt`), which goes with the
+app data. Every run therefore ends with the phone un-credentialed and the
+*next* run failing three cases with `no device token on this device` —
+which is the check's own named error doing its job, not a regression.
+Re-install (`./gradlew installDebug`) and paste the token from
+`hummingbird-device-pixel-fold` again before the next run. Checks 1–18 are
+unaffected only because nothing in them runs an instrumented suite.
 
 You need the device on USB, a `device`-scope token for **this** device (there
 is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
@@ -249,6 +262,45 @@ reached.
     "Ack still offered" clause only holds while the alert is still live —
     check 16 settles it, so run 18 against a separate alert if you want that
     half too.
+
+19. **The skills runner lane (#538/M4).** Not a notification check at all —
+    no alert, no rule, no alarm wait — and it ships **no screen**: the probe
+    is an instrumented test, so what is proven is that the *lane* works, not
+    that a Compose surface renders. It needs only the device token from
+    check 2 and a real item to grill.
+
+    ```sh
+    ./gradlew :app:connectedDebugAndroidTest \
+      -Pandroid.testInstrumentationRunnerArguments.ref=HB-42
+    adb logcat -s HB-SKILL-PROBE
+    ```
+
+    Three cases, and the logcat output under that one tag is the evidence to
+    paste into the PR: a real turn that reaches a question or a proposal
+    **with the 20s `"still running"` heartbeats collapsed** (the runner beats
+    every 20s; a narration with the same sentence twice in a row means the
+    core's reducer did not run), a decline carried **verbatim**, and a
+    mid-stream cancellation that delivers nothing afterwards.
+
+    **A turn too short to beat fails the first case on purpose.** The probe
+    asserts a heartbeat was actually seen before it asserts the collapse,
+    because "no two entries repeat" is satisfied by a narration of one
+    entry — a pass that would prove nothing about the reducer. If it says
+    *no heartbeat was observed*, that is not the bug: re-run it against an
+    item foggy enough to take more than one 20s beat.
+
+    **To cause a decline deliberately**, use a `ref` the runner cannot
+    resolve — the probe's second case does exactly that. It declines in
+    `prepare`, before a model token is spent. Threading past
+    `PROVISIONAL_TURN_CAP = 8` is the other way and also declines in
+    `prepare`, but it costs eight real turns to get there.
+
+    **This spends real model tokens**, on the first and third cases. It
+    writes nothing: `grill-me` has no `apply` (ADR-0023), so unlike a
+    `microtask` smoke test there is nothing to clean up afterwards. The
+    automated half of this lane's evidence is `:app:testDebugUnitTest`'s
+    MockWebServer suite plus `:app:assembleDebug` — CI runs those and
+    nothing else, so a green badge is not a claim about a real run.
 
 Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
 adb writes a warning banner into the PNG, and the ids differ inner vs cover

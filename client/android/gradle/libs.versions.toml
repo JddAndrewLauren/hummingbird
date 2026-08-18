@@ -22,7 +22,26 @@ navigationCompose = "2.9.8"
 # but `NotificationCompat` is a direct compile dependency of the notify/
 # package now, so it gets a direct pin rather than an inherited one.
 coreKtx = "1.17.0"
+# M3/#530: the frontier board's axis/facet/collapse preferences —
+# per-client state (ADR-0025's verdict table already places `frontier-prefs.ts`'s
+# web counterpart out of the core for the same reason), stored with
+# `Preferences DataStore` rather than `SharedPreferences` for its
+# coroutine-native, single-writer-race-free reads.
+datastore = "1.1.1"
 jna = "5.17.0"
+# M4/#538: the skills lane's HTTP client, and the first HTTP client in this
+# module at all — every other byte on the wire goes through the Rust core's
+# sync engine. OkHttp rather than `HttpURLConnection` for two things the
+# lane actually needs: a `Call` that can be cancelled from another thread
+# (the coroutine-cancellation half of the probe) and okio's own line reader,
+# which is this platform's answer to the web's `TextDecoder` + `takeLines`.
+# `mockwebserver` is the same version deliberately — the two are released in
+# lockstep and a split pair is a known source of protocol-level surprises.
+okhttp = "4.12.0"
+# `runTest` for the MockWebServer suites. Versioned with `coroutines` above
+# rather than independently: kotlinx-coroutines-test is published from the
+# same repo and release train, and a mismatched pair fails at runtime with a
+# module-version error rather than at resolution.
 junit = "4.13.2"
 androidxJunit = "1.2.1"
 androidxTestRunner = "1.6.2"
@@ -65,6 +84,10 @@ firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging
 # `showStatus` boolean cannot express `alert/{alertId}`).
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
+coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
