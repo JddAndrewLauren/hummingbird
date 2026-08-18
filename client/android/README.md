@@ -104,11 +104,10 @@ CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 CI cannot cover any of this: there is no emulator in `android.yml` and no FCM
 delivery without a real device, so the checks below are the only evidence the
 lane works end to end. Checks 1–12 were run in full on 2026-08-17 (Pixel 10
-Pro Fold, SDK 37, #517) and every one passed. **13, 14, 15, 16 and 18 were
-run on 2026-08-17 against merged `2ea76b5` on the same device and all
-passed**; **17 has never been run** — it is the only one needing an ingest
-token. Re-run all of them after any change to `notify/`, `push/`, or the
-tap intent.
+Pro Fold, SDK 37, #517) and every one passed. **13–18 were run on
+2026-08-17 against merged `2ea76b5` on the same device and every one
+passed** — the lane is proven end to end, sweep to pixel. Re-run all of
+them after any change to `notify/`, `push/`, or the tap intent.
 
 You need the device on USB, a `device`-scope token for **this** device (there
 is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
@@ -200,6 +199,12 @@ be real taps; 15 and 18 are indifferent to how the screen was reached.
     part 3).
 17. Degrade check: ring a *non-item* alert (`POST /api/alerts`, ingest
     scope) and confirm the tap still opens **alert** detail unchanged.
+    Cheapest of the six and needs no alarm wait — an ingested alert is
+    delivered inside the request, not on the tick — and the two disabled
+    `m2-proof-*` rules already match `healthchecks/v1`, so re-enabling one
+    beats writing a new rule. Mint the ingest token bound to that same
+    source (`"source":"healthchecks/v1"` on the mint body) so its blast
+    radius is one fake healthcheck.
 18. Open an archived item through a stale notification: readable, its
     checklist intact, and **no edit affordance** (Recall's rule, #478). Give
     it steps first, or this proves nothing about the checklist. Archiving
