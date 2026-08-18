@@ -11,7 +11,11 @@
 //! counters the proof screen shows. M1-5 (#503) added the free
 //! [`can_submit_capture`] door onto [`hummingbird_core::decisions`] and
 //! [`MobileTaskHost::capture`] — `CaptureActivity`'s whole surface, title
-//! only, no capture-meta fields (out of scope until a later screen). M2
+//! only, no capture-meta fields (out of scope until a later screen). M3/#529
+//! widened [`MobileTaskHost::capture`] to take a whole [`CaptureDraft`] and
+//! added the free [`capture_form_meta`] door, a pure expose over decisions
+//! already sunk at M1-2/#500: no new core logic, just the rest of the
+//! capture box's field set reaching the same seam. M2
 //! (#141, ADR-0012) adds the notification lane's client side:
 //! [`MobileTaskHost::alerts`]/[`MobileTaskHost::alert`] as decided
 //! [`AlertRecord`]s, [`MobileTaskHost::ack_alert`] (the Ack gesture — swipe
@@ -24,19 +28,22 @@
 //! providing one. Interior state is a `tokio::sync::Mutex` for the same
 //! reason: it is held across the cycle's awaits.
 //!
-//! **Android never calls a per-row decision function** (M1-6/#504) — this
-//! is the designed asymmetry with the web seam. `client/ffi-web/src/decisions.rs`
-//! exposes `hummingbird_core::decisions` as a free-function door a *second*,
-//! main-thread wasm instance calls per keystroke/per row (that module's own
-//! header explains why a second stateless instance is safe there). Android
-//! has no such second instance and no in-process wasm boundary to cross
-//! cheaply from Kotlin — every crossing here is a JNI call — so
-//! [`MobileTaskHost::now_queue`] does the *decided* work once, on the Rust
-//! side, and hands Kotlin one ordered [`Vec<NowItemRecord>`], each record
-//! already carrying its [`MobileUrgencyBand`] and wire-vocabulary action
-//! list. `NowScreen` never calls `by_priority_then_due`, `compute_urgency`
-//! or `available_actions` itself, and never could: those functions are not
-//! exported to Kotlin at all, only their already-applied results are.
+//! **Android never calls a per-row decision function** (M1-6/#504, widened
+//! by M3/#530) — this is the designed asymmetry with the web seam.
+//! `client/ffi-web/src/decisions.rs` exposes `hummingbird_core::decisions`
+//! as a free-function door a *second*, main-thread wasm instance calls per
+//! keystroke/per row (that module's own header explains why a second
+//! stateless instance is safe there). Android has no such second instance
+//! and no in-process wasm boundary to cross cheaply from Kotlin — every
+//! crossing here is a JNI call — so [`MobileTaskHost::now_board`] does the
+//! *decided* work once, on the Rust side, and hands Kotlin one whole board
+//! — every column pre-grouped, pre-filtered and pre-ordered, plus the
+//! blocked section — in a single crossing, each row already carrying its
+//! [`MobileUrgencyBand`] and wire-vocabulary action list. `NowScreen` never
+//! calls `by_priority_then_due`, `group_frontier`, `apply_facets`,
+//! `compute_urgency` or `available_actions` itself, and never could: those
+//! functions are not exported to Kotlin at all, only their already-applied
+//! results are.
 //! [`AlertRecord`] is M2's instance of the same rule: it ships `is_live`
 //! and `can_ack` as answers, so no Kotlin `dismissedAt == null` test can
 //! disagree with ADR-0014's predicate.
@@ -52,7 +59,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use hummingbird_core::decisions::{available_actions, frontier, urgency};
+use hummingbird_core::decisions::{available_actions, can_mark_done, frontier, queue, urgency};
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
     HttpMethod, MutationRequest, MutationTransport,
@@ -103,6 +110,140 @@ pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> MetaProble
         deadline: problems.deadline,
         scheduled_date: problems.scheduled_date,
     }
+}
+
+/// [`hummingbird_core::decisions::vocabulary::VocabOption`], mirrored as a
+/// `uniffi::Record` — one `<select>`-equivalent option's wire value and
+/// display label, crossed to Kotlin so no size/energy word is ever a
+/// literal in `CaptureScreen`'s source (M3/#529's own structural-test
+/// criterion).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct VocabOption {
+    pub value: String,
+    pub label: String,
+}
+
+fn to_vocab_option(option: hummingbird_core::decisions::vocabulary::VocabOption) -> VocabOption {
+    VocabOption {
+        value: option.value,
+        label: option.label,
+    }
+}
+
+/// The capture form's whole metadata bundle — sizes, energies and the
+/// suggested (open-vocabulary) contexts — as one applied result
+/// (M3/#529). This is a *per-gesture* free door, not a per-row one (the
+/// module doc's asymmetry rule): `CaptureScreen` reads it once, on mount,
+/// never once per row or per keystroke, so a single JNI crossing here is
+/// the whole cost this ever incurs.
+///
+/// `suggestedContexts` is not a closed vocabulary — CONTEXT.md: "the set of
+/// places a person works is theirs" — so it is offered only as suggestions;
+/// [`CaptureDraft::context`] accepts any string, including one absent from
+/// this list.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CaptureFormMeta {
+    pub sizes: Vec<VocabOption>,
+    pub energies: Vec<VocabOption>,
+    pub suggested_contexts: Vec<String>,
+}
+
+/// One project, as the details disclosure's Project picker needs it —
+/// [`MobileTaskHost::projects`]'s row, carrying only what a picker reads
+/// (see that method's own doc for why not the whole [`hummingbird_domain::Project`]).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileProject {
+    pub id: String,
+    pub name: String,
+}
+
+/// [`MobileTaskHost::capture`]'s form metadata read — the vocabulary and
+/// context suggestions `CaptureScreen` needs to render its fields, with no
+/// vocabulary literal of its own. Free rather than a method on
+/// [`MobileTaskHost`]: it needs no durable state, the same reason
+/// [`can_submit_capture`] and [`capture_meta_problems`] are free functions.
+#[uniffi::export]
+pub fn capture_form_meta() -> CaptureFormMeta {
+    CaptureFormMeta {
+        sizes: hummingbird_core::decisions::vocabulary::size_options()
+            .into_iter()
+            .map(to_vocab_option)
+            .collect(),
+        energies: hummingbird_core::decisions::vocabulary::energy_options()
+            .into_iter()
+            .map(to_vocab_option)
+            .collect(),
+        suggested_contexts: hummingbird_core::decisions::vocabulary::CONTEXTS
+            .iter()
+            .map(|context| context.to_string())
+            .collect(),
+    }
+}
+
+/// The capture box's destination choice — Triage (the default funnel entry)
+/// or Ready (skip the funnel because the item is already decided). A closed
+/// two-value vocabulary, so a `uniffi::Enum` rather than a string: unlike
+/// size/energy/context, this one is never open, and there is no third
+/// destination capture can name (`Stage`'s other four values are reachable
+/// only by later action, never at mint time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CaptureDestination {
+    Triage,
+    Ready,
+}
+
+/// The capture box's whole draft, as the form collects it (M3/#529) — the
+/// mobile twin of [`hummingbird_core::CaptureOptions`] plus the title and
+/// the destination [`MobileTaskHost::capture`] needs
+/// [`hummingbird_core::Core::capture`]'s own `stage` argument for.
+///
+/// Every optional field crosses as a plain `String`, `""` meaning "not
+/// set" — the form's own resting state — never a nested `Option`: capture
+/// is a create, so there is no stored value a "clear" could mean anything
+/// different from "absent" for (the same reasoning
+/// [`hummingbird_core::CaptureOptions`]'s own doc gives, carried across the
+/// seam). `size`/`energy` cross as their wire vocabulary word; an
+/// unrecognised, non-empty value is refused at
+/// [`MobileTaskHost::capture`] rather than silently treated as unset, the
+/// same "reject before the seam" rule [`FieldPatch::to_vocabulary`] already
+/// applies to the item-edit form.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CaptureDraft {
+    pub title: String,
+    pub destination: CaptureDestination,
+    pub size: String,
+    pub energy: String,
+    pub context: String,
+    pub description: String,
+    pub project_id: String,
+    /// The priority `Select`'s raw value (`""`..`"4"`) — resolved through
+    /// [`hummingbird_core::decisions::capture::priority_from_select`],
+    /// never re-derived here.
+    pub priority: String,
+    pub deadline: String,
+    pub scheduled_date: String,
+}
+
+/// Resolves one optional vocabulary field: `""` is "not set", anything else
+/// must parse or the whole capture is refused before it ever reaches the
+/// core — mirrors [`FieldPatch::to_vocabulary`]'s "reject before the seam"
+/// rule for the item-edit form.
+fn parse_optional_vocabulary<T>(
+    raw: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<T>, String> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    parse(raw)
+        .map(Some)
+        .ok_or_else(|| format!("unrecognised value: {raw}"))
+}
+
+/// A free-text optional field: `""` is "not set", anything else is sent
+/// verbatim.
+fn some_if_present(raw: &str) -> Option<String> {
+    (!raw.is_empty()).then(|| raw.to_string())
 }
 
 /// [`decisions::TapTarget`], mirrored as a `uniffi::Enum` for
@@ -419,13 +560,22 @@ fn map_urgency_band(band: urgency::UrgencyBand) -> MobileUrgencyBand {
 }
 
 /// One `NowScreen` row: an already-decided [`Item`] — ordered by the
-/// caller ([`MobileTaskHost::now_queue`] returns these pre-ordered, so
-/// `ids`/index order *is* display order), its [`MobileUrgencyBand`] and its
-/// S11/#109 act vocabulary strings (`"start"|"complete"|"block"|"cancel"`,
-/// [`ItemAction::as_str`]) ready for [`MobileTaskHost::act`]. Carries only
-/// the fields `NowScreen` actually renders — the same "hand the boundary
-/// only what a decision needs" discipline [`frontier::FrontierItem`]'s own
-/// doc states, applied on the way *out* instead of in.
+/// caller ([`MobileTaskHost::now_board`] returns every row pre-ordered
+/// within its column, so `items`/index order *is* display order), its
+/// [`MobileUrgencyBand`] and its S11/#109 act vocabulary strings
+/// (`"start"|"complete"|"block"|"cancel"`, [`ItemAction::as_str`]) ready
+/// for [`MobileTaskHost::act`]. Carries only the fields `NowScreen`
+/// actually renders — the same "hand the boundary only what a decision
+/// needs" discipline [`frontier::FrontierItem`]'s own doc states, applied
+/// on the way *out* instead of in.
+///
+/// `stage` is `hummingbird_domain::Stage::as_str`'s own wire spelling
+/// (`"triage"`, `"grilling"`, `"ready"`, `"in_progress"`) — the M3/#530
+/// addition that lets an inline triage-process card carry its own stage
+/// chip exactly as `ItemRow`'s `item.stage === "ready" ? null : <StageBadge>`
+/// does on web: a `Ready`/`InProgress` frontier row still stages, it is
+/// only never rendered for those two, and that rendering choice belongs to
+/// `NowScreen`, not to this record.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct NowItemRecord {
     pub id: String,
@@ -438,6 +588,7 @@ pub struct NowItemRecord {
     pub priority: i64,
     pub context: Option<String>,
     pub available_actions: Vec<String>,
+    pub stage: String,
 }
 
 fn to_frontier_item(item: &Item) -> frontier::FrontierItem {
@@ -450,6 +601,10 @@ fn to_frontier_item(item: &Item) -> frontier::FrontierItem {
         energy: item.energy.map(|energy| energy.as_str().to_string()),
         project_id: item.project_id.clone(),
     }
+}
+
+fn to_queue_item(item: &Item) -> queue::QueueItem {
+    queue::QueueItem { id: item.id.clone(), created_at: item.created_at }
 }
 
 fn to_now_item_record(item: &Item, now: &str) -> NowItemRecord {
@@ -466,23 +621,220 @@ fn to_now_item_record(item: &Item, now: &str) -> NowItemRecord {
         priority: item.priority,
         context: item.context.clone(),
         available_actions: actions,
+        stage: item.stage.as_str().to_string(),
     }
 }
 
-/// [`MobileTaskHost::now_queue`]'s pure core: `hummingbird_core::Core::frontier`'s
-/// `Ready`/`InProgress` items, ordered by [`frontier::by_priority_then_due`]
-/// (ADR-0021 decision 1's one spelling) and decided into [`NowItemRecord`]s.
-/// Free of `Core`/`MobileTaskHost` entirely so the ordering pin below can
-/// exercise it directly, against the identical fixture shapes
-/// `hummingbird_core::decisions::frontier`'s own tests use, with no async
-/// runtime or durable store in the loop.
-fn build_now_queue(items: &[Item], now: &str) -> Vec<NowItemRecord> {
-    let by_id: HashMap<&str, &Item> = items.iter().map(|item| (item.id.as_str(), item)).collect();
-    let entries: Vec<frontier::FrontierItem> = items.iter().map(to_frontier_item).collect();
-    frontier::by_priority_then_due(&entries)
+/// [`to_now_item_record`] for a **relation-blocked** row, whose act
+/// vocabulary is narrower than its stage alone would say: only the
+/// core-decided mark-done gesture ([`hummingbird_core::decisions::
+/// can_mark_done`]), never `start`/`block`/`cancel`.
+///
+/// [`available_actions`] answers from [`Item::stage`] and nothing else, and
+/// a relation-blocked item's stage is usually `Ready` — so reusing the
+/// frontier record here offered `Start` on an item with an open blocker,
+/// and taking it minted an In Progress item that was still blocked. The web
+/// blocked row has always passed `onComplete` alone, gated on `canMarkDone`
+/// (`client/web/src/screens/NowScreen.tsx`); this is that rule, decided on
+/// this side of the seam so `NowScreen.kt` still renders whatever list it
+/// is handed rather than filtering one itself (the module doc's
+/// Android-decides-no-affordance rule).
+fn to_blocked_item_record(item: &Item, now: &str) -> NowItemRecord {
+    let record = to_now_item_record(item, now);
+    let actions = if can_mark_done(item.stage, item.archived_at.is_some()) {
+        vec![ItemAction::Complete.as_str().to_string()]
+    } else {
+        Vec::new()
+    };
+    NowItemRecord { available_actions: actions, ..record }
+}
+
+/// [`FrontierAxis`], mirrored as a `uniffi::Enum` — the grouping axis
+/// switch (M3/#530). A second, uniffi-derived definition of the same four
+/// axes rather than an annotation on the core type (ADR-0003, the same
+/// reasoning [`MobileUrgencyBand`] states); [`map_frontier_axis`] is the
+/// only place the two are allowed to drift apart from, and it is
+/// exhaustive with no wildcard arm for exactly that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileFrontierAxis {
+    Context,
+    Project,
+    Size,
+    Energy,
+}
+
+fn map_frontier_axis(axis: MobileFrontierAxis) -> frontier::FrontierAxis {
+    match axis {
+        MobileFrontierAxis::Context => frontier::FrontierAxis::Context,
+        MobileFrontierAxis::Project => frontier::FrontierAxis::Project,
+        MobileFrontierAxis::Size => frontier::FrontierAxis::Size,
+        MobileFrontierAxis::Energy => frontier::FrontierAxis::Energy,
+    }
+}
+
+/// [`frontier::FacetSelection`], mirrored as a `uniffi::Record` — a
+/// `HashSet<String>` per facet crosses as a `Vec<String>` (uniffi has no
+/// `Set` type), so [`to_facet_selection`] is where the two are reconciled.
+/// Kotlin owns the actual `Set` shape and toggling; this record only ever
+/// carries the picked values *to* [`MobileTaskHost::now_board`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
+pub struct NowFacetSelectionRecord {
+    pub context: Vec<String>,
+    pub size: Vec<String>,
+    pub energy: Vec<String>,
+    pub urgency: Vec<String>,
+}
+
+fn to_facet_selection(record: &NowFacetSelectionRecord) -> frontier::FacetSelection {
+    frontier::FacetSelection {
+        context: record.context.iter().cloned().collect(),
+        size: record.size.iter().cloned().collect(),
+        energy: record.energy.iter().cloned().collect(),
+        urgency: record.urgency.iter().cloned().collect(),
+    }
+}
+
+/// One [`frontier::group_frontier`] column, decided: `value`/`label`
+/// exactly that function's own doc (`None` for the axis's no-value
+/// bucket), `items` the column's rows in display order — already capped to
+/// nothing; the six-card-and-"N more" cap is `NowScreen`'s own rendering
+/// choice over this full list, not a second crossing.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct NowColumnRecord {
+    pub value: Option<String>,
+    pub label: Option<String>,
+    pub items: Vec<NowItemRecord>,
+}
+
+/// One [`hummingbird_core::Core::blocked`] entry, decided: the blocked row
+/// itself, plus its still-open blockers' titles — `blockedReasonLabel`'s
+/// own web-side input shape (`client/web/src/screens/blocked-reason.ts`),
+/// so `NowScreen`'s blocked-section label reads the identical words.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct NowBlockedEntryRecord {
+    pub item: NowItemRecord,
+    pub blocked_by_titles: Vec<String>,
+}
+
+/// [`MobileTaskHost::now_board`]'s whole read, decided: every frontier
+/// column (with the triage-process queue's rows riding inline into
+/// whichever column their axis value lands them in — see
+/// [`build_now_board`]'s own doc) plus the blocked section [`Core::blocked`]
+/// carries separately, since a relation-blocked item is not on the
+/// frontier at all and groups by no axis.
+///
+/// `contexts` is [`frontier::contexts_of`] over the ordered, **pre-facet**
+/// list (`FrontierColumns.tsx`'s own `contextsOf(ordered)`, not `shown`) —
+/// the Context facet's live chip vocabulary: contexts actually present on
+/// the board, suggested vocabulary first, [`frontier::NO_CONTEXT`] last
+/// only when something on the board actually lacks one. Reusing `shown`
+/// instead would make a picked chip remove its own option from the list
+/// the moment it narrowed the board to nothing but itself.
+///
+/// `live_column_keys` is every column key [`frontier::group_frontier`]
+/// would produce for the *given axis* over that same pre-facet list —
+/// `FrontierColumns.tsx`'s own `liveKeys` (`groupFrontier(ordered, axis,
+/// projects)`, not `shown`): the set a caller prunes its persisted
+/// collapse set against before writing, so a column the live filter
+/// merely hides is never mistaken for one that no longer exists (a
+/// pruned-then-reappearing column would otherwise come back collapsed for
+/// a reason the reader cannot see — ADR-0021 decision 5's key-accretion
+/// argument).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct NowBoardRecord {
+    pub columns: Vec<NowColumnRecord>,
+    pub blocked: Vec<NowBlockedEntryRecord>,
+    pub contexts: Vec<String>,
+    pub live_column_keys: Vec<String>,
+}
+
+/// [`MobileTaskHost::now_board`]'s pure core: the frontier
+/// ([`hummingbird_core::Core::frontier`]) ordered by
+/// [`frontier::by_priority_then_due`], with the triage-process queue
+/// ([`queue::triage_process_queue`] over `triage_items`/`grilling_items`/
+/// `draft_item_ids`) appended after it — exactly the web board's own
+/// `[...orderFrontier(frontier), ...triageProcessQueue(...).items]`
+/// concatenation (`FrontierColumns.tsx`): whichever column a triage/
+/// grilling row's axis value lands it in, it sorts under that column's
+/// startable actions, because [`frontier::group_frontier`] preserves input
+/// order inside every bucket. Facets apply to that combined, ordered list
+/// before grouping ([`frontier::apply_facets`]), and grouping
+/// ([`frontier::group_frontier`]) never re-sorts. `blocked` is entirely
+/// separate: [`hummingbird_core::Core::blocked`]'s relation-blocked items
+/// never join the frontier or the triage-process queue, so they never
+/// enter the grouping pass at all.
+///
+/// Free of `Core`/`MobileTaskHost` entirely so a fixture-driven test can
+/// exercise it directly, with no async runtime or durable store in the
+/// loop — `build_now_queue`'s own reason, before it retired into this.
+#[allow(clippy::too_many_arguments)]
+fn build_now_board(
+    frontier_items: &[Item],
+    triage_items: &[Item],
+    grilling_items: &[Item],
+    draft_item_ids: &[String],
+    blocked: &[(Item, Vec<Item>)],
+    projects: &[frontier::ProjectName],
+    axis: frontier::FrontierAxis,
+    facets: &frontier::FacetSelection,
+    now: &str,
+) -> NowBoardRecord {
+    let by_id: HashMap<&str, &Item> = frontier_items
+        .iter()
+        .chain(triage_items.iter())
+        .chain(grilling_items.iter())
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+
+    let frontier_entries: Vec<frontier::FrontierItem> =
+        frontier_items.iter().map(to_frontier_item).collect();
+    let frontier_ordered = frontier::by_priority_then_due(&frontier_entries);
+
+    let triage_queue: Vec<queue::QueueItem> = triage_items.iter().map(to_queue_item).collect();
+    let grilling_queue: Vec<queue::QueueItem> = grilling_items.iter().map(to_queue_item).collect();
+    let triage_process = queue::triage_process_queue(&triage_queue, &grilling_queue, draft_item_ids);
+
+    let ordered_ids: Vec<String> =
+        frontier_ordered.into_iter().chain(triage_process.ids).collect();
+    let ordered_entries: Vec<frontier::FrontierItem> = ordered_ids
+        .iter()
+        .filter_map(|id| by_id.get(id.as_str()).map(|item| to_frontier_item(item)))
+        .collect();
+
+    let contexts = frontier::contexts_of(&ordered_entries);
+    let live_column_keys: Vec<String> = frontier::group_frontier(&ordered_entries, axis, projects)
         .into_iter()
-        .filter_map(|id| by_id.get(id.as_str()).map(|item| to_now_item_record(item, now)))
-        .collect()
+        .map(|column| column.value.unwrap_or_default())
+        .collect();
+
+    let shown_ids = frontier::apply_facets(&ordered_entries, facets, now);
+    let shown_entries: Vec<frontier::FrontierItem> = shown_ids
+        .iter()
+        .filter_map(|id| by_id.get(id.as_str()).map(|item| to_frontier_item(item)))
+        .collect();
+
+    let columns = frontier::group_frontier(&shown_entries, axis, projects)
+        .into_iter()
+        .map(|column| NowColumnRecord {
+            value: column.value,
+            label: column.label,
+            items: column
+                .ids
+                .iter()
+                .filter_map(|id| by_id.get(id.as_str()).map(|item| to_now_item_record(item, now)))
+                .collect(),
+        })
+        .collect();
+
+    let blocked = blocked
+        .iter()
+        .map(|(item, blockers)| NowBlockedEntryRecord {
+            item: to_blocked_item_record(item, now),
+            blocked_by_titles: blockers.iter().map(|blocker| blocker.title.clone()).collect(),
+        })
+        .collect();
+
+    NowBoardRecord { columns, blocked, contexts, live_column_keys }
 }
 
 // ----------------------------------------------------------------- M2 (#141)
@@ -914,26 +1266,96 @@ impl MobileTaskHost {
         map_run_outcome(outcome)
     }
 
-    /// Captures `title` — `CaptureActivity`'s whole surface (M1-5/#503).
-    /// **Local-first** (#128's own criterion): reaches
+    /// Captures a whole [`CaptureDraft`] — `CaptureScreen`'s full field set
+    /// (M3/#529), widened from M1-5/#503's title-only surface. **Still
+    /// local-first** (#128's own criterion): reaches
     /// [`hummingbird_core::Core::capture`], which durably enqueues via
     /// `SyncCycle::enqueue` and overlays the optimistic [`Item`] before any
     /// transport is ever touched, so the item exists in the local mirror the
-    /// instant this returns — sync or no sync, online or offline. Always
-    /// captures into `Stage::Triage` with every [`CaptureOptions`] field
-    /// absent: raw text only, no capture-meta surface in M1 (say so at every
-    /// call site rather than only here). Mints its own seed
-    /// ([`mint_mutation_seed`]) since the host supplies only `title`/`now_ms`.
-    pub async fn capture(&self, title: String, now_ms: i64) -> Result<String, MobileCaptureError> {
+    /// instant this returns — sync or no sync, online or offline.
+    ///
+    /// `draft.destination` picks [`hummingbird_core::Core::capture`]'s
+    /// `stage` argument; every other field resolves into a
+    /// [`CaptureOptions`] the same way [`MobileTaskHost::edit_item`]
+    /// resolves an [`ItemEdit`] into a `TriagePatch` — an unrecognised
+    /// `size`/`energy` word is refused here, before the core is ever
+    /// reached, rather than silently treated as absent. Mints its own seed
+    /// ([`mint_mutation_seed`]) since the host supplies only
+    /// `draft`/`now_ms`.
+    ///
+    /// This is a pure expose (#529's own framing): every decision here —
+    /// what counts as a valid date, what a priority `"0"` means, which
+    /// words are valid size/energy — already lives in
+    /// `hummingbird_core::decisions`; this method only assembles their
+    /// answers into the one [`CaptureOptions`] the core's own `capture`
+    /// takes. `Core::capture` itself still refuses no title (that stays
+    /// [`can_submit_capture`]'s job, called before this ever is).
+    pub async fn capture(
+        &self,
+        draft: CaptureDraft,
+        now_ms: i64,
+    ) -> Result<String, MobileCaptureError> {
+        let stage = match draft.destination {
+            CaptureDestination::Triage => Stage::Triage,
+            CaptureDestination::Ready => Stage::Ready,
+        };
+        let size = parse_optional_vocabulary(&draft.size, Size::parse)
+            .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
+        let energy = parse_optional_vocabulary(&draft.energy, Energy::parse)
+            .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
+        let options = CaptureOptions {
+            size,
+            energy,
+            context: some_if_present(&draft.context),
+            description: some_if_present(&draft.description),
+            priority: hummingbird_core::decisions::capture::priority_from_select(&draft.priority),
+            project_id: some_if_present(&draft.project_id),
+            deadline: some_if_present(&draft.deadline),
+            scheduled_date: some_if_present(&draft.scheduled_date),
+        };
+
         let seed = mint_mutation_seed("capture", now_ms);
         let mut inner = self.inner.lock().await;
         inner
             .core
-            .capture(&seed, title, Stage::Triage, now_ms, CaptureOptions::default())
+            .capture(&seed, draft.title, stage, now_ms, options)
             .await
             .map_err(|error| MobileCaptureError::CaptureFailed {
                 detail: error.to_string(),
             })
+    }
+
+    /// Every live project — the details disclosure's Project picker's read
+    /// (review finding on #529's own PR): the brief's "one new door" clause
+    /// governs [`capture_form_meta`]'s vocabulary/context bundle, not this
+    /// one, and this read needs the live mirror ([`hummingbird_core::Core::projects`]),
+    /// which a free function cannot reach. Shaped like [`MobileTaskHost::alerts`]
+    /// — a plain state-bearing read, not a `"busy"`-wrapped one, since a
+    /// checked-out mid-poll host still answers a synchronous method call
+    /// truthfully (`Core::projects`'s own doc: "id order, for a stable list
+    /// a caller can diff against its own").
+    ///
+    /// Only `id`/`name` cross, not the whole [`hummingbird_domain::Project`] row: a picker reads
+    /// nothing else, and `ffi-web::task_host::TaskHostCore::projects`
+    /// crosses the full row only because the web's `ProjectDTO` already
+    /// carries the rest for other callers. This seam does have the frontier's
+    /// "grouped by project" display now ([`MobileFrontierAxis::Project`],
+    /// M3/#530), but it feeds off its own mapping of the same
+    /// `Core::projects()` read — [`MobileTaskHost::now_board`]'s
+    /// `frontier::ProjectName`, built where the board is built — and that is
+    /// two mappings of one read at two layers, not a duplicate (#530's
+    /// FINAL-GATE review): the picker needs `MobileProject` records crossing
+    /// the seam to Kotlin, the grouping axis needs names inside Rust and
+    /// never crosses at all.
+    pub async fn projects(&self) -> Vec<MobileProject> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .projects()
+            .into_iter()
+            .map(|project| MobileProject { id: project.id, name: project.name })
+            .collect()
     }
 
     /// Drains queued [`CoreEvent`]s (today: `credential_needed`) — a
@@ -949,24 +1371,60 @@ impl MobileTaskHost {
             .collect()
     }
 
-    /// `NowScreen`'s whole read (M1-6/#504): the frontier
-    /// ([`hummingbird_core::Core::frontier`]), ordered exactly
-    /// [`frontier::by_priority_then_due`] orders it, each item already
-    /// decided into a [`NowItemRecord`] — its [`MobileUrgencyBand`]
-    /// ([`urgency::compute_urgency`]) and its wire-vocabulary
-    /// [`available_actions`] ([`hummingbird_core::decisions::available_actions`]).
-    /// See the module header for why this crosses decided records rather
-    /// than exposing the decision functions themselves.
+    /// `NowScreen`'s whole read (M1-6/#504, widened to the frontier board
+    /// by M3/#530): the frontier ([`hummingbird_core::Core::frontier`])
+    /// plus the triage-process queue ([`Core::triage_inbox`],
+    /// [`Core::grilling_items`], [`Core::grill_draft_item_ids`]), ordered,
+    /// faceted and grouped by `axis` — [`build_now_board`]'s doc has the
+    /// full recipe — plus [`Core::blocked`]'s relation-blocked section.
+    /// Each row is already decided into a [`NowItemRecord`] — its
+    /// [`MobileUrgencyBand`] ([`urgency::compute_urgency`]) and its
+    /// wire-vocabulary [`available_actions`]
+    /// ([`hummingbird_core::decisions::available_actions`]). See the
+    /// module header for why this crosses one decided board rather than
+    /// exposing the decision functions themselves — a render of the whole
+    /// screen costs this one crossing, however many columns or rows it
+    /// holds.
+    ///
+    /// This is the one seam door onto the frontier board: the flat
+    /// [`Vec<NowItemRecord>`] `now_queue` door M1-6 shipped retired into
+    /// this on M3/#530, rather than living alongside it as a second read
+    /// path.
     ///
     /// `now` is deadline-shaped (`YYYY-MM-DDTHH:MM`), the host's own local
     /// wall clock already rendered into that shape — the same convention
     /// `urgency.rs`'s module header states for [`urgency::compute_urgency`]:
     /// `hummingbird-core` resolves no civil date to an instant, so Android,
     /// like the web seam, is the reader that does.
-    pub async fn now_queue(&self, now: String) -> Vec<NowItemRecord> {
+    pub async fn now_board(
+        &self,
+        axis: MobileFrontierAxis,
+        facets: NowFacetSelectionRecord,
+        now: String,
+    ) -> NowBoardRecord {
         let inner = self.inner.lock().await;
-        let items = inner.core.frontier();
-        build_now_queue(&items, &now)
+        let frontier_items = inner.core.frontier();
+        let triage_items = inner.core.triage_inbox();
+        let grilling_items = inner.core.grilling_items();
+        let draft_item_ids = inner.core.grill_draft_item_ids();
+        let blocked = inner.core.blocked();
+        let projects: Vec<frontier::ProjectName> = inner
+            .core
+            .projects()
+            .into_iter()
+            .map(|project| frontier::ProjectName { id: project.id, name: project.name })
+            .collect();
+        build_now_board(
+            &frontier_items,
+            &triage_items,
+            &grilling_items,
+            &draft_item_ids,
+            &blocked,
+            &projects,
+            map_frontier_axis(axis),
+            &to_facet_selection(&facets),
+            &now,
+        )
     }
 
     /// One S11/#109 act (`start`/`complete`/`block`/`cancel`, S11's closed
@@ -1081,7 +1539,7 @@ impl MobileTaskHost {
     /// every source, newest raise first —
     /// [`hummingbird_core::Core::live_alerts`] verbatim, each row decided
     /// into an [`AlertRecord`]. `now_ms` is the host's wall clock in
-    /// milliseconds (unlike [`MobileTaskHost::now_queue`]'s civil-time
+    /// milliseconds (unlike [`MobileTaskHost::now_board`]'s civil-time
     /// `now`: alert liveness is instants throughout, no civil date to
     /// resolve).
     pub async fn alerts(&self, now_ms: i64) -> Vec<AlertRecord> {
@@ -1660,6 +2118,25 @@ pub fn microtask_run_body(
 mod tests {
     use super::*;
 
+    /// A [`CaptureDraft`] with only `title` set — every M1-5-era test below
+    /// pins behaviour that predates the rest of the field set, so this
+    /// keeps those cases unchanged rather than growing nine-field literals
+    /// that have nothing to do with what each test actually asserts.
+    fn title_only_draft(title: &str) -> CaptureDraft {
+        CaptureDraft {
+            title: title.to_string(),
+            destination: CaptureDestination::Triage,
+            size: String::new(),
+            energy: String::new(),
+            context: String::new(),
+            description: String::new(),
+            project_id: String::new(),
+            priority: String::new(),
+            deadline: String::new(),
+            scheduled_date: String::new(),
+        }
+    }
+
     #[test]
     fn exported_stub_matches_core_api_version() {
         assert_eq!(core_api_version(), hummingbird_core::API_VERSION);
@@ -1770,7 +2247,7 @@ mod tests {
         .await
         .unwrap();
 
-        let id = host.capture("buy milk".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
         assert!(!id.is_empty());
         assert_eq!(host.queue_depth().await, 1);
     }
@@ -1790,8 +2267,8 @@ mod tests {
         .await
         .unwrap();
 
-        let a = host.capture("first".to_string(), 5_000).await.unwrap();
-        let b = host.capture("second".to_string(), 5_000).await.unwrap();
+        let a = host.capture(title_only_draft("first"), 5_000).await.unwrap();
+        let b = host.capture(title_only_draft("second"), 5_000).await.unwrap();
         assert_ne!(a, b);
         assert_eq!(host.queue_depth().await, 2);
     }
@@ -1828,7 +2305,264 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(host.capture("   ".to_string(), 1_000).await.is_ok());
+        assert!(host.capture(title_only_draft("   "), 1_000).await.is_ok());
+    }
+
+    // ------------------------------------------------------------- M3 (#529)
+
+    /// [`capture_form_meta`] is a pure expose over
+    /// `hummingbird_core::decisions::vocabulary` (#500) — this pins that it
+    /// hands across the real values rather than some other list, so a
+    /// vocabulary rename (ADR-0024's own history: `short` -> `normal`)
+    /// cannot silently stop reaching Kotlin.
+    #[test]
+    fn capture_form_meta_carries_the_real_vocabulary_values() {
+        let meta = capture_form_meta();
+        assert_eq!(
+            meta.sizes,
+            vec![
+                VocabOption { value: "quick".to_string(), label: "Quick".to_string() },
+                VocabOption { value: "normal".to_string(), label: "Normal".to_string() },
+                VocabOption { value: "deep".to_string(), label: "Deep".to_string() },
+            ],
+        );
+        assert_eq!(
+            meta.energies,
+            vec![
+                VocabOption { value: "low".to_string(), label: "Low".to_string() },
+                VocabOption { value: "medium".to_string(), label: "Medium".to_string() },
+                VocabOption { value: "high".to_string(), label: "High".to_string() },
+            ],
+        );
+        assert_eq!(
+            meta.suggested_contexts,
+            vec!["@home", "@computer", "@phone", "@errands", "@garden"],
+        );
+    }
+
+    /// [`MobileTaskHost::projects`] on a mirror that has never synced
+    /// anything — the same "empty is a real, honest answer" case
+    /// `ffi-web::task_host`'s own
+    /// `a_fresh_host_reports_no_blocked_items_and_no_steps`-adjacent
+    /// `projects()` test pins on the web seam.
+    #[tokio::test]
+    async fn projects_on_a_fresh_mirror_is_empty_not_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-projects-empty");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(host.projects().await, Vec::<MobileProject>::new());
+    }
+
+    /// `CaptureActivity.kt`'s `PriorityRow` hardcodes its display order as
+    /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
+    /// JVM test cannot call a generated JNI binding directly
+    /// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
+    /// process), so the pin lives here, on the Rust side of the seam: if
+    /// `decisions::frontier::priority_rank`'s ordering ever changes, this
+    /// test breaks and names the Kotlin literal (`PriorityRow`,
+    /// `CaptureActivity.kt`) that must change to match.
+    ///
+    /// It reads the core rule **directly**, never through a
+    /// `#[uniffi::export]`ed pass-through: exporting one would put a
+    /// per-item decision function on the mobile seam that no Kotlin caller
+    /// wants (the module doc's own asymmetry — Android reads applied
+    /// results), to buy a test nothing but the test would use.
+    #[test]
+    fn the_priority_row_order_matches_priority_rank() {
+        let mut wire_values = vec![0i64, 1, 2, 3, 4];
+        wire_values.sort_by_key(|raw| frontier::priority_rank(*raw));
+        assert_eq!(
+            wire_values,
+            vec![1, 2, 3, 4, 0],
+            "PriorityRow's hardcoded Kotlin order (CaptureActivity.kt) must match this",
+        );
+    }
+
+    /// `NowScreen.kt`'s facet chips hold the size, energy and axis
+    /// vocabularies as Kotlin literals — the same shape `seam.ts` keeps on
+    /// the web side, where `seam.test.ts` pins them against the core
+    /// ("the one surviving unpinned vocabulary copy", the M1-2 review).
+    /// The mobile half of that pin lives here for `priority_rank`'s own
+    /// reason: a plain JVM test cannot call the generated JNI binding. If
+    /// any of these vocabularies moves, this test breaks and names the
+    /// Kotlin literal that must move with it.
+    ///
+    /// `URGENCY_VALUES` is deliberately absent: the facet's three words are
+    /// `UrgencyBand` minus `calm` (a facet for "nothing pressing" is a
+    /// facet for "everything"), which is a filter-vocabulary decision no
+    /// core constant states — web's `URGENCIES` is unpinned for the same
+    /// reason. The `when (band)` exhaustiveness gate in
+    /// `NowScreenStructuralTest` is what catches a fifth band.
+    #[test]
+    fn the_now_screen_facet_vocabularies_match_the_core() {
+        let sizes: Vec<String> = hummingbird_core::decisions::vocabulary::size_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect();
+        assert_eq!(
+            sizes,
+            vec!["quick", "normal", "deep"],
+            "NowScreen.kt's SIZE_VALUES must match this",
+        );
+
+        let energies: Vec<String> = hummingbird_core::decisions::vocabulary::energy_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect();
+        assert_eq!(
+            energies,
+            vec!["low", "medium", "high"],
+            "NowScreen.kt's ENERGY_VALUES must match this",
+        );
+
+        let axes: Vec<&str> = frontier::FRONTIER_GROUP_AXES
+            .into_iter()
+            .map(|axis| axis.as_str())
+            .collect();
+        assert_eq!(
+            axes,
+            vec!["context", "project", "size", "energy"],
+            "NowScreen.kt's FRONTIER_AXES (and AXIS_LABEL/NO_VALUE_LABEL) must match this order",
+        );
+    }
+
+    /// The whole field set reaches the captured [`Item`] in one mutation —
+    /// the mobile twin of `ffi-web::task_host`'s
+    /// `everything_the_capture_box_can_set_reaches_the_item_in_one_capture_mutation`.
+    #[tokio::test]
+    async fn a_full_draft_reaches_the_captured_item_in_one_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-full-draft");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let draft = CaptureDraft {
+            title: "renew the passport".to_string(),
+            destination: CaptureDestination::Ready,
+            size: "deep".to_string(),
+            energy: "high".to_string(),
+            context: "@computer".to_string(),
+            description: "before the trip".to_string(),
+            project_id: "proj-1".to_string(),
+            priority: "2".to_string(),
+            deadline: "2026-09-01".to_string(),
+            scheduled_date: "2026-08-30".to_string(),
+        };
+        let id = host.capture(draft, 1_000).await.unwrap();
+
+        let inner = host.inner.lock().await;
+        let item = inner.core.frontier().into_iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.stage, Stage::Ready);
+        assert_eq!(item.size, Some(Size::Deep));
+        assert_eq!(item.energy, Some(Energy::High));
+        assert_eq!(item.context, Some("@computer".to_string()));
+        assert_eq!(item.description, Some("before the trip".to_string()));
+        assert_eq!(item.project_id, Some("proj-1".to_string()));
+        assert_eq!(item.priority, 2);
+        assert_eq!(item.deadline, Some("2026-09-01".to_string()));
+        assert_eq!(item.scheduled_date, Some("2026-08-30".to_string()));
+    }
+
+    /// `destination: Triage` never reaches [`Core::frontier`] (Triage is
+    /// filtered out of it, the same fact
+    /// `capture_is_durable_before_any_network_is_touched` already leans on)
+    /// — proved instead through the queue depth plus a `Ready` capture
+    /// alongside it landing on the frontier, so both arms of the enum are
+    /// pinned in one test.
+    #[tokio::test]
+    async fn destination_picks_the_captured_items_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-destination");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        host.capture(title_only_draft("stays in triage"), 1_000).await.unwrap();
+        let ready_id = host
+            .capture(
+                CaptureDraft { destination: CaptureDestination::Ready, ..title_only_draft("goes to ready") },
+                1_000,
+            )
+            .await
+            .unwrap();
+
+        let inner = host.inner.lock().await;
+        let frontier = inner.core.frontier();
+        assert_eq!(frontier.len(), 1, "only the Ready capture should be on the frontier");
+        assert_eq!(frontier[0].id, ready_id);
+        drop(inner);
+        assert_eq!(host.queue_depth().await, 2, "the Triage capture is still durably queued");
+    }
+
+    /// An unrecognised size/energy word is refused before
+    /// [`hummingbird_core::Core::capture`] is ever reached — the same
+    /// "reject before the seam" discipline `FieldPatch::to_vocabulary`
+    /// already applies to the item-edit form, proved here by the queue
+    /// depth staying at zero.
+    #[tokio::test]
+    async fn an_unrecognised_size_or_energy_word_is_refused_before_the_core_is_reached() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-bad-vocab");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let bad_size = CaptureDraft { size: "gigantic".to_string(), ..title_only_draft("x") };
+        assert!(host.capture(bad_size, 1_000).await.is_err());
+
+        let bad_energy = CaptureDraft { energy: "extreme".to_string(), ..title_only_draft("y") };
+        assert!(host.capture(bad_energy, 1_000).await.is_err());
+
+        assert_eq!(host.queue_depth().await, 0);
+    }
+
+    /// `"0"` is the priority `Select`'s own resting value — "not sent",
+    /// never a sent zero (`priority_from_select`'s own doc) — pinned here
+    /// at the seam so a capture with no priority chosen never asserts one.
+    #[tokio::test]
+    async fn priority_zero_is_not_sent_through_the_seam() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-priority-zero");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let draft = CaptureDraft {
+            destination: CaptureDestination::Ready,
+            priority: "0".to_string(),
+            ..title_only_draft("no priority chosen")
+        };
+        let id = host.capture(draft, 1_000).await.unwrap();
+
+        let inner = host.inner.lock().await;
+        let item = inner.core.frontier().into_iter().find(|item| item.id == id).unwrap();
+        // The server's own default, never an asserted zero — same check
+        // `hummingbird_core::decisions::capture`'s own doc gives.
+        assert_eq!(item.priority, 0);
     }
 
     // ------------------------------------------------------- M1-6 (#504)
@@ -1859,72 +2593,346 @@ mod tests {
         }
     }
 
+    /// Every frontier column's rows, in column-then-row order — the flat
+    /// shape most of these tests want, over the whole board's own nested
+    /// one.
+    fn board_ids(board: &NowBoardRecord) -> Vec<String> {
+        board
+            .columns
+            .iter()
+            .flat_map(|column| column.items.iter().map(|record| record.id.clone()))
+            .collect()
+    }
+
+    fn no_facets() -> frontier::FacetSelection {
+        frontier::FacetSelection::default()
+    }
+
     /// The shared-fixture ordering pin: the exact fixture shapes
     /// `hummingbird_core::decisions::frontier`'s own
     /// `ranks_by_priority_label_never_the_raw_wire_number` and
     /// `within_the_same_priority_orders_by_deadline_chronologically` tests
-    /// use, proving [`build_now_queue`] — `now_queue`'s pure core — orders
+    /// use, proving [`build_now_board`] — `now_board`'s pure core — orders
     /// identically to the web frontier's own decision-sink pin, not a
     /// second, independently-drifting copy of the rule.
     #[test]
-    fn now_queue_orders_exactly_like_the_shared_frontier_fixtures() {
+    fn now_board_orders_exactly_like_the_shared_frontier_fixtures() {
         let none = item("none", 0, None);
         let urgent = item("urgent", 1, None);
         let low = item("low", 4, None);
 
-        let ids: Vec<String> = build_now_queue(&[none, low, urgent], "2026-08-15T12:00")
-            .into_iter()
-            .map(|record| record.id)
-            .collect();
-        assert_eq!(ids, vec!["urgent", "low", "none"]);
+        let board = build_now_board(
+            &[none, low, urgent],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &no_facets(),
+            "2026-08-15T12:00",
+        );
+        assert_eq!(board_ids(&board), vec!["urgent", "low", "none"]);
 
         let soon = item("soon", 1, Some("2026-08-15"));
         let later = item("later", 1, Some("2026-08-20"));
         let none_deadline = item("none-deadline", 1, None);
 
-        let ids: Vec<String> =
-            build_now_queue(&[none_deadline, later, soon], "2026-08-13T12:00")
-                .into_iter()
-                .map(|record| record.id)
-                .collect();
-        assert_eq!(ids, vec!["soon", "later", "none-deadline"]);
+        let board = build_now_board(
+            &[none_deadline, later, soon],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &no_facets(),
+            "2026-08-13T12:00",
+        );
+        assert_eq!(board_ids(&board), vec!["soon", "later", "none-deadline"]);
     }
 
     #[test]
-    fn now_queue_records_carry_urgency_priority_and_available_actions() {
+    fn now_board_records_carry_urgency_priority_available_actions_and_stage() {
         let overdue = item("overdue-id", 2, Some("2020-01-01"));
 
-        let records = build_now_queue(&[overdue], "2026-08-15T12:00");
+        let board = build_now_board(
+            &[overdue],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &no_facets(),
+            "2026-08-15T12:00",
+        );
 
-        assert_eq!(records.len(), 1);
-        let record = &records[0];
+        assert_eq!(board.columns.len(), 1);
+        let record = &board.columns[0].items[0];
         assert_eq!(record.urgency, MobileUrgencyBand::Overdue);
         assert_eq!(record.priority, 2);
         assert_eq!(
             record.available_actions,
             vec!["start", "complete", "block", "cancel"],
         );
+        assert_eq!(record.stage, "ready");
     }
 
     #[test]
-    fn now_queue_is_a_pure_function_returning_the_same_order_every_call() {
+    fn now_board_is_a_pure_function_returning_the_same_output_every_call() {
         let items = vec![item("a", 3, None), item("b", 1, None)];
+        let build = || {
+            build_now_board(
+                &items,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                frontier::FrontierAxis::Context,
+                &no_facets(),
+                "2026-08-15T12:00",
+            )
+        };
+        assert_eq!(build(), build());
+    }
+
+    /// Grouping: every column's own axis value and label, fullest first
+    /// (the same rule [`frontier::group_frontier`]'s own tests already
+    /// pin), decided all the way down to [`NowItemRecord`]s.
+    #[test]
+    fn now_board_groups_by_the_given_axis() {
+        let phone_a = Item { context: Some("@phone".to_string()), ..item("a", 0, None) };
+        let phone_b = Item { context: Some("@phone".to_string()), ..item("b", 0, None) };
+        let computer = Item { context: Some("@computer".to_string()), ..item("c", 0, None) };
+
+        let board = build_now_board(
+            &[phone_a, phone_b, computer],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &no_facets(),
+            "2026-08-15T12:00",
+        );
+
+        assert_eq!(board.columns[0].value.as_deref(), Some("@phone"));
         assert_eq!(
-            build_now_queue(&items, "2026-08-15T12:00"),
-            build_now_queue(&items, "2026-08-15T12:00"),
+            board.columns[0].items.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+            vec!["a", "b"],
+        );
+        assert_eq!(board.columns[1].value.as_deref(), Some("@computer"));
+    }
+
+    /// `live_column_keys` names every column the given axis produces over
+    /// the pre-facet list — including one the active facet selection has
+    /// just filtered every item out of, so a caller pruning a persisted
+    /// collapse set against it never mistakes "hidden by the live filter"
+    /// for "no longer exists".
+    #[test]
+    fn now_board_live_column_keys_survive_a_facet_that_empties_a_column() {
+        let phone = Item { context: Some("@phone".to_string()), ..item("a", 0, None) };
+        let computer = Item { context: Some("@computer".to_string()), ..item("b", 0, None) };
+        let picked = frontier::toggle_facet(&no_facets(), frontier::Facet::Context, "@phone");
+
+        let board = build_now_board(
+            &[phone, computer],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &picked,
+            "2026-08-15T12:00",
+        );
+
+        // @computer has no columns left once the filter is applied...
+        assert_eq!(board.columns.len(), 1);
+        assert_eq!(board.columns[0].value.as_deref(), Some("@phone"));
+        // ...but its key is still live, because the filter hid it rather
+        // than it ceasing to exist.
+        let mut keys = board.live_column_keys.clone();
+        keys.sort();
+        assert_eq!(keys, vec!["@computer", "@phone"]);
+    }
+
+    /// Facets narrow the shown set before grouping, exactly
+    /// [`frontier::apply_facets`]'s own contract.
+    #[test]
+    fn now_board_applies_the_given_facet_selection() {
+        let phone = Item { context: Some("@phone".to_string()), ..item("a", 0, None) };
+        let computer = Item { context: Some("@computer".to_string()), ..item("b", 0, None) };
+        let picked = frontier::toggle_facet(&no_facets(), frontier::Facet::Context, "@phone");
+
+        let board = build_now_board(
+            &[phone, computer],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &picked,
+            "2026-08-15T12:00",
+        );
+
+        assert_eq!(board_ids(&board), vec!["a"]);
+    }
+
+    /// `contexts` is computed over the ordered **pre-facet** list
+    /// (`frontier::contexts_of`, mirroring `FrontierColumns.tsx`'s own
+    /// `contextsOf(ordered)`), so a picked chip that narrows the board to
+    /// nothing but itself does not also remove every other chip from the
+    /// panel — the reviewer's own reason for pinning this to `ordered`
+    /// rather than `shown`.
+    #[test]
+    fn now_board_carries_the_live_context_vocabulary_from_the_pre_facet_list() {
+        let phone = Item { context: Some("@phone".to_string()), ..item("a", 0, None) };
+        let computer = Item { context: Some("@computer".to_string()), ..item("b", 0, None) };
+        let unjudged = item("c", 0, None);
+        let picked = frontier::toggle_facet(&no_facets(), frontier::Facet::Context, "@phone");
+
+        let board = build_now_board(
+            &[phone, computer, unjudged],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &picked,
+            "2026-08-15T12:00",
+        );
+
+        // The board is narrowed to @phone alone, but the chip vocabulary
+        // still names every context actually on the (unfiltered) board.
+        assert_eq!(board_ids(&board), vec!["a"]);
+        assert_eq!(board.contexts, vec!["@computer", "@phone", frontier::NO_CONTEXT]);
+    }
+
+    /// The triage-process queue rides inline, after the ordered frontier —
+    /// the web board's own concatenation (`FrontierColumns.tsx`), so a
+    /// capture with no context lands in the axis's no-value column,
+    /// beneath any already-startable frontier item there.
+    #[test]
+    fn now_board_appends_the_triage_process_queue_after_the_ordered_frontier() {
+        let ready = Item { context: Some("@phone".to_string()), ..item("ready-1", 1, None) };
+        let triage_capture = Item {
+            context: Some("@phone".to_string()),
+            stage: Stage::Triage,
+            ..item("triage-1", 0, None)
+        };
+
+        let board = build_now_board(
+            &[ready],
+            &[triage_capture],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &no_facets(),
+            "2026-08-15T12:00",
+        );
+
+        assert_eq!(
+            board.columns[0].items.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+            vec!["ready-1", "triage-1"],
         );
     }
 
-    /// End-to-end proof that [`MobileTaskHost::now_queue`] wires the real
-    /// `Core::frontier` read through [`build_now_queue`] — captures two
+    /// Blocked entries never join the frontier columns, and carry their
+    /// still-open blockers' titles.
+    #[test]
+    fn now_board_carries_a_separate_blocked_section() {
+        let blocker = item("blocker", 0, None);
+        let blocked_item = item("blocked-1", 0, None);
+
+        let board = build_now_board(
+            &[],
+            &[],
+            &[],
+            &[],
+            &[(blocked_item, vec![blocker])],
+            &[],
+            frontier::FrontierAxis::Context,
+            &no_facets(),
+            "2026-08-15T12:00",
+        );
+
+        assert!(board.columns.is_empty());
+        assert_eq!(board.blocked.len(), 1);
+        assert_eq!(board.blocked[0].item.id, "blocked-1");
+        assert_eq!(board.blocked[0].blocked_by_titles, vec!["item blocker"]);
+    }
+
+    /// A relation-blocked row offers the mark-done gesture and nothing
+    /// else, whatever its stage says — `Start` on an item with an open
+    /// blocker would mint an In Progress item that is still blocked, and
+    /// the web blocked row has never offered it (`NowScreen.tsx`'s
+    /// `canMarkDone`-gated `onComplete`).
+    #[test]
+    fn a_relation_blocked_row_offers_only_the_mark_done_gesture() {
+        for stage in [Stage::Ready, Stage::InProgress, Stage::Blocked, Stage::Triage] {
+            let blocked_item = Item { stage, ..item("blocked-1", 0, None) };
+            let board = build_now_board(
+                &[],
+                &[],
+                &[],
+                &[],
+                &[(blocked_item, vec![item("blocker", 0, None)])],
+                &[],
+                frontier::FrontierAxis::Context,
+                &no_facets(),
+                "2026-08-15T12:00",
+            );
+
+            assert_eq!(
+                board.blocked[0].item.available_actions,
+                vec!["complete"],
+                "a {stage:?} blocked row must offer mark-done and nothing else",
+            );
+        }
+    }
+
+    /// Done and archived blocked rows offer nothing at all — the same
+    /// `can_mark_done` answer, not a second rule.
+    #[test]
+    fn a_finished_or_archived_blocked_row_offers_no_action() {
+        for blocked_item in [
+            Item { stage: Stage::Done, ..item("blocked-done", 0, None) },
+            Item { archived_at: Some(1), ..item("blocked-archived", 0, None) },
+        ] {
+            let board = build_now_board(
+                &[],
+                &[],
+                &[],
+                &[],
+                &[(blocked_item, vec![item("blocker", 0, None)])],
+                &[],
+                frontier::FrontierAxis::Context,
+                &no_facets(),
+                "2026-08-15T12:00",
+            );
+
+            assert!(board.blocked[0].item.available_actions.is_empty());
+        }
+    }
+
+    /// End-to-end proof that [`MobileTaskHost::now_board`] wires the real
+    /// `Core::frontier` read through [`build_now_board`] — captures two
     /// items, promotes both to `Ready` with `Core::triage` (bypassing the
     /// FFI surface directly, same-crate access to `MobileTaskHost::inner`;
-    /// triage itself is out of M1-6's scope) at different priorities, and
-    /// asserts `now_queue` returns them in the decided order.
+    /// triage itself is out of scope here) at different priorities, and
+    /// asserts `now_board` returns them in the decided order.
     #[tokio::test]
-    async fn now_queue_reads_the_live_frontier_in_priority_order() {
+    async fn now_board_reads_the_live_frontier_in_priority_order() {
         let dir = tempfile::tempdir().unwrap();
-        let namespace = dir.path().join("m1-6-now-queue-ns");
+        let namespace = dir.path().join("m3-now-board-ns");
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
@@ -1933,8 +2941,8 @@ mod tests {
         .await
         .unwrap();
 
-        let low_id = host.capture("low priority".to_string(), 1_000).await.unwrap();
-        let urgent_id = host.capture("urgent thing".to_string(), 1_000).await.unwrap();
+        let low_id = host.capture(title_only_draft("low priority"), 1_000).await.unwrap();
+        let urgent_id = host.capture(title_only_draft("urgent thing"), 1_000).await.unwrap();
 
         {
             let mut inner = host.inner.lock().await;
@@ -1968,11 +2976,14 @@ mod tests {
                 .unwrap();
         }
 
-        let queue = host.now_queue("2026-08-15T12:00".to_string()).await;
-        assert_eq!(
-            queue.iter().map(|record| record.id.clone()).collect::<Vec<_>>(),
-            vec![urgent_id, low_id],
-        );
+        let board = host
+            .now_board(
+                MobileFrontierAxis::Context,
+                NowFacetSelectionRecord::default(),
+                "2026-08-15T12:00".to_string(),
+            )
+            .await;
+        assert_eq!(board_ids(&board), vec![urgent_id, low_id]);
     }
 
     #[tokio::test]
@@ -1987,7 +2998,7 @@ mod tests {
         .await
         .unwrap();
 
-        let id = host.capture("do it".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("do it"), 1_000).await.unwrap();
         {
             let mut inner = host.inner.lock().await;
             inner
@@ -1999,8 +3010,19 @@ mod tests {
 
         host.act(id.clone(), "start".to_string(), 3_000).await.unwrap();
 
-        let queue = host.now_queue("2026-08-15T12:00".to_string()).await;
-        let record = queue.iter().find(|r| r.id == id).expect("item still on the frontier");
+        let board = host
+            .now_board(
+                MobileFrontierAxis::Context,
+                NowFacetSelectionRecord::default(),
+                "2026-08-15T12:00".to_string(),
+            )
+            .await;
+        let record = board
+            .columns
+            .iter()
+            .flat_map(|column| column.items.iter())
+            .find(|r| r.id == id)
+            .expect("item still on the frontier");
         assert_eq!(record.available_actions, vec!["complete", "block", "cancel"]);
     }
 
@@ -2016,7 +3038,7 @@ mod tests {
         .await
         .unwrap();
 
-        let id = host.capture("whatever".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("whatever"), 1_000).await.unwrap();
         let result = host.act(id, "not-a-real-action".to_string(), 1_000).await;
         assert!(matches!(result, Err(MobileActError::ActFailed { .. })));
     }
@@ -2350,7 +3372,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let id = host.capture("buy milk".to_string(), 1_000).await.unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
 
         host.edit_item(
             id.clone(),

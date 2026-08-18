@@ -608,6 +608,269 @@ pub fn outside_schema_decline() -> String {
     skills::OUTSIDE_SCHEMA.to_string()
 }
 
+// ----------------------------------------------------------------- M4 (#533)
+// The standing-question panes: the pane shell contract's decided half, the
+// cross-pane sort, the zone bridge, and the waste pane. Same house style as
+// everything above — free functions over JSON, no constructor, no state.
+//
+// **The zone bridge is why two of these take a second JSON argument.** The
+// core owns no tzdb (`client/core/Cargo.toml`'s `chrono-tz` note), so a
+// civil-date pane is answered in two phases: the core names the
+// `(zone, civil-date)` facts it needs, the host resolves them with `Intl`
+// (`screens/questions/zone-bridge.ts`), and the core ranks against the
+// resolved table. A key the host omits is the unresolvable zone, and what
+// that *means* stays a core decision — see
+// `hummingbird_core::decisions::panes::zone`'s module header.
+
+use hummingbird_core::decisions::panes::{
+    self,
+    contract::{pane_key, RankedPaneRecord},
+    waste, PaneInputs, Surface, ZoneFacts, ZoneQuery,
+};
+
+fn parse_inputs(inputs_json: &str) -> Result<PaneInputs, String> {
+    serde_json::from_str(inputs_json).map_err(|e| e.to_string())
+}
+
+fn parse_zone_facts(zone_facts_json: &str) -> Result<ZoneFacts, String> {
+    serde_json::from_str(zone_facts_json).map_err(|e| e.to_string())
+}
+
+fn error_json(error: String) -> String {
+    serde_json::json!({ "error": error }).to_string()
+}
+
+/// A query list as the host reads it: each [`ZoneQuery`]'s own JSON with
+/// its [`ZoneQuery::key`] spliced in.
+///
+/// The key is sent rather than left for the host to derive, because it is
+/// the *whole* protocol — a host that computed `civil:{zone}:{atMs}` itself
+/// would be a second spelling of the one string both sides must agree on,
+/// and a mismatch would present as an unresolvable zone rather than as a
+/// bug.
+fn queries_json(queries: Vec<ZoneQuery>) -> String {
+    let rows: Vec<serde_json::Value> = queries
+        .into_iter()
+        .map(|query| {
+            let key = query.key();
+            let mut value = serde_json::to_value(&query).unwrap();
+            if let Some(object) = value.as_object_mut() {
+                object.insert("key".to_string(), serde_json::Value::String(key));
+            }
+            value
+        })
+        .collect();
+    serde_json::to_string(&rows).unwrap()
+}
+
+/// Every `(zone, civil-date)` fact the waste pane needs, given these
+/// inputs — phase one of the bridge, for the one-pane path `waste.ts`
+/// takes.
+#[wasm_bindgen]
+pub fn waste_zone_queries_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => queries_json(waste::waste_zone_queries(&inputs)),
+        Err(error) => error_json(error),
+    }
+}
+
+/// [`waste::waste_facts`] — the whole answered fact set, or the reason
+/// there is none, as `{"kind":"facts",…}` / `{"kind":"gap","gap":{…}}`.
+/// **No rendered sentence crosses**: the client composes its own words from
+/// these facts and from the gap's kind.
+#[wasm_bindgen]
+pub fn waste_facts_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&waste::waste_facts(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+/// [`waste::waste_answer`] — the pane shell's three decided fields
+/// (`answerState`, `band`, `withinBand`) and nothing else.
+#[wasm_bindgen]
+pub fn waste_answer_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&waste::waste_answer(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+/// [`waste::waste_setup`] — whether the collection page has been set, and
+/// which kind of not-set it is.
+#[wasm_bindgen]
+pub fn waste_setup_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&waste::waste_setup(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+/// [`waste::parse_waste_body`] over one `PaneSnapshotDTO`, as
+/// `{"kind":"ok","body":{…}}` / `{"kind":"gap","gap":{…}}`. `null` is the
+/// "no row at all" case, which is a gap kind of its own rather than an
+/// error.
+#[wasm_bindgen]
+pub fn parse_waste_body_json(snapshot_json: &str) -> String {
+    let snapshot: Option<hummingbird_core::decisions::panes::inputs::PaneSnapshotFacts> =
+        match serde_json::from_str(snapshot_json) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return error_json(error.to_string()),
+        };
+    match waste::parse_waste_body(snapshot.as_ref()) {
+        Ok(body) => serde_json::json!({ "kind": "ok", "body": body }).to_string(),
+        Err(gap) => serde_json::json!({ "kind": "gap", "gap": gap }).to_string(),
+    }
+}
+
+/// [`panes::zone_queries`] — phase one for a whole surface. `surface` is
+/// `"now"` or `"status"`; an unrecognised one asks for nothing rather than
+/// panicking.
+#[wasm_bindgen]
+pub fn pane_zone_queries_json(inputs_json: &str, surface: &str) -> String {
+    let Some(surface) = Surface::parse(surface) else {
+        return "[]".to_string();
+    };
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => queries_json(panes::zone_queries(surface, &inputs)),
+        Err(error) => error_json(error),
+    }
+}
+
+/// [`panes::rank_panes`] — phase two for a whole surface, already in
+/// display order. An unrecognised surface ranks nothing.
+#[wasm_bindgen]
+pub fn rank_panes_json(inputs_json: &str, zone_facts_json: &str, surface: &str) -> String {
+    let Some(surface) = Surface::parse(surface) else {
+        return "[]".to_string();
+    };
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&panes::rank_panes(surface, &inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+/// One pane as [`panes::order_panes`]/[`panes::same_pane_identity`] read it
+/// — the four fields the sort touches, and nothing the shell draws with.
+/// `paneKey` is optional on the wire and derived when absent, so a caller
+/// holding a `RankedPane` can send its own identity rather than have this
+/// boundary re-derive one that might disagree.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RankedPaneDTO {
+    question: String,
+    subject_key: String,
+    pane_key: Option<String>,
+    answer: hummingbird_core::decisions::panes::PaneAnswerCore,
+}
+
+fn to_record(dto: &RankedPaneDTO) -> RankedPaneRecord {
+    RankedPaneRecord {
+        pane_key: dto
+            .pane_key
+            .clone()
+            .unwrap_or_else(|| pane_key(&dto.question, &dto.subject_key)),
+        question: dto.question.clone(),
+        subject_key: dto.subject_key.clone(),
+        answer: dto.answer,
+    }
+}
+
+/// [`panes::order_panes`], JSON-encoded as **the ordered input indices**.
+///
+/// Indices rather than pane keys, on the same "ids cross, not whole items"
+/// reasoning as `order_frontier_ids` — but keyed by position rather than by
+/// identity, because nothing at this boundary enforces that `paneKey` is
+/// unique, and a duplicate would silently drop a pane from the region on
+/// the way back. The caller maps indices onto the `RankedPane`s it already
+/// holds, headline and glyphs included.
+#[wasm_bindgen]
+pub fn order_panes_json(panes_json: &str, question_order_json: &str) -> String {
+    let panes: Vec<RankedPaneDTO> = match serde_json::from_str(panes_json) {
+        Ok(panes) => panes,
+        Err(error) => return error_json(error.to_string()),
+    };
+    let question_order: Vec<String> = match serde_json::from_str(question_order_json) {
+        Ok(order) => order,
+        Err(error) => return error_json(error.to_string()),
+    };
+    // The index rides along as the subject key's neighbour: `order_panes`
+    // is total and non-mutating, so the ordered records can be matched back
+    // to their input positions by identity plus first-unused occurrence.
+    let records: Vec<RankedPaneRecord> = panes.iter().map(to_record).collect();
+    let ordered = panes::order_panes(&records, &question_order);
+
+    let mut taken = vec![false; records.len()];
+    let mut indices: Vec<usize> = Vec::with_capacity(ordered.len());
+    for pane in &ordered {
+        let found = records
+            .iter()
+            .enumerate()
+            .position(|(index, candidate)| !taken[index] && candidate == pane)
+            .unwrap_or(0);
+        taken[found] = true;
+        indices.push(found);
+    }
+    serde_json::to_string(&indices).unwrap()
+}
+
+/// [`panes::same_pane_identity`] — whether two ranked lists describe the
+/// same panes in the same answer states. Deliberately not a full equality;
+/// see the core function's own doc.
+#[wasm_bindgen]
+pub fn same_pane_identity_json(a_json: &str, b_json: &str) -> bool {
+    let parse = |s: &str| serde_json::from_str::<Vec<RankedPaneDTO>>(s);
+    match (parse(a_json), parse(b_json)) {
+        (Ok(a), Ok(b)) => {
+            let a: Vec<RankedPaneRecord> = a.iter().map(to_record).collect();
+            let b: Vec<RankedPaneRecord> = b.iter().map(to_record).collect();
+            panes::same_pane_identity(&a, &b)
+        }
+        // An unreadable list is not "the same as" anything: answering
+        // `true` here would freeze a captured order against a payload
+        // nobody could read.
+        _ => false,
+    }
+}
+
+/// [`hummingbird_core::decisions::panes::BAND_ORDER`], JSON-encoded — the
+/// pinning reader `seam.test.ts` holds `contract.ts`'s literal `BAND_ORDER`
+/// against. Not called in production: that array is read at
+/// module-evaluation time (see `seam.ts`'s M1-2 header for the constraint).
+#[wasm_bindgen]
+pub fn pane_band_order_json() -> String {
+    serde_json::to_string(&hummingbird_core::decisions::panes::BAND_ORDER).unwrap()
+}
+
+/// [`hummingbird_core::decisions::panes::QUESTION_ORDER`], pinned the same
+/// way — `registry.ts` builds `QUESTIONS` at module evaluation and would
+/// throw the seam's "used before ready" guard on every page load if this
+/// were a live call.
+#[wasm_bindgen]
+pub fn pane_question_order_json() -> String {
+    serde_json::to_string(&hummingbird_core::decisions::panes::QUESTION_ORDER).unwrap()
+}
+
+/// The waste pane's four constants, pinned against `waste.ts`'s literals
+/// for the same module-evaluation reason.
+#[wasm_bindgen]
+pub fn waste_constants_json() -> String {
+    serde_json::json!({
+        "source": waste::SOURCE,
+        "snapshotKey": waste::SNAPSHOT_KEY,
+        "bindingKey": waste::BINDING_KEY,
+        "staleAfterMs": waste::STALE_AFTER_MS,
+        "streamOrder": waste::STREAM_ORDER.map(|stream| stream.as_str()),
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +1084,197 @@ mod tests {
             "deadline": null,
         })
         .to_string()
+    }
+
+    // ------------------------------------------------------------ M4 (#533)
+    // Every binding below is a pass-through and nothing more — the rules
+    // are tested in `hummingbird_core::decisions::panes`, and the shared
+    // fixtures (`client/core/tests/pane_fixtures.rs` +
+    // `shared-fixtures.test.ts`) pin the two clients against each other.
+    // These pin that the JSON crossing did not grow an opinion of its own.
+
+    /// The waste pane's inputs, `QuestionInputs`-shaped exactly as
+    /// `seam.ts`'s `paneInputsPayload` sends them.
+    fn waste_inputs(body: &str, bindings: serde_json::Value) -> String {
+        serde_json::json!({
+            "nowMs": 1_786_377_600_000i64,
+            "bindings": bindings,
+            "paneReads": {
+                "city-waste/v2": {
+                    "source": "city-waste/v2",
+                    "snapshots": [{
+                        "key": "collection",
+                        "fetchedAtMs": 1_786_377_540_000i64,
+                        "envelope": {"kind":"ok","schema":"city-waste/v2","polledEveryMs":86_400_000,"body":body},
+                        "freshness": {"kind":"age","ageMs":60_000,"declaredCadenceMs":86_400_000},
+                    }],
+                    "liveAlerts": [],
+                },
+            },
+        })
+        .to_string()
+    }
+
+    fn bound_page() -> serde_json::Value {
+        serde_json::json!([
+            {"key":"city-waste-page","known":true,"pending":false,
+             "value":{"state":"text","text":"https://example.gov"}}
+        ])
+    }
+
+    const BODY: &str = r#"{"zone":"America/Los_Angeles","scheduled":"2026-08-17","collected_on":"2026-08-17","streams":["trash","yard"]}"#;
+    const FACTS: &str = r#"{"civil:America/Los_Angeles:1786377600000":"2026-08-10","midnight:America/Los_Angeles:2026-08-17":1786950000000}"#;
+
+    #[test]
+    fn waste_zone_queries_json_names_both_facts_and_carries_each_ones_key() {
+        let json = waste_zone_queries_json(&waste_inputs(BODY, bound_page()));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(), 2);
+        assert_eq!(parsed[0]["kind"], serde_json::json!("civilDate"));
+        assert_eq!(parsed[0]["key"], serde_json::json!("civil:America/Los_Angeles:1786377600000"));
+        assert_eq!(parsed[1]["kind"], serde_json::json!("midnight"));
+        assert_eq!(
+            parsed[1]["key"],
+            serde_json::json!("midnight:America/Los_Angeles:2026-08-17"),
+        );
+    }
+
+    #[test]
+    fn waste_answer_json_is_the_three_decided_fields_and_no_rendering() {
+        let json = waste_answer_json(&waste_inputs(BODY, bound_page()), FACTS);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["answerState"], serde_json::json!("answered"));
+        assert_eq!(parsed["band"], serde_json::json!("dormant"));
+        assert_eq!(parsed["withinBand"], serde_json::json!(1_786_950_000_000i64));
+        assert_eq!(parsed.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn waste_facts_json_answers_facts_or_a_gap_kind_never_a_sentence() {
+        let facts: serde_json::Value =
+            serde_json::from_str(&waste_facts_json(&waste_inputs(BODY, bound_page()), FACTS))
+                .unwrap();
+        assert_eq!(facts["kind"], serde_json::json!("facts"));
+        assert_eq!(facts["daysAway"], serde_json::json!(7));
+        assert_eq!(facts["holiday"], serde_json::json!(false));
+        assert_eq!(facts["weekdayIndex"], serde_json::json!(1));
+
+        // An empty table is the unresolvable zone, and the refusal is the
+        // core's — the binding invents nothing.
+        let gap: serde_json::Value =
+            serde_json::from_str(&waste_facts_json(&waste_inputs(BODY, bound_page()), "{}"))
+                .unwrap();
+        assert_eq!(gap["kind"], serde_json::json!("gap"));
+        assert_eq!(gap["gap"]["gap"], serde_json::json!("unresolvableZone"));
+        assert_eq!(gap["gap"]["zone"], serde_json::json!("America/Los_Angeles"));
+    }
+
+    #[test]
+    fn waste_setup_json_distinguishes_unread_from_unset() {
+        let unread = waste_setup_json(&waste_inputs(BODY, serde_json::Value::Null));
+        assert_eq!(unread, r#"{"kind":"unread"}"#);
+        let unset = waste_setup_json(&waste_inputs(BODY, serde_json::json!([])));
+        assert_eq!(unset, r#"{"kind":"unset"}"#);
+    }
+
+    #[test]
+    fn parse_waste_body_json_reads_a_body_or_names_the_gap_kind() {
+        let snapshot = serde_json::json!({
+            "key": "collection",
+            "envelope": {"kind":"ok","schema":"city-waste/v2","body":BODY},
+            "freshness": {"kind":"age","ageMs":0,"declaredCadenceMs":null},
+        })
+        .to_string();
+        let ok: serde_json::Value = serde_json::from_str(&parse_waste_body_json(&snapshot)).unwrap();
+        assert_eq!(ok["kind"], serde_json::json!("ok"));
+        assert_eq!(ok["body"]["collectedOn"], serde_json::json!("2026-08-17"));
+        assert_eq!(ok["body"]["streams"], serde_json::json!(["trash", "yard"]));
+
+        let absent: serde_json::Value = serde_json::from_str(&parse_waste_body_json("null")).unwrap();
+        assert_eq!(absent["gap"]["gap"], serde_json::json!("notFetched"));
+    }
+
+    #[test]
+    fn rank_panes_json_ranks_the_surfaces_own_questions_and_no_others() {
+        let inputs = waste_inputs(BODY, bound_page());
+        let now: serde_json::Value =
+            serde_json::from_str(&rank_panes_json(&inputs, FACTS, "now")).unwrap();
+        assert_eq!(now.as_array().unwrap().len(), 1);
+        assert_eq!(now[0]["paneKey"], serde_json::json!("waste:collection"));
+        assert_eq!(rank_panes_json(&inputs, FACTS, "status"), "[]");
+        assert_eq!(rank_panes_json(&inputs, FACTS, "not-a-surface"), "[]");
+        assert_eq!(pane_zone_queries_json(&inputs, "not-a-surface"), "[]");
+    }
+
+    #[test]
+    fn order_panes_json_answers_input_indices_in_display_order() {
+        let panes = serde_json::json!([
+            {"question":"alpha","subjectKey":"b","paneKey":"alpha:b",
+             "answer":{"answerState":"answered","band":"dormant","withinBand":0}},
+            {"question":"alpha","subjectKey":"a","paneKey":"alpha:a",
+             "answer":{"answerState":"answered","band":"live","withinBand":0}},
+        ])
+        .to_string();
+        assert_eq!(order_panes_json(&panes, r#"["alpha"]"#), "[1,0]");
+    }
+
+    /// Indices rather than pane keys is the whole reason this binding does
+    /// not lose a pane when two rows share an identity.
+    #[test]
+    fn order_panes_json_keeps_every_input_even_when_two_share_a_pane_key() {
+        let panes = serde_json::json!([
+            {"question":"alpha","subjectKey":"a","paneKey":"dup",
+             "answer":{"answerState":"answered","band":"dormant","withinBand":0}},
+            {"question":"alpha","subjectKey":"a","paneKey":"dup",
+             "answer":{"answerState":"answered","band":"dormant","withinBand":0}},
+        ])
+        .to_string();
+        let mut indices: Vec<usize> =
+            serde_json::from_str(&order_panes_json(&panes, r#"["alpha"]"#)).unwrap();
+        indices.sort();
+        assert_eq!(indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn same_pane_identity_json_ignores_the_clock_and_refuses_an_unreadable_list() {
+        let a = r#"[{"question":"alpha","subjectKey":"a","answer":{"answerState":"answered","band":"dormant","withinBand":900}}]"#;
+        let b = r#"[{"question":"alpha","subjectKey":"a","answer":{"answerState":"answered","band":"imminent","withinBand":5}}]"#;
+        assert!(same_pane_identity_json(a, b));
+        let gap = r#"[{"question":"alpha","subjectKey":"a","answer":{"answerState":"unbound","band":"dormant","withinBand":null}}]"#;
+        assert!(!same_pane_identity_json(a, gap));
+        assert!(!same_pane_identity_json(a, "not json"));
+    }
+
+    #[test]
+    fn the_pinning_readers_are_the_core_vocabularies_verbatim() {
+        assert_eq!(pane_band_order_json(), r#"["live","imminent","near","distant","dormant"]"#);
+        assert_eq!(
+            pane_question_order_json(),
+            r#"["waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
+        );
+        let constants: serde_json::Value =
+            serde_json::from_str(&waste_constants_json()).unwrap();
+        assert_eq!(constants["source"], serde_json::json!("city-waste/v2"));
+        assert_eq!(constants["snapshotKey"], serde_json::json!("collection"));
+        assert_eq!(constants["bindingKey"], serde_json::json!("city-waste-page"));
+        assert_eq!(constants["staleAfterMs"], serde_json::json!(93_600_000));
+        assert_eq!(constants["streamOrder"], serde_json::json!(["trash", "recycling", "yard"]));
+    }
+
+    #[test]
+    fn every_pane_binding_answers_rather_than_panicking_on_junk() {
+        for answer in [
+            waste_zone_queries_json("not json"),
+            waste_facts_json("not json", "{}"),
+            waste_answer_json("{}", "not json"),
+            waste_setup_json("not json"),
+            parse_waste_body_json("not json"),
+            pane_zone_queries_json("not json", "now"),
+            rank_panes_json("not json", "{}", "now"),
+            order_panes_json("not json", "[]"),
+        ] {
+            assert!(answer.contains("error"), "got {answer}");
+        }
     }
 
     /// [`priority_rank`] pass-through, pinned against the core rule the same

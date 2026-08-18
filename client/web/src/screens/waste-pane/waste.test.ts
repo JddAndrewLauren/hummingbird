@@ -112,17 +112,6 @@ describe("parseWasteBody", () => {
         }),
         /unknown kind of bin/,
       ],
-      [
-        snapshot({
-          envelope: {
-            kind: "ok",
-            schema: SOURCE,
-            polledEveryMs: null,
-            body: body({ zone: "Mars/Olympus_Mons" }),
-          },
-        }),
-        /unknown time zone/,
-      ],
     ];
     for (const [row, pattern] of cases) {
       const parsed = parseWasteBody(row);
@@ -131,6 +120,25 @@ describe("parseWasteBody", () => {
         expect(parsed.reason).toMatch(pattern);
       }
     }
+  });
+
+  it("reads a zone this runtime cannot resolve as a shape it CAN read (#533)", () => {
+    // The refusal did not vanish, it moved — see the answer-level test
+    // below. `parseWasteBody` used to call `zonedMidnightMs` here; the core
+    // (`hummingbird_core::decisions::panes::waste`) owns no tzdb and cannot,
+    // so its parser answers about the payload's *shape* only and the zone
+    // is refused once the bridge comes back without the fact.
+    const parsed = parseWasteBody(
+      snapshot({
+        envelope: {
+          kind: "ok",
+          schema: SOURCE,
+          polledEveryMs: null,
+          body: body({ zone: "Mars/Olympus_Mons" }),
+        },
+      }),
+    );
+    expect(parsed.kind).toBe("ok");
   });
 
   it("reads an unrecognised schema as this device being behind, not as a broken payload", () => {
@@ -361,6 +369,32 @@ describe("wasteAnswer", () => {
     // Not imminent, and above all not "Trash today".
     expect(answer.band).toBe("dormant");
     expect(answer.collapsedHeadline).toBe("No answer yet");
+  });
+
+  it("refuses a zone this runtime cannot resolve, with the same words as before (#533)", () => {
+    // The zone bridge's whole point, from the reader's side: the host
+    // resolves what `Intl` knows and OMITS the rest, and the core decides
+    // that an absent fact is a gap. Nothing invents a fallback zone, and
+    // the sentence is unchanged from when `parseWasteBody` refused it.
+    const martian = inputs({
+      paneReads: {
+        [SOURCE]: read([
+          snapshot({
+            envelope: {
+              kind: "ok",
+              schema: SOURCE,
+              polledEveryMs: null,
+              body: body({ zone: "Mars/Olympus_Mons" }),
+            },
+          }),
+        ]),
+      },
+    });
+
+    expect(wasteView(martian)).toBeNull();
+    expect(wasteGapReason(martian)).toMatch(/unknown time zone \(Mars\/Olympus_Mons\)/);
+    expect(wasteAnswer(martian).answerState).toBe("bound-but-unacquired");
+    expect(wasteAnswer(martian).collapsedHeadline).toBe("No answer yet");
   });
 
   it("marks an answer stale past the threshold without losing it", () => {

@@ -16,7 +16,13 @@ Rust/TS carve-out is redrawn for the multi-client world — decision logic
 (orderings, urgency/priority, band functions with their thresholds) sinks
 into the core behind the generated bindings; only rendering stays
 per-client. The threshold-beside-band reasoning survives; the pair moves
-together.
+together. · **amended 2026-08-18 by
+[ADR-0025](0025-decisions-sink-to-the-core-rendering-stays-per-client.md#the-zone-bridge-fixed-by-m4s-probe):**
+**Time** below is written in a one-client world, where the reader's zone
+database and the pane's rules share a runtime; a core with no tzdb splits it
+into a two-phase answer, and an unresolvable zone becomes a core decision
+rather than a host fallback. The invariant — a civil date is never stored as
+an instant, and resolves at read time — is untouched.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on
@@ -320,6 +326,8 @@ filtering the source's alerts by parsing `source_key`), which is exactly
 the "never parsed" rule this ADR is restating.
 
 ## Time
+
+*This section is amended by a later ADR — see the Status header.*
 
 **Device-local, everywhere, with no zone label.** This matches what the app
 already does for owned dates: `screens/urgency.ts` resolves a day-only

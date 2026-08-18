@@ -24,6 +24,7 @@ pub mod actions;
 pub mod capture;
 pub mod frontier;
 pub mod notification;
+pub mod panes;
 pub mod queue;
 pub mod skills;
 pub mod urgency;

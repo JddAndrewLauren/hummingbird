@@ -422,8 +422,14 @@ file.
 
 **Built, and deliberately ungated here.** `client/android/` has had a code
 root since M0 (#141) and now renders five screens — Now, Status, Alerts,
-alert detail and item detail — plus the notification lane's own shade UI.
-None of it is photographed by anything.
+alert detail and item detail — plus the capture box and the notification
+lane's own shade UI. Two of those have grown well past a list of rows: capture
+is a full field set since #529 (destination, size, energy, context,
+description, a project picker over the live project list, priority, deadline,
+scheduled date), and Now is the frontier board in the phone's single-column
+form since #530 (switchable grouping axis, facet chips, per-column collapse, a
+blocked section, axis and collapse state persisted through DataStore). None of
+it is photographed by anything.
 
 That is a real gap, not an oversight to fix casually: `android.yml` runs no
 emulator (its own header says why), so a screenshot matrix would need one
@@ -434,8 +440,8 @@ for a visual gate:
 - **Structural tests**, JVM, reading the Compose source as text —
   `NavigationStructuralTest`, `NowScreenStructuralTest`,
   `AlertsScreenStructuralTest`, `CaptureSubmitRefusalTest`,
-  `ScreenStateRetentionTest`. They answer "is it wired the way the ADRs
-  say", never "does it look right".
+  `CaptureFieldSetStructuralTest`, `ScreenStateRetentionTest`. They answer
+  "is it wired the way the ADRs say", never "does it look right".
 - **`ColorTokenDriftTest`** (#483, ADR-0026), which pins `ui/theme/Color.kt`
   against the design system's token CSS. It is the one thing here that
   *is* about appearance, and it covers the palette only — never layout,

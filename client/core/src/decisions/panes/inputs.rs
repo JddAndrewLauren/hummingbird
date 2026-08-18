@@ -1,0 +1,222 @@
+//! What a pane rule reads, and nothing else — the decisions-local input
+//! shape for the whole `panes` family (#533/M4).
+//!
+//! Same discipline as [`super::super::frontier::FrontierItem`]: **do not
+//! re-cross whole DTOs**. `QuestionInputs` (`contract.ts`) carries a sync
+//! snapshot, a calendar-read map, a connected flag and every actionable
+//! item; the sunk rules read three of its fields, so three is what crosses.
+//! A caller adding a field here is making a claim that some rule reads it.
+//!
+//! Deliberately **not** [`crate::pane::PaneRead`]. That type is
+//! `Serialize`-only and is a *read* type — what the core hands the host on
+//! its way out of `Core::pane_read` — while this is the host's own input on
+//! the way back in through a second, stateless wasm instance. Reusing it
+//! would make one type answer to two directions and quietly require a
+//! `Deserialize` derive on a view model.
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::freshness::Freshness;
+
+/// The clock, the bindings table and whatever pane reads have landed.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneInputs {
+    pub now_ms: i64,
+    /// `None` until the first `bindings` answer arrives — "nobody has read
+    /// the table yet", which is **not** the same as "the table is empty".
+    /// Reading the two as one showed every configured device the setup
+    /// prompt for the whole round trip between mount and that answer.
+    #[serde(default)]
+    pub bindings: Option<Vec<BindingFact>>,
+    /// Keyed by source, only what was actually requested. A missing entry
+    /// is "not read yet", never "no rows".
+    #[serde(default)]
+    pub pane_reads: HashMap<String, PaneReadFacts>,
+}
+
+impl PaneInputs {
+    /// The binding row for `key`, if the table has been read and holds one.
+    pub fn binding(&self, key: &str) -> Option<&BindingFact> {
+        self.bindings.as_ref()?.iter().find(|binding| binding.key == key)
+    }
+
+    /// One source's snapshot row under `key`, if that source has been read
+    /// at all.
+    pub fn snapshot(&self, source: &str, key: &str) -> Option<&PaneSnapshotFacts> {
+        self.pane_reads.get(source)?.snapshots.iter().find(|snapshot| snapshot.key == key)
+    }
+}
+
+/// One `settings` row as a pane rule reads it — the key and its value, with
+/// `known`/`pending` (the editor's concerns) left behind.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingFact {
+    pub key: String,
+    pub value: BindingValueFact,
+}
+
+/// Three states rather than `Option<String>`: "no row" and "a row holding
+/// something that is not text" are different facts, and collapsing the
+/// second into the first would let a pane claim the reader never set
+/// something they can see they did. `Other`'s stored JSON is deliberately
+/// not carried — displaying it is the editor's job, and no *decision* reads
+/// it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum BindingValueFact {
+    Unset,
+    Text { text: String },
+    Other,
+}
+
+/// One source's pane read, as a rule reads it: its snapshot rows.
+///
+/// `liveAlerts` is deliberately absent. The waste pane does not join the
+/// alert lane (a holiday *is* the answer, so joining it would render the
+/// same fact twice), and a field no rule reads has no business crossing —
+/// #534 adds it here if and when a sunk question needs one.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneReadFacts {
+    #[serde(default)]
+    pub snapshots: Vec<PaneSnapshotFacts>,
+}
+
+/// One `context_snapshots` row as a rule reads it. `fetchedAtMs` is absent
+/// on purpose: the age was already measured core-side
+/// ([`Freshness::measure`]'s clock rule) and re-deriving it here would be
+/// the second place that subtraction happens.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneSnapshotFacts {
+    pub key: String,
+    pub envelope: PaneEnvelopeFacts,
+    pub freshness: FreshnessFact,
+}
+
+/// One snapshot row's envelope, read shallowly. `schema` rides through
+/// untouched and is **never** registry-checked (ADR-0015): a source this
+/// build has not heard of is a fact about the build, and the pane says so
+/// itself.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum PaneEnvelopeFacts {
+    Ok { schema: String, body: String },
+    Malformed { reason: String },
+}
+
+/// [`Freshness`] in the host's own wire spelling (`FreshnessDTO`,
+/// `store/protocol.ts`), which is camelCase and tagged `kind` where
+/// `Freshness`'s own serde is snake_case and tagged `state`.
+///
+/// A second spelling rather than a re-tagged `Freshness`, because the
+/// existing wire is what the worker already emits and this seam is a
+/// *second* reader of it — changing `Freshness`'s tags to suit this
+/// crossing would move the existing one. The *reading* is not duplicated:
+/// [`FreshnessFact::is_stale_beyond`] converts and defers to
+/// [`Freshness::is_stale_beyond`], so the "`unknown` is never fresh" rule
+/// is still spelled exactly once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum FreshnessFact {
+    Unknown,
+    Age { age_ms: i64, declared_cadence_ms: Option<i64> },
+}
+
+impl FreshnessFact {
+    pub fn to_freshness(self) -> Freshness {
+        match self {
+            FreshnessFact::Unknown => Freshness::Unknown,
+            FreshnessFact::Age { age_ms, declared_cadence_ms } => {
+                Freshness::Age { age_ms, declared_cadence_ms }
+            }
+        }
+    }
+
+    /// Whether this answer is old enough to say so, against the caller's
+    /// own threshold — [`Freshness::is_stale_beyond`] verbatim, so no pane
+    /// can lose the `Unknown` arm by writing `age_ms > threshold` alone.
+    pub fn is_stale_beyond(self, threshold_ms: i64) -> bool {
+        self.to_freshness().is_stale_beyond(threshold_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const INPUTS: &str = r#"{
+        "nowMs": 1000,
+        "bindings": [
+            {"key":"city-waste-page","known":true,"pending":false,
+             "value":{"state":"text","text":"https://example.gov"}}
+        ],
+        "paneReads": {
+            "city-waste/v2": {
+                "source": "city-waste/v2",
+                "snapshots": [
+                    {"key":"collection","fetchedAtMs":900,
+                     "envelope":{"kind":"ok","schema":"city-waste/v2","polledEveryMs":86400000,"body":"{}"},
+                     "freshness":{"kind":"age","ageMs":100,"declaredCadenceMs":86400000}}
+                ],
+                "liveAlerts": []
+            }
+        },
+        "calendarReads": {},
+        "calendarConnected": false,
+        "items": []
+    }"#;
+
+    #[test]
+    fn reads_the_three_fields_a_rule_needs_out_of_the_hosts_whole_question_inputs() {
+        // The literal above is `QuestionInputs`-shaped, extra fields and
+        // all — the point is that the crossing ignores everything no rule
+        // reads rather than forcing the host to build a second object.
+        let inputs: PaneInputs = serde_json::from_str(INPUTS).unwrap();
+        assert_eq!(inputs.now_ms, 1000);
+        assert!(matches!(
+            inputs.binding("city-waste-page").map(|b| &b.value),
+            Some(BindingValueFact::Text { text }) if text == "https://example.gov"
+        ));
+        assert!(inputs.snapshot("city-waste/v2", "collection").is_some());
+        assert!(inputs.snapshot("city-waste/v2", "nope").is_none());
+        assert!(inputs.snapshot("nope", "collection").is_none());
+    }
+
+    #[test]
+    fn an_absent_bindings_table_is_not_an_empty_one() {
+        let unread: PaneInputs = serde_json::from_str(r#"{"nowMs":0,"bindings":null}"#).unwrap();
+        assert!(unread.bindings.is_none());
+        let empty: PaneInputs = serde_json::from_str(r#"{"nowMs":0,"bindings":[]}"#).unwrap();
+        assert_eq!(empty.bindings.as_deref(), Some(&[][..]));
+        assert!(unread.binding("anything").is_none());
+        assert!(empty.binding("anything").is_none());
+    }
+
+    #[test]
+    fn a_binding_holding_something_that_is_not_text_is_its_own_state() {
+        let inputs: PaneInputs = serde_json::from_str(
+            r#"{"nowMs":0,"bindings":[{"key":"k","value":{"state":"other","raw":"7"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(inputs.binding("k").map(|b| b.value.clone()), Some(BindingValueFact::Other));
+    }
+
+    #[test]
+    fn freshness_crosses_in_the_hosts_spelling_and_defers_to_the_core_stale_rule() {
+        let unknown: FreshnessFact = serde_json::from_str(r#"{"kind":"unknown"}"#).unwrap();
+        assert_eq!(unknown.to_freshness(), Freshness::Unknown);
+        // Never fresh, against any threshold — the whole reason this is a
+        // tagged union rather than a nullable age.
+        assert!(unknown.is_stale_beyond(i64::MAX));
+
+        let aged: FreshnessFact =
+            serde_json::from_str(r#"{"kind":"age","ageMs":100,"declaredCadenceMs":null}"#).unwrap();
+        assert!(!aged.is_stale_beyond(100));
+        assert!(aged.is_stale_beyond(99));
+    }
+}

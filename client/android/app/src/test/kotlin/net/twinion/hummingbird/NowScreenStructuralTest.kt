@@ -34,10 +34,10 @@ class NowScreenStructuralTest {
     }
 
     @Test
-    fun `NowViewModel imports the real uniffi nowQueue and act bindings`() {
+    fun `NowViewModel imports the real uniffi nowBoard and act bindings`() {
         assertTrue(
-            "expected NowViewModel to close over CoreHolder.get(...).nowQueue",
-            nowViewModelSrc.contains(".nowQueue("),
+            "expected NowViewModel to close over CoreHolder.get(...).nowBoard",
+            nowViewModelSrc.contains(".nowBoard("),
         )
         assertTrue(
             "expected NowViewModel to close over CoreHolder.get(...).act",
@@ -58,14 +58,17 @@ class NowScreenStructuralTest {
     }
 
     @Test
-    fun `neither NowScreen nor NowViewModel re-derives the frontier ordering, urgency banding, or act affordances locally`() {
+    fun `neither NowScreen nor NowViewModel re-derives the frontier ordering, grouping, urgency banding, or act affordances locally`() {
         // The decision functions this screen must never call directly —
         // they are not even exported to Kotlin (see lib.rs's module doc),
         // but a hand-rolled equivalent (a local priority comparator, a
         // hardcoded deadline-window band, a hardcoded per-stage action
-        // list) would silently disagree with the core rule the same way a
-        // Kotlin `isBlank()` copy disagrees with `can_submit_capture` on a
-        // BOM-only draft.
+        // list, a local grouping pass) would silently disagree with the
+        // core rule the same way a Kotlin `isBlank()` copy disagrees with
+        // `can_submit_capture` on a BOM-only draft. `groupBy` is M3/#530's
+        // own addition to this gate: the frontier board's columns arrive
+        // from `hummingbird_ffi_mobile::MobileTaskHost.nowBoard` already
+        // grouped, so neither file may re-group locally either.
         for ((name, src) in listOf(
             "NowScreen.kt" to nowScreenSrc,
             "NowViewModel.kt" to nowViewModelSrc,
@@ -78,6 +81,10 @@ class NowScreenStructuralTest {
             assertFalse(
                 "$name must not re-derive an urgency window (a raw day/hour arithmetic constant)",
                 Regex("""\b\d+\s*\*\s*24\s*\*\s*60\b""").containsMatchIn(src),
+            )
+            assertFalse(
+                "$name must not re-group the frontier locally (groupBy)",
+                src.contains("groupBy"),
             )
         }
     }
@@ -122,6 +129,52 @@ class NowScreenStructuralTest {
         assertTrue(
             "the swatch Box must be rendered only when urgencyColor gives one",
             Regex("""urgencyColor\([^)]*\)\?\.let""").containsMatchIn(nowScreenSrc),
+        )
+    }
+
+    @Test
+    fun `entering the screen crosses the seam once, not twice`() {
+        // #530: "One seam door returns the whole board; rendering it makes a
+        // single crossing." A one-shot `LaunchedEffect(Unit) { load(...) }`
+        // beside the resume effect's own refresh made entry read the board
+        // twice, and the two raced — the resume leg could paint a
+        // default-axis board before `load` restored the persisted axis. The
+        // resume effect owns the first read now (`NowViewModel.loadedOnce`),
+        // so no `LaunchedEffect(Unit)` may come back; `LaunchedEffect(syncTick)`
+        // is a different thing and stays.
+        assertFalse(
+            "NowScreen.kt must not re-add a one-shot LaunchedEffect(Unit) beside the resume effect",
+            nowScreenSrc.contains("LaunchedEffect(Unit)"),
+        )
+        assertTrue(
+            "the resume effect must branch on loadedOnce so the first resume is the load",
+            nowScreenSrc.contains("viewModel.loadedOnce"),
+        )
+    }
+
+    @Test
+    fun `the collapse control uses an icon and a full-sized touch target`() {
+        // The design system's ICONOGRAPHY rule is "Unicode as icons: never"
+        // (README) — the header drew "▸"/"▾" — and its 44px row height is
+        // the minimum touch target on every surface, which a bare
+        // `clickable` modifier does not supply.
+        for (triangle in listOf("▸", "▾")) {
+            assertFalse(
+                "NowScreen.kt must not draw a Unicode triangle as an icon",
+                nowScreenSrc.contains(triangle),
+            )
+        }
+        val header = Regex("""private fun ColumnHeader\([\s\S]*?\n}""")
+            .find(nowScreenSrc)
+            ?.value
+            ?: error("could not locate ColumnHeader in NowScreen.kt")
+        assertTrue(
+            "the collapse toggle must carry the 44dp minimum touch target",
+            header.contains("heightIn(min = 44.dp)"),
+        )
+        assertTrue(
+            "the collapse state must be drawn with the chevron drawable",
+            header.contains("R.drawable.ic_chevron_down"),
         )
     }
 
