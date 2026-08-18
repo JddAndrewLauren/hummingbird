@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,6 +19,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -32,8 +34,10 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -215,14 +219,22 @@ fun NowScreen(
         viewModel.refresh(nowDeadlineShaped())
     }
 
-    LaunchedEffect(Unit) { viewModel.load(nowDeadlineShaped()) }
-
     // Foreground refresh on every return to this screen — independent of
     // `syncTick` below, so a capture or an act taken elsewhere (or on
     // another device) shows up the moment this screen is looked at again,
     // even before the next sync cycle completes.
+    //
+    // The FIRST resume is the initial load, not a second one: a separate
+    // one-shot launched effect calling `load` alongside this made entry
+    // cross the seam twice, racing a default-axis board against the
+    // persisted one (#530's "rendering it makes a single crossing"; the
+    // structural gate names the shape that must not come back). `load` restores
+    // the axis/collapse set and then refreshes, so it is the resume path's
+    // own first iteration rather than a rival to it.
     LifecycleResumeEffect(Unit) {
-        val resumed = scope.launch { reload() }
+        val resumed = scope.launch {
+            if (viewModel.loadedOnce) reload() else viewModel.load(nowDeadlineShaped())
+        }
         onPauseOrDispose { resumed.cancel() }
     }
 
@@ -459,7 +471,18 @@ private fun FacetChipGroup(
 /** One column's (or the Blocked section's) header: its heading, its own
  * count (visible even while collapsed — a closed column must still say
  * how much is inside it), and the collapse toggle. `onToggleCollapsed`
- * is `null` for a section with no collapse of its own (Blocked). */
+ * is `null` for a section with no collapse of its own (Blocked).
+ *
+ * The whole row is the toggle, so it carries the design system's 44dp
+ * minimum touch target (README: "a 44px row height that doubles as the
+ * minimum touch target on every surface") — a `clickable` modifier, unlike
+ * Material3's own control components, enforces no minimum of its own, and
+ * a `titleMedium` line alone is well under it.
+ *
+ * The state is drawn with [R.drawable.ic_chevron_down], rotated a
+ * quarter-turn when the column is shut, not with a Unicode triangle: the
+ * design system's ICONOGRAPHY rule is "Unicode as icons: never". A section
+ * with no toggle draws no mark at all rather than a disabled-looking one. */
 @Composable
 private fun ColumnHeader(
     heading: String,
@@ -468,18 +491,33 @@ private fun ColumnHeader(
     onToggleCollapsed: (() -> Unit)?,
 ) {
     Row(
-        modifier = if (onToggleCollapsed != null) {
-            Modifier.fillMaxWidth().clickable(onClick = onToggleCollapsed)
-        } else {
-            Modifier.fillMaxWidth()
-        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onToggleCollapsed != null) {
+                    Modifier.heightIn(min = 44.dp).clickable(onClick = onToggleCollapsed)
+                } else {
+                    Modifier
+                },
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
+        if (onToggleCollapsed != null) {
+            Icon(
+                painterResource(R.drawable.ic_chevron_down),
+                // The heading says which column; this mark says only
+                // whether it is open, so that is what it names.
+                contentDescription = if (collapsed) "Expand" else "Collapse",
+                modifier = Modifier
+                    .size(20.dp)
+                    .rotate(if (collapsed) -90f else 0f),
+            )
+        }
         Text(
-            (if (collapsed) "▸ " else if (onToggleCollapsed != null) "▾ " else "") + heading,
+            heading,
             style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).padding(start = if (onToggleCollapsed != null) 4.dp else 0.dp),
         )
         Text(
             "$count",

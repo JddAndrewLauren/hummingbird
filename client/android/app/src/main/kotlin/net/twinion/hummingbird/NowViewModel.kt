@@ -109,12 +109,22 @@ class NowViewModel(
     private val _expanded = MutableStateFlow<Set<String>>(emptySet())
     val expanded: StateFlow<Set<String>> = _expanded.asStateFlow()
 
+    /** Whether [load] has completed at least once on this (Activity-scoped)
+     * instance — `NowScreen`'s resume effect reads it to tell its first
+     * resume, which must restore the persisted axis/collapse set, from
+     * every later one, which must not re-read preferences already held
+     * here. Set only after [load] returns, so a resume cancelled mid-load
+     * (a fold, a fast Back) leaves the next one to do the load again. */
+    var loadedOnce: Boolean = false
+        private set
+
     /** First load: restores the persisted axis/collapse set, then reads
-     * the board once under them — `NowScreen`'s one-time `LaunchedEffect`. */
+     * the board once under them — `NowScreen`'s first resume. */
     suspend fun load(now: String) {
         _axis.value = readAxisFn()
         _collapsed.value = readCollapsedFn()
         refresh(now)
+        loadedOnce = true
     }
 
     /** Reloads the board from [fetchBoardFn] under the current axis/facet

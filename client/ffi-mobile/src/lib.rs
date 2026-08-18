@@ -59,7 +59,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use hummingbird_core::decisions::{available_actions, frontier, queue, urgency};
+use hummingbird_core::decisions::{available_actions, can_mark_done, frontier, queue, urgency};
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
     HttpMethod, MutationRequest, MutationTransport,
@@ -178,24 +178,6 @@ pub fn capture_form_meta() -> CaptureFormMeta {
             .map(|context| context.to_string())
             .collect(),
     }
-}
-
-/// [`frontier::priority_rank`], the mobile twin of `ffi-web::decisions::
-/// priority_rank` — review finding on #529's own PR (note 5): `PriorityRow`
-/// (`CaptureActivity.kt`) keeps its five labels literal per ADR-0025's own
-/// verdict table (`priority.ts`'s labels stay client-side TS), but that row
-/// of the table records the *rank* itself as pinned against the core by
-/// `seam.test.ts`'s `priorityRankFromCore`, and the Kotlin literal order
-/// (`1,2,3,4,0`) had no equivalent pin. This free door plus
-/// `the_priority_row_order_matches_priority_rank` below is that pin's
-/// mobile half: a plain JVM test cannot call the generated JNI binding
-/// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
-/// process), so the guard lives here, on the Rust side of the seam, rather
-/// than in Kotlin — if `priority_rank`'s ordering ever moves, this test
-/// breaks and names the Kotlin literal that needs updating to match.
-#[uniffi::export]
-pub fn priority_rank(raw: i64) -> i64 {
-    frontier::priority_rank(raw)
 }
 
 /// The capture box's destination choice — Triage (the default funnel entry)
@@ -643,6 +625,30 @@ fn to_now_item_record(item: &Item, now: &str) -> NowItemRecord {
     }
 }
 
+/// [`to_now_item_record`] for a **relation-blocked** row, whose act
+/// vocabulary is narrower than its stage alone would say: only the
+/// core-decided mark-done gesture ([`hummingbird_core::decisions::
+/// can_mark_done`]), never `start`/`block`/`cancel`.
+///
+/// [`available_actions`] answers from [`Item::stage`] and nothing else, and
+/// a relation-blocked item's stage is usually `Ready` — so reusing the
+/// frontier record here offered `Start` on an item with an open blocker,
+/// and taking it minted an In Progress item that was still blocked. The web
+/// blocked row has always passed `onComplete` alone, gated on `canMarkDone`
+/// (`client/web/src/screens/NowScreen.tsx`); this is that rule, decided on
+/// this side of the seam so `NowScreen.kt` still renders whatever list it
+/// is handed rather than filtering one itself (the module doc's
+/// Android-decides-no-affordance rule).
+fn to_blocked_item_record(item: &Item, now: &str) -> NowItemRecord {
+    let record = to_now_item_record(item, now);
+    let actions = if can_mark_done(item.stage, item.archived_at.is_some()) {
+        vec![ItemAction::Complete.as_str().to_string()]
+    } else {
+        Vec::new()
+    };
+    NowItemRecord { available_actions: actions, ..record }
+}
+
 /// [`FrontierAxis`], mirrored as a `uniffi::Enum` — the grouping axis
 /// switch (M3/#530). A second, uniffi-derived definition of the same four
 /// axes rather than an annotation on the core type (ADR-0003, the same
@@ -823,7 +829,7 @@ fn build_now_board(
     let blocked = blocked
         .iter()
         .map(|(item, blockers)| NowBlockedEntryRecord {
-            item: to_now_item_record(item, now),
+            item: to_blocked_item_record(item, now),
             blocked_by_titles: blockers.iter().map(|blocker| blocker.title.clone()).collect(),
         })
         .collect();
@@ -1894,36 +1900,76 @@ mod tests {
         assert_eq!(host.projects().await, Vec::<MobileProject>::new());
     }
 
-    /// [`priority_rank`] pass-through, pinned against the core rule — the
-    /// same shape `ffi-web::decisions`'s own
-    /// `priority_rank_binding_is_the_core_rule_verbatim` pins on the web
-    /// side.
-    #[test]
-    fn priority_rank_binding_is_the_core_rule_verbatim() {
-        for raw in [0, 1, 2, 3, 4, 5, -1] {
-            assert_eq!(
-                priority_rank(raw),
-                hummingbird_core::decisions::frontier::priority_rank(raw),
-                "{raw} disagreed across the binding",
-            );
-        }
-    }
-
     /// `CaptureActivity.kt`'s `PriorityRow` hardcodes its display order as
     /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
-    /// JVM test cannot call the generated JNI binding directly
-    /// (`priority_rank`'s own doc). This is that pin's other half: if
+    /// JVM test cannot call a generated JNI binding directly
+    /// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
+    /// process), so the pin lives here, on the Rust side of the seam: if
     /// `decisions::frontier::priority_rank`'s ordering ever changes, this
     /// test breaks and names the Kotlin literal (`PriorityRow`,
     /// `CaptureActivity.kt`) that must change to match.
+    ///
+    /// It reads the core rule **directly**, never through a
+    /// `#[uniffi::export]`ed pass-through: exporting one would put a
+    /// per-item decision function on the mobile seam that no Kotlin caller
+    /// wants (the module doc's own asymmetry — Android reads applied
+    /// results), to buy a test nothing but the test would use.
     #[test]
     fn the_priority_row_order_matches_priority_rank() {
         let mut wire_values = vec![0i64, 1, 2, 3, 4];
-        wire_values.sort_by_key(|raw| priority_rank(*raw));
+        wire_values.sort_by_key(|raw| frontier::priority_rank(*raw));
         assert_eq!(
             wire_values,
             vec![1, 2, 3, 4, 0],
             "PriorityRow's hardcoded Kotlin order (CaptureActivity.kt) must match this",
+        );
+    }
+
+    /// `NowScreen.kt`'s facet chips hold the size, energy and axis
+    /// vocabularies as Kotlin literals — the same shape `seam.ts` keeps on
+    /// the web side, where `seam.test.ts` pins them against the core
+    /// ("the one surviving unpinned vocabulary copy", the M1-2 review).
+    /// The mobile half of that pin lives here for `priority_rank`'s own
+    /// reason: a plain JVM test cannot call the generated JNI binding. If
+    /// any of these vocabularies moves, this test breaks and names the
+    /// Kotlin literal that must move with it.
+    ///
+    /// `URGENCY_VALUES` is deliberately absent: the facet's three words are
+    /// `UrgencyBand` minus `calm` (a facet for "nothing pressing" is a
+    /// facet for "everything"), which is a filter-vocabulary decision no
+    /// core constant states — web's `URGENCIES` is unpinned for the same
+    /// reason. The `when (band)` exhaustiveness gate in
+    /// `NowScreenStructuralTest` is what catches a fifth band.
+    #[test]
+    fn the_now_screen_facet_vocabularies_match_the_core() {
+        let sizes: Vec<String> = hummingbird_core::decisions::vocabulary::size_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect();
+        assert_eq!(
+            sizes,
+            vec!["quick", "normal", "deep"],
+            "NowScreen.kt's SIZE_VALUES must match this",
+        );
+
+        let energies: Vec<String> = hummingbird_core::decisions::vocabulary::energy_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect();
+        assert_eq!(
+            energies,
+            vec!["low", "medium", "high"],
+            "NowScreen.kt's ENERGY_VALUES must match this",
+        );
+
+        let axes: Vec<&str> = frontier::FRONTIER_GROUP_AXES
+            .into_iter()
+            .map(|axis| axis.as_str())
+            .collect();
+        assert_eq!(
+            axes,
+            vec!["context", "project", "size", "energy"],
+            "NowScreen.kt's FRONTIER_AXES (and AXIS_LABEL/NO_VALUE_LABEL) must match this order",
         );
     }
 
@@ -2362,6 +2408,59 @@ mod tests {
         assert_eq!(board.blocked.len(), 1);
         assert_eq!(board.blocked[0].item.id, "blocked-1");
         assert_eq!(board.blocked[0].blocked_by_titles, vec!["item blocker"]);
+    }
+
+    /// A relation-blocked row offers the mark-done gesture and nothing
+    /// else, whatever its stage says — `Start` on an item with an open
+    /// blocker would mint an In Progress item that is still blocked, and
+    /// the web blocked row has never offered it (`NowScreen.tsx`'s
+    /// `canMarkDone`-gated `onComplete`).
+    #[test]
+    fn a_relation_blocked_row_offers_only_the_mark_done_gesture() {
+        for stage in [Stage::Ready, Stage::InProgress, Stage::Blocked, Stage::Triage] {
+            let blocked_item = Item { stage, ..item("blocked-1", 0, None) };
+            let board = build_now_board(
+                &[],
+                &[],
+                &[],
+                &[],
+                &[(blocked_item, vec![item("blocker", 0, None)])],
+                &[],
+                frontier::FrontierAxis::Context,
+                &no_facets(),
+                "2026-08-15T12:00",
+            );
+
+            assert_eq!(
+                board.blocked[0].item.available_actions,
+                vec!["complete"],
+                "a {stage:?} blocked row must offer mark-done and nothing else",
+            );
+        }
+    }
+
+    /// Done and archived blocked rows offer nothing at all — the same
+    /// `can_mark_done` answer, not a second rule.
+    #[test]
+    fn a_finished_or_archived_blocked_row_offers_no_action() {
+        for blocked_item in [
+            Item { stage: Stage::Done, ..item("blocked-done", 0, None) },
+            Item { archived_at: Some(1), ..item("blocked-archived", 0, None) },
+        ] {
+            let board = build_now_board(
+                &[],
+                &[],
+                &[],
+                &[],
+                &[(blocked_item, vec![item("blocker", 0, None)])],
+                &[],
+                frontier::FrontierAxis::Context,
+                &no_facets(),
+                "2026-08-15T12:00",
+            );
+
+            assert!(board.blocked[0].item.available_actions.is_empty());
+        }
     }
 
     /// End-to-end proof that [`MobileTaskHost::now_board`] wires the real

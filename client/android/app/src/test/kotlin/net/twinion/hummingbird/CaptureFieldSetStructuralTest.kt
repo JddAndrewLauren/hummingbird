@@ -181,6 +181,25 @@ class CaptureFieldSetStructuralTest {
         )
     }
 
+    /** The five priority chips wrap rather than clipping at a phone width
+     * — "Urgent / High / Medium / Low / No priority" does not fit one
+     * 360dp row at the default font scale, let alone a scaled-up one, and
+     * a fixed `Row` put the trailing priorities out of reach. No emulator
+     * here, so this gates the container choice itself, exactly as
+     * `NowScreenStructuralTest` does for the action buttons. */
+    @Test
+    fun `the priority chips wrap rather than clipping at a phone width`() {
+        val captureActivitySrc = captureFieldSrcByName.getValue("CaptureActivity.kt")
+        val row = Regex("""private fun PriorityRow\([\s\S]*?\n}""")
+            .find(captureActivitySrc)
+            ?.value
+            ?: error("could not locate PriorityRow in CaptureActivity.kt")
+        assertTrue(
+            "PriorityRow's chips must sit in a FlowRow, not a fixed Row",
+            row.contains("FlowRow("),
+        )
+    }
+
     /** Dictation stays title-field-only (#529's own boundary, carried from
      * M1-5): the transcript callback must never touch any field but the
      * title. */

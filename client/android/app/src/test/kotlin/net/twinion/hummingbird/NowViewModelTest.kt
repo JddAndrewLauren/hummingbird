@@ -70,6 +70,26 @@ class NowViewModelTest {
         assertFalse("loading must settle false once the fetch returns", vm.loading.value)
     }
 
+    /** #530's "rendering it makes a single crossing": entry reads the board
+     * once. `NowScreen` used to run a one-shot `LaunchedEffect { load }`
+     * beside its resume effect's `refresh`, so opening Now crossed the seam
+     * twice — and the two raced, letting a default-axis board win over the
+     * persisted one. The resume path now branches on [NowViewModel
+     * .loadedOnce], which this pins on both sides: unset until a `load`
+     * completes, set afterwards. */
+    @Test
+    fun `loadedOnce is false until a load completes, so entry loads exactly once`() = runBlocking {
+        var fetches = 0
+        val vm = viewModel(fetchBoardFn = { _, _, _ -> fetches += 1; board() })
+
+        assertFalse("a fresh ViewModel has not loaded", vm.loadedOnce)
+
+        vm.load("2026-08-15T12:00")
+
+        assertTrue("load must mark the instance loaded", vm.loadedOnce)
+        assertEquals("entry must read the board exactly once", 1, fetches)
+    }
+
     @Test
     fun `refresh loads whatever the injected fetch fn returns, in its own order`() = runBlocking {
         val vm = viewModel(fetchBoardFn = { _, _, _ -> board("b", "a") })

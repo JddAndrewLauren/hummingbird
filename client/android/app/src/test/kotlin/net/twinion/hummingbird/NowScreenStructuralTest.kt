@@ -133,6 +133,52 @@ class NowScreenStructuralTest {
     }
 
     @Test
+    fun `entering the screen crosses the seam once, not twice`() {
+        // #530: "One seam door returns the whole board; rendering it makes a
+        // single crossing." A one-shot `LaunchedEffect(Unit) { load(...) }`
+        // beside the resume effect's own refresh made entry read the board
+        // twice, and the two raced — the resume leg could paint a
+        // default-axis board before `load` restored the persisted axis. The
+        // resume effect owns the first read now (`NowViewModel.loadedOnce`),
+        // so no `LaunchedEffect(Unit)` may come back; `LaunchedEffect(syncTick)`
+        // is a different thing and stays.
+        assertFalse(
+            "NowScreen.kt must not re-add a one-shot LaunchedEffect(Unit) beside the resume effect",
+            nowScreenSrc.contains("LaunchedEffect(Unit)"),
+        )
+        assertTrue(
+            "the resume effect must branch on loadedOnce so the first resume is the load",
+            nowScreenSrc.contains("viewModel.loadedOnce"),
+        )
+    }
+
+    @Test
+    fun `the collapse control uses an icon and a full-sized touch target`() {
+        // The design system's ICONOGRAPHY rule is "Unicode as icons: never"
+        // (README) — the header drew "▸"/"▾" — and its 44px row height is
+        // the minimum touch target on every surface, which a bare
+        // `clickable` modifier does not supply.
+        for (triangle in listOf("▸", "▾")) {
+            assertFalse(
+                "NowScreen.kt must not draw a Unicode triangle as an icon",
+                nowScreenSrc.contains(triangle),
+            )
+        }
+        val header = Regex("""private fun ColumnHeader\([\s\S]*?\n}""")
+            .find(nowScreenSrc)
+            ?.value
+            ?: error("could not locate ColumnHeader in NowScreen.kt")
+        assertTrue(
+            "the collapse toggle must carry the 44dp minimum touch target",
+            header.contains("heightIn(min = 44.dp)"),
+        )
+        assertTrue(
+            "the collapse state must be drawn with the chevron drawable",
+            header.contains("R.drawable.ic_chevron_down"),
+        )
+    }
+
+    @Test
     fun `the action buttons wrap rather than clipping at a narrow width`() {
         // A Ready item offers all four actions (decisions::actions::
         // available_actions), and "Start / Complete / Mark blocked /

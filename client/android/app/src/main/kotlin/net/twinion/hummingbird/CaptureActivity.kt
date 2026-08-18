@@ -14,6 +14,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -457,8 +458,8 @@ private fun ProjectField(
  * **The order (`1,2,3,4,0` — Urgent..Low, then No priority last) is
  * `decisions::frontier::priority_rank`'s own order, pinned from the Rust
  * side** (review finding on #529's own PR, note 5): a plain JVM test
- * cannot call the generated JNI binding to check it here
- * (`hummingbird_ffi_mobile::priority_rank`'s own doc), so
+ * cannot call a generated JNI binding to check it here
+ * (`CaptureSubmitRefusalTest`'s own doc), so
  * `ffi-mobile/src/lib.rs`'s `the_priority_row_order_matches_priority_rank`
  * asserts this exact sequence against the real rule instead — if that rule
  * ever reorders, that Rust test breaks and names this list as what needs
@@ -480,7 +481,15 @@ private fun PriorityRow(selected: String, onSelect: (String) -> Unit) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // A `FlowRow`, not a `Row`: five labelled chips ("Urgent / High /
+        // Medium / Low / No priority") are wider than a phone at the
+        // default font scale, and a fixed, non-scrolling Row put the
+        // trailing priorities out of reach — the same clipping `NowScreen`'s
+        // action buttons already answered with a wrapping container.
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             for ((value, label) in options) {
                 FilterChip(
                     selected = value == selected,
