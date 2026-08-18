@@ -27,6 +27,7 @@ pub mod notification;
 pub mod panes;
 pub mod queue;
 pub mod rules;
+pub mod settings;
 pub mod skills;
 pub mod urgency;
 pub mod vocabulary;

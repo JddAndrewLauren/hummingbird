@@ -1191,6 +1191,60 @@ pub fn waste_constants_json() -> String {
     .to_string()
 }
 
+// -------------------------------------------------------------- #535 (M4)
+// The Settings screen's decision half: the sync-status readout and the
+// dead-letter heading. `sync_status_summary_json` takes the card's whole
+// input as one JSON object (`decisions::settings::SyncStatusInput`) and
+// answers all three of tone/label/word together — never three separate
+// calls that could read three different snapshots of "now".
+
+use hummingbird_core::decisions::settings::{self, SyncStatusInput};
+
+fn parse_sync_status_input(input_json: &str) -> Result<SyncStatusInput, String> {
+    serde_json::from_str(input_json).map_err(|e| e.to_string())
+}
+
+/// [`settings::sync_outcome_class`], by its wire spelling (`"held"`,
+/// `"failed"`, `"not-run"`, `"landed"`).
+#[wasm_bindgen]
+pub fn sync_outcome_class(kind: &str) -> String {
+    serde_json::to_value(settings::sync_outcome_class(kind))
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[wasm_bindgen]
+pub fn is_informative_sync_outcome(kind: &str) -> bool {
+    settings::is_informative_sync_outcome(kind)
+}
+
+#[wasm_bindgen]
+pub fn relative_age(age_ms: f64) -> String {
+    settings::relative_age(age_ms as i64)
+}
+
+/// `{"tone":"neutral"|"warn"|"danger"|"success","label":"...","toneWord":"..."}`,
+/// or `{"error":"..."}` on unparseable input.
+#[wasm_bindgen]
+pub fn sync_status_summary_json(input_json: &str) -> String {
+    match parse_sync_status_input(input_json) {
+        Ok(input) => serde_json::json!({
+            "tone": settings::sync_status_tone(&input),
+            "label": settings::sync_status_label(&input),
+            "toneWord": settings::sync_status_tone_word(&input),
+        })
+        .to_string(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn dead_letter_heading(count: u32) -> String {
+    settings::dead_letter_heading(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1986,5 +2040,46 @@ mod tests {
         }
         assert_eq!(decline_for_transport("  boom  "), "Could not reach the server: boom");
         assert_eq!(decline_for_transport(""), "Could not reach the server.");
+    }
+
+    #[test]
+    fn sync_status_summary_answers_tone_label_and_word_together() {
+        let json = sync_status_summary_json(
+            r#"{"online":true,"lastSyncOutcomeKind":"completed","lastSyncAtMs":0,"queueDepth":2,"nowMs":60000}"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["tone"], "success");
+        assert_eq!(parsed["label"], "Synced — as of 1m ago · 2 queued");
+        assert_eq!(parsed["toneWord"], "synced");
+    }
+
+    #[test]
+    fn sync_status_summary_reports_unparseable_input_rather_than_panicking() {
+        let json = sync_status_summary_json("not json");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("error").is_some());
+    }
+
+    #[test]
+    fn dead_letter_heading_is_the_core_rule_verbatim() {
+        assert_eq!(dead_letter_heading(1), "1 edit didn't apply");
+        assert_eq!(dead_letter_heading(3), "3 edits didn't apply");
+    }
+
+    #[test]
+    fn sync_outcome_class_and_informativeness_are_the_core_rules_verbatim() {
+        assert_eq!(sync_outcome_class("held"), "held");
+        assert_eq!(sync_outcome_class("pull_failed"), "failed");
+        assert_eq!(sync_outcome_class("skipped"), "not-run");
+        assert_eq!(sync_outcome_class("completed"), "landed");
+        assert!(!is_informative_sync_outcome("skipped"));
+        assert!(!is_informative_sync_outcome("busy"));
+        assert!(is_informative_sync_outcome("completed"));
+    }
+
+    #[test]
+    fn relative_age_is_the_core_rule_verbatim() {
+        assert_eq!(relative_age(0.0), "just now");
+        assert_eq!(relative_age(60_000.0), "1m ago");
     }
 }

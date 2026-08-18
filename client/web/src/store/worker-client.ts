@@ -1,4 +1,4 @@
-import { isInformativeSyncOutcome } from "../shell/sync-status";
+import { isInformativeSyncOutcome } from "../shell/sync-outcome-informative";
 import {
   advanceLastSuccessfulSyncAtMs,
   readLastSuccessfulSyncAtMs,

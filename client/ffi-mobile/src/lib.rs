@@ -59,9 +59,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use hummingbird_core::bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_core::decisions::{
     available_actions, can_mark_done, frontier, queue, rules, urgency,
 };
+use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
     HttpMethod, MutationRequest, MutationTransport,
@@ -1793,6 +1795,62 @@ impl MobileTaskHost {
         self.inner.lock().await.core.queue_depth() as u32
     }
 
+    /// Every dead-lettered entry (#535), per [`Core::dead_letters`] — S9's
+    /// "1 edit didn't apply" affordance, mapped the same shape
+    /// `ffi-web::task_host::map_dead_letter` uses (that crate's own copy,
+    /// since the two FFI crates share no DTO layer — ADR-0001 seam rule 2
+    /// is that each surfaces `Core` verbatim, not that they surface each
+    /// other).
+    pub async fn dead_letters(&self) -> Vec<MobileDeadLetterRecord> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .dead_letters()
+            .iter()
+            .map(to_dead_letter_record)
+            .collect()
+    }
+
+    /// Every standing-question binding (#535/#118), per [`Core::bindings`].
+    pub async fn bindings(&self) -> Vec<MobileBindingRecord> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .bindings()
+            .iter()
+            .map(to_binding_record)
+            .collect()
+    }
+
+    /// Sets one binding (#535/#118). `key` is the wire's kebab-case binding
+    /// name, resolved through [`BindingKey::parse`] before it ever reaches
+    /// [`Core::set_binding`] — the same "reject before the seam" discipline
+    /// [`MobileTaskHost::capture`] applies to its own vocabulary, and
+    /// load-bearing here for a second reason: `settings` has no DELETE, so
+    /// a key minted by mistake can never be taken back out of the table.
+    pub async fn set_binding(
+        &self,
+        seed: String,
+        key: String,
+        value: String,
+        now_ms: i64,
+    ) -> Result<(), MobileSetBindingError> {
+        let Some(key) = BindingKey::parse(&key) else {
+            return Err(MobileSetBindingError::UnknownKey);
+        };
+        self.inner
+            .lock()
+            .await
+            .core
+            .set_binding(&seed, key, &value, now_ms)
+            .await
+            .map_err(|error| MobileSetBindingError::WriteFailed {
+                detail: error.to_string(),
+            })
+    }
+
     /// A fresh device token from the person (first entry, or rotation
     /// after a `credential_needed` event). Always resumes a hold — see
     /// [`Core::push_api_key`].
@@ -2961,6 +3019,249 @@ pub fn microtask_run_body(
     model: Option<String>,
 ) -> String {
     skills::microtask_run_body(&skills::MicrotaskRunInput { item_id, replace, grain, model })
+}
+
+// -------------------------------------------------------------- #535 (M4)
+// The Settings screen: bindings, the outbound queue's dead-letter journal,
+// and the sync-status readout — the last of these sunk to
+// `hummingbird_core::decisions::settings` in the same slice (ADR-0025), so
+// this screen carries no Kotlin-side classification of what "stale"/
+// "held"/"synced" mean, matching the web's `shell/sync-status.ts` rewire.
+
+use hummingbird_core::decisions::settings;
+
+/// [`BindingValue`], mirrored as a `uniffi::Enum` — [`bindings.rs`]'s own
+/// three states, never collapsed into a nullable string.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileBindingValue {
+    Unset,
+    Text { text: String },
+    Other { raw: String },
+}
+
+fn to_binding_value(value: &BindingValue) -> MobileBindingValue {
+    match value {
+        BindingValue::Unset => MobileBindingValue::Unset,
+        BindingValue::Text { text } => MobileBindingValue::Text { text: text.clone() },
+        BindingValue::Other { raw } => MobileBindingValue::Other { raw: raw.clone() },
+    }
+}
+
+/// [`Binding`], mirrored — every [`BindingKey`] this build knows (set or
+/// not) plus every other live `settings` row, exactly as
+/// [`Core::bindings`]'s own doc describes.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileBindingRecord {
+    pub key: String,
+    pub known: bool,
+    pub pending: bool,
+    pub value: MobileBindingValue,
+}
+
+fn to_binding_record(binding: &Binding) -> MobileBindingRecord {
+    MobileBindingRecord {
+        key: binding.key.clone(),
+        known: binding.known,
+        pending: binding.pending,
+        value: to_binding_value(&binding.value),
+    }
+}
+
+/// [`MobileTaskHost::set_binding`] failed. `UnknownKey` is the seam
+/// rejecting a key that is not in ADR-0015's closed vocabulary — a caller
+/// mistake, and the one outcome that never reaches [`Core::set_binding`] at
+/// all; `WriteFailed` is a durability failure enqueueing the write. Same
+/// split [`MobileRuleError`] draws for its own seam.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileSetBindingError {
+    UnknownKey,
+    WriteFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileSetBindingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileSetBindingError::UnknownKey => write!(f, "unrecognised binding key"),
+            MobileSetBindingError::WriteFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileSetBindingError {}
+
+/// One field a dead-lettered [`DeadLetterReason::Conflict`] disagreed on —
+/// the local and server values carried as their own canonical JSON text
+/// (uniffi has no `serde_json::Value` equivalent, and this is opaque
+/// material the screen only displays, never parses further).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeadLetterFieldRecord {
+    pub field: String,
+    pub local_json: String,
+    pub server_json: String,
+}
+
+/// [`DeadLetterReason`], mirrored. `Permanent` carries `detail` (never
+/// `message` — the uniffi field-naming trap [`MobileInitError`]'s own doc
+/// records); `Conflict` and `Contention` carry no fields of their own here,
+/// since [`MobileDeadLetterRecord::fields`] already carries a `Conflict`'s
+/// field-level detail alongside the reason, matching
+/// `ffi-web::task_host::DeadLetterEntryDTO`'s split.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDeadLetterReason {
+    Permanent { detail: String },
+    Conflict,
+    Contention,
+}
+
+/// One dead-lettered entry — S9's "1 edit didn't apply" affordance.
+/// `entity`/`entity_id` are what the abandoned change was *about*
+/// ([`MutationIntent::subject`]), not the queue entry's own tracking id.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeadLetterRecord {
+    pub id: String,
+    pub reason: MobileDeadLetterReason,
+    pub fields: Vec<MobileDeadLetterFieldRecord>,
+    pub at_ms: i64,
+    pub entity: String,
+    pub entity_id: Option<String>,
+}
+
+/// The touched fields' *intended* (local) values a [`MutationIntent`]
+/// carries — [`ffi-web::task_host::local_field_values`]'s own copy of this
+/// reasoning: only a `Patch` has any.
+fn local_field_values(intent: &MutationIntent) -> serde_json::Map<String, serde_json::Value> {
+    match intent {
+        MutationIntent::Patch { patch_fields, .. } => {
+            patch_fields.as_object().cloned().unwrap_or_default()
+        }
+        MutationIntent::Create { .. } | MutationIntent::CompleteGrill { .. } => {
+            serde_json::Map::new()
+        }
+    }
+}
+
+fn to_dead_letter_record(entry: &DeadLetterEntry) -> MobileDeadLetterRecord {
+    let subject = entry.entry.intent.subject();
+    match &entry.reason {
+        DeadLetterReason::Permanent(detail) => MobileDeadLetterRecord {
+            id: entry.entry.id.clone(),
+            reason: MobileDeadLetterReason::Permanent { detail: detail.clone() },
+            fields: Vec::new(),
+            at_ms: entry.at_ms,
+            entity: subject.entity,
+            entity_id: subject.id,
+        },
+        DeadLetterReason::Conflict { fields, current } => {
+            let local = local_field_values(&entry.entry.intent);
+            let mapped_fields = fields
+                .iter()
+                .map(|field| MobileDeadLetterFieldRecord {
+                    field: field.clone(),
+                    local_json: local
+                        .get(field)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
+                        .to_string(),
+                    server_json: current
+                        .get(field)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
+                        .to_string(),
+                })
+                .collect();
+            MobileDeadLetterRecord {
+                id: entry.entry.id.clone(),
+                reason: MobileDeadLetterReason::Conflict,
+                fields: mapped_fields,
+                at_ms: entry.at_ms,
+                entity: subject.entity,
+                entity_id: subject.id,
+            }
+        }
+        DeadLetterReason::Contention { .. } => MobileDeadLetterRecord {
+            id: entry.entry.id.clone(),
+            reason: MobileDeadLetterReason::Contention,
+            fields: Vec::new(),
+            at_ms: entry.at_ms,
+            entity: subject.entity,
+            entity_id: subject.id,
+        },
+    }
+}
+
+/// [`settings::SyncStatusInput`], mirrored — the sync card's whole input,
+/// gathered so the summary below can never answer off three different
+/// snapshots of "now". `last_sync_outcome_kind` is the wire's own kind
+/// string (`RunOutcome::kind`), never re-parsed into a Kotlin enum.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileSyncStatusInput {
+    pub online: bool,
+    pub last_sync_outcome_kind: Option<String>,
+    pub last_sync_at_ms: Option<i64>,
+    pub queue_depth: Option<u32>,
+    pub now_ms: i64,
+}
+
+/// [`settings::SyncStatusTone`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSyncStatusTone {
+    Neutral,
+    Warn,
+    Danger,
+    Success,
+}
+
+fn map_sync_status_tone(tone: settings::SyncStatusTone) -> MobileSyncStatusTone {
+    match tone {
+        settings::SyncStatusTone::Neutral => MobileSyncStatusTone::Neutral,
+        settings::SyncStatusTone::Warn => MobileSyncStatusTone::Warn,
+        settings::SyncStatusTone::Danger => MobileSyncStatusTone::Danger,
+        settings::SyncStatusTone::Success => MobileSyncStatusTone::Success,
+    }
+}
+
+/// [`settings::sync_status_tone`]/[`settings::sync_status_label`]/
+/// [`settings::sync_status_tone_word`], answered together off one input —
+/// the badge and its label can never disagree about which state they
+/// describe.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileSyncStatusSummary {
+    pub tone: MobileSyncStatusTone,
+    pub label: String,
+    pub tone_word: String,
+}
+
+#[uniffi::export]
+pub fn sync_status_summary(input: MobileSyncStatusInput) -> MobileSyncStatusSummary {
+    let core_input = settings::SyncStatusInput {
+        online: input.online,
+        last_sync_outcome_kind: input.last_sync_outcome_kind,
+        last_sync_at_ms: input.last_sync_at_ms,
+        queue_depth: input.queue_depth,
+        now_ms: input.now_ms,
+    };
+    MobileSyncStatusSummary {
+        tone: map_sync_status_tone(settings::sync_status_tone(&core_input)),
+        label: settings::sync_status_label(&core_input),
+        tone_word: settings::sync_status_tone_word(&core_input),
+    }
+}
+
+/// [`settings::dead_letter_heading`] — the dead-letter affordance's
+/// heading, pluralised off the real count.
+#[uniffi::export]
+pub fn dead_letter_heading(count: u32) -> String {
+    settings::dead_letter_heading(count)
+}
+
+/// [`settings::is_informative_sync_outcome`] — whether a completed cycle's
+/// `RunOutcome::kind` says anything about how stale the mirror is. The
+/// host filters on this before overwriting its own last-outcome/
+/// last-synced-at state, the same guard `store/worker-client.ts` applies
+/// on the web side.
+#[uniffi::export]
+pub fn is_informative_sync_outcome(kind: String) -> bool {
+    settings::is_informative_sync_outcome(&kind)
 }
 
 #[cfg(test)]
@@ -5016,5 +5317,141 @@ mod skills_tests {
         for name in ["anthropic", "claude-", "sonnet", "opus", "haiku", "moonshot"] {
             assert!(!lowercase.contains(name), "the decline prose names {name}");
         }
+    }
+}
+
+/// The M4 (#535) Settings doors. Every exported function above is
+/// exercised here, for the same `dead_code` reason `skills_tests` states.
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    fn dummy_entry(id: &str, patch_fields: serde_json::Value) -> DeadLetterEntry {
+        DeadLetterEntry {
+            entry: hummingbird_core::sync::queue::QueueEntry {
+                id: id.to_string(),
+                intent: MutationIntent::Patch {
+                    path: "settings/city-waste-page".to_string(),
+                    method: hummingbird_core::sync::write::transport::HttpMethod::Put,
+                    base: serde_json::json!({}),
+                    base_updated_at: 0,
+                    patch_fields,
+                    rebase_fields: None,
+                },
+            },
+            reason: DeadLetterReason::Permanent("rejected".to_string()),
+            at_ms: 5_000,
+        }
+    }
+
+    #[test]
+    fn a_binding_record_carries_its_three_states_verbatim() {
+        assert_eq!(
+            to_binding_value(&BindingValue::Unset),
+            MobileBindingValue::Unset,
+        );
+        assert_eq!(
+            to_binding_value(&BindingValue::Text { text: "f1".to_string() }),
+            MobileBindingValue::Text { text: "f1".to_string() },
+        );
+        assert_eq!(
+            to_binding_value(&BindingValue::Other { raw: "7".to_string() }),
+            MobileBindingValue::Other { raw: "7".to_string() },
+        );
+
+        let binding = Binding {
+            key: "race-series".to_string(),
+            known: true,
+            pending: false,
+            value: BindingValue::Text { text: "motogp".to_string() },
+        };
+        let record = to_binding_record(&binding);
+        assert_eq!(record.key, "race-series");
+        assert!(record.known);
+        assert!(!record.pending);
+        assert_eq!(record.value, MobileBindingValue::Text { text: "motogp".to_string() });
+    }
+
+    #[test]
+    fn a_permanent_dead_letter_carries_its_detail_and_no_fields() {
+        let entry = dummy_entry("q-1", serde_json::json!({}));
+        let record = to_dead_letter_record(&entry);
+        assert_eq!(record.id, "q-1");
+        assert_eq!(
+            record.reason,
+            MobileDeadLetterReason::Permanent { detail: "rejected".to_string() },
+        );
+        assert!(record.fields.is_empty());
+        assert_eq!(record.at_ms, 5_000);
+        assert_eq!(record.entity, "settings");
+        assert_eq!(record.entity_id.as_deref(), Some("city-waste-page"));
+    }
+
+    #[test]
+    fn a_conflict_dead_letter_pairs_each_named_field_with_its_local_and_server_value() {
+        let mut entry = dummy_entry(
+            "q-2",
+            serde_json::json!({ "value": "new-page" }),
+        );
+        entry.reason = DeadLetterReason::Conflict {
+            fields: vec!["value".to_string()],
+            current: serde_json::json!({ "value": "someone-elses-page" }),
+        };
+        let record = to_dead_letter_record(&entry);
+        assert_eq!(record.reason, MobileDeadLetterReason::Conflict);
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].field, "value");
+        assert_eq!(record.fields[0].local_json, "\"new-page\"");
+        assert_eq!(record.fields[0].server_json, "\"someone-elses-page\"");
+    }
+
+    #[test]
+    fn a_contention_dead_letter_carries_neither_detail_nor_fields() {
+        let mut entry = dummy_entry("q-3", serde_json::json!({}));
+        entry.reason = DeadLetterReason::Contention { current: serde_json::json!({}) };
+        let record = to_dead_letter_record(&entry);
+        assert_eq!(record.reason, MobileDeadLetterReason::Contention);
+        assert!(record.fields.is_empty());
+    }
+
+    #[test]
+    fn the_sync_status_summary_is_the_core_rule_verbatim() {
+        let summary = sync_status_summary(MobileSyncStatusInput {
+            online: true,
+            last_sync_outcome_kind: Some("completed".to_string()),
+            last_sync_at_ms: Some(0),
+            queue_depth: Some(2),
+            now_ms: 60_000,
+        });
+        assert_eq!(summary.tone, MobileSyncStatusTone::Success);
+        assert_eq!(summary.label, "Synced — as of 1m ago · 2 queued");
+        assert_eq!(summary.tone_word, "synced");
+    }
+
+    #[test]
+    fn a_held_outcome_reads_as_held_never_a_silent_success() {
+        let summary = sync_status_summary(MobileSyncStatusInput {
+            online: true,
+            last_sync_outcome_kind: Some("credential_needed".to_string()),
+            last_sync_at_ms: Some(0),
+            queue_depth: None,
+            now_ms: 60_000,
+        });
+        assert_eq!(summary.tone, MobileSyncStatusTone::Warn);
+        assert_eq!(summary.label, "Held — device token needed");
+    }
+
+    #[test]
+    fn the_dead_letter_heading_is_the_core_rule_verbatim() {
+        assert_eq!(dead_letter_heading(1), "1 edit didn't apply");
+        assert_eq!(dead_letter_heading(2), "2 edits didn't apply");
+    }
+
+    #[test]
+    fn informativeness_is_the_core_rule_verbatim() {
+        assert!(!is_informative_sync_outcome("skipped".to_string()));
+        assert!(!is_informative_sync_outcome("busy".to_string()));
+        assert!(is_informative_sync_outcome("completed".to_string()));
+        assert!(is_informative_sync_outcome("held".to_string()));
     }
 }
