@@ -2,6 +2,7 @@ package net.twinion.hummingbird
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -81,6 +82,7 @@ fun RulesScreen(
     val draft by viewModel.draft.collectAsState()
     val form by viewModel.form.collectAsState()
     val backtest by viewModel.backtest.collectAsState()
+    val pendingEnabled by viewModel.pendingEnabled.collectAsState()
 
     suspend fun reload() = viewModel.load()
 
@@ -142,6 +144,7 @@ fun RulesScreen(
                     )
                     is RulesState.Loaded -> ListBody(
                         rules = current.rules,
+                        pendingEnabled = pendingEnabled,
                         onNew = { scope.launch { viewModel.beginCreate() } },
                         onEdit = { record -> scope.launch { viewModel.beginEdit(record) } },
                         onSetEnabled = { ruleId, enabled ->
@@ -173,6 +176,7 @@ private fun RulesNotSyncedBody(onRetry: () -> Unit) {
 @Composable
 private fun ListBody(
     rules: List<RuleRecord>,
+    pendingEnabled: Map<String, Boolean>,
     onNew: () -> Unit,
     onEdit: (RuleRecord) -> Unit,
     onSetEnabled: (String, Boolean) -> Unit,
@@ -194,6 +198,7 @@ private fun ListBody(
     for (rule in rules) {
         RuleCard(
             rule = rule,
+            pending = pendingEnabled[rule.id],
             onEdit = { onEdit(rule) },
             onSetEnabled = { enabled -> onSetEnabled(rule.id, enabled) },
         )
@@ -205,6 +210,9 @@ private fun ListBody(
 @Composable
 private fun RuleCard(
     rule: RuleRecord,
+    /** A switch position tapped but not yet handed back, or null when the
+     * row and the switch agree — [RulesViewModel.pendingEnabled]. */
+    pending: Boolean?,
     onEdit: () -> Unit,
     onSetEnabled: (Boolean) -> Unit,
 ) {
@@ -226,8 +234,18 @@ private fun RuleCard(
                 Text(rule.name, style = MaterialTheme.typography.titleMedium)
                 // The toggle is one CAS field. `enabled` is read for the
                 // toggle and for nothing else — a disabled rule is not an
-                // invalid one, and the two facts arrive separately.
-                Switch(checked = rule.enabled, onCheckedChange = onSetEnabled)
+                // invalid one, and the two facts arrive separately. The
+                // tapped position wins over the row's until the write lands,
+                // and the badge below says which one this is.
+                Switch(checked = pending ?: rule.enabled, onCheckedChange = onSetEnabled)
+            }
+
+            if (pending != null) {
+                Text(
+                    "Not synced yet — this device is still holding that change.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             val meta = buildList {
@@ -323,7 +341,11 @@ private fun EditBody(
         label = "KIND",
         options = form.kindOptions.map { it.key to kindLabel(it.labelKey) },
         selected = draft.eventKind,
-        onSelect = { key -> onChange(draft.copy(eventKind = key)) },
+        // Changing the kind empties the conditions, as the web form does: a
+        // row naming the old kind's field renders operator-less here and the
+        // seam refuses the save it leads to ("… is not a field this kind
+        // declares"), with nothing on screen saying which row to remove.
+        onSelect = { key -> onChange(draft.copy(eventKind = key, conditions = emptyList())) },
     )
 
     ChoiceRow(
@@ -512,7 +534,15 @@ private fun ChoiceRow(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // A `FlowRow`, not a `Row`, for `NowScreen`'s reason: KIND draws every
+        // kind the registry declares plus ADR-0013's null one, and FIELD draws
+        // every field a kind offers — both past the width of a phone, and a
+        // fixed `Row` clips what does not fit rather than wrapping it, leaving
+        // the trailing choices invisible and untappable.
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             for ((key, wording) in options) {
                 if (key == selected) {
                     Button(onClick = { onSelect(key) }) { Text(wording) }

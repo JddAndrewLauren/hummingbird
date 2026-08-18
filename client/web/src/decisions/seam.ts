@@ -90,6 +90,7 @@ export interface DecisionsModule {
   rule_format_duration(amount: number, unit: string): string;
   rule_duration_units_json(fieldType: string): string;
   rule_is_below_alarm_interval(value: string, alarmIntervalMs: number): boolean;
+  rule_default_severity(): string;
   rule_fields_for_kind_json(registryJson: string, eventKind: string | undefined): string;
   rule_field_type(
     registryJson: string,
@@ -645,6 +646,12 @@ export function durationUnitsFor(fieldType: "timestamp" | "date"): DurationUnit[
  * duration warning (#138). Warn, never reject. */
 export function isBelowAlarmInterval(value: string, alarmIntervalMs: number): boolean {
   return required().rule_is_below_alarm_interval(value, alarmIntervalMs);
+}
+
+/** `hummingbird_core::decisions::rules::DEFAULT_SEVERITY` — the severity a
+ * fresh draft opens on, which the phone's form reads from the same const. */
+export function defaultSeverity(): string {
+  return required().rule_default_severity();
 }
 
 /** The registry crosses in full on every call: it is five kinds, the caller

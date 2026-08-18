@@ -57,7 +57,9 @@
 //!    exact rather than approximate. Every other field offered here is a
 //!    direct 1:1 copy of what `item_threshold_event` sets.
 
-use hummingbird_domain::{deadline_sort_key, is_valid_deadline, shift, Condition, FieldValue};
+use hummingbird_domain::{
+    deadline_sort_key, is_valid_deadline, shift, Condition, DurationUnit, FieldValue,
+};
 use hummingbird_rules_engine::Operator;
 
 /// The one instant, in both frames a backtest reads (see the header).
@@ -283,6 +285,14 @@ fn bool_match(value: &FieldValue, condition_value: &serde_json::Value) -> bool {
 /// host's job at its own edge (see the header), and a lexicographic
 /// comparison against a shape this crate cannot read would be an answer,
 /// not a refusal.
+///
+/// `scheduled_date` is the exception, and the reason this dispatches on the
+/// field name a second time: `EVENT_KINDS` types it `date`, not `timestamp`,
+/// and `eval`'s `FieldType::Date` arm compares it day to day and accepts `d`
+/// units only. Resolving it to `T23:59` like a deadline and comparing against
+/// a cutoff that carries `now`'s time of day drops the boundary day
+/// wholesale — `within_next 3d` at noon excludes the date exactly three days
+/// out, which is the day the sweep would have fired on.
 fn time_match(
     op: Operator,
     field: &str,
@@ -317,6 +327,22 @@ fn time_match(
                 Operator::WithinLast => -amount,
                 _ => return false,
             };
+            if field == "scheduled_date" {
+                if unit != DurationUnit::Days || field_str.len() != 10 {
+                    return false;
+                }
+                let Some(now_date) = now.get(..10) else {
+                    return false;
+                };
+                let Some(cutoff) = shift(now_date, signed, unit) else {
+                    return false;
+                };
+                return match op {
+                    Operator::WithinNext => field_str.as_str() <= cutoff.as_str(),
+                    Operator::WithinLast => field_str.as_str() >= cutoff.as_str(),
+                    _ => false,
+                };
+            }
             let Some(raw_cutoff) = shift(now, signed, unit) else {
                 return false;
             };
@@ -502,6 +528,46 @@ mod tests {
             &clock(),
         );
         assert_eq!(matched(&outcome), ["i-1", "i-2"]);
+    }
+
+    /// `scheduled_date` is `date`-typed, so the boundary day is inside the
+    /// window whatever time of day it is asked at — the clock here is noon,
+    /// where resolving the value to `T23:59` against a `T12:00` cutoff would
+    /// drop `i-2`, the very day the sweep fires on.
+    #[test]
+    fn scheduled_date_compares_whole_days_including_the_boundary() {
+        let mut inside = item("i-1");
+        inside.scheduled_date = Some("2026-08-17".to_string());
+        let mut boundary = item("i-2");
+        boundary.scheduled_date = Some("2026-08-18".to_string());
+        let mut beyond = item("i-3");
+        beyond.scheduled_date = Some("2026-08-19".to_string());
+        let outcome = backtest(
+            Some("item_threshold"),
+            &[condition("scheduled_date", "within_next", serde_json::json!("3d"), false)],
+            &[inside, boundary, beyond],
+            &clock(),
+        );
+        assert_eq!(matched(&outcome), ["i-1", "i-2"]);
+    }
+
+    /// A `date` field accepts `d` units only, and the authority 400s a rule
+    /// that says otherwise (`validate_rule`). Carrying `18h` over from a
+    /// retyped `deadline` row must count nothing here rather than report a
+    /// number for a rule that cannot be saved — `18h` and not `6h` because
+    /// only a duration that reaches past tonight tells the two readings
+    /// apart.
+    #[test]
+    fn a_sub_day_unit_on_scheduled_date_matches_nothing() {
+        let mut today = item("i-1");
+        today.scheduled_date = Some("2026-08-15".to_string());
+        let outcome = backtest(
+            Some("item_threshold"),
+            &[condition("scheduled_date", "within_next", serde_json::json!("18h"), false)],
+            &[today],
+            &clock(),
+        );
+        assert!(matched(&outcome).is_empty());
     }
 
     #[test]

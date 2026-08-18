@@ -49,6 +49,7 @@ class RulesViewModelTest {
         ),
         fields = fields.toList(),
         severities = listOf("low", "normal", "high", "urgent"),
+        defaultSeverity = "normal",
         tiers = listOf(MobileTier.URGENT, MobileTier.NORMAL),
         alarmIntervalMs = 900_000,
     )
@@ -151,6 +152,31 @@ class RulesViewModelTest {
         assertTrue(model.state.value is RulesState.Loaded)
     }
 
+    /** `Core::rules()` has no optimistic overlay, so the re-read after a
+     * toggle returns the *unchanged* row until a cycle lands. The tapped
+     * position has to survive that, or the switch visibly reverts. */
+    @Test
+    fun `a toggled switch holds its position until the row catches up`() = runBlocking {
+        var landed = false
+        val model = viewModel(
+            rules = { listOf(rule(enabled = !landed)) },
+            onToggle = { _, _ -> },
+        )
+        model.setEnabled("r-1", false, 1_000)
+        assertEquals(mapOf("r-1" to false), model.pendingEnabled.value)
+
+        landed = true
+        model.load()
+        assertTrue(model.pendingEnabled.value.isEmpty())
+    }
+
+    @Test
+    fun `a failed toggle drops the pending position rather than lying`() = runBlocking {
+        val model = viewModel(onToggle = { _, _ -> error("offline") })
+        model.setEnabled("r-1", false, 1_000)
+        assertTrue(model.pendingEnabled.value.isEmpty())
+    }
+
     @Test
     fun `a failed toggle reports and does not blank the list`() = runBlocking {
         val model = viewModel(onToggle = { _, _ -> error("offline") })
@@ -167,7 +193,9 @@ class RulesViewModelTest {
         val draft = requireNotNull(model.draft.value)
         assertNull(draft.ruleId)
         assertNull(draft.eventKind)
-        assertEquals("low", draft.severity)
+        // The form's `defaultSeverity`, which the core decides — never the
+        // head of `severities`, which is the ratchet order.
+        assertEquals("normal", draft.severity)
         assertEquals(MobileTier.NORMAL, draft.tier)
         assertTrue(draft.conditions.isEmpty())
     }
@@ -183,6 +211,32 @@ class RulesViewModelTest {
         assertEquals(listOf("passport"), draft.conditions.map { it.value })
         model.save(1_000)
         assertEquals(0, created)
+        assertEquals(1, patched)
+    }
+
+    /** A patch from here sends every field and the seam takes the *newest*
+     * row as its CAS base, so a rule that moved under an open draft would
+     * be overwritten at a version the authority accepts — a 200 with no 409
+     * and nothing in the conflict journal. Refuse the first such save. */
+    @Test
+    fun `a rule that moved under an open draft is not silently overwritten`() = runBlocking {
+        var patched = 0
+        var version = 3L
+        val model = viewModel(
+            rules = { listOf(rule().copy(version = version)) },
+            onPatch = { patched++ },
+        )
+        model.beginEdit(rule())
+
+        version = 4
+        model.save(1_000)
+        assertEquals(0, patched)
+        assertTrue(model.statusLine.value.orEmpty().contains("changed somewhere else"))
+        // The words are still on screen — a refusal, not a discard.
+        assertEquals("passport", requireNotNull(model.draft.value).name)
+
+        // Saving again is the person's own answer to that refusal.
+        model.save(1_000)
         assertEquals(1, patched)
     }
 

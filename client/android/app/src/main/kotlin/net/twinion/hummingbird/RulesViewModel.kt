@@ -53,18 +53,29 @@ data class RuleDraft(
     val severity: String,
     val tier: MobileTier,
     val enabled: Boolean,
+    /** The row version this draft was opened over — null on a create, and
+     * cleared once [RulesViewModel.save] has refused this draft over it, so
+     * that a second Save is the person's own answer to that refusal.
+     *
+     * A patch from here sends all six fields, and the seam re-reads the
+     * newest row for its CAS base — so a rule that moved underneath an open
+     * draft would be overwritten at `expected_version`, landing a 200 with
+     * no 409 and no rebase. [RulesViewModel.save] compares this against the
+     * row it is about to write and refuses the first such save. */
+    val baseVersion: Long? = null,
 ) {
     companion object {
-        /** A fresh rule, opened on the form's own defaults — the first
-         * severity in `hummingbird_domain::SEVERITIES`' ratchet order, and
-         * the quieter tier, because a rule that interrupts is a choice a
-         * person makes rather than one they are given. */
+        /** A fresh rule, opened on the form's own defaults — the severity
+         * the core decides a fresh rule starts at (never the head of
+         * `severities`, which is ADR-0014's ratchet order), and the quieter
+         * tier, because a rule that interrupts is a choice a person makes
+         * rather than one they are given. */
         fun blank(form: RuleFormRecord) = RuleDraft(
             ruleId = null,
             name = "",
             eventKind = null,
             conditions = emptyList(),
-            severity = form.severities.firstOrNull().orEmpty(),
+            severity = form.defaultSeverity,
             tier = MobileTier.NORMAL,
             enabled = true,
         )
@@ -87,6 +98,7 @@ data class RuleDraft(
             severity = record.severity,
             tier = record.tier,
             enabled = record.enabled,
+            baseVersion = record.version,
         )
     }
 }
@@ -133,6 +145,20 @@ class RulesViewModel(
     private val _statusLine = MutableStateFlow<String?>(null)
     val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
 
+    /** The switch positions a person has tapped but the authority has not
+     * yet handed back, by rule id.
+     *
+     * `Core::rules()` is deliberately overlay-free — a queued write is
+     * invisible to it until a completed cycle pulls the new row back — so a
+     * toggle would otherwise render, then revert the instant [load] re-read
+     * the unchanged mirror, for up to the 60-second tick above the NavHost.
+     * Holding the tapped value here (and saying "pending" beside it) is what
+     * keeps the switch from lying about what just happened; the web screen
+     * holds its own `pendingEnabled` for exactly this, and this is that. An
+     * entry is dropped the moment the re-read row agrees with it. */
+    private val _pendingEnabled = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val pendingEnabled: StateFlow<Map<String, Boolean>> = _pendingEnabled.asStateFlow()
+
     /** The rule being written or edited, or null in list mode. Held here
      * and never in a `remember {}`: a draft is human-authored content, and
      * a fold or a rotation must not take it (`ScreenStateRetentionTest`). */
@@ -169,11 +195,14 @@ class RulesViewModel(
             val rules = fetchRulesFn()
             if (rules.isNotEmpty()) {
                 _state.value = RulesState.Loaded(rules)
+                settlePending(rules)
                 _statusLine.value = null
                 return
             }
             syncFn()
-            _state.value = RulesState.Loaded(fetchRulesFn())
+            val synced = fetchRulesFn()
+            _state.value = RulesState.Loaded(synced)
+            settlePending(synced)
             _statusLine.value = null
         } catch (error: Exception) {
             _state.value = RulesState.NotSynced
@@ -185,13 +214,25 @@ class RulesViewModel(
      * is #140's acceptance criterion for it. It is the same seam method
      * every other rule edit uses, so the two can never drift. */
     suspend fun setEnabled(ruleId: String, enabled: Boolean, nowMs: Long) {
+        _pendingEnabled.value += (ruleId to enabled)
         try {
             toggleFn(ruleId, enabled, nowMs)
         } catch (error: Exception) {
+            _pendingEnabled.value -= ruleId
             _statusLine.value = "Couldn't change that rule — ${error.message}"
             return
         }
         load()
+    }
+
+    /** Drops every pending switch position the given rows have caught up
+     * with. A row that has not caught up keeps its entry, so the switch
+     * holds the tapped value across the reads in between. */
+    private fun settlePending(rules: List<RuleRecord>) {
+        if (_pendingEnabled.value.isEmpty()) return
+        _pendingEnabled.value = _pendingEnabled.value.filterNot { (ruleId, enabled) ->
+            rules.any { it.id == ruleId && it.enabled == enabled }
+        }
     }
 
     suspend fun beginCreate() {
@@ -246,6 +287,18 @@ class RulesViewModel(
             _statusLine.value = "This rule can't be saved yet — a rule needs a name."
             return
         }
+        if (draft.ruleId != null && movedUnderTheDraft(draft)) {
+            // Refuse once, then let the same tap through: the draft is not
+            // reseeded, because that would take words a person is still
+            // typing, and it is not silently written either, because the
+            // seam's CAS base is the newest row and the other edit would
+            // vanish without a 409 anyone could see.
+            _draft.value = draft.copy(baseVersion = null)
+            _statusLine.value =
+                "This rule changed somewhere else while you were editing it. " +
+                    "Save again to replace it with what's on screen."
+            return
+        }
         try {
             if (draft.ruleId == null) createFn(draft, nowMs) else patchFn(draft, nowMs)
             _draft.value = null
@@ -255,6 +308,19 @@ class RulesViewModel(
             return
         }
         load()
+    }
+
+    /** Whether the row this draft is a patch of has moved since it was
+     * opened. A read failure answers "no": a save that cannot be checked is
+     * still a save the person asked for, and the seam's own CAS is what
+     * ultimately decides it. */
+    private suspend fun movedUnderTheDraft(draft: RuleDraft): Boolean {
+        val base = draft.baseVersion ?: return false
+        return try {
+            fetchRulesFn().any { it.id == draft.ruleId && it.version != base }
+        } catch (error: Exception) {
+            false
+        }
     }
 
     private suspend fun loadForm(eventKind: String?): RuleFormRecord? = try {

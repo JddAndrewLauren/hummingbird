@@ -972,6 +972,10 @@ pub struct RuleFormRecord {
     pub kind_options: Vec<KindOptionRecord>,
     pub fields: Vec<RuleFieldRecord>,
     pub severities: Vec<String>,
+    /// The severity a fresh draft opens on —
+    /// [`hummingbird_core::decisions::rules::DEFAULT_SEVERITY`], not the
+    /// head of `severities`, which is a ratchet order and not a default.
+    pub default_severity: String,
     pub tiers: Vec<MobileTier>,
     pub alarm_interval_ms: i64,
 }
@@ -1711,6 +1715,7 @@ impl MobileTaskHost {
                 .map(to_rule_field_record)
                 .collect(),
             severities: registry.severities.clone(),
+            default_severity: rules::DEFAULT_SEVERITY.to_string(),
             tiers: vec![MobileTier::Urgent, MobileTier::Normal],
             alarm_interval_ms: registry.alarm_interval_ms,
         }

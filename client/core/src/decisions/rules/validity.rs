@@ -76,6 +76,18 @@ pub struct KindRegistry {
 /// re-exports this rather than restating the number.
 pub const ALARM_INTERVAL_MS: i64 = 15 * 60 * 1000;
 
+/// The severity a rule a person has just started carries until they say
+/// otherwise.
+///
+/// Not the first entry of [`hummingbird_domain::SEVERITIES`]: that list is
+/// ADR-0014's ratchet *order*, so reading a default off its head silently
+/// births every rule at the rank the ratchet can never lift. `normal` is
+/// the answer the web form has always given, and it is here rather than in
+/// each form because which severity a fresh rule starts at is one shared
+/// behavioural decision — two clients disagreeing about it is invisible
+/// until someone compares the rules they each created (ADR-0025).
+pub const DEFAULT_SEVERITY: &str = "normal";
+
 /// The registry as *this binary* compiled it, from
 /// [`hummingbird_domain::EVENT_KINDS`] — for a caller that holds no
 /// registry of its own (the mobile seam; #133/#140's export is what the

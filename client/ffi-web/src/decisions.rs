@@ -558,6 +558,14 @@ pub fn rule_duration_units_json(field_type: &str) -> String {
     serde_json::to_string(&units).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// [`rules::DEFAULT_SEVERITY`] — the severity a fresh draft opens on. A
+/// function rather than a re-stated literal in the form, so the phone and
+/// this client cannot disagree about where a rule is born (ADR-0025).
+#[wasm_bindgen]
+pub fn rule_default_severity() -> String {
+    rules::DEFAULT_SEVERITY.to_string()
+}
+
 /// [`rules::is_below_alarm_interval`] — the duration warning (#138), never
 /// a save gate.
 #[wasm_bindgen]
