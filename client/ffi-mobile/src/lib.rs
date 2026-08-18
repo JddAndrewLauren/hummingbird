@@ -3218,52 +3218,19 @@ pub fn skill_run_stamp_label(state: MobileSkillRunState) -> Option<String> {
     skills::stamp_label(&unmap_run_state(state))
 }
 
-/// [`skills::NO_TOKEN`]'s own words — the #274 fallback offer's one
-/// exclusion (`declined_backend_fallback`'s own doc): a NO_TOKEN decline
-/// means no request was ever attempted, which every tier would refuse
-/// identically, so offering "switch tiers" on it would suggest a fix that
-/// does not exist. Exposed as a function, not duplicated as a Kotlin
-/// literal, for the same reason `no_token_decline` exists on the web seam.
-#[uniffi::export]
-pub fn skill_no_token_decline() -> String {
-    skills::NO_TOKEN.to_string()
-}
-
-/// #274's one-tap fallback offer, decided whole rather than assembled from
-/// three separate reads: whether the current [MobileSkillRunState] is a
-/// decline this device should offer to reroute, and if so, which
-/// registered id to switch to. Mirrors `useMicrotaskWiring.ts`'s own
-/// `declinedFallback` predicate:
-///
-/// - not declined at all → `None`;
-/// - the current selection is Auto (nothing to fall back FROM, Auto
-///   already tried everything it could) → `None`;
-/// - the decline evidences no reachability problem — no token was ever
-///   sent (`answered: false` AND the reason is [`skill_no_token_decline`]'s
-///   own words) or a backend *answered* (`answered: true`, so the guard
-///   that declined it is the seam's, not any backend's) → `None`;
-/// - otherwise, [`skills::fallback_backend_id`]'s answer over
-///   `registry_ids`, which is itself `None` when there is nowhere else to
-///   try.
+/// #274's one-tap fallback offer — [`skills::declined_backend_fallback`]
+/// verbatim (ADR-0001 rule 2/ADR-0025: this crate maps, it does not decide;
+/// the four-clause predicate itself lives in `hummingbird_core::decisions::
+/// skills::backend`, not here, since #539's round-2 review). A thin mapping
+/// wrapper the same shape [`notification_tap_target`] is for its own
+/// core-decided verdict.
 #[uniffi::export]
 pub fn declined_backend_fallback(
     state: MobileSkillRunState,
     selection: String,
     registry_ids: Vec<String>,
 ) -> Option<String> {
-    let MobileSkillRunState::Declined { reason, answered, .. } = state else {
-        return None;
-    };
-    if selection == skills::AUTO_SELECTION {
-        return None;
-    }
-    if answered {
-        return None;
-    }
-    if reason == skills::NO_TOKEN {
-        return None;
-    }
-    skills::fallback_backend_id(&registry_ids, &selection)
+    skills::declined_backend_fallback(&unmap_run_state(state), &selection, &registry_ids)
 }
 
 fn reduce_run_state(state: MobileSkillRunState, event: skills::SkillEvent) -> MobileSkillRunState {
@@ -5725,93 +5692,25 @@ mod skills_tests {
         assert_eq!(backend_auto_selection(), skills::AUTO_SELECTION);
     }
 
+    /// The predicate itself is `hummingbird_core::decisions::skills::backend
+    /// ::declined_backend_fallback`'s own test to own (#539's round-2
+    /// review) — this only pins that the mapping wrapper reaches it and
+    /// answers unchanged.
     #[test]
-    fn skill_no_token_decline_is_the_cores_words() {
-        assert_eq!(skill_no_token_decline(), skills::NO_TOKEN);
-    }
-
-    fn declined(reason: &str, answered: bool) -> MobileSkillRunState {
-        MobileSkillRunState::Declined {
+    fn declined_backend_fallback_maps_and_answers_the_cores_verdict_unchanged() {
+        let declined = MobileSkillRunState::Declined {
             messages: Vec::new(),
-            reason: reason.to_string(),
+            reason: "Could not reach the server.".to_string(),
             backend: None,
             model: None,
-            answered,
-        }
-    }
-
-    #[test]
-    fn declined_backend_fallback_offers_the_next_id_only_for_an_unanswered_non_no_token_decline() {
+            answered: false,
+        };
         assert_eq!(
-            declined_backend_fallback(
-                declined("Could not reach the server.", false),
-                "cloud".to_string(),
-                vec!["cloud".to_string(), "home".to_string()],
-            ),
+            declined_backend_fallback(declined, "cloud".to_string(), vec!["cloud".to_string(), "home".to_string()]),
             Some("home".to_string()),
         );
-    }
-
-    #[test]
-    fn declined_backend_fallback_is_none_when_not_declined() {
         assert_eq!(
             declined_backend_fallback(skill_run_idle(), "cloud".to_string(), vec!["cloud".to_string()]),
-            None,
-        );
-        assert_eq!(
-            declined_backend_fallback(
-                skill_run_started(skill_run_idle()),
-                "cloud".to_string(),
-                vec!["cloud".to_string()],
-            ),
-            None,
-        );
-    }
-
-    #[test]
-    fn declined_backend_fallback_is_none_when_the_selection_is_auto() {
-        assert_eq!(
-            declined_backend_fallback(
-                declined("Could not reach the server.", false),
-                skills::AUTO_SELECTION.to_string(),
-                vec!["cloud".to_string(), "home".to_string()],
-            ),
-            None,
-        );
-    }
-
-    #[test]
-    fn declined_backend_fallback_is_none_for_a_decline_a_backend_answered() {
-        assert_eq!(
-            declined_backend_fallback(
-                declined("That item already has live steps.", true),
-                "cloud".to_string(),
-                vec!["cloud".to_string(), "home".to_string()],
-            ),
-            None,
-        );
-    }
-
-    #[test]
-    fn declined_backend_fallback_is_none_for_no_token_even_though_unanswered() {
-        assert_eq!(
-            declined_backend_fallback(
-                declined(skills::NO_TOKEN, false),
-                "cloud".to_string(),
-                vec!["cloud".to_string(), "home".to_string()],
-            ),
-            None,
-        );
-    }
-
-    #[test]
-    fn declined_backend_fallback_is_none_when_there_is_nowhere_else_to_try() {
-        assert_eq!(
-            declined_backend_fallback(
-                declined("Could not reach the server.", false),
-                "cloud".to_string(),
-                vec!["cloud".to_string()],
-            ),
             None,
         );
     }

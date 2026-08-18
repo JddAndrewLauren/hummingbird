@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   backendAutoSelectionFromCore,
   canSubmitCapture,
+  declinedBackendFallbackFromCore,
   declineForResponseFromCore,
   declineForTransportFromCore,
   decisionsReady,
@@ -239,6 +240,16 @@ describe("the microtask affordance, the backend fallback and the Grill review pr
     expect(fallbackEntry(registry, "a")?.id).toBe(fallbackBackendIdFromCore(["a", "b"], "a"));
     expect(fallbackEntry(BACKEND_REGISTRY, "cloud")).toBe(null);
     expect(fallbackBackendIdFromCore(["cloud"], "cloud")).toBeUndefined();
+  });
+
+  it("declinedBackendFallbackFromCore decides the whole #274 offer, not just the fallback id", () => {
+    const declined = { phase: "declined", messages: [], reason: "Could not reach the server.", backend: null, model: null, answered: false };
+    expect(declinedBackendFallbackFromCore(declined, "cloud", ["cloud", "home"])).toBe("home");
+    expect(declinedBackendFallbackFromCore({ phase: "idle" }, "cloud", ["cloud", "home"])).toBeUndefined();
+    expect(declinedBackendFallbackFromCore(declined, AUTO_SELECTION, ["cloud", "home"])).toBeUndefined();
+    expect(
+      declinedBackendFallbackFromCore({ ...declined, answered: true }, "cloud", ["cloud", "home"]),
+    ).toBeUndefined();
   });
 
   it("readBackendSelection answers out of the core's resolve_backend_selection", () => {

@@ -9,8 +9,11 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.skills.BackendPreference
@@ -68,11 +71,18 @@ class MicrotaskViewModel(
     /** #274's one-tap fallback offer for the CURRENT [run] — `null`
      * whenever there is nothing to offer (see the uniffi door's own doc for
      * the four exclusions: not declined, Auto already tried everything, a
-     * backend answered, or no token was ever sent). Derived from [run]/
-     * [selection] rather than stored, so it can never go stale against
-     * either. */
-    val declinedFallbackId: String?
-        get() = declinedFallbackFn(_run.value, _selection.value, registryIds)
+     * backend answered, or no token was ever sent).
+     *
+     * A `StateFlow`, not a plain getter: [switchAndRetry] writes
+     * [selection] before the new run's first state lands, and a caller that
+     * only collected [run] would read this one recomposition/emission
+     * stale in that gap. Combining both is what makes "derived from run and
+     * selection" a property Compose can actually subscribe to, rather than
+     * a value that merely happens to be fresh whenever something else also
+     * triggers a re-read. */
+    val declinedFallbackId: StateFlow<String?> = combine(_run, _selection) { run, selection ->
+        declinedFallbackFn(run, selection, registryIds)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** The in-flight run's lock — a duplicate tap while one is streaming is
      * a no-op, the same rule the core's own reducer applies (belt AND
@@ -98,7 +108,7 @@ class MicrotaskViewModel(
      * function makes that miswiring unexpressible, the same reasoning
      * `useMicrotaskWiring.ts`'s own `onSwitchAndRun` states. */
     fun switchAndRetry() {
-        val fallback = declinedFallbackId ?: return
+        val fallback = declinedFallbackId.value ?: return
         val request = lastRequest ?: return
         writeSelectionFn(fallback)
         _selection.value = fallback

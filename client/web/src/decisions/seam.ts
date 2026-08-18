@@ -144,6 +144,7 @@ export interface DecisionsModule {
   fallback_backend_id(registryIdsJson: string, deadId: string): string | undefined;
   resolve_backend_selection(stored: string | undefined, registryIdsJson: string): string;
   backend_auto_selection(): string;
+  declined_backend_fallback(stateJson: string, selection: string, registryIdsJson: string): string | undefined;
   grill_would_strand_plan(verdict: string, stepsJson: string): boolean;
   grill_plan_replacement_label(stepsJson: string): string;
   grill_demotes_from_frontier(verdict: string, stage: string): boolean;
@@ -1129,6 +1130,20 @@ export function resolveBackendSelectionFromCore(stored: string | undefined, regi
  * are. */
 export function backendAutoSelectionFromCore(): string {
   return required().backend_auto_selection();
+}
+
+/** `hummingbird_core::decisions::skills::declined_backend_fallback` — #274's
+ * one-tap fallback offer, decided whole: not declined / Auto / answered /
+ * NO_TOKEN are all excluded inside this one call, never assembled from
+ * three separate reads on this side (#539's round-2 review moved the
+ * predicate out of `ffi-mobile` for the identical reason). `state` crosses
+ * as the `SkillRunState` JSON `reduce_skill_run` already round-trips. */
+export function declinedBackendFallbackFromCore(
+  state: unknown,
+  selection: string,
+  registryIds: readonly string[],
+): string | undefined {
+  return required().declined_backend_fallback(JSON.stringify(state), selection, JSON.stringify(registryIds));
 }
 
 /** `hummingbird_core::decisions::skills::would_strand_plan`. */

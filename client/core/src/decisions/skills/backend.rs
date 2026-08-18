@@ -12,6 +12,9 @@
 //! declines. Both take the registry as a bare ordered list of ids — the only
 //! part of an entry either rule reads.
 
+use super::decline::NO_TOKEN;
+use super::run::SkillRunState;
+
 /// The sentinel selection value. Not a registered id — no entry may ever be
 /// named `"auto"`, which is why a picker checks this constant rather than
 /// `registry.is_empty()`.
@@ -22,6 +25,40 @@ pub const AUTO_SELECTION: &str = "auto";
 /// none.
 pub fn fallback_backend_id(registry_ids: &[String], dead_id: &str) -> Option<String> {
     registry_ids.iter().find(|id| id.as_str() != dead_id).cloned()
+}
+
+/// #274's one-tap fallback offer, decided whole rather than assembled from
+/// three separate reads by each caller — the same decision
+/// `useMicrotaskWiring.ts`'s `declinedFallback` makes on the web, sunk here
+/// at #539's review:
+///
+/// - not declined at all → `None`;
+/// - the current selection is Auto (nothing to fall back FROM, Auto already
+///   tried everything it could) → `None`;
+/// - the decline evidences no reachability problem — no token was ever sent
+///   ([`NO_TOKEN`]'s own words) or a backend *answered* (`answered: true`,
+///   so the guard that declined it is the seam's, not any backend's) →
+///   `None`;
+/// - otherwise, [`fallback_backend_id`]'s answer over `registry_ids`, which
+///   is itself `None` when there is nowhere else to try.
+pub fn declined_backend_fallback(
+    state: &SkillRunState,
+    selection: &str,
+    registry_ids: &[String],
+) -> Option<String> {
+    let SkillRunState::Declined { reason, answered, .. } = state else {
+        return None;
+    };
+    if selection == AUTO_SELECTION {
+        return None;
+    }
+    if *answered {
+        return None;
+    }
+    if reason == NO_TOKEN {
+        return None;
+    }
+    fallback_backend_id(registry_ids, selection)
 }
 
 /// Auto when nothing is stored, and Auto when the stored value no longer
@@ -75,5 +112,82 @@ mod tests {
     #[test]
     fn a_stored_selection_naming_a_retired_backend_degrades_to_auto() {
         assert_eq!(resolve_backend_selection(Some("retired-backend"), &ids(&["cloud"])), AUTO_SELECTION);
+    }
+
+    /// Cases moved here from `ffi-mobile`'s `skills_tests` at #539's review
+    /// (round 2): the predicate itself belongs in the core, not the seam.
+    fn declined(reason: &str, answered: bool) -> SkillRunState {
+        SkillRunState::Declined {
+            messages: Vec::new(),
+            reason: reason.to_string(),
+            backend: None,
+            model: None,
+            answered,
+        }
+    }
+
+    #[test]
+    fn declined_backend_fallback_offers_the_next_id_only_for_an_unanswered_non_no_token_decline() {
+        assert_eq!(
+            declined_backend_fallback(
+                &declined("Could not reach the server.", false),
+                "cloud",
+                &ids(&["cloud", "home"]),
+            ),
+            Some("home".to_string()),
+        );
+    }
+
+    #[test]
+    fn declined_backend_fallback_is_none_when_not_declined() {
+        assert_eq!(declined_backend_fallback(&SkillRunState::Idle, "cloud", &ids(&["cloud"])), None);
+        assert_eq!(
+            declined_backend_fallback(
+                &SkillRunState::Running { messages: Vec::new() },
+                "cloud",
+                &ids(&["cloud"]),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn declined_backend_fallback_is_none_when_the_selection_is_auto() {
+        assert_eq!(
+            declined_backend_fallback(
+                &declined("Could not reach the server.", false),
+                AUTO_SELECTION,
+                &ids(&["cloud", "home"]),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn declined_backend_fallback_is_none_for_a_decline_a_backend_answered() {
+        assert_eq!(
+            declined_backend_fallback(
+                &declined("That item already has live steps.", true),
+                "cloud",
+                &ids(&["cloud", "home"]),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn declined_backend_fallback_is_none_for_no_token_even_though_unanswered() {
+        assert_eq!(
+            declined_backend_fallback(&declined(NO_TOKEN, false), "cloud", &ids(&["cloud", "home"])),
+            None,
+        );
+    }
+
+    #[test]
+    fn declined_backend_fallback_is_none_when_there_is_nowhere_else_to_try() {
+        assert_eq!(
+            declined_backend_fallback(&declined("Could not reach the server.", false), "cloud", &ids(&["cloud"])),
+            None,
+        );
     }
 }

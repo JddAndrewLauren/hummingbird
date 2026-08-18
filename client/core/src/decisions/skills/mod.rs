@@ -34,7 +34,7 @@ pub mod run;
 
 pub use affordance::{live_undone_steps, microtask_affordance, MicrotaskAffordance};
 pub use args::{format_grill_transcript, grill_run_body, microtask_run_body, GrillTurn, MicrotaskRunInput};
-pub use backend::{fallback_backend_id, resolve_backend_selection, AUTO_SELECTION};
+pub use backend::{declined_backend_fallback, fallback_backend_id, resolve_backend_selection, AUTO_SELECTION};
 pub use decline::{decline_for_response, decline_for_transport, NO_TERMINAL_LINE, NO_TOKEN};
 pub use envelope::{
     classify_line, grill_result, microtask_result, GrillProposal, GrillQuestion, GrillTurnResult,

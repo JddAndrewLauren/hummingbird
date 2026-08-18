@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry, type BackendEntry } from "../skills/backend-registry";
-import { NO_TOKEN } from "../skills/decline";
+import { declinedBackendFallbackFromCore } from "../decisions/seam";
+import { AUTO_SELECTION, BACKEND_REGISTRY, findBackendEntry, type BackendEntry } from "../skills/backend-registry";
 import { microtaskRunBody } from "../skills/microtask-args";
 import { EMPTY_MEMO, type ReachabilityMemo } from "../skills/reachability-memo";
 import { runRouted, type ReachabilityMemoStore } from "../skills/route-run";
@@ -192,25 +192,19 @@ export function useMicrotaskWiring(
   const run = (selectedItemId && runs[selectedItemId]) || IDLE;
 
   const declinedFallback = useMemo(() => {
-    if (run.phase !== "declined" || selection === AUTO_SELECTION) return null;
-    // NO_TOKEN means no request was ever made — it says nothing about
-    // whether the pinned backend itself is reachable, so offering "switch
-    // to X" here would suggest a fix for a problem that was never observed.
-    if (run.reason === NO_TOKEN) return null;
-    // A decline a backend ANSWERED says nothing about reachability, so
-    // nothing may offer switching away from a backend on the strength of it:
-    // "That item already has live steps." is true of every tier, because the
-    // guard is the seam's (#307), not any backend's. Same principle as the
-    // NO_TOKEN case above, for the other way a decline arrives without
-    // evidencing unreachability.
-    //
-    // Read off the routed fact, never off the stamp: a 401 and a 403 are
-    // empty-bodied by design (ADR-0018) and so arrive unstamped, yet the
-    // backend plainly answered — and switching tiers cannot help, since
-    // every tier is reached through the same proxy with the same device
-    // token.
-    if (run.answered) return null;
-    const fallback = fallbackEntry(registry, selection);
+    // The whole predicate — not declined / Auto / an answered backend / a
+    // NO_TOKEN decline are all excluded inside this one call — is
+    // `hummingbird_core::decisions::skills::declined_backend_fallback`
+    // (#539's round-2 review moved it out of a hand-assembled read here,
+    // the same drift ADR-0025 exists to prevent). This wrapper only turns
+    // the id it answers back into the full registry entry.
+    const fallbackId = declinedBackendFallbackFromCore(
+      run,
+      selection,
+      registry.map((entry) => entry.id),
+    );
+    if (fallbackId === undefined) return null;
+    const fallback = findBackendEntry(registry, fallbackId);
     const onSelectBackend = deps.onSelectBackend;
     if (fallback === null || onSelectBackend === undefined) return null;
     return {

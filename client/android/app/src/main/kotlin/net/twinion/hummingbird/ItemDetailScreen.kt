@@ -85,10 +85,7 @@ fun ItemDetailScreen(
     val statusLine by viewModel.statusLine.collectAsState()
     val draft by viewModel.draft.collectAsState()
     val microtaskRun by microtaskViewModel.run.collectAsState()
-    // Read fresh on every recomposition `microtaskRun` triggers — a getter,
-    // not a `StateFlow`, but its inputs (`run`/`selection`) are covered by
-    // the flows already collected here.
-    val microtaskDeclinedFallbackId = microtaskViewModel.declinedFallbackId
+    val microtaskDeclinedFallbackId by microtaskViewModel.declinedFallbackId.collectAsState()
     val microtaskDeclinedFallbackLabel = microtaskDeclinedFallbackId?.let { id ->
         BackendPreference.ENTRIES.find { it.id == id }?.label ?: id
     }

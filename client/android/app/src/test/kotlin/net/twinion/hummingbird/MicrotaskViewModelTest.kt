@@ -2,7 +2,9 @@ package net.twinion.hummingbird
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -91,6 +93,31 @@ class MicrotaskViewModelTest {
         assertEquals(0, recorder.syncCalls)
     }
 
+    /** The in-flight lock — a duplicate tap while a run is genuinely still
+     * streaming must not start a second request. `awaitCancellation()` is
+     * what makes "still streaming" a real, observable suspension in this
+     * JVM test rather than a `flowOf` that has already completed by the
+     * time the second call happens. */
+    @Test
+    fun `a duplicate tap while a run is still streaming is a no-op`() = runTest {
+        val recorder = Recorder()
+        val vm = viewModel(
+            recorder,
+            states = {
+                flow {
+                    emit(MobileSkillRunState.Running(emptyList()))
+                    awaitCancellation()
+                }
+            },
+        )
+        vm.run("i", false, null)
+        assertEquals(1, recorder.runCalls.size)
+
+        vm.run("i", false, null)
+
+        assertEquals(1, recorder.runCalls.size)
+    }
+
     /** #307: the seam's decline is shown verbatim, never paraphrased —
      * pinned here by identity, the same discipline
      * `GrillTakeoverViewModelTest`'s own decline test uses. */
@@ -143,11 +170,11 @@ class MicrotaskViewModelTest {
             states = { flowOf(MobileSkillRunState.Declined(emptyList(), "down", null, null, false)) },
         )
 
-        assertNull(vm.declinedFallbackId)
+        assertNull(vm.declinedFallbackId.value)
 
         vm.run("i", false, null)
 
-        assertEquals("home", vm.declinedFallbackId)
+        assertEquals("home", vm.declinedFallbackId.value)
     }
 
     /** The fallback button's one call: switches the preference AND retries

@@ -1005,6 +1005,19 @@ pub fn backend_auto_selection() -> String {
     skills::AUTO_SELECTION.to_string()
 }
 
+/// [`skills::declined_backend_fallback`] — #274's one-tap fallback offer,
+/// decided whole (#539's round-2 review moved the predicate here from
+/// `ffi-mobile`, which had been deciding it itself). `state_json` is a
+/// [`skills::SkillRunState`] in its own wire shape — the same text
+/// `reduce_skill_run` already round-trips — so a caller already holding
+/// `run` as that JSON sends it unchanged.
+#[wasm_bindgen]
+pub fn declined_backend_fallback(state_json: &str, selection: &str, registry_ids_json: &str) -> Option<String> {
+    let state: skills::SkillRunState = serde_json::from_str(state_json).ok()?;
+    let ids: Vec<String> = serde_json::from_str(registry_ids_json).unwrap_or_default();
+    skills::declined_backend_fallback(&state, selection, &ids)
+}
+
 fn parse_verdict(verdict: &str) -> Option<hummingbird_domain::GrillVerdict> {
     serde_json::from_value(serde_json::Value::String(verdict.to_string())).ok()
 }
@@ -2625,6 +2638,19 @@ mod tests {
             skills::AUTO_SELECTION,
         );
         assert_eq!(resolve_backend_selection(None, r#"["cloud"]"#), skills::AUTO_SELECTION);
+    }
+
+    #[test]
+    fn declined_backend_fallback_maps_the_wire_state_and_answers_the_cores_verdict() {
+        let declined =
+            r#"{"phase":"declined","messages":[],"reason":"Could not reach the server.","backend":null,"model":null,"answered":false}"#;
+        assert_eq!(
+            declined_backend_fallback(declined, "cloud", r#"["cloud","home"]"#),
+            Some("home".to_string()),
+        );
+        let idle = r#"{"phase":"idle"}"#;
+        assert_eq!(declined_backend_fallback(idle, "cloud", r#"["cloud"]"#), None);
+        assert_eq!(declined_backend_fallback("not json", "cloud", r#"["cloud"]"#), None);
     }
 
     #[test]
