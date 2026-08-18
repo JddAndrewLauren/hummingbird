@@ -104,9 +104,10 @@ CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 CI cannot cover any of this: there is no emulator in `android.yml` and no FCM
 delivery without a real device, so the checks below are the only evidence the
 lane works end to end. Checks 1–12 were run in full on 2026-08-17 (Pixel 10
-Pro Fold, SDK 37, #517) and every one passed; 13–18 are ADR-0027's second
-destination and are **not yet run on hardware**. Re-run all of them after any
-change to `notify/`, `push/`, or the deep link.
+Pro Fold, SDK 37, #517) and every one passed. **13–18 were run on
+2026-08-17 against merged `2ea76b5` on the same device and every one
+passed** — the lane is proven end to end, sweep to pixel. Re-run all of
+them after any change to `notify/`, `push/`, or the tap intent.
 
 You need the device on USB, a `device`-scope token for **this** device (there
 is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
@@ -132,9 +133,11 @@ needs rules on `alert_raised` keyed on `source` and `severity`.
 7. Confirm `actions=1` on both — that is the Ack action, and it is what a
    full-hybrid payload would have cost (ADR-0012's amendment).
 8. Ack from the notification shade; confirm `dismissed_at` on the authority.
-9. Ack from the alert detail screen; confirm `dismissed_at` again. **Give the
-   mutation queue a moment** — this one goes through the queue, not
-   `AckWorker`, so an immediate read of the authority still shows `null`.
+9. Ack from the alert detail screen; confirm `dismissed_at` again. This one
+   goes through the core's mutation queue, not `AckWorker`, and the
+   difference is large enough to misread as a failure: measured 2026-08-17,
+   a shade ack landed in **5 seconds** and a screen ack in **40–45**. Poll
+   the authority for a full minute before calling it failed.
 10. Tap a notification with the app running: lands on that alert's detail.
 11. Tap one cold. Kill with `adb shell am kill net.twinion.hummingbird`, not
     `force-stop` — a force-stopped app receives no FCM at all.
@@ -143,14 +146,52 @@ needs rules on `alert_raised` keyed on `source` and `severity`.
 The item door (ADR-0027). These need an **`item-threshold/v1`** alert, which
 is not raised by `POST /api/alerts` at all: it is minted by the Durable
 Object's alarm sweep over items with near deadlines
-(`authority/src/sweep.rs`). So give an item a deadline inside the sweep
-threshold and let the alarm ring, rather than ingesting one by hand.
+(`authority/src/sweep.rs`). A deadline alone rings **nothing**: `sweep::tick`
+evaluates *enabled rules* against an `item_threshold` event and returns early
+when there are none, so the sweep has no built-in threshold. Create a rule
+first, and scope it by title so it cannot fire against real work:
+
+```
+POST /api/rules  {"id":"…","event_kind":"item_threshold","severity":"urgent",
+  "tier":"urgent","enabled":true,"conditions":[
+    {"field":"title","op":"contains","value":"<marker>","negate":false},
+    {"field":"deadline","op":"within_next","value":"1d","negate":false}]}
+```
+
+Then give a throwaway item that title and **today's** date as its deadline —
+`within_next` is unbounded on the past side (ADR-0013), so today never lapses
+out of the window mid-run, and the match must survive every tick from 13
+through 16 or `resolution_pass` closes the alert. The alarm ticks every
+`ALARM_INTERVAL_MS` (15 min), which is the floor on every ring below.
+
+Each check needs its **own** ring, and a live alert will not ring twice:
+`deliver`'s dedupe key is `(alert_id, rule_id, raised_at, severity)`, so a
+fresh notification arrives only after the alert has settled and re-raised.
+That forces the order **15 → 14 → 16**: ack first, then wait a tick for the
+re-raise, then tap cold. Budget an hour.
+
+Item detail has exactly **one door — a notification tap** (#521): the Now
+card is not clickable. To reach the screen without a live notification, fire
+the same intent by hand (adb shell holds `START_ANY_ACTIVITY`):
+
+```
+adb shell am start -n net.twinion.hummingbird/.MainActivity \
+  --es net.twinion.hummingbird.extra.ALERT_ID <alert-id> \
+  --es net.twinion.hummingbird.extra.SOURCE "item-threshold/v1" \
+  --es net.twinion.hummingbird.extra.SOURCE_KEY "item:<item-id>"
+```
+
+That exercises the routing but **not** the `PendingIntent` — 13 and 14 must
+be real taps; 15 and 18 are indifferent to how the screen was reached.
 
 13. Tap that notification warm: lands on the **item**, not the alert. One
     Back lands on `Now`.
-14. Tap it cold (`am kill` again): same destination, and still one Back to
-    `Now` — the second door has its own `popUpTo`, and this is what proves
-    it.
+14. Tap it cold (`am kill` again, after HOME — `am kill` is a no-op on a
+    foreground process): same destination, and still one Back to `Now` — the
+    second door has its own `popUpTo`, and this is what proves it. **A cold
+    push is slow**: measured 2026-08-17, it took minutes to reach the killed
+    app where a warm one was instant. Wait before concluding it was dropped;
+    `wrangler tail` is the only way to tell late from lost.
 15. Ack from the item's live-alert card; confirm `dismissed_at` on the
     authority. **Give the mutation queue a moment**, as in check 9.
 16. Complete the item from item detail: two queue entries drain, the `act`
@@ -158,8 +199,22 @@ threshold and let the alarm ring, rather than ingesting one by hand.
     part 3).
 17. Degrade check: ring a *non-item* alert (`POST /api/alerts`, ingest
     scope) and confirm the tap still opens **alert** detail unchanged.
-18. Open an archived item through a stale notification: readable, the Ack
-    still offered, and **no edit affordance** (Recall's rule, #478).
+    Cheapest of the six and needs no alarm wait — an ingested alert is
+    delivered inside the request, not on the tick — and the two disabled
+    `m2-proof-*` rules already match `healthchecks/v1`, so re-enabling one
+    beats writing a new rule. Mint the ingest token bound to that same
+    source (`"source":"healthchecks/v1"` on the mint body) so its blast
+    radius is one fake healthcheck.
+18. Open an archived item through a stale notification: readable, its
+    checklist intact, and **no edit affordance** (Recall's rule, #478). Give
+    it steps first, or this proves nothing about the checklist. Archiving
+    marks only the item `Absent` — steps are demoted by their own
+    `deleted_at` alone, so they stay `Live` in the mirror and still render;
+    2026-08-17 confirmed both the mirror presence and the screen. The screen
+    reads `ARCHIVED · READ ONLY` and drops every action, so the check's older
+    "Ack still offered" clause only holds while the alert is still live —
+    check 16 settles it, so run 18 against a separate alert if you want that
+    half too.
 
 Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
 adb writes a warning banner into the PNG, and the ids differ inner vs cover
