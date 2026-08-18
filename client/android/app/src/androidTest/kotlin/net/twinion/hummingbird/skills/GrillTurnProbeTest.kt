@@ -95,15 +95,25 @@ class GrillTurnProbeTest {
         // not run, which looks exactly like a fast turn from the outside.
         //
         // Two things are asserted, and they need different witnesses. That
-        // a beat *arrived* is read off `states`, not off the narration:
-        // every line the socket delivers emits a state, so a heartbeat the
-        // core collapsed shows up here as the same state emitted twice in a
-        // row. That the beat was *collapsed* is then the narration having
-        // no adjacent duplicates. A failure of the first is a run too short
+        // a beat *arrived* is the narration carrying the runner's sentence
+        // at all. That one was *collapsed* is read off `states`, not off
+        // the narration: every line the socket delivers emits a state, so a
+        // duplicate the core swallowed shows up here as the same state
+        // emitted twice in a row. A failure of the first is a run too short
         // to prove anything (re-run it against a foggier item); a failure
         // of the second is the bug.
-        val repeatedEmissions = states.zipWithNext().count { (a, b) -> a == b }
-        Log.i(tag, "collapsed heartbeats: $repeatedEmissions")
+        //
+        // **Only `Asking` pairs count.** The transport calls `streamEnded`
+        // at the end of every stream, which is a no-op against a settled
+        // turn and so re-emits the terminal state — one adjacent duplicate
+        // that every completed run has, heartbeat or not. Counting it would
+        // put the vacuous pass straight back in, one layer down; the first
+        // hardware run of this case showed exactly that (two repeats, only
+        // one of them a heartbeat).
+        val collapsed = states.zipWithNext().count { (a, b) ->
+            a == b && a is MobileGrillTurnState.Asking
+        }
+        Log.i(tag, "collapsed heartbeats: $collapsed")
 
         val last = states.last()
         assertTrue(
@@ -117,10 +127,11 @@ class GrillTurnProbeTest {
         }
         Log.i(tag, "narration: $narration")
         assertTrue(
-            "no heartbeat was observed, so this case proved nothing: the run " +
-                "produced $narration and no line was ever repeated. Re-run it " +
-                "against an item foggy enough to take more than one 20s beat.",
-            narration.contains(HEARTBEAT) && repeatedEmissions > 0,
+            "no collapsed heartbeat was observed, so this case proved " +
+                "nothing: the run produced $narration and no in-flight state " +
+                "was ever repeated. Re-run it against an item foggy enough to " +
+                "take more than one 20s beat.",
+            narration.contains(HEARTBEAT) && collapsed > 0,
         )
         assertTrue(
             "the heartbeat must collapse: no two consecutive entries may be equal — got $narration",

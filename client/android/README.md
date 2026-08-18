@@ -108,9 +108,19 @@ Pro Fold, SDK 37, #517) and every one passed. **13–18 were run on
 2026-08-17 against merged `2ea76b5` on the same device and every one
 passed** — the lane is proven end to end, sweep to pixel. Re-run all of
 them after any change to `notify/`, `push/`, or the tap intent. **Check 19
-(#538's skills-runner probe) has not been run yet** — it is that slice's
-open operator checkpoint, and it shares nothing with 1–18 but the device
-token.
+(#538's skills-runner probe) was run on 2026-08-18 against `5f23ec8` on the
+same device and all three cases passed** (evidence in #560); it shares
+nothing with 1–18 but the device token.
+
+**Check 19 costs you the device token.** `connectedDebugAndroidTest`
+uninstalls both APKs when it finishes, and the token rests in
+`EncryptedSharedPreferences` (`core/TokenStore.kt`), which goes with the
+app data. Every run therefore ends with the phone un-credentialed and the
+*next* run failing three cases with `no device token on this device` —
+which is the check's own named error doing its job, not a regression.
+Re-install (`./gradlew installDebug`) and paste the token from
+`hummingbird-device-pixel-fold` again before the next run. Checks 1–18 are
+unaffected only because nothing in them runs an instrumented suite.
 
 You need the device on USB, a `device`-scope token for **this** device (there
 is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
