@@ -256,7 +256,7 @@ private fun CaptureScreen(
             dictationFailure?.let {
                 Text(
                     it.message,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
             }

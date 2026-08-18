@@ -202,4 +202,13 @@ tasks.withType<Test>().configureEach {
     // way; this is for the local loop.)
     inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/colors.css"))
         .withPropertyName("designTokensCss")
+    // Same freshness fix for TypeTokenDriftTest (#528): fonts.css sits
+    // outside this Gradle project too.
+    inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/fonts.css"))
+        .withPropertyName("designTokensFontsCss")
+    // And the launcher backgrounds the colour gate now covers. This one is
+    // in-tree, but res/ is not an input to the unit-test task either, so
+    // editing a hex here leaves the gate UP-TO-DATE just the same.
+    inputs.file(File(repoRoot, "client/android/app/src/main/res/values/colors.xml"))
+        .withPropertyName("launcherColorsXml")
 }
