@@ -40,15 +40,21 @@ class CaptureSubmitRefusalTest {
     }
 
     @Test
-    fun `CaptureViewModel imports the real uniffi canSubmitCapture binding`() {
-        assertTrue(
-            "expected an import of the generated uniffi binding",
-            captureViewModelSrc.contains("import uniffi.hummingbird_ffi_mobile.canSubmitCapture"),
-        )
+    fun `CaptureViewModel imports the real uniffi capture-decision bindings`() {
+        for (binding in listOf(
+            "canSubmitCapture",
+            "captureMetaProblems",
+            "captureFormMeta",
+        )) {
+            assertTrue(
+                "expected an import of the generated uniffi binding $binding",
+                captureViewModelSrc.contains("import uniffi.hummingbird_ffi_mobile.$binding"),
+            )
+        }
     }
 
     @Test
-    fun `the production factory wires canSubmitFn to the real binding, not a fake`() {
+    fun `the production factory wires all three doors to the real bindings, not a fake`() {
         val factory = Regex("""fun create\(context: Context\)[\s\S]*?\n {4}}""")
             .find(captureViewModelSrc)
             ?.value
@@ -56,6 +62,14 @@ class CaptureSubmitRefusalTest {
         assertTrue(
             "CaptureViewModel.create must pass ::canSubmitCapture as canSubmitFn",
             factory.contains("canSubmitFn = ::canSubmitCapture"),
+        )
+        assertTrue(
+            "CaptureViewModel.create must pass ::captureMetaProblems as metaProblemsFn",
+            factory.contains("metaProblemsFn = ::captureMetaProblems"),
+        )
+        assertTrue(
+            "CaptureViewModel.create must pass ::captureFormMeta as formMetaFn",
+            factory.contains("formMetaFn = ::captureFormMeta"),
         )
     }
 

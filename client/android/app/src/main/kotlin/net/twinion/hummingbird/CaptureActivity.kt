@@ -18,21 +18,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -45,15 +51,30 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.forms.CaptureDateField
+import net.twinion.hummingbird.ui.forms.ContextField
+import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
+import uniffi.hummingbird_ffi_mobile.CaptureDestination
 
 // M1-5's capture surface (#128/#503), the second launcher icon's
 // destination: field focused with the IME up on launch with zero taps,
 // submit captures and finishes, mic is a button over on-device
 // `SpeechRecognizer`'s raw transcript (ADR-0022 — raw text, no parsing).
 // Local-first (#128): `CaptureViewModel.submit` enqueues durably before any
-// network call. Raw text only — no capture-meta surface in M1 (say so here
-// too, not just in ffi-mobile's doc).
+// network call.
+//
+// M3/#529 widened this from title-only to the web capture box's whole
+// field set: a destination choice (Triage/Ready), the energy/size sliders,
+// the open-vocabulary context field, and a details disclosure holding
+// description, project, priority, deadline and scheduled date. Dictation
+// stays title-field-only (`CaptureViewModel.onTranscript`'s own doc) — say
+// so here too, not just there. `LevelSlider`/`ContextField`/
+// `CaptureDateField` (`ui/forms/`) are the shared components this screen
+// builds and the Triage screen (#531) reuses; every vocabulary word they
+// render comes from `viewModel.formMeta`
+// (`uniffi.hummingbird_ffi_mobile.captureFormMeta`), never a literal typed
+// into this file (ADR-0025's ban on a hand-copied vocabulary).
 class CaptureActivity : ComponentActivity() {
 
     private var recognizer: SpeechRecognizer? = null
@@ -185,6 +206,11 @@ private fun CaptureScreen(
     val dictationFailure by viewModel.dictationFailure.collectAsState()
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    // Shut on arrival, matching the web capture box's own resting state
+    // (`CaptureBox.tsx`'s `detailsOpen`) — a form that opens to seven
+    // fields taxes the common case, which is one line and Enter.
+    var detailsOpen by remember { mutableStateOf(false) }
+    val metaProblems = viewModel.metaProblems
 
     val micPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -216,7 +242,8 @@ private fun CaptureScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp),
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // The product name is lowercase everywhere; the screen title is
@@ -230,8 +257,8 @@ private fun CaptureScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 OutlinedTextField(
-                    value = draft,
-                    onValueChange = viewModel::onDraftChange,
+                    value = draft.title,
+                    onValueChange = { viewModel.updateDraft(draft.copy(title = it)) },
                     modifier = Modifier
                         .weight(1f)
                         .focusRequester(focusRequester),
@@ -250,6 +277,45 @@ private fun CaptureScreen(
                 }
             }
 
+            // The two destinations the web capture box offers as Triage/Mint
+            // (`CaptureBox.tsx`) — here as a two-way choice rather than two
+            // submit buttons, since one "Capture" action already ends the
+            // Activity. `FilterChip`'s own selected/unselected pair is the
+            // native control closest to a segmented toggle.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = draft.destination == CaptureDestination.TRIAGE,
+                    onClick = { viewModel.updateDraft(draft.copy(destination = CaptureDestination.TRIAGE)) },
+                    label = { Text("Triage") },
+                )
+                FilterChip(
+                    selected = draft.destination == CaptureDestination.READY,
+                    onClick = { viewModel.updateDraft(draft.copy(destination = CaptureDestination.READY)) },
+                    label = { Text("Ready") },
+                )
+            }
+
+            // Energy/Size (the frontier's axes) and Context (the open
+            // vocabulary) — every word rendered here comes from
+            // `viewModel.formMeta`, never a literal in this file.
+            LevelSlider(
+                label = "Energy",
+                options = viewModel.formMeta.energies,
+                selected = draft.energy.ifEmpty { null },
+                onSelect = { viewModel.updateDraft(draft.copy(energy = it.orEmpty())) },
+            )
+            LevelSlider(
+                label = "Size",
+                options = viewModel.formMeta.sizes,
+                selected = draft.size.ifEmpty { null },
+                onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },
+            )
+            ContextField(
+                value = draft.context,
+                onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
+                suggestions = viewModel.formMeta.suggestedContexts,
+            )
+
             // ADR-0022: a dictation pass that ends without text says so.
             // A mic that renders and then does nothing is the failure mode
             // that ADR calls a defect rather than a nit.
@@ -261,8 +327,80 @@ private fun CaptureScreen(
                 )
             }
 
-            Button(onClick = { submit() }, enabled = viewModel.canSubmit(draft)) {
+            // Everything a mint would ask, behind one disclosure — the web
+            // capture box's own "More details" (`CaptureBox.tsx`).
+            TextButton(onClick = { detailsOpen = !detailsOpen }) {
+                Text(if (detailsOpen) "Fewer details" else "More details")
+            }
+            if (detailsOpen) {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(
+                        value = draft.description,
+                        onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
+                        label = { Text("Description") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = draft.projectId,
+                        onValueChange = { viewModel.updateDraft(draft.copy(projectId = it)) },
+                        label = { Text("Project") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    PriorityRow(
+                        selected = draft.priority,
+                        onSelect = { viewModel.updateDraft(draft.copy(priority = it)) },
+                    )
+                    CaptureDateField(
+                        label = "Deadline",
+                        value = draft.deadline,
+                        error = metaProblems.deadline,
+                        onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
+                    )
+                    CaptureDateField(
+                        label = "Scheduled date",
+                        value = draft.scheduledDate,
+                        error = metaProblems.scheduledDate,
+                        onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
+                    )
+                }
+            }
+
+            Button(onClick = { submit() }, enabled = viewModel.canSubmitDraft()) {
                 Text("Capture")
+            }
+        }
+    }
+}
+
+/** Priority is a small, fixed 0..4 range, not an open or a domain
+ * vocabulary — `hummingbird_core::decisions::vocabulary` owns size, energy
+ * and the suggested contexts, but names no priority labels (ADR-0025's own
+ * verdict table: the web's `priority.ts` keeps its labels literal TS for
+ * the same reason). So this row's five labels stay literal here too,
+ * mirroring that precedent rather than inventing a fourth core door for a
+ * five-word, never-renamed display list. */
+@Composable
+private fun PriorityRow(selected: String, onSelect: (String) -> Unit) {
+    val options = listOf(
+        "1" to "Urgent",
+        "2" to "High",
+        "3" to "Medium",
+        "4" to "Low",
+        "0" to "No priority",
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "Priority",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for ((value, label) in options) {
+                FilterChip(
+                    selected = value == selected,
+                    onClick = { onSelect(if (value == selected) "" else value) },
+                    label = { Text(label) },
+                )
             }
         }
     }

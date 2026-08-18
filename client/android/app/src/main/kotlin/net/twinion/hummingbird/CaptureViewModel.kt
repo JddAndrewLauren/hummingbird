@@ -9,29 +9,69 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
+import uniffi.hummingbird_ffi_mobile.CaptureDestination
+import uniffi.hummingbird_ffi_mobile.CaptureDraft
+import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
+import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.canSubmitCapture
+import uniffi.hummingbird_ffi_mobile.captureFormMeta
+import uniffi.hummingbird_ffi_mobile.captureMetaProblems
 
-// M1-5's whole surface (#128/#503): the "ViewModel over CoreHolder" pattern
-// the brief names, holding the one field's draft and deciding whether it is
-// worth submitting. `canSubmitFn` defaults, in [create], to the uniffi
-// `canSubmitCapture` door onto `hummingbird_core::decisions::can_submit_capture`
-// (ADR-0025) — never a hand-rolled blank-string check, which disagrees with
-// the real rule on a BOM-only draft (see `hummingbird_core::decisions::capture`'s
-// doc for the exact case). It is injected, not called directly, purely so a
-// JVM test can exercise [submit]'s control flow (refuses without capturing,
-// captures on a real draft, propagates the given clock) without touching
-// `hummingbird_ffi_mobile`'s generated JNI binding — a plain JVM process has
-// no host-architecture `.so` to load (`CoreBindingTest`'s own doc: that
-// round trip is a device/emulator-only check). `ManifestAliasTest`'s sibling
-// `CaptureSubmitRefusalTest` is the mechanical proof that [create] really
-// does wire the real uniffi fn and that neither this file nor
-// `CaptureActivity.kt` re-derives the rule locally.
+/** The capture box's whole draft (#529), one Kotlin value shadowing
+ * [CaptureDraft] field-for-field — every optional field a plain `String`,
+ * `""` meaning "not set", the same convention [CaptureDraft]'s own doc
+ * states for the seam. Kept as its own type rather than holding a
+ * [CaptureDraft] directly so this ViewModel's state has a `data class`
+ * default constructor and `copy()`, neither of which a uniffi-generated
+ * record reliably carries across binding versions.
+ */
+data class CaptureFormState(
+    val title: String = "",
+    val destination: CaptureDestination = CaptureDestination.TRIAGE,
+    val size: String = "",
+    val energy: String = "",
+    val context: String = "",
+    val description: String = "",
+    val projectId: String = "",
+    val priority: String = "",
+    val deadline: String = "",
+    val scheduledDate: String = "",
+) {
+    fun toDraft(): CaptureDraft = CaptureDraft(
+        title = title,
+        destination = destination,
+        size = size,
+        energy = energy,
+        context = context,
+        description = description,
+        projectId = projectId,
+        priority = priority,
+        deadline = deadline,
+        scheduledDate = scheduledDate,
+    )
+}
+
+// M1-5's whole surface (#128/#503), widened at M3/#529 to the capture box's
+// full field set: destination, energy/size, context, and the details
+// disclosure (description, project, priority, deadline, scheduled date).
+// `canSubmitFn`/`metaProblemsFn` default, in [create], to the uniffi doors
+// onto `hummingbird_core::decisions::capture` (ADR-0025) — never a
+// hand-rolled blank-string check or a hand-rolled date regex, either of
+// which is an automatic reject in this repo's own gate
+// (`CaptureSubmitRefusalTest`). `formMetaFn` is the third door #529 adds:
+// the vocabulary and context suggestions the fields render, read once per
+// screen (a per-gesture cost, never a per-row one — `ffi-mobile::lib.rs`'s
+// own module doc). All three are injected, not called directly, purely so
+// a JVM test can exercise this ViewModel's control flow without touching
+// `hummingbird_ffi_mobile`'s generated JNI binding — see
+// `CaptureViewModel.kt`'s original doc for why (a plain JVM process has no
+// host-architecture `.so` to load). `CaptureSubmitRefusalTest`'s sibling is
+// the mechanical proof that [create] really does wire the real uniffi fns.
 //
-// **Repository layer deferred** (#503's own scope note): `captureFn` is the
-// other seam this ViewModel needs, and [create] closes it over `CoreHolder`
-// directly — the same shape `MainActivity`'s `ProofScreen` already uses. A
-// repository abstraction is future work once a second screen needs one, not
-// invented ahead of that need.
+// **Repository layer deferred** (#503's own scope note, unchanged at #529):
+// `captureFn` is the other seam this ViewModel needs, and [create] closes
+// it over `CoreHolder` directly — the same shape `MainActivity`'s
+// `ProofScreen` already uses.
 //
 // `submit` is `suspend`, not self-launched on `viewModelScope`: the caller
 // (`CaptureActivity`, or a JVM test) controls the coroutine and can await
@@ -39,11 +79,18 @@ import uniffi.hummingbird_ffi_mobile.canSubmitCapture
 // `Dispatchers.Main` wiring to call it directly.
 class CaptureViewModel(
     private val canSubmitFn: (String) -> Boolean,
-    private val captureFn: suspend (title: String, nowMs: Long) -> String,
+    private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
+    private val formMetaFn: () -> CaptureFormMeta,
+    private val captureFn: suspend (draft: CaptureDraft, nowMs: Long) -> String,
 ) : ViewModel() {
 
-    private val _draft = MutableStateFlow("")
-    val draft: StateFlow<String> = _draft.asStateFlow()
+    private val _draft = MutableStateFlow(CaptureFormState())
+    val draft: StateFlow<CaptureFormState> = _draft.asStateFlow()
+
+    /** The vocabulary and context suggestions the fields render — read once,
+     * lazily, on first use rather than in the constructor, so a JVM test
+     * that never touches the form's metadata never calls [formMetaFn]. */
+    val formMeta: CaptureFormMeta by lazy { formMetaFn() }
 
     /** The last dictation attempt's failure, or `null` if the mic is idle
      * or the last attempt produced a transcript. ADR-0022 requires every
@@ -56,11 +103,32 @@ class CaptureViewModel(
     private val _dictationFailure = MutableStateFlow<DictationFailure?>(null)
     val dictationFailure: StateFlow<DictationFailure?> = _dictationFailure.asStateFlow()
 
-    /** Whether `text` (the current draft by default) is worth submitting. */
-    fun canSubmit(text: String = _draft.value): Boolean = canSubmitFn(text)
+    /** What is wrong with the draft's two free-text dates right now, by
+     * field — the core's answer, shown next to the field it belongs to.
+     * Dictation stays title-only (#529's own boundary): nothing here reads
+     * a spoken transcript into anything but [CaptureFormState.title]. */
+    val metaProblems: MetaProblems
+        get() = metaProblemsFn(_draft.value.deadline, _draft.value.scheduledDate)
 
-    fun onDraftChange(value: String) {
-        _draft.value = value
+    /** Whether `title` (the current draft's by default) is worth
+     * submitting at all — the title rule alone, matching the pre-#529
+     * surface's `canSubmit` name and shape so `CaptureActivity`'s existing
+     * call sites (the Enter-key handler, the button's `enabled`) need no
+     * change beyond the wider `submit`. [canSubmitDraft] is the fuller
+     * check `submit` actually gates on. */
+    fun canSubmit(title: String = _draft.value.title): Boolean = canSubmitFn(title)
+
+    /** Whether the whole draft — title plus both free-text dates — can be
+     * submitted right now. A malformed date is refused here rather than
+     * sent for the authority to 400 into the dead-letter journal, the same
+     * discipline [ItemDetailViewModel.canSave] already applies to an edit. */
+    fun canSubmitDraft(): Boolean {
+        val problems = metaProblems
+        return canSubmit() && problems.deadline == null && problems.scheduledDate == null
+    }
+
+    fun updateDraft(draft: CaptureFormState) {
+        _draft.value = draft
     }
 
     /** Clears any previous notice as a fresh attempt begins — a stale "no
@@ -75,38 +143,42 @@ class CaptureViewModel(
     }
 
     /** The mic button's raw transcript lands here verbatim (ADR-0022: no
-     * parsing on the way in), replacing whatever was typed so far — the
-     * same "the box holds one draft" model the web capture box uses. */
+     * parsing on the way in), replacing whatever was typed in the title so
+     * far — dictation stays title-field-only; every other field is
+     * unaffected (#529's own boundary, carried from M1-5's title-only
+     * surface). */
     fun onTranscript(transcript: String) {
-        _draft.value = transcript
+        _draft.value = _draft.value.copy(title = transcript)
         _dictationFailure.value = null
     }
 
-    /** Captures the current draft if [canSubmit] says it is worth it;
+    /** Captures the current draft if [canSubmitDraft] says it is worth it;
      * returns whether it did. Local-first per #128's own criterion:
      * [captureFn] (`MobileTaskHost.capture`, in production) enqueues
      * durably before any network call, so a caller awaiting this can finish
      * the activity immediately after — the item is already in the local
      * mirror. */
     suspend fun submit(nowMs: Long): Boolean {
-        val title = _draft.value
-        if (!canSubmit(title)) {
+        val current = _draft.value
+        if (!canSubmitDraft()) {
             return false
         }
-        captureFn(title, nowMs)
+        captureFn(current.toDraft(), nowMs)
         return true
     }
 
     companion object {
-        /** The production wiring: [canSubmitFn] is the uniffi
-         * `canSubmitCapture` function reference verbatim, and [captureFn]
-         * closes over the app's one durable [CoreHolder] handle — never a
-         * fresh core per capture. */
+        /** The production wiring: [canSubmitFn]/[metaProblemsFn]/[formMetaFn]
+         * are the real uniffi bindings verbatim, and [captureFn] closes over
+         * the app's one durable [CoreHolder] handle — never a fresh core
+         * per capture. */
         fun create(context: Context): CaptureViewModel =
             CaptureViewModel(
                 canSubmitFn = ::canSubmitCapture,
-                captureFn = { title, nowMs ->
-                    CoreHolder.get(context.applicationContext).capture(title, nowMs)
+                metaProblemsFn = ::captureMetaProblems,
+                formMetaFn = ::captureFormMeta,
+                captureFn = { draft, nowMs ->
+                    CoreHolder.get(context.applicationContext).capture(draft, nowMs)
                 },
             )
 

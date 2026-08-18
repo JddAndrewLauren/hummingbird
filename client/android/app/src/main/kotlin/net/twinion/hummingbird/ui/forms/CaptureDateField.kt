@@ -1,0 +1,38 @@
+package net.twinion.hummingbird.ui.forms
+
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+/** #529's third shared form component: one of the capture box's two
+ * free-text dates (deadline, scheduled date) — a plain text field, deadline
+ * and scheduled date reuse it for both the capture form and, later, the
+ * Triage screen (#531).
+ *
+ * **No date regex lives here, or anywhere in this file.** What is wrong
+ * with the typed text — a malformed shape, an impossible calendar date — is
+ * the core's own answer
+ * ([`uniffi.hummingbird_ffi_mobile.captureMetaProblems`], reached through
+ * `hummingbird_core::decisions::capture::capture_meta_problems`), read by
+ * the caller and passed in as [error]. This component only shows whatever
+ * it is handed; it decides nothing about what a valid date looks like
+ * (#529's own structural-test criterion: "no date regexes").
+ */
+@Composable
+fun CaptureDateField(
+    label: String,
+    value: String,
+    error: String?,
+    onValueChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        isError = error != null,
+        supportingText = error?.let { { Text(it) } },
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
