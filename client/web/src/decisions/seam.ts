@@ -41,7 +41,14 @@ import type { TaskActionName, TaskStageName } from "../store/protocol";
  * generated `.d.ts`: this file is also the type the node-side test loader
  * satisfies, and the generated package is a build artifact (gitignored) the
  * typechecker only sees after `pnpm run build:wasm`. */
-import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
+import type {
+  BindingDTO,
+  FreshnessDTO,
+  PaneReadDTO,
+  PaneSnapshotDTO,
+  ProjectDTO,
+  TaskItemDTO,
+} from "../store/protocol";
 
 export interface DecisionsModule {
   can_submit_capture(draft: string): boolean;
@@ -75,6 +82,20 @@ export interface DecisionsModule {
   item_can_mark_done(stage: string, archived: boolean): boolean;
   item_can_grill(stage: string): boolean;
   item_grill_button_label(hasDraft: boolean): string;
+  // M4 (#533): the pane shell contract's decided half, the cross-pane
+  // sort, the zone bridge, and the waste pane.
+  waste_zone_queries_json(inputsJson: string): string;
+  waste_facts_json(inputsJson: string, zoneFactsJson: string): string;
+  waste_answer_json(inputsJson: string, zoneFactsJson: string): string;
+  waste_setup_json(inputsJson: string): string;
+  parse_waste_body_json(snapshotJson: string): string;
+  pane_zone_queries_json(inputsJson: string, surface: string): string;
+  rank_panes_json(inputsJson: string, zoneFactsJson: string, surface: string): string;
+  order_panes_json(panesJson: string, questionOrderJson: string): string;
+  same_pane_identity_json(aJson: string, bJson: string): boolean;
+  pane_band_order_json(): string;
+  pane_question_order_json(): string;
+  waste_constants_json(): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -546,4 +567,277 @@ export function canGrill(stage: TaskStageName): boolean {
  * `hummingbird_core::decisions::grill_button_label` verbatim. */
 export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill" {
   return required().item_grill_button_label(hasDraft) as "Grill me" | "Resume grill";
+}
+
+// -------------------------------------------------------------- M4 (#533)
+// The standing-question panes: the pane shell contract's decided half
+// (`AnswerState`, `Band`, `withinBand`, pane identity), the cross-pane
+// sort, and the waste pane's whole rule set —
+// `hummingbird_core::decisions::panes`.
+//
+// **The zone bridge is why two of these take a second argument.** Panes are
+// civil-date reasoning and the core owns no tzdb, so a pane is answered in
+// two phases: the core names the `(zone, civil-date)` facts it needs
+// (`wasteZoneQueries`/`paneZoneQueries`), the host resolves them with
+// `Intl` (`screens/questions/zone-bridge.ts` — this file deliberately does
+// NOT import that module, so the seam stays a pure boundary with no screen
+// dependency), and the core decides against the resolved table. A key the
+// host could not resolve is simply **absent**, and what an absent fact
+// means is a core decision like every other one.
+//
+// **What still crosses back as words:** nothing. Every wrapper below
+// returns structured values — gap *kinds*, band names, indices, instants —
+// and the sentences are composed client-side in `waste.ts`/
+// `WastePaneExpanded.tsx`. That is ADR-0025's line: two clients disagreeing
+// about the band is a bug, two clients wording a gap differently is a
+// design choice.
+
+/** One `(zone, civil-date)` fact the core cannot answer itself.
+ * `key` is `ZoneQuery::key()`, sent by the core rather than derived here:
+ * it is the whole protocol, and a second spelling of it on this side would
+ * present as an unresolvable zone rather than as a bug. */
+export type ZoneQuery =
+  | { key: string; kind: "civilDate"; zone: string; atMs: number }
+  | { key: string; kind: "midnight"; zone: string; date: string };
+
+/** Everything the host could resolve, keyed by [`ZoneQuery.key`]. **An
+ * omitted key is the unresolvable zone** — never a null, never an empty
+ * string, because either would be this side deciding what an unusable zone
+ * means. */
+export type ZoneFacts = Record<string, string | number>;
+
+/** The three fields `hummingbird_core::decisions::panes::inputs::PaneInputs`
+ * reads out of the shell's whole `QuestionInputs` — the same "do not
+ * re-cross whole DTOs" discipline as `frontierPayload` above. The sync
+ * snapshot, the calendar arms and the item list are read by no sunk rule
+ * and never leave the main thread. */
+export interface PaneInputsSource {
+  nowMs: number;
+  bindings: BindingDTO[] | null;
+  paneReads: Record<string, PaneReadDTO | undefined>;
+}
+
+function paneInputsPayload(inputs: PaneInputsSource): string {
+  return JSON.stringify({
+    nowMs: inputs.nowMs,
+    bindings: inputs.bindings,
+    paneReads: inputs.paneReads,
+  });
+}
+
+/** `hummingbird_core::decisions::panes::waste::waste_zone_queries` — phase
+ * one of the bridge for the waste pane alone. Empty when the payload is
+ * already a gap: there is no zone to ask about. */
+export function wasteZoneQueries(inputs: PaneInputsSource): ZoneQuery[] {
+  return JSON.parse(required().waste_zone_queries_json(paneInputsPayload(inputs))) as ZoneQuery[];
+}
+
+/** `hummingbird_core::decisions::panes::zone_queries` — phase one for a
+ * whole surface, deduplicated by key. */
+export function paneZoneQueries(inputs: PaneInputsSource, surface: PaneSurface): ZoneQuery[] {
+  return JSON.parse(
+    required().pane_zone_queries_json(paneInputsPayload(inputs), surface),
+  ) as ZoneQuery[];
+}
+
+export type PaneSurface = "now" | "status";
+
+/** `hummingbird_core::decisions::panes::contract::AnswerState`. */
+export type PaneAnswerState = "answered" | "bound-but-unacquired" | "unbound";
+
+/** `hummingbird_core::decisions::panes::contract::Band`. */
+export type PaneBand = "live" | "imminent" | "near" | "distant" | "dormant";
+
+/** `PaneAnswer` minus its rendering half — the three fields ADR-0025 sinks.
+ * The headline and the glyphs stay per-client and are added back by the
+ * pane's own module. */
+export interface PaneAnswerCore {
+  answerState: PaneAnswerState;
+  band: PaneBand;
+  withinBand: number | null;
+}
+
+/** One pane as the sort reads it — structurally what `RankedPane`
+ * (`screens/questions/contract.ts`) already is, named here so this file
+ * needs no import from `screens/`. */
+export interface RankedPaneLike {
+  question: string;
+  subjectKey: string;
+  paneKey: string;
+  answer: PaneAnswerCore;
+}
+
+/** `hummingbird_core::decisions::panes::sort::order_panes`.
+ *
+ * Generic over the caller's own pane type, and mapped back by **index**
+ * rather than by `paneKey`: the wasm side returns ordered input positions
+ * (see `order_panes_json`'s own doc for why identity would be the wrong
+ * key here), so a caller keeps whatever headline and glyphs its panes
+ * carry. */
+export function orderPanes<T extends RankedPaneLike>(
+  panes: readonly T[],
+  questionOrder: readonly string[],
+): T[] {
+  const indices = JSON.parse(
+    required().order_panes_json(panePayload(panes), JSON.stringify(questionOrder)),
+  ) as number[];
+  return indices.map((index) => panes[index]);
+}
+
+/** `hummingbird_core::decisions::panes::sort::same_pane_identity` —
+ * deliberately not a full equality; see the core function's own doc. */
+export function samePaneIdentity(
+  a: readonly RankedPaneLike[],
+  b: readonly RankedPaneLike[],
+): boolean {
+  return required().same_pane_identity_json(panePayload(a), panePayload(b));
+}
+
+/** The four fields the sort touches, and nothing the shell draws with. */
+function panePayload(panes: readonly RankedPaneLike[]): string {
+  return JSON.stringify(
+    panes.map((pane) => ({
+      question: pane.question,
+      subjectKey: pane.subjectKey,
+      paneKey: pane.paneKey,
+      answer: {
+        answerState: pane.answer.answerState,
+        band: pane.answer.band,
+        withinBand: pane.answer.withinBand,
+      },
+    })),
+  );
+}
+
+/** `hummingbird_core::decisions::panes::rank_panes` — phase two for a whole
+ * surface, already in display order, covering only the questions the core
+ * decides today (`SUNK`). Exercised by tests; whether the web should hoist
+ * its per-question ranking onto this is #533's stated ergonomics question,
+ * answered in that PR rather than here. */
+export function rankPanesFromCore(
+  inputs: PaneInputsSource,
+  facts: ZoneFacts,
+  surface: PaneSurface,
+): RankedPaneLike[] {
+  return JSON.parse(
+    required().rank_panes_json(paneInputsPayload(inputs), JSON.stringify(facts), surface),
+  ) as RankedPaneLike[];
+}
+
+/** `hummingbird_core::decisions::panes::waste::Stream` — kerb vocabulary. */
+export type WasteStream = "trash" | "recycling" | "yard";
+
+/** `hummingbird_core::decisions::panes::waste::WasteGap` — a **kind**, not
+ * a sentence. `waste.ts`'s `wasteGapReason` is the one place these become
+ * words. `malformed`'s `reason` is the domain's own wording
+ * (`EnvelopeProblem`) passed through as data, not composed by the core. */
+export type WasteGap =
+  | { gap: "notFetched" }
+  | { gap: "malformed"; reason: string }
+  | { gap: "unknownSchema"; schema: string }
+  | { gap: "notJson" }
+  | { gap: "notAnObject" }
+  | { gap: "noZone" }
+  | { gap: "badDates" }
+  | { gap: "unknownStream" }
+  | { gap: "unresolvableZone"; zone: string }
+  | { gap: "pastCollection"; collectedOn: string; weekdayIndex: number };
+
+/** `hummingbird_core::decisions::panes::waste::WasteFacts` — everything an
+ * answered waste pane needs, with no rendered sentence in it.
+ * `weekdayIndex` is `0` = Sunday; the *word* is per-client. */
+export interface WasteFacts {
+  zone: string;
+  scheduled: string;
+  collectedOn: string;
+  streams: WasteStream[];
+  today: string;
+  daysAway: number;
+  holiday: boolean;
+  weekdayIndex: number;
+  stale: boolean;
+  startsAtMs: number;
+  freshness: FreshnessDTO;
+}
+
+export type WasteResolved = ({ kind: "facts" } & WasteFacts) | { kind: "gap"; gap: WasteGap };
+
+/** `hummingbird_core::decisions::panes::waste::waste_facts` — phase two for
+ * the waste pane alone. */
+export function wasteFactsFromCore(inputs: PaneInputsSource, facts: ZoneFacts): WasteResolved {
+  return JSON.parse(
+    required().waste_facts_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as WasteResolved;
+}
+
+/** `hummingbird_core::decisions::panes::waste::waste_answer`. */
+export function wasteAnswerFromCore(
+  inputs: PaneInputsSource,
+  facts: ZoneFacts,
+): PaneAnswerCore {
+  return JSON.parse(
+    required().waste_answer_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as PaneAnswerCore;
+}
+
+/** `hummingbird_core::decisions::panes::waste::WasteSetup` — four answers,
+ * not a boolean. */
+export type WasteSetupCore =
+  | { kind: "bound"; page: string }
+  | { kind: "unread" }
+  | { kind: "unusable" }
+  | { kind: "unset" };
+
+/** `hummingbird_core::decisions::panes::waste::waste_setup`. */
+export function wasteSetupFromCore(inputs: PaneInputsSource): WasteSetupCore {
+  return JSON.parse(required().waste_setup_json(paneInputsPayload(inputs))) as WasteSetupCore;
+}
+
+export interface WasteBodyCore {
+  zone: string;
+  scheduled: string;
+  collectedOn: string;
+  streams: WasteStream[];
+}
+
+/** `hummingbird_core::decisions::panes::waste::parse_waste_body` — shape
+ * only. A zone this runtime cannot resolve is not a shape problem and is
+ * refused later, by the core, when the bridge comes back without the
+ * fact. */
+export function parseWasteBodyFromCore(
+  snapshot: PaneSnapshotDTO | undefined,
+): { kind: "ok"; body: WasteBodyCore } | { kind: "gap"; gap: WasteGap } {
+  return JSON.parse(required().parse_waste_body_json(JSON.stringify(snapshot ?? null))) as
+    | { kind: "ok"; body: WasteBodyCore }
+    | { kind: "gap"; gap: WasteGap };
+}
+
+/** `hummingbird_core::decisions::panes::BAND_ORDER` — pinning-test-only.
+ * `contract.ts`'s own `BAND_ORDER` is a module-evaluation-time literal
+ * (`registry.ts` builds `QUESTIONS` at module evaluation and would throw
+ * this file's "used before ready" guard on every page load), and
+ * `seam.test.ts` pins the two together. */
+export function paneBandOrderFromCore(): PaneBand[] {
+  return JSON.parse(required().pane_band_order_json()) as PaneBand[];
+}
+
+/** `hummingbird_core::decisions::panes::QUESTION_ORDER` — pinning-test-only
+ * for the same reason. */
+export function paneQuestionOrderFromCore(): string[] {
+  return JSON.parse(required().pane_question_order_json()) as string[];
+}
+
+export interface WasteConstants {
+  source: string;
+  snapshotKey: string;
+  bindingKey: string;
+  staleAfterMs: number;
+  streamOrder: WasteStream[];
+}
+
+/** The waste pane's constants — pinning-test-only, same reason again:
+ * `waste.ts`'s `SOURCE` is read at module evaluation by `question.ts`'s
+ * `sources` array. */
+export function wasteConstantsFromCore(): WasteConstants {
+  return JSON.parse(required().waste_constants_json()) as WasteConstants;
 }
