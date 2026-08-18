@@ -8,6 +8,7 @@ import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
 import type { ConditionDTO, FieldTypeName, KindRegistryDTO, RuleDTO, TaskItemDTO, TierName } from "../store/protocol";
 import type { TaskState } from "../store/store";
+import { defaultSeverity } from "../decisions/seam";
 import { backtest } from "./rules/backtest";
 import { newCondition, retypeCondition, toggleNegate, widgetFor } from "./rules/condition-editor";
 import { datetimeInputValueFromDuration, durationFromDatetimeInputValue, type DeadlineOperator } from "./rules/deadline-picker";
@@ -301,8 +302,11 @@ interface RuleEditorState {
   enabled: boolean;
 }
 
+/** The severity a fresh rule starts at is the core's answer, not this
+ * file's: the phone's form reads the same const, so the two clients cannot
+ * birth rules at different ranks of ADR-0014's ratchet. */
 function emptyEditorState(): RuleEditorState {
-  return { name: "", eventKind: null, conditions: [], severity: "normal", tier: "normal", enabled: true };
+  return { name: "", eventKind: null, conditions: [], severity: defaultSeverity(), tier: "normal", enabled: true };
 }
 
 function editorStateFromRule(rule: RuleDTO): RuleEditorState {

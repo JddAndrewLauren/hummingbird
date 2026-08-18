@@ -99,6 +99,26 @@ at the first newline. Pipe it minified.
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
 
+## The rules screen (M4, #540)
+
+`RulesScreen.kt`/`RulesViewModel.kt` list the rules, toggle one
+enabled/disabled (one CAS field), create and edit one, and show a draft's
+backtest count. **The route is registered and deliberately unreachable** —
+no bar entry, no More sheet, nothing navigates to `Routes.RULES` — because
+reachability and the nav form it needs are #541's. `RulesScreenStructuralTest`
+asserts that absence, so a later slice adding an entry does it on purpose.
+
+Every rule verdict arrives applied from
+`hummingbird_core::decisions::rules` (ADR-0025's M4 sink): validity,
+operator legality, the value-widget cascade, the sub-alarm-interval
+duration warning, the backtest count. There is no operator table, duration
+grammar or `23:59` in either file, and `RulesScreenStructuralTest` reads
+the sources to keep it so — the same no-emulator discipline
+`AlertsScreenStructuralTest` uses. `core/WallClock.kt` is the one place
+this app reads a timezone: the core takes "now" as an already-resolved
+civil string, and the backtest needs two readings of one instant
+(`deadline` is device-local, `occurred_at` is UTC).
+
 ## Proving the lane on hardware
 
 CI cannot cover any of this: there is no emulator in `android.yml` and no FCM

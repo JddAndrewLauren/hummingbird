@@ -1,10 +1,23 @@
-import type { KindEntryDTO, KindFieldDTO, KindRegistryDTO } from "../../store/protocol";
+import type { KindRegistryDTO } from "../../store/protocol";
 
 // The rules editor's cascade — kind, then field, then operator, then value
-// widget — starts here. Everything reads the exported kind registry
-// (#133, `hummingbird_domain::kind_registry_json`); nothing here is a
-// second, hand-maintained copy of what kinds or fields exist. Adding a
-// kind to the registry surfaces it with no change to this module.
+// widget. Everything reads the exported kind registry (#133,
+// `hummingbird_domain::kind_registry_json`); nothing here is a second,
+// hand-maintained copy of what kinds or fields exist.
+//
+// The *field* half of that cascade — `fieldsForKind` and `fieldType` — no
+// longer lives here: it is `hummingbird_core::decisions::rules::validity`
+// (ADR-0025, #141/M4, #540), because the phone's create-and-edit form
+// needs the identical narrowing (ADR-0013's "any kind" means the Event
+// core alone; a named kind means core-first, a colliding kind field
+// skipped) and a Kotlin copy would have been the third.
+//
+// The *kind* half below stays TS: `kindLabel` is display copy, and
+// `kindOptions` is that copy plus the registry's own declaration order —
+// two clients wording "Calendar event" differently is a difference, not a
+// bug (ADR-0025's own test for what belongs in core).
+
+export { fieldsForKind, fieldType } from "../../decisions/seam";
 
 /** One selectable kind option — `null` is ADR-0013's "any kind" (a `NULL
  * event_kind`), always first, since it is the widest and most common
@@ -38,44 +51,4 @@ export function kindLabel(key: string): string {
     alert_raised: "Alert raised",
   };
   return known[key] ?? key;
-}
-
-function findKind(registry: KindRegistryDTO, key: string): KindEntryDTO | undefined {
-  return registry.kinds.find((kind) => kind.key === key);
-}
-
-/** The field list a condition editor offers for `eventKind`. `null`
- * ("any kind") narrows the list to the Event core alone — ADR-0013's own
- * rule, and the acceptance criterion this function exists to satisfy.
- * A named kind offers the Event core plus that kind's own declared
- * fields, core fields first (core fields "always win a name collision"
- * per `hummingbird_domain::event`'s own doc, so listing them first mirrors
- * which one actually resolves at evaluation time) — a kind field sharing a
- * core name is skipped as a duplicate, never listed twice.
- */
-export function fieldsForKind(registry: KindRegistryDTO, eventKind: string | null): KindFieldDTO[] {
-  if (eventKind === null) {
-    return registry.coreFields;
-  }
-  const kind = findKind(registry, eventKind);
-  if (kind === undefined) {
-    // A rule naming a kind this build's registry has never heard of —
-    // ADR-0013's open registry key. Still offers the core alone, since
-    // that is all this build can meaningfully edit; `validity.ts` is what
-    // flags the rule itself as invalid, not this lookup.
-    return registry.coreFields;
-  }
-  const coreNames = new Set(registry.coreFields.map((field) => field.name));
-  return [...registry.coreFields, ...kind.fields.filter((field) => !coreNames.has(field.name))];
-}
-
-/** One field's declared type, within the field list `eventKind` offers —
- * `undefined` if `fieldName` is not in that list (the "invalid rule"
- * case `validity.ts` surfaces). */
-export function fieldType(
-  registry: KindRegistryDTO,
-  eventKind: string | null,
-  fieldName: string,
-): KindFieldDTO["fieldType"] | undefined {
-  return fieldsForKind(registry, eventKind).find((field) => field.name === fieldName)?.fieldType;
 }

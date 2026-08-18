@@ -687,9 +687,11 @@ pub struct KindRegistryResponse {
 }
 
 /// Mirrors `hummingbird_authority::sweep::ALARM_INTERVAL_MS` — see
-/// [`KindRegistryResponse`]'s own doc for why this is a duplicate constant
-/// rather than a dependency.
-pub const ALARM_INTERVAL_MS: i64 = 15 * 60 * 1000;
+/// [`KindRegistryResponse`]'s own doc for why this is a mirrored constant
+/// rather than a dependency. The mirror itself lives once, in
+/// `hummingbird_core::decisions::rules` (#540), so the mobile seam reads
+/// the same number rather than restating it a third time.
+pub const ALARM_INTERVAL_MS: i64 = hummingbird_core::decisions::rules::ALARM_INTERVAL_MS;
 
 /// The wrapper around [`TaskHostCore::mirror_snapshot`]'s answer — S9's
 /// mirror download button.

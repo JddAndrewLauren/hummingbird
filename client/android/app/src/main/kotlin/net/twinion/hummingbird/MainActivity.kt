@@ -130,13 +130,20 @@ private data class NotificationTap(
     }
 }
 
-/** The five routes. Strings, because that is what `NavHost` takes; kept in
+/** The six routes. Strings, because that is what `NavHost` takes; kept in
  * one place so a typo is a compile error at the use site rather than a
- * silently unreachable screen. */
+ * silently unreachable screen.
+ *
+ * [RULES] is **registered and not yet reachable** — no bar entry, no More
+ * sheet, no other screen navigates to it (#540/M4). Reachability is #541's
+ * job, along with the nav form that will carry it; registering the route
+ * here first is what lets the screen exist, compile and be gated without
+ * inventing a navigation shape this slice has not decided. */
 private object Routes {
     const val NOW = "now"
     const val STATUS = "status"
     const val ALERTS = "alerts"
+    const val RULES = "rules"
     const val ALERT_DETAIL = "alert/{alertId}"
     const val ITEM_DETAIL = "item/{itemId}"
 
@@ -311,6 +318,12 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
                 onOpenAlert = { alertId ->
                     navController.navigate(Routes.alertDetail(alertId))
                 },
+            )
+        }
+        composable(Routes.RULES) {
+            RulesScreen(
+                syncTick = syncTick,
+                onBack = { navController.popBackStack() },
             )
         }
         composable(Routes.ITEM_DETAIL) { entry ->

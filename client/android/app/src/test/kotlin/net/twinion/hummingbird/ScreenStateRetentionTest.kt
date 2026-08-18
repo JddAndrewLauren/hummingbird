@@ -36,6 +36,9 @@ class ScreenStateRetentionTest {
         // draft is content a person typed, and a fold mid-edit is exactly
         // the transition this gate exists for.
         "ItemDetailScreen.kt" to "ItemDetailViewModel",
+        // The rules screen has a draft too (#540/M4) — a rule someone is
+        // writing, conditions and all.
+        "RulesScreen.kt" to "RulesViewModel",
     )
 
     @Test

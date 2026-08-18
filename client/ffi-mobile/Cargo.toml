@@ -14,6 +14,10 @@ hummingbird-core = { path = "../core" }
 # carries, needed here only to *name* the type (`ffi-web`'s Cargo.toml
 # carries the identical dependency for the identical reason).
 hummingbird-domain = { path = "../../server/domain" }
+# ADR-0013's `Operator`, needed here only to *name* the type this crate's
+# rules records mirror as a `uniffi::Enum` (#540/M4) — same
+# already-carried-by-`hummingbird-core` reasoning as the line above.
+hummingbird-rules-engine = { path = "../../server/rules-engine" }
 # `tokio` on uniffi because the exported async surface runs under
 # `async_runtime = "tokio"` — `Core::run`'s reqwest transports need a tokio
 # reactor, and the generated Kotlin suspend functions poll futures on the

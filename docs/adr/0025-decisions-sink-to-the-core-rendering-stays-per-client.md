@@ -66,6 +66,29 @@ per-*event* doors, admissible because the events arrive seconds apart on a
 stream and the alternative is a Kotlin copy of the reducer. #274's
 routing/registry/memo and `microtask-affordance.ts` are deliberately not
 sunk here — they are #539's.
+**Amended 2026-08-18 (#540):** M4 sank the rules-editor decision set —
+`decisions::rules::{operators,duration,validity,deadline,editor,backtest}`
+— which retires both drifts this ADR's own verdict table had recorded as
+known debt (`rules/backtest.ts:52`, `rules/deadline-picker.ts:32`) and
+the operator table, the duration grammar, the validity read and the
+field/widget cascade alongside them. Two findings worth the record.
+**First:** `client/core` can depend on `hummingbird-rules-engine`. That
+crate takes `hummingbird-domain` and `serde_json` and nothing else, so it
+crosses the `wasm32-unknown-unknown` build and `client/next-up`'s
+`default-features = false` build untouched — `backtest.ts`'s header had
+claimed the opposite ("a native-only crate this build has no wasm path
+to"), and that claim was rewritten, not annotated. **Second:** the
+strongest retirement — calling `evaluate_rule` wholesale — is not
+available to a *client-side* backtest, because that function takes a
+single `now` and a client reads two frames of one instant (`occurred_at`
+in UTC, `deadline`/`scheduled_date` in device-local civil time). The sink
+took the other arm: core-side evaluation assembled from the engine's own
+`Operator` plus `hummingbird_domain::deadline`'s primitives, so every
+primitive still has exactly one owner while the two-frame assembly lives
+in `decisions::rules::backtest`. The frames are named at the boundary
+(`BacktestClock`), never inferred. The M1 module-evaluation-order
+constraint did not bite here: every export of the seven `screens/rules/`
+modules is a function called from an event handler or a render body.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -230,7 +253,13 @@ not permanent — it is where the line fell for the capture/Now slice.
 | `frontier-facets.ts`'s `SIZES`/`ENERGIES`/`FACETS` (sunk at #501) | the rule sank (`decisions::frontier`'s `Facet`, `NO_CONTEXT`, `matches_facets`, `apply_facets`); the three arrays stay literal in `seam.ts` for the same module-evaluation-order reason as `field-vocabulary.ts`'s, pinned against the core by `seam.test.ts` rather than sunk at runtime — no longer the surviving unpinned copy the #500 review flagged |
 | `frontier-columns.ts`'s `FRONTIER_AXES`/`DEFAULT_FRONTIER_AXIS` (sunk at #501) | the grouping rule sank (`decisions::frontier`'s `FrontierAxis`, `group_frontier`); the two constants stay literal in `seam.ts`, same reason and same pinning pattern |
 | `priority.ts`'s `priorityRank` (sunk at #501) | the ordering rule sank (`decisions::frontier`'s `priority_rank`, canonical); the TS function stays literal — `PRIORITY_OPTIONS` reads it at module-evaluation time, same constraint as `field-vocabulary.ts`'s arrays — pinned against the core by `seam.test.ts` (`priorityRankFromCore`) rather than sunk at runtime |
-| `rules/backtest.ts:52`, `rules/deadline-picker.ts:32` | known drift — local re-derivations of the deadline reading, out of M1's rewire |
+| `rules/backtest.ts:52`, `rules/deadline-picker.ts:32` | known drift — local re-derivations of the deadline reading, out of M1's rewire. **Sunk at M4 (#540)**: both are now `hummingbird_core::decisions::rules::{backtest,deadline}`, reading `hummingbird_domain::deadline`'s `deadline_sort_key`/`shift`/`minutes_until`/`parse_duration` |
+| `rules/operators.ts`'s `legalOperators`/`defaultOperatorFor` (sunk at #540) | sunk to `decisions::rules::operators`, which derives every answer from `hummingbird_rules_engine::Operator::is_legal_for` rather than the hand-maintained twin table this module asked to be "kept byte-identical" with nothing mechanical connecting them |
+| `rules/duration.ts` (sunk at #540) | sunk to `decisions::rules::duration` — the ADR-0013 duration grammar and the #138 alarm-interval warning, parsing through `hummingbird_domain::parse_duration` instead of a second regex and a second unit table |
+| `rules/validity.ts` and `registry.ts`'s `fieldsForKind`/`fieldType` (sunk at #540) | sunk to `decisions::rules::validity`. Takes the registry as an **argument** rather than reading `hummingbird_domain::EVENT_KINDS` directly: the catalogue a client edits against is the one its authority exported, not the one its binary compiled — an invalid-rule badge is a trust signal and must answer against what the reader was shown |
+| `rules/condition-editor.ts` (`widgetFor`, `newCondition`, `retypeCondition`, `toggleNegate`) (sunk at #540) | sunk to `decisions::rules::editor` — not one of #540's five named items, and forced by them: the phone's create-and-edit form needs the same kind → field → operator → widget cascade, and this ADR forbids Kotlin holding a per-row decision function, so a Kotlin copy would have been the third |
+| `rules/operators.ts`'s `OPERATOR_LABELS`, `registry.ts`'s `kindLabel`/`kindOptions` (#540) | **stays** — display copy plus the registry's own declared order. Two clients wording "is within the next" or "Calendar event" differently is a difference, not a bug |
+| The epoch ⇄ civil wall-clock conversion, at each host's edge (#540) | **stays per-client, deliberately.** `client/core` holds no tzdb (its `Cargo.toml` argues this at length), so every rules function takes an already-resolved deadline-shaped `now`, exactly as `decisions::urgency` does. The backtest needs *two* readings of one instant — `occurred_at` is stamped UTC by the authority, `deadline`/`scheduled_date` are device-local civil strings — so `BacktestClock` names both frames at the boundary rather than letting the core infer either |
 | Calendar / #169's two doors | out of M1 entirely |
 | the NDJSON **line splitting** (`skills/ndjson.ts`'s `takeLines`, okio's `readUtf8Line`) (M4, #538) | stays per-client: a byte-level stream reader is a platform fact, not a decision. The web decodes a `ReadableStream` with a streaming `TextDecoder`; Android reads okio's buffered source. What each *line means* did sink (`decisions::skills::envelope`) |
 | the **transport** — `run-skill.ts`, `route-run.ts`, `skills/SkillRunner.kt` (M4, #538) | stays per-client: `fetch` + `AbortSignal` vs OkHttp + `Call.cancel()` have no shared expression, and neither decides anything. Each reports what happened to *its* socket (no token / never resolved / a status / the stream ended) and the core answers with the next state |

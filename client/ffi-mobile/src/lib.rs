@@ -59,7 +59,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use hummingbird_core::decisions::{available_actions, can_mark_done, frontier, queue, urgency};
+use hummingbird_core::decisions::{
+    available_actions, can_mark_done, frontier, queue, rules, urgency,
+};
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
     HttpMethod, MutationRequest, MutationTransport,
@@ -67,7 +69,10 @@ use hummingbird_core::sync::write::transport::{
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::{CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
-use hummingbird_domain::{Alert, CreatePushTarget, Energy, Item, Platform, Size, Stage};
+use hummingbird_domain::{
+    Alert, Condition, CreatePushTarget, Energy, FieldType, Item, Platform, Rule, Size, Stage, Tier,
+};
+use hummingbird_rules_engine::Operator;
 
 /// Whether `draft` is worth submitting — the free door onto
 /// [`hummingbird_core::decisions::can_submit_capture`] (ADR-0025), the
@@ -1118,6 +1123,463 @@ impl std::fmt::Display for MobileEditError {
 
 impl std::error::Error for MobileEditError {}
 
+
+// ----------------------------------------------------------------- M4 (#540)
+// The rules surface. Same asymmetry as every section above: Kotlin receives
+// decided records, never a predicate to apply. Every verdict a rules screen
+// renders — `is_valid`, the legal operator list, the value widget, the
+// sub-alarm-interval warning, the backtest count — is decided in
+// `hummingbird_core::decisions::rules` and arrives applied. The Compose
+// screen holds no operator table, no duration regex, no `23:59`, and no
+// notion of which fields a kind declares.
+
+/// [`hummingbird_rules_engine::Operator`], mirrored as a `uniffi::Enum` for
+/// the same reason [`MobileUrgencyBand`] mirrors its band: the core stays
+/// binding-agnostic (ADR-0003), so this is a second uniffi-derived
+/// definition rather than an annotation on someone else's type.
+/// [`map_operator`] is the only place the two may drift apart from, and it
+/// is exhaustive with no wildcard arm for exactly that reason — an eighth
+/// operator added to ADR-0013's vocabulary fails this crate's build before
+/// it ever reaches Kotlin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileOperator {
+    Eq,
+    Contains,
+    Gt,
+    Lt,
+    Is,
+    WithinNext,
+    WithinLast,
+}
+
+fn map_operator(op: Operator) -> MobileOperator {
+    match op {
+        Operator::Eq => MobileOperator::Eq,
+        Operator::Contains => MobileOperator::Contains,
+        Operator::Gt => MobileOperator::Gt,
+        Operator::Lt => MobileOperator::Lt,
+        Operator::Is => MobileOperator::Is,
+        Operator::WithinNext => MobileOperator::WithinNext,
+        Operator::WithinLast => MobileOperator::WithinLast,
+    }
+}
+
+fn unmap_operator(op: MobileOperator) -> Operator {
+    match op {
+        MobileOperator::Eq => Operator::Eq,
+        MobileOperator::Contains => Operator::Contains,
+        MobileOperator::Gt => Operator::Gt,
+        MobileOperator::Lt => Operator::Lt,
+        MobileOperator::Is => Operator::Is,
+        MobileOperator::WithinNext => Operator::WithinNext,
+        MobileOperator::WithinLast => Operator::WithinLast,
+    }
+}
+
+/// [`hummingbird_domain::FieldType`], mirrored — ADR-0013's typed
+/// catalogue. `Dynamic` is `snapshot_change`'s `value`/`previous` only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileFieldType {
+    Text,
+    TextList,
+    Number,
+    Boolean,
+    Timestamp,
+    Date,
+    Dynamic,
+}
+
+fn map_field_type(field_type: FieldType) -> MobileFieldType {
+    match field_type {
+        FieldType::String => MobileFieldType::Text,
+        FieldType::StringList => MobileFieldType::TextList,
+        FieldType::Number => MobileFieldType::Number,
+        FieldType::Bool => MobileFieldType::Boolean,
+        FieldType::Timestamp => MobileFieldType::Timestamp,
+        FieldType::Date => MobileFieldType::Date,
+        FieldType::Dynamic => MobileFieldType::Dynamic,
+    }
+}
+
+/// [`rules::ValueWidget`], mirrored — the control one condition row's value
+/// is edited with, decided by [`rules::widget_for`] and never by Kotlin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileValueWidget {
+    Chips,
+    Duration,
+    Datetime,
+    Boolean,
+    Number,
+    Text,
+}
+
+fn map_widget(widget: rules::ValueWidget) -> MobileValueWidget {
+    match widget {
+        rules::ValueWidget::Chips => MobileValueWidget::Chips,
+        rules::ValueWidget::Duration => MobileValueWidget::Duration,
+        rules::ValueWidget::Datetime => MobileValueWidget::Datetime,
+        rules::ValueWidget::Boolean => MobileValueWidget::Boolean,
+        rules::ValueWidget::Number => MobileValueWidget::Number,
+        rules::ValueWidget::Text => MobileValueWidget::Text,
+    }
+}
+
+/// [`hummingbird_domain::Tier`], mirrored — ADR-0012's two notification
+/// tiers, which map to Android's own channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileTier {
+    Urgent,
+    Normal,
+}
+
+fn map_tier(tier: Tier) -> MobileTier {
+    match tier {
+        Tier::Urgent => MobileTier::Urgent,
+        Tier::Normal => MobileTier::Normal,
+    }
+}
+
+fn unmap_tier(tier: MobileTier) -> Tier {
+    match tier {
+        MobileTier::Urgent => Tier::Urgent,
+        MobileTier::Normal => Tier::Normal,
+    }
+}
+
+/// One condition row, decided. `value_display` is already rendered — a
+/// scalar as itself, a list as its comma-joined members — so Kotlin never
+/// inspects the untyped JSON a `Condition.value` actually is.
+/// `below_alarm_interval` is #138's warning, already measured
+/// ([`rules::is_below_alarm_interval`]): **warn, never reject**.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RuleConditionRecord {
+    pub field: String,
+    pub op: MobileOperator,
+    pub value_display: String,
+    pub negate: bool,
+    pub widget: MobileValueWidget,
+    pub below_alarm_interval: bool,
+}
+
+/// One rule, decided — the row behind the rules list and its editor.
+///
+/// `is_valid`/`invalid_fields` are [`rules::is_rule_valid`] already applied
+/// against the compiled registry: a Kotlin re-derivation would be the
+/// silently-dead-rule failure mode the whole check exists to prevent.
+/// `enabled` is a *separate* fact and Kotlin must never read one for the
+/// other — a disabled rule is not invalid, and an invalid rule is not
+/// disabled.
+///
+/// `kind_label_key` is the kind's own registry key, or `"any_kind"` for
+/// ADR-0013's null kind — a *key*, not a label, because the human wording
+/// is rendering and stays per-client (ADR-0025's verdict table says so for
+/// `kindLabel` explicitly).
+///
+/// `severity_is_unranked` is whether `severity` is outside
+/// `hummingbird_domain::SEVERITIES` — a word `severity_rank` ranks at `0`,
+/// so the ADR-0014 ratchet can never lift it. Answered here because it is
+/// a vocabulary membership test, which is precisely the kind of thing a
+/// hand-typed Kotlin list gets wrong.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RuleRecord {
+    pub id: String,
+    pub name: String,
+    pub event_kind: Option<String>,
+    pub kind_label_key: String,
+    pub conditions: Vec<RuleConditionRecord>,
+    pub severity: String,
+    pub tier: MobileTier,
+    pub enabled: bool,
+    pub is_valid: bool,
+    pub invalid_fields: Vec<String>,
+    pub severity_is_unranked: bool,
+    /// The CAS pivot every rule write needs — see [`AlertRecord`]'s own
+    /// note on why a record carries its version.
+    pub version: i64,
+}
+
+/// One selectable kind. `key: None` is ADR-0013's "any kind", always first.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct KindOptionRecord {
+    pub key: Option<String>,
+    pub label_key: String,
+}
+
+/// One field the editor offers, with its cascade already resolved:
+/// the operators legal for its type ([`rules::legal_operators`], derived
+/// from the authority's own gating function), the widget its *default*
+/// operator implies, and the duration units a `date` field narrows to.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RuleFieldRecord {
+    pub name: String,
+    pub field_type: MobileFieldType,
+    pub legal_operators: Vec<MobileOperator>,
+    pub default_widget: MobileValueWidget,
+    pub duration_units: Vec<String>,
+}
+
+/// Everything the create-and-edit form needs for one chosen kind, decided
+/// once per form open rather than per row — the seam rule this crate's
+/// header states.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RuleFormRecord {
+    pub kind_options: Vec<KindOptionRecord>,
+    pub fields: Vec<RuleFieldRecord>,
+    pub severities: Vec<String>,
+    /// The severity a fresh draft opens on —
+    /// [`hummingbird_core::decisions::rules::DEFAULT_SEVERITY`], not the
+    /// head of `severities`, which is a ratchet order and not a default.
+    pub default_severity: String,
+    pub tiers: Vec<MobileTier>,
+    pub alarm_interval_ms: i64,
+}
+
+/// A draft rule's backtest against this device's own frontier (ADR-0011).
+///
+/// `corpus_note_key` names the caveat the UI must show beside the count,
+/// never a bare "N matches": the corpus here is the frontier, not the
+/// sweep's `load_live_items`, so triage-stage and blocked items are
+/// outside it (`rules::backtest`'s header, gap 1). A key rather than the
+/// sentence, for the same rendering-stays-per-client reason as
+/// `kind_label_key`.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct BacktestRecord {
+    pub is_available: bool,
+    pub match_count: u32,
+    pub corpus_note_key: String,
+}
+
+/// One condition as the editor collects it, on the way *in*. `value` is a
+/// single string in every case — the typing back into a JSON literal is
+/// decided Rust-side from the field's declared type, so Kotlin never
+/// constructs the untyped value a `Condition` carries and cannot get a
+/// number-vs-string literal wrong.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RuleConditionInput {
+    pub field: String,
+    pub op: MobileOperator,
+    pub value: String,
+    pub negate: bool,
+}
+
+/// A rules write failed. No field named `message` anywhere in this crate's
+/// records — uniffi reserves it.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileRuleError {
+    RuleNotFound,
+    /// A condition names a field the chosen kind does not declare, or a
+    /// value its type cannot hold. Refused at the seam, never sent.
+    InvalidCondition { detail: String },
+    SaveFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileRuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileRuleError::RuleNotFound => write!(f, "rule not found"),
+            MobileRuleError::InvalidCondition { detail } => write!(f, "{detail}"),
+            MobileRuleError::SaveFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileRuleError {}
+
+/// ADR-0013's null kind, as a rendering key.
+const ANY_KIND_KEY: &str = "any_kind";
+
+/// The one caveat the backtest count must always carry — see
+/// [`BacktestRecord`].
+const BACKTEST_CORPUS_NOTE_KEY: &str = "backtest_corpus_frontier_only";
+
+/// A condition's untyped JSON value, rendered for display. A list joins
+/// with `", "` (ADR-0013's any-of); everything else renders as itself, a
+/// string without its JSON quotes.
+fn condition_value_display(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(condition_value_display)
+            .collect::<Vec<_>>()
+            .join(", "),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn to_rule_condition_record(
+    condition: &Condition,
+    registry: &rules::KindRegistry,
+    event_kind: Option<&str>,
+    alarm_interval_ms: i64,
+) -> RuleConditionRecord {
+    let op = Operator::parse(&condition.op).unwrap_or(Operator::Eq);
+    let field_type = rules::field_type(registry, event_kind, &condition.field)
+        .unwrap_or(FieldType::String);
+    let display = condition_value_display(&condition.value);
+    RuleConditionRecord {
+        field: condition.field.clone(),
+        op: map_operator(op),
+        value_display: display.clone(),
+        negate: condition.negate,
+        widget: map_widget(rules::widget_for(&condition.field, field_type, op)),
+        below_alarm_interval: rules::is_below_alarm_interval(&display, alarm_interval_ms),
+    }
+}
+
+fn to_rule_record(rule: &Rule, registry: &rules::KindRegistry) -> RuleRecord {
+    let event_kind = rule.event_kind.as_deref();
+    let invalid = rules::invalid_fields(&rule.conditions, event_kind, registry);
+    RuleRecord {
+        id: rule.id.clone(),
+        name: rule.name.clone(),
+        event_kind: rule.event_kind.clone(),
+        kind_label_key: event_kind.unwrap_or(ANY_KIND_KEY).to_string(),
+        conditions: rule
+            .conditions
+            .iter()
+            .map(|condition| {
+                to_rule_condition_record(
+                    condition,
+                    registry,
+                    event_kind,
+                    registry.alarm_interval_ms,
+                )
+            })
+            .collect(),
+        severity: rule.severity.clone(),
+        tier: map_tier(rule.tier),
+        enabled: rule.enabled,
+        is_valid: invalid.is_empty(),
+        invalid_fields: invalid,
+        severity_is_unranked: !registry.severities.iter().any(|s| s == &rule.severity),
+        version: rule.version,
+    }
+}
+
+fn to_rule_field_record(field: &rules::KindField) -> RuleFieldRecord {
+    let legal = rules::legal_operators(field.field_type);
+    let default_op = rules::default_operator_for(field.field_type);
+    RuleFieldRecord {
+        name: field.name.clone(),
+        field_type: map_field_type(field.field_type),
+        legal_operators: legal.into_iter().map(map_operator).collect(),
+        default_widget: map_widget(rules::widget_for(&field.name, field.field_type, default_op)),
+        duration_units: rules::duration_units_for(field.field_type)
+            .into_iter()
+            .map(|unit| rules::duration::duration_unit_str(unit).to_string())
+            .collect(),
+    }
+}
+
+/// One editor-collected condition, typed back into the `Condition` the
+/// wire carries. The literal's JSON kind follows the **field's declared
+/// type**, exactly what `validate_rule` checks at save time — a `number`
+/// field gets a number, a `bool` field a bool, a `string_list` field the
+/// comma-split list ADR-0013's any-of means, everything else a string.
+/// An unparseable number or bool is refused here rather than sent as a
+/// string the authority would reject with a 400.
+fn to_condition(
+    input: &RuleConditionInput,
+    registry: &rules::KindRegistry,
+    event_kind: Option<&str>,
+) -> Result<Condition, MobileRuleError> {
+    let field_type = rules::field_type(registry, event_kind, &input.field).ok_or_else(|| {
+        MobileRuleError::InvalidCondition {
+            detail: format!("{} is not a field this kind declares", input.field),
+        }
+    })?;
+    let op = unmap_operator(input.op);
+    if !rules::legal_operators(field_type).contains(&op) {
+        return Err(MobileRuleError::InvalidCondition {
+            detail: format!("{} is not legal on {}", op.as_str(), input.field),
+        });
+    }
+    let value = match field_type {
+        FieldType::Number if !matches!(op, Operator::WithinNext | Operator::WithinLast) => {
+            let parsed: f64 = input.value.trim().parse().map_err(|_| {
+                MobileRuleError::InvalidCondition {
+                    detail: format!("{:?} is not a number", input.value),
+                }
+            })?;
+            serde_json::json!(parsed)
+        }
+        FieldType::Bool => {
+            let parsed: bool = input.value.trim().parse().map_err(|_| {
+                MobileRuleError::InvalidCondition {
+                    detail: format!("{:?} is not true or false", input.value),
+                }
+            })?;
+            serde_json::json!(parsed)
+        }
+        FieldType::StringList => serde_json::Value::Array(
+            input
+                .value
+                .split(',')
+                .map(|part| serde_json::Value::String(part.trim().to_string()))
+                .filter(|part| part.as_str() != Some(""))
+                .collect(),
+        ),
+        _ => serde_json::Value::String(input.value.clone()),
+    };
+    Ok(Condition {
+        field: input.field.clone(),
+        op: op.as_str().to_string(),
+        value,
+        negate: input.negate,
+    })
+}
+
+fn to_conditions(
+    inputs: &[RuleConditionInput],
+    registry: &rules::KindRegistry,
+    event_kind: Option<&str>,
+) -> Result<Vec<Condition>, MobileRuleError> {
+    inputs
+        .iter()
+        .map(|input| to_condition(input, registry, event_kind))
+        .collect()
+}
+
+/// One mirrored item as the sweep's `item_threshold_event` would see it —
+/// `occurred_at_utc` resolved by the caller's clock, exactly as the web's
+/// seam does it, for the tzdb reason in `rules::backtest`'s header.
+fn to_backtest_record(outcome: rules::BacktestOutcome) -> BacktestRecord {
+    match outcome {
+        rules::BacktestOutcome::Unavailable { .. } => BacktestRecord {
+            is_available: false,
+            match_count: 0,
+            corpus_note_key: BACKTEST_CORPUS_NOTE_KEY.to_string(),
+        },
+        rules::BacktestOutcome::Ok { matched_ids } => BacktestRecord {
+            is_available: true,
+            match_count: matched_ids.len() as u32,
+            corpus_note_key: BACKTEST_CORPUS_NOTE_KEY.to_string(),
+        },
+    }
+}
+
+fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem {
+    rules::BacktestItem {
+        id: item.id.clone(),
+        occurred_at_utc,
+        title: item.title.clone(),
+        body: item.description.clone(),
+        url: item.source_url.clone(),
+        deadline: item.deadline.clone(),
+        scheduled_date: item.scheduled_date.clone(),
+        stage: item.stage.as_str().to_string(),
+        size: item.size.map(|size| size.as_str().to_string()),
+        energy: item.energy.map(|energy| energy.as_str().to_string()),
+        context: item.context.clone(),
+        priority: item.priority,
+        project_id: item.project_id.clone(),
+        source: item.source.clone(),
+        source_key: item.source_key.clone(),
+    }
+}
+
 struct Inner {
     core: Core<FsSnapshotStore, FsSnapshotStore>,
     read_transport: ReqwestSyncTransport,
@@ -1651,6 +2113,224 @@ impl MobileTaskHost {
                 detail: format!("push target registration failed: {status} {}", response.body),
             }),
         }
+    }
+
+    // ------------------------------------------------------------- M4 (#540)
+
+    /// Every rule this device has mirrored, decided into [`RuleRecord`]s —
+    /// [`hummingbird_core::Core::rules`] verbatim, in the mirror's own
+    /// order. Validity is measured against the compiled registry
+    /// ([`rules::compiled_registry`]), the same catalogue the authority
+    /// evaluates with, so a rule flagged here is a rule that really has
+    /// stopped being able to fire.
+    pub async fn rules(&self) -> Vec<RuleRecord> {
+        let registry = rules::compiled_registry();
+        self.inner
+            .lock()
+            .await
+            .core
+            .rules()
+            .iter()
+            .map(|rule| to_rule_record(rule, &registry))
+            .collect()
+    }
+
+    /// One rule by id, or `None` if this device has not mirrored it — the
+    /// editor's own read.
+    pub async fn rule(&self, rule_id: String) -> Option<RuleRecord> {
+        let registry = rules::compiled_registry();
+        self.inner
+            .lock()
+            .await
+            .core
+            .rules()
+            .iter()
+            .find(|rule| rule.id == rule_id)
+            .map(|rule| to_rule_record(rule, &registry))
+    }
+
+    /// Everything the create-and-edit form needs for `event_kind`, decided
+    /// once per form open: the selectable kinds, the fields that kind
+    /// offers with their legal operators and widgets already resolved, the
+    /// severity vocabulary in ADR-0014's ratchet order, both tiers, and the
+    /// alarm interval a duration warning is measured against.
+    ///
+    /// `None` is ADR-0013's "any kind", which narrows the field list to the
+    /// Event core — decided by [`rules::fields_for_kind`], not by Kotlin.
+    /// No `Core` state is read, so this never contends the lock.
+    pub async fn rule_form(&self, event_kind: Option<String>) -> RuleFormRecord {
+        let registry = rules::compiled_registry();
+        let mut kind_options = vec![KindOptionRecord {
+            key: None,
+            label_key: ANY_KIND_KEY.to_string(),
+        }];
+        kind_options.extend(registry.kinds.iter().map(|kind| KindOptionRecord {
+            key: Some(kind.key.clone()),
+            label_key: kind.key.clone(),
+        }));
+        RuleFormRecord {
+            kind_options,
+            fields: rules::fields_for_kind(&registry, event_kind.as_deref())
+                .iter()
+                .map(to_rule_field_record)
+                .collect(),
+            severities: registry.severities.clone(),
+            default_severity: rules::DEFAULT_SEVERITY.to_string(),
+            tiers: vec![MobileTier::Urgent, MobileTier::Normal],
+            alarm_interval_ms: registry.alarm_interval_ms,
+        }
+    }
+
+    /// Creates a rule — [`hummingbird_core::Core::create_rule`], enqueued
+    /// durably like every other mutation here. Conditions arrive as
+    /// [`RuleConditionInput`]s and are typed into the wire's `Condition`
+    /// shape Rust-side; a field the kind does not declare, an operator its
+    /// type does not permit, or a value its type cannot hold is refused at
+    /// this seam rather than sent for the authority to 400.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_rule(
+        &self,
+        name: String,
+        event_kind: Option<String>,
+        conditions: Vec<RuleConditionInput>,
+        severity: String,
+        tier: MobileTier,
+        enabled: bool,
+        now_ms: i64,
+    ) -> Result<String, MobileRuleError> {
+        let registry = rules::compiled_registry();
+        let conditions = to_conditions(&conditions, &registry, event_kind.as_deref())?;
+        let seed = mint_mutation_seed("create-rule", now_ms);
+        self.inner
+            .lock()
+            .await
+            .core
+            .create_rule(
+                &seed,
+                name,
+                event_kind,
+                conditions,
+                severity,
+                unmap_tier(tier),
+                enabled,
+                now_ms,
+            )
+            .await
+            .map_err(|error| MobileRuleError::SaveFailed {
+                detail: error.to_string(),
+            })
+    }
+
+    /// Patches a rule — [`hummingbird_core::Core::patch_rule`], one CAS
+    /// `PATCH` for the whole edit. Every field is a [`FieldPatch`]-shaped
+    /// three-way answer for the same reason [`ItemEdit`]'s are: **"this
+    /// rule now names no kind" is not the same as "I did not touch the
+    /// kind"**, and only `event_kind` can be cleared (to ADR-0013's null
+    /// kind), so it is the only one that needs all three. The others are
+    /// plain `Option`s — `NOT NULL` columns cannot be cleared, the same
+    /// asymmetry the authority enforces with a 400.
+    ///
+    /// **The enable/disable toggle is this method with `enabled` set and
+    /// everything else `None`** — one CAS field, exactly #140's acceptance
+    /// criterion, and no second entry point that could drift from it.
+    ///
+    /// `conditions` is re-typed against `event_kind` when that is being set
+    /// too, and against the rule's current kind otherwise — so a condition
+    /// list is never validated against a kind the save is about to leave
+    /// behind.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_rule(
+        &self,
+        rule_id: String,
+        name: Option<String>,
+        event_kind: FieldPatch,
+        conditions: Option<Vec<RuleConditionInput>>,
+        severity: Option<String>,
+        tier: Option<MobileTier>,
+        enabled: Option<bool>,
+        now_ms: i64,
+    ) -> Result<(), MobileRuleError> {
+        let registry = rules::compiled_registry();
+        let mut inner = self.inner.lock().await;
+        let current = inner
+            .core
+            .rules()
+            .into_iter()
+            .find(|rule| rule.id == rule_id)
+            .ok_or(MobileRuleError::RuleNotFound)?;
+
+        let event_kind_patch = event_kind.to_text();
+        // The kind the conditions are validated against: the one being set,
+        // or the rule's current one when the kind is untouched.
+        let effective_kind = match &event_kind_patch {
+            Some(next) => next.clone(),
+            None => current.event_kind.clone(),
+        };
+        let conditions = match conditions {
+            Some(inputs) => Some(to_conditions(&inputs, &registry, effective_kind.as_deref())?),
+            None => None,
+        };
+
+        let seed = mint_mutation_seed("patch-rule", now_ms);
+        inner
+            .core
+            .patch_rule(
+                &seed,
+                &current,
+                name,
+                event_kind_patch,
+                conditions,
+                severity,
+                tier.map(unmap_tier),
+                enabled,
+                now_ms,
+            )
+            .await
+            .map_err(|error| MobileRuleError::SaveFailed {
+                detail: error.to_string(),
+            })
+    }
+
+    /// A draft rule's backtest against this device's own frontier
+    /// (ADR-0011) — [`rules::backtest`], with the corpus caveat travelling
+    /// beside the count rather than left for the reader to know.
+    ///
+    /// `now_local` and `now_utc` are the same instant in the two frames the
+    /// evaluation reads: `deadline`/`scheduled_date` are device-local civil
+    /// strings, `occurred_at` is stamped UTC by the authority. The host
+    /// resolves both, because neither this crate nor `hummingbird-core`
+    /// holds a timezone table — see `rules::backtest`'s header.
+    pub async fn backtest_rule(
+        &self,
+        event_kind: Option<String>,
+        conditions: Vec<RuleConditionInput>,
+        now_local: String,
+        now_utc: String,
+    ) -> Result<BacktestRecord, MobileRuleError> {
+        let registry = rules::compiled_registry();
+        let conditions = to_conditions(&conditions, &registry, event_kind.as_deref())?;
+        let items: Vec<rules::BacktestItem> = self
+            .inner
+            .lock()
+            .await
+            .core
+            .frontier()
+            .iter()
+            // `item_threshold_event` stamps `occurred_at:
+            // now_as_deadline(item.updated_at)` — a poll-time-derived core
+            // field, exact from the same `updated_at` the mirror holds.
+            .map(|item| to_backtest_item(item, hummingbird_domain::now_as_deadline(item.updated_at)))
+            .collect();
+        let clock = rules::BacktestClock {
+            now_local,
+            now_utc,
+        };
+        Ok(to_backtest_record(rules::backtest(
+            event_kind.as_deref(),
+            &conditions,
+            &items,
+            &clock,
+        )))
     }
 }
 
@@ -3430,6 +4110,242 @@ mod tests {
             Err(MobileEditError::ItemNotFound)
         ));
         assert!(host.item_detail("nope".to_string(), 1_000).await.is_none());
+    }
+
+    // ------------------------------------------------------------- M4 (#540)
+
+    fn rule_fixture(conditions: Vec<Condition>, event_kind: Option<&str>) -> Rule {
+        Rule {
+            id: "r-1".to_string(),
+            name: "passport".to_string(),
+            event_kind: event_kind.map(str::to_string),
+            conditions,
+            severity: "high".to_string(),
+            tier: Tier::Urgent,
+            enabled: true,
+            updated_at: 1,
+            version: 3,
+        }
+    }
+
+    fn condition_fixture(field: &str, op: &str, value: serde_json::Value) -> Condition {
+        Condition {
+            field: field.to_string(),
+            op: op.to_string(),
+            value,
+            negate: false,
+        }
+    }
+
+    /// Every enum this crate mirrors is exhaustive with no wildcard arm —
+    /// the compile-time drift gate the brief names. These pin the round
+    /// trip on the two that cross in both directions.
+    #[test]
+    fn the_operator_and_tier_mirrors_round_trip() {
+        for op in Operator::ALL {
+            assert_eq!(unmap_operator(map_operator(op)), op);
+        }
+        for tier in Tier::ALL {
+            assert_eq!(unmap_tier(map_tier(tier)), tier);
+        }
+    }
+
+    #[test]
+    fn every_field_type_and_widget_maps_to_a_distinct_mobile_variant() {
+        let mapped: Vec<MobileFieldType> =
+            FieldType::ALL.into_iter().map(map_field_type).collect();
+        assert_eq!(mapped.len(), FieldType::ALL.len());
+        for (index, one) in mapped.iter().enumerate() {
+            assert!(
+                !mapped[index + 1..].contains(one),
+                "{one:?} is the mapping of two different field types",
+            );
+        }
+        let widgets: Vec<MobileValueWidget> = rules::ValueWidget::ALL
+            .into_iter()
+            .map(map_widget)
+            .collect();
+        assert_eq!(widgets.len(), rules::ValueWidget::ALL.len());
+    }
+
+    #[test]
+    fn a_rule_record_carries_its_validity_already_decided() {
+        let registry = rules::compiled_registry();
+        let record = to_rule_record(
+            &rule_fixture(
+                vec![condition_fixture("removed_field", "eq", serde_json::json!("x"))],
+                Some("item_threshold"),
+            ),
+            &registry,
+        );
+        assert!(!record.is_valid);
+        assert_eq!(record.invalid_fields, ["removed_field"]);
+        // Validity and enablement are separate facts, and Kotlin must never
+        // read one for the other.
+        assert!(record.enabled);
+        assert_eq!(record.version, 3);
+        assert_eq!(record.kind_label_key, "item_threshold");
+    }
+
+    #[test]
+    fn a_null_kind_rule_carries_the_any_kind_rendering_key() {
+        let registry = rules::compiled_registry();
+        let record = to_rule_record(&rule_fixture(Vec::new(), None), &registry);
+        assert_eq!(record.event_kind, None);
+        assert_eq!(record.kind_label_key, ANY_KIND_KEY);
+        assert!(record.is_valid);
+    }
+
+    #[test]
+    fn a_severity_outside_the_ratchet_vocabulary_is_flagged() {
+        let registry = rules::compiled_registry();
+        let mut rule = rule_fixture(Vec::new(), None);
+        assert!(!to_rule_record(&rule, &registry).severity_is_unranked);
+        rule.severity = "extremely".to_string();
+        assert!(to_rule_record(&rule, &registry).severity_is_unranked);
+    }
+
+    #[test]
+    fn a_condition_record_renders_its_value_and_measures_the_alarm_warning() {
+        let registry = rules::compiled_registry();
+        let record = to_rule_record(
+            &rule_fixture(
+                vec![
+                    condition_fixture("deadline", "within_next", serde_json::json!("5m")),
+                    condition_fixture("deadline", "within_next", serde_json::json!("2h")),
+                ],
+                Some("item_threshold"),
+            ),
+            &registry,
+        );
+        assert_eq!(record.conditions[0].value_display, "5m");
+        assert!(record.conditions[0].below_alarm_interval);
+        assert!(!record.conditions[1].below_alarm_interval);
+        // `deadline` specifically gets the date/time picker, decided by
+        // `rules::widget_for` — never by Kotlin.
+        assert_eq!(record.conditions[0].widget, MobileValueWidget::Datetime);
+    }
+
+    #[test]
+    fn a_list_condition_value_renders_comma_joined() {
+        assert_eq!(
+            condition_value_display(&serde_json::json!(["a", "b"])),
+            "a, b",
+        );
+        assert_eq!(condition_value_display(&serde_json::json!(3)), "3");
+        assert_eq!(condition_value_display(&serde_json::json!(true)), "true");
+        assert_eq!(condition_value_display(&serde_json::Value::Null), "");
+    }
+
+    #[test]
+    fn a_condition_input_is_typed_from_the_fields_declared_type() {
+        let registry = rules::compiled_registry();
+        let kind = Some("item_threshold");
+        let typed = |field: &str, op: MobileOperator, value: &str| {
+            to_condition(
+                &RuleConditionInput {
+                    field: field.to_string(),
+                    op,
+                    value: value.to_string(),
+                    negate: false,
+                },
+                &registry,
+                kind,
+            )
+            .map(|c| c.value)
+        };
+        assert_eq!(
+            typed("priority", MobileOperator::Gt, "2").unwrap(),
+            serde_json::json!(2.0),
+        );
+        assert_eq!(
+            typed("stage", MobileOperator::Eq, "ready").unwrap(),
+            serde_json::json!("ready"),
+        );
+        assert_eq!(
+            typed("calendar_busy", MobileOperator::Is, "true").unwrap(),
+            serde_json::json!(true),
+        );
+    }
+
+    #[test]
+    fn a_condition_input_is_refused_before_the_seam_never_sent() {
+        let registry = rules::compiled_registry();
+        let kind = Some("item_threshold");
+        let attempt = |field: &str, op: MobileOperator, value: &str| {
+            to_condition(
+                &RuleConditionInput {
+                    field: field.to_string(),
+                    op,
+                    value: value.to_string(),
+                    negate: false,
+                },
+                &registry,
+                kind,
+            )
+            .is_err()
+        };
+        // A field the kind does not declare.
+        assert!(attempt("subject", MobileOperator::Eq, "x"));
+        // An operator the field's type does not permit.
+        assert!(attempt("priority", MobileOperator::Contains, "2"));
+        // A value the field's type cannot hold.
+        assert!(attempt("priority", MobileOperator::Gt, "soon"));
+        assert!(attempt("calendar_busy", MobileOperator::Is, "yes"));
+    }
+
+    #[test]
+    fn a_string_list_condition_splits_on_commas_and_drops_empties() {
+        let registry = rules::compiled_registry();
+        let value = to_condition(
+            &RuleConditionInput {
+                field: "to".to_string(),
+                op: MobileOperator::Contains,
+                value: " a , ,b ".to_string(),
+                negate: false,
+            },
+            &registry,
+            Some("email"),
+        )
+        .expect("`to` is a string_list field on email")
+        .value;
+        assert_eq!(value, serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn a_field_record_carries_its_cascade_already_resolved() {
+        let registry = rules::compiled_registry();
+        let fields = rules::fields_for_kind(&registry, Some("item_threshold"));
+        let scheduled = fields
+            .iter()
+            .find(|f| f.name == "scheduled_date")
+            .expect("item_threshold declares scheduled_date");
+        let record = to_rule_field_record(scheduled);
+        assert_eq!(record.field_type, MobileFieldType::Date);
+        assert_eq!(
+            record.legal_operators,
+            [MobileOperator::WithinNext, MobileOperator::WithinLast],
+        );
+        // A `date` field is day-grained only (ADR-0013).
+        assert_eq!(record.duration_units, ["d"]);
+        assert_eq!(record.default_widget, MobileValueWidget::Duration);
+    }
+
+    #[test]
+    fn a_backtest_record_carries_the_corpus_caveat_beside_every_count() {
+        let unavailable = to_backtest_record(rules::BacktestOutcome::Unavailable {
+            reason: rules::backtest::BacktestUnavailable::NoLocalHistory,
+        });
+        assert!(!unavailable.is_available);
+        assert_eq!(unavailable.match_count, 0);
+        assert_eq!(unavailable.corpus_note_key, BACKTEST_CORPUS_NOTE_KEY);
+
+        let ok = to_backtest_record(rules::BacktestOutcome::Ok {
+            matched_ids: vec!["a".to_string(), "b".to_string()],
+        });
+        assert!(ok.is_available);
+        assert_eq!(ok.match_count, 2);
+        assert_eq!(ok.corpus_note_key, BACKTEST_CORPUS_NOTE_KEY);
     }
 }
 

@@ -16,6 +16,12 @@ hummingbird-core = { path = "../core" }
 # particular, to parse the wire's stage string into the enum `Core::capture`
 # takes).
 hummingbird-domain = { path = "../../server/domain" }
+# Needed only to *name* ADR-0013's `Operator` at this boundary (#540/M4):
+# the rules bindings take and return the wire operator strings, and parse
+# them through the one enum the authority evaluates with rather than
+# matching on strings here. Same already-carried-by-`hummingbird-core`
+# dependency as `hummingbird-domain` above.
+hummingbird-rules-engine = { path = "../../server/rules-engine" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
