@@ -16,7 +16,13 @@ Rust/TS carve-out is redrawn for the multi-client world — decision logic
 (orderings, urgency/priority, band functions with their thresholds) sinks
 into the core behind the generated bindings; only rendering stays
 per-client. The threshold-beside-band reasoning survives; the pair moves
-together.
+together. · **amended 2026-08-18 by
+[ADR-0025](0025-decisions-sink-to-the-core-rendering-stays-per-client.md#the-zone-bridge-fixed-by-m4s-probe):**
+**Time** below is written in a one-client world, where the reader's zone
+database and the pane's rules share a runtime; a core with no tzdb splits it
+into a two-phase answer, and an unresolvable zone becomes a core decision
+rather than a host fallback. The invariant — a civil date is never stored as
+an instant, and resolves at read time — is untouched.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on
@@ -321,17 +327,7 @@ the "never parsed" rule this ADR is restating.
 
 ## Time
 
-*Amended 2026-08-18 ([#533](https://github.com/JddAndrewLauren/hummingbird/issues/533)):
-this section is written in a one-client world, where the reader's zone
-database and the pane's rules are in the same runtime. ADR-0025 sinks the
-rules into a core that has no zone database, so **this section now has a
-two-phase answer**: the core names every `(zone, civil-date)` fact it needs,
-the host resolves it (`Intl` on web, `java.time` on Android), and the core
-decides — including deciding that an unresolvable zone is a gap. The
-invariant below is untouched and is what makes the split possible at all: a
-civil date is still never stored as an instant, and the resolution to an
-instant still happens at read time. See [ADR-0025's "The zone bridge, fixed
-by M4's probe"](0025-decisions-sink-to-the-core-rendering-stays-per-client.md#the-zone-bridge-fixed-by-m4s-probe).*
+*This section is amended by a later ADR — see the Status header.*
 
 **Device-local, everywhere, with no zone label.** This matches what the app
 already does for owned dates: `screens/urgency.ts` resolves a day-only

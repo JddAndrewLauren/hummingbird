@@ -17,10 +17,23 @@
 //!
 //! This slice sinks **waste alone**. [`zone_queries`] and [`rank_panes`]
 //! are the surface-level pair the whole family will be driven through, and
-//! they ship now — with a one-question list — so #534 grows a list rather
-//! than an API. The other seven questions are still answered entirely in
-//! the web's own `*-pane/` modules and are simply not in [`SUNK`] yet;
-//! a surface's ranked region is the union of both, which is why the web
+//! they ship now — with a one-question list — so #534 grows [`SUNK`] rather
+//! than the surface API.
+//!
+//! **That is true of the surface pair and not yet of the facts.** A
+//! [`RankedPaneRecord`] carries identity and [`PaneAnswerCore`]; a
+//! question's *facts* cross on their own per-question seam export
+//! (`waste_facts_json`, and `waste::waste_facts` behind it), so pane two
+//! adds a seam function rather than a row. Whether those collapse into one
+//! tagged facts union hung off the ranked record is **#534's call, with two
+//! real arms to shape it from** — shaping a union from a single arm is the
+//! thing this probe is meant to avoid, not the thing it should do. What is
+//! already settled is the part the acceptance criterion names: facts cross
+//! as structured data and gaps cross as *kinds*, never as sentences.
+//!
+//! The other seven questions are still answered entirely in the web's own
+//! `*-pane/` modules and are simply not in [`SUNK`] yet; a surface's ranked
+//! region is the union of both, which is why the web
 //! keeps ranking per-question rather than hoisting to [`rank_panes`] in
 //! this slice.
 //!
