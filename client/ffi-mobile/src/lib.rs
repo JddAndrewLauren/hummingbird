@@ -560,10 +560,30 @@ pub struct NowBlockedEntryRecord {
 /// [`build_now_board`]'s own doc) plus the blocked section [`Core::blocked`]
 /// carries separately, since a relation-blocked item is not on the
 /// frontier at all and groups by no axis.
+///
+/// `contexts` is [`frontier::contexts_of`] over the ordered, **pre-facet**
+/// list (`FrontierColumns.tsx`'s own `contextsOf(ordered)`, not `shown`) —
+/// the Context facet's live chip vocabulary: contexts actually present on
+/// the board, suggested vocabulary first, [`frontier::NO_CONTEXT`] last
+/// only when something on the board actually lacks one. Reusing `shown`
+/// instead would make a picked chip remove its own option from the list
+/// the moment it narrowed the board to nothing but itself.
+///
+/// `live_column_keys` is every column key [`frontier::group_frontier`]
+/// would produce for the *given axis* over that same pre-facet list —
+/// `FrontierColumns.tsx`'s own `liveKeys` (`groupFrontier(ordered, axis,
+/// projects)`, not `shown`): the set a caller prunes its persisted
+/// collapse set against before writing, so a column the live filter
+/// merely hides is never mistaken for one that no longer exists (a
+/// pruned-then-reappearing column would otherwise come back collapsed for
+/// a reason the reader cannot see — ADR-0021 decision 5's key-accretion
+/// argument).
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct NowBoardRecord {
     pub columns: Vec<NowColumnRecord>,
     pub blocked: Vec<NowBlockedEntryRecord>,
+    pub contexts: Vec<String>,
+    pub live_column_keys: Vec<String>,
 }
 
 /// [`MobileTaskHost::now_board`]'s pure core: the frontier
@@ -619,6 +639,12 @@ fn build_now_board(
         .filter_map(|id| by_id.get(id.as_str()).map(|item| to_frontier_item(item)))
         .collect();
 
+    let contexts = frontier::contexts_of(&ordered_entries);
+    let live_column_keys: Vec<String> = frontier::group_frontier(&ordered_entries, axis, projects)
+        .into_iter()
+        .map(|column| column.value.unwrap_or_default())
+        .collect();
+
     let shown_ids = frontier::apply_facets(&ordered_entries, facets, now);
     let shown_entries: Vec<frontier::FrontierItem> = shown_ids
         .iter()
@@ -646,7 +672,7 @@ fn build_now_board(
         })
         .collect();
 
-    NowBoardRecord { columns, blocked }
+    NowBoardRecord { columns, blocked, contexts, live_column_keys }
 }
 
 // ----------------------------------------------------------------- M2 (#141)
@@ -1740,6 +1766,39 @@ mod tests {
         assert_eq!(board.columns[1].value.as_deref(), Some("@computer"));
     }
 
+    /// `live_column_keys` names every column the given axis produces over
+    /// the pre-facet list — including one the active facet selection has
+    /// just filtered every item out of, so a caller pruning a persisted
+    /// collapse set against it never mistakes "hidden by the live filter"
+    /// for "no longer exists".
+    #[test]
+    fn now_board_live_column_keys_survive_a_facet_that_empties_a_column() {
+        let phone = Item { context: Some("@phone".to_string()), ..item("a", 0, None) };
+        let computer = Item { context: Some("@computer".to_string()), ..item("b", 0, None) };
+        let picked = frontier::toggle_facet(&no_facets(), frontier::Facet::Context, "@phone");
+
+        let board = build_now_board(
+            &[phone, computer],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &picked,
+            "2026-08-15T12:00",
+        );
+
+        // @computer has no columns left once the filter is applied...
+        assert_eq!(board.columns.len(), 1);
+        assert_eq!(board.columns[0].value.as_deref(), Some("@phone"));
+        // ...but its key is still live, because the filter hid it rather
+        // than it ceasing to exist.
+        let mut keys = board.live_column_keys.clone();
+        keys.sort();
+        assert_eq!(keys, vec!["@computer", "@phone"]);
+    }
+
     /// Facets narrow the shown set before grouping, exactly
     /// [`frontier::apply_facets`]'s own contract.
     #[test]
@@ -1761,6 +1820,37 @@ mod tests {
         );
 
         assert_eq!(board_ids(&board), vec!["a"]);
+    }
+
+    /// `contexts` is computed over the ordered **pre-facet** list
+    /// (`frontier::contexts_of`, mirroring `FrontierColumns.tsx`'s own
+    /// `contextsOf(ordered)`), so a picked chip that narrows the board to
+    /// nothing but itself does not also remove every other chip from the
+    /// panel — the reviewer's own reason for pinning this to `ordered`
+    /// rather than `shown`.
+    #[test]
+    fn now_board_carries_the_live_context_vocabulary_from_the_pre_facet_list() {
+        let phone = Item { context: Some("@phone".to_string()), ..item("a", 0, None) };
+        let computer = Item { context: Some("@computer".to_string()), ..item("b", 0, None) };
+        let unjudged = item("c", 0, None);
+        let picked = frontier::toggle_facet(&no_facets(), frontier::Facet::Context, "@phone");
+
+        let board = build_now_board(
+            &[phone, computer, unjudged],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            frontier::FrontierAxis::Context,
+            &picked,
+            "2026-08-15T12:00",
+        );
+
+        // The board is narrowed to @phone alone, but the chip vocabulary
+        // still names every context actually on the (unfiltered) board.
+        assert_eq!(board_ids(&board), vec!["a"]);
+        assert_eq!(board.contexts, vec!["@computer", "@phone", frontier::NO_CONTEXT]);
     }
 
     /// The triage-process queue rides inline, after the ordered frontier —

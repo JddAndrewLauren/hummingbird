@@ -162,18 +162,6 @@ private val NO_VALUE_LABEL: Map<MobileFrontierAxis, String> = mapOf(
     MobileFrontierAxis.ENERGY to "No energy",
 )
 
-/** The relation-block's picked-value marker — `hummingbird_core::decisions::
- * frontier::NO_CONTEXT` mirrored as a literal, the same "closed/suggested
- * vocabulary stays a client-side literal" precedent `ItemDetailScreen.kt`'s
- * own size/energy option lists already set for this module (no seam
- * exposes this string, and it is not worth one: it never changes
- * independently of the Rust constant it names). */
-private const val NO_CONTEXT = "no context"
-
-/** The suggested context vocabulary — `hummingbird_core::decisions::
- * vocabulary::CONTEXTS` mirrored the same way, for the same reason. */
-private val SUGGESTED_CONTEXTS = listOf("@home", "@computer", "@phone", "@errands", "@garden")
-
 /** `hummingbird_domain::Size`'s closed vocabulary — `ItemDetailScreen.kt`'s
  * own list (`listOf("quick", "normal", "deep")`), mirrored for the facet
  * chips rather than re-declared with different values. */
@@ -183,9 +171,12 @@ private val SIZE_VALUES = listOf("quick", "normal", "deep")
  * own list, mirrored. */
 private val ENERGY_VALUES = listOf("low", "medium", "high")
 
-/** [MobileUrgencyBand]'s own wire spelling, lower-cased — the facet's
- * closed vocabulary. */
-private val URGENCY_VALUES = listOf("calm", "soon", "now", "overdue")
+/** The urgency facet's closed vocabulary — `client/web/src/decisions/
+ * seam.ts:387`'s own list and order (`overdue, now, soon`), ported.
+ * `calm` is deliberately absent: it is the default, and "a facet for
+ * 'nothing pressing' is a facet for 'everything'", which the unpicked
+ * state already means. */
+private val URGENCY_VALUES = listOf("overdue", "now", "soon")
 
 /** `blockedReasonLabel` (`client/web/src/screens/blocked-reason.ts`),
  * ported verbatim: the reader of a relation-blocked row and the reader of
@@ -278,6 +269,8 @@ fun NowScreen(
                 }
             }
 
+            val currentBoard = board
+
             AxisRow(
                 axis = axis,
                 onPick = { next -> scope.launch { viewModel.setAxis(next, nowDeadlineShaped()) } },
@@ -285,21 +278,38 @@ fun NowScreen(
 
             FacetFilterRow(
                 facets = facets,
+                // The live vocabulary the axis's own board carries
+                // (`contexts_of` over the pre-facet list, `board.contexts`
+                // — never a hardcoded suggested list, which would offer a
+                // chip for a context nothing on the board has, or omit one
+                // an item actually carries).
+                contexts = currentBoard?.contexts ?: emptyList(),
                 onToggle = { facet, value ->
                     scope.launch { viewModel.toggleFacet(facet, value, nowDeadlineShaped()) }
                 },
                 onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
             )
 
-            val currentBoard = board
             when {
                 loading && currentBoard == null -> CircularProgressIndicator()
                 currentBoard == null ||
                     (currentBoard.columns.isEmpty() && currentBoard.blocked.isEmpty()) ->
                     Text(
-                        // Honesty over reassurance (README): an empty frontier
-                        // is reported as a fact, not apologised for.
-                        "Nothing on the frontier.",
+                        // "Nothing matches what you picked" and "nothing is
+                        // startable" are different facts and must not look
+                        // alike (`FrontierColumns.tsx`'s own empty-result
+                        // branch, ADR-0021 decision 5's whole reason for
+                        // never persisting the filter): a facet-emptied
+                        // board says so, rather than reporting an empty
+                        // frontier it is not.
+                        if (facets.count() > 0) {
+                            "Nothing matches what you picked."
+                        } else {
+                            // Honesty over reassurance (README): an empty
+                            // frontier is reported as a fact, not
+                            // apologised for.
+                            "Nothing on the frontier."
+                        },
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -388,19 +398,23 @@ private fun AxisRow(axis: MobileFrontierAxis, onPick: (MobileFrontierAxis) -> Un
     }
 }
 
-/** The facet filter — one chip group per facet, values from the closed (or
- * suggested) vocabulary lists above. Selection lives in [NowViewModel]'s
- * in-memory [FrontierFacetSelection] and is never persisted (that class's
- * own doc has the reason); toggling only ever asks for a fresh, already-
- * decided board. */
+/** The facet filter — one chip group per facet. Size/Energy/Urgency read
+ * from the closed vocabulary lists above; Context reads [contexts] —
+ * [uniffi.hummingbird_ffi_mobile.NowBoardRecord.contexts], the live
+ * vocabulary `frontier::contexts_of` decided over the current (pre-facet)
+ * board, never a hardcoded suggested list. Selection lives in
+ * [NowViewModel]'s in-memory [FrontierFacetSelection] and is never
+ * persisted (that class's own doc has the reason); toggling only ever
+ * asks for a fresh, already-decided board. */
 @Composable
 private fun FacetFilterRow(
     facets: FrontierFacetSelection,
+    contexts: List<String>,
     onToggle: (FrontierFacet, String) -> Unit,
     onClear: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        FacetChipGroup("Context", FrontierFacet.CONTEXT, SUGGESTED_CONTEXTS + NO_CONTEXT, facets.context, onToggle)
+        FacetChipGroup("Context", FrontierFacet.CONTEXT, contexts, facets.context, onToggle)
         FacetChipGroup("Size", FrontierFacet.SIZE, SIZE_VALUES, facets.size, onToggle)
         FacetChipGroup("Energy", FrontierFacet.ENERGY, ENERGY_VALUES, facets.energy, onToggle)
         FacetChipGroup("Urgency", FrontierFacet.URGENCY, URGENCY_VALUES, facets.urgency, onToggle)
@@ -418,6 +432,12 @@ private fun FacetChipGroup(
     selected: Set<String>,
     onToggle: (FrontierFacet, String) -> Unit,
 ) {
+    // `FacetRow` in `FrontierColumns.tsx` returns nothing for an empty
+    // vocabulary (`values.length === 0`) — a board with, say, nothing on
+    // it yet offers no Context chips at all rather than a label over an
+    // empty row.
+    if (values.isEmpty()) return
+
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             label,

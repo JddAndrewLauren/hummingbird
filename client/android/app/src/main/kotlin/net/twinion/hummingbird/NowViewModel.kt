@@ -156,16 +156,36 @@ class NowViewModel(
         refresh(now)
     }
 
-    /** Toggles one column's collapse state and persists it. `suspend`, not
-     * self-launched on `viewModelScope` — `CaptureViewModel.submit`'s own
-     * reasoning, ported: the caller (`NowScreen`, or a JVM test) controls
-     * the coroutine, and a JVM test needs no `Dispatchers.Main` wiring to
-     * call this directly. A header click is its own event (never batched
-     * with another), so writing straight from the computed `next` set is
-     * safe the same way `toggleCollapsed` in `FrontierColumns.tsx`
-     * documents for its own `setCollapsed` call. */
+    /** Toggles one column's collapse state and persists it — pruned first
+     * against [NowBoardRecord.liveColumnKeys], the current board's own
+     * pre-facet column keys for the live axis. Without pruning, the last
+     * `@garden` action done, a project renamed, or a size never used again
+     * leaves its collapse entry in `FrontierPrefs` forever, and a column of
+     * that name reappearing later comes back collapsed for a reason the
+     * reader cannot see — the exact "an override map would accrete keys
+     * for panes that no longer exist" failure ADR-0021 decision 5 cites,
+     * and `toggleCollapsed` in `FrontierColumns.tsx` prunes against the
+     * same **pre-facet** key set for the same reason: a column the live
+     * filter is merely hiding is not dead.
+     *
+     * `suspend`, not self-launched on `viewModelScope` —
+     * `CaptureViewModel.submit`'s own reasoning, ported: the caller
+     * (`NowScreen`, or a JVM test) controls the coroutine, and a JVM test
+     * needs no `Dispatchers.Main` wiring to call this directly. A header
+     * click is its own event (never batched with another), so writing
+     * straight from the computed `next` set is safe the same way
+     * `FrontierColumns.tsx` documents for its own `setCollapsed` call. */
     suspend fun toggleCollapsed(key: String) {
-        val next = _collapsed.value.toggled(key)
+        // No board read yet means no known live-key set to prune
+        // against — leave the collapse set exactly as it is rather than
+        // treating "unknown" as "nothing is live" and wiping it.
+        val liveKeys = _board.value?.liveColumnKeys?.toSet()
+        val pruned = if (liveKeys != null) {
+            _collapsed.value.filterTo(mutableSetOf()) { it in liveKeys }
+        } else {
+            _collapsed.value
+        }
+        val next = pruned.toggled(key)
         _collapsed.value = next
         writeCollapsedFn(next)
     }

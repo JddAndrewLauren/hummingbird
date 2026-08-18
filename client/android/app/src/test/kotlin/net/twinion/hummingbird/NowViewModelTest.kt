@@ -32,11 +32,13 @@ class NowViewModelTest {
         stage = "ready",
     )
 
-    private fun board(vararg ids: String) = NowBoardRecord(
+    private fun board(vararg ids: String, liveColumnKeys: List<String> = listOf("")) = NowBoardRecord(
         columns = listOf(
             NowColumnRecord(value = null, label = null, items = ids.map { record(it) }),
         ),
         blocked = emptyList(),
+        contexts = emptyList(),
+        liveColumnKeys = liveColumnKeys,
     )
 
     private fun columnIds(board: NowBoardRecord): List<String> =
@@ -166,6 +168,49 @@ class NowViewModelTest {
     }
 
     @Test
+    fun `toggleCollapsed prunes stale keys against the boards live column keys before persisting`() = runBlocking {
+        val writes = mutableListOf<Set<String>>()
+        var liveKeys = listOf("@phone", "@garden")
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> board(liveColumnKeys = liveKeys) },
+            writeCollapsedFn = { writes.add(it) },
+        )
+        vm.refresh("2026-08-15T12:00")
+        vm.toggleCollapsed("@garden")
+        assertEquals(setOf("@garden"), vm.collapsed.value)
+
+        // @garden's last action is done -- it drops out of the live set on
+        // the next board read (the way a real re-fetch would reflect it).
+        liveKeys = listOf("@phone")
+        vm.refresh("2026-08-15T12:00")
+
+        // Toggling an unrelated key must prune @garden's now-dead entry
+        // rather than carry it forward forever.
+        vm.toggleCollapsed("@phone")
+
+        assertEquals(setOf("@phone"), vm.collapsed.value)
+        assertEquals(setOf("@phone"), writes.last())
+    }
+
+    @Test
+    fun `toggleCollapsed never prunes a key the live filter is merely hiding`() = runBlocking {
+        // live_column_keys is computed pre-facet on the Rust side
+        // (build_now_board's own doc); this pins the Kotlin side's half of
+        // that contract -- a key present in liveColumnKeys survives a
+        // prune even though the *rendered* columns (post-facet) might not
+        // currently include it.
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> board(liveColumnKeys = listOf("@phone", "@computer")) },
+        )
+        vm.refresh("2026-08-15T12:00")
+
+        vm.toggleCollapsed("@computer")
+        vm.toggleCollapsed("@phone")
+
+        assertEquals(setOf("@computer", "@phone"), vm.collapsed.value)
+    }
+
+    @Test
     fun `toggleExpanded adds then removes a key without persisting it`() = runBlocking {
         var collapsedWrites = 0
         val vm = viewModel(writeCollapsedFn = { collapsedWrites++ })
@@ -225,6 +270,8 @@ class NowViewModelTest {
                     blockedByTitles = listOf("Ship the release"),
                 ),
             ),
+            contexts = emptyList(),
+            liveColumnKeys = emptyList(),
         )
         val vm = viewModel(fetchBoardFn = { _, _, _ -> blockedBoard })
 
