@@ -259,6 +259,14 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
             NowScreen(
                 onShowStatus = { navController.navigate(Routes.STATUS) },
                 onShowAlerts = { navController.navigate(Routes.ALERTS) },
+                // A plain navigate, deliberately not
+                // `openItemFromNotification`: that helper's `popUpTo`
+                // exists because a *restored* back stack may already hold
+                // debris beneath a cold tap (#518). Here Now is the live
+                // destination being navigated from, so it is already
+                // directly beneath and popping to it would be a no-op
+                // dressed as policy.
+                onOpenItem = { itemId -> navController.navigate(Routes.itemDetail(itemId)) },
                 syncTick = syncTick,
             )
         }
