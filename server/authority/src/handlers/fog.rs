@@ -1,9 +1,9 @@
 //! `POST /api/fog` and `PATCH /api/fog/:id` — Fog segments, resolved by
 //! flagging `resolved_at`, never deleted.
 
-use hummingbird_domain::{CreateFog, Fog, FogPatch};
+use hummingbird_domain::{is_url_safe_id, CreateFog, Fog, FogPatch};
 
-use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
+use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse, ID_NOT_URL_SAFE};
 use crate::codec::{RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -12,8 +12,12 @@ pub fn create(body: Option<&str>, _now_ms: i64, sql: &dyn Sql) -> Result<ApiResp
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
-    if create.id.is_empty() {
-        return Ok(error(400, "validation", "id must be non-empty"));
+    // Ahead of the replay select below, deliberately: an id outside
+    // the charset can never be addressed as a path segment, so
+    // already-exists must not answer 200 for one (#548). Empty is
+    // one of the shapes this rejects.
+    if !is_url_safe_id(&create.id) {
+        return Ok(error(400, "validation", ID_NOT_URL_SAFE));
     }
 
     // Replay before the remaining validation: already-exists is success and

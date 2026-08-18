@@ -12,9 +12,9 @@
 //! `revoke` is a flag, never a delete, and idempotent like
 //! `admin_tokens::revoke`.
 
-use hummingbird_domain::{CreatePushTarget, Platform, PushTarget};
+use hummingbird_domain::{is_url_safe_id, CreatePushTarget, Platform, PushTarget};
 
-use super::{error, json, parse_body, ApiResponse};
+use super::{error, json, parse_body, ApiResponse, ID_NOT_URL_SAFE};
 use crate::codec::{bad_cell, RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -23,8 +23,12 @@ pub fn register(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRes
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
-    if create.id.is_empty() {
-        return Ok(error(400, "validation", "id must be non-empty"));
+    // Ahead of the replay select below, deliberately: an id outside
+    // the charset can never be addressed as a path segment, so
+    // already-exists must not answer 200 for one (#548). Empty is
+    // one of the shapes this rejects.
+    if !is_url_safe_id(&create.id) {
+        return Ok(error(400, "validation", ID_NOT_URL_SAFE));
     }
 
     if let Some(row) = select(sql, &create.id)? {

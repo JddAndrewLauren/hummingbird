@@ -50,7 +50,12 @@ pub struct ApiRequest<'a> {
     /// Path only, no query string — e.g. `/api/items/uuid-1`. Segments are
     /// matched exactly as received (no percent-decoding): entity ids and
     /// settings keys must be URL-safe literals — an encoded character is
-    /// stored and matched verbatim.
+    /// stored and matched verbatim. Since #548 the create routes *enforce*
+    /// that on the id they are handed, via
+    /// [`hummingbird_domain::is_url_safe_id`]: it was only ever stated here,
+    /// and one row got minted that no path segment could name again. A
+    /// settings key needs no such guard — it arrives as a segment, so
+    /// whatever reaches the route can always be sent again.
     pub path: &'a str,
     /// The raw query string, without the `?`.
     pub query: Option<&'a str>,
@@ -75,6 +80,14 @@ pub struct ApiResponse {
     /// crate calls `deliver`.
     pub deliveries: Vec<DeliveryOutcome>,
 }
+
+/// The 400 every create route answers when its client-supplied id is not a
+/// URL-safe literal ([`hummingbird_domain::is_url_safe_id`]). It leads with
+/// `id` because that first word is the only field name a caller gets — the
+/// sweeper parses rejections with `^([a-z_]+)\b` (`sweep.py`), there being
+/// no structured `property` in the error body.
+pub(crate) const ID_NOT_URL_SAFE: &str =
+    "id must be URL-safe: unreserved characters only (A-Za-z0-9 - . _ ~)";
 
 /// Everything injected around a request: the clock, the `ADMIN_SECRET`
 /// Worker secret (`None` = admin routes fail closed), and the entropy

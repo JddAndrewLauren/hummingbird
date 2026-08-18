@@ -5,10 +5,10 @@
 //! either write persists (#186) — a malformed condition is rejected at save
 //! rather than only discovered at fire time.
 
-use hummingbird_domain::{CreateRule, Rule, RulePatch, Tier};
+use hummingbird_domain::{is_url_safe_id, CreateRule, Rule, RulePatch, Tier};
 use hummingbird_rules_engine::{validate_rule, RuleProblem};
 
-use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
+use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse, ID_NOT_URL_SAFE};
 use crate::codec::{bad_cell, RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -59,8 +59,12 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
-    if create.id.is_empty() {
-        return Ok(error(400, "validation", "id must be non-empty"));
+    // Ahead of the replay select below, deliberately: an id outside
+    // the charset can never be addressed as a path segment, so
+    // already-exists must not answer 200 for one (#548). Empty is
+    // one of the shapes this rejects.
+    if !is_url_safe_id(&create.id) {
+        return Ok(error(400, "validation", ID_NOT_URL_SAFE));
     }
 
     // Idempotent by client-supplied id, same rule as items::create: a
