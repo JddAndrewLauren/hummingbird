@@ -75,6 +75,21 @@ export interface DecisionsModule {
   item_can_mark_done(stage: string, archived: boolean): boolean;
   item_can_grill(stage: string): boolean;
   item_grill_button_label(hasDraft: boolean): string;
+  // M4 (#538): the skills lane's decision half.
+  classify_skill_line(text: string): string;
+  microtask_result_json(resultJson: string): string;
+  grill_result_json(resultJson: string): string;
+  reduce_skill_run(stateJson: string, eventJson: string): string;
+  reduce_grill_turn(stateJson: string, eventJson: string): string;
+  skill_stamp_label(stateJson: string): string | undefined;
+  microtask_run_body_json(inputJson: string): string;
+  grill_run_body_json(ref: string, turnsJson: string): string;
+  format_grill_transcript(turnsJson: string): string;
+  decline_for_transport(detail: string): string;
+  decline_for_response(status: number): string;
+  no_token_decline(): string;
+  no_terminal_line_decline(): string;
+  outside_schema_decline(): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -546,4 +561,120 @@ export function canGrill(stage: TaskStageName): boolean {
  * `hummingbird_core::decisions::grill_button_label` verbatim. */
 export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill" {
   return required().item_grill_button_label(hasDraft) as "Grill me" | "Resume grill";
+}
+
+// -------------------------------------------------------------- M4 (#538)
+// The skills lane's decision half — `hummingbird_core::decisions::skills`,
+// which `client/web/src/skills/`'s `envelope.ts`, `run-state.ts`,
+// `grill-turn-state.ts`, `microtask-args.ts` and `grill-args.ts` are now
+// thin wrappers over. Their exported signatures are unchanged, so every
+// existing suite in that directory still tests the rule from this side.
+//
+// **The reducers cross as TEXT, not as objects.** A caller holds its state
+// as a parsed object; the wrapper serializes it, asks the core, and — when
+// the answer is byte-identical to what it sent — returns *the object it was
+// given*, unparsed. That is not an optimisation: a reducer that always
+// answered a fresh object would break the no-op rule the lane is built on
+// (a duplicate tap must leave the running state untouched, and React
+// re-renders on identity), so the identity is part of the contract, and it
+// is the core's own byte-for-byte no-op that establishes it.
+//
+// **The three decline constants are NOT here.** `NO_TOKEN`,
+// `NO_TERMINAL_LINE` and `OUTSIDE_SCHEMA` are read at module-evaluation
+// time by `route-run.ts` and `useMicrotaskWiring.ts`, which are statically
+// reachable from `main.tsx` — a seam call there would throw the "used
+// before ready" guard on every page load. They stay literal TS strings in
+// their own modules, pinned against the core by `seam.test.ts`, exactly as
+// `priority.ts`'s `priorityRank` and `field-vocabulary.ts`'s arrays are.
+// ADR-0025's #538 amendment records that as a verdict-table row rather than
+// leaving it as folklore.
+
+/** `hummingbird_core::decisions::skills::classify_line`, parsed. The object
+ * shape is `envelope.ts`'s own `SkillLine`, which is why that module can
+ * cast this and change nothing else. */
+export function classifySkillLine(text: string): unknown {
+  return JSON.parse(required().classify_skill_line(text));
+}
+
+/** `skills::microtask_result` / `skills::grill_result` over a terminal
+ * line's `result` — `null` when the value is not that schema's shape.
+ * `undefined` crosses as JSON `null`, which both readers answer `null` for
+ * anyway. */
+export function microtaskResultFromCore(result: unknown): unknown {
+  return JSON.parse(required().microtask_result_json(JSON.stringify(result) ?? "null"));
+}
+
+export function grillResultFromCore(result: unknown): unknown {
+  return JSON.parse(required().grill_result_json(JSON.stringify(result) ?? "null"));
+}
+
+/** `skills::reduce_run` / `skills::reduce_grill_turn`. The state crosses as
+ * text; **the state the caller gave back is returned unchanged when the
+ * core answered byte-identically**, so a no-op reduce is a no-op by
+ * identity too. See the header for why that is contractual rather than an
+ * optimisation. */
+export function reduceSkillRun<S>(state: S, event: unknown): S {
+  return reduceThroughCore(state, event, (s, e) => required().reduce_skill_run(s, e));
+}
+
+export function reduceGrillTurn<S>(state: S, event: unknown): S {
+  return reduceThroughCore(state, event, (s, e) => required().reduce_grill_turn(s, e));
+}
+
+function reduceThroughCore<S>(
+  state: S,
+  event: unknown,
+  reduce: (stateJson: string, eventJson: string) => string,
+): S {
+  const before = JSON.stringify(state);
+  const after = reduce(before, JSON.stringify(event));
+  return after === before ? state : (JSON.parse(after) as S);
+}
+
+/** `skills::stamp_label` — `null` whenever the envelope named no backend.
+ * There is no default name to fall back to, here or in the core. */
+export function skillStampLabel(state: unknown): string | null {
+  return required().skill_stamp_label(JSON.stringify(state)) ?? null;
+}
+
+/** `skills::microtask_run_body` / `skills::grill_run_body` — the exact
+ * request text, byte-pinned across Rust, TypeScript and Kotlin by
+ * `client/core/tests/fixtures/skills-run-bodies.json`. */
+export function microtaskRunBodyJson(input: unknown): string {
+  return required().microtask_run_body_json(JSON.stringify(input));
+}
+
+export function grillRunBodyJson(ref: string, turns: unknown): string {
+  return required().grill_run_body_json(ref, JSON.stringify(turns));
+}
+
+/** `skills::format_grill_transcript` — the plain-text record
+ * `Core::complete_grill`'s `GrillCompletion.transcript` carries. */
+export function formatGrillTranscriptFromCore(turns: unknown): string {
+  return required().format_grill_transcript(JSON.stringify(turns));
+}
+
+/** `skills::decline_for_transport` / `skills::decline_for_response`. Both
+ * are called from an event handler, past the loading gate — unlike the
+ * three constants, which is the whole distinction the header draws. */
+export function declineForTransportFromCore(detail: string): string {
+  return required().decline_for_transport(detail);
+}
+
+export function declineForResponseFromCore(status: number): string {
+  return required().decline_for_response(status);
+}
+
+/** The three module-evaluation-time constants, exposed for `seam.test.ts`
+ * to pin the literal TS copies against — production reads the literals. */
+export function noTokenDeclineFromCore(): string {
+  return required().no_token_decline();
+}
+
+export function noTerminalLineDeclineFromCore(): string {
+  return required().no_terminal_line_decline();
+}
+
+export function outsideSchemaDeclineFromCore(): string {
+  return required().outside_schema_decline();
 }

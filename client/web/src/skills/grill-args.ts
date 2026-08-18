@@ -4,7 +4,12 @@
 // whole conversation") — so this module's whole job is threading `turns`
 // back exactly as the runner requires them, never trimming or replaying a
 // subset of what actually happened.
+//
+// **The rules are `hummingbird_core::decisions::skills::args`'s** since
+// #538 sank them there (ADR-0025); see `microtask-args.ts`'s header for why
+// the core answers with canonical text and this module parses it back.
 
+import { formatGrillTranscriptFromCore, grillRunBodyJson } from "../decisions/seam";
 import type { GrillQuestion } from "./envelope";
 
 /** One completed round: the question the model asked, and the answer given
@@ -35,7 +40,7 @@ export interface GrillRunBody {
  * is the same call for the runner's `model` arg, which nothing on this
  * surface ever sets. Add it back only when a real caller needs it. */
 export function grillRunBody(input: GrillRunInput): GrillRunBody {
-  return { skill: "grill-me", args: { ref: input.ref, turns: input.turns } };
+  return JSON.parse(grillRunBodyJson(input.ref, input.turns)) as GrillRunBody;
 }
 
 /** The plain-text record `Core::complete_grill`'s `GrillCompletion.transcript`
@@ -47,5 +52,5 @@ export function grillRunBody(input: GrillRunInput): GrillRunBody {
  * proposal, so this is defensive rather than reachable in practice) reads
  * as the empty string, never a placeholder sentence. */
 export function formatGrillTranscript(turns: GrillTurn[]): string {
-  return turns.map((turn) => `Q: ${turn.question.prompt}\nA: ${turn.answer}`).join("\n\n");
+  return formatGrillTranscriptFromCore(turns);
 }

@@ -80,9 +80,25 @@ describe("the skill lane cannot reach the sync engine", () => {
     for (const [name, source] of SKILL_MODULES) {
       const imports = [...code(source).matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
       for (const specifier of imports) {
-        // The one permitted crossing is a TYPE: `StepDTO` from the
-        // protocol, which carries no runtime code at all.
-        const allowed = specifier.startsWith("./") || specifier === "../store/protocol";
+        // Two permitted crossings, both named deliberately.
+        //
+        // `../store/protocol` is a TYPE: `StepDTO`, which carries no
+        // runtime code at all.
+        //
+        // `../decisions/seam` is #538's addition, and it is an EXTENSION of
+        // this gate to name a new sanctioned crossing rather than a
+        // loosening of it. ADR-0025 sank this lane's rules into
+        // `hummingbird_core::decisions::skills` so Android could reach them
+        // without a second copy, and the seam is how the web reaches
+        // anything sunk. It is admissible here for exactly the reason this
+        // test exists: the seam constructs no `Core`, opens no storage and
+        // starts no timer — `worker/worker-import-graph.test.ts` pins that
+        // structurally — so importing it cannot put a question into the
+        // queue that holds decisions, which is the whole invariant.
+        const allowed =
+          specifier.startsWith("./") ||
+          specifier === "../store/protocol" ||
+          specifier === "../decisions/seam";
         expect(allowed, `${name} imports ${specifier}`).toBe(true);
       }
     }

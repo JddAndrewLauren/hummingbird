@@ -467,6 +467,147 @@ pub fn triage_process_queue_json(
     .to_string()
 }
 
+// -------------------------------------------------------------- M4 (#538)
+// The skills lane's decision half (`hummingbird_core::decisions::skills`).
+// Same shape as everything above — free functions over scalars and JSON —
+// and the same reason: `useMicrotaskWiring.ts`/`useGrillWiring.ts` reduce
+// synchronously as each NDJSON line lands, on the main thread, where a
+// worker round trip cannot be spliced in.
+//
+// **The states round-trip as JSON.** `reduce_skill_run`/`reduce_grill_turn`
+// take the previous state as text and answer with the next one, so the web
+// holds the state in React and the *rule* lives in the core. A state or
+// event this side cannot parse is answered with the state text verbatim —
+// a strict no-op, never an invented phase — because a malformed argument is
+// a caller bug and swallowing it into `idle` would wipe a live run's
+// narration.
+
+use hummingbird_core::decisions::skills;
+
+/// [`skills::classify_line`], JSON-encoded — the same object shape
+/// `envelope.ts`'s `classifyLine` has always returned, so its callers parse
+/// it and are otherwise unchanged.
+#[wasm_bindgen]
+pub fn classify_skill_line(text: &str) -> String {
+    serde_json::to_string(&skills::classify_line(text)).unwrap()
+}
+
+/// [`skills::microtask_result`] / [`skills::grill_result`] over the terminal
+/// line's `result` value, JSON-encoded, `"null"` when the result is not
+/// that schema's shape.
+#[wasm_bindgen]
+pub fn microtask_result_json(result_json: &str) -> String {
+    let value = serde_json::from_str(result_json).unwrap_or(serde_json::Value::Null);
+    serde_json::to_string(&skills::microtask_result(&value)).unwrap()
+}
+
+#[wasm_bindgen]
+pub fn grill_result_json(result_json: &str) -> String {
+    let value = serde_json::from_str(result_json).unwrap_or(serde_json::Value::Null);
+    serde_json::to_string(&skills::grill_result(&value)).unwrap()
+}
+
+/// [`skills::reduce_run`], state and event in as JSON text, the next state
+/// out as JSON text.
+#[wasm_bindgen]
+pub fn reduce_skill_run(state_json: &str, event_json: &str) -> String {
+    let (Ok(state), Ok(event)) = (
+        serde_json::from_str::<skills::SkillRunState>(state_json),
+        serde_json::from_str::<skills::SkillEvent>(event_json),
+    ) else {
+        return state_json.to_string();
+    };
+    serde_json::to_string(&skills::reduce_run(&state, &event)).unwrap()
+}
+
+/// [`skills::reduce_grill_turn`], the same way.
+#[wasm_bindgen]
+pub fn reduce_grill_turn(state_json: &str, event_json: &str) -> String {
+    let (Ok(state), Ok(event)) = (
+        serde_json::from_str::<skills::GrillTurnState>(state_json),
+        serde_json::from_str::<skills::SkillEvent>(event_json),
+    ) else {
+        return state_json.to_string();
+    };
+    serde_json::to_string(&skills::reduce_grill_turn(&state, &event)).unwrap()
+}
+
+/// [`skills::stamp_label`] — `None` (and so JS `undefined`) whenever the
+/// envelope named no backend. There is no default name to fall back to,
+/// here or anywhere in this lane.
+#[wasm_bindgen]
+pub fn skill_stamp_label(state_json: &str) -> Option<String> {
+    let state = serde_json::from_str::<skills::SkillRunState>(state_json).ok()?;
+    skills::stamp_label(&state)
+}
+
+/// [`skills::microtask_run_body`] / [`skills::grill_run_body`] — the exact
+/// request text, byte-pinned across the three languages by
+/// `client/core/tests/fixtures/skills-run-bodies.json`. The empty string on
+/// an unreadable input, so a caller cannot post a half-built body: an empty
+/// body fails at the transport, loudly, rather than reaching the runner as
+/// something plausible.
+#[wasm_bindgen]
+pub fn microtask_run_body_json(input_json: &str) -> String {
+    match serde_json::from_str::<skills::MicrotaskRunInput>(input_json) {
+        Ok(input) => skills::microtask_run_body(&input),
+        Err(_) => String::new(),
+    }
+}
+
+#[wasm_bindgen]
+pub fn grill_run_body_json(reference: &str, turns_json: &str) -> String {
+    match serde_json::from_str::<Vec<skills::GrillTurn>>(turns_json) {
+        Ok(turns) => skills::grill_run_body(reference, &turns),
+        Err(_) => String::new(),
+    }
+}
+
+/// [`skills::format_grill_transcript`] — the plain-text record
+/// `Core::complete_grill` carries (ADR-0023 decision 2).
+#[wasm_bindgen]
+pub fn format_grill_transcript(turns_json: &str) -> String {
+    match serde_json::from_str::<Vec<skills::GrillTurn>>(turns_json) {
+        Ok(turns) => skills::format_grill_transcript(&turns),
+        Err(_) => String::new(),
+    }
+}
+
+/// The four decline sentences, from
+/// [`hummingbird_core::decisions::skills::decline`] and
+/// [`hummingbird_core::decisions::skills::grill::OUTSIDE_SCHEMA`]. The two
+/// constants are exposed as functions because a `#[wasm_bindgen]` const is
+/// not a thing — and, on the TS side, because the web's own copies stay
+/// literal strings for module-evaluation order and are *pinned* against
+/// these by `seam.test.ts` (ADR-0025's #538 amendment records that row).
+#[wasm_bindgen]
+pub fn decline_for_transport(detail: &str) -> String {
+    skills::decline_for_transport(detail)
+}
+
+/// `u32` rather than `u16`: wasm-bindgen's numeric boundary is a JS
+/// `number` either way, and every caller already holds `response.status` as
+/// one. The core takes the `u16` an HTTP status actually is.
+#[wasm_bindgen]
+pub fn decline_for_response(status: u32) -> String {
+    skills::decline_for_response(status.min(u16::MAX as u32) as u16)
+}
+
+#[wasm_bindgen]
+pub fn no_token_decline() -> String {
+    skills::NO_TOKEN.to_string()
+}
+
+#[wasm_bindgen]
+pub fn no_terminal_line_decline() -> String {
+    skills::NO_TERMINAL_LINE.to_string()
+}
+
+#[wasm_bindgen]
+pub fn outside_schema_decline() -> String {
+    skills::OUTSIDE_SCHEMA.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,5 +835,150 @@ mod tests {
                 "{raw} disagreed across the binding",
             );
         }
+    }
+
+    // ---------------------------------------------------------- M4 (#538)
+
+    #[test]
+    fn classify_skill_line_is_the_core_rule_verbatim_as_json() {
+        for text in [
+            r#"{"type":"progress","message":"still running"}"#,
+            r#"{"ok":true,"result":{"steps":[],"note":"n"},"backend":"b","model":"m"}"#,
+            r#"{"ok":false,"error":"nope"}"#,
+            r#"{"ok":"true"}"#,
+            "not json",
+        ] {
+            assert_eq!(
+                classify_skill_line(text),
+                serde_json::to_string(&skills::classify_line(text)).unwrap(),
+                "{text} disagreed across the binding",
+            );
+        }
+        // The JSON spelling itself is the contract `envelope.ts` parses.
+        assert_eq!(
+            classify_skill_line(r#"{"type":"progress","message":"a"}"#),
+            r#"{"kind":"progress","message":"a"}"#,
+        );
+        assert_eq!(classify_skill_line("not json"), r#"{"kind":"unreadable"}"#);
+    }
+
+    #[test]
+    fn reduce_skill_run_round_trips_a_run_through_its_json() {
+        let started = reduce_skill_run(r#"{"phase":"idle"}"#, r#"{"kind":"started"}"#);
+        assert_eq!(started, r#"{"phase":"running","messages":[]}"#);
+        let beat = reduce_skill_run(&started, r#"{"kind":"progress","message":"still running"}"#);
+        // The heartbeat collapse, across the binding.
+        assert_eq!(
+            reduce_skill_run(&beat, r#"{"kind":"progress","message":"still running"}"#),
+            beat,
+        );
+        let done = reduce_skill_run(
+            &beat,
+            r#"{"kind":"ok","result":{"steps":[],"note":"kept 2"},"backend":"b","model":"m"}"#,
+        );
+        assert_eq!(
+            done,
+            r#"{"phase":"done","messages":["still running"],"note":"kept 2","backend":"b","model":"m"}"#,
+        );
+        assert_eq!(skill_stamp_label(&done).as_deref(), Some("b · m"));
+    }
+
+    /// The duplicate-tap rule and the after-terminal no-op are the core's,
+    /// and the binding must return a byte-identical state for them — the
+    /// web wrapper compares the two strings to decide whether to keep its
+    /// existing object (which is what keeps `run-state.test.ts`'s identity
+    /// assertions passing unchanged).
+    #[test]
+    fn a_no_op_reduce_answers_the_state_text_byte_for_byte() {
+        let running = reduce_skill_run(r#"{"phase":"idle"}"#, r#"{"kind":"started"}"#);
+        assert_eq!(reduce_skill_run(&running, r#"{"kind":"started"}"#), running);
+        assert_eq!(reduce_skill_run(&running, r#"{"kind":"unreadable"}"#), running);
+        let done = reduce_skill_run(&running, r#"{"kind":"ok","backend":null,"model":null}"#);
+        assert_eq!(reduce_skill_run(&done, r#"{"kind":"progress","message":"late"}"#), done);
+    }
+
+    /// A malformed argument is a caller bug; it must not wipe a live run.
+    #[test]
+    fn an_unreadable_state_or_event_is_a_strict_no_op() {
+        let running = r#"{"phase":"running","messages":["a"]}"#;
+        assert_eq!(reduce_skill_run(running, "not json"), running);
+        assert_eq!(reduce_skill_run("not json", r#"{"kind":"started"}"#), "not json");
+        assert_eq!(reduce_grill_turn(running, "not json"), running);
+        assert_eq!(skill_stamp_label("not json"), None);
+    }
+
+    #[test]
+    fn reduce_grill_turn_answers_the_question_phase_and_the_outside_schema_decline() {
+        let asking = reduce_grill_turn(r#"{"phase":"idle"}"#, r#"{"kind":"started"}"#);
+        assert_eq!(asking, r#"{"phase":"asking","messages":[]}"#);
+        let question = reduce_grill_turn(
+            &asking,
+            r#"{"kind":"ok","result":{"kind":"question","question":{"prompt":"p","recommendedAnswer":"r","choices":["a","b"]}},"backend":"b","model":"m"}"#,
+        );
+        assert_eq!(
+            question,
+            r#"{"phase":"question","messages":[],"question":{"prompt":"p","recommendedAnswer":"r","choices":["a","b"]},"backend":"b","model":"m"}"#,
+        );
+        let outside = reduce_grill_turn(
+            &asking,
+            r#"{"kind":"ok","result":{"kind":"neither"},"backend":null,"model":null}"#,
+        );
+        assert!(outside.contains(&outside_schema_decline()), "{outside}");
+        assert!(outside.contains(r#""answered":true"#), "{outside}");
+    }
+
+    #[test]
+    fn the_result_readers_are_the_core_rules_verbatim() {
+        assert_eq!(
+            microtask_result_json(r#"{"steps":["a"],"note":"n"}"#),
+            r#"{"steps":["a"],"note":"n"}"#,
+        );
+        assert_eq!(microtask_result_json(r#"{"steps":[],"note":""}"#), "null");
+        assert_eq!(microtask_result_json("not json"), "null");
+        assert_eq!(
+            grill_result_json(r#"{"kind":"question","question":{"prompt":"p","recommendedAnswer":"r","choices":["a","b"]}}"#),
+            r#"{"kind":"question","question":{"prompt":"p","recommendedAnswer":"r","choices":["a","b"]}}"#,
+        );
+        assert_eq!(grill_result_json(r#"{"kind":"neither"}"#), "null");
+    }
+
+    #[test]
+    fn the_run_bodies_are_the_core_bytes_verbatim() {
+        assert_eq!(
+            microtask_run_body_json(r#"{"itemId":"i","replace":true}"#),
+            r#"{"skill":"microtask","args":{"ref":"i","replace":true}}"#,
+        );
+        assert_eq!(
+            grill_run_body_json("i", "[]"),
+            r#"{"skill":"grill-me","args":{"ref":"i","turns":[]}}"#,
+        );
+        // An unreadable input posts nothing rather than a half-built body.
+        assert_eq!(microtask_run_body_json("not json"), "");
+        assert_eq!(grill_run_body_json("i", "not json"), "");
+    }
+
+    #[test]
+    fn format_grill_transcript_is_the_core_rule_verbatim() {
+        let turns = r#"[{"question":{"prompt":"Which airport?","recommendedAnswer":"SEA","choices":["SEA","PDX"]},"answer":"SEA"}]"#;
+        assert_eq!(format_grill_transcript(turns), "Q: Which airport?\nA: SEA");
+        assert_eq!(format_grill_transcript("[]"), "");
+    }
+
+    /// The four decline sentences cross unchanged — this is what
+    /// `seam.test.ts` pins the web's literal TS copies against.
+    #[test]
+    fn the_decline_bindings_are_the_core_words_verbatim() {
+        assert_eq!(no_token_decline(), skills::NO_TOKEN);
+        assert_eq!(no_terminal_line_decline(), skills::NO_TERMINAL_LINE);
+        assert_eq!(outside_schema_decline(), skills::OUTSIDE_SCHEMA);
+        for status in [401u32, 403, 404, 500] {
+            assert_eq!(
+                decline_for_response(status),
+                skills::decline_for_response(status as u16),
+                "{status} disagreed across the binding",
+            );
+        }
+        assert_eq!(decline_for_transport("  boom  "), "Could not reach the server: boom");
+        assert_eq!(decline_for_transport(""), "Could not reach the server.");
     }
 }

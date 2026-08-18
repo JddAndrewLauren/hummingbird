@@ -1203,6 +1203,459 @@ fn reqwest_client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+// ------------------------------------------------------------- M4 (#538)
+// The skills runner lane: `hummingbird_core::decisions::skills`, exposed as
+// **applied results only**.
+//
+// Kotlin is never handed a `SkillLine`. It reports what happened to its own
+// socket — a line arrived, the request never resolved, the response was a
+// 401, the stream ended — and receives the new state. Terminality, ordering,
+// heartbeat collapse and decline wording all stay in the core, on every
+// platform at once; `SkillsLaneIsolationTest.kt` pins that no Kotlin file in
+// the lane parses a runner line or spells a decline sentence.
+//
+// **Why a per-event door is allowed here.** This module's header states the
+// rule: Kotlin never calls a *per-row* decision function, because the cost
+// guarded against is a JNI crossing multiplied by a list. These are
+// per-event on a stream that emits a line every few seconds at most (the
+// runner's own heartbeat is 20s), and the alternative — a Kotlin copy of the
+// reducer — is what ADR-0025 forbids outright. Same carve-out
+// [`can_submit_capture`] took per submit and [`notification_tap_target`] per
+// tap.
+//
+// **`answered` is observed at the response, never inferred from the
+// terminal** — the web's `route-run.ts` states the same rule and reads it
+// off whether `fetch` resolved. So [`grill_turn_response_failed`] and
+// [`grill_turn_stream_ended`] carry `answered: true` (a response *did*
+// arrive) while [`grill_turn_no_token`] and [`grill_turn_transport_failed`]
+// carry `false`. A decline a backend answered is not evidence any backend
+// is unreachable, and nothing downstream can recover the difference from
+// the prose (`decline.rs` forbids matching on it).
+//
+// Both doors land now — the `grill_turn_*` family and the `skill_run_*`
+// twins — even though nothing on Android calls the microtask one until
+// #539: the binding surface is designed once, and #539 gets a transport and
+// a reducer already proven together rather than half a seam. Every function
+// here is covered by a test in this crate, so `dead_code` never fires and
+// the door is not merely declared.
+
+use hummingbird_core::decisions::skills;
+
+/// [`hummingbird_domain::GrillVerdict`], mirrored as a `uniffi::Enum` for
+/// the same reason [`MobileUrgencyBand`] is: `hummingbird-core` and
+/// `hummingbird-domain` stay binding-agnostic (ADR-0003). An enum rather
+/// than the wire string, so the two maps below are exhaustive and a third
+/// verdict fails this crate's build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileGrillVerdict {
+    Resolved,
+    FogRemains,
+}
+
+fn map_verdict(verdict: hummingbird_domain::GrillVerdict) -> MobileGrillVerdict {
+    match verdict {
+        hummingbird_domain::GrillVerdict::Resolved => MobileGrillVerdict::Resolved,
+        hummingbird_domain::GrillVerdict::FogRemains => MobileGrillVerdict::FogRemains,
+    }
+}
+
+fn unmap_verdict(verdict: MobileGrillVerdict) -> hummingbird_domain::GrillVerdict {
+    match verdict {
+        MobileGrillVerdict::Resolved => hummingbird_domain::GrillVerdict::Resolved,
+        MobileGrillVerdict::FogRemains => hummingbird_domain::GrillVerdict::FogRemains,
+    }
+}
+
+/// `grill-me`'s question turn (ADR-0023) — 2-4 short `choices`, and free
+/// text is always still a valid answer regardless of what they list.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileGrillQuestion {
+    pub prompt: String,
+    pub recommended_answer: String,
+    pub choices: Vec<String>,
+}
+
+/// `grill-me`'s terminal proposal. **`patch_json` is opaque** — the raw
+/// object text, carried whole to `Core::complete_grill`'s `applied_patch`
+/// and never read into on this side of the boundary. A JSON string rather
+/// than a map because uniffi has no `serde_json::Value`, and because a
+/// typed mirror here would be a second schema for a field whose whole
+/// contract is that nobody parses it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileGrillProposal {
+    pub summary: String,
+    pub verdict: MobileGrillVerdict,
+    pub patch_json: String,
+}
+
+/// One completed round, threaded back on the next request — `grill-me` is
+/// stateless and every request carries the whole conversation.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileGrillTurn {
+    pub question: MobileGrillQuestion,
+    pub answer: String,
+}
+
+/// [`skills::GrillTurnState`], mirrored. The narration field is
+/// **`messages`**, plural, and the line's own `message` never crosses at
+/// all: a uniffi field named `message` generates a Kotlin `val message`
+/// that collides with `kotlin.Exception.message` (see [`MobileInitError`]),
+/// and this is the record that would have hit it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileGrillTurnState {
+    Idle,
+    Asking {
+        messages: Vec<String>,
+    },
+    Question {
+        messages: Vec<String>,
+        question: MobileGrillQuestion,
+        backend: Option<String>,
+        model: Option<String>,
+    },
+    Proposal {
+        messages: Vec<String>,
+        proposal: MobileGrillProposal,
+        backend: Option<String>,
+        model: Option<String>,
+    },
+    Declined {
+        messages: Vec<String>,
+        reason: String,
+        backend: Option<String>,
+        model: Option<String>,
+        answered: bool,
+    },
+}
+
+/// [`skills::SkillRunState`], mirrored — `microtask`'s four phases.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSkillRunState {
+    Idle,
+    Running {
+        messages: Vec<String>,
+    },
+    Done {
+        messages: Vec<String>,
+        note: String,
+        backend: Option<String>,
+        model: Option<String>,
+    },
+    Declined {
+        messages: Vec<String>,
+        reason: String,
+        backend: Option<String>,
+        model: Option<String>,
+        answered: bool,
+    },
+}
+
+fn map_question(question: skills::GrillQuestion) -> MobileGrillQuestion {
+    MobileGrillQuestion {
+        prompt: question.prompt,
+        recommended_answer: question.recommended_answer,
+        choices: question.choices,
+    }
+}
+
+fn unmap_question(question: MobileGrillQuestion) -> skills::GrillQuestion {
+    skills::GrillQuestion {
+        prompt: question.prompt,
+        recommended_answer: question.recommended_answer,
+        choices: question.choices,
+    }
+}
+
+fn map_proposal(proposal: skills::GrillProposal) -> MobileGrillProposal {
+    MobileGrillProposal {
+        summary: proposal.summary,
+        verdict: map_verdict(proposal.verdict),
+        patch_json: serde_json::Value::Object(proposal.patch).to_string(),
+    }
+}
+
+fn unmap_proposal(proposal: MobileGrillProposal) -> skills::GrillProposal {
+    skills::GrillProposal {
+        summary: proposal.summary,
+        verdict: unmap_verdict(proposal.verdict),
+        // Only reachable if a caller fabricated a state rather than passing
+        // back one of ours; an empty patch is the reading that changes
+        // nothing, which is the safe one for a value only ever carried.
+        patch: serde_json::from_str(&proposal.patch_json).unwrap_or_default(),
+    }
+}
+
+fn map_turn(turn: MobileGrillTurn) -> skills::GrillTurn {
+    skills::GrillTurn { question: unmap_question(turn.question), answer: turn.answer }
+}
+
+fn map_grill_state(state: skills::GrillTurnState) -> MobileGrillTurnState {
+    match state {
+        skills::GrillTurnState::Idle => MobileGrillTurnState::Idle,
+        skills::GrillTurnState::Asking { messages } => MobileGrillTurnState::Asking { messages },
+        skills::GrillTurnState::Question { messages, question, backend, model } => {
+            MobileGrillTurnState::Question {
+                messages,
+                question: map_question(question),
+                backend,
+                model,
+            }
+        }
+        skills::GrillTurnState::Proposal { messages, proposal, backend, model } => {
+            MobileGrillTurnState::Proposal {
+                messages,
+                proposal: map_proposal(proposal),
+                backend,
+                model,
+            }
+        }
+        skills::GrillTurnState::Declined { messages, reason, backend, model, answered } => {
+            MobileGrillTurnState::Declined { messages, reason, backend, model, answered }
+        }
+    }
+}
+
+fn unmap_grill_state(state: MobileGrillTurnState) -> skills::GrillTurnState {
+    match state {
+        MobileGrillTurnState::Idle => skills::GrillTurnState::Idle,
+        MobileGrillTurnState::Asking { messages } => skills::GrillTurnState::Asking { messages },
+        MobileGrillTurnState::Question { messages, question, backend, model } => {
+            skills::GrillTurnState::Question {
+                messages,
+                question: unmap_question(question),
+                backend,
+                model,
+            }
+        }
+        MobileGrillTurnState::Proposal { messages, proposal, backend, model } => {
+            skills::GrillTurnState::Proposal {
+                messages,
+                proposal: unmap_proposal(proposal),
+                backend,
+                model,
+            }
+        }
+        MobileGrillTurnState::Declined { messages, reason, backend, model, answered } => {
+            skills::GrillTurnState::Declined { messages, reason, backend, model, answered }
+        }
+    }
+}
+
+fn map_run_state(state: skills::SkillRunState) -> MobileSkillRunState {
+    match state {
+        skills::SkillRunState::Idle => MobileSkillRunState::Idle,
+        skills::SkillRunState::Running { messages } => MobileSkillRunState::Running { messages },
+        skills::SkillRunState::Done { messages, note, backend, model } => {
+            MobileSkillRunState::Done { messages, note, backend, model }
+        }
+        skills::SkillRunState::Declined { messages, reason, backend, model, answered } => {
+            MobileSkillRunState::Declined { messages, reason, backend, model, answered }
+        }
+    }
+}
+
+fn unmap_run_state(state: MobileSkillRunState) -> skills::SkillRunState {
+    match state {
+        MobileSkillRunState::Idle => skills::SkillRunState::Idle,
+        MobileSkillRunState::Running { messages } => skills::SkillRunState::Running { messages },
+        MobileSkillRunState::Done { messages, note, backend, model } => {
+            skills::SkillRunState::Done { messages, note, backend, model }
+        }
+        MobileSkillRunState::Declined { messages, reason, backend, model, answered } => {
+            skills::SkillRunState::Declined { messages, reason, backend, model, answered }
+        }
+    }
+}
+
+/// The four transport reports, as core events. `answered` is set from which
+/// report this is, never from the terminal's prose — see the section header.
+fn no_token_event() -> skills::SkillEvent {
+    skills::SkillEvent::Failed {
+        error: skills::NO_TOKEN.to_string(),
+        backend: None,
+        model: None,
+        answered: false,
+    }
+}
+
+fn transport_failed_event(detail: &str) -> skills::SkillEvent {
+    skills::SkillEvent::Failed {
+        error: skills::decline_for_transport(detail),
+        backend: None,
+        model: None,
+        answered: false,
+    }
+}
+
+fn response_failed_event(status: u16) -> skills::SkillEvent {
+    skills::SkillEvent::Failed {
+        error: skills::decline_for_response(status),
+        backend: None,
+        model: None,
+        answered: true,
+    }
+}
+
+fn stream_ended_event() -> skills::SkillEvent {
+    skills::SkillEvent::Failed {
+        error: skills::NO_TERMINAL_LINE.to_string(),
+        backend: None,
+        model: None,
+        answered: true,
+    }
+}
+
+/// A line off the socket, classified and reduced in one crossing. A
+/// terminal `failed` line carries `answered: true` — it arrived over a
+/// response that resolved.
+fn line_event(line: &str) -> skills::SkillEvent {
+    match skills::classify_line(line) {
+        skills::SkillLine::Failed { error, backend, model } => {
+            skills::SkillEvent::Failed { error, backend, model, answered: true }
+        }
+        other => skills::SkillEvent::from(other),
+    }
+}
+
+// ---- the Grill turn door (the #538 probe's own lane)
+
+#[uniffi::export]
+pub fn grill_turn_idle() -> MobileGrillTurnState {
+    map_grill_state(skills::grill::IDLE)
+}
+
+/// The tap. A second one while already asking leaves the state untouched —
+/// the duplicate-tap rule lives in the core's reducer, so no Kotlin
+/// `isRunning` guard is the only thing holding it.
+#[uniffi::export]
+pub fn grill_turn_started(state: MobileGrillTurnState) -> MobileGrillTurnState {
+    reduce_grill(state, skills::SkillEvent::Started)
+}
+
+/// One NDJSON line. Classification and the heartbeat collapse are the
+/// core's; an unreadable line is dropped and is **not** terminal, so a
+/// stream that emits garbage mid-flight has not ended.
+#[uniffi::export]
+pub fn grill_turn_line(state: MobileGrillTurnState, line: String) -> MobileGrillTurnState {
+    reduce_grill(state, line_event(&line))
+}
+
+#[uniffi::export]
+pub fn grill_turn_no_token(state: MobileGrillTurnState) -> MobileGrillTurnState {
+    reduce_grill(state, no_token_event())
+}
+
+#[uniffi::export]
+pub fn grill_turn_transport_failed(
+    state: MobileGrillTurnState,
+    detail: String,
+) -> MobileGrillTurnState {
+    reduce_grill(state, transport_failed_event(&detail))
+}
+
+#[uniffi::export]
+pub fn grill_turn_response_failed(
+    state: MobileGrillTurnState,
+    status: u16,
+) -> MobileGrillTurnState {
+    reduce_grill(state, response_failed_event(status))
+}
+
+/// The socket closed. If the turn is still asking, that is a run with no
+/// terminal line; if it already settled, this is a no-op — which is why the
+/// transport can call it unconditionally at the end of every stream.
+#[uniffi::export]
+pub fn grill_turn_stream_ended(state: MobileGrillTurnState) -> MobileGrillTurnState {
+    reduce_grill(state, stream_ended_event())
+}
+
+fn reduce_grill(state: MobileGrillTurnState, event: skills::SkillEvent) -> MobileGrillTurnState {
+    map_grill_state(skills::reduce_grill_turn(&unmap_grill_state(state), &event))
+}
+
+/// The request body, byte for byte — pinned across Rust, TypeScript and
+/// Kotlin by `client/core/tests/fixtures/skills-run-bodies.json`. The
+/// transport posts this string verbatim and builds nothing of its own.
+#[uniffi::export]
+pub fn grill_run_body(reference: String, turns: Vec<MobileGrillTurn>) -> String {
+    let turns: Vec<skills::GrillTurn> = turns.into_iter().map(map_turn).collect();
+    skills::grill_run_body(&reference, &turns)
+}
+
+/// The plain-text transcript `Core::complete_grill` carries (ADR-0023
+/// decision 2) — #539's caller, landed with the rest of the door.
+#[uniffi::export]
+pub fn format_grill_transcript(turns: Vec<MobileGrillTurn>) -> String {
+    let turns: Vec<skills::GrillTurn> = turns.into_iter().map(map_turn).collect();
+    skills::format_grill_transcript(&turns)
+}
+
+// ---- the microtask run door (#539's, landed now so the shape is proven)
+
+#[uniffi::export]
+pub fn skill_run_idle() -> MobileSkillRunState {
+    map_run_state(skills::run::IDLE)
+}
+
+#[uniffi::export]
+pub fn skill_run_started(state: MobileSkillRunState) -> MobileSkillRunState {
+    reduce_run_state(state, skills::SkillEvent::Started)
+}
+
+#[uniffi::export]
+pub fn skill_run_line(state: MobileSkillRunState, line: String) -> MobileSkillRunState {
+    reduce_run_state(state, line_event(&line))
+}
+
+#[uniffi::export]
+pub fn skill_run_no_token(state: MobileSkillRunState) -> MobileSkillRunState {
+    reduce_run_state(state, no_token_event())
+}
+
+#[uniffi::export]
+pub fn skill_run_transport_failed(
+    state: MobileSkillRunState,
+    detail: String,
+) -> MobileSkillRunState {
+    reduce_run_state(state, transport_failed_event(&detail))
+}
+
+#[uniffi::export]
+pub fn skill_run_response_failed(state: MobileSkillRunState, status: u16) -> MobileSkillRunState {
+    reduce_run_state(state, response_failed_event(status))
+}
+
+#[uniffi::export]
+pub fn skill_run_stream_ended(state: MobileSkillRunState) -> MobileSkillRunState {
+    reduce_run_state(state, stream_ended_event())
+}
+
+/// The `backend · model` stamp, or `None` when the envelope named no
+/// backend. **There is no default name to fall back to** — the whole reason
+/// #273's "not hardcoded at the render site" survives the port to a second
+/// client is that no provider name exists anywhere in this lane to inherit.
+#[uniffi::export]
+pub fn skill_run_stamp_label(state: MobileSkillRunState) -> Option<String> {
+    skills::stamp_label(&unmap_run_state(state))
+}
+
+fn reduce_run_state(state: MobileSkillRunState, event: skills::SkillEvent) -> MobileSkillRunState {
+    map_run_state(skills::reduce_run(&unmap_run_state(state), &event))
+}
+
+/// The microtask body, byte-pinned by the same shared fixture. `replace` is
+/// present-and-`true` or absent; `grain` and `model` are omitted when unset,
+/// so the runner's defaults stay the defaults.
+#[uniffi::export]
+pub fn microtask_run_body(
+    item_id: String,
+    replace: bool,
+    grain: Option<i64>,
+    model: Option<String>,
+) -> String {
+    skills::microtask_run_body(&skills::MicrotaskRunInput { item_id, replace, grain, model })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1937,5 +2390,305 @@ mod tests {
             Err(MobileEditError::ItemNotFound)
         ));
         assert!(host.item_detail("nope".to_string(), 1_000).await.is_none());
+    }
+}
+
+/// The M4 (#538) skills-lane doors. Every exported function above is
+/// exercised here — `clippy -D warnings` fails on `dead_code`, so a door
+/// that is declared but never reachable would fail the build rather than
+/// ship as a promise.
+#[cfg(test)]
+mod skills_tests {
+    use super::*;
+
+    fn asking() -> MobileGrillTurnState {
+        grill_turn_started(grill_turn_idle())
+    }
+
+    fn messages_of(state: &MobileGrillTurnState) -> Vec<String> {
+        match state {
+            MobileGrillTurnState::Idle => Vec::new(),
+            MobileGrillTurnState::Asking { messages }
+            | MobileGrillTurnState::Question { messages, .. }
+            | MobileGrillTurnState::Proposal { messages, .. }
+            | MobileGrillTurnState::Declined { messages, .. } => messages.clone(),
+        }
+    }
+
+    #[test]
+    fn a_tap_starts_asking_and_a_second_one_is_a_no_op() {
+        assert_eq!(asking(), MobileGrillTurnState::Asking { messages: Vec::new() });
+        let with_a_line = grill_turn_line(
+            asking(),
+            r#"{"type":"progress","message":"reading"}"#.to_string(),
+        );
+        assert_eq!(grill_turn_started(with_a_line.clone()), with_a_line);
+    }
+
+    /// The whole of heartbeat handling, across the boundary: the runner
+    /// beats `"still running"` every 20s and the narration collapses them.
+    /// No timer exists anywhere in this lane, on either side.
+    #[test]
+    fn consecutive_heartbeats_collapse_and_a_later_repeat_is_kept() {
+        let beat = r#"{"type":"progress","message":"still running"}"#.to_string();
+        let mut state = asking();
+        for _ in 0..4 {
+            state = grill_turn_line(state, beat.clone());
+        }
+        state = grill_turn_line(state, r#"{"type":"progress","message":"asking"}"#.to_string());
+        state = grill_turn_line(state, beat.clone());
+        assert_eq!(messages_of(&state), vec!["still running", "asking", "still running"]);
+    }
+
+    #[test]
+    fn an_unreadable_line_is_dropped_and_is_not_terminal() {
+        let state = grill_turn_line(asking(), "not json at all".to_string());
+        assert_eq!(state, MobileGrillTurnState::Asking { messages: Vec::new() });
+    }
+
+    #[test]
+    fn a_question_line_answers_the_question_phase_with_its_stamp() {
+        let state = grill_turn_line(
+            asking(),
+            r#"{"ok":true,"result":{"kind":"question","question":{"prompt":"Which airport?","recommendedAnswer":"SEA","choices":["SEA","PDX"]}},"backend":"b","model":"m"}"#
+                .to_string(),
+        );
+        let MobileGrillTurnState::Question { question, backend, model, .. } = state else {
+            panic!("expected the question phase");
+        };
+        assert_eq!(question.prompt, "Which airport?");
+        assert_eq!(question.choices, vec!["SEA".to_string(), "PDX".to_string()]);
+        assert_eq!(backend.as_deref(), Some("b"));
+        assert_eq!(model.as_deref(), Some("m"));
+    }
+
+    /// The patch crosses as opaque text and is never read into — a key this
+    /// client has never heard of survives the round trip through both maps.
+    #[test]
+    fn a_proposal_carries_its_patch_verbatim_and_unread() {
+        let state = grill_turn_line(
+            asking(),
+            r#"{"ok":true,"result":{"kind":"proposal","proposal":{"summary":"s","verdict":"fog_remains","patch":{"never_heard_of":[1,2]}}},"backend":null,"model":null}"#
+                .to_string(),
+        );
+        let MobileGrillTurnState::Proposal { proposal, .. } = state.clone() else {
+            panic!("expected the proposal phase");
+        };
+        assert_eq!(proposal.verdict, MobileGrillVerdict::FogRemains);
+        assert!(proposal.patch_json.contains("never_heard_of"), "{}", proposal.patch_json);
+        // Both maps, round trip: what Kotlin holds deserializes back to the
+        // core state it came from.
+        assert_eq!(map_grill_state(unmap_grill_state(state.clone())), state);
+    }
+
+    /// The decline the runner itself sends (a 200 whose terminal line says
+    /// `ok:false`) is carried verbatim — never prefixed, never branched on
+    /// — and counts as answered, because a response resolved.
+    #[test]
+    fn a_seam_decline_is_verbatim_and_answered() {
+        let reason = "That item cannot be grilled: PROVISIONAL_TURN_CAP reached.";
+        let state = grill_turn_line(
+            asking(),
+            format!(r#"{{"ok":false,"error":"{reason}","backend":"b","model":"m"}}"#),
+        );
+        assert_eq!(
+            state,
+            MobileGrillTurnState::Declined {
+                messages: Vec::new(),
+                reason: reason.to_string(),
+                backend: Some("b".to_string()),
+                model: Some("m".to_string()),
+                answered: true,
+            },
+        );
+    }
+
+    /// `answered` is observed at the response, never inferred from the
+    /// prose: the two transport-side reports are unanswered, the two
+    /// response-side ones are answered.
+    #[test]
+    fn answered_tracks_whether_a_response_arrived() {
+        let cases: Vec<(MobileGrillTurnState, bool)> = vec![
+            (grill_turn_no_token(asking()), false),
+            (grill_turn_transport_failed(asking(), "connection reset".to_string()), false),
+            (grill_turn_response_failed(asking(), 401), true),
+            (grill_turn_stream_ended(asking()), true),
+        ];
+        for (state, expected) in cases {
+            let MobileGrillTurnState::Declined { answered, .. } = state else {
+                panic!("expected a declined phase");
+            };
+            assert_eq!(answered, expected);
+        }
+    }
+
+    #[test]
+    fn the_four_transport_reports_carry_the_cores_words() {
+        let words = |state: MobileGrillTurnState| match state {
+            MobileGrillTurnState::Declined { reason, .. } => reason,
+            other => panic!("expected a declined phase, got {other:?}"),
+        };
+        assert_eq!(words(grill_turn_no_token(asking())), skills::NO_TOKEN);
+        assert_eq!(words(grill_turn_stream_ended(asking())), skills::NO_TERMINAL_LINE);
+        assert_eq!(
+            words(grill_turn_transport_failed(asking(), "  boom  ".to_string())),
+            skills::decline_for_transport("boom"),
+        );
+        assert_eq!(
+            words(grill_turn_response_failed(asking(), 403)),
+            skills::decline_for_response(403),
+        );
+    }
+
+    /// The transport calls `stream_ended` at the end of every stream,
+    /// including the ones that answered — so it must be a no-op on a
+    /// settled state.
+    #[test]
+    fn stream_ended_is_a_no_op_once_the_turn_has_settled() {
+        let settled = grill_turn_line(
+            asking(),
+            r#"{"ok":true,"result":{"kind":"question","question":{"prompt":"p","recommendedAnswer":"r","choices":["a","b"]}},"backend":null,"model":null}"#
+                .to_string(),
+        );
+        assert_eq!(grill_turn_stream_ended(settled.clone()), settled);
+        assert_eq!(grill_turn_line(settled.clone(), "{\"ok\":false,\"error\":\"late\"}".to_string()), settled);
+    }
+
+    #[test]
+    fn the_grill_body_is_the_shared_fixtures_bytes() {
+        assert_eq!(
+            grill_run_body("i".to_string(), Vec::new()),
+            r#"{"skill":"grill-me","args":{"ref":"i","turns":[]}}"#,
+        );
+        let turn = MobileGrillTurn {
+            question: MobileGrillQuestion {
+                prompt: "Which airport?".to_string(),
+                recommended_answer: "SEA".to_string(),
+                choices: vec!["SEA".to_string(), "PDX".to_string()],
+            },
+            answer: "SEA".to_string(),
+        };
+        assert_eq!(
+            grill_run_body("i".to_string(), vec![turn.clone()]),
+            r#"{"skill":"grill-me","args":{"ref":"i","turns":[{"question":{"prompt":"Which airport?","recommendedAnswer":"SEA","choices":["SEA","PDX"]},"answer":"SEA"}]}}"#,
+        );
+        assert_eq!(format_grill_transcript(vec![turn]), "Q: Which airport?\nA: SEA");
+    }
+
+    // ---- the microtask twins
+
+    #[test]
+    fn a_microtask_run_narrates_then_completes_with_its_note_and_stamp() {
+        let mut state = skill_run_started(skill_run_idle());
+        state = skill_run_line(state, r#"{"type":"progress","message":"reading"}"#.to_string());
+        state = skill_run_line(
+            state,
+            r#"{"ok":true,"result":{"steps":["a"],"note":"kept 2"},"backend":"b","model":"m"}"#
+                .to_string(),
+        );
+        assert_eq!(
+            state,
+            MobileSkillRunState::Done {
+                messages: vec!["reading".to_string()],
+                note: "kept 2".to_string(),
+                backend: Some("b".to_string()),
+                model: Some("m".to_string()),
+            },
+        );
+        assert_eq!(skill_run_stamp_label(state).as_deref(), Some("b · m"));
+    }
+
+    #[test]
+    fn a_run_with_no_backend_named_has_no_stamp_to_render() {
+        let state = skill_run_transport_failed(
+            skill_run_started(skill_run_idle()),
+            "offline".to_string(),
+        );
+        assert_eq!(skill_run_stamp_label(state), None);
+    }
+
+    #[test]
+    fn the_microtask_run_doors_report_the_same_four_transport_events() {
+        let started = || skill_run_started(skill_run_idle());
+        let words = |state: MobileSkillRunState| match state {
+            MobileSkillRunState::Declined { reason, answered, .. } => (reason, answered),
+            other => panic!("expected a declined phase, got {other:?}"),
+        };
+        assert_eq!(words(skill_run_no_token(started())), (skills::NO_TOKEN.to_string(), false));
+        assert_eq!(
+            words(skill_run_stream_ended(started())),
+            (skills::NO_TERMINAL_LINE.to_string(), true),
+        );
+        assert_eq!(
+            words(skill_run_response_failed(started(), 500)),
+            (skills::decline_for_response(500), true),
+        );
+        assert_eq!(
+            words(skill_run_transport_failed(started(), String::new())),
+            (skills::decline_for_transport(""), false),
+        );
+        // The duplicate-tap rule, on this reducer too.
+        let running = started();
+        assert_eq!(skill_run_started(running.clone()), running);
+    }
+
+    #[test]
+    fn the_microtask_body_is_the_shared_fixtures_bytes() {
+        assert_eq!(
+            microtask_run_body("i".to_string(), false, None, None),
+            r#"{"skill":"microtask","args":{"ref":"i"}}"#,
+        );
+        assert_eq!(
+            microtask_run_body("i".to_string(), true, Some(3), Some("m".to_string())),
+            r#"{"skill":"microtask","args":{"ref":"i","replace":true,"grain":3,"model":"m"}}"#,
+        );
+        // The web picker's "Default model" empty string omits the key.
+        assert_eq!(
+            microtask_run_body("i".to_string(), false, None, Some(String::new())),
+            r#"{"skill":"microtask","args":{"ref":"i"}}"#,
+        );
+    }
+
+    /// Both run-state maps round trip, the same way the grill ones do.
+    #[test]
+    fn the_run_state_maps_round_trip_every_phase() {
+        let states = vec![
+            skill_run_idle(),
+            skill_run_started(skill_run_idle()),
+            skill_run_line(
+                skill_run_started(skill_run_idle()),
+                r#"{"ok":true,"result":{"steps":[],"note":"n"},"backend":"b","model":null}"#
+                    .to_string(),
+            ),
+            skill_run_no_token(skill_run_started(skill_run_idle())),
+        ];
+        for state in states {
+            assert_eq!(map_run_state(unmap_run_state(state.clone())), state);
+        }
+    }
+
+    /// **No provider or model name appears in this lane** — the stamp is
+    /// read off the envelope or it is absent. The web pins the same absence
+    /// over `ItemPanel.tsx`; this is the Rust side of that rule, and
+    /// `SkillsLaneIsolationTest.kt` is the Kotlin side.
+    #[test]
+    fn no_decline_or_stamp_names_a_provider() {
+        let stamped = skill_run_line(
+            skill_run_started(skill_run_idle()),
+            r#"{"ok":true,"result":null,"backend":"whatever-the-envelope-said","model":null}"#
+                .to_string(),
+        );
+        assert_eq!(skill_run_stamp_label(stamped).as_deref(), Some("whatever-the-envelope-said"));
+        let lowercase = format!(
+            "{} {} {} {}",
+            skills::NO_TOKEN,
+            skills::NO_TERMINAL_LINE,
+            skills::OUTSIDE_SCHEMA,
+            skills::decline_for_response(500),
+        )
+        .to_lowercase();
+        for name in ["anthropic", "claude-", "sonnet", "opus", "haiku", "moonshot"] {
+            assert!(!lowercase.contains(name), "the decline prose names {name}");
+        }
     }
 }

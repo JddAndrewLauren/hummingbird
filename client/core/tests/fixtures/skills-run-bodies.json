@@ -1,0 +1,120 @@
+{
+  "_comment": [
+    "The byte-identity pin for `POST /api/skills/run` request bodies (#538).",
+    "Three languages read this one file and assert their builder emits `expected`",
+    "byte for byte: Rust in `client/core/tests/skills_run_bodies.rs`, TypeScript in",
+    "`client/web/src/skills/run-body-fixture.test.ts`, Kotlin in the instrumented",
+    "suite (a JVM test cannot call uniffi, so the JVM side pins only that the lane",
+    "sends the core's string verbatim). `expected` is the real wire text: the web",
+    "posts exactly `JSON.stringify(body)` and the Kotlin client posts the core's",
+    "string unchanged, so key ORDER is part of the contract, not formatting.",
+    "Add a case here rather than to any one language's own suite — a case that",
+    "exists in one place proves nothing about the other two."
+  ],
+  "cases": [
+    {
+      "name": "microtask: a bare run sends nothing but the ref",
+      "skill": "microtask",
+      "input": { "itemId": "8f2c0f1e-0000-4000-8000-000000000001" },
+      "expected": "{\"skill\":\"microtask\",\"args\":{\"ref\":\"8f2c0f1e-0000-4000-8000-000000000001\"}}"
+    },
+    {
+      "name": "microtask: replace is present-and-true",
+      "skill": "microtask",
+      "input": { "itemId": "8f2c0f1e-0000-4000-8000-000000000001", "replace": true },
+      "expected": "{\"skill\":\"microtask\",\"args\":{\"ref\":\"8f2c0f1e-0000-4000-8000-000000000001\",\"replace\":true}}"
+    },
+    {
+      "name": "microtask: replace false is omitted, not sent as a literal false",
+      "skill": "microtask",
+      "input": { "itemId": "i", "replace": false },
+      "expected": "{\"skill\":\"microtask\",\"args\":{\"ref\":\"i\"}}"
+    },
+    {
+      "name": "microtask: grain rides along, replace absent",
+      "skill": "microtask",
+      "input": { "itemId": "i", "grain": 3 },
+      "expected": "{\"skill\":\"microtask\",\"args\":{\"ref\":\"i\",\"grain\":3}}"
+    },
+    {
+      "name": "microtask: every arg set, in declaration order",
+      "skill": "microtask",
+      "input": { "itemId": "i", "replace": true, "grain": 1, "model": "a-model-name" },
+      "expected": "{\"skill\":\"microtask\",\"args\":{\"ref\":\"i\",\"replace\":true,\"grain\":1,\"model\":\"a-model-name\"}}"
+    },
+    {
+      "name": "microtask: an empty model omits the key entirely",
+      "skill": "microtask",
+      "input": { "itemId": "i", "model": "" },
+      "expected": "{\"skill\":\"microtask\",\"args\":{\"ref\":\"i\"}}"
+    },
+    {
+      "name": "grill-me: an interview opens with an empty turns array",
+      "skill": "grill-me",
+      "input": { "ref": "8f2c0f1e-0000-4000-8000-000000000002", "turns": [] },
+      "expected": "{\"skill\":\"grill-me\",\"args\":{\"ref\":\"8f2c0f1e-0000-4000-8000-000000000002\",\"turns\":[]}}"
+    },
+    {
+      "name": "grill-me: one completed round threads back question and answer",
+      "skill": "grill-me",
+      "input": {
+        "ref": "i",
+        "turns": [
+          {
+            "question": {
+              "prompt": "Which airport?",
+              "recommendedAnswer": "SEA",
+              "choices": ["SEA", "PDX"]
+            },
+            "answer": "SEA"
+          }
+        ]
+      },
+      "expected": "{\"skill\":\"grill-me\",\"args\":{\"ref\":\"i\",\"turns\":[{\"question\":{\"prompt\":\"Which airport?\",\"recommendedAnswer\":\"SEA\",\"choices\":[\"SEA\",\"PDX\"]},\"answer\":\"SEA\"}]}}"
+    },
+    {
+      "name": "grill-me: the whole conversation, never a trimmed subset",
+      "skill": "grill-me",
+      "input": {
+        "ref": "i",
+        "turns": [
+          {
+            "question": {
+              "prompt": "Which airport?",
+              "recommendedAnswer": "SEA",
+              "choices": ["SEA", "PDX"]
+            },
+            "answer": "SEA"
+          },
+          {
+            "question": {
+              "prompt": "Which dates?",
+              "recommendedAnswer": "next week",
+              "choices": ["next week", "in a month", "not decided"]
+            },
+            "answer": "the third week of September"
+          }
+        ]
+      },
+      "expected": "{\"skill\":\"grill-me\",\"args\":{\"ref\":\"i\",\"turns\":[{\"question\":{\"prompt\":\"Which airport?\",\"recommendedAnswer\":\"SEA\",\"choices\":[\"SEA\",\"PDX\"]},\"answer\":\"SEA\"},{\"question\":{\"prompt\":\"Which dates?\",\"recommendedAnswer\":\"next week\",\"choices\":[\"next week\",\"in a month\",\"not decided\"]},\"answer\":\"the third week of September\"}]}}"
+    },
+    {
+      "name": "grill-me: an answer with characters JSON must escape",
+      "skill": "grill-me",
+      "input": {
+        "ref": "i",
+        "turns": [
+          {
+            "question": {
+              "prompt": "Say it in your own words",
+              "recommendedAnswer": "anything",
+              "choices": ["a", "b"]
+            },
+            "answer": "he said \"soon\"\nand left"
+          }
+        ]
+      },
+      "expected": "{\"skill\":\"grill-me\",\"args\":{\"ref\":\"i\",\"turns\":[{\"question\":{\"prompt\":\"Say it in your own words\",\"recommendedAnswer\":\"anything\",\"choices\":[\"a\",\"b\"]},\"answer\":\"he said \\\"soon\\\"\\nand left\"}]}}"
+    }
+  ]
+}
