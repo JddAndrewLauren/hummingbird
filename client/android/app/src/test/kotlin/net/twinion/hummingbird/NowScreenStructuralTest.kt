@@ -34,10 +34,10 @@ class NowScreenStructuralTest {
     }
 
     @Test
-    fun `NowViewModel imports the real uniffi nowQueue and act bindings`() {
+    fun `NowViewModel imports the real uniffi nowBoard and act bindings`() {
         assertTrue(
-            "expected NowViewModel to close over CoreHolder.get(...).nowQueue",
-            nowViewModelSrc.contains(".nowQueue("),
+            "expected NowViewModel to close over CoreHolder.get(...).nowBoard",
+            nowViewModelSrc.contains(".nowBoard("),
         )
         assertTrue(
             "expected NowViewModel to close over CoreHolder.get(...).act",
@@ -58,14 +58,17 @@ class NowScreenStructuralTest {
     }
 
     @Test
-    fun `neither NowScreen nor NowViewModel re-derives the frontier ordering, urgency banding, or act affordances locally`() {
+    fun `neither NowScreen nor NowViewModel re-derives the frontier ordering, grouping, urgency banding, or act affordances locally`() {
         // The decision functions this screen must never call directly —
         // they are not even exported to Kotlin (see lib.rs's module doc),
         // but a hand-rolled equivalent (a local priority comparator, a
         // hardcoded deadline-window band, a hardcoded per-stage action
-        // list) would silently disagree with the core rule the same way a
-        // Kotlin `isBlank()` copy disagrees with `can_submit_capture` on a
-        // BOM-only draft.
+        // list, a local grouping pass) would silently disagree with the
+        // core rule the same way a Kotlin `isBlank()` copy disagrees with
+        // `can_submit_capture` on a BOM-only draft. `groupBy` is M3/#530's
+        // own addition to this gate: the frontier board's columns arrive
+        // from `hummingbird_ffi_mobile::MobileTaskHost.nowBoard` already
+        // grouped, so neither file may re-group locally either.
         for ((name, src) in listOf(
             "NowScreen.kt" to nowScreenSrc,
             "NowViewModel.kt" to nowViewModelSrc,
@@ -78,6 +81,10 @@ class NowScreenStructuralTest {
             assertFalse(
                 "$name must not re-derive an urgency window (a raw day/hour arithmetic constant)",
                 Regex("""\b\d+\s*\*\s*24\s*\*\s*60\b""").containsMatchIn(src),
+            )
+            assertFalse(
+                "$name must not re-group the frontier locally (groupBy)",
+                src.contains("groupBy"),
             )
         }
     }

@@ -22,6 +22,12 @@ navigationCompose = "2.9.8"
 # but `NotificationCompat` is a direct compile dependency of the notify/
 # package now, so it gets a direct pin rather than an inherited one.
 coreKtx = "1.17.0"
+# M3/#530: the frontier board's axis/facet/collapse preferences —
+# per-client state (ADR-0025's verdict table already places `frontier-prefs.ts`'s
+# web counterpart out of the core for the same reason), stored with
+# `Preferences DataStore` rather than `SharedPreferences` for its
+# coroutine-native, single-writer-race-free reads.
+datastore = "1.1.1"
 jna = "5.17.0"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
@@ -65,6 +71,7 @@ firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging
 # `showStatus` boolean cannot express `alert/{alertId}`).
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
