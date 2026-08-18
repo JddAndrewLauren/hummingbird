@@ -321,6 +321,18 @@ the "never parsed" rule this ADR is restating.
 
 ## Time
 
+*Amended 2026-08-18 ([#533](https://github.com/JddAndrewLauren/hummingbird/issues/533)):
+this section is written in a one-client world, where the reader's zone
+database and the pane's rules are in the same runtime. ADR-0025 sinks the
+rules into a core that has no zone database, so **this section now has a
+two-phase answer**: the core names every `(zone, civil-date)` fact it needs,
+the host resolves it (`Intl` on web, `java.time` on Android), and the core
+decides — including deciding that an unresolvable zone is a gap. The
+invariant below is untouched and is what makes the split possible at all: a
+civil date is still never stored as an instant, and the resolution to an
+instant still happens at read time. See [ADR-0025's "The zone bridge, fixed
+by M4's probe"](0025-decisions-sink-to-the-core-rendering-stays-per-client.md#the-zone-bridge-fixed-by-m4s-probe).*
+
 **Device-local, everywhere, with no zone label.** This matches what the app
 already does for owned dates: `screens/urgency.ts` resolves a day-only
 deadline to `T23:59` naive local wall clock, with a twin in the domain

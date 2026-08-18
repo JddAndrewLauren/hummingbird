@@ -11,10 +11,21 @@ import {
   orderFrontier,
   priorityRankFromCore,
   resetDecisionsForTest,
+  paneBandOrderFromCore,
+  paneQuestionOrderFromCore,
   SIZES,
   sizeOptionsFromCore,
+  wasteConstantsFromCore,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
+import { BAND_ORDER, QUESTION_ORDER } from "../screens/questions/contract";
+import {
+  BINDING_KEY,
+  SNAPSHOT_KEY,
+  SOURCE,
+  STALE_AFTER_MS,
+  STREAM_ORDER,
+} from "../screens/waste-pane/waste";
 import { loadDecisionsForTest } from "../test/wasm-setup";
 import type { TaskItemDTO } from "../store/protocol";
 
@@ -86,6 +97,39 @@ describe("the seam's literal frontier-facet vocabulary, pinned against the core"
     for (const raw of [0, 1, 2, 3, 4, 5, -1]) {
       expect(priorityRank(raw)).toEqual(priorityRankFromCore(raw));
     }
+  });
+});
+
+// M4 (#533): the panes' vocabularies. `BAND_ORDER` and `QUESTION_ORDER`
+// stay literal TS in `contract.ts` for a HARDER version of the same
+// module-evaluation-order constraint as above — `registry.ts` builds its
+// `QUESTIONS` map at module evaluation and reads `QUESTION_ORDER` there, so
+// a seam call would throw the "used before ready" guard on every page load,
+// not merely in a test. The waste pane's four constants are the same story
+// via `question.ts`'s `sources: [SOURCE]`. All of them are pinned here
+// instead.
+describe("the seam's literal pane vocabulary, pinned against the core", () => {
+  it("BAND_ORDER matches the core's salience vocabulary, in order", () => {
+    expect([...BAND_ORDER]).toEqual(paneBandOrderFromCore());
+  });
+
+  it("QUESTION_ORDER matches the core's declared question order", () => {
+    // Declaration order, not alphabetical — a question's place must not
+    // move when another is renamed, and the two clients must agree which
+    // order that is.
+    expect([...QUESTION_ORDER]).toEqual(paneQuestionOrderFromCore());
+  });
+
+  it("the waste pane's constants match the core's", () => {
+    const constants = wasteConstantsFromCore();
+    expect(SOURCE).toBe(constants.source);
+    expect(SNAPSHOT_KEY).toBe(constants.snapshotKey);
+    expect(BINDING_KEY).toBe(constants.bindingKey);
+    // ADR-0015 puts the threshold beside the band function, and ADR-0025
+    // moved the pair into the core — this is the copy that must not drift
+    // from it.
+    expect(STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect([...STREAM_ORDER]).toEqual(constants.streamOrder);
   });
 });
 

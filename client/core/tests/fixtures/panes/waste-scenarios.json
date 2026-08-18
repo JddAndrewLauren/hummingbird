@@ -1,0 +1,733 @@
+{
+  "readme": [
+    "The which-cans question's scenarios, read by BOTH clients' suites (#533/M4):",
+    "`client/core/tests/pane_fixtures.rs` and",
+    "`client/web/src/screens/questions/shared-fixtures.test.ts`. The precedent is",
+    "the race pane's vitest reading `server/race-poll/tests/fixtures/golden-body.json`",
+    "off disk (#119) — one artifact, two readers, no second copy to drift.",
+    "",
+    "`zoneFacts` is what makes a tzdb-free Rust test possible at all: it is the",
+    "table `zone.rs`'s bridge expects a host to resolve, keyed by `ZoneQuery::key()`.",
+    "The TS suite asserts its OWN `Intl` resolver reproduces this table exactly",
+    "before running a single scenario — THAT assertion is the cross-host pin, and it",
+    "is what a `java.time` resolver will be held to at #536. A key absent from the",
+    "table is a zone the host could not resolve; there is no null and no sentinel.",
+    "",
+    "`expected` is structured only — never a sentence. Gap wording is per-client by",
+    "ADR-0025, so a fixture asserting words would pin a rendering and fail the next",
+    "time a client rephrased one. `gapKind` is `WasteGap`'s own tag.",
+    "",
+    "The clock: 2026-08-10T16:00Z is Monday 09:00 at the address (PDT, UTC-7)."
+  ],
+  "zone": "America/Los_Angeles",
+  "scenarios": [
+    {
+      "name": "answered, dormant, and still ordered seven days out",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\",\"yard\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-17": 1786950000000
+      },
+      "expected": {
+        "answerState": "answered",
+        "band": "dormant",
+        "withinBand": 1786950000000,
+        "daysAway": 7,
+        "holiday": false,
+        "weekdayIndex": 1,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "imminent on the eve",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-11\",\"collected_on\":\"2026-08-11\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-11": 1786431600000
+      },
+      "expected": {
+        "answerState": "answered",
+        "band": "imminent",
+        "withinBand": 1786431600000,
+        "daysAway": 1,
+        "holiday": false,
+        "weekdayIndex": 2,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "imminent on the day itself, and already past inside the band",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-10\",\"collected_on\":\"2026-08-10\",\"streams\":[\"trash\",\"recycling\",\"yard\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-10": 1786345200000
+      },
+      "expected": {
+        "answerState": "answered",
+        "band": "imminent",
+        "withinBand": 1786345200000,
+        "daysAway": 0,
+        "holiday": false,
+        "weekdayIndex": 1,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "a holiday week is awake all week, four days out",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-13\",\"collected_on\":\"2026-08-14\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-14": 1786690800000
+      },
+      "expected": {
+        "answerState": "answered",
+        "band": "imminent",
+        "withinBand": 1786690800000,
+        "daysAway": 4,
+        "holiday": true,
+        "weekdayIndex": 5,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "the day is the address's, not the device's — 03:00Z is still Monday in Los Angeles",
+      "nowMs": 1786417200000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786417140000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-11\",\"collected_on\":\"2026-08-11\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786417200000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-11": 1786431600000
+      },
+      "expected": {
+        "answerState": "answered",
+        "band": "imminent",
+        "withinBand": 1786431600000,
+        "daysAway": 1,
+        "holiday": false,
+        "weekdayIndex": 2,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "an answer kept and marked stale — an unknown age is never fresh",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\",\"yard\"]}"
+        },
+        "freshness": { "kind": "unknown" }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-17": 1786950000000
+      },
+      "expected": {
+        "answerState": "answered",
+        "band": "dormant",
+        "withinBand": 1786950000000,
+        "daysAway": 7,
+        "holiday": false,
+        "weekdayIndex": 1,
+        "stale": true,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "a collection that has already happened is refused, never rendered as today's",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-09\",\"collected_on\":\"2026-08-09\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-09": 1786258800000
+      },
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "pastCollection"
+      }
+    },
+    {
+      "name": "a zone this host cannot resolve — the fact is absent and the refusal is the core's",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"Mars/Olympus_Mons\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "unresolvableZone"
+      }
+    },
+    {
+      "name": "nothing has been fetched yet",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": null,
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "notFetched"
+      }
+    },
+    {
+      "name": "the envelope itself could not be read",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": { "kind": "malformed", "reason": "`body` is missing" },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "malformed"
+      }
+    },
+    {
+      "name": "a schema this build has never heard of is a fact about the device",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v9",
+          "polledEveryMs": null,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "unknownSchema"
+      }
+    },
+    {
+      "name": "the payload is not JSON",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": { "kind": "ok", "schema": "city-waste/v2", "polledEveryMs": null, "body": "{" },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "notJson"
+      }
+    },
+    {
+      "name": "the payload is JSON but not an object",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": { "kind": "ok", "schema": "city-waste/v2", "polledEveryMs": null, "body": "[]" },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "notAnObject"
+      }
+    },
+    {
+      "name": "the payload names no time zone",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": null,
+          "body": "{\"zone\":\"\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "noZone"
+      }
+    },
+    {
+      "name": "the payload's dates aren't whole days",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": null,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"next tuesday\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "badDates"
+      }
+    },
+    {
+      "name": "a day that is not on the calendar at all is a bad date, not a zone problem",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": null,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-02-31\",\"collected_on\":\"2026-02-31\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "badDates"
+      }
+    },
+    {
+      "name": "the payload lists a bin nobody has",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "https://example.gov/collection" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": null,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\",\"nuclear\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": null }
+      },
+      "zoneFacts": {},
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": null,
+        "holiday": null,
+        "weekdayIndex": null,
+        "stale": null,
+        "gapKind": "unknownStream"
+      }
+    },
+    {
+      "name": "nobody has set the page — unbound, and the pane still ranks",
+      "nowMs": 1786377600000,
+      "bindings": [],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-17": 1786950000000
+      },
+      "expected": {
+        "answerState": "unbound",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": 7,
+        "holiday": false,
+        "weekdayIndex": 1,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "the bindings table has not been read at all — a gap, never 'not set up'",
+      "nowMs": 1786377600000,
+      "bindings": null,
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-17": 1786950000000
+      },
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": 7,
+        "holiday": false,
+        "weekdayIndex": 1,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "a binding blanked to whitespace reads as never set — `settings` has no DELETE",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "text", "text": "   " }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-17": 1786950000000
+      },
+      "expected": {
+        "answerState": "unbound",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": 7,
+        "holiday": false,
+        "weekdayIndex": 1,
+        "stale": false,
+        "gapKind": null
+      }
+    },
+    {
+      "name": "a binding holding something that is not text is a gap the reader can act on",
+      "nowMs": 1786377600000,
+      "bindings": [
+        {
+          "key": "city-waste-page",
+          "known": true,
+          "pending": false,
+          "value": { "state": "other", "raw": "7" }
+        }
+      ],
+      "snapshot": {
+        "key": "collection",
+        "fetchedAtMs": 1786377540000,
+        "envelope": {
+          "kind": "ok",
+          "schema": "city-waste/v2",
+          "polledEveryMs": 86400000,
+          "body": "{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\"]}"
+        },
+        "freshness": { "kind": "age", "ageMs": 60000, "declaredCadenceMs": 86400000 }
+      },
+      "zoneFacts": {
+        "civil:America/Los_Angeles:1786377600000": "2026-08-10",
+        "midnight:America/Los_Angeles:2026-08-17": 1786950000000
+      },
+      "expected": {
+        "answerState": "bound-but-unacquired",
+        "band": "dormant",
+        "withinBand": null,
+        "daysAway": 7,
+        "holiday": false,
+        "weekdayIndex": 1,
+        "stale": false,
+        "gapKind": null
+      }
+    }
+  ]
+}
