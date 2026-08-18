@@ -16,12 +16,18 @@ on:
       # off disk (#119, `screens/race-pane/race.test.ts`), so a change to
       # that fixture alone is a change this suite has to see.
       - "server/race-poll/tests/fixtures/**"
+      # ADR-0013's operator table and duration grammar, which
+      # `hummingbird-core`'s rules decisions delegate to since #540 — a
+      # change there changes what this suite's `screens/rules/*` tests
+      # assert, through the wasm seam, with nothing else to notice.
+      - "server/rules-engine/**"
   pull_request:
     paths:
       - "client/**"
       - "rust-toolchain.toml"
       - ".github/workflows/client.yml"
       - "server/race-poll/tests/fixtures/**"
+      - "server/rules-engine/**"
 
 jobs:
   test:
