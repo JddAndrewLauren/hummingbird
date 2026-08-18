@@ -48,5 +48,6 @@ pub use duration::{
 pub use editor::{new_condition, retype_condition, toggle_negate, widget_for, ValueWidget};
 pub use operators::{default_operator_for, legal_operators};
 pub use validity::{
-    field_type, fields_for_kind, invalid_fields, is_rule_valid, KindEntry, KindField, KindRegistry,
+    compiled_registry, field_type, fields_for_kind, invalid_fields, is_rule_valid, KindEntry,
+    KindField, KindRegistry, ALARM_INTERVAL_MS,
 };

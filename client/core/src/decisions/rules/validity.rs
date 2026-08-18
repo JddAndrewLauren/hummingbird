@@ -1,16 +1,19 @@
 //! The kind → field cascade and the invalid-rule read — sunk from
 //! `client/web/src/screens/rules/{registry.ts,validity.ts}`.
 //!
-//! **Why this takes the registry as an argument rather than reading
-//! [`hummingbird_domain::EVENT_KINDS`] directly.** The registry *is* a
-//! domain artifact (ADR-0013 is explicit), and reading it here would be one
-//! fewer thing to pass. But the catalogue a client edits against is the one
-//! the **authority it is synced with** exports (`GET`'s `kindRegistry`
-//! push), not the one this binary happened to compile: a phone or a browser
-//! running a build older or newer than the server would otherwise flag a
-//! rule invalid — or fail to flag one — against a catalogue the server never
-//! used. `invalid_fields` is a trust signal, so it must answer against the
-//! registry the reader was actually shown.
+//! **Why these take the registry as an argument.** The registry *is* a
+//! domain artifact (ADR-0013 is explicit) and [`compiled_registry`] below
+//! reads it straight out of [`hummingbird_domain::EVENT_KINDS`], so a
+//! zero-argument form was available. It is not what the callers want:
+//! every client already holds the registry as *data* — the web receives it
+//! over the worker protocol (`kindRegistry`) and renders its dropdowns
+//! from that object — so a decision function that ignored the argument and
+//! consulted its own compiled copy would answer about a different
+//! catalogue than the one the reader is looking at the moment those two
+//! ever diverge. `invalid_fields` is a trust signal ("this rule has
+//! stopped firing"), which is exactly the wrong place to answer about a
+//! catalogue nobody was shown. The registry a caller passes wins;
+//! [`compiled_registry`] is what a caller *without* one passes.
 //!
 //! Everything here is display-only. It never blocks a save (#133's
 //! `validate_rule` already does that, server-side, at save time) and never
@@ -60,6 +63,56 @@ pub struct KindRegistry {
     pub alarm_interval_ms: i64,
     #[serde(default)]
     pub severities: Vec<String>,
+}
+
+/// The Durable Object's sweep-alarm interval (#138) — what a
+/// `within_next`/`within_last` duration shorter than this warns about,
+/// never rejects ([`super::duration::is_below_alarm_interval`]).
+///
+/// A mirror of `hummingbird_authority::sweep::ALARM_INTERVAL_MS`, not a
+/// dependency on it: `client/core` may not take the authority as a
+/// dependency in either direction. One mirror, here, rather than one per
+/// seam — `client/ffi-web/src/task_host.rs`'s own `ALARM_INTERVAL_MS`
+/// re-exports this rather than restating the number.
+pub const ALARM_INTERVAL_MS: i64 = 15 * 60 * 1000;
+
+/// The registry as *this binary* compiled it, from
+/// [`hummingbird_domain::EVENT_KINDS`] — for a caller that holds no
+/// registry of its own (the mobile seam; #133/#140's export is what the
+/// web holds instead). See this module's header for why the decision
+/// functions still take a registry rather than calling this themselves.
+pub fn compiled_registry() -> KindRegistry {
+    KindRegistry {
+        kinds: hummingbird_domain::EVENT_KINDS
+            .iter()
+            .map(|entry| KindEntry {
+                key: entry.key.to_string(),
+                mints: entry.mints,
+                fields: entry
+                    .fields
+                    .iter()
+                    .map(|field| KindField {
+                        name: field.name.to_string(),
+                        field_type: field.field_type,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        core_fields: hummingbird_domain::CORE_FIELDS
+            .iter()
+            .filter_map(|&name| {
+                hummingbird_domain::core_field_type(name).map(|field_type| KindField {
+                    name: name.to_string(),
+                    field_type,
+                })
+            })
+            .collect(),
+        alarm_interval_ms: ALARM_INTERVAL_MS,
+        severities: hummingbird_domain::SEVERITIES
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    }
 }
 
 /// The field list a condition editor offers for `event_kind`.
