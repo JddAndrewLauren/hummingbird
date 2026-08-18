@@ -191,13 +191,17 @@ export interface DecisionsModule {
   weekend_window_json(nowMs: number, zoneFactsJson: string): string;
   weekend_facts_json(inputsJson: string, zoneFactsJson: string): string;
   weekend_answer_json(inputsJson: string, zoneFactsJson: string): string;
+  weekend_band_json(windowJson: string, nowMs: number): string;
+  weekend_within_band_json(windowJson: string): string;
   weekend_constants_json(): string;
   vacation_zone_queries_json(inputsJson: string): string;
+  vacation_setup_json(inputsJson: string): string;
   trip_queue_json(eventsJson: string, calendarId: string, today: string, zoneFactsJson: string): string;
   vacation_band_json(nextTripJson: string): string;
   vacation_view_json(inputsJson: string, zoneFactsJson: string): string;
   vacation_answer_json(inputsJson: string, zoneFactsJson: string): string;
   vacation_constants_json(): string;
+  device_zone(): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -1417,6 +1421,8 @@ export function isInformativeSyncOutcomeFromCore(kind: string): boolean {
 /** `hummingbird_core::decisions::settings::relative_age`. */
 export function relativeAgeFromCore(ageMs: number): string {
   return required().relative_age(ageMs);
+}
+
 // ------------------------------------------------------------------- #534
 // The remaining seven panes: the status four (kimi/github/uptime/
 // reachability) and the now three (race/weekend/vacation). Same house style
@@ -1794,6 +1800,18 @@ export function weekendAnswerFromCore(
   ) as PaneAnswerCore;
 }
 
+/** `hummingbird_core::decisions::panes::weekend::weekend_band` — exposed
+ * standalone so `weekend.ts`'s locally-kept `weekendBand` can be pinned
+ * directly against it, on `githubBandFromCore`'s own precedent. */
+export function weekendBandFromCore(window: WeekendWindowCore, nowMs: number): PaneBand {
+  return JSON.parse(required().weekend_band_json(JSON.stringify(window), nowMs)) as PaneBand;
+}
+
+/** `hummingbird_core::decisions::panes::weekend::weekend_within_band`. */
+export function weekendWithinBandFromCore(window: WeekendWindowCore): number {
+  return JSON.parse(required().weekend_within_band_json(JSON.stringify(window))) as number;
+}
+
 export interface WeekendConstants {
   subjectKey: string;
   calendarRequestKey: string;
@@ -1826,6 +1844,22 @@ export function vacationZoneQueriesFromCore(inputs: PaneInputsSource): ZoneQuery
   return JSON.parse(
     required().vacation_zone_queries_json(paneInputsPayload(inputs)),
   ) as ZoneQuery[];
+}
+
+/** `hummingbird_core::decisions::panes::vacation::VacationSetupKind` — the
+ * kind-only projection of `VacationSetup` (which cannot itself cross the
+ * seam; its `Bound` arm borrows). `Bound` carries only `calendarId`; the
+ * caller already has the bound read's events/freshness on its own
+ * `QuestionInputs`. */
+export type VacationSetupKindCore =
+  | { kind: "noCalendar" }
+  | { kind: "unbound" }
+  | { kind: "unread" }
+  | { kind: "bound"; calendarId: string };
+
+/** `hummingbird_core::decisions::panes::vacation::vacation_setup_kind`. */
+export function vacationSetupFromCore(inputs: PaneInputsSource): VacationSetupKindCore {
+  return JSON.parse(required().vacation_setup_json(paneInputsPayload(inputs))) as VacationSetupKindCore;
 }
 
 export function tripQueueFromCore(
@@ -1886,4 +1920,10 @@ export interface VacationConstants {
 
 export function vacationConstantsFromCore(): VacationConstants {
   return JSON.parse(required().vacation_constants_json()) as VacationConstants;
+}
+
+/** `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
+ * `zone-bridge.ts`'s literal copy is pinned against, by `seam.test.ts`. */
+export function deviceZoneFromCore(): string {
+  return required().device_zone();
 }

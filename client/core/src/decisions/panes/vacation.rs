@@ -331,6 +331,34 @@ pub fn vacation_setup(inputs: &PaneInputs) -> VacationSetup<'_> {
     }
 }
 
+/// [`VacationSetup`] minus its borrowed `Bound` payload — the wire form.
+/// `VacationSetup<'a>` cannot itself cross the seam (its `Bound` arm
+/// borrows the inputs' own event slice, so it has no `Serialize`); this is
+/// the kind-only projection a host pins its own precedence copy against,
+/// on `RaceSetup`'s/`WasteSetup`'s own shape. `Bound` keeps `calendar_id`
+/// (a decided fact — which calendar the binding named) but not the events
+/// or freshness, which the host already has on its own `QuestionInputs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum VacationSetupKind {
+    NoCalendar,
+    Unbound,
+    Unread,
+    Bound { calendar_id: String },
+}
+
+/// [`vacation_setup`], projected to [`VacationSetupKind`] — see that type's
+/// own doc for why this is the wire form rather than [`VacationSetup`]
+/// itself.
+pub fn vacation_setup_kind(inputs: &PaneInputs) -> VacationSetupKind {
+    match vacation_setup(inputs) {
+        VacationSetup::NoCalendar => VacationSetupKind::NoCalendar,
+        VacationSetup::Unbound => VacationSetupKind::Unbound,
+        VacationSetup::Unread => VacationSetupKind::Unread,
+        VacationSetup::Bound { calendar_id, .. } => VacationSetupKind::Bound { calendar_id },
+    }
+}
+
 /// Why this pane has no *facts*, once it is known to be bound — the zone
 /// equivalent of `WasteGap::UnresolvableZone`. See the module header for why
 /// this carries no `zone` field.
@@ -747,6 +775,30 @@ mod tests {
         // Connected, bound, and read.
         let bound = with_read(bound_inputs(now_at("2026-03-01", 9)), Vec::new(), 0);
         assert!(matches!(vacation_setup(&bound), VacationSetup::Bound { .. }));
+    }
+
+    #[test]
+    fn the_setup_kind_projection_matches_vacation_setup_arm_for_arm() {
+        let mut no_calendar = bound_inputs(now_at("2026-03-01", 9));
+        no_calendar.calendar_connected = false;
+        assert_eq!(vacation_setup_kind(&no_calendar), VacationSetupKind::NoCalendar);
+
+        let mut unbound = bound_inputs(now_at("2026-03-01", 9));
+        unbound.bindings = Some(vec![BindingFact {
+            key: TRIPS_CALENDAR_BINDING_KEY.to_string(),
+            value: BindingValueFact::Unset,
+        }]);
+        assert_eq!(vacation_setup_kind(&unbound), VacationSetupKind::Unbound);
+
+        let mut table_unread = bound_inputs(now_at("2026-03-01", 9));
+        table_unread.bindings = None;
+        assert_eq!(vacation_setup_kind(&table_unread), VacationSetupKind::Unread);
+
+        let bound = with_read(bound_inputs(now_at("2026-03-01", 9)), Vec::new(), 0);
+        assert_eq!(
+            vacation_setup_kind(&bound),
+            VacationSetupKind::Bound { calendar_id: "trips@g".to_string() },
+        );
     }
 
     #[test]

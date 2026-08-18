@@ -5,6 +5,7 @@ import {
   declineForResponseFromCore,
   declineForTransportFromCore,
   decisionsReady,
+  deviceZoneFromCore,
   ENERGIES,
   energyOptionsFromCore,
   FACETS,
@@ -67,6 +68,8 @@ import {
 } from "../screens/race-pane/race";
 import {
   CALENDAR_REQUEST_KEY as WEEKEND_CALENDAR_REQUEST_KEY,
+  IMMINENT_WITHIN_MS as WEEKEND_IMMINENT_WITHIN_MS,
+  NEAR_WITHIN_MS as WEEKEND_NEAR_WITHIN_MS,
   SUBJECT_KEY as WEEKEND_SUBJECT_KEY,
 } from "../screens/weekend-pane/weekend";
 import {
@@ -76,6 +79,7 @@ import {
   STALE_AFTER_MS as VACATION_STALE_AFTER_MS,
   SUBJECT_KEY as VACATION_SUBJECT_KEY,
 } from "../screens/vacation-pane/vacation";
+import { DEVICE_ZONE } from "../screens/questions/zone-bridge";
 import { loadDecisionsForTest } from "../test/wasm-setup";
 import type { TaskItemDTO } from "../store/protocol";
 
@@ -254,6 +258,11 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     const constants = weekendConstantsFromCore();
     expect(WEEKEND_SUBJECT_KEY).toBe(constants.subjectKey);
     expect(WEEKEND_CALENDAR_REQUEST_KEY).toBe(constants.calendarRequestKey);
+    // `weekendBand`'s own thresholds — kept literal TS on the
+    // describe-collection-order reasoning `weekend.ts`'s module header
+    // states, pinned here rather than read through the seam at runtime.
+    expect(WEEKEND_IMMINENT_WITHIN_MS).toBe(constants.imminentWithinMs);
+    expect(WEEKEND_NEAR_WITHIN_MS).toBe(constants.nearWithinMs);
   });
 
   it("the vacation pane's constants match the core's", () => {
@@ -263,6 +272,16 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     expect(HORIZON_BEFORE_DAYS).toBe(constants.horizonBeforeDays);
     expect(HORIZON_AHEAD_DAYS).toBe(constants.horizonAheadDays);
     expect(VACATION_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+  });
+
+  // `zone-bridge.ts`'s `DEVICE_ZONE` special-cases exactly this string to
+  // mean "the reader's own device zone" — a drift here would silently turn
+  // every weekend/vacation query into a permanently-unresolvable one
+  // (`resolveZone` would pass a literal `"device-local"` straight to
+  // `Intl`, which throws, so every query is simply omitted and the pane
+  // reads as a permanent gap, never a loud failure).
+  it("zone-bridge.ts's DEVICE_ZONE sentinel matches the core's", () => {
+    expect(DEVICE_ZONE).toBe(deviceZoneFromCore());
   });
 });
 

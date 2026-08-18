@@ -13,6 +13,7 @@ import {
   tripQueueFromCore,
   vacationAnswerFromCore,
   vacationBandFromCore,
+  vacationSetupFromCore,
   vacationZoneQueriesFromCore,
   vacationViewFromCore,
   type PaneInputsSource,
@@ -153,40 +154,6 @@ function vacationRead(inputs: QuestionInputs): CalendarReadDTO | undefined {
   return inputs.calendarReads[CALENDAR_REQUEST_KEY];
 }
 
-/** Why this pane has no answer, or that it has one — `vacation.rs`'s
- * `VacationSetup` cannot itself cross the seam (its `Bound` arm borrows
- * the inputs' own event slice, so it has no `Serialize`), so this is the
- * one arm of the decision recomputed locally: it is pure precedence over
- * fields already on `QuestionInputs` (no threshold, no zone lookup), on
- * `tripsCalendarId`'s own reasoning for staying local. */
-export type VacationSetup =
-  | { kind: "no-calendar" }
-  | { kind: "unbound" }
-  | { kind: "unread" }
-  | { kind: "bound"; calendarId: string; read: Extract<CalendarReadDTO, { state: "read" }> };
-
-export function vacationSetup(inputs: QuestionInputs): VacationSetup {
-  if (!inputs.calendarConnected) {
-    return { kind: "no-calendar" };
-  }
-  const calendarId = tripsCalendarId(inputs.bindings);
-  if (calendarId === null) {
-    return inputs.bindings === null ? { kind: "unread" } : { kind: "unbound" };
-  }
-  const read = vacationRead(inputs);
-  if (read === undefined || read.state === "not_read") {
-    return { kind: "unread" };
-  }
-  return { kind: "bound", calendarId, read };
-}
-
-export interface VacationView {
-  next: Trip | null;
-  later: Trip[];
-  freshness: FreshnessDTO;
-  stale: boolean;
-}
-
 function paneInputs(inputs: QuestionInputs): PaneInputsSource {
   return {
     nowMs: inputs.nowMs,
@@ -196,6 +163,52 @@ function paneInputs(inputs: QuestionInputs): PaneInputsSource {
     calendarConnected: inputs.calendarConnected,
     items: inputs.items,
   };
+}
+
+/** Why this pane has no answer, or that it has one — `vacation.rs`'s
+ * `vacation_setup`, via its kind-only projection `vacation_setup_kind`
+ * (`VacationSetup<'a>` itself cannot cross the seam: its `Bound` arm
+ * borrows the inputs' own event slice, so it has no `Serialize`). The
+ * `Bound` arm's `read` is attached here from the same `calendarReads` the
+ * core already read to decide `Bound` in the first place — not a second
+ * guess about its state, just the one field the projection could not
+ * carry across. */
+export type VacationSetup =
+  | { kind: "no-calendar" }
+  | { kind: "unbound" }
+  | { kind: "unread" }
+  | { kind: "bound"; calendarId: string; read: Extract<CalendarReadDTO, { state: "read" }> };
+
+export function vacationSetup(inputs: QuestionInputs): VacationSetup {
+  const core = vacationSetupFromCore(paneInputs(inputs));
+  switch (core.kind) {
+    case "noCalendar":
+      return { kind: "no-calendar" };
+    case "unbound":
+      return { kind: "unbound" };
+    case "unread":
+      return { kind: "unread" };
+    case "bound": {
+      const read = vacationRead(inputs);
+      if (read === undefined || read.state !== "read") {
+        // Unreachable: `vacation_setup_kind` only answers `bound` once
+        // `calendarReads[CALENDAR_REQUEST_KEY]` is a landed `"read"` —
+        // the exact precedence `vacation.rs`'s own `vacation_setup`
+        // decides. A mismatch here would mean the two disagreed about
+        // that precedence, which is a bug worth a loud failure rather
+        // than a silently invented gap.
+        throw new Error("vacation_setup_kind answered bound with no landed calendar read");
+      }
+      return { kind: "bound", calendarId: core.calendarId, read };
+    }
+  }
+}
+
+export interface VacationView {
+  next: Trip | null;
+  later: Trip[];
+  freshness: FreshnessDTO;
+  stale: boolean;
 }
 
 /** The answered view an expanded pane draws — `null` for every gap state,

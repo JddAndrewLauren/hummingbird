@@ -41,10 +41,13 @@ import { civilDateInZone, zonedMidnightMs } from "../waste-pane/zoned-day";
 // module ever sees `"device-local"` as an argument.
 
 /** `hummingbird_core::decisions::panes::zone::DEVICE_ZONE`, pinned against
- * the core by `seam.test.ts` rather than read through the seam at runtime
- * — this module is itself the resolver the seam calls, so it cannot also
- * be a caller of it without a circular import. */
-const DEVICE_ZONE = "device-local";
+ * `deviceZoneFromCore()` by `seam.test.ts` (see that file) rather than read
+ * through the seam on every call: this constant is compared once, in a
+ * loop-free `resolveZone` — a real seam round trip per query would be a
+ * live dependency for zero benefit, since the sentinel's whole point is
+ * that it never changes at runtime. Exported so the pinning test can
+ * import the literal side of the comparison. */
+export const DEVICE_ZONE = "device-local";
 
 function resolveZone(zone: string): string {
   return zone === DEVICE_ZONE ? Intl.DateTimeFormat().resolvedOptions().timeZone : zone;

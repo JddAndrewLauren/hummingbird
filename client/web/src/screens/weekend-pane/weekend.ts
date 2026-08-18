@@ -56,6 +56,9 @@ function startOfLocalDay(ms: number): number {
 
 function addLocalDays(ms: number, days: number): number {
   const d = new Date(ms);
+  // Date-part arithmetic, not `+ n * DAY_MS` — a DST boundary inside the
+  // window would slide a midnight by an hour and put a late-evening entry
+  // on the wrong day.
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days).getTime();
 }
 
@@ -135,6 +138,19 @@ export interface WindowEntry {
   deadlineOutsideWindow?: string;
 }
 
+/** Day-membership test for an item's due/do-date, deliberately NOT
+ * `[window.startMs, window.endMs]` — #122 review fix. `window.startMs` is
+ * Friday **17:00** (the band's own "has the weekend started" instant), but
+ * `window.days[0]` (Friday) spans the whole day from local midnight, and a
+ * scheduled or due date anchors to the *start* of its day
+ * (`scheduledToMs`/`deadlineToMs`'s day-only case). Testing against
+ * `window.startMs` made every Friday do-date or day-only Friday deadline
+ * fail `inWindow` even though `PlanChips` offers a `FRI` chip for it: the
+ * write landed, the row either disappeared from the merge entirely or the
+ * chip never filled, and there was no way to tell from the pane that
+ * anything had happened. The lower bound here is the first day's own
+ * `startMs` (Friday local midnight); the upper bound is unchanged, since
+ * `window.days[2].endMs === window.endMs` already. */
 function inWindow(ms: number, window: WeekendWindow): boolean {
   const lowerMs = window.days[0]?.startMs ?? window.startMs;
   return ms >= lowerMs && ms <= window.endMs;
@@ -157,8 +173,16 @@ function scheduledToMs(scheduled: string): number | null {
 }
 
 /**
- * The merge, run fresh on every render, for the expanded rendering alone —
- * see the module header for why this is not the decision's own path.
+ * The merge, run fresh on every render: events + due items + scheduled
+ * items, grouped by day, chronological within a day — for the expanded
+ * rendering alone; see the module header for why this is not the
+ * decision's own path.
+ *
+ * The dedupe rule is #122's own acceptance criterion — an item both
+ * scheduled and due inside the window appears **once, as due** (a deadline
+ * is a consequence, a do-date is a preference, and when both apply, the one
+ * with consequences is what the day owes) — and the inverse: an item
+ * scheduled in the window but due *outside* it still shows its deadline.
  */
 export function mergeWindow(
   window: WeekendWindow,
@@ -169,8 +193,19 @@ export function mergeWindow(
   const byKey = new Map(days.map((day) => [day.key, day]));
 
   for (const event of events) {
-    if (event.status === "cancelled") continue;
+    if (event.status === "cancelled") continue; // defence in depth — the core already filters these.
 
+    // The two arms are asked in their own terms and never converted into
+    // one another (ADR-0015's 2026-08-10 amendment). An all-day event's
+    // day membership is a pure string compare against the day's own
+    // `YYYY-MM-DD` key — no zone, no instant, and so no way for a device
+    // east or west of the calendar to land it on the wrong day. A timed
+    // event overlaps in milliseconds, rendered with plain `Date` in the
+    // reader's device zone, which is the only zone anywhere in this pane.
+    //
+    // Either way, an event spanning more than one day of the window
+    // belongs to each of them — a fact about each day, so showing it once
+    // would leave the other day reading as free.
     if (event.when.kind === "allDay") {
       const { startDate, endDate } = event.when;
       for (const day of days) {
@@ -228,7 +263,7 @@ export function mergeWindow(
           ...(scheduledHere && item.scheduledDate ? { alsoScheduledOn: item.scheduledDate } : {}),
         });
       }
-      continue;
+      continue; // the dedupe: never also emitted as scheduled.
     }
 
     if (scheduledHere && scheduledMs !== null) {
@@ -310,19 +345,41 @@ export function weekendCalendarRead(inputs: QuestionInputs) {
   return inputs.calendarReads[CALENDAR_REQUEST_KEY];
 }
 
-/** `weekend.rs`'s `weekend_band`, exposed for rendering callers that
- * already hold a merged window — used only by tests today; the shell's
- * own answer goes through [`weekendAnswer`]. */
+/** The window opens this many hours before it starts to read as `imminent`
+ * rather than `near`. Kept literal TS on `weekendWindow`'s own
+ * describe-collection-order reasoning (the module header above) — pinned
+ * against `weekend_constants_json()`'s `imminentWithinMs` by
+ * `seam.test.ts`, not read through the seam at runtime. */
+export const IMMINENT_WITHIN_MS = 48 * HOUR_MS;
+
+/** Beyond `IMMINENT_WITHIN_MS` but inside this reads as `near`; beyond it,
+ * `dormant`. Pinned against `weekend_constants_json()`'s `nearWithinMs`,
+ * same reason. */
+export const NEAR_WITHIN_MS = 96 * HOUR_MS;
+
+/** `weekend.rs`'s `weekend_band` — kept literal TS for the same
+ * describe-collection-order reason `weekendWindow` is (this module's own
+ * header), pinned against the core directly by
+ * `weekend-window.shared.test.ts` rather than called through the seam.
+ *
+ * **No production caller.** `weekendAnswer` gets its band from
+ * `weekendAnswerFromCore` (the real decision), not from this — this export
+ * exists so a pin test can hold the local arithmetic against the core's
+ * own `weekend_band` directly, on `wasteSetup`-adjacent test-only exports
+ * elsewhere in this family. Kept exported (rather than folded into the pin
+ * test itself) because a caller-side desync between this and
+ * `weekendAnswerFromCore` is exactly the class of bug ADR-0025 exists to
+ * catch, and a private copy inside a test file could drift unnoticed. */
 export function weekendBand(window: WeekendWindow, nowMs: number): Band {
   if (window.underWay) return "live";
   const untilStartMs = window.startMs - nowMs;
-  const IMMINENT_WITHIN_MS = 48 * HOUR_MS;
-  const NEAR_WITHIN_MS = 96 * HOUR_MS;
   if (untilStartMs <= IMMINENT_WITHIN_MS) return "imminent";
   if (untilStartMs <= NEAR_WITHIN_MS) return "near";
   return "dormant";
 }
 
+/** `weekend.rs`'s `weekend_within_band` — same reason, same pin, and the
+ * same "no production caller" note as [`weekendBand`]. */
 export function weekendWithinBand(window: WeekendWindow): number {
   return window.underWay ? window.endMs : window.startMs;
 }

@@ -1236,6 +1236,10 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
             "toneWord": settings::sync_status_tone_word(&input),
         })
         .to_string(),
+        Err(error) => error_json(error),
+    }
+}
+
 // ------------------------------------------------------------------- #534
 // The remaining seven panes: the status four (kimi/github/uptime/
 // reachability) and the now three (race/weekend/vacation) — same house
@@ -1243,7 +1247,20 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
 // values, never a rendered sentence; each pane's own TS module composes its
 // words from these.
 
-use hummingbird_core::decisions::panes::{kimi, github, uptime, reachability, race, vacation, weekend};
+use hummingbird_core::decisions::panes::{kimi, github, uptime, reachability, race, vacation, weekend, zone};
+
+/// `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
+/// `zone-bridge.ts`'s `resolveZone` special-cases to mean "the reader's own
+/// device zone". Pinned against the TS literal by `seam.test.ts` rather
+/// than read through the seam at every call: a changed sentinel here and a
+/// stale copy there would silently turn weekend/vacation into permanent
+/// gap answers (`ZoneFacts` simply never resolving), the exact "used
+/// before ready" style failure this crossing exists to catch loudly
+/// instead.
+#[wasm_bindgen]
+pub fn device_zone() -> String {
+    zone::DEVICE_ZONE.to_string()
+}
 
 fn snapshot_from_json(
     snapshot_json: &str,
@@ -1550,6 +1567,28 @@ pub fn weekend_answer_json(inputs_json: &str, zone_facts_json: &str) -> String {
     }
 }
 
+/// [`weekend::weekend_band`] — exposed standalone (not just via
+/// `weekend_answer_json`) so `weekend.ts`'s locally-kept `weekendBand` can
+/// be pinned against it directly by a shared cross-host test, on
+/// `github_band_json`'s own precedent.
+#[wasm_bindgen]
+pub fn weekend_band_json(window_json: &str, now_ms: f64) -> String {
+    match serde_json::from_str::<weekend::WeekendWindow>(window_json) {
+        Ok(window) => serde_json::to_string(&weekend::weekend_band(&window, now_ms as i64)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+/// [`weekend::weekend_within_band`] — same reason as
+/// [`weekend_band_json`].
+#[wasm_bindgen]
+pub fn weekend_within_band_json(window_json: &str) -> String {
+    match serde_json::from_str::<weekend::WeekendWindow>(window_json) {
+        Ok(window) => serde_json::to_string(&weekend::weekend_within_band(&window)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
 #[wasm_bindgen]
 pub fn weekend_constants_json() -> String {
     serde_json::json!({
@@ -1567,6 +1606,18 @@ pub fn weekend_constants_json() -> String {
 pub fn vacation_zone_queries_json(inputs_json: &str) -> String {
     match parse_inputs(inputs_json) {
         Ok(inputs) => queries_json(vacation::vacation_zone_queries(&inputs)),
+        Err(error) => error_json(error),
+    }
+}
+
+/// [`vacation::vacation_setup_kind`] — the kind-only projection
+/// `vacation::VacationSetup` itself cannot cross (its `Bound` arm borrows).
+/// `vacation.ts`'s `vacationSetup` is pinned against this, on
+/// `race_setup_json`'s/`waste_setup_json`'s own precedent.
+#[wasm_bindgen]
+pub fn vacation_setup_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&vacation::vacation_setup_kind(&inputs)).unwrap(),
         Err(error) => error_json(error),
     }
 }
