@@ -342,7 +342,21 @@ private fun ReadBody(
                             .padding(horizontal = 8.dp, vertical = 2.dp),
                     )
                 }
-                Text(alert.title, style = MaterialTheme.typography.bodyLarge)
+                // Suppressed when it would restate the heading directly
+                // above it (#522). Not a quirk of one alert: `sweep.rs`
+                // builds an `item-threshold/v1` ingest with
+                // `title: item.title`, so for this source -- the one this
+                // screen exists to land (ADR-0027) -- the two are always
+                // the same string. The severity pill and the Ack carry the
+                // card without it.
+                //
+                // Conditional rather than removed: the card also renders
+                // for a future source whose title says something the
+                // heading does not, and dropping the line outright would
+                // lose that.
+                if (alert.title != record.title) {
+                    Text(alert.title, style = MaterialTheme.typography.bodyLarge)
+                }
                 alert.body?.let {
                     Text(
                         it,
