@@ -114,7 +114,12 @@ internal val ACTION_LABEL: Map<String, String> = mapOf(
 )
 
 @Composable
-fun NowScreen(onShowStatus: () -> Unit, onShowAlerts: () -> Unit, syncTick: Int = 0) {
+fun NowScreen(
+    onShowStatus: () -> Unit,
+    onShowAlerts: () -> Unit,
+    onOpenItem: (String) -> Unit,
+    syncTick: Int = 0,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // Activity-scoped, not composition-scoped: see NowViewModel.factory.
@@ -189,6 +194,7 @@ fun NowScreen(onShowStatus: () -> Unit, onShowAlerts: () -> Unit, syncTick: Int 
                         NowRow(
                             record = record,
                             dark = dark,
+                            onOpen = { onOpenItem(record.id) },
                             onAct = { action ->
                                 scope.launch {
                                     viewModel.act(
@@ -208,8 +214,23 @@ fun NowScreen(onShowStatus: () -> Unit, onShowAlerts: () -> Unit, syncTick: Int 
 }
 
 @Composable
-private fun NowRow(record: NowItemRecord, dark: Boolean, onAct: (String) -> Unit) {
+private fun NowRow(
+    record: NowItemRecord,
+    dark: Boolean,
+    onOpen: () -> Unit,
+    onAct: (String) -> Unit,
+) {
+    // The card itself is the door to item detail (#521). Material3's
+    // `onClick` overload rather than a `clickable` modifier: it carries the
+    // ripple, the `role = Button` semantics and the minimum touch target
+    // that a bare modifier leaves to the caller. No chevron and no other
+    // added chrome -- the design system's `interactive` card is the whole
+    // affordance, and its icon vocabulary has no chevron in it.
+    //
+    // The action buttons below stay reachable: a nested clickable consumes
+    // its own press, so `Complete` still completes rather than opening.
     Card(
+        onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
