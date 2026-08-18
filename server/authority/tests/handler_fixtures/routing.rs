@@ -119,6 +119,16 @@ fn create_rejects_an_id_no_path_could_ever_address() {
             r#"{"id": "pt 1", "name": "pixel-9", "platform": "android", "fcm_token": "tok-1"}"#,
             "space",
         ),
+        (
+            "/api/blocked_by",
+            r#"{"item_id": "a 1", "blocker_id": "a-2"}"#,
+            "space, on item_id",
+        ),
+        (
+            "/api/blocked_by",
+            r#"{"item_id": "a-1", "blocker_id": "a 2"}"#,
+            "space, on blocker_id",
+        ),
     ] {
         let resp = post_to(&sql, path, body, 0);
         assert_eq!(resp.status, 400, "POST {path} ({why}): {}", resp.body);
