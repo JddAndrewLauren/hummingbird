@@ -2,18 +2,23 @@ package net.twinion.hummingbird
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
+import uniffi.hummingbird_ffi_mobile.NowBoardRecord
+import uniffi.hummingbird_ffi_mobile.NowColumnRecord
+import uniffi.hummingbird_ffi_mobile.NowFacetSelectionRecord
 import uniffi.hummingbird_ffi_mobile.NowItemRecord
 
-// NowViewModel's refresh/act control flow, exercised entirely with fakes —
-// the same "no generated JNI binding involved" reasoning
-// CaptureViewModelTest states for its own class. The production wiring's
-// own correctness — that [NowViewModel.create] really reaches
-// `MobileTaskHost.nowQueue`/`.act` and that nothing on this screen
-// re-derives ordering, urgency or the act vocabulary locally — is
-// NowScreenStructuralTest's job.
+// NowViewModel's load/refresh/act/setAxis/toggleFacet/toggleCollapsed
+// control flow, exercised entirely with fakes — the same "no generated JNI
+// binding involved" reasoning CaptureViewModelTest states for its own
+// class. The production wiring's own correctness — that [NowViewModel.create]
+// really reaches `MobileTaskHost.nowBoard`/`.act`/`FrontierPrefs` and that
+// nothing on this screen re-derives ordering, grouping, urgency or the act
+// vocabulary locally — is NowScreenStructuralTest's job.
 class NowViewModelTest {
 
     private fun record(id: String, actions: List<String> = listOf("start")) = NowItemRecord(
@@ -24,28 +29,60 @@ class NowViewModelTest {
         priority = 0L,
         context = null,
         availableActions = actions,
+        stage = "ready",
     )
+
+    private fun board(vararg ids: String, liveColumnKeys: List<String> = listOf("")) = NowBoardRecord(
+        columns = listOf(
+            NowColumnRecord(value = null, label = null, items = ids.map { record(it) }),
+        ),
+        blocked = emptyList(),
+        contexts = emptyList(),
+        liveColumnKeys = liveColumnKeys,
+    )
+
+    private fun columnIds(board: NowBoardRecord): List<String> =
+        board.columns.flatMap { column -> column.items.map { it.id } }
+
+    private fun viewModel(
+        fetchBoardFn: suspend (MobileFrontierAxis, NowFacetSelectionRecord, String) -> NowBoardRecord = { _, _, _ -> board() },
+        actFn: suspend (String, String, Long) -> Unit = { _, _, _ -> },
+        readAxisFn: suspend () -> MobileFrontierAxis = { MobileFrontierAxis.CONTEXT },
+        writeAxisFn: suspend (MobileFrontierAxis) -> Unit = {},
+        readCollapsedFn: suspend () -> Set<String> = { emptySet() },
+        writeCollapsedFn: suspend (Set<String>) -> Unit = {},
+    ) = NowViewModel(fetchBoardFn, actFn, readAxisFn, writeAxisFn, readCollapsedFn, writeCollapsedFn)
+
+    @Test
+    fun `load restores the persisted axis and collapse set before the first fetch`() = runBlocking {
+        var seenAxis: MobileFrontierAxis? = null
+        val vm = viewModel(
+            fetchBoardFn = { axis, _, _ -> seenAxis = axis; board() },
+            readAxisFn = { MobileFrontierAxis.SIZE },
+            readCollapsedFn = { setOf("@phone") },
+        )
+
+        vm.load("2026-08-15T12:00")
+
+        assertEquals(MobileFrontierAxis.SIZE, vm.axis.value)
+        assertEquals(MobileFrontierAxis.SIZE, seenAxis)
+        assertEquals(setOf("@phone"), vm.collapsed.value)
+        assertFalse("loading must settle false once the fetch returns", vm.loading.value)
+    }
 
     @Test
     fun `refresh loads whatever the injected fetch fn returns, in its own order`() = runBlocking {
-        val vm = NowViewModel(
-            fetchQueueFn = { listOf(record("b"), record("a")) },
-            actFn = { _, _, _ -> },
-        )
+        val vm = viewModel(fetchBoardFn = { _, _, _ -> board("b", "a") })
 
         vm.refresh("2026-08-15T12:00")
 
-        assertEquals(listOf("b", "a"), vm.items.value.map { it.id })
-        assertTrue("loading must settle false once the fetch returns", !vm.loading.value)
+        assertEquals(listOf("b", "a"), columnIds(vm.board.value!!))
     }
 
     @Test
     fun `refresh passes the given deadline-shaped now straight through`() = runBlocking {
         var seenNow: String? = null
-        val vm = NowViewModel(
-            fetchQueueFn = { now -> seenNow = now; emptyList() },
-            actFn = { _, _, _ -> },
-        )
+        val vm = viewModel(fetchBoardFn = { _, _, now -> seenNow = now; board() })
 
         vm.refresh("2026-08-15T09:30")
 
@@ -53,12 +90,145 @@ class NowViewModelTest {
     }
 
     @Test
+    fun `setAxis writes the new axis, clears collapse and expand, and reloads under it`() = runBlocking {
+        var writtenAxis: MobileFrontierAxis? = null
+        var writtenCollapsed: Set<String>? = null
+        var seenAxis: MobileFrontierAxis? = null
+        val vm = viewModel(
+            fetchBoardFn = { axis, _, _ -> seenAxis = axis; board() },
+            writeAxisFn = { axis -> writtenAxis = axis },
+            writeCollapsedFn = { collapsed -> writtenCollapsed = collapsed },
+        )
+        vm.toggleCollapsed("@phone")
+        vm.toggleExpanded("@phone")
+
+        vm.setAxis(MobileFrontierAxis.PROJECT, "2026-08-15T12:00")
+
+        assertEquals(MobileFrontierAxis.PROJECT, vm.axis.value)
+        assertEquals(MobileFrontierAxis.PROJECT, writtenAxis)
+        assertEquals(MobileFrontierAxis.PROJECT, seenAxis)
+        assertEquals(emptySet<String>(), vm.collapsed.value)
+        assertEquals(emptySet<String>(), writtenCollapsed)
+        assertEquals(emptySet<String>(), vm.expanded.value)
+    }
+
+    @Test
+    fun `toggleFacet adds then removes a value and reloads under the current selection each time`() = runBlocking {
+        var seenFacets: NowFacetSelectionRecord? = null
+        val vm = viewModel(fetchBoardFn = { _, facets, _ -> seenFacets = facets; board() })
+
+        vm.toggleFacet(FrontierFacet.CONTEXT, "@phone", "2026-08-15T12:00")
+        assertEquals(setOf("@phone"), vm.facets.value.context)
+        assertEquals(listOf("@phone"), seenFacets?.context)
+
+        vm.toggleFacet(FrontierFacet.CONTEXT, "@phone", "2026-08-15T12:00")
+        assertEquals(emptySet<String>(), vm.facets.value.context)
+        assertEquals(emptyList<String>(), seenFacets?.context)
+    }
+
+    @Test
+    fun `clearFacets resets every facet and reloads`() = runBlocking {
+        val vm = viewModel()
+        vm.toggleFacet(FrontierFacet.CONTEXT, "@phone", "2026-08-15T12:00")
+        vm.toggleFacet(FrontierFacet.SIZE, "quick", "2026-08-15T12:00")
+
+        vm.clearFacets("2026-08-15T12:00")
+
+        assertEquals(FrontierFacetSelection(), vm.facets.value)
+    }
+
+    @Test
+    fun `facet selection is never handed to the axis-collapse persistence doors`() = runBlocking {
+        var collapsedWrites = 0
+        var axisWrites = 0
+        val vm = viewModel(
+            writeAxisFn = { axisWrites++ },
+            writeCollapsedFn = { collapsedWrites++ },
+        )
+
+        vm.toggleFacet(FrontierFacet.CONTEXT, "@phone", "2026-08-15T12:00")
+        vm.clearFacets("2026-08-15T12:00")
+
+        assertEquals(0, axisWrites)
+        assertEquals(0, collapsedWrites)
+    }
+
+    @Test
+    fun `toggleCollapsed adds then removes a key and persists each write`() = runBlocking {
+        val writes = mutableListOf<Set<String>>()
+        val vm = viewModel(writeCollapsedFn = { writes.add(it) })
+
+        vm.toggleCollapsed("@phone")
+        assertEquals(setOf("@phone"), vm.collapsed.value)
+
+        vm.toggleCollapsed("@phone")
+        assertEquals(emptySet<String>(), vm.collapsed.value)
+
+        assertEquals(listOf(setOf("@phone"), emptySet()), writes)
+    }
+
+    @Test
+    fun `toggleCollapsed prunes stale keys against the boards live column keys before persisting`() = runBlocking {
+        val writes = mutableListOf<Set<String>>()
+        var liveKeys = listOf("@phone", "@garden")
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> board(liveColumnKeys = liveKeys) },
+            writeCollapsedFn = { writes.add(it) },
+        )
+        vm.refresh("2026-08-15T12:00")
+        vm.toggleCollapsed("@garden")
+        assertEquals(setOf("@garden"), vm.collapsed.value)
+
+        // @garden's last action is done -- it drops out of the live set on
+        // the next board read (the way a real re-fetch would reflect it).
+        liveKeys = listOf("@phone")
+        vm.refresh("2026-08-15T12:00")
+
+        // Toggling an unrelated key must prune @garden's now-dead entry
+        // rather than carry it forward forever.
+        vm.toggleCollapsed("@phone")
+
+        assertEquals(setOf("@phone"), vm.collapsed.value)
+        assertEquals(setOf("@phone"), writes.last())
+    }
+
+    @Test
+    fun `toggleCollapsed never prunes a key the live filter is merely hiding`() = runBlocking {
+        // live_column_keys is computed pre-facet on the Rust side
+        // (build_now_board's own doc); this pins the Kotlin side's half of
+        // that contract -- a key present in liveColumnKeys survives a
+        // prune even though the *rendered* columns (post-facet) might not
+        // currently include it.
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> board(liveColumnKeys = listOf("@phone", "@computer")) },
+        )
+        vm.refresh("2026-08-15T12:00")
+
+        vm.toggleCollapsed("@computer")
+        vm.toggleCollapsed("@phone")
+
+        assertEquals(setOf("@computer", "@phone"), vm.collapsed.value)
+    }
+
+    @Test
+    fun `toggleExpanded adds then removes a key without persisting it`() = runBlocking {
+        var collapsedWrites = 0
+        val vm = viewModel(writeCollapsedFn = { collapsedWrites++ })
+
+        vm.toggleExpanded("@phone")
+        assertEquals(setOf("@phone"), vm.expanded.value)
+
+        vm.toggleExpanded("@phone")
+        assertEquals(emptySet<String>(), vm.expanded.value)
+        assertEquals(0, collapsedWrites)
+    }
+
+    @Test
     fun `act calls the injected act fn with the given item, action and clock`() = runBlocking {
         var seenItemId: String? = null
         var seenAction: String? = null
         var seenNowMs: Long? = null
-        val vm = NowViewModel(
-            fetchQueueFn = { emptyList() },
+        val vm = viewModel(
             actFn = { itemId, action, nowMs ->
                 seenItemId = itemId
                 seenAction = action
@@ -74,17 +244,52 @@ class NowViewModelTest {
     }
 
     @Test
-    fun `act reloads the queue after acting, reflecting the mutation immediately`() = runBlocking {
+    fun `act reloads the board after acting, reflecting the mutation immediately`() = runBlocking {
         var actHasRun = false
-        val vm = NowViewModel(
-            fetchQueueFn = { if (actHasRun) listOf(record("still-here")) else listOf(record("gone"), record("still-here")) },
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ ->
+                if (actHasRun) board("still-here") else board("gone", "still-here")
+            },
             actFn = { _, _, _ -> actHasRun = true },
         )
         vm.refresh("2026-08-15T12:00")
-        assertEquals(listOf("gone", "still-here"), vm.items.value.map { it.id })
+        assertEquals(listOf("gone", "still-here"), columnIds(vm.board.value!!))
 
         vm.act("gone", "complete", 1_000L, "2026-08-15T12:00")
 
-        assertEquals(listOf("still-here"), vm.items.value.map { it.id })
+        assertEquals(listOf("still-here"), columnIds(vm.board.value!!))
+    }
+
+    @Test
+    fun `the blocked section rides on the board unchanged`() = runBlocking {
+        val blockedBoard = NowBoardRecord(
+            columns = emptyList(),
+            blocked = listOf(
+                uniffi.hummingbird_ffi_mobile.NowBlockedEntryRecord(
+                    item = record("blocked-1"),
+                    blockedByTitles = listOf("Ship the release"),
+                ),
+            ),
+            contexts = emptyList(),
+            liveColumnKeys = emptyList(),
+        )
+        val vm = viewModel(fetchBoardFn = { _, _, _ -> blockedBoard })
+
+        vm.refresh("2026-08-15T12:00")
+
+        assertEquals(1, vm.board.value!!.blocked.size)
+        assertEquals("blocked-1", vm.board.value!!.blocked[0].item.id)
+        assertEquals(listOf("Ship the release"), vm.board.value!!.blocked[0].blockedByTitles)
+    }
+
+    @Test
+    fun `toggleFacet is a pure add-remove -- toggling twice restores the original selection`() {
+        val base = FrontierFacetSelection()
+        val once = base.toggled(FrontierFacet.SIZE, "deep")
+        assertTrue(once.size.contains("deep"))
+        assertTrue("toggled() must not mutate the receiver", base.size.isEmpty())
+
+        val twice = once.toggled(FrontierFacet.SIZE, "deep")
+        assertEquals(base, twice)
     }
 }

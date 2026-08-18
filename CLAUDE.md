@@ -38,7 +38,7 @@ grepping it.
 | The decisions every client shares (#141/M1) | `client/core/src/decisions/`, `client/ffi-web/src/decisions.rs`, `client/web/src/decisions/seam.ts` | `decisions/mod.rs`, then `seam.ts`; ADR-0025 |
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |
-| The mobile seam + the Android app (#141, through the item-detail slice) | `client/ffi-mobile/`, `client/android/` | `ffi-mobile/src/lib.rs`, `android/README.md`, ADR-0025 |
+| The mobile seam + the Android app (#141, through the frontier-board slice) | `client/ffi-mobile/`, `client/android/` | `ffi-mobile/src/lib.rs`, `android/README.md`, ADR-0025 |
 | Item detail, and where a tapped notification lands | `client/core/src/{item_detail.rs,decisions/notification.rs}`, `client/android/.../ItemDetail{Screen,ViewModel}.kt` | `item_detail.rs`, then `decisions/notification.rs`; ADR-0027 |
 | Android's notification lane (#141/M2) | `client/android/app/src/main/kotlin/net/twinion/hummingbird/{notify,push}/` | `notify/NotificationChannels.kt`, `push/AckRunner.kt`; ADR-0012/0014 |
 | The web app | `client/web/` | `client/web/README.md` |
