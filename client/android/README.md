@@ -170,19 +170,33 @@ fresh notification arrives only after the alert has settled and re-raised.
 That forces the order **15 → 14 → 16**: ack first, then wait a tick for the
 re-raise, then tap cold. Budget an hour.
 
-Item detail has exactly **one door — a notification tap** (#521): the Now
-card is not clickable. To reach the screen without a live notification, fire
-the same intent by hand (adb shell holds `START_ANY_ACTIVITY`):
+Item detail has **two doors**: the Now card itself (#524) and a notification
+tap (#521). Tapping the card is the quick way onto the screen, but it does not
+exercise the notification path — for that, without waiting for a live alert,
+fire the same intent by hand (adb shell holds `START_ANY_ACTIVITY`):
 
 ```
 adb shell am start -n net.twinion.hummingbird/.MainActivity \
+  -a android.intent.action.VIEW \
+  -d "hummingbird://alert/<alert-id>" \
+  -f 0x24000000 \
   --es net.twinion.hummingbird.extra.ALERT_ID <alert-id> \
   --es net.twinion.hummingbird.extra.SOURCE "item-threshold/v1" \
   --es net.twinion.hummingbird.extra.SOURCE_KEY "item:<item-id>"
 ```
 
-That exercises the routing but **not** the `PendingIntent` — 13 and 14 must
-be real taps; 15 and 18 are indifferent to how the screen was reached.
+The action, the data uri and `-f 0x24000000`
+(`FLAG_ACTIVITY_SINGLE_TOP or FLAG_ACTIVITY_CLEAR_TOP`) are the ones
+`AlertNotifier` puts on its `PendingIntent`, and they are **not optional**.
+`MainActivity` is `LAUNCH_MULTIPLE`, so without `SINGLE_TOP` a hand-fired
+intent aimed at an already-running instance is delivered to the top activity
+without `onNewIntent` — the command reports success, and the app does not
+move. Cold (`am force-stop` first) it works either way, via `onCreate`, which
+is what makes the flagless form look intermittent rather than wrong (#526).
+
+A hand-fired intent exercises the routing but **not** the `PendingIntent` —
+13 and 14 must be real taps; 15 and 18 are indifferent to how the screen was
+reached.
 
 13. Tap that notification warm: lands on the **item**, not the alert. One
     Back lands on `Now`.
