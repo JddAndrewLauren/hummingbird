@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- M1-5's second launcher icon (#128/#503), placeholder until the real
-     icon artwork is mirrored — same ink-950 plate as the main icon
-     (ic_launcher.xml) for brand consistency, but a distinct glyph so the
-     two entries read apart at a glance: Lucide `plus` (the mint/quick-add
-     verb), stroked in ember-400 (#fe8a03), where the main icon uses
-     `feather`. Same safe-zone math as the main icon's foreground: the
+<!-- The capture alias's themed-icon (Android 13+ monochrome) layer — see
+     ic_launcher_monochrome.xml's header for why this can't be the bitmap
+     foreground. Lucide `plus` (the mint/quick-add verb), where the main
+     icon's monochrome layer uses `feather`, so the two entries stay
+     tellable apart under a themed icon pack too. Same safe-zone math: the
      24-unit glyph is scaled x2 and centred (108 - 48 = 60, translate 30). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -20,13 +19,13 @@
         android:pivotY="0">
         <path
             android:pathData="M12,5L12,19"
-            android:strokeColor="#fe8a03"
+            android:strokeColor="#FFFFFF"
             android:strokeWidth="1.75"
             android:strokeLineCap="round"
             android:strokeLineJoin="round" />
         <path
             android:pathData="M5,12L19,12"
-            android:strokeColor="#fe8a03"
+            android:strokeColor="#FFFFFF"
             android:strokeWidth="1.75"
             android:strokeLineCap="round"
             android:strokeLineJoin="round" />

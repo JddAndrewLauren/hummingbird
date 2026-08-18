@@ -202,4 +202,8 @@ tasks.withType<Test>().configureEach {
     // way; this is for the local loop.)
     inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/colors.css"))
         .withPropertyName("designTokensCss")
+    // Same freshness fix for TypeTokenDriftTest (#528): fonts.css sits
+    // outside this Gradle project too.
+    inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/fonts.css"))
+        .withPropertyName("designTokensFontsCss")
 }

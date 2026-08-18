@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The second launcher icon's adaptive-icon wrapper (M1-5/#503) — same
-     background plate as ic_launcher.xml, distinct foreground (see
-     ic_launcher_capture_foreground.xml's own comment). -->
+<!-- The second launcher icon's adaptive-icon wrapper (#528): the dark
+     plate from client/web/src/design/brand/app-icon-dark-78.png, hand-
+     ported the same way as the main icon (ic_launcher.xml) but on the
+     dark plate's own ink-700 background (#2f3a45 — README's "the dark
+     plate", sampled off this same asset; NOT ink-950/theme-color, which
+     is a darker, different token), so the two entries read apart on a
+     home screen. Themed-icon (monochrome) layer is separate art — see
+     ic_launcher_capture_monochrome.xml's header. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/ic_launcher_background" />
+    <background android:drawable="@color/ic_launcher_capture_background" />
     <foreground android:drawable="@drawable/ic_launcher_capture_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_capture_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_capture_monochrome" />
 </adaptive-icon>

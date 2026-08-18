@@ -153,6 +153,37 @@ class ManifestAliasTest {
     }
 
     @Test
+    fun `no shipped icon resource still carries the placeholder comment`() {
+        // #528: the real brand icon replaced the M0/M1 monochrome glyph
+        // marks, each of which said outright it was a placeholder pending
+        // the mirrored artwork. This is the mechanical guard against a
+        // future edit reintroducing one of those files (or a new one)
+        // without also carrying the real art -- text resources under
+        // res/drawable*/ and res/mipmap*/ are read as text (icon PNGs
+        // themselves can't carry a comment, so only their XML wrappers and
+        // any vector art are in scope) and none may mention "placeholder".
+        val root = System.getProperty("hummingbird.repoRoot")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+        val resDir = File(root, "client/android/app/src/main/res")
+        val iconDirs = resDir.listFiles { f -> f.isDirectory && (f.name.startsWith("drawable") || f.name.startsWith("mipmap")) }
+            ?: error("res/ not found or unreadable under $resDir")
+        assertTrue("no drawable*/mipmap* resource directories found", iconDirs.isNotEmpty())
+
+        val offenders = mutableListOf<String>()
+        for (dir in iconDirs) {
+            for (file in dir.listFiles { f -> f.isFile && (f.extension == "xml") } ?: emptyArray()) {
+                if (file.readText().contains("placeholder", ignoreCase = true)) {
+                    offenders += "${dir.name}/${file.name}"
+                }
+            }
+        }
+        assertTrue(
+            "these shipped icon resources still carry a placeholder comment: $offenders",
+            offenders.isEmpty(),
+        )
+    }
+
+    @Test
     fun `static shortcuts are wired on the primary launcher activity, and the resource exists`() {
         val application = manifest().children("application").single()
         val mainActivity = application.children("activity").single { it.attr("name") == ".MainActivity" }
