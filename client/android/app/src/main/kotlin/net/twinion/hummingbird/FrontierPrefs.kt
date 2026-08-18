@@ -62,16 +62,36 @@ object FrontierPrefs {
      * explicitly picked Context read back identically. An unrecognised
      * stored value (a future axis this build predates) degrades to the
      * default rather than crashing the read. */
-    suspend fun readAxis(context: Context): MobileFrontierAxis {
-        val stored = tolerating { context.frontierPrefsStore.data.first()[AXIS_KEY] }
+    suspend fun readAxis(context: Context): MobileFrontierAxis =
+        readAxis(context.frontierPrefsStore)
+
+    suspend fun writeAxis(context: Context, axis: MobileFrontierAxis) =
+        writeAxis(context.frontierPrefsStore, axis)
+
+    suspend fun readCollapsedColumns(context: Context): Set<String> =
+        readCollapsedColumns(context.frontierPrefsStore)
+
+    suspend fun writeCollapsedColumns(context: Context, collapsed: Set<String>) =
+        writeCollapsedColumns(context.frontierPrefsStore, collapsed)
+
+    // The same four doors against a `DataStore` handed in rather than
+    // reached through a `Context`. The four above are the app's, and the
+    // only thing they add is `frontierPrefsStore` — the store delegate is
+    // the one part of this file a plain JVM test cannot construct (no
+    // Context, and this module runs no Robolectric), so the degradation
+    // rule the header states is expressed here where `FrontierPrefsTest`
+    // can hand it a store that throws.
+
+    internal suspend fun readAxis(store: DataStore<Preferences>): MobileFrontierAxis {
+        val stored = tolerating { store.data.first()[AXIS_KEY] }
             ?: return MobileFrontierAxis.CONTEXT
         return runCatching { MobileFrontierAxis.valueOf(stored) }
             .getOrDefault(MobileFrontierAxis.CONTEXT)
     }
 
-    suspend fun writeAxis(context: Context, axis: MobileFrontierAxis) {
+    internal suspend fun writeAxis(store: DataStore<Preferences>, axis: MobileFrontierAxis) {
         tolerating {
-            context.frontierPrefsStore.edit { prefs ->
+            store.edit { prefs ->
                 if (axis == MobileFrontierAxis.CONTEXT) {
                     prefs.remove(AXIS_KEY)
                 } else {
@@ -83,13 +103,16 @@ object FrontierPrefs {
 
     /** An empty collapse set is stored as key absence too, for the same
      * reason `writeAxis` above states. */
-    suspend fun readCollapsedColumns(context: Context): Set<String> =
-        tolerating { context.frontierPrefsStore.data.first()[COLLAPSED_KEY] }
+    internal suspend fun readCollapsedColumns(store: DataStore<Preferences>): Set<String> =
+        tolerating { store.data.first()[COLLAPSED_KEY] }
             ?: emptySet()
 
-    suspend fun writeCollapsedColumns(context: Context, collapsed: Set<String>) {
+    internal suspend fun writeCollapsedColumns(
+        store: DataStore<Preferences>,
+        collapsed: Set<String>,
+    ) {
         tolerating {
-            context.frontierPrefsStore.edit { prefs ->
+            store.edit { prefs ->
                 if (collapsed.isEmpty()) {
                     prefs.remove(COLLAPSED_KEY)
                 } else {

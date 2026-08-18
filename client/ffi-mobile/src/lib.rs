@@ -766,7 +766,7 @@ pub struct NowBoardRecord {
 ///
 /// Free of `Core`/`MobileTaskHost` entirely so a fixture-driven test can
 /// exercise it directly, with no async runtime or durable store in the
-/// loop — [`build_now_queue`]'s own reason, before it retired into this.
+/// loop — `build_now_queue`'s own reason, before it retired into this.
 #[allow(clippy::too_many_arguments)]
 fn build_now_board(
     frontier_items: &[Item],
@@ -1338,8 +1338,15 @@ impl MobileTaskHost {
     /// Only `id`/`name` cross, not the whole [`hummingbird_domain::Project`] row: a picker reads
     /// nothing else, and `ffi-web::task_host::TaskHostCore::projects`
     /// crosses the full row only because the web's `ProjectDTO` already
-    /// carries the rest for other callers (the frontier's "grouped by
-    /// project" display) that this seam has no equivalent of yet.
+    /// carries the rest for other callers. This seam does have the frontier's
+    /// "grouped by project" display now ([`MobileFrontierAxis::Project`],
+    /// M3/#530), but it feeds off its own mapping of the same
+    /// `Core::projects()` read — [`MobileTaskHost::now_board`]'s
+    /// `frontier::ProjectName`, built where the board is built — and that is
+    /// two mappings of one read at two layers, not a duplicate (#530's
+    /// FINAL-GATE review): the picker needs `MobileProject` records crossing
+    /// the seam to Kotlin, the grouping axis needs names inside Rust and
+    /// never crosses at all.
     pub async fn projects(&self) -> Vec<MobileProject> {
         self.inner
             .lock()
