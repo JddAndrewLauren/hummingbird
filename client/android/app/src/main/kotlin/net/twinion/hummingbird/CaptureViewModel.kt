@@ -13,6 +13,7 @@ import uniffi.hummingbird_ffi_mobile.CaptureDestination
 import uniffi.hummingbird_ffi_mobile.CaptureDraft
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
+import uniffi.hummingbird_ffi_mobile.MobileProject
 import uniffi.hummingbird_ffi_mobile.canSubmitCapture
 import uniffi.hummingbird_ffi_mobile.captureFormMeta
 import uniffi.hummingbird_ffi_mobile.captureMetaProblems
@@ -81,6 +82,15 @@ class CaptureViewModel(
     private val canSubmitFn: (String) -> Boolean,
     private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
     private val formMetaFn: () -> CaptureFormMeta,
+    /** The Project picker's read (review finding on #529's own PR: an
+     * opaque free-text project id was an authority-side dead-letter hazard
+     * — `items.project_id` is an FK, `server/authority/src/schema.rs:135`
+     * — a typo would mint locally and be refused server-side, exactly the
+     * failure [canSubmitDraft] otherwise exists to prevent). `suspend`,
+     * unlike [formMetaFn]: it reads the live mirror through the core's
+     * checked-out state (`MobileTaskHost::projects`'s own doc), not a pure
+     * function of no state. */
+    private val projectsFn: suspend () -> List<MobileProject>,
     private val captureFn: suspend (draft: CaptureDraft, nowMs: Long) -> String,
 ) : ViewModel() {
 
@@ -91,6 +101,18 @@ class CaptureViewModel(
      * lazily, on first use rather than in the constructor, so a JVM test
      * that never touches the form's metadata never calls [formMetaFn]. */
     val formMeta: CaptureFormMeta by lazy { formMetaFn() }
+
+    /** The live Project list the details disclosure's picker offers —
+     * empty until [loadProjects] runs (`CaptureScreen`'s own
+     * `LaunchedEffect`), the same "empty is a real, honest fact until the
+     * first read lands" contract [MobileTaskHost.projects] states for a
+     * never-synced mirror. */
+    private val _projects = MutableStateFlow<List<MobileProject>>(emptyList())
+    val projects: StateFlow<List<MobileProject>> = _projects.asStateFlow()
+
+    suspend fun loadProjects() {
+        _projects.value = projectsFn()
+    }
 
     /** The last dictation attempt's failure, or `null` if the mic is idle
      * or the last attempt produced a transcript. ADR-0022 requires every
@@ -169,14 +191,15 @@ class CaptureViewModel(
 
     companion object {
         /** The production wiring: [canSubmitFn]/[metaProblemsFn]/[formMetaFn]
-         * are the real uniffi bindings verbatim, and [captureFn] closes over
-         * the app's one durable [CoreHolder] handle — never a fresh core
-         * per capture. */
+         * are the real uniffi bindings verbatim, and [projectsFn]/[captureFn]
+         * close over the app's one durable [CoreHolder] handle — never a
+         * fresh core per capture. */
         fun create(context: Context): CaptureViewModel =
             CaptureViewModel(
                 canSubmitFn = ::canSubmitCapture,
                 metaProblemsFn = ::captureMetaProblems,
                 formMetaFn = ::captureFormMeta,
+                projectsFn = { CoreHolder.get(context.applicationContext).projects() },
                 captureFn = { draft, nowMs ->
                     CoreHolder.get(context.applicationContext).capture(draft, nowMs)
                 },

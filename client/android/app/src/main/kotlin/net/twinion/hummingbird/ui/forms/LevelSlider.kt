@@ -1,12 +1,9 @@
 package net.twinion.hummingbird.ui.forms
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -15,10 +12,14 @@ import androidx.compose.ui.unit.dp
 import uniffi.hummingbird_ffi_mobile.VocabOption
 
 /** #529's first shared form component: a closed-vocabulary field rendered
- * as a row of choices, the capture box's own energy/size Sliders and the
- * item-edit form's `VocabularyRow` reshaped into one reusable composable —
+ * as a row of `FilterChip`s — the capture box's own energy/size Sliders —
  * so the Triage screen (#531) reaches for this rather than growing a third
- * copy.
+ * copy. Built on `FilterChip` rather than a hand-rolled `clickable Text`
+ * (review finding on #529's own PR): `FilterChip` is what the destination
+ * toggle and `PriorityRow` already render this screen's other two rows of
+ * choices with, and it supplies `Role.Button` semantics and the platform's
+ * 48dp minimum touch target for free — a hand-rolled `Text` chip gave
+ * neither.
  *
  * `options` always comes from [uniffi.hummingbird_ffi_mobile.captureFormMeta]
  * — `hummingbird_core::decisions::vocabulary`'s real values, crossed as
@@ -27,9 +28,10 @@ import uniffi.hummingbird_ffi_mobile.VocabOption
  * this screen renders, not a word it knows.
  *
  * Tapping the already-selected option clears the field (`onSelect(null)`) —
- * the same "tap again to clear" gesture `ItemDetailScreen`'s
- * `VocabularyRow` already uses, since deciding a level is mint-time work,
- * never forced.
+ * the same "tap again to clear" gesture `ItemDetailScreen`'s own
+ * `VocabularyRow` uses (a *separate*, pre-existing control this component
+ * does not replace — see that composable's own header), since deciding a
+ * level is mint-time work, never forced.
  */
 @Composable
 fun LevelSlider(
@@ -48,27 +50,10 @@ fun LevelSlider(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (option in options) {
                 val isSelected = option.value == selected
-                Text(
-                    option.label,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    modifier = Modifier
-                        .clickable {
-                            onSelect(if (isSelected) null else option.value)
-                        }
-                        .background(
-                            color = if (isSelected) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.surfaceVariant
-                            },
-                            shape = RoundedCornerShape(8.dp),
-                        )
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onSelect(if (isSelected) null else option.value) },
+                    label = { Text(option.label) },
                 )
             }
         }

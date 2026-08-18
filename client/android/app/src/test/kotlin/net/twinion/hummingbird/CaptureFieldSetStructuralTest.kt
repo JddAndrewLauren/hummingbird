@@ -13,26 +13,48 @@ import org.junit.Test
 // already use for their own no-emulator gates.
 class CaptureFieldSetStructuralTest {
 
+    private fun repoRoot(): File =
+        File(
+            System.getProperty("hummingbird.repoRoot")
+                ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)"),
+        )
+
     private fun repoFile(relative: String): String {
-        val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
-        val file = File(root, relative)
-        check(file.isFile) { "$relative not found under $root" }
+        val file = File(repoRoot(), relative)
+        check(file.isFile) { "$relative not found under ${repoRoot()}" }
         return file.readText()
     }
 
-    private val captureFieldSrcByName: Map<String, String> = listOf(
-        "CaptureActivity.kt" to
-            "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureActivity.kt",
-        "CaptureViewModel.kt" to
-            "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureViewModel.kt",
-        "ui/forms/LevelSlider.kt" to
-            "client/android/app/src/main/kotlin/net/twinion/hummingbird/ui/forms/LevelSlider.kt",
-        "ui/forms/ContextField.kt" to
-            "client/android/app/src/main/kotlin/net/twinion/hummingbird/ui/forms/ContextField.kt",
-        "ui/forms/CaptureDateField.kt" to
-            "client/android/app/src/main/kotlin/net/twinion/hummingbird/ui/forms/CaptureDateField.kt",
-    ).associate { (name, path) -> name to repoFile(path) }
+    /** `CaptureActivity.kt`/`CaptureViewModel.kt` by name, plus every
+     * `.kt` file under `ui/forms/` — enumerated from the directory rather
+     * than listed by hand (review finding on #529's own PR): the whole
+     * point of that directory is that #531's Triage screen adds a sixth
+     * file to it, and a hardcoded five-file list would let that file
+     * escape every gate below silently — the exact failure mode
+     * `field-vocabulary.ts`'s header (cited below) says ADR-0024 caught
+     * too late on the web side. */
+    private val captureFieldSrcByName: Map<String, String> = run {
+        val formsDir = File(
+            repoRoot(),
+            "client/android/app/src/main/kotlin/net/twinion/hummingbird/ui/forms",
+        )
+        check(formsDir.isDirectory) { "ui/forms directory not found under ${repoRoot()}" }
+        val formsFiles = formsDir.listFiles { file -> file.extension == "kt" }
+            ?.sortedBy { it.name }
+            ?: error("could not list ui/forms/*.kt under $formsDir")
+        check(formsFiles.isNotEmpty()) { "expected at least one .kt file under $formsDir" }
+
+        val named = listOf(
+            "CaptureActivity.kt" to
+                "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureActivity.kt",
+            "CaptureViewModel.kt" to
+                "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureViewModel.kt",
+        ).associate { (name, path) -> name to repoFile(path) }
+
+        val forms = formsFiles.associate { file -> "ui/forms/${file.name}" to file.readText() }
+
+        named + forms
+    }
 
     /** The size/energy vocabulary and the suggested contexts, as the
      * quoted string literals a hand-copy would look like. Every one of
@@ -120,6 +142,43 @@ class CaptureFieldSetStructuralTest {
                 captureActivitySrc.contains("import net.twinion.hummingbird.ui.forms.$component"),
             )
         }
+    }
+
+    /** Review finding on #529's own PR: an opaque, hand-typed project id
+     * was a dead-letter hazard (`items.project_id` is an FK). The details
+     * disclosure's Project field must read the live list from
+     * `MobileTaskHost.projects()` and offer it as a picker (`readOnly`
+     * anchor field, `onValueChange = {}`) rather than accepting arbitrary
+     * text. */
+    @Test
+    fun `the Project field is a read-only picker over the live projects list, never free text`() {
+        val captureActivitySrc = captureFieldSrcByName.getValue("CaptureActivity.kt")
+        val captureViewModelSrc = captureFieldSrcByName.getValue("CaptureViewModel.kt")
+        assertTrue(
+            "CaptureViewModel must expose the live projects list",
+            captureViewModelSrc.contains("val projects: StateFlow<List<MobileProject>>"),
+        )
+        assertTrue(
+            "CaptureViewModel.create must wire projectsFn to CoreHolder.get(...).projects()",
+            captureViewModelSrc.contains(".projects()"),
+        )
+        val projectFieldBody = Regex("""private fun ProjectField\([\s\S]*?\n}""")
+            .find(captureActivitySrc)
+            ?.value
+            ?: error("could not locate ProjectField in CaptureActivity.kt")
+        assertTrue(
+            "the Project field's anchor must be read-only",
+            projectFieldBody.contains("readOnly = true"),
+        )
+        assertTrue(
+            "the Project field's anchor must ignore typed input (onValueChange = {})",
+            projectFieldBody.contains("onValueChange = {}"),
+        )
+        assertFalse(
+            "CaptureActivity.kt must not bind an editable OutlinedTextField directly to " +
+                "draft.projectId (that is the free-text hazard the picker replaces)",
+            captureActivitySrc.contains("value = draft.projectId"),
+        )
     }
 
     /** Dictation stays title-field-only (#529's own boundary, carried from

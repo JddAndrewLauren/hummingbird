@@ -145,6 +145,15 @@ pub struct CaptureFormMeta {
     pub suggested_contexts: Vec<String>,
 }
 
+/// One project, as the details disclosure's Project picker needs it —
+/// [`MobileTaskHost::projects`]'s row, carrying only what a picker reads
+/// (see that method's own doc for why not the whole [`hummingbird_domain::Project`]).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileProject {
+    pub id: String,
+    pub name: String,
+}
+
 /// [`MobileTaskHost::capture`]'s form metadata read — the vocabulary and
 /// context suggestions `CaptureScreen` needs to render its fields, with no
 /// vocabulary literal of its own. Free rather than a method on
@@ -166,6 +175,24 @@ pub fn capture_form_meta() -> CaptureFormMeta {
             .map(|context| context.to_string())
             .collect(),
     }
+}
+
+/// [`frontier::priority_rank`], the mobile twin of `ffi-web::decisions::
+/// priority_rank` — review finding on #529's own PR (note 5): `PriorityRow`
+/// (`CaptureActivity.kt`) keeps its five labels literal per ADR-0025's own
+/// verdict table (`priority.ts`'s labels stay client-side TS), but that row
+/// of the table records the *rank* itself as pinned against the core by
+/// `seam.test.ts`'s `priorityRankFromCore`, and the Kotlin literal order
+/// (`1,2,3,4,0`) had no equivalent pin. This free door plus
+/// `the_priority_row_order_matches_priority_rank` below is that pin's
+/// mobile half: a plain JVM test cannot call the generated JNI binding
+/// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
+/// process), so the guard lives here, on the Rust side of the seam, rather
+/// than in Kotlin — if `priority_rank`'s ordering ever moves, this test
+/// breaks and names the Kotlin literal that needs updating to match.
+#[uniffi::export]
+pub fn priority_rank(raw: i64) -> i64 {
+    frontier::priority_rank(raw)
 }
 
 /// The capture box's destination choice — Triage (the default funnel entry)
@@ -1102,6 +1129,32 @@ impl MobileTaskHost {
             })
     }
 
+    /// Every live project — the details disclosure's Project picker's read
+    /// (review finding on #529's own PR): the brief's "one new door" clause
+    /// governs [`capture_form_meta`]'s vocabulary/context bundle, not this
+    /// one, and this read needs the live mirror ([`hummingbird_core::Core::projects`]),
+    /// which a free function cannot reach. Shaped like [`MobileTaskHost::alerts`]
+    /// — a plain state-bearing read, not a `"busy"`-wrapped one, since a
+    /// checked-out mid-poll host still answers a synchronous method call
+    /// truthfully (`Core::projects`'s own doc: "id order, for a stable list
+    /// a caller can diff against its own").
+    ///
+    /// Only `id`/`name` cross, not the whole [`hummingbird_domain::Project`] row: a picker reads
+    /// nothing else, and `ffi-web::task_host::TaskHostCore::projects`
+    /// crosses the full row only because the web's `ProjectDTO` already
+    /// carries the rest for other callers (the frontier's "grouped by
+    /// project" display) that this seam has no equivalent of yet.
+    pub async fn projects(&self) -> Vec<MobileProject> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .projects()
+            .into_iter()
+            .map(|project| MobileProject { id: project.id, name: project.name })
+            .collect()
+    }
+
     /// Drains queued [`CoreEvent`]s (today: `credential_needed`) — a
     /// pull-based drain, never a host-implemented callback (ADR-0003).
     pub async fn take_events(&self) -> Vec<MobileEvent> {
@@ -1592,6 +1645,59 @@ mod tests {
         assert_eq!(
             meta.suggested_contexts,
             vec!["@home", "@computer", "@phone", "@errands", "@garden"],
+        );
+    }
+
+    /// [`MobileTaskHost::projects`] on a mirror that has never synced
+    /// anything — the same "empty is a real, honest answer" case
+    /// `ffi-web::task_host`'s own
+    /// `a_fresh_host_reports_no_blocked_items_and_no_steps`-adjacent
+    /// `projects()` test pins on the web seam.
+    #[tokio::test]
+    async fn projects_on_a_fresh_mirror_is_empty_not_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-projects-empty");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(host.projects().await, Vec::<MobileProject>::new());
+    }
+
+    /// [`priority_rank`] pass-through, pinned against the core rule — the
+    /// same shape `ffi-web::decisions`'s own
+    /// `priority_rank_binding_is_the_core_rule_verbatim` pins on the web
+    /// side.
+    #[test]
+    fn priority_rank_binding_is_the_core_rule_verbatim() {
+        for raw in [0, 1, 2, 3, 4, 5, -1] {
+            assert_eq!(
+                priority_rank(raw),
+                hummingbird_core::decisions::frontier::priority_rank(raw),
+                "{raw} disagreed across the binding",
+            );
+        }
+    }
+
+    /// `CaptureActivity.kt`'s `PriorityRow` hardcodes its display order as
+    /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
+    /// JVM test cannot call the generated JNI binding directly
+    /// (`priority_rank`'s own doc). This is that pin's other half: if
+    /// `decisions::frontier::priority_rank`'s ordering ever changes, this
+    /// test breaks and names the Kotlin literal (`PriorityRow`,
+    /// `CaptureActivity.kt`) that must change to match.
+    #[test]
+    fn the_priority_row_order_matches_priority_rank() {
+        let mut wire_values = vec![0i64, 1, 2, 3, 4];
+        wire_values.sort_by_key(|raw| priority_rank(*raw));
+        assert_eq!(
+            wire_values,
+            vec![1, 2, 3, 4, 0],
+            "PriorityRow's hardcoded Kotlin order (CaptureActivity.kt) must match this",
         );
     }
 

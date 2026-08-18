@@ -10,6 +10,7 @@ import uniffi.hummingbird_ffi_mobile.CaptureDestination
 import uniffi.hummingbird_ffi_mobile.CaptureDraft
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
+import uniffi.hummingbird_ffi_mobile.MobileProject
 import uniffi.hummingbird_ffi_mobile.VocabOption
 
 // CaptureViewModel.submit's control flow, exercised entirely with fakes: no
@@ -29,8 +30,9 @@ class CaptureViewModelTest {
         canSubmitFn: (String) -> Boolean = { it.isNotBlank() },
         metaProblemsFn: (String, String) -> MetaProblems = { _, _ -> noProblems },
         formMetaFn: () -> CaptureFormMeta = { emptyFormMeta },
+        projectsFn: suspend () -> List<MobileProject> = { emptyList() },
         captureFn: suspend (CaptureDraft, Long) -> String = { _, _ -> "unused" },
-    ) = CaptureViewModel(canSubmitFn, metaProblemsFn, formMetaFn, captureFn)
+    ) = CaptureViewModel(canSubmitFn, metaProblemsFn, formMetaFn, projectsFn, captureFn)
 
     private fun draftWithTitle(title: String) = CaptureFormState(title = title)
 
@@ -123,6 +125,16 @@ class CaptureViewModelTest {
         // Read again: still just the one call — `by lazy` caches it.
         vm.formMeta
         assertEquals(1, calls)
+    }
+
+    @Test
+    fun `projects is empty until loadProjects runs, then holds the injected doors answer`() = runBlocking {
+        val vm = viewModel(projectsFn = { listOf(MobileProject(id = "p-1", name = "Kitchen remodel")) })
+        assertEquals(emptyList<MobileProject>(), vm.projects.value)
+
+        vm.loadProjects()
+
+        assertEquals(listOf(MobileProject(id = "p-1", name = "Kitchen remodel")), vm.projects.value)
     }
 
     @Test

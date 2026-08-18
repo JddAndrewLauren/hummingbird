@@ -54,7 +54,7 @@ class CaptureSubmitRefusalTest {
     }
 
     @Test
-    fun `the production factory wires all three doors to the real bindings, not a fake`() {
+    fun `the production factory wires all four doors to the real bindings, not a fake`() {
         val factory = Regex("""fun create\(context: Context\)[\s\S]*?\n {4}}""")
             .find(captureViewModelSrc)
             ?.value
@@ -70,6 +70,10 @@ class CaptureSubmitRefusalTest {
         assertTrue(
             "CaptureViewModel.create must pass ::captureFormMeta as formMetaFn",
             factory.contains("formMetaFn = ::captureFormMeta"),
+        )
+        assertTrue(
+            "CaptureViewModel.create must wire projectsFn to the real CoreHolder.projects() read",
+            factory.contains("projectsFn = { CoreHolder.get(context.applicationContext).projects() }"),
         )
     }
 

@@ -23,10 +23,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -38,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,6 +61,7 @@ import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
+import uniffi.hummingbird_ffi_mobile.MobileProject
 
 // M1-5's capture surface (#128/#503), the second launcher icon's
 // destination: field focused with the IME up on launch with zero taps,
@@ -203,13 +209,14 @@ private fun CaptureScreen(
     // Activity-scoped, not composition-scoped: see CaptureViewModel.factory.
     val viewModel: CaptureViewModel = viewModel(factory = CaptureViewModel.factory(context))
     val draft by viewModel.draft.collectAsState()
+    val projects by viewModel.projects.collectAsState()
     val dictationFailure by viewModel.dictationFailure.collectAsState()
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     // Shut on arrival, matching the web capture box's own resting state
     // (`CaptureBox.tsx`'s `detailsOpen`) — a form that opens to seven
     // fields taxes the common case, which is one line and Enter.
-    var detailsOpen by remember { mutableStateOf(false) }
+    var detailsOpen by rememberSaveable { mutableStateOf(false) }
     val metaProblems = viewModel.metaProblems
 
     val micPermission = rememberLauncherForActivityResult(
@@ -227,6 +234,15 @@ private fun CaptureScreen(
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
         keyboard?.show()
+    }
+
+    // The Project picker's read, once per screen (review finding on #529's
+    // own PR): an opaque, hand-typed project id was a dead-letter hazard —
+    // `items.project_id` is an FK — so the details disclosure offers the
+    // real live list instead, the same "No project" + list `CaptureBox.tsx`
+    // (`client/web/src/screens/CaptureBox.tsx:830-839`) already renders.
+    LaunchedEffect(Unit) {
+        viewModel.loadProjects()
     }
 
     fun submit() {
@@ -340,11 +356,10 @@ private fun CaptureScreen(
                         label = { Text("Description") },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    OutlinedTextField(
-                        value = draft.projectId,
-                        onValueChange = { viewModel.updateDraft(draft.copy(projectId = it)) },
-                        label = { Text("Project") },
-                        modifier = Modifier.fillMaxWidth(),
+                    ProjectField(
+                        projects = projects,
+                        selectedId = draft.projectId,
+                        onSelect = { viewModel.updateDraft(draft.copy(projectId = it)) },
                     )
                     PriorityRow(
                         selected = draft.priority,
@@ -372,13 +387,84 @@ private fun CaptureScreen(
     }
 }
 
+/** The details disclosure's Project picker (review finding on #529's own
+ * PR): a read-only `ExposedDropdownMenuBox` over the real live
+ * [projects][MobileProject] list plus a leading "No project" entry — the
+ * same shape `CaptureBox.tsx:830-839`'s `Select` offers on the web side.
+ * An opaque, hand-typed project id would mint locally and be refused at
+ * the authority the first time it did not match a real row
+ * (`items.project_id` is `TEXT REFERENCES projects(id)`,
+ * `server/authority/src/schema.rs:135`) — exactly the dead-letter failure
+ * `CaptureViewModel.canSubmitDraft`'s own doc says the two-predicate gate
+ * exists to prevent, so this field must offer only ids that already exist.
+ * `readOnly = true` on the anchor field is what makes that true: nothing
+ * here lets a reader type a project id at all. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProjectField(
+    projects: List<MobileProject>,
+    selectedId: String,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedName = projects.find { it.id == selectedId }?.name ?: "No project"
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = selectedName,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Project") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text("No project") },
+                onClick = {
+                    onSelect("")
+                    expanded = false
+                },
+            )
+            for (project in projects) {
+                DropdownMenuItem(
+                    text = { Text(project.name) },
+                    onClick = {
+                        onSelect(project.id)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
 /** Priority is a small, fixed 0..4 range, not an open or a domain
  * vocabulary — `hummingbird_core::decisions::vocabulary` owns size, energy
  * and the suggested contexts, but names no priority labels (ADR-0025's own
  * verdict table: the web's `priority.ts` keeps its labels literal TS for
  * the same reason). So this row's five labels stay literal here too,
  * mirroring that precedent rather than inventing a fourth core door for a
- * five-word, never-renamed display list. */
+ * five-word, never-renamed display list.
+ *
+ * **The order (`1,2,3,4,0` — Urgent..Low, then No priority last) is
+ * `decisions::frontier::priority_rank`'s own order, pinned from the Rust
+ * side** (review finding on #529's own PR, note 5): a plain JVM test
+ * cannot call the generated JNI binding to check it here
+ * (`hummingbird_ffi_mobile::priority_rank`'s own doc), so
+ * `ffi-mobile/src/lib.rs`'s `the_priority_row_order_matches_priority_rank`
+ * asserts this exact sequence against the real rule instead — if that rule
+ * ever reorders, that Rust test breaks and names this list as what needs
+ * updating to match. ADR-0025's ledger for `priority.ts` records the same
+ * asymmetry on the web side: the rank is pinned (`seam.test.ts`'s
+ * `priorityRankFromCore`), the labels are not. */
 @Composable
 private fun PriorityRow(selected: String, onSelect: (String) -> Unit) {
     val options = listOf(
