@@ -173,10 +173,17 @@ private object Routes {
     const val SETTINGS = "settings"
     const val ALERT_DETAIL = "alert/{alertId}"
     const val ITEM_DETAIL = "item/{itemId}"
+    const val GRILL = "grill/{itemId}/{from}"
 
     fun alertDetail(alertId: String) = "alert/$alertId"
 
     fun itemDetail(itemId: String) = "item/$itemId"
+
+    /** [from] is `"triage"` or `"detail"` — the takeover's one nav arg, and
+     * the whole of how [GrillTakeoverScreen] knows which surface's own
+     * words its Back control names (#355 review round 1's own rule, ported
+     * from the web's two `backLabel` call sites). */
+    fun grill(itemId: String, from: String) = "grill/$itemId/$from"
 }
 
 // The always-composed content root. The #141 sync cadence (one `user` cycle
@@ -399,6 +406,7 @@ private fun AppRoot(
             TriageScreen(
                 syncTick = syncTick,
                 onBack = { navController.popBackStack() },
+                onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "triage")) },
             )
         }
         composable(Routes.ITEM_DETAIL) { entry ->
@@ -406,6 +414,14 @@ private fun AppRoot(
                 itemId = entry.arguments?.getString("itemId").orEmpty(),
                 syncTick = syncTick,
                 onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
+            )
+        }
+        composable(Routes.GRILL) { entry ->
+            GrillTakeoverScreen(
+                itemId = entry.arguments?.getString("itemId").orEmpty(),
+                backLabel = if (entry.arguments?.getString("from") == "triage") "Back to Triage" else "Back to item",
+                onBack = { navController.popBackStack() },
             )
         }
         composable(Routes.ALERT_DETAIL) { entry ->

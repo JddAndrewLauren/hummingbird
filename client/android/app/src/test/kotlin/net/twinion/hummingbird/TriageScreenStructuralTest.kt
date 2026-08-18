@@ -48,17 +48,17 @@ class TriageScreenStructuralTest {
     }
 
     @Test
-    fun `the Grill button renders disabled and behind no interview state`() {
+    fun `the Grill button is live and navigates to the takeover, never holds its own interview state`() {
         assertTrue(
             "TriageScreen.kt must render a Grill button",
-            screenSrc.contains("\"Grill\""),
+            screenSrc.contains("onGrill"),
         )
-        assertTrue(
-            "the Grill button must be gated off",
-            screenSrc.contains("enabled = false"),
-        )
-        // No partial interview behind it: nothing here may hold a turn,
-        // a session, or a grill draft state — that is #539's whole surface.
+        // The button is gated on the row's own can-grill fact from the
+        // seam, never a hand-rolled stage check — and it navigates rather
+        // than opening an interview inline. #539 lands the takeover as a
+        // separate screen/ViewModel (`GrillTakeoverScreen.kt`,
+        // `GrillTakeoverViewModel.kt`); nothing here may hold a turn, a
+        // session, or a grill draft state.
         for ((name, src) in both) {
             for (spelling in listOf("GrillTurn", "grillDraft", "GrillSession", "grillTurn")) {
                 assertFalse(

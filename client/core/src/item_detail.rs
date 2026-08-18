@@ -21,6 +21,7 @@
 
 use hummingbird_domain::{Alert, Item, Step};
 
+use crate::decisions::skills::MicrotaskAffordance;
 use crate::ItemAction;
 
 /// The project an item belongs to, named if the mirror has seen it.
@@ -81,4 +82,13 @@ pub struct ItemDetail {
     /// re-derived this from `stage` alone would offer Complete on a
     /// cancelled item.
     pub available_actions: Vec<ItemAction>,
+    /// #539's applied result: which microtask gesture (`Break`/`Rewrite`)
+    /// this item's own steps make legal, decided by
+    /// [`crate::decisions::skills::microtask_affordance`]. `None` for a
+    /// non-[`ItemDetail::is_editable`] item — an archived item has no live
+    /// gesture to offer, the same rule [`ItemDetail::available_actions`]
+    /// already applies to itself. **Kotlin is told whether to offer the
+    /// affordance, not how to decide** (ADR-0025): no eligibility logic of
+    /// its own may re-derive this.
+    pub microtask_affordance: Option<MicrotaskAffordance>,
 }

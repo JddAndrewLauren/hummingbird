@@ -6,6 +6,7 @@
 // the outbound queue, the mirror, or a `Core` mutation entry point, which is
 // what makes "device preference, not a synced fact" true by construction.
 
+import { resolveBackendSelectionFromCore } from "../decisions/seam";
 import { AUTO_SELECTION, type BackendEntry } from "./backend-registry";
 
 const SELECTION_KEY = "hb.backend-selection";
@@ -27,6 +28,10 @@ export interface StorageLike {
  * names a registered entry — the same "a stale binding degrades to the
  * safe default" rule `route-plan.ts`'s `planRoute` applies at routing time,
  * kept here too so a picker never renders a selection it cannot label.
+ *
+ * The degrade rule itself is `hummingbird_core::decisions::skills::
+ * resolve_backend_selection` (#539); this reads the raw stored value and
+ * hands it to the seam.
  */
 export function readBackendSelection(storage: StorageLike | undefined, registry: BackendEntry[]): string {
   // No storage at all (a context without `localStorage`) reads the same as
@@ -34,9 +39,10 @@ export function readBackendSelection(storage: StorageLike | undefined, registry:
   // way, for the same reason.
   if (!storage) return AUTO_SELECTION;
   const raw = storage.getItem(SELECTION_KEY);
-  if (raw === null) return AUTO_SELECTION;
-  if (raw === AUTO_SELECTION) return AUTO_SELECTION;
-  return registry.some((entry) => entry.id === raw) ? raw : AUTO_SELECTION;
+  return resolveBackendSelectionFromCore(
+    raw ?? undefined,
+    registry.map((entry) => entry.id),
+  );
 }
 
 export function writeBackendSelection(storage: StorageLike | undefined, selection: string): void {

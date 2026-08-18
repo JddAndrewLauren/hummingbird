@@ -54,6 +54,7 @@ import type {
   PaneSnapshotDTO,
   ProjectDTO,
   RuleDTO,
+  StepDTO,
   TaskItemDTO,
 } from "../store/protocol";
 
@@ -137,6 +138,17 @@ export interface DecisionsModule {
   no_token_decline(): string;
   no_terminal_line_decline(): string;
   outside_schema_decline(): string;
+  // #539: the microtask affordance, the backend picker's tier fallback,
+  // and the Grill review card's predicates.
+  microtask_affordance_json(stepsJson: string): string;
+  fallback_backend_id(registryIdsJson: string, deadId: string): string | undefined;
+  resolve_backend_selection(stored: string | undefined, registryIdsJson: string): string;
+  backend_auto_selection(): string;
+  declined_backend_fallback(stateJson: string, selection: string, registryIdsJson: string): string | undefined;
+  grill_would_strand_plan(verdict: string, stepsJson: string): boolean;
+  grill_plan_replacement_label(stepsJson: string): string;
+  grill_demotes_from_frontier(verdict: string, stage: string): boolean;
+  grill_frontier_demotion_warning(): string;
   // M4 (#533): the pane shell contract's decided half, the cross-pane
   // sort, the zone bridge, and the waste pane.
   waste_zone_queries_json(inputsJson: string): string;
@@ -1072,6 +1084,89 @@ export function noTerminalLineDeclineFromCore(): string {
 
 export function outsideSchemaDeclineFromCore(): string {
   return required().outside_schema_decline();
+}
+
+// -------------------------------------------------------------- M4 (#539)
+// The microtask affordance (`skills/microtask-affordance.ts`), the backend
+// picker's tier fallback and degrade-to-Auto rule
+// (`skills/backend-registry.ts`'s `fallbackEntry`,
+// `skills/backend-selection.ts`'s `readBackendSelection`), and the Grill
+// review card's predicates (`screens/grill-review.ts`) — all sunk to
+// `hummingbird_core::decisions::skills`.
+
+/** The seven fields [`skills::affordance`]/`grill-review.ts`'s own
+ * predicates read off a `StepDTO` — everything but `deletedAt`/`done` rides
+ * along unread, the same "cross the whole DTO, read only what the rule
+ * needs" shape [`backtestPayload`] already uses. Named once here rather
+ * than repeated across every signature below that takes a step list. */
+function stepsPayload(steps: readonly StepDTO[]): string {
+  return JSON.stringify(steps);
+}
+
+/** `hummingbird_core::decisions::skills::microtask_affordance`, parsed —
+ * the object shape is `microtask-affordance.ts`'s own `MicrotaskAffordance`. */
+export function microtaskAffordanceFromCore(steps: readonly StepDTO[]): unknown {
+  return JSON.parse(required().microtask_affordance_json(stepsPayload(steps)));
+}
+
+/** `hummingbird_core::decisions::skills::fallback_backend_id` — the next
+ * registered id that is not `deadId`, `undefined` when there is none.
+ * `registryIds` is a bare list of ids, the only part of a `BackendEntry`
+ * this rule reads. */
+export function fallbackBackendIdFromCore(registryIds: readonly string[], deadId: string): string | undefined {
+  return required().fallback_backend_id(JSON.stringify(registryIds), deadId);
+}
+
+/** `hummingbird_core::decisions::skills::resolve_backend_selection` — Auto
+ * when nothing is stored, or when the stored id no longer names a
+ * registered entry. */
+export function resolveBackendSelectionFromCore(stored: string | undefined, registryIds: readonly string[]): string {
+  return required().resolve_backend_selection(stored, JSON.stringify(registryIds));
+}
+
+/** The sentinel selection value — module-evaluation-time in
+ * `backend-registry.ts`'s own `AUTO_SELECTION`, pinned against this by
+ * `seam.test.ts` for the same reason the three decline constants above
+ * are. */
+export function backendAutoSelectionFromCore(): string {
+  return required().backend_auto_selection();
+}
+
+/** `hummingbird_core::decisions::skills::declined_backend_fallback` — #274's
+ * one-tap fallback offer, decided whole: not declined / Auto / answered /
+ * NO_TOKEN are all excluded inside this one call, never assembled from
+ * three separate reads on this side (#539's round-2 review moved the
+ * predicate out of `ffi-mobile` for the identical reason). `state` crosses
+ * as the `SkillRunState` JSON `reduce_skill_run` already round-trips. */
+export function declinedBackendFallbackFromCore(
+  state: unknown,
+  selection: string,
+  registryIds: readonly string[],
+): string | undefined {
+  return required().declined_backend_fallback(JSON.stringify(state), selection, JSON.stringify(registryIds));
+}
+
+/** `hummingbird_core::decisions::skills::would_strand_plan`. */
+export function grillWouldStrandPlanFromCore(verdict: string, steps: readonly StepDTO[]): boolean {
+  return required().grill_would_strand_plan(verdict, stepsPayload(steps));
+}
+
+/** `hummingbird_core::decisions::skills::plan_replacement_label`. */
+export function grillPlanReplacementLabelFromCore(steps: readonly StepDTO[]): string {
+  return required().grill_plan_replacement_label(stepsPayload(steps));
+}
+
+/** `hummingbird_core::decisions::skills::demotes_from_frontier`. */
+export function grillDemotesFromFrontierFromCore(verdict: string, stage: string): boolean {
+  return required().grill_demotes_from_frontier(verdict, stage);
+}
+
+/** `hummingbird_core::decisions::skills::FRONTIER_DEMOTION_WARNING` —
+ * pinning-test-only; `grill-review.ts`'s own copy stays a literal TS
+ * string for the same module-evaluation-order reason the three decline
+ * constants above do. */
+export function grillFrontierDemotionWarningFromCore(): string {
+  return required().grill_frontier_demotion_warning();
 }
 
 // -------------------------------------------------------------- M4 (#533)
