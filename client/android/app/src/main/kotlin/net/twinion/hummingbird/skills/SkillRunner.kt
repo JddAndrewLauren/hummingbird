@@ -69,7 +69,7 @@ data class GrillReducers(
     val started: (MobileGrillTurnState) -> MobileGrillTurnState = ::grillTurnStarted,
     val line: (MobileGrillTurnState, String) -> MobileGrillTurnState = ::grillTurnLine,
     val noToken: (MobileGrillTurnState) -> MobileGrillTurnState = ::grillTurnNoToken,
-    val transportFailed: (MobileGrillTurnState, String) -> MobileGrillTurnState =
+    val transportFailed: (MobileGrillTurnState, String, Boolean) -> MobileGrillTurnState =
         ::grillTurnTransportFailed,
     val responseFailed: (MobileGrillTurnState, UShort) -> MobileGrillTurnState =
         ::grillTurnResponseFailed,
@@ -141,8 +141,20 @@ class SkillRunner(
                 }
             }
 
+            // **Whether a backend answered, observed rather than inferred.**
+            // `execute()` returning means a response arrived; a body that
+            // tears afterwards does not take that back, and the run was
+            // this backend's to lose rather than evidence it is
+            // unreachable. Both cases throw the same `IOException`, so the
+            // catch below cannot tell them apart and this flag is the only
+            // thing that can. The web draws the identical line on `fetch`'s
+            // resolve path (`route-run.ts`); nothing in this lane may
+            // recover the difference from the decline's prose.
+            var answered = false
+
             try {
                 call.execute().use { response ->
+                    answered = true
                     // A 400 or 413 from the runner is forwarded verbatim by
                     // the proxy and IS a valid terminal line, so status
                     // alone does not decide: the body is read either way,
@@ -170,10 +182,11 @@ class SkillRunner(
                 }
             } catch (error: IOException) {
                 // Offline, DNS, a connection reset, or a body that tore
-                // mid-stream. A cancelled `Call` also lands here — and the
+                // mid-stream — the last of which is the case `answered`
+                // exists for. A cancelled `Call` also lands here, and the
                 // send below is simply never delivered, because the
                 // collector is already gone.
-                send(reducers.transportFailed(state, error.message.orEmpty()))
+                send(reducers.transportFailed(state, error.message.orEmpty(), answered))
             } finally {
                 cancellation.cancel()
             }

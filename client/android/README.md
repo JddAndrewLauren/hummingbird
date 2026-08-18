@@ -252,6 +252,13 @@ reached.
     core's reducer did not run), a decline carried **verbatim**, and a
     mid-stream cancellation that delivers nothing afterwards.
 
+    **A turn too short to beat fails the first case on purpose.** The probe
+    asserts a heartbeat was actually seen before it asserts the collapse,
+    because "no two entries repeat" is satisfied by a narration of one
+    entry — a pass that would prove nothing about the reducer. If it says
+    *no heartbeat was observed*, that is not the bug: re-run it against an
+    item foggy enough to take more than one 20s beat.
+
     **To cause a decline deliberately**, use a `ref` the runner cannot
     resolve — the probe's second case does exactly that. It declines in
     `prepare`, before a model token is spent. Threading past

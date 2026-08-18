@@ -66,7 +66,9 @@ class SkillRunnerTest {
             started = { record("started") },
             line = { _, line -> record("line:$line") },
             noToken = { record("noToken") },
-            transportFailed = { _, detail -> record("transportFailed:${detail.isNotEmpty()}") },
+            transportFailed = { _, detail, answered ->
+                record("transportFailed:${detail.isNotEmpty()}:answered=$answered")
+            },
             responseFailed = { _, status -> record("responseFailed:$status") },
             streamEnded = { record("streamEnded") },
             runBody = { _, _ -> bodyText },
@@ -224,13 +226,54 @@ class SkillRunnerTest {
     }
 
     @Test
-    fun `a refused connection reports a transport failure`() = runTest {
+    fun `a refused connection reports a transport failure nothing answered`() = runTest {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
         val fake = FakeReducers()
 
         runner(fake).grillTurn("i", emptyList()).toList()
 
-        assertEquals(listOf("started", "transportFailed:true"), fake.reports)
+        assertEquals(listOf("started", "transportFailed:true:answered=false"), fake.reports)
+    }
+
+    /**
+     * The other half of that pair, and the one a status code cannot express:
+     * the response arrived, lines were read, and *then* the body tore. A
+     * backend answered — it lost the run afterwards, which is a different
+     * fact from "no backend could be reached", and #274's routing rule turns
+     * on the difference. The web pins the same case on its own transport
+     * (`route-run.test.ts`: "a tier that answered is not an unreachable
+     * tier"), where `answered` is set on `fetch`'s resolve path and is not
+     * unset by a body that dies later.
+     */
+    @Test
+    fun `a body that tears mid-stream still reports that a backend answered`() = runTest {
+        // `DISCONNECT_DURING_RESPONSE_BODY` writes half the body and then
+        // shuts the socket down, so the padding line is what makes the tear
+        // land *after* a whole first line rather than inside it — the real
+        // shape of a stream that dies mid-run, and the one where a status
+        // code can say nothing at all.
+        val padding = "x".repeat(4_000)
+        server.enqueue(
+            MockResponse()
+                .setHeader("content-type", "application/x-ndjson")
+                .setBody(
+                    """{"type":"progress","message":"reading HB-42"}""" + "\n" +
+                        """{"type":"progress","message":"$padding"}""" + "\n",
+                )
+                .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY),
+        )
+        val fake = FakeReducers()
+
+        runner(fake).grillTurn("i", emptyList()).toList()
+
+        assertEquals(
+            listOf(
+                "started",
+                """line:{"type":"progress","message":"reading HB-42"}""",
+                "transportFailed:true:answered=true",
+            ),
+            fake.reports,
+        )
     }
 
     /** A last line with no trailing newline is still a line — okio's

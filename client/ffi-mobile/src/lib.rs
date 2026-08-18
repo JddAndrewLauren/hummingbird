@@ -1685,10 +1685,20 @@ fn reqwest_client() -> reqwest::Client {
 // terminal** — the web's `route-run.ts` states the same rule and reads it
 // off whether `fetch` resolved. So [`grill_turn_response_failed`] and
 // [`grill_turn_stream_ended`] carry `answered: true` (a response *did*
-// arrive) while [`grill_turn_no_token`] and [`grill_turn_transport_failed`]
-// carry `false`. A decline a backend answered is not evidence any backend
-// is unreachable, and nothing downstream can recover the difference from
-// the prose (`decline.rs` forbids matching on it).
+// arrive) while [`grill_turn_no_token`] carries `false`. A decline a
+// backend answered is not evidence any backend is unreachable, and nothing
+// downstream can recover the difference from the prose (`decline.rs`
+// forbids matching on it).
+//
+// [`grill_turn_transport_failed`] is the one report that **takes** the flag
+// rather than fixing it, because its two cases are indistinguishable from
+// here: a socket that died before the response resolved answered nothing,
+// while a body that tore after its headers arrived was answered by a
+// backend that then lost the run. The web draws exactly this line —
+// `route-run.ts` sets `answered` on `fetch`'s resolve path and its comment
+// states that "a body that later tears mid-stream does not unset it" — and
+// only the transport knows which side of `execute()` its `IOException`
+// came from.
 //
 // Both doors land now — the `grill_turn_*` family and the `skill_run_*`
 // twins — even though nothing on Android calls the microtask one until
@@ -1936,12 +1946,18 @@ fn no_token_event() -> skills::SkillEvent {
     }
 }
 
-fn transport_failed_event(detail: &str) -> skills::SkillEvent {
+/// The one report whose `answered` the transport must supply rather than
+/// this file: a socket can tear *before* the response resolves (nothing
+/// answered) or *after* its headers arrived and the body died mid-stream (a
+/// backend did answer, and the run was its to lose). Both land in the same
+/// `IOException`, and only the caller knows which side of `execute()` it was
+/// on.
+fn transport_failed_event(detail: &str, answered: bool) -> skills::SkillEvent {
     skills::SkillEvent::Failed {
         error: skills::decline_for_transport(detail),
         backend: None,
         model: None,
-        answered: false,
+        answered,
     }
 }
 
@@ -2007,8 +2023,9 @@ pub fn grill_turn_no_token(state: MobileGrillTurnState) -> MobileGrillTurnState 
 pub fn grill_turn_transport_failed(
     state: MobileGrillTurnState,
     detail: String,
+    answered: bool,
 ) -> MobileGrillTurnState {
-    reduce_grill(state, transport_failed_event(&detail))
+    reduce_grill(state, transport_failed_event(&detail, answered))
 }
 
 #[uniffi::export]
@@ -2074,8 +2091,9 @@ pub fn skill_run_no_token(state: MobileSkillRunState) -> MobileSkillRunState {
 pub fn skill_run_transport_failed(
     state: MobileSkillRunState,
     detail: String,
+    answered: bool,
 ) -> MobileSkillRunState {
-    reduce_run_state(state, transport_failed_event(&detail))
+    reduce_run_state(state, transport_failed_event(&detail, answered))
 }
 
 #[uniffi::export]
@@ -3526,13 +3544,16 @@ mod skills_tests {
     }
 
     /// `answered` is observed at the response, never inferred from the
-    /// prose: the two transport-side reports are unanswered, the two
-    /// response-side ones are answered.
+    /// prose: no token and a socket that never resolved are unanswered, the
+    /// two response-side reports are answered, and a transport failure
+    /// *after* the response arrived — a body torn mid-stream — is answered
+    /// too, because a backend did reply and then lost the run.
     #[test]
     fn answered_tracks_whether_a_response_arrived() {
         let cases: Vec<(MobileGrillTurnState, bool)> = vec![
             (grill_turn_no_token(asking()), false),
-            (grill_turn_transport_failed(asking(), "connection reset".to_string()), false),
+            (grill_turn_transport_failed(asking(), "connection reset".to_string(), false), false),
+            (grill_turn_transport_failed(asking(), "unexpected end of stream".to_string(), true), true),
             (grill_turn_response_failed(asking(), 401), true),
             (grill_turn_stream_ended(asking()), true),
         ];
@@ -3553,7 +3574,7 @@ mod skills_tests {
         assert_eq!(words(grill_turn_no_token(asking())), skills::NO_TOKEN);
         assert_eq!(words(grill_turn_stream_ended(asking())), skills::NO_TERMINAL_LINE);
         assert_eq!(
-            words(grill_turn_transport_failed(asking(), "  boom  ".to_string())),
+            words(grill_turn_transport_failed(asking(), "  boom  ".to_string(), false)),
             skills::decline_for_transport("boom"),
         );
         assert_eq!(
@@ -3625,6 +3646,7 @@ mod skills_tests {
         let state = skill_run_transport_failed(
             skill_run_started(skill_run_idle()),
             "offline".to_string(),
+            false,
         );
         assert_eq!(skill_run_stamp_label(state), None);
     }
@@ -3646,8 +3668,15 @@ mod skills_tests {
             (skills::decline_for_response(500), true),
         );
         assert_eq!(
-            words(skill_run_transport_failed(started(), String::new())),
+            words(skill_run_transport_failed(started(), String::new(), false)),
             (skills::decline_for_transport(""), false),
+        );
+        // The same mid-stream tear the Grill door has, on this one too: the
+        // wording is identical and only `answered` differs, which is the
+        // whole reason it is a parameter rather than a constant.
+        assert_eq!(
+            words(skill_run_transport_failed(started(), String::new(), true)),
+            (skills::decline_for_transport(""), true),
         );
         // The duplicate-tap rule, on this reducer too.
         let running = started();
