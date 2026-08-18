@@ -2,13 +2,18 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   canSubmitCapture,
+  declineForResponseFromCore,
+  declineForTransportFromCore,
   decisionsReady,
   ENERGIES,
   energyOptionsFromCore,
   FACETS,
   frontierAxesFromCore,
   initDecisions,
+  noTerminalLineDeclineFromCore,
+  noTokenDeclineFromCore,
   orderFrontier,
+  outsideSchemaDeclineFromCore,
   priorityRankFromCore,
   resetDecisionsForTest,
   paneBandOrderFromCore,
@@ -18,6 +23,8 @@ import {
   wasteConstantsFromCore,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
+import { declineForResponse, declineForTransport, NO_TERMINAL_LINE, NO_TOKEN } from "../skills/decline";
+import { OUTSIDE_SCHEMA } from "../skills/grill-turn-state";
 import { BAND_ORDER, QUESTION_ORDER } from "../screens/questions/contract";
 import {
   BINDING_KEY,
@@ -97,6 +104,35 @@ describe("the seam's literal frontier-facet vocabulary, pinned against the core"
     for (const raw of [0, 1, 2, 3, 4, 5, -1]) {
       expect(priorityRank(raw)).toEqual(priorityRankFromCore(raw));
     }
+  });
+});
+
+// M4 (#538): the skills lane's three module-evaluation-time constants. Same
+// carve-out, same reason, same pin — `NO_TOKEN` and `NO_TERMINAL_LINE` are
+// read at module-evaluation time by `route-run.ts` and
+// `useMicrotaskWiring.ts`, and `OUTSIDE_SCHEMA` by `useGrillWiring.ts`, all
+// statically reachable from `main.tsx`, so a seam call there would throw the
+// "used before ready" guard on every page load. Everything else in that lane
+// calls across; only these three stay literal, and only because they cannot.
+describe("the skills lane's literal decline prose, pinned against the core", () => {
+  it("NO_TOKEN matches the core's words", () => {
+    expect(NO_TOKEN).toBe(noTokenDeclineFromCore());
+  });
+
+  it("NO_TERMINAL_LINE matches the core's words", () => {
+    expect(NO_TERMINAL_LINE).toBe(noTerminalLineDeclineFromCore());
+  });
+
+  it("OUTSIDE_SCHEMA matches the core's words", () => {
+    expect(OUTSIDE_SCHEMA).toBe(outsideSchemaDeclineFromCore());
+  });
+
+  /** The two that are *not* constants — proof they were not quietly copied
+   * alongside the three that had to be. */
+  it("the two decline functions answer out of the core, not a TS copy", () => {
+    expect(declineForResponse(401)).toBe(declineForResponseFromCore(401));
+    expect(declineForResponse(503)).toBe(declineForResponseFromCore(503));
+    expect(declineForTransport("boom")).toBe(declineForTransportFromCore("boom"));
   });
 });
 

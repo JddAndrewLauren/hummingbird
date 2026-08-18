@@ -45,6 +45,27 @@ and what an absent fact means stays a core decision. One pane (waste) was
 sunk with it, and the verdict on whether two phases are tolerable gates
 #534 and the rest of the pane lane. See [The zone bridge, fixed by M4's
 probe](#the-zone-bridge-fixed-by-m4s-probe) below.
+**Amended 2026-08-18 (#538):** M4's probe sank the *skills runner lane*'s
+decision half — `decisions::skills` (`envelope`, `run`, `grill`, `decline`,
+`args`) — and rewired `client/web/src/skills/`'s six rule modules onto it in
+the same slice, so the phone could drive `POST /api/skills/run` without a
+second copy of any of it. Three things this ADR had not had to say before,
+each now a verdict-table row: **line splitting stays per-client** (a
+byte-level stream reader is a platform fact, not a decision — the web's
+`TextDecoder` + `takeLines`, okio's `readUtf8Line` on Android); **the
+transport stays per-client** (`run-skill.ts`, `route-run.ts` and the Kotlin
+`SkillRunner`, none of which decides anything); and **three decline
+constants stay literal TS** — `NO_TOKEN`, `NO_TERMINAL_LINE`,
+`OUTSIDE_SCHEMA` — for exactly the module-evaluation-order reason #500 and
+#501 already recorded, pinned against the core by `seam.test.ts`. This slice
+also invented the repo's first **cross-language shared fixture**
+(`client/core/tests/fixtures/skills-run-bodies.json`, read by Rust,
+TypeScript and the Android instrumented suite), and took the per-gesture
+free-door carve-out one step further on the mobile seam: the reducers are
+per-*event* doors, admissible because the events arrive seconds apart on a
+stream and the alternative is a Kotlin copy of the reducer. #274's
+routing/registry/memo and `microtask-affordance.ts` are deliberately not
+sunk here — they are #539's.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -211,6 +232,10 @@ not permanent — it is where the line fell for the capture/Now slice.
 | `priority.ts`'s `priorityRank` (sunk at #501) | the ordering rule sank (`decisions::frontier`'s `priority_rank`, canonical); the TS function stays literal — `PRIORITY_OPTIONS` reads it at module-evaluation time, same constraint as `field-vocabulary.ts`'s arrays — pinned against the core by `seam.test.ts` (`priorityRankFromCore`) rather than sunk at runtime |
 | `rules/backtest.ts:52`, `rules/deadline-picker.ts:32` | known drift — local re-derivations of the deadline reading, out of M1's rewire |
 | Calendar / #169's two doors | out of M1 entirely |
+| the NDJSON **line splitting** (`skills/ndjson.ts`'s `takeLines`, okio's `readUtf8Line`) (M4, #538) | stays per-client: a byte-level stream reader is a platform fact, not a decision. The web decodes a `ReadableStream` with a streaming `TextDecoder`; Android reads okio's buffered source. What each *line means* did sink (`decisions::skills::envelope`) |
+| the **transport** — `run-skill.ts`, `route-run.ts`, `skills/SkillRunner.kt` (M4, #538) | stays per-client: `fetch` + `AbortSignal` vs OkHttp + `Call.cancel()` have no shared expression, and neither decides anything. Each reports what happened to *its* socket (no token / never resolved / a status / the stream ended) and the core answers with the next state |
+| `skills/decline.ts`'s `NO_TOKEN`/`NO_TERMINAL_LINE` and `grill-turn-state.ts`'s `OUTSIDE_SCHEMA` (M4, #538) | the rule sank (`decisions::skills::decline`, `grill::OUTSIDE_SCHEMA`); the three constants stay literal TS for the same module-evaluation-order constraint as `field-vocabulary.ts`'s arrays — `route-run.ts`/`useMicrotaskWiring.ts`/`useGrillWiring.ts` read them at module evaluation, statically reachable from `main.tsx` — pinned against the core by `seam.test.ts`. Kotlin needs no equivalent: it never holds the strings at all |
+| #274's `backend-registry.ts`/`backend-selection.ts`/`route-plan.ts`/`reachability-memo.ts`, and `microtask-affordance.ts` (M4, #538) | out of #538 deliberately — the probe needed one lane end to end, not the whole surface. #539 decides them with a real second caller in hand |
 | `item-actions.ts`'s `applyItemAction`/`resolveFallbackPending` (M1-4, #502) | screen-local optimistic UI reconciliation over `TaskItemDTO` — `Date.now()`, `archivedAt` writes and the live-vs-optimistic `pending` merge are not a decision two clients could disagree about, even though the same file's affordance rules (`availableActions`, `canMarkDone`, `canGrill`, `grillButtonLabel`, `applyItemAction`'s stage lookup) did sink |
 
 

@@ -185,11 +185,23 @@ dependencies {
 
     debugImplementation(libs.compose.ui.tooling)
 
+    // M4/#538: the skills runner lane's transport. The lane is physically
+    // unable to reach the sync engine (`SkillsLaneIsolationTest`), so this
+    // is a second, deliberately isolated way out of the process — a skill
+    // request is a question, and questions go stale (#269); a sync mutation
+    // is a fact the user already decided.
+    implementation(libs.okhttp)
+
     testImplementation(libs.junit)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.coroutines.test)
 
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)
 }
+
+tasks.matching { it.name.startsWith("merge") && it.name.contains("AndroidTestAssets") }
+    .configureEach { dependsOn(copySkillsFixture) }
 
 // ColorTokenDriftTest reads tokens/colors.css and Color.kt from the repo
 // root — two levels above this Gradle root (client/android → client → repo).
@@ -214,3 +226,28 @@ tasks.withType<Test>().configureEach {
     inputs.file(File(repoRoot, "client/android/app/src/main/res/values/colors.xml"))
         .withPropertyName("launcherColorsXml")
 }
+
+// ---------------------------------------------------------------------------
+// M4/#538: the shared run-body fixture, copied into androidTest assets.
+//
+// `client/core/tests/fixtures/skills-run-bodies.json` is read directly off
+// disk by the Rust and TypeScript sides. The instrumented suite cannot do
+// that — it runs on the device, where the repo does not exist — and a
+// hand-typed copy in `assets/` would be exactly the drift the fixture exists
+// to prevent. So Gradle copies the real file in at build time: one source of
+// truth, three readers, and a stale copy is impossible because the copy is
+// generated. (The JVM suite needs no copy — it pins that the lane posts the
+// core's string verbatim, not what the bytes are.)
+// ---------------------------------------------------------------------------
+val skillsFixture: File = File(repoRoot, "client/core/tests/fixtures/skills-run-bodies.json")
+val copySkillsFixture = tasks.register<Copy>("copySkillsRunBodyFixture") {
+    group = "verification"
+    description = "Copy the shared run-body fixture into androidTest assets (#538)"
+    from(skillsFixture)
+    into(layout.buildDirectory.dir("generated/skillsFixture/assets"))
+}
+android.sourceSets.getByName("androidTest") {
+    assets.srcDir(layout.buildDirectory.dir("generated/skillsFixture/assets"))
+}
+tasks.matching { it.name.startsWith("generate") && it.name.contains("AndroidTestAssets") }
+    .configureEach { dependsOn(copySkillsFixture) }

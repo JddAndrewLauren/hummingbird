@@ -10,6 +10,18 @@
 // So this module covers exactly three cases the seam never sees: no
 // credential to send, a `fetch` that rejected, and a response whose body
 // this client could not read as a terminal line.
+//
+// **The words are `hummingbird_core::decisions::skills::decline`'s** since
+// #538 sank them there for the Android client (ADR-0025). The two functions
+// call across; the two `const`s below cannot, because they are read at
+// module-evaluation time by `route-run.ts` and `useMicrotaskWiring.ts`,
+// which are statically reachable from `main.tsx` — a seam call there throws
+// the "used before ready" guard on every page load. They stay literal and
+// `seam.test.ts` pins them equal to the core's, exactly as `priority.ts`'s
+// `priorityRank` and `field-vocabulary.ts`'s arrays are pinned. ADR-0025's
+// #538 amendment records that as a verdict-table row.
+
+import { declineForResponseFromCore, declineForTransportFromCore } from "../decisions/seam";
 
 /** No device token stored. The one decline that names an action, because
  * the user has one to take and the app can point at it. */
@@ -26,10 +38,7 @@ export const NO_TERMINAL_LINE = "The run ended without an answer.";
 
 /** A `fetch` that rejected — offline, DNS, a connection reset. */
 export function declineForTransport(detail: string): string {
-  const trimmed = detail.trim();
-  return trimmed.length > 0
-    ? `Could not reach the server: ${trimmed}`
-    : "Could not reach the server.";
+  return declineForTransportFromCore(detail);
 }
 
 /**
@@ -43,7 +52,5 @@ export function declineForTransport(detail: string): string {
  * it was, because inventing a cause for a 500 would be a guess.
  */
 export function declineForResponse(status: number): string {
-  if (status === 401) return "Your device token was rejected. Re-enter it in Settings.";
-  if (status === 403) return "This device's token is not allowed to run skills.";
-  return `The server answered ${status}.`;
+  return declineForResponseFromCore(status);
 }

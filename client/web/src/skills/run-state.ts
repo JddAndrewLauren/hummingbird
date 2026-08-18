@@ -1,29 +1,36 @@
 // The state of one skill run, as something a reader can observe (#273).
 //
+// **The rules are `hummingbird_core::decisions::skills::run`'s** since #538
+// sank them there for the Android client (ADR-0025); this module is the
+// call, the type declarations and nothing else, and `run-state.test.ts`
+// still pins them from this side.
+//
 // The acceptance criterion is that "in flight", "declined with reason" and
 // "completed" are distinguishable — so they are four named phases rather
 // than a bag of booleans, and every phase has exactly one rendering.
 //
-// **The duplicate-tap rule lives here**, in `reduceRun`: a `started` while a
-// run is already streaming leaves the state untouched. Putting it in the
-// reducer rather than in the click handler is what makes it testable
+// **The duplicate-tap rule lives in the reducer**, not in the click
+// handler: a `started` while a run is already streaming leaves the state
+// untouched — and untouched *by identity*, because the seam hands back the
+// object it was given when the core's answer is byte-identical (see
+// `decisions/seam.ts`'s M4 header). That is what makes the rule testable
 // without a DOM, and it is why the button's `disabled` is a second
 // expression of the rule rather than the only one.
 
+import { reduceSkillRun, skillStampLabel } from "../decisions/seam";
 import type { SkillLine } from "./envelope";
-import { microtaskResult } from "./envelope";
 import { NO_TERMINAL_LINE } from "./decline";
 
 /**
  * A terminal `failed` that **routing** has annotated with the one fact no
  * line carries: whether a backend actually answered this run (#274).
  *
- * It lives here rather than in `envelope.ts` because it is not a property of
- * a line — the wire never sends it, and `classifyLine` never sets it. Only
- * `route-run.ts` knows it, from whether its `fetch` resolved, and the
- * distinction is not recoverable downstream: a seam decline (#307), a 401
- * and a rejected connection can all arrive as an unstamped `failed`, and
- * `decline.ts` forbids telling them apart by their prose.
+ * It is not a property of a line — the wire never sends it, and
+ * `classifyLine` never sets it. Only `route-run.ts` knows it, from whether
+ * its `fetch` resolved, and the distinction is not recoverable downstream:
+ * a seam decline (#307), a 401 and a rejected connection can all arrive as
+ * an unstamped `failed`, and `decline.ts` forbids telling them apart by
+ * their prose.
  */
 export interface RoutedFailure {
   kind: "failed";
@@ -65,6 +72,8 @@ export type SkillRunState =
 
 export const IDLE: SkillRunState = { phase: "idle" };
 
+/** A phase read, not a rule: the state names its own phase, and there is
+ * nothing for two clients to disagree about. */
 export function isRunning(state: SkillRunState): boolean {
   return state.phase === "running";
 }
@@ -76,65 +85,11 @@ export function isRunning(state: SkillRunState): boolean {
  * is exactly what #273 forbids.
  */
 export function stampLabel(state: SkillRunState): string | null {
-  if (state.phase !== "done" && state.phase !== "declined") return null;
-  if (state.backend === null) return null;
-  return state.model === null ? state.backend : `${state.backend} · ${state.model}`;
+  return skillStampLabel(state);
 }
 
 export function reduceRun(state: SkillRunState, event: SkillEvent): SkillRunState {
-  switch (event.kind) {
-    case "started":
-      // The duplicate-tap rule. A second tap during a streaming run must not
-      // wipe the narration already on screen, and must not start anything.
-      return state.phase === "running" ? state : { phase: "running", messages: [] };
-
-    case "progress":
-      // Only a running state accumulates. A line arriving after the terminal
-      // one (or before a tap, which cannot happen but costs nothing to
-      // exclude) is dropped rather than reopening a finished run.
-      if (state.phase !== "running") return state;
-      return { phase: "running", messages: append(state.messages, event.message) };
-
-    case "ok": {
-      if (state.phase !== "running") return state;
-      const result = microtaskResult(event.result);
-      return {
-        phase: "done",
-        messages: state.messages,
-        note: result?.note ?? "",
-        backend: event.backend,
-        model: event.model,
-      };
-    }
-
-    case "failed":
-      if (state.phase !== "running") return state;
-      return {
-        phase: "declined",
-        messages: state.messages,
-        reason: event.error,
-        backend: event.backend,
-        model: event.model,
-        // Absent means unrouted, which is the safe reading: "nothing told
-        // me a backend answered", never "a backend definitely did not".
-        answered: "answered" in event ? event.answered : false,
-      };
-
-    case "unreadable":
-      // Dropped from the narration, and deliberately NOT terminal: a stream
-      // that emits one garbage line has not ended. If the stream then ends
-      // with nothing terminal at all, the seam synthesizes the terminal
-      // event carrying `NO_TERMINAL_LINE` — this reducer never has to guess
-      // that a run is over.
-      return state;
-  }
-}
-
-/** The runner heartbeats `"still running"` every 20s, and an op can repeat
- * a line of its own; a narration that stutters the same sentence adds
- * nothing a reader can use. */
-function append(messages: string[], message: string): string[] {
-  return messages[messages.length - 1] === message ? messages : [...messages, message];
+  return reduceSkillRun(state, event);
 }
 
 export { NO_TERMINAL_LINE };
