@@ -42,6 +42,9 @@ class ColorTokenDriftTest {
         // Same divergence for `--urgency-overdue` — see `Color.kt`'s own
         // comment on `UrgencyOverdueDark`.
         "UrgencyOverdueDark" to ScopedToken("--urgency-overdue", Scope.DARK),
+        // The Settings sync card's WARN/SUCCESS tones (#535 review).
+        "StatusWarnFgDark" to ScopedToken("--status-warn-fg", Scope.DARK),
+        "StatusDoneFgDark" to ScopedToken("--status-done-fg", Scope.DARK),
     )
 
     // A ramp name is CamelCase-with-trailing-digits; anything else must be

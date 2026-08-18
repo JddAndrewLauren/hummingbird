@@ -89,6 +89,29 @@ in `decisions::rules::backtest`. The frames are named at the boundary
 (`BacktestClock`), never inferred. The M1 module-evaluation-order
 constraint did not bite here: every export of the seven `screens/rules/`
 modules is a function called from an event handler or a render body.
+**Amended 2026-08-18 (#535):** M4 sank the Settings screen's sync-status
+readout and the dead-letter heading — `decisions::settings::{
+sync_outcome_class, is_informative_sync_outcome, relative_age,
+sync_status_tone, sync_status_label, sync_status_tone_word,
+dead_letter_heading}` — and rewired `shell/sync-status.ts` onto them in the
+same slice, plus exposed the same set through `client/ffi-mobile`'s free
+`sync_status_summary`/`dead_letter_heading`/`is_informative_sync_outcome`
+doors and a `MobileTaskHost::bindings`/`set_binding`/`dead_letters` read/write
+trio mirroring `ffi-web::task_host`'s DTOs. Two carve-outs this slice
+introduced, both now in the verdict table below: `isInformativeSyncOutcome`
+stays a literal TS copy in its own module
+(`shell/sync-outcome-informative.ts`) for a **new** kind of reason — not
+M1's module-evaluation-order constraint, but a worker/main-thread
+static-import-graph separation (ADR-0010): `worker/ports.ts` needs the
+identical predicate and runs inside `core.worker.ts`'s own script
+evaluation, which must never statically reach the seam
+(`worker-import-graph.test.ts`'s gate) — and any static import anywhere in
+a file pulls that file's *whole* graph in, regardless of which export is
+used, so the predicate could not stay in `sync-status.ts` once that file
+imported the seam for its other functions. `ThemePreference`/
+`resolveDarkTheme` stay per-client on `frontier-prefs.ts`'s existing
+"view prefs" verdict, widened here to cover a theme choice explicitly, not
+only a frontier grouping/facet preference.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -266,6 +289,8 @@ not permanent — it is where the line fell for the capture/Now slice.
 | `skills/decline.ts`'s `NO_TOKEN`/`NO_TERMINAL_LINE` and `grill-turn-state.ts`'s `OUTSIDE_SCHEMA` (M4, #538) | the rule sank (`decisions::skills::decline`, `grill::OUTSIDE_SCHEMA`); the three constants stay literal TS for the same module-evaluation-order constraint as `field-vocabulary.ts`'s arrays — `route-run.ts`/`useMicrotaskWiring.ts`/`useGrillWiring.ts` read them at module evaluation, statically reachable from `main.tsx` — pinned against the core by `seam.test.ts`. Kotlin needs no equivalent: it never holds the strings at all |
 | #274's `backend-registry.ts`/`backend-selection.ts`/`route-plan.ts`/`reachability-memo.ts`, and `microtask-affordance.ts` (M4, #538) | out of #538 deliberately — the probe needed one lane end to end, not the whole surface. #539 decides them with a real second caller in hand |
 | `item-actions.ts`'s `applyItemAction`/`resolveFallbackPending` (M1-4, #502) | screen-local optimistic UI reconciliation over `TaskItemDTO` — `Date.now()`, `archivedAt` writes and the live-vs-optimistic `pending` merge are not a decision two clients could disagree about, even though the same file's affordance rules (`availableActions`, `canMarkDone`, `canGrill`, `grillButtonLabel`, `applyItemAction`'s stage lookup) did sink |
+| `shell/sync-outcome-informative.ts`'s `isInformativeSyncOutcome` (M4, #535) | stays literal TS, for a **new** reason distinct from the module-evaluation-order rows above: `worker/ports.ts` needs this exact predicate and runs inside `core.worker.ts`'s own static import graph (ADR-0010), which must never statically reach the main-thread seam (`worker-import-graph.test.ts`'s gate) — a static import anywhere in a file pulls that file's whole graph in regardless of which export is used, so the predicate could not share a file with `sync-status.ts`'s seam-backed functions. Pinned against `decisions::settings::is_informative_sync_outcome` by `sync-outcome-informative.test.ts` |
+| `theme/ThemePreference.kt`'s `resolveDarkTheme` (M4, #535) | stays per-client, on `frontier-prefs.ts`'s existing "view prefs" verdict widened to cover a theme choice explicitly — a device's dark/light/system preference is not a decision two clients could disagree about |
 
 
 ## The zone bridge, fixed by M4's probe

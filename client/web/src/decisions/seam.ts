@@ -149,6 +149,13 @@ export interface DecisionsModule {
   pane_band_order_json(): string;
   pane_question_order_json(): string;
   waste_constants_json(): string;
+  // #535 (M4): the Settings screen's sync-status readout and dead-letter
+  // heading.
+  sync_status_summary_json(inputJson: string): string;
+  dead_letter_heading(count: number): string;
+  sync_outcome_class(kind: string): string;
+  is_informative_sync_outcome(kind: string): boolean;
+  relative_age(ageMs: number): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -1292,4 +1299,62 @@ export interface WasteConstants {
  * `sources` array. */
 export function wasteConstantsFromCore(): WasteConstants {
   return JSON.parse(required().waste_constants_json()) as WasteConstants;
+}
+
+// -------------------------------------------------------------- #535 (M4)
+// The Settings screen's decision half: `hummingbird_core::decisions::
+// settings` — the sync-status readout and the dead-letter heading, sunk so
+// Android does not carry its own copy of what "stale"/"held"/"synced"
+// mean. `shell/sync-status.ts` is the one caller; everything else in this
+// app reaches these through that module, never this one directly.
+
+/** `hummingbird_core::decisions::settings::SyncStatusInput`, camelCase to
+ * match the JSON the wasm seam reads. */
+export interface SyncStatusInputCore {
+  online: boolean;
+  lastSyncOutcomeKind: string | null;
+  lastSyncAtMs: number | null;
+  queueDepth: number | null;
+  nowMs: number;
+}
+
+/** `hummingbird_core::decisions::settings::SyncStatusTone`. */
+export type SyncStatusToneCore = "neutral" | "warn" | "danger" | "success";
+
+export interface SyncStatusSummaryCore {
+  tone: SyncStatusToneCore;
+  label: string;
+  toneWord: string;
+}
+
+/** `hummingbird_core::decisions::settings::{sync_status_tone,
+ * sync_status_label, sync_status_tone_word}`, answered together off one
+ * input so the badge and its label can never disagree about which state
+ * they describe. */
+export function syncStatusSummaryFromCore(input: SyncStatusInputCore): SyncStatusSummaryCore {
+  return JSON.parse(required().sync_status_summary_json(JSON.stringify(input))) as SyncStatusSummaryCore;
+}
+
+/** `hummingbird_core::decisions::settings::dead_letter_heading`. */
+export function deadLetterHeadingFromCore(count: number): string {
+  return required().dead_letter_heading(count);
+}
+
+/** `hummingbird_core::decisions::settings::SyncOutcomeClass`'s wire
+ * spelling. */
+export type SyncOutcomeClassCore = "held" | "failed" | "not-run" | "landed";
+
+/** `hummingbird_core::decisions::settings::sync_outcome_class`. */
+export function syncOutcomeClassFromCore(kind: string): SyncOutcomeClassCore {
+  return required().sync_outcome_class(kind) as SyncOutcomeClassCore;
+}
+
+/** `hummingbird_core::decisions::settings::is_informative_sync_outcome`. */
+export function isInformativeSyncOutcomeFromCore(kind: string): boolean {
+  return required().is_informative_sync_outcome(kind);
+}
+
+/** `hummingbird_core::decisions::settings::relative_age`. */
+export function relativeAgeFromCore(ageMs: number): string {
+  return required().relative_age(ageMs);
 }

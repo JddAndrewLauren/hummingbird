@@ -1,4 +1,4 @@
-import { isInformativeSyncOutcome } from "../shell/sync-status";
+import { isInformativeSyncOutcome } from "../shell/sync-outcome-informative";
 import {
   advanceLastSuccessfulSyncAtMs,
   readLastSuccessfulSyncAtMs,
@@ -401,7 +401,9 @@ export function attachWorkerClient(
           // to now, and flipped the badge back to a green "Synced — as of
           // just now" — re-greening itself every minute for the whole
           // outage, which is precisely the affordance #107 exists to
-          // provide. See `shell/sync-status.ts`'s `OUTCOME_CLASS`.
+          // provide. See `shell/sync-outcome-informative.ts`'s
+          // `isInformativeSyncOutcome` (#535 moved the classification here
+          // from `shell/sync-status.ts`'s `OUTCOME_CLASS`).
           store.setTaskState({ syncOutcomeSeq });
           return;
         }

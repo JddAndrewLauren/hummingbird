@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,7 +20,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -31,7 +31,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -47,13 +46,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.TokenStore
-import net.twinion.hummingbird.core.TokenValidation
 import net.twinion.hummingbird.notify.AlertNotifier
 import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.RegistrationWorker
+import net.twinion.hummingbird.theme.ThemePreference
+import net.twinion.hummingbird.theme.ThemeStore
+import net.twinion.hummingbird.theme.resolveDarkTheme
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
+import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 import uniffi.hummingbird_ffi_mobile.notificationTapTarget
 import uniffi.hummingbird_ffi_mobile.RunOutcome
 
@@ -93,8 +95,26 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         deepLinkedAlertId.value = NotificationTap.from(intent)
         setContent {
-            HummingbirdTheme {
-                AppRoot(deepLinkedAlertId = deepLinkedAlertId)
+            // The theme preference (#535) is read here, above
+            // `HummingbirdTheme`, rather than inside `AppRoot` — the
+            // theme call needs the resolved `darkTheme` boolean before it
+            // composes anything beneath it, and `AppRoot` is that
+            // "beneath". `ThemeStore` is plain `SharedPreferences`
+            // (device-local, no secret), so the initial read happens
+            // straight in composition rather than behind a
+            // `LaunchedEffect` — the same reasoning `HummingbirdTheme`'s
+            // own `isSystemInDarkTheme()` default already relies on.
+            val context = LocalContext.current
+            var themePreference by remember { mutableStateOf(ThemeStore.load(context)) }
+            HummingbirdTheme(darkTheme = resolveDarkTheme(themePreference, isSystemInDarkTheme())) {
+                AppRoot(
+                    deepLinkedAlertId = deepLinkedAlertId,
+                    themePreference = themePreference,
+                    onThemePreference = { preference ->
+                        ThemeStore.save(context, preference)
+                        themePreference = preference
+                    },
+                )
             }
         }
     }
@@ -134,18 +154,23 @@ private data class NotificationTap(
  * one place so a typo is a compile error at the use site rather than a
  * silently unreachable screen.
  *
- * [RULES] and [TRIAGE] are **registered and not yet reachable** — no bar
- * entry, no More sheet, no other screen navigates to either (#540/#531,
- * both M3/M4). Reachability is #532's job for Triage and #541's for Rules,
- * along with the nav form that will carry them; registering the route here
- * first is what lets each screen exist, compile and be gated without
- * inventing a navigation shape this slice has not decided. */
+ * [RULES], [TRIAGE] and [SETTINGS] are **registered and not yet
+ * reachable** — no bar entry, no More sheet, no other screen navigates to
+ * any of them (#540/#531/#535, M3/M4), except [SETTINGS]'s one incidental
+ * door via `ProofScreen`'s "Manage device token in Settings" link, since
+ * token entry/forget moved off that debug surface in this slice. None has
+ * a permanent nav entry yet. Reachability is #532's job for Triage and
+ * #541's for Rules and Settings, along with the nav form that will carry
+ * them; registering the route here first is what lets each screen exist,
+ * compile and be gated without inventing a navigation shape this slice has
+ * not decided. */
 private object Routes {
     const val NOW = "now"
     const val STATUS = "status"
     const val ALERTS = "alerts"
     const val RULES = "rules"
     const val TRIAGE = "triage"
+    const val SETTINGS = "settings"
     const val ALERT_DETAIL = "alert/{alertId}"
     const val ITEM_DETAIL = "item/{itemId}"
 
@@ -170,7 +195,11 @@ private object Routes {
 // once per completed sync cycle so they re-read the mirror after each one,
 // not only on their own resume.
 @Composable
-private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
+private fun AppRoot(
+    deepLinkedAlertId: MutableStateFlow<NotificationTap?>,
+    themePreference: ThemePreference,
+    onThemePreference: (ThemePreference) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val navController = rememberNavController()
@@ -181,12 +210,25 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
     var syncing by remember { mutableStateOf(false) }
     var needsToken by remember { mutableStateOf(false) }
     var syncTick by remember { mutableIntStateOf(0) }
+    // #535 review: the sync card's real input. Held here, above the
+    // `NavHost`, for the same reason the cadence itself is (`AppRoot`'s
+    // own doc below) — a screen-scoped `ViewModel` is rebuilt every time
+    // its `NavBackStackEntry` is left and re-entered, so state that lived
+    // only in `SettingsViewModel` reset to "Not yet synced" on every
+    // return to Settings even after ten minutes of the app's own resume/
+    // 60-second cadence syncing happily. `AppRoot` is the one place that
+    // sees every cycle, whichever route is on screen. Only an
+    // *informative* outcome overwrites either — a backed-off
+    // `"skipped"`/`"busy"` tick must never read as a fresh "Synced".
+    var lastSyncOutcomeKind by remember { mutableStateOf<String?>(null) }
+    var lastSyncAtMs by remember { mutableStateOf<Long?>(null) }
 
     suspend fun sync(trigger: String) {
         val host = core ?: return
         syncing = true
+        val nowMs = System.currentTimeMillis()
         val outcome = host.run(
-            System.currentTimeMillis(),
+            nowMs,
             trigger,
             false,
             Random.nextDouble(),
@@ -196,6 +238,10 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
         statusLine = describe(outcome)
         needsToken = credentialEvent ||
             outcome.kind == "no_credential" || outcome.kind == "held"
+        if (isInformativeSyncOutcome(outcome.kind)) {
+            lastSyncOutcomeKind = outcome.kind
+            lastSyncAtMs = nowMs
+        }
         facts = readFacts(host)
         syncing = false
         syncTick += 1
@@ -263,6 +309,33 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
         onPauseOrDispose { }
     }
 
+    // The token entry/forget gestures — shared between `ProofScreen`
+    // (which no longer carries the widgets themselves, #535) and
+    // `SettingsScreen` (their one home now). Hoisted here rather than
+    // inlined in either `composable {}` body, the same reason `sync`
+    // above is: both destinations reach the same `core`/`needsToken`
+    // state, and duplicating the two lambdas per screen would be the
+    // Kotlin copy this slice moved away from.
+    suspend fun saveToken(token: String) {
+        TokenStore.save(context, token)
+        core?.pushApiKey(token)
+        needsToken = false
+        // Registration follows the credential (M2/#141): `registerPushTarget`
+        // is the one authority call that needs the bearer token in hand
+        // rather than riding the sync queue, so an attempt made before a
+        // token existed returned `Unauthorized` and stopped. This arrival
+        // is the event that makes it worth trying again.
+        RegistrationWorker.enqueue(context)
+        sync("user")
+    }
+
+    suspend fun forgetToken() {
+        TokenStore.clear(context)
+        core?.clearApiKey()
+        needsToken = true
+        statusLine = "No device token — paste one to sync."
+    }
+
     NavHost(navController = navController, startDestination = Routes.NOW) {
         composable(Routes.NOW) {
             NowScreen(
@@ -287,30 +360,24 @@ private fun AppRoot(deepLinkedAlertId: MutableStateFlow<NotificationTap?>) {
                 needsToken = needsToken,
                 onBack = { navController.popBackStack() },
                 onSync = { scope.launch { sync("user") } },
-                onSaveToken = { token ->
-                    scope.launch {
-                        TokenStore.save(context, token)
-                        core?.pushApiKey(token)
-                        needsToken = false
-                        // Registration follows the credential (M2/#141):
-                        // `registerPushTarget` is the one authority call
-                        // that needs the bearer token in hand rather than
-                        // riding the sync queue, so an attempt made before
-                        // a token existed returned `Unauthorized` and
-                        // stopped. This arrival is the event that makes it
-                        // worth trying again.
-                        RegistrationWorker.enqueue(context)
-                        sync("user")
-                    }
-                },
-                onForgetToken = {
-                    scope.launch {
-                        TokenStore.clear(context)
-                        core?.clearApiKey()
-                        needsToken = true
-                        statusLine = "No device token — paste one to sync."
-                    }
-                },
+                onGoToSettings = { navController.navigate(Routes.SETTINGS) },
+            )
+        }
+        composable(Routes.SETTINGS) {
+            SettingsScreen(
+                syncTick = syncTick,
+                needsToken = needsToken,
+                onSaveToken = { token -> scope.launch { saveToken(token) } },
+                onForgetToken = { scope.launch { forgetToken() } },
+                themePreference = themePreference,
+                onThemePreference = onThemePreference,
+                // #535 review: the real cadence's own state, not a
+                // screen-local copy — see the `lastSyncOutcomeKind`/
+                // `lastSyncAtMs` note above `sync()`.
+                lastSyncOutcomeKind = lastSyncOutcomeKind,
+                lastSyncAtMs = lastSyncAtMs,
+                onSync = { scope.launch { sync("user") } },
+                onBack = { navController.popBackStack() },
             )
         }
         composable(Routes.ALERTS) {
@@ -464,8 +531,11 @@ private fun ProofScreen(
     needsToken: Boolean,
     onBack: () -> Unit,
     onSync: () -> Unit,
-    onSaveToken: (String) -> Unit,
-    onForgetToken: () -> Unit,
+    /** #535: token entry/forget moved off this screen entirely — Settings
+     * is their one home now. A device with no token still needs a way
+     * *out* of here to go get one, hence this link rather than a bare
+     * "no token" sentence with nothing to do about it. */
+    onGoToSettings: () -> Unit,
 ) {
     Scaffold { padding ->
         Column(
@@ -509,12 +579,15 @@ private fun ProofScreen(
                 }
 
                 if (needsToken) {
-                    TokenEntry(onSave = onSaveToken)
+                    Text(
+                        "No device token — add one from Settings.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 } else {
                     SyncButton(syncing = syncing, onSync = onSync)
-                    TextButton(onClick = onForgetToken) {
-                        Text("Forget token")
-                    }
+                }
+                TextButton(onClick = onGoToSettings) {
+                    Text("Manage device token in Settings")
                 }
             }
         }
@@ -528,30 +601,3 @@ private fun SyncButton(syncing: Boolean, onSync: () -> Unit) {
     }
 }
 
-@Composable
-private fun TokenEntry(onSave: (String) -> Unit) {
-    var raw by remember { mutableStateOf("") }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            "Paste this device's token. It is stored in the Android " +
-                "Keystore and sent only to the authority.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        OutlinedTextField(
-            value = raw,
-            onValueChange = { raw = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Device token") },
-            singleLine = true,
-        )
-        val normalized = TokenValidation.normalize(raw)
-        Button(
-            onClick = { normalized?.let(onSave) },
-            enabled = normalized != null,
-            modifier = Modifier.align(Alignment.End),
-        ) {
-            Text("Save token")
-        }
-    }
-}
