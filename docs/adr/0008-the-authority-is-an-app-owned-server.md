@@ -114,7 +114,12 @@ re-point every id already stored, and it would have to live in the wasm32
 shim, which has no test harness (`CLAUDE.md`). The check is in `domain`
 (`is_url_safe_id`), where it is testable, and it runs **ahead of the replay
 select** — already-exists must not answer 200 for an id nothing can
-address.*
+address. The one row that got in before the door closed (#549) is settled
+by `init_schema`, which archives what it cannot address: no API caller can
+reach that row, so the only hand left is the one that runs on boot. It
+**archives**, never deletes — ADR-0020 holds here as everywhere — and takes
+a real version off the workspace counter, so the change reaches devices on
+the ordinary delta pull.*
 
 ### Reads: delta pull, full sweep as backstop
 

@@ -13,7 +13,7 @@ use crate::rig::*;
 fn init_schema_is_idempotent() {
     let sql = RusqliteSql::new(); // ran init once already
     post(&sql, r#"{"id": "a", "title": "t"}"#, 0);
-    init_schema(&sql).expect("second init is a no-op");
+    init_schema(&sql, 0).expect("second init is a no-op");
     assert_eq!(meta_version(&sql), 1, "meta row survives re-init");
     let rows = sql.exec("SELECT id FROM items", &[]).unwrap();
     assert_eq!(rows.len(), 1, "items survive re-init");
@@ -64,7 +64,7 @@ fn init_schema_grows_a_schema_1_database_additively() {
     sql.exec("UPDATE meta SET schema_version = 1 WHERE id = 1", &[])
         .unwrap();
 
-    init_schema(&sql).expect("growth init succeeds");
+    init_schema(&sql, 0).expect("growth init succeeds");
 
     assert_eq!(schema_version(&sql), SCHEMA_VERSION, "schema_version moved forward");
     assert_eq!(meta_version(&sql), 1, "the workspace counter is untouched");
@@ -282,7 +282,7 @@ fn init_schema_grows_a_schema_2_database_additively() {
         "the v2 fixture must not already carry the notification lane"
     );
 
-    init_schema(&migrated).expect("growth init succeeds");
+    init_schema(&migrated, 0).expect("growth init succeeds");
 
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
     for table in ["rules", "push_targets", "deliveries"] {
@@ -398,7 +398,7 @@ fn init_schema_grows_a_schema_3_database_additively() {
         )
         .unwrap();
 
-    init_schema(&migrated).expect("growth init succeeds");
+    init_schema(&migrated, 0).expect("growth init succeeds");
 
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
     assert!(
@@ -472,7 +472,7 @@ fn init_schema_grows_a_schema_4_database_additively() {
         )
         .unwrap();
 
-    init_schema(&migrated).expect("growth init succeeds");
+    init_schema(&migrated, 0).expect("growth init succeeds");
 
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
     assert!(
@@ -536,7 +536,7 @@ fn init_schema_grows_a_schema_5_database_additively() {
         )
         .unwrap();
 
-    init_schema(&migrated).expect("growth init succeeds");
+    init_schema(&migrated, 0).expect("growth init succeeds");
 
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
     assert!(
@@ -652,7 +652,7 @@ fn init_schema_rewrites_a_schema_6_database_size_vocabulary() {
         )
         .unwrap();
 
-    init_schema(&migrated).expect("the rebuild succeeds");
+    init_schema(&migrated, 0).expect("the rebuild succeeds");
 
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
     let sizes = migrated
@@ -717,7 +717,7 @@ fn init_schema_rewrites_a_schema_6_database_size_vocabulary() {
 #[test]
 fn the_size_rebuild_is_idempotent() {
     let migrated = v6_store();
-    init_schema(&migrated).expect("first rebuild succeeds");
+    init_schema(&migrated, 0).expect("first rebuild succeeds");
     migrated
         .exec(
             "INSERT INTO items (id, title, stage, size, priority, created_at, updated_at, version, agent) \
@@ -726,7 +726,7 @@ fn the_size_rebuild_is_idempotent() {
         )
         .unwrap();
 
-    init_schema(&migrated).expect("second init is a no-op, not a second rebuild");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a second rebuild");
 
     let rows = migrated.exec("SELECT id FROM items", &[]).unwrap();
     assert_eq!(rows.len(), 1, "the row written after the rebuild survives the next boot");
@@ -817,7 +817,7 @@ fn the_size_rebuild_resumes_after_dying_before_the_parent() {
         .exec("CREATE TABLE items_size_rebuild AS SELECT * FROM items WHERE id = 'q'", &[])
         .unwrap();
 
-    init_schema(&migrated).expect("the next boot resumes rather than failing on its own leftovers");
+    init_schema(&migrated, 0).expect("the next boot resumes rather than failing on its own leftovers");
 
     let sizes = migrated.exec("SELECT id, size FROM items ORDER BY id", &[]).unwrap();
     assert_eq!(sizes.len(), 2, "the stale scratch copy did not duplicate a row back in");
@@ -847,7 +847,7 @@ fn the_size_rebuild_resumes_after_dying_before_the_parent() {
 #[test]
 fn the_size_rebuild_resumes_after_dying_after_the_parent() {
     let migrated = v6_store_with_rows();
-    init_schema(&migrated).expect("the rebuild succeeds");
+    init_schema(&migrated, 0).expect("the rebuild succeeds");
 
     // Wind the store back to the moment between the parent's reinsert and
     // the children's: rows in the scratch table, `items` empty, children
@@ -863,7 +863,7 @@ fn the_size_rebuild_resumes_after_dying_after_the_parent() {
         .unwrap();
     migrated.exec("DELETE FROM items", &[]).unwrap();
 
-    init_schema(&migrated).expect("the boot recovers instead of declining on the new DDL");
+    init_schema(&migrated, 0).expect("the boot recovers instead of declining on the new DDL");
 
     let sizes = migrated.exec("SELECT id, size FROM items ORDER BY id", &[]).unwrap();
     assert_eq!(sizes.len(), 2, "the rows waiting in the scratch table were drained back in");
@@ -883,8 +883,8 @@ fn the_size_rebuild_resumes_after_dying_after_the_parent() {
 #[test]
 fn the_column_migration_is_idempotent() {
     let migrated = v3_store();
-    init_schema(&migrated).expect("first growth succeeds");
-    init_schema(&migrated).expect("second init is a no-op, not a duplicate-column error");
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-column error");
     assert_eq!(
         column_names(&migrated, "alerts")
             .iter()
@@ -963,4 +963,89 @@ fn column_names(sql: &dyn Sql, table: &str) -> Vec<String> {
         .iter()
         .map(|r| r.get("name").unwrap().as_text().unwrap().to_string())
         .collect()
+}
+
+// ------------------------------- #549: the unaddressable-row catch-up
+
+/// The row #549 is about: minted through the old `POST /api/items`, which
+/// checked only that the id was non-empty. Seeded directly because the
+/// route it came through no longer exists in that shape (#548).
+fn seed_unaddressable(sql: &RusqliteSql, id: &str) {
+    sql.exec(
+        "INSERT INTO items (id, title, stage, priority, agent, version, created_at, updated_at) \
+         VALUES (?, 'test mint', 'ready', 0, 0, 1, 1787064577642, 1787064577642)",
+        &[SqlValue::Text(id.to_string())],
+    )
+    .expect("seed");
+}
+
+#[test]
+fn init_schema_archives_a_row_no_path_could_ever_address() {
+    let sql = RusqliteSql::new();
+    seed_unaddressable(&sql, "test mint 526 repro B");
+    let before = meta_version(&sql);
+
+    init_schema(&sql, 9_000).expect("growth init succeeds");
+
+    let rows = sql
+        .exec(
+            "SELECT archived_at, updated_at, version FROM items WHERE id = 'test mint 526 repro B'",
+            &[],
+        )
+        .unwrap();
+    let row = rows.first().expect("the row is still there — archived, not deleted (ADR-0020)");
+    assert_eq!(
+        row.get("archived_at").unwrap().as_i64(),
+        Some(9_000),
+        "stamped with the boot's clock"
+    );
+    assert_eq!(row.get("updated_at").unwrap().as_i64(), Some(9_000));
+    assert_eq!(
+        row.get("version").unwrap().as_i64(),
+        Some(before + 1),
+        "a real version off the workspace counter, so the delta pull carries it"
+    );
+    assert_eq!(meta_version(&sql), before + 1, "and the counter moved with it");
+}
+
+#[test]
+fn the_catch_up_leaves_every_addressable_row_alone() {
+    let sql = RusqliteSql::new();
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    let before = meta_version(&sql);
+
+    init_schema(&sql, 9_000).expect("growth init succeeds");
+
+    let rows = sql
+        .exec("SELECT archived_at, version FROM items WHERE id = 'a-1'", &[])
+        .unwrap();
+    let row = rows.first().expect("row survives");
+    assert!(row.get("archived_at").unwrap().as_i64().is_none(), "still live");
+    assert_eq!(meta_version(&sql), before, "a clean store writes nothing at all");
+}
+
+/// Every boot re-runs `init_schema`, so the catch-up must settle rather
+/// than keep re-archiving — a second stamp would bump the counter forever
+/// and re-push the row to every device on each boot.
+#[test]
+fn the_catch_up_is_a_no_op_on_the_second_boot() {
+    let sql = RusqliteSql::new();
+    seed_unaddressable(&sql, "test mint 526 repro B");
+    init_schema(&sql, 9_000).expect("first boot archives");
+    let after_first = meta_version(&sql);
+
+    init_schema(&sql, 20_000).expect("second boot");
+
+    let rows = sql
+        .exec(
+            "SELECT archived_at FROM items WHERE id = 'test mint 526 repro B'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        rows.first().unwrap().get("archived_at").unwrap().as_i64(),
+        Some(9_000),
+        "the original stamp stands"
+    );
+    assert_eq!(meta_version(&sql), after_first, "and nothing was written twice");
 }

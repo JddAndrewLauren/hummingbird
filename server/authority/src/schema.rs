@@ -5,6 +5,8 @@
 //! Fifteen tables and eight indexes; `tokens` gained a `source` column in
 //! #145.
 
+use hummingbird_domain::is_url_safe_id;
+
 use crate::sql::{Sql, SqlError, SqlValue};
 
 /// Bumped when the DDL changes shape; stored in `meta.schema_version`.
@@ -362,7 +364,10 @@ const CREATE_TABLES: [&str; 15] = [
 /// takes every index on it down with the table. Creating the indexes after
 /// the rebuild is what puts them back — and it costs a fresh store nothing,
 /// because there the rebuild is a no-op.
-pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
+///
+/// `now_ms` is here for [`archive_unaddressable_items`] alone — the one
+/// growth step that writes a timestamp rather than a shape (#549).
+pub fn init_schema(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlError> {
     for ddl in CREATE_TABLES.iter() {
         sql.exec(ddl, &[])?;
     }
@@ -382,6 +387,63 @@ pub fn init_schema(sql: &dyn Sql) -> Result<(), SqlError> {
             SqlValue::Integer(SCHEMA_VERSION),
         ],
     )?;
+    archive_unaddressable_items(sql, now_ms)?;
+    Ok(())
+}
+
+/// #549: the store catching up with the invariant #548 now enforces at the
+/// door.
+///
+/// `POST /api/items` used to accept any non-empty id, and one id with
+/// spaces in it reached production. Because path segments are matched
+/// verbatim (`handlers::ApiRequest::path`), no `PATCH` can name that row
+/// again, and there is no `DELETE` route for items — so the row is live on
+/// every client with no way for a caller to settle it. This is the only
+/// hand that can reach it.
+///
+/// It **archives**, never deletes: ADR-0020's rule holds here as everywhere,
+/// and the row stays readable evidence of what happened. The write is an
+/// ordinary one — a real `version` off the workspace counter and a `meta`
+/// bump — so the archival reaches every device on its next delta pull
+/// rather than waiting for a full sweep.
+///
+/// Gated on the data, not on `SCHEMA_VERSION`, following
+/// [`add_missing_columns`]'s doctrine: the condition is a row that is
+/// actually there. A fresh store and every store after the first boot that
+/// runs this pay one indexed-free scan of the live items and write nothing.
+/// The set it can act on is closed — #548 shut the door that filled it — so
+/// this stays a no-op forever after.
+fn archive_unaddressable_items(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlError> {
+    let unaddressable: Vec<String> = sql
+        .exec("SELECT id FROM items WHERE archived_at IS NULL", &[])?
+        .iter()
+        .filter_map(|r| r.get("id").and_then(SqlValue::as_text).map(str::to_string))
+        .filter(|id| !is_url_safe_id(id))
+        .collect();
+
+    for id in unaddressable {
+        let version = sql
+            .exec("SELECT version FROM meta WHERE id = 1", &[])?
+            .first()
+            .and_then(|r| r.get("version").and_then(SqlValue::as_i64))
+            .ok_or_else(|| SqlError {
+                message: "meta row missing — the create loop did not run".into(),
+            })?
+            + 1;
+        sql.exec(
+            "UPDATE meta SET version = ? WHERE id = 1",
+            &[SqlValue::Integer(version)],
+        )?;
+        sql.exec(
+            "UPDATE items SET archived_at = ?, updated_at = ?, version = ? WHERE id = ?",
+            &[
+                SqlValue::Integer(now_ms),
+                SqlValue::Integer(now_ms),
+                SqlValue::Integer(version),
+                SqlValue::Text(id),
+            ],
+        )?;
+    }
     Ok(())
 }
 

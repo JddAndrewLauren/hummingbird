@@ -125,7 +125,7 @@ mod shim {
             // Idempotent, and in fetch rather than the constructor so a
             // failure surfaces as a clean 500 instead of a poisoned object.
             if !self.schema_ready.get() {
-                if let Err(e) = init_schema(&sql) {
+                if let Err(e) = init_schema(&sql, Date::now().as_millis() as i64) {
                     let body = serde_json::to_string(&ApiError {
                         error: "internal".to_string(),
                         message: e.message,
@@ -203,7 +203,8 @@ mod shim {
                 sql: self.state.storage().sql(),
             };
             if !self.schema_ready.get() {
-                init_schema(&sql).map_err(|e| Error::RustError(e.message))?;
+                init_schema(&sql, Date::now().as_millis() as i64)
+                    .map_err(|e| Error::RustError(e.message))?;
                 self.schema_ready.set(true);
             }
 
