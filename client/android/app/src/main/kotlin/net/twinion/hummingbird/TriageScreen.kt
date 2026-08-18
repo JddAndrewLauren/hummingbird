@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.forms.CaptureDateField
@@ -68,6 +69,19 @@ fun TriageScreen(
     }
 
     LaunchedEffect(Unit) { reload() }
+
+    // Refresh on every return to this screen, independent of the sync
+    // cadence (`AlertsScreen`'s own precedent) — a capture minted from
+    // `CaptureActivity` while this screen was backgrounded must not wait
+    // for the next app-wide tick to appear in the queue.
+    LifecycleResumeEffect(Unit) {
+        val resumed = scope.launch { reload() }
+        onPauseOrDispose { resumed.cancel() }
+    }
+
+    // `AppRoot`'s cadence hand-off (#514's shape): one increment per
+    // completed sync cycle, so this screen re-reads the mirror after each
+    // one rather than showing a stale queue until its own next resume.
     LaunchedEffect(syncTick) {
         if (syncTick > 0) reload()
     }

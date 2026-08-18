@@ -104,6 +104,24 @@ class TriageScreenStructuralTest {
         )
     }
 
+    /** The route is unreachable until #532, so nothing exercises this on a
+     * real device pass yet — the review finding on this PR that made this
+     * gate necessary. `AlertsScreen`'s own precedent: a foreground resume
+     * must re-read independent of the app-wide `syncTick`, or a capture
+     * minted elsewhere while this screen was backgrounded waits for the
+     * next tick to appear. */
+    @Test
+    fun `the screen re-reads on every foreground resume, not just on syncTick`() {
+        assertTrue(
+            "TriageScreen.kt must carry a LifecycleResumeEffect",
+            screenSrc.contains("LifecycleResumeEffect"),
+        )
+        assertTrue(
+            "the resume effect must reload, cancelling on pause/dispose",
+            screenSrc.contains("onPauseOrDispose"),
+        )
+    }
+
     @Test
     fun `the triage route is registered and deliberately unreachable`() {
         val main = source("MainActivity.kt")

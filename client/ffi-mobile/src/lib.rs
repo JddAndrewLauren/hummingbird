@@ -1203,6 +1203,26 @@ pub struct ItemEdit {
     pub scheduled_date: FieldPatch,
 }
 
+/// [`ItemEdit`] → [`hummingbird_core::TriagePatch`], the one conversion
+/// [`MobileTaskHost::edit_item`] and [`MobileTaskHost::triage_item`] both
+/// need (review finding on #531's own PR — the two calls carried the
+/// identical nine-field literal before this was pulled out). `Err` is an
+/// unrecognised vocabulary word, rejected before the seam exactly as every
+/// other closed-vocabulary string crossing here is.
+fn to_triage_patch(edit: &ItemEdit) -> Result<hummingbird_core::TriagePatch, String> {
+    Ok(hummingbird_core::TriagePatch {
+        title: edit.title.clone(),
+        priority: edit.priority,
+        description: edit.description.to_text(),
+        size: edit.size.to_vocabulary(Size::parse)?,
+        energy: edit.energy.to_vocabulary(Energy::parse)?,
+        context: edit.context.to_text(),
+        project_id: edit.project_id.to_text(),
+        deadline: edit.deadline.to_text(),
+        scheduled_date: edit.scheduled_date.to_text(),
+    })
+}
+
 /// [`MobileTaskHost::edit_item`] failed. `ItemNotFound` covers the archived
 /// case too, and deliberately: the core's edit path reads the *live* view,
 /// so history is unreachable from here by construction rather than by a
@@ -2067,23 +2087,7 @@ impl MobileTaskHost {
         edit: ItemEdit,
         now_ms: i64,
     ) -> Result<(), MobileEditError> {
-        let patch = hummingbird_core::TriagePatch {
-            title: edit.title.clone(),
-            priority: edit.priority,
-            description: edit.description.to_text(),
-            size: edit
-                .size
-                .to_vocabulary(Size::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            energy: edit
-                .energy
-                .to_vocabulary(Energy::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            context: edit.context.to_text(),
-            project_id: edit.project_id.to_text(),
-            deadline: edit.deadline.to_text(),
-            scheduled_date: edit.scheduled_date.to_text(),
-        };
+        let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
         let seed = mint_mutation_seed("edit", now_ms);
         let mut inner = self.inner.lock().await;
         inner
@@ -2116,12 +2120,12 @@ impl MobileTaskHost {
 
     /// The Triage screen's mutation (M3/#531) —
     /// [`hummingbird_core::Core::triage`] verbatim, the same [`ItemEdit`]→
-    /// [`hummingbird_core::TriagePatch`] conversion [`MobileTaskHost::
-    /// edit_item`] already makes, except `promote_to_ready` rides as a real
-    /// caller-supplied argument rather than pinned `false`: promoting to
-    /// Ready is this screen's one destination, and every edit alongside it
-    /// still lands in the same single CAS `PATCH` [`Core::triage`]'s own
-    /// doc argues for.
+    /// [`hummingbird_core::TriagePatch`] conversion [`to_triage_patch`]
+    /// [`MobileTaskHost::edit_item`] shares, except `promote_to_ready` rides
+    /// as a real caller-supplied argument rather than pinned `false`:
+    /// promoting to Ready is this screen's one destination, and every edit
+    /// alongside it still lands in the same single CAS `PATCH`
+    /// [`Core::triage`]'s own doc argues for.
     pub async fn triage_item(
         &self,
         item_id: String,
@@ -2129,23 +2133,7 @@ impl MobileTaskHost {
         edit: ItemEdit,
         now_ms: i64,
     ) -> Result<(), MobileEditError> {
-        let patch = hummingbird_core::TriagePatch {
-            title: edit.title.clone(),
-            priority: edit.priority,
-            description: edit.description.to_text(),
-            size: edit
-                .size
-                .to_vocabulary(Size::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            energy: edit
-                .energy
-                .to_vocabulary(Energy::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            context: edit.context.to_text(),
-            project_id: edit.project_id.to_text(),
-            deadline: edit.deadline.to_text(),
-            scheduled_date: edit.scheduled_date.to_text(),
-        };
+        let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
         let seed = mint_mutation_seed("triage", now_ms);
         let mut inner = self.inner.lock().await;
         inner

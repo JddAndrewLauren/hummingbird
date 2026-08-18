@@ -21,7 +21,7 @@ import uniffi.hummingbird_ffi_mobile.TriageItemRecord
 class TriageViewModelTest {
 
     private fun vm(
-        fetch: suspend () -> TriageBoardRecord = { board() },
+        fetch: suspend () -> TriageBoardRecord = { triageBoardFixture() },
         triage: suspend (String, Boolean, ItemEdit, Long) -> Unit = { _, _, _, _ -> },
         complete: suspend (String, Long) -> Unit = { _, _ -> },
     ) = TriageViewModel(
@@ -51,7 +51,7 @@ class TriageViewModelTest {
 
     @Test
     fun `loading reads the whole board`() = runBlocking {
-        val model = vm(fetch = { board(capturedCount = 2, grillingCount = 1) })
+        val model = vm(fetch = { triageBoardFixture(capturedCount = 2, grillingCount = 1) })
 
         model.load()
 
@@ -62,7 +62,7 @@ class TriageViewModelTest {
 
     @Test
     fun `selecting a row opens exactly it, seeded from the record`() = runBlocking {
-        val model = vm(fetch = { board(items = listOf(item("i-1", title = "buy milk"))) })
+        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
         model.load()
 
         model.select("i-1")
@@ -73,7 +73,7 @@ class TriageViewModelTest {
 
     @Test
     fun `selecting the open row again closes it`() = runBlocking {
-        val model = vm(fetch = { board(items = listOf(item("i-1"))) })
+        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) })
         model.load()
         model.select("i-1")
 
@@ -90,7 +90,7 @@ class TriageViewModelTest {
     fun `opening a different row replaces whichever was open`() = runBlocking {
         val model = vm(
             fetch = {
-                board(items = listOf(item("i-1", title = "first"), item("i-2", title = "second")))
+                triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "first"), triageItemFixture("i-2", title = "second")))
             },
         )
         model.load()
@@ -109,7 +109,7 @@ class TriageViewModelTest {
         var sentPromote: Boolean? = null
         var sentEdit: ItemEdit? = null
         val model = vm(
-            fetch = { board(items = listOf(item("i-1", title = "buy milk"))) },
+            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) },
             triage = { _, promote, edit, _ -> sentPromote = promote; sentEdit = edit },
         )
         model.load()
@@ -130,7 +130,7 @@ class TriageViewModelTest {
     fun `promoting patches only the fields that changed`() = runBlocking {
         var sentEdit: ItemEdit? = null
         val model = vm(
-            fetch = { board(items = listOf(item("i-1"))) },
+            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             triage = { _, _, edit, _ -> sentEdit = edit },
         )
         model.load()
@@ -146,7 +146,7 @@ class TriageViewModelTest {
     fun `a blank title refuses to promote instead of silently dropping it`() = runBlocking {
         var sent: ItemEdit? = null
         val model = vm(
-            fetch = { board(items = listOf(item("i-1"))) },
+            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             triage = { _, _, edit, _ -> sent = edit },
         )
         model.load()
@@ -164,7 +164,7 @@ class TriageViewModelTest {
     @Test
     fun `a failed promote keeps the row open and the draft where it can be retried`() = runBlocking {
         val model = vm(
-            fetch = { board(items = listOf(item("i-1"))) },
+            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             triage = { _, _, _, _ -> throw RuntimeException("offline") },
         )
         model.load()
@@ -185,7 +185,7 @@ class TriageViewModelTest {
     fun `completing an open row calls act complete and closes it`() = runBlocking {
         var completed: String? = null
         val model = vm(
-            fetch = { board(items = listOf(item("i-1"))) },
+            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             complete = { itemId, _ -> completed = itemId },
         )
         model.load()
@@ -200,7 +200,7 @@ class TriageViewModelTest {
 
     @Test
     fun `a reload while a row is open leaves its draft alone`() = runBlocking {
-        val model = vm(fetch = { board(items = listOf(item("i-1", title = "buy milk"))) })
+        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
         model.load()
         model.select("i-1")
         model.updateDraft(model.draft.value!!.copy(title = "half-typed"))
@@ -211,7 +211,7 @@ class TriageViewModelTest {
     }
 }
 
-internal fun board(
+private fun triageBoardFixture(
     items: List<TriageItemRecord> = emptyList(),
     capturedCount: Int = items.count { it.stage == "triage" },
     grillingCount: Int = items.count { it.stage == "grilling" },
@@ -221,7 +221,7 @@ internal fun board(
     grillingCount = grillingCount.toUInt(),
 )
 
-internal fun item(
+private fun triageItemFixture(
     id: String,
     title: String = "item $id",
     stage: String = "triage",
