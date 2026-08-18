@@ -169,8 +169,10 @@ app data. Every run therefore ends with the phone un-credentialed and the
 *next* run failing three cases with `no device token on this device` —
 which is the check's own named error doing its job, not a regression.
 Re-install (`./gradlew installDebug`) and paste the token from
-`hummingbird-device-pixel-fold` again before the next run. Checks 1–18 are
-unaffected only because nothing in them runs an instrumented suite.
+`hummingbird-device-pixel-fold` again before the next run, from Status's
+"Manage device token in Settings" link (#535 moved the field itself off
+Status). Checks 1–18 are unaffected only because nothing in them runs an
+instrumented suite.
 
 You need the device on USB, a `device`-scope token for **this** device (there
 is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
@@ -183,7 +185,9 @@ Rules matter too: an ingested alert raises kind **`alert_raised`**, not
 needs rules on `alert_raised` keyed on `source` and `severity`.
 
 1. `./gradlew installDebug`, launch, grant `POST_NOTIFICATIONS`.
-2. Paste the device token on Status; confirm it reads `Synced`.
+2. From Status, follow "Manage device token in Settings" and paste the
+   token there (#535 — Status itself carries no token field); back out to
+   Status and confirm it reads `Synced`.
 3. Confirm `fcm_token` exists: `adb shell run-as net.twinion.hummingbird cat
    shared_prefs/hummingbird-push.xml`. Its absence means Firebase never
    initialised.

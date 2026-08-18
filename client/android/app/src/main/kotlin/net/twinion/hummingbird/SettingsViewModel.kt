@@ -5,27 +5,23 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
-import net.twinion.hummingbird.core.NetworkStatus
-import net.twinion.hummingbird.sync.SyncWorker
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
 import uniffi.hummingbird_ffi_mobile.MobileSetBindingException
-import uniffi.hummingbird_ffi_mobile.MobileSyncStatusInput
-import uniffi.hummingbird_ffi_mobile.MobileSyncStatusSummary
 import uniffi.hummingbird_ffi_mobile.deadLetterHeading
-import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
-import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 
 /** Settings' own read of the seam (#535/M4) — bindings, the dead-letter
- * journal and the outbound queue's depth. Token entry/forget and the theme
- * preference are device-local and handled directly by `AppRoot`/
- * `SettingsScreen`, the same split `RulesScreen`'s own doc draws between
- * what needs a ViewModel and what does not. */
+ * journal and the outbound queue's depth. Token entry/forget, the theme
+ * preference, and the sync card's `lastSyncOutcomeKind`/`lastSyncAtMs` are
+ * `AppRoot`'s state, not this class's — see `SettingsScreen.kt`'s own doc
+ * for why the sync card in particular moved there (round-1 review, #535):
+ * a `viewModel()` here is rebuilt every time its `NavBackStackEntry` is
+ * left and re-entered, so state that lived only here would forget the
+ * app's real sync history on every visit. */
 data class SettingsRead(
     val bindings: List<MobileBindingRecord>,
     val deadLetters: List<MobileDeadLetterRecord>,
@@ -42,33 +38,25 @@ data class SettingsRead(
 fun mintBindingSeed(key: String, nowMs: Long): String = "$key:binding:$nowMs"
 
 // The Settings screen (#535/M4): bindings with their compare-and-set write,
-// the sync-status card, and the dead-letter rows. **This class decides
-// nothing about sync status.** `syncSummary` arrives applied from
-// `hummingbird_core::decisions::settings::sync_status_summary`, reached
-// through the free `syncStatusSummary` door — there is no Kotlin-side
-// classification of what "stale"/"held"/"synced" mean, and
-// `SettingsScreenStructuralTest` reads this file (and `SettingsScreen.kt`)
-// to keep it that way.
+// and the dead-letter rows' backing read. **This class decides nothing
+// about a binding write's outcome or a dead-letter's heading.**
+// `deadLetterHeadingText` arrives applied from
+// `hummingbird_core::decisions::settings::dead_letter_heading` — no
+// Kotlin-side classification, and `SettingsScreenStructuralTest` reads
+// this file (and `SettingsScreen.kt`) to keep it that way.
 //
 // The injected-fn constructor is the house shape (`RulesViewModel`'s own
 // doc): a plain JVM test can drive the control flow with no host
-// `.so`/keystore/`ConnectivityManager` in the process. That doc understates
-// it a little here — `RulesViewModelTest`'s own fakes never actually reach
-// `canSubmitCapture`, and this class's own `*Fn` parameters below cover the
-// same ground for `syncStatusSummary`/`isInformativeSyncOutcome`/
-// `deadLetterHeading`: none of the three is ever called directly from a
-// method body, precisely so a JVM test never touches the native library at
-// all — the underlying decision is `hummingbird_core::decisions::settings`'
-// own test to own regardless.
+// `.so`/keystore in the process. That doc understates it a little here —
+// `RulesViewModelTest`'s own fakes never actually reach `canSubmitCapture`
+// — and `deadLetterHeadingFn` covers the same ground for
+// `deadLetterHeading`: it is never called directly from a method body,
+// precisely so a JVM test never touches the native library at all — the
+// underlying decision is `hummingbird_core::decisions::settings`'s own
+// test to own regardless.
 class SettingsViewModel(
     private val fetchFn: suspend () -> SettingsRead,
     private val setBindingFn: suspend (key: String, value: String, nowMs: Long) -> Unit,
-    /** One sync cycle, answering the outcome's wire `kind` — the same
-     * string `hummingbird_core::decisions::settings` classifies. */
-    private val runFn: suspend (nowMs: Long) -> String,
-    private val onlineFn: () -> Boolean,
-    private val syncStatusSummaryFn: (MobileSyncStatusInput) -> MobileSyncStatusSummary = ::syncStatusSummary,
-    private val isInformativeSyncOutcomeFn: (String) -> Boolean = ::isInformativeSyncOutcome,
     private val deadLetterHeadingFn: (UInt) -> String = ::deadLetterHeading,
 ) : ViewModel() {
 
@@ -87,23 +75,6 @@ class SettingsViewModel(
      * any write. */
     private val _bindingError = MutableStateFlow<Pair<String, String>?>(null)
     val bindingError: StateFlow<Pair<String, String>?> = _bindingError.asStateFlow()
-
-    private val _lastSyncOutcomeKind = MutableStateFlow<String?>(null)
-    private val _lastSyncAtMs = MutableStateFlow<Long?>(null)
-
-    /** The sync card's whole read, off this screen's own last-sync state.
-     * `isInformativeSyncOutcomeFn` is what keeps a `"skipped"`/`"busy"`
-     * tick from re-greening this card mid-outage — the same guard
-     * `store/worker-client.ts` applies on the web side. */
-    fun syncSummary(nowMs: Long): MobileSyncStatusSummary = syncStatusSummaryFn(
-        MobileSyncStatusInput(
-            online = onlineFn(),
-            lastSyncOutcomeKind = _lastSyncOutcomeKind.value,
-            lastSyncAtMs = _lastSyncAtMs.value,
-            queueDepth = _queueDepth.value,
-            nowMs = nowMs,
-        ),
-    )
 
     /** The dead-letter affordance's heading, off the real count — never a
      * fixed "1 edit didn't apply" string. */
@@ -133,19 +104,6 @@ class SettingsViewModel(
         load()
     }
 
-    /** One sync cycle, off this screen's own cadence — `RulesViewModel
-     * .save`'s own precedent for a screen driving a cycle independent of
-     * `AppRoot`'s. Only an *informative* outcome overwrites the last-sync
-     * state: a backed-off tick must never read as a fresh "Synced". */
-    suspend fun sync(nowMs: Long) {
-        val kind = runFn(nowMs)
-        if (isInformativeSyncOutcomeFn(kind)) {
-            _lastSyncOutcomeKind.value = kind
-            _lastSyncAtMs.value = nowMs
-        }
-        load()
-    }
-
     companion object {
         fun create(context: Context): SettingsViewModel {
             suspend fun core() = CoreHolder.get(context.applicationContext)
@@ -161,10 +119,6 @@ class SettingsViewModel(
                 setBindingFn = { key, value, nowMs ->
                     core().setBinding(mintBindingSeed(key, nowMs), key, value, nowMs)
                 },
-                runFn = { nowMs ->
-                    core().run(nowMs, SyncWorker.TRIGGER_PUSH, false, Random.nextDouble()).kind
-                },
-                onlineFn = { NetworkStatus.isOnline(context.applicationContext) },
             )
         }
 

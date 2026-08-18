@@ -1,5 +1,6 @@
 package net.twinion.hummingbird
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,17 +30,28 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.core.NetworkStatus
 import net.twinion.hummingbird.theme.ThemePreference
+import net.twinion.hummingbird.ui.theme.Amber600
+import net.twinion.hummingbird.ui.theme.Moss600
+import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
+import net.twinion.hummingbird.ui.theme.StatusWarnFgDark
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileBindingValue
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterReason
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
+import uniffi.hummingbird_ffi_mobile.MobileSyncStatusInput
+import uniffi.hummingbird_ffi_mobile.MobileSyncStatusSummary
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusTone
+import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 
 // The Settings screen (#535/M4): the bindings editor, device-token entry
 // and forget (moved off the debug `ProofScreen`), the sync-status card, the
@@ -48,12 +60,22 @@ import uniffi.hummingbird_ffi_mobile.MobileSyncStatusTone
 // plan entirely (#527's "Out of scope").
 //
 // **This file decides nothing about sync status or a binding write's
-// outcome.** `syncSummary`/`deadLetterHeadingText` arrive applied from
-// `SettingsViewModel`, itself a thin door onto
-// `hummingbird_core::decisions::settings` — no Kotlin-side classification
-// of what "stale"/"held"/"synced" mean, and no Kotlin re-derivation of a
-// binding's known/pending/value states. `SettingsScreenStructuralTest`
-// reads this file (and `SettingsViewModel.kt`) to keep it that way.
+// outcome.** `syncSummary`/`SettingsViewModel.deadLetterHeadingText` arrive
+// applied from `hummingbird_core::decisions::settings` — no Kotlin-side
+// classification of what "stale"/"held"/"synced" mean, and no Kotlin
+// re-derivation of a binding's known/pending/value states.
+// `SettingsScreenStructuralTest` reads this file (and
+// `SettingsViewModel.kt`) to keep it that way.
+//
+// **`lastSyncOutcomeKind`/`lastSyncAtMs` arrive from `AppRoot`, not from
+// this screen's own `SettingsViewModel`** (round-1 review, #535): the real
+// sync cadence — one `user` cycle per resume plus the 60-second `timer`
+// loop — runs above the `NavHost`, and a `viewModel()` here is rebuilt
+// every time its `NavBackStackEntry` is left and re-entered. Reading only
+// this screen's own state would read "Not yet synced" on almost every real
+// visit, however long the app had actually been syncing. `onSync` is
+// `AppRoot`'s own `sync("user")`, for the same reason: one cadence, one
+// writer.
 //
 // **The route is registered but not reachable from the bar or the More
 // sheet** — `RulesScreen`'s own precedent: that is #541's job, and this
@@ -69,6 +91,11 @@ fun SettingsScreen(
     onForgetToken: () -> Unit,
     themePreference: ThemePreference,
     onThemePreference: (ThemePreference) -> Unit,
+    /** The real cadence's last completed, informative cycle — `AppRoot`'s
+     * own state, threaded down exactly as `syncTick` already is. */
+    lastSyncOutcomeKind: String?,
+    lastSyncAtMs: Long?,
+    onSync: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -92,8 +119,19 @@ fun SettingsScreen(
         if (syncTick > 0) reload()
     }
 
-    val nowMs = System.currentTimeMillis()
-    val summary = viewModel.syncSummary(nowMs)
+    // `hummingbird_core::decisions::settings::sync_status_summary`, called
+    // straight from render — the same shape `notificationTapTarget`'s call
+    // in `AppRoot` already takes for a synchronous, clock-free decision
+    // with no durable state of its own to hold.
+    val summary: MobileSyncStatusSummary = syncStatusSummary(
+        MobileSyncStatusInput(
+            online = NetworkStatus.isOnline(context),
+            lastSyncOutcomeKind = lastSyncOutcomeKind,
+            lastSyncAtMs = lastSyncAtMs,
+            queueDepth = queueDepth,
+            nowMs = System.currentTimeMillis(),
+        ),
+    )
 
     Scaffold { padding ->
         Column(
@@ -206,17 +244,25 @@ fun SettingsScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    // `summary.label` already carries the queued count —
+                    // `decisions::settings::queued_suffix`'s own rule is
+                    // that a "0 queued" pill is decoration, so a second,
+                    // Kotlin-side "$queueDepth queued" line would both
+                    // double the count when something is queued and print
+                    // exactly the "0 queued" noise the core suppresses.
                     Text(
                         summary.label,
                         style = MaterialTheme.typography.bodyLarge,
                         color = syncStatusToneColor(summary.tone),
+                        // `toneWord` is the same fact as `label`/`tone`,
+                        // worded for a screen reader rather than a sighted
+                        // render — the one Kotlin caller of
+                        // `MobileSyncStatusSummary.toneWord` (#535 review).
+                        modifier = Modifier.semantics {
+                            contentDescription = "Sync status: ${summary.toneWord}. ${summary.label}"
+                        },
                     )
-                    Text(
-                        "$queueDepth queued",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(onClick = { scope.launch { viewModel.sync(System.currentTimeMillis()) } }) {
+                    Button(onClick = onSync) {
                         Text("Sync now")
                     }
                 }
@@ -362,12 +408,20 @@ private fun themePreferenceLabel(preference: ThemePreference): String = when (pr
     ThemePreference.DARK -> "Dark"
 }
 
+// `tertiary` is the design system's *info* blue (`--status-info-fg`,
+// `Theme.kt`'s own mapping note) — wrong for WARN, which reads "Held —
+// device token needed" and needs `--status-warn-fg`. `onSurface` is plain
+// body text and indistinguishable from every other line on the card —
+// wrong for SUCCESS, which needs `--status-done-fg` (#535 review).
 @Composable
-private fun syncStatusToneColor(tone: MobileSyncStatusTone) = when (tone) {
-    MobileSyncStatusTone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
-    MobileSyncStatusTone.WARN -> MaterialTheme.colorScheme.tertiary
-    MobileSyncStatusTone.DANGER -> MaterialTheme.colorScheme.error
-    MobileSyncStatusTone.SUCCESS -> MaterialTheme.colorScheme.onSurface
+private fun syncStatusToneColor(tone: MobileSyncStatusTone): Color {
+    val dark = isSystemInDarkTheme()
+    return when (tone) {
+        MobileSyncStatusTone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+        MobileSyncStatusTone.WARN -> if (dark) StatusWarnFgDark else Amber600
+        MobileSyncStatusTone.DANGER -> MaterialTheme.colorScheme.error
+        MobileSyncStatusTone.SUCCESS -> if (dark) StatusDoneFgDark else Moss600
+    }
 }
 
 /** The text a row's input starts at — the current value when it is text,

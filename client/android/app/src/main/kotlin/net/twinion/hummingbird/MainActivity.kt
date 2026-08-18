@@ -55,6 +55,7 @@ import net.twinion.hummingbird.theme.resolveDarkTheme
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
+import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 import uniffi.hummingbird_ffi_mobile.notificationTapTarget
 import uniffi.hummingbird_ffi_mobile.RunOutcome
 
@@ -209,12 +210,25 @@ private fun AppRoot(
     var syncing by remember { mutableStateOf(false) }
     var needsToken by remember { mutableStateOf(false) }
     var syncTick by remember { mutableIntStateOf(0) }
+    // #535 review: the sync card's real input. Held here, above the
+    // `NavHost`, for the same reason the cadence itself is (`AppRoot`'s
+    // own doc below) — a screen-scoped `ViewModel` is rebuilt every time
+    // its `NavBackStackEntry` is left and re-entered, so state that lived
+    // only in `SettingsViewModel` reset to "Not yet synced" on every
+    // return to Settings even after ten minutes of the app's own resume/
+    // 60-second cadence syncing happily. `AppRoot` is the one place that
+    // sees every cycle, whichever route is on screen. Only an
+    // *informative* outcome overwrites either — a backed-off
+    // `"skipped"`/`"busy"` tick must never read as a fresh "Synced".
+    var lastSyncOutcomeKind by remember { mutableStateOf<String?>(null) }
+    var lastSyncAtMs by remember { mutableStateOf<Long?>(null) }
 
     suspend fun sync(trigger: String) {
         val host = core ?: return
         syncing = true
+        val nowMs = System.currentTimeMillis()
         val outcome = host.run(
-            System.currentTimeMillis(),
+            nowMs,
             trigger,
             false,
             Random.nextDouble(),
@@ -224,6 +238,10 @@ private fun AppRoot(
         statusLine = describe(outcome)
         needsToken = credentialEvent ||
             outcome.kind == "no_credential" || outcome.kind == "held"
+        if (isInformativeSyncOutcome(outcome.kind)) {
+            lastSyncOutcomeKind = outcome.kind
+            lastSyncAtMs = nowMs
+        }
         facts = readFacts(host)
         syncing = false
         syncTick += 1
@@ -353,6 +371,12 @@ private fun AppRoot(
                 onForgetToken = { scope.launch { forgetToken() } },
                 themePreference = themePreference,
                 onThemePreference = onThemePreference,
+                // #535 review: the real cadence's own state, not a
+                // screen-local copy — see the `lastSyncOutcomeKind`/
+                // `lastSyncAtMs` note above `sync()`.
+                lastSyncOutcomeKind = lastSyncOutcomeKind,
+                lastSyncAtMs = lastSyncAtMs,
+                onSync = { scope.launch { sync("user") } },
                 onBack = { navController.popBackStack() },
             )
         }
