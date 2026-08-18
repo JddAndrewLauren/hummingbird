@@ -170,9 +170,10 @@ fresh notification arrives only after the alert has settled and re-raised.
 That forces the order **15 → 14 → 16**: ack first, then wait a tick for the
 re-raise, then tap cold. Budget an hour.
 
-Item detail has exactly **one door — a notification tap** (#521): the Now
-card is not clickable. To reach the screen without a live notification, fire
-the same intent by hand (adb shell holds `START_ANY_ACTIVITY`):
+Item detail has **two doors**: the Now card itself (#524) and a notification
+tap (#521). Tapping the card is the quick way onto the screen, but it does not
+exercise the notification path — for that, without waiting for a live alert,
+fire the same intent by hand (adb shell holds `START_ANY_ACTIVITY`):
 
 ```
 adb shell am start -n net.twinion.hummingbird/.MainActivity \
