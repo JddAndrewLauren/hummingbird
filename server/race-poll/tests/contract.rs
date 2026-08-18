@@ -10,8 +10,18 @@
 //! `tests/golden.rs` guards the bytes this poller emits; #119's consumer now
 //! exists, so this file guards the *other* half — that the pane's own parser
 //! still reads the keys those bytes carry. It asserts the literal snake_case
-//! names against the text of `race.ts`, plus the two constants that have to
+//! names against the text of `race.rs`, plus the two constants that have to
 //! agree across the seam and one that has to agree with the cron.
+//!
+//! **Retargeted at #534.** ADR-0025/#534 sank the pane's parser out of
+//! `client/web/src/screens/race-pane/race.ts` and into
+//! `client/core/src/decisions/panes/race.rs::parse_race_body` — the real
+//! parse surface now lives there (`race.ts` kept its name but is now a thin
+//! rendering wrapper over the seam for the parsed shape, and no longer
+//! spells `event.…`/`session.…` anywhere; its own `STALE_AFTER_MS` literal
+//! is unaffected — that one stays pinned in TS on its own module-evaluation
+//! reasoning, so `the_panes_stale_threshold_is_twice_the_cadence_this_poller_declares`
+//! is untouched below).
 
 use hummingbird_race_poll::body::POLLED_EVERY_MS;
 
@@ -25,8 +35,13 @@ const RACE_TS: &str = include_str!(concat!(
     "/../../client/web/src/screens/race-pane/race.ts"
 ));
 
+const RACE_RS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../client/core/src/decisions/panes/race.rs"
+));
+
 /// Every key the pane reads out of an event, spelled exactly as it appears on
-/// the wire, and the accessor spelling `race.ts` reads it with.
+/// the wire, and the accessor spelling `race.rs` reads it with.
 const EVENT_KEYS: &[&str] = &["name", "locality", "starts_at_ms", "sessions"];
 
 /// The same, one level down, on the supporting ladder.
@@ -48,13 +63,13 @@ fn the_body_this_poller_writes_is_the_body_the_pane_parses() {
     for key in EVENT_KEYS {
         assert!(
             first.get(*key).is_some(),
-            "`{key}` is gone from the body this poller writes — `parseRaceBody` \
+            "`{key}` is gone from the body this poller writes — `parse_race_body` \
              would answer a gap and the pane would read 'never polled' forever"
         );
         assert!(
-            RACE_TS.contains(&format!("event.{key}")),
-            "`{key}` is written here but no longer read by race.ts — one side \
-             was renamed alone"
+            RACE_RS.contains(&format!("object.get(\"{key}\")")),
+            "`object.get(\"{key}\")` is gone from race.rs's parser — `{key}` is \
+             written here but no longer read there, one side was renamed alone"
         );
     }
 
@@ -66,8 +81,9 @@ fn the_body_this_poller_writes_is_the_body_the_pane_parses() {
     for key in SESSION_KEYS {
         assert!(session.get(*key).is_some(), "a session carries `{key}`");
         assert!(
-            RACE_TS.contains(&format!("session.{key}")),
-            "`{key}` is written on a session but no longer read by race.ts"
+            RACE_RS.contains(&format!("object.get(\"{key}\")")),
+            "`object.get(\"{key}\")` is written on a session but no longer read \
+             by race.rs"
         );
     }
 }
@@ -79,11 +95,11 @@ fn the_body_this_poller_writes_is_the_body_the_pane_parses() {
 #[test]
 fn the_source_and_binding_key_agree_with_the_pane() {
     assert!(
-        RACE_TS.contains(r#"export const SOURCE = "race-schedule/v1""#),
+        RACE_RS.contains(r#"pub const SOURCE: &str = "race-schedule/v1";"#),
         "the pane reads a different source than this poller writes"
     );
     assert!(
-        RACE_TS.contains(r#"export const BINDING_KEY = "race-series""#),
+        RACE_RS.contains(r#"pub const BINDING_KEY: &str = "race-series";"#),
         "the pane reads a different binding than this poller reads"
     );
     assert_eq!(hummingbird_domain::RACE_SCHEDULE_V1, "race-schedule/v1");
@@ -121,5 +137,9 @@ fn neither_side_invents_a_session_end_time() {
     assert!(
         !RACE_TS.contains("ends_at_ms") && !RACE_TS.contains("endsAtMs"),
         "race.ts reads or invents a session end time; the feed publishes none"
+    );
+    assert!(
+        !RACE_RS.contains("ends_at_ms") && !RACE_RS.contains("endsAtMs"),
+        "race.rs reads or invents a session end time; the feed publishes none"
     );
 }

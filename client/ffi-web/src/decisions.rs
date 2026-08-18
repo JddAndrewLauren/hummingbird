@@ -1240,9 +1240,445 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
     }
 }
 
+// ------------------------------------------------------------------- #534
+// The remaining seven panes: the status four (kimi/github/uptime/
+// reachability) and the now three (race/weekend/vacation) — same house
+// style as waste's own section above. Every wrapper returns structured
+// values, never a rendered sentence; each pane's own TS module composes its
+// words from these.
+
+use hummingbird_core::decisions::panes::{kimi, github, uptime, reachability, race, vacation, weekend, zone};
+
+/// `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
+/// `zone-bridge.ts`'s `resolveZone` special-cases to mean "the reader's own
+/// device zone". Pinned against the TS literal by `seam.test.ts` rather
+/// than read through the seam at every call: a changed sentinel here and a
+/// stale copy there would silently turn weekend/vacation into permanent
+/// gap answers (`ZoneFacts` simply never resolving), the exact "used
+/// before ready" style failure this crossing exists to catch loudly
+/// instead.
+#[wasm_bindgen]
+pub fn device_zone() -> String {
+    zone::DEVICE_ZONE.to_string()
+}
+
+fn snapshot_from_json(
+    snapshot_json: &str,
+) -> Result<Option<hummingbird_core::decisions::panes::inputs::PaneSnapshotFacts>, String> {
+    serde_json::from_str(snapshot_json).map_err(|e| e.to_string())
+}
+
+// -- kimi (#313) -------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn parse_kimi_body_json(snapshot_json: &str) -> String {
+    match snapshot_from_json(snapshot_json) {
+        Ok(snapshot) => match kimi::parse_kimi_body(snapshot.as_ref()) {
+            Ok(body) => serde_json::json!({ "kind": "ok", "body": body }).to_string(),
+            Err(gap) => serde_json::json!({ "kind": "gap", "gap": gap }).to_string(),
+        },
+        Err(error) => error_json(error),
+    }
+}
+
 #[wasm_bindgen]
 pub fn dead_letter_heading(count: u32) -> String {
     settings::dead_letter_heading(count)
+}
+
+#[wasm_bindgen]
+pub fn kimi_facts_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&kimi::kimi_facts(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn kimi_answer_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&kimi::kimi_answer(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn kimi_band_json(available_balance: f64) -> String {
+    serde_json::to_string(&kimi::kimi_band(available_balance)).unwrap()
+}
+
+#[wasm_bindgen]
+pub fn kimi_constants_json() -> String {
+    serde_json::json!({
+        "source": kimi::SOURCE,
+        "snapshotKey": kimi::SNAPSHOT_KEY,
+        "staleAfterMs": kimi::STALE_AFTER_MS,
+        "imminentThresholdUsd": kimi::IMMINENT_THRESHOLD_USD,
+        "nearThresholdUsd": kimi::NEAR_THRESHOLD_USD,
+    })
+    .to_string()
+}
+
+// -- github (#314) -------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn parse_workflow_body_json(snapshot_json: &str) -> String {
+    match snapshot_from_json(snapshot_json) {
+        Ok(snapshot) => match github::parse_workflow_body(snapshot.as_ref()) {
+            Ok(body) => serde_json::json!({ "kind": "ok", "body": body }).to_string(),
+            Err(gap) => serde_json::json!({ "kind": "gap", "gap": gap }).to_string(),
+        },
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn github_band_json(body_json: &str, now_ms: f64) -> String {
+    match serde_json::from_str::<github::WorkflowBody>(body_json) {
+        Ok(body) => serde_json::to_string(&github::github_band(&body, now_ms as i64)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+#[wasm_bindgen]
+pub fn github_subjects_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&github::github_subjects(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn github_facts_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&github::github_facts(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn github_answer_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&github::github_answer(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn github_constants_json() -> String {
+    serde_json::json!({
+        "source": github::SOURCE,
+        "neverPolledSubject": github::NEVER_POLLED_SUBJECT,
+        "staleAfterMs": github::STALE_AFTER_MS,
+        "overdueMultiplier": github::OVERDUE_MULTIPLIER,
+    })
+    .to_string()
+}
+
+// -- uptime (#315) -------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn parse_uptime_body_json(snapshot_json: &str) -> String {
+    match snapshot_from_json(snapshot_json) {
+        Ok(snapshot) => match uptime::parse_uptime_body(snapshot.as_ref()) {
+            Ok(body) => serde_json::json!({ "kind": "ok", "body": body }).to_string(),
+            Err(gap) => serde_json::json!({ "kind": "gap", "gap": gap }).to_string(),
+        },
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn uptime_band_json(body_json: &str) -> String {
+    match serde_json::from_str::<uptime::ProbeBody>(body_json) {
+        Ok(body) => serde_json::to_string(&uptime::uptime_band(&body)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+#[wasm_bindgen]
+pub fn uptime_subjects_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&uptime::uptime_subjects(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn uptime_facts_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&uptime::uptime_facts(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn uptime_answer_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&uptime::uptime_answer(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn uptime_constants_json() -> String {
+    serde_json::json!({
+        "source": uptime::SOURCE,
+        "neverPolledSubject": uptime::NEVER_POLLED_SUBJECT,
+        "staleAfterMs": uptime::STALE_AFTER_MS,
+    })
+    .to_string()
+}
+
+// -- reachability (#316) --------------------------------------------------
+
+#[wasm_bindgen]
+pub fn reachability_facts_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&reachability::reachability_facts(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn reachability_answer_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => {
+            serde_json::to_string(&reachability::reachability_answer(&inputs)).unwrap()
+        }
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn reachability_constants_json() -> String {
+    serde_json::json!({
+        "subjectKey": reachability::SUBJECT_KEY,
+        "graceMs": reachability::REACHABILITY_GRACE_MS,
+    })
+    .to_string()
+}
+
+// -- race (#119) -----------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn parse_race_body_json(snapshot_json: &str) -> String {
+    match snapshot_from_json(snapshot_json) {
+        Ok(snapshot) => match race::parse_race_body(snapshot.as_ref()) {
+            Ok(body) => serde_json::json!({ "kind": "ok", "body": body }).to_string(),
+            Err(gap) => serde_json::json!({ "kind": "gap", "gap": gap }).to_string(),
+        },
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn race_series_from_binding_json(text: &str) -> String {
+    serde_json::to_string(&race::series_from_binding(text)).unwrap()
+}
+
+#[wasm_bindgen]
+pub fn race_setup_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&race::race_setup(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn race_subjects_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&race::race_subjects(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn next_race_at_json(events_json: &str, now_ms: f64) -> String {
+    match serde_json::from_str::<Vec<race::RaceEvent>>(events_json) {
+        Ok(events) => {
+            serde_json::to_string(&race::next_race_at(&events, now_ms as i64)).unwrap()
+        }
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+#[wasm_bindgen]
+pub fn race_facts_json(series: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&race::race_facts(series, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn race_answer_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&race::race_answer(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn race_constants_json() -> String {
+    serde_json::json!({
+        "source": race::SOURCE,
+        "bindingKey": race::BINDING_KEY,
+        "staleAfterMs": race::STALE_AFTER_MS,
+        "setupSubject": race::SETUP_SUBJECT,
+    })
+    .to_string()
+}
+
+// -- weekend (#122) ---------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn weekend_zone_queries_json(now_ms: f64) -> String {
+    queries_json(weekend::weekend_zone_queries(now_ms as i64))
+}
+
+#[wasm_bindgen]
+pub fn weekend_window_json(now_ms: f64, zone_facts_json: &str) -> String {
+    match parse_zone_facts(zone_facts_json) {
+        Ok(facts) => {
+            serde_json::to_string(&weekend::weekend_window(now_ms as i64, &facts)).unwrap()
+        }
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn weekend_facts_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&weekend::weekend_facts(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn weekend_answer_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&weekend::weekend_answer(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+/// [`weekend::weekend_band`] — exposed standalone (not just via
+/// `weekend_answer_json`) so `weekend.ts`'s locally-kept `weekendBand` can
+/// be pinned against it directly by a shared cross-host test, on
+/// `github_band_json`'s own precedent.
+#[wasm_bindgen]
+pub fn weekend_band_json(window_json: &str, now_ms: f64) -> String {
+    match serde_json::from_str::<weekend::WeekendWindow>(window_json) {
+        Ok(window) => serde_json::to_string(&weekend::weekend_band(&window, now_ms as i64)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+/// [`weekend::weekend_within_band`] — same reason as
+/// [`weekend_band_json`].
+#[wasm_bindgen]
+pub fn weekend_within_band_json(window_json: &str) -> String {
+    match serde_json::from_str::<weekend::WeekendWindow>(window_json) {
+        Ok(window) => serde_json::to_string(&weekend::weekend_within_band(&window)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+#[wasm_bindgen]
+pub fn weekend_constants_json() -> String {
+    serde_json::json!({
+        "subjectKey": weekend::SUBJECT_KEY,
+        "calendarRequestKey": weekend::CALENDAR_REQUEST_KEY,
+        "imminentWithinMs": weekend::IMMINENT_WITHIN_MS,
+        "nearWithinMs": weekend::NEAR_WITHIN_MS,
+    })
+    .to_string()
+}
+
+// -- vacation (#121) ---------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn vacation_zone_queries_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => queries_json(vacation::vacation_zone_queries(&inputs)),
+        Err(error) => error_json(error),
+    }
+}
+
+/// [`vacation::vacation_setup_kind`] — the kind-only projection
+/// `vacation::VacationSetup` itself cannot cross (its `Bound` arm borrows).
+/// `vacation.ts`'s `vacationSetup` is pinned against this, on
+/// `race_setup_json`'s/`waste_setup_json`'s own precedent.
+#[wasm_bindgen]
+pub fn vacation_setup_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&vacation::vacation_setup_kind(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn trip_queue_json(events_json: &str, calendar_id: &str, today: &str, zone_facts_json: &str) -> String {
+    match (
+        serde_json::from_str::<Vec<hummingbird_core::decisions::panes::inputs::CalendarEventFacts>>(
+            events_json,
+        ),
+        parse_zone_facts(zone_facts_json),
+    ) {
+        (Ok(events), Ok(facts)) => {
+            let today = today.to_string();
+            serde_json::to_string(&vacation::trip_queue(&events, calendar_id, &today, &facts)).unwrap()
+        }
+        (Err(error), _) => error_json(error.to_string()),
+        (_, Err(error)) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn vacation_band_json(next_trip_json: &str) -> String {
+    match serde_json::from_str::<Option<vacation::Trip>>(next_trip_json) {
+        Ok(next) => serde_json::to_string(&vacation::vacation_band(next.as_ref())).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+#[wasm_bindgen]
+pub fn vacation_view_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&vacation::vacation_view(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn vacation_answer_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&vacation::vacation_answer(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn vacation_constants_json() -> String {
+    serde_json::json!({
+        "subjectKey": vacation::SUBJECT_KEY,
+        "calendarRequestKey": vacation::CALENDAR_REQUEST_KEY,
+        "horizonBeforeDays": vacation::HORIZON_BEFORE_DAYS,
+        "horizonAheadDays": vacation::HORIZON_AHEAD_DAYS,
+        "staleAfterMs": vacation::STALE_AFTER_MS,
+        "imminentWithinDays": vacation::IMMINENT_WITHIN_DAYS,
+        "nearWithinDays": vacation::NEAR_WITHIN_DAYS,
+    })
+    .to_string()
 }
 
 #[cfg(test)]
@@ -1573,9 +2009,18 @@ mod tests {
         let inputs = waste_inputs(BODY, bound_page());
         let now: serde_json::Value =
             serde_json::from_str(&rank_panes_json(&inputs, FACTS, "now")).unwrap();
-        assert_eq!(now.as_array().unwrap().len(), 1);
-        assert_eq!(now[0]["paneKey"], serde_json::json!("waste:collection"));
-        assert_eq!(rank_panes_json(&inputs, FACTS, "status"), "[]");
+        // #534 grew Now to four questions (waste/weekend/vacation/race);
+        // this fixture only binds waste's own page, so the other three
+        // rank unbound rather than vanishing (ADR-0017's own rule).
+        let now = now.as_array().unwrap();
+        assert_eq!(now.len(), 4);
+        let waste = now.iter().find(|pane| pane["question"] == "waste").unwrap();
+        assert_eq!(waste["paneKey"], serde_json::json!("waste:collection"));
+        // #534 also filled Status with the never-polled sentinel for its
+        // four questions, rather than leaving the surface empty.
+        let status: serde_json::Value =
+            serde_json::from_str(&rank_panes_json(&inputs, FACTS, "status")).unwrap();
+        assert_eq!(status.as_array().unwrap().len(), 4);
         assert_eq!(rank_panes_json(&inputs, FACTS, "not-a-surface"), "[]");
         assert_eq!(pane_zone_queries_json(&inputs, "not-a-surface"), "[]");
     }

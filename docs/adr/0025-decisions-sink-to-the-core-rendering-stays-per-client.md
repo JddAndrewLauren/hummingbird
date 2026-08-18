@@ -112,6 +112,35 @@ imported the seam for its other functions. `ThemePreference`/
 `resolveDarkTheme` stay per-client on `frontier-prefs.ts`'s existing
 "view prefs" verdict, widened here to cover a theme choice explicitly, not
 only a frontier grouping/facet preference.
+**Amended 2026-08-18 (#534):** M4 sank the remaining seven standing-question
+panes — the status four (kimi/github/uptime/reachability) and the now three
+(race/weekend/vacation) — growing `decisions::panes::SUNK` from waste alone
+to all eight. Three findings worth the record, beyond the per-pane verdict
+rows in [What does not sink with the panes, continued](#what-does-not-sink-with-the-panes-continued-534).
+**First**, the facts-union question #533 deliberately left open is settled:
+each pane's *facts* still cross on its own seam export (`kimi_facts_json`,
+`github_facts_json`, …) rather than a single tagged union hung off
+`RankedPaneRecord` — seven real arms made the union's shape obvious enough
+to write, but no caller ever needs a pane's full facts and its rank in one
+call (the shell reads `PaneAnswerCore` for ranking and a pane's own facts
+only inside that pane's own `Expanded` render), so a union would cost a
+type nobody was blocked on. **Second**, a new zone-bridge case:
+`weekend.rs`/`vacation.rs` both need "the reader's own zone" rather than a
+payload-carried IANA name, so [`zone::DEVICE_ZONE`](../../client/core/src/decisions/panes/zone.rs)
+is a sentinel `zone` string the two-phase crossing already carried without
+a new `ZoneQuery` variant — `zone-bridge.ts` is the one place it is given
+meaning (`Intl.DateTimeFormat().resolvedOptions().timeZone`). **Third**, a
+harder version of the M1 module-evaluation-order constraint: `weekend.ts`'s
+`weekendWindow` is called at `describe`-body top level by `weekend.test.ts`
+(before any `it()` runs), which executes during vitest's synchronous test
+*collection* — before `wasm-setup.ts`'s `beforeAll` resolves
+`initDecisions()`. `weekendWindow`/`weekendBand`/`weekendWithinBand`
+therefore stay literal TS, pinned against `weekend.rs`'s own
+`weekend_window`/`weekend_band`/`weekend_within_band` by
+`weekend-window.shared.test.ts` rather than called through the seam at
+runtime — `field-vocabulary.ts`'s precedent, for a collection-order trap
+rather than a module-evaluation one. `weekendAnswer` itself (called only
+inside `it()` bodies) does cross.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -371,3 +400,30 @@ rewrite rather than a probe.
 | `contract.ts`'s `BAND_ORDER`/`QUESTION_ORDER` | the vocabularies sank (`decisions::panes::contract`); the two arrays stay literal TS for a *harder* version of #500's module-evaluation-order constraint — `registry.ts` builds `QUESTIONS` at module evaluation and reads `QUESTION_ORDER` there — pinned against the core by `seam.test.ts` |
 | `waste.ts`'s `SOURCE`/`SNAPSHOT_KEY`/`BINDING_KEY`/`STALE_AFTER_MS`/`STREAM_ORDER` | same constraint via `question.ts`'s `sources: [SOURCE]`; pinned by `seam.test.ts`, not sunk at runtime |
 | The weekday *word* | per-client, from `WasteFacts.weekdayIndex` — the core decides which day, the client names it |
+
+## What does not sink with the panes, continued (#534)
+
+*The remaining seven panes, sunk at #534, on the same split waste drew at
+#533: a question's answer state, band, `withinBand` and its structured
+**facts**/**gap kinds** are decisions and sink; its headline wording,
+glyphs, and whole `Expanded` rendering are per-client and do not.*
+
+| Module | Verdict |
+|---|---|
+| `kimi.ts`'s `formatUsd`/`kimiCollapsedHeadline`/`kimiGlyph`/`kimiGapReason` | headline wording, formatting and glyph — `KimiGap` sank as a kind, the sentences did not |
+| `github.ts`'s `githubCollapsedHeadline`/`githubGlyph`/`ageWords`/`githubGapReason` | same split; `githubBand`'s stale-poller escalation is decided in the core (`github_answer`), the web only recomputes the *raw* band locally to tell "genuinely imminent" apart from "escalated because stale" when composing the headline |
+| `uptime.ts`'s `uptimeCollapsedHeadline`/`uptimeGlyph`/`ageWords`/`uptimeGapReason` | same split as github's |
+| `reachability.ts`'s headline sentence (`"Synced"`/`"Last synced" ${relativeAge(...)}`) | `relativeAge`'s wording stays per-client; `reachability_facts`'s `latestAttemptLanded` boolean is what the core decides, so the web is choosing a verb, not deciding one |
+| `race.ts`'s `countdown`'s numeric split, `abbreviate`, `seriesLabel`, `raceHeadlineParts`, `raceCollapsedHeadline` | number/name formatting and headline composition |
+| `race.ts`'s `dayLabel`/`clock` | explicitly device-local wall-clock words (ADR-0015) — no zone anywhere, deliberately |
+| `race.ts`'s `RaceView.liveAlert`'s own `title`/`body` | the alert join stays client-side (`liveAlertFor`, re-derived from `inputs.paneReads` directly) — `race.rs`'s `RaceFacts.hasLiveAlert` is the boolean the *band* reads; the alert's own display fields are data the client already holds locally and would be a whole-DTO re-crossing for no decision to read |
+| `weekend.ts`'s `weekendWindow`/`weekendBand`/`weekendWithinBand` | **stays literal TS, pinned rather than called** — `weekend.test.ts` calls `weekendWindow` at `describe`-body top level, before `wasm-setup.ts`'s `beforeAll` resolves `initDecisions()`; a collection-order version of #500's module-evaluation-order constraint. Pinned against `weekend.rs`'s own `weekend_window`/`weekend_band`/`weekend_within_band` by `weekend-window.shared.test.ts`. `weekendAnswer` (called only inside `it()` bodies) does cross |
+| `weekend.ts`'s `mergeWindow`/`WindowEntry`/`countKinds`/`timeLabel`/`shortDayLabel`/`dayKeyOf` | the full per-entry merge, with titles, ids and anchors — the decision only ever needs the *counts* (`weekend.rs`'s `WindowCounts`), and every title/id crossing the seam with no decision reading it would violate `inputs.rs`'s own "do not re-cross whole DTOs" discipline |
+| `weekend.ts`'s `entryUrgency` | reads `computeUrgency`, already `hummingbird_core::decisions::urgency` (M1-2, #500) under a different name — nothing second to sink |
+| `vacation.ts`'s `Trip.name`/`tripName` | `vacation.rs`'s `Trip` carries no `name` field — no core decision reads it (only the headline does), so this file recovers it locally by matching a core `Trip`'s `id` back to the `CalendarEventDTO` it came from |
+| `vacation.ts`'s `vacationHeadline`/`tripDateRange`/`tripDayLabel`/`MONTH_NAMES`/`civilParts` | headline and date-range wording |
+| `vacation.ts`'s `vacationSetup`'s `Bound` arm's `read` field | the seam carries only `calendarId` (`vacation_setup_kind`'s kind-only projection — `VacationSetup::Bound` itself borrows the inputs' own event slice and has no `Serialize`); `read` is attached locally from the same `calendarReads` the core already consulted to decide `Bound`, never a second guess about its state |
+| `weekend-pane/question.ts`'s and `vacation-pane/question.ts`'s `calendarRequests` (`vacationCalendarInterval`, the weekend window's civil bounds) | **calendar-request building stays per-client, keeping the tzdb at request-build time** — #267's calendar arm is asked in civil dates resolved in the device's own zone at the moment of the request, which is a per-render host concern (`useCalendarEventsWiring`'s effect), not a fact the core needs to have decided in advance of asking for it |
+| `WastePaneExpanded.tsx`-shaped `Expanded` components for all seven (`KimiPaneExpanded`, `GithubPaneExpanded`, `UptimePaneExpanded`, `ReachabilityPaneExpanded`, `RacePaneExpanded`, `WeekendPaneExpanded`, `VacationPaneExpanded`) | whole renderings |
+| `kimi.ts`/`github.ts`/`uptime.ts`/`reachability.ts`/`race.ts`/`weekend.ts`/`vacation.ts`'s own `SOURCE`/`SNAPSHOT_KEY`/`BINDING_KEY`/`STALE_AFTER_MS`-shaped constants | same module-evaluation-order constraint as waste's own four (each question's `sources: [SOURCE]` in its `question.ts` is built at module evaluation); pinned against the core's own `*_constants_json()` by `seam.test.ts`, not sunk at runtime |
+| The weekday/month *words* everywhere they appear | per-client, from the core's own civil-date/index facts (`weekendDay.date`, `Trip.startDate`) — the core decides which day, the client names it |

@@ -3,13 +3,14 @@
 //! by `race-alert-poll`, which holds no schedule of its own.
 //!
 //! **This is one half of a cross-language contract.** The other half is
-//! #119's pane parser, which does not exist yet, so
-//! `tests/fixtures/golden-body.json` stands in for it: the exact envelope
-//! this poller emits from the committed Jolpica response, byte-compared by
-//! `tests/golden.rs`. #119 writes its parser against that file and adds its
-//! own `contract.rs` pointing at it, exactly as `server/city-waste`'s
-//! `contract.rs` asserts the literal snake_case keys against `waste.ts`'s
-//! text. Nothing mechanical connects the two sides — the body inside the
+//! `client/core/src/decisions/panes/race.rs`'s `parse_race_body` (sunk out
+//! of `client/web/src/screens/race-pane/race.ts` at #534), so
+//! `tests/fixtures/golden-body.json` stands in for the wire fixture: the
+//! exact envelope this poller emits from the committed Jolpica response,
+//! byte-compared by `tests/golden.rs`. `tests/contract.rs` asserts the
+//! literal snake_case keys against `race.rs`'s own text, exactly as
+//! `server/city-waste`'s `contract.rs` asserts them against `waste.rs`'s.
+//! Nothing mechanical connects the two sides — the body inside the
 //! envelope is deliberately unfrozen and opaque to the server — so a rename
 //! on either side compiles and passes on both.
 //!

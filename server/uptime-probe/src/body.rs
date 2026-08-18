@@ -2,9 +2,10 @@
 //! around a `uptime/v1` body, one row per manifest-declared service.
 //!
 //! **This is one half of a cross-language contract.** The other half is
-//! `client/web/src/screens/uptime-pane/uptime.ts`'s parser, and nothing
-//! mechanically connects them — the same "no type, no schema, no compiler
-//! on either side can see the other" posture `kimi-balance`'s
+//! `client/core/src/decisions/panes/uptime.rs`'s `parse_uptime_body` (sunk
+//! out of `client/web/src/screens/uptime-pane/uptime.ts` at #534), and
+//! nothing mechanically connects them — the same "no type, no schema, no
+//! compiler on either side can see the other" posture `kimi-balance`'s
 //! `tests/contract.rs` documents, and this crate's own `tests/contract.rs`
 //! asserts the same way.
 //!
