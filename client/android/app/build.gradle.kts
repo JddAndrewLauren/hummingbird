@@ -165,6 +165,8 @@ dependencies {
     implementation(libs.security.crypto)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.core.ktx)
+    // M3/#530: the frontier board's axis/facet/collapse preferences.
+    implementation(libs.androidx.datastore.preferences)
     // M2/#141's push half. The BoM versions `firebase-messaging` below.
     //
     // **`google-services.json` is committed, deliberately.** It is not a
