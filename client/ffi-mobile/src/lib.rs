@@ -842,6 +842,107 @@ fn build_now_board(
     NowBoardRecord { columns, blocked, contexts, live_column_keys }
 }
 
+// ----------------------------------------------------------------- M3 (#531)
+// The Triage screen's own door — the "triage process" queue
+// (`hummingbird_core::decisions::queue`), already sunk from web and already
+// riding inline into `build_now_board`'s combined list, exposed here as its
+// own decided read so a dedicated screen never has to pick triage/grilling
+// rows back out of the frontier board's columns.
+
+/// One Triage-screen row: an already-decided [`Item`], carrying every field
+/// [`hummingbird_core::TriagePatch`] can touch — the seeded editor's whole
+/// starting draft — plus `stage` (a combined queue can hold a Grilling row
+/// beside a Triage one, so the badge reads the item's own stage rather than
+/// assuming "triage") and `can_mark_done`.
+///
+/// `can_mark_done` rides along rather than `available_actions`
+/// ([`NowItemRecord`]'s own field): [`available_actions`] answers `&[]` for
+/// both Triage and Grilling (`hummingbird_core::decisions::actions`'s own
+/// doc — "neither is action yet"), so a row built the frontier board's way
+/// would never offer the checkmark the web's `TriageRow` renders today.
+/// [`can_mark_done`] is the wider, deliberately-separate rule that answers
+/// this instead — the same one [`to_blocked_item_record`] already reaches
+/// for.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TriageItemRecord {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub stage: String,
+    pub size: Option<String>,
+    pub energy: Option<String>,
+    pub context: Option<String>,
+    pub priority: i64,
+    pub project_id: Option<String>,
+    pub deadline: Option<String>,
+    pub scheduled_date: Option<String>,
+    pub source: Option<String>,
+    pub created_at: i64,
+    pub can_mark_done: bool,
+}
+
+fn to_triage_item_record(item: &Item) -> TriageItemRecord {
+    TriageItemRecord {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        description: item.description.clone(),
+        stage: item.stage.as_str().to_string(),
+        size: item.size.map(|size| size.as_str().to_string()),
+        energy: item.energy.map(|energy| energy.as_str().to_string()),
+        context: item.context.clone(),
+        priority: item.priority,
+        project_id: item.project_id.clone(),
+        deadline: item.deadline.clone(),
+        scheduled_date: item.scheduled_date.clone(),
+        source: item.source.clone(),
+        created_at: item.created_at,
+        can_mark_done: can_mark_done(item.stage, item.archived_at.is_some()),
+    }
+}
+
+/// [`MobileTaskHost::triage_board`]'s whole read, decided: [`queue::
+/// triage_process_queue`]'s own ordered id list, resolved back to full rows
+/// and its two record-field counts carried verbatim — never recomputed from
+/// `items.len()` in Kotlin, which is exactly the "N captured · M grilling"
+/// header's own acceptance criterion.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TriageBoardRecord {
+    pub items: Vec<TriageItemRecord>,
+    pub captured_count: u32,
+    pub grilling_count: u32,
+}
+
+/// [`MobileTaskHost::triage_board`]'s pure core, free of `Core`/
+/// `MobileTaskHost` for the same fixture-driven-test reason
+/// [`build_now_board`]'s own doc gives.
+fn build_triage_board(
+    triage_items: &[Item],
+    grilling_items: &[Item],
+    draft_item_ids: &[String],
+) -> TriageBoardRecord {
+    let by_id: HashMap<&str, &Item> = triage_items
+        .iter()
+        .chain(grilling_items.iter())
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+
+    let triage_queue: Vec<queue::QueueItem> = triage_items.iter().map(to_queue_item).collect();
+    let grilling_queue: Vec<queue::QueueItem> = grilling_items.iter().map(to_queue_item).collect();
+    let process = queue::triage_process_queue(&triage_queue, &grilling_queue, draft_item_ids);
+
+    let items = process
+        .ids
+        .iter()
+        .filter_map(|id| by_id.get(id.as_str()).map(|item| to_triage_item_record(item)))
+        .collect();
+
+    TriageBoardRecord {
+        items,
+        captured_count: process.captured_count as u32,
+        grilling_count: process.grilling_count as u32,
+    }
+}
+
 // ----------------------------------------------------------------- M2 (#141)
 // The notification lane's read side. Same asymmetry as the M1-6 section
 // above: Kotlin receives decided records, never a predicate to apply.
@@ -1100,6 +1201,26 @@ pub struct ItemEdit {
     pub project_id: FieldPatch,
     pub deadline: FieldPatch,
     pub scheduled_date: FieldPatch,
+}
+
+/// [`ItemEdit`] → [`hummingbird_core::TriagePatch`], the one conversion
+/// [`MobileTaskHost::edit_item`] and [`MobileTaskHost::triage_item`] both
+/// need (review finding on #531's own PR — the two calls carried the
+/// identical nine-field literal before this was pulled out). `Err` is an
+/// unrecognised vocabulary word, rejected before the seam exactly as every
+/// other closed-vocabulary string crossing here is.
+fn to_triage_patch(edit: &ItemEdit) -> Result<hummingbird_core::TriagePatch, String> {
+    Ok(hummingbird_core::TriagePatch {
+        title: edit.title.clone(),
+        priority: edit.priority,
+        description: edit.description.to_text(),
+        size: edit.size.to_vocabulary(Size::parse)?,
+        energy: edit.energy.to_vocabulary(Energy::parse)?,
+        context: edit.context.to_text(),
+        project_id: edit.project_id.to_text(),
+        deadline: edit.deadline.to_text(),
+        scheduled_date: edit.scheduled_date.to_text(),
+    })
 }
 
 /// [`MobileTaskHost::edit_item`] failed. `ItemNotFound` covers the archived
@@ -1966,28 +2087,58 @@ impl MobileTaskHost {
         edit: ItemEdit,
         now_ms: i64,
     ) -> Result<(), MobileEditError> {
-        let patch = hummingbird_core::TriagePatch {
-            title: edit.title.clone(),
-            priority: edit.priority,
-            description: edit.description.to_text(),
-            size: edit
-                .size
-                .to_vocabulary(Size::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            energy: edit
-                .energy
-                .to_vocabulary(Energy::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            context: edit.context.to_text(),
-            project_id: edit.project_id.to_text(),
-            deadline: edit.deadline.to_text(),
-            scheduled_date: edit.scheduled_date.to_text(),
-        };
+        let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
         let seed = mint_mutation_seed("edit", now_ms);
         let mut inner = self.inner.lock().await;
         inner
             .core
             .triage(&seed, &item_id, false, patch, now_ms)
+            .await
+            .map_err(|error| match error {
+                hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
+                other => MobileEditError::EditFailed {
+                    detail: other.to_string(),
+                },
+            })
+    }
+
+    /// The Triage screen's whole read (M3/#531) — [`build_triage_board`]'s
+    /// pure core over [`hummingbird_core::Core::triage_inbox`],
+    /// [`hummingbird_core::Core::grilling_items`] and
+    /// [`hummingbird_core::Core::grill_draft_item_ids`], the same three
+    /// reads [`MobileTaskHost::now_board`] already combines for the
+    /// frontier board's inline triage rows — this door decides the same
+    /// queue on its own, for the screen whose whole reason to exist is that
+    /// queue.
+    pub async fn triage_board(&self) -> TriageBoardRecord {
+        let inner = self.inner.lock().await;
+        let triage_items = inner.core.triage_inbox();
+        let grilling_items = inner.core.grilling_items();
+        let draft_item_ids = inner.core.grill_draft_item_ids();
+        build_triage_board(&triage_items, &grilling_items, &draft_item_ids)
+    }
+
+    /// The Triage screen's mutation (M3/#531) —
+    /// [`hummingbird_core::Core::triage`] verbatim, the same [`ItemEdit`]→
+    /// [`hummingbird_core::TriagePatch`] conversion [`to_triage_patch`]
+    /// [`MobileTaskHost::edit_item`] shares, except `promote_to_ready` rides
+    /// as a real caller-supplied argument rather than pinned `false`:
+    /// promoting to Ready is this screen's one destination, and every edit
+    /// alongside it still lands in the same single CAS `PATCH`
+    /// [`Core::triage`]'s own doc argues for.
+    pub async fn triage_item(
+        &self,
+        item_id: String,
+        promote_to_ready: bool,
+        edit: ItemEdit,
+        now_ms: i64,
+    ) -> Result<(), MobileEditError> {
+        let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
+        let seed = mint_mutation_seed("triage", now_ms);
+        let mut inner = self.inner.lock().await;
+        inner
+            .core
+            .triage(&seed, &item_id, promote_to_ready, patch, now_ms)
             .await
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
@@ -2931,8 +3082,9 @@ mod tests {
     /// `active_item_count`/`frontier` stay at zero on purpose: a capture is
     /// born into `Stage::Triage`, which `Core::frontier`'s own
     /// Ready/InProgress filter never surfaces — `Core::triage_inbox` is the
-    /// query that would show it, not yet exposed to a mobile host (deferred
-    /// to the Now-list screen, M1-6).
+    /// query that shows it instead, exposed to a mobile host by
+    /// `MobileTaskHost::now_board` (M3/#530) and again, on its own, by
+    /// `MobileTaskHost::triage_board` (M3/#531).
     #[tokio::test]
     async fn capture_is_durable_before_any_network_is_touched() {
         let dir = tempfile::tempdir().unwrap();
@@ -3755,6 +3907,213 @@ mod tests {
 
         let result = host.act("no-such-id".to_string(), "start".to_string(), 1_000).await;
         assert!(matches!(result, Err(MobileActError::ItemNotFound)));
+    }
+
+    // ------------------------------------------------------- M3 (#531)
+
+    /// Captured and Grilling items combine into one queue, in the core's
+    /// order — local drafts first (none here), then Grilling, then captured
+    /// Triage, oldest-first within each group — the same order
+    /// `queue::triage_process_queue` itself pins.
+    #[test]
+    fn triage_board_orders_grilling_before_captured_triage() {
+        let captured = Item { stage: Stage::Triage, ..item("captured-1", 0, None) };
+        let grilling = Item {
+            stage: Stage::Grilling,
+            created_at: 1,
+            ..item("grilling-1", 0, None)
+        };
+
+        let board = build_triage_board(&[captured], &[grilling], &[]);
+
+        assert_eq!(
+            board.items.iter().map(|record| record.id.clone()).collect::<Vec<_>>(),
+            vec!["grilling-1", "captured-1"],
+        );
+    }
+
+    /// The header's two counts are the record's own fields, never a caller
+    /// recomputation over `items.len()`.
+    #[test]
+    fn triage_board_counts_are_exact_never_recomputed() {
+        let captured = vec![
+            Item { stage: Stage::Triage, ..item("c-1", 0, None) },
+            Item { stage: Stage::Triage, ..item("c-2", 0, None) },
+        ];
+        let grilling = vec![Item { stage: Stage::Grilling, ..item("g-1", 0, None) }];
+
+        let board = build_triage_board(&captured, &grilling, &[]);
+
+        assert_eq!(board.captured_count, 2);
+        assert_eq!(board.grilling_count, 1);
+        assert_eq!(board.items.len(), 3);
+    }
+
+    /// A row carries every field the seeded editor needs, and its own
+    /// stage — a combined queue can hold a Grilling row beside a Triage
+    /// one, so the badge must never assume "triage".
+    #[test]
+    fn triage_item_records_carry_the_seeded_editor_fields_and_own_stage() {
+        let grilling = Item {
+            stage: Stage::Grilling,
+            description: Some("notes".to_string()),
+            context: Some("@computer".to_string()),
+            ..item("g-1", 2, Some("2026-08-20"))
+        };
+
+        let board = build_triage_board(&[], &[grilling], &[]);
+
+        let record = &board.items[0];
+        assert_eq!(record.stage, "grilling");
+        assert_eq!(record.description.as_deref(), Some("notes"));
+        assert_eq!(record.context.as_deref(), Some("@computer"));
+        assert_eq!(record.priority, 2);
+        assert_eq!(record.deadline.as_deref(), Some("2026-08-20"));
+    }
+
+    /// Triage and Grilling both offer nothing in `available_actions`
+    /// (neither is action yet), so the checkmark rides on the wider,
+    /// separate `can_mark_done` rule instead — never `&[]`-implies-false.
+    #[test]
+    fn triage_item_records_carry_can_mark_done_not_available_actions() {
+        let triage = Item { stage: Stage::Triage, ..item("t-1", 0, None) };
+        let archived = Item {
+            stage: Stage::Triage,
+            archived_at: Some(1),
+            ..item("t-2", 0, None)
+        };
+
+        let board = build_triage_board(&[triage, archived], &[], &[]);
+
+        let live = board.items.iter().find(|record| record.id == "t-1").unwrap();
+        let done = board.items.iter().find(|record| record.id == "t-2").unwrap();
+        assert!(live.can_mark_done);
+        assert!(!done.can_mark_done);
+    }
+
+    fn untouched_triage_edit() -> ItemEdit {
+        ItemEdit {
+            title: None,
+            priority: None,
+            description: FieldPatch::Untouched,
+            size: FieldPatch::Untouched,
+            energy: FieldPatch::Untouched,
+            context: FieldPatch::Untouched,
+            project_id: FieldPatch::Untouched,
+            deadline: FieldPatch::Untouched,
+            scheduled_date: FieldPatch::Untouched,
+        }
+    }
+
+    /// The read door, end to end: a fresh capture lands in the board with
+    /// the right count, and disappears from it once promoted.
+    #[tokio::test]
+    async fn triage_board_reads_a_fresh_capture_and_drops_it_once_promoted() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-board-ns").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
+
+        let board = host.triage_board().await;
+        assert_eq!(board.captured_count, 1);
+        assert_eq!(board.grilling_count, 0);
+        assert_eq!(board.items[0].id, id);
+
+        host.triage_item(id, true, untouched_triage_edit(), 2_000).await.unwrap();
+
+        let board = host.triage_board().await;
+        assert_eq!(board.captured_count, 0);
+        assert!(board.items.is_empty());
+    }
+
+    /// Promotion and a field edit are one CAS `PATCH`: the edit lands, and
+    /// the item leaves Triage, in a single durable entry.
+    #[tokio::test]
+    async fn triage_item_promotes_and_edits_in_one_durable_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-item-ns").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
+
+        host.triage_item(
+            id.clone(),
+            true,
+            ItemEdit {
+                title: Some("buy oat milk".into()),
+                ..untouched_triage_edit()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.title, "buy oat milk");
+        assert_eq!(detail.stage, "ready");
+        assert_eq!(
+            host.queue_depth().await,
+            2,
+            "the capture and the triage are two durable entries"
+        );
+    }
+
+    /// `promote_to_ready: false` is a pure edit — the item stays in Triage,
+    /// exactly the weekend-plans-pane reasoning `Core::triage`'s own doc
+    /// gives for the same flag on `edit_item`.
+    #[tokio::test]
+    async fn triage_item_with_promotion_false_edits_without_promoting() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-item-ns-2").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
+
+        host.triage_item(
+            id.clone(),
+            false,
+            ItemEdit {
+                context: FieldPatch::Set { value: "@errands".into() },
+                ..untouched_triage_edit()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.stage, "triage");
+        assert_eq!(detail.context.as_deref(), Some("@errands"));
+    }
+
+    #[tokio::test]
+    async fn triaging_an_item_this_device_has_never_seen_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-item-ns-3").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            host.triage_item("nope".to_string(), true, untouched_triage_edit(), 1_000).await,
+            Err(MobileEditError::ItemNotFound)
+        ));
     }
 
     // ------------------------------------------------------- M2 (#141)

@@ -119,6 +119,36 @@ this app reads a timezone: the core takes "now" as an already-resolved
 civil string, and the backtest needs two readings of one instant
 (`deadline` is device-local, `occurred_at` is UTC).
 
+## The Triage screen (M3, #531)
+
+`TriageScreen.kt`/`TriageViewModel.kt` render the "triage process" queue —
+captured and Grilling items together, in the core's order — headed by the
+"N captured · M grilling" counts read straight off the record
+(`TriageBoardRecord.capturedCount`/`grillingCount`; `TriageScreenStructuralTest`
+gates that neither figure is ever recomputed from `items.size`/`items.count`).
+One row opens at a time into the seeded editor built from #529's shared
+`ui/forms/` components (`LevelSlider`/`ContextField`/`CaptureDateField`);
+Promote-to-Ready is the only save destination this screen offers — there is
+no "save without promoting" method on `TriageViewModel` at all, unlike item
+detail's own edit mode. The row checkmark goes through the existing
+`act("complete")` path, never a triage. The Grill button renders
+`enabled = false`, with no interview state anywhere in either file — the
+takeover itself lands at #539. **The route is registered and deliberately
+unreachable** — no bar entry, no More sheet, nothing navigates to
+`Routes.TRIAGE` — because reachability is #532's job, the same "registered
+first, wired later" shape `Routes.RULES` established.
+`TriageScreenStructuralTest` asserts that absence, gates the Grill/promotion
+rules above, and — the same foreground-resume discipline `AlertsScreen`,
+`NowScreen` and `ItemDetailScreen` all carry — asserts a `LifecycleResumeEffect`
+re-reads the queue on every return to the screen, not only on the app-wide
+`syncTick`: a capture minted from `CaptureActivity` while Triage was
+backgrounded must not wait for the next tick to appear.
+
+The seam doors are `MobileTaskHost::triage_board()` (decided from the
+already-sunk `hummingbird_core::decisions::queue::triage_process_queue`) and
+`::triage_item()` (`Core::triage` with a real `promote_to_ready`, sharing
+`to_triage_patch`'s `ItemEdit`→`TriagePatch` conversion with `edit_item`).
+
 ## Proving the lane on hardware
 
 CI cannot cover any of this: there is no emulator in `android.yml` and no FCM
