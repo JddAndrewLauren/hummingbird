@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.skills.BackendPreference
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileMicrotaskAffordance
@@ -84,6 +85,13 @@ fun ItemDetailScreen(
     val statusLine by viewModel.statusLine.collectAsState()
     val draft by viewModel.draft.collectAsState()
     val microtaskRun by microtaskViewModel.run.collectAsState()
+    // Read fresh on every recomposition `microtaskRun` triggers — a getter,
+    // not a `StateFlow`, but its inputs (`run`/`selection`) are covered by
+    // the flows already collected here.
+    val microtaskDeclinedFallbackId = microtaskViewModel.declinedFallbackId
+    val microtaskDeclinedFallbackLabel = microtaskDeclinedFallbackId?.let { id ->
+        BackendPreference.ENTRIES.find { it.id == id }?.label ?: id
+    }
     val hasGrillDraft by viewModel.hasGrillDraft.collectAsState()
     val dark = isSystemInDarkTheme()
     // Saveable: an Activity recreation mid-question must not silently
@@ -172,15 +180,13 @@ fun ItemDetailScreen(
                             onGrill = { onGrill(itemId) },
                             hasGrillDraft = hasGrillDraft,
                             microtaskRun = microtaskRun,
-                            onMicrotaskRun = { replace, grain ->
-                                // `model` is `null` for every selection
-                                // this slice's one-entry backend registry
-                                // (Settings' picker, `BackendPreference`)
-                                // can resolve to — see that object's own
-                                // header for why a second tier changes
-                                // nothing here when it lands.
-                                microtaskViewModel.run(itemId, replace, grain, null)
-                            },
+                            // The current backend selection resolves to a
+                            // `model` INSIDE `MicrotaskViewModel.run` (off
+                            // `BackendPreference`, #274's Settings picker)
+                            // — never a literal here.
+                            onMicrotaskRun = { replace, grain -> microtaskViewModel.run(itemId, replace, grain) },
+                            declinedFallbackLabel = microtaskDeclinedFallbackLabel,
+                            onSwitchAndRetry = { microtaskViewModel.switchAndRetry() },
                         )
                     } else {
                         EditBody(
@@ -228,6 +234,8 @@ private fun ReadBody(
     hasGrillDraft: Boolean,
     microtaskRun: MobileSkillRunState,
     onMicrotaskRun: (replace: Boolean, grain: Long?) -> Unit,
+    declinedFallbackLabel: String?,
+    onSwitchAndRetry: () -> Unit,
 ) {
     if (record.isArchived) {
         // Honesty over reassurance: history is readable here, and says so.
@@ -412,8 +420,16 @@ private fun ReadBody(
     }
 
     // Live (#539): `itemCanGrill` is the seam's own rule, the same one
-    // `TriageItemRecord.canGrill` reads per row.
-    if (itemCanGrill(record.stage)) {
+    // `TriageItemRecord.canGrill` reads per row. `isEditable` is gated
+    // alongside it, and cannot be folded into `itemCanGrill(record.stage)`
+    // — `stage` alone cannot tell a cancelled item from a live one: `Core
+    // ::act`'s cancel sets `archivedAt`, never `stage`, so a cancelled
+    // Ready/In Progress item still carries a `canGrill`-eligible stage.
+    // Without this second check, that archived row would offer a live
+    // "Grill me" whose Confirm could still enqueue a `CompleteGrill` on
+    // history (the same recall rule `record.isEditable` already gates Edit
+    // and the microtask affordance on).
+    if (record.isEditable && itemCanGrill(record.stage)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onGrill) {
                 Text(itemGrillButtonLabel(hasGrillDraft))
@@ -431,6 +447,8 @@ private fun ReadBody(
             affordance = affordance,
             run = microtaskRun,
             onRun = onMicrotaskRun,
+            declinedFallbackLabel = declinedFallbackLabel,
+            onSwitchAndRetry = onSwitchAndRetry,
         )
     }
 
@@ -450,6 +468,8 @@ private fun MicrotaskSection(
     affordance: MobileMicrotaskAffordance,
     run: MobileSkillRunState,
     onRun: (replace: Boolean, grain: Long?) -> Unit,
+    declinedFallbackLabel: String?,
+    onSwitchAndRetry: () -> Unit,
 ) {
     var grain by rememberSaveable { mutableStateOf(2L) }
     val running = run is MobileSkillRunState.Running
@@ -500,6 +520,17 @@ private fun MicrotaskSection(
             // Verbatim, unprefixed, unbranched.
             if (run is MobileSkillRunState.Declined) {
                 Text(run.reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                // #274: a pinned, dead backend is never silently rerouted —
+                // this is the one-tap offer, not an automatic fallback.
+                // Absent whenever the current selection is Auto, the
+                // decline names no reachability problem, or the registry
+                // has nothing else to try (`declinedBackendFallback`'s own
+                // doc states all four exclusions).
+                if (declinedFallbackLabel != null) {
+                    OutlinedButton(onClick = onSwitchAndRetry) {
+                        Text("Switch to $declinedFallbackLabel")
+                    }
+                }
             }
         }
     }

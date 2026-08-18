@@ -412,11 +412,11 @@ private fun BackendPicker(context: android.content.Context) {
             selected = selection == BackendPreference.AUTO,
             onClick = { select(BackendPreference.AUTO) },
         )
-        for (entry in BackendPreference.REGISTRY) {
+        for (entry in BackendPreference.ENTRIES) {
             BackendOption(
-                label = backendLabel(entry),
-                selected = selection == entry,
-                onClick = { select(entry) },
+                label = entry.label,
+                selected = selection == entry.id,
+                onClick = { select(entry.id) },
             )
         }
     }
@@ -430,12 +430,6 @@ private fun BackendOption(label: String, selected: Boolean, onClick: () -> Unit)
         OutlinedButton(onClick = onClick) { Text(label) }
     }
 }
-
-/** The picker's own rendering, never a decision — [BackendPreference
- * .REGISTRY] carries ids only, and the label a picker shows for one is
- * per-client wording, the same line ADR-0025's verdict table already draws
- * for `rules/operators.ts`'s `OPERATOR_LABELS`. */
-private fun backendLabel(id: String): String = if (id == "cloud") "Cloud runner" else id
 
 @Composable
 private fun TokenEntry(onSave: (String) -> Unit) {

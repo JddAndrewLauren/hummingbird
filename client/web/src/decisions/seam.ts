@@ -54,6 +54,7 @@ import type {
   PaneSnapshotDTO,
   ProjectDTO,
   RuleDTO,
+  StepDTO,
   TaskItemDTO,
 } from "../store/protocol";
 
@@ -1095,16 +1096,15 @@ export function outsideSchemaDeclineFromCore(): string {
 /** The seven fields [`skills::affordance`]/`grill-review.ts`'s own
  * predicates read off a `StepDTO` — everything but `deletedAt`/`done` rides
  * along unread, the same "cross the whole DTO, read only what the rule
- * needs" shape [`backtestPayload`] already uses. */
-function stepsPayload(steps: readonly { id: string; itemId: string; body: string; done: boolean; position: number; deletedAt: number | null; version: number }[]): string {
+ * needs" shape [`backtestPayload`] already uses. Named once here rather
+ * than repeated across every signature below that takes a step list. */
+function stepsPayload(steps: readonly StepDTO[]): string {
   return JSON.stringify(steps);
 }
 
 /** `hummingbird_core::decisions::skills::microtask_affordance`, parsed —
  * the object shape is `microtask-affordance.ts`'s own `MicrotaskAffordance`. */
-export function microtaskAffordanceFromCore(
-  steps: readonly { id: string; itemId: string; body: string; done: boolean; position: number; deletedAt: number | null; version: number }[],
-): unknown {
+export function microtaskAffordanceFromCore(steps: readonly StepDTO[]): unknown {
   return JSON.parse(required().microtask_affordance_json(stepsPayload(steps)));
 }
 
@@ -1132,17 +1132,12 @@ export function backendAutoSelectionFromCore(): string {
 }
 
 /** `hummingbird_core::decisions::skills::would_strand_plan`. */
-export function grillWouldStrandPlanFromCore(
-  verdict: string,
-  steps: readonly { id: string; itemId: string; body: string; done: boolean; position: number; deletedAt: number | null; version: number }[],
-): boolean {
+export function grillWouldStrandPlanFromCore(verdict: string, steps: readonly StepDTO[]): boolean {
   return required().grill_would_strand_plan(verdict, stepsPayload(steps));
 }
 
 /** `hummingbird_core::decisions::skills::plan_replacement_label`. */
-export function grillPlanReplacementLabelFromCore(
-  steps: readonly { id: string; itemId: string; body: string; done: boolean; position: number; deletedAt: number | null; version: number }[],
-): string {
+export function grillPlanReplacementLabelFromCore(steps: readonly StepDTO[]): string {
   return required().grill_plan_replacement_label(stepsPayload(steps));
 }
 

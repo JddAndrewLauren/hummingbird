@@ -19,8 +19,6 @@ import uniffi.hummingbird_ffi_mobile.ItemStepRecord
 import uniffi.hummingbird_ffi_mobile.MobileGrillCompletion
 import uniffi.hummingbird_ffi_mobile.MobileGrillTurn
 import uniffi.hummingbird_ffi_mobile.MobileGrillTurnState
-import uniffi.hummingbird_ffi_mobile.grillTurnIdle
-import uniffi.hummingbird_ffi_mobile.grillTurnStarted
 
 /** What the takeover is showing. [Loading] until the item's own read and
  * its draft (if any) have both landed — the same "resume waits for the
@@ -84,7 +82,23 @@ class GrillTakeoverViewModel(
      * not a duplicate tap on the same one. */
     private var askJob: Job? = null
 
+    /** Opens the takeover over `itemId` — a no-op when it is already open
+     * over that same item.
+     *
+     * **Why the guard matters more than it looks.** This `ViewModel`
+     * survives Activity recreation (a Pixel Fold rotation/fold, the same
+     * transition `ScreenStateRetentionTest` gates), but the Compose call
+     * site does not: `GrillTakeoverScreen.kt`'s `LaunchedEffect(itemId)`
+     * re-fires on every fresh composition, including one built after
+     * recreation. Without this guard, a re-fire would reset [state] to
+     * [GrillTakeoverState.Loading] and call [ask] again — losing whatever
+     * turn/draft state had already streamed in, AND re-issuing a second,
+     * billed `grill-me` request for a turn already in flight or already
+     * answered. Idempotent by item id is what makes the guard survive a
+     * genuine navigation to a DIFFERENT item, which must still open fresh. */
     fun open(itemId: String, nowMs: Long) {
+        val current = _state.value
+        if (current is GrillTakeoverState.Ready && current.item.id == itemId) return
         _state.value = GrillTakeoverState.Loading
         viewModelScope.launch {
             val item = itemDetailFn(itemId, nowMs) ?: return@launch
@@ -93,7 +107,15 @@ class GrillTakeoverViewModel(
             _state.value = GrillTakeoverState.Ready(
                 item = item,
                 sessionSteps = item.steps,
-                turn = grillTurnStarted(grillTurnIdle()),
+                // `MobileGrillTurnState.Idle` directly, not a call to the
+                // real `grillTurnStarted(grillTurnIdle())` bindings — see
+                // `MicrotaskViewModel._run`'s identical note. `ask`, called
+                // right below, immediately overwrites this with the
+                // injected `grillTurn` flow's own first emission (an
+                // `Asking` state in production), so this is a placeholder
+                // for the instant before that arrives, never itself the
+                // "Started" transition.
+                turn = MobileGrillTurnState.Idle,
                 turns = startingTurns,
                 confirming = false,
                 completionError = null,
@@ -169,6 +191,15 @@ class GrillTakeoverViewModel(
         return try {
             completeGrillFn(itemId, current.sessionSteps, completion, nowMs)
             discardDraftFn(itemId, nowMs)
+            // Reset even on success: the caller closes the takeover on a
+            // `true` answer, but this class does not assume that happens —
+            // leaving `confirming` stuck `true` would wrongly lock out a
+            // second confirm if the same instance somehow stayed alive
+            // (e.g. `onBack()` failing to navigate for an unrelated
+            // reason). `completionError` stays cleared from the line
+            // above.
+            val after = _state.value as? GrillTakeoverState.Ready ?: current
+            _state.value = after.copy(confirming = false)
             true
         } catch (error: Exception) {
             val after = _state.value as? GrillTakeoverState.Ready ?: current

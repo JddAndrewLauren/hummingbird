@@ -60,7 +60,7 @@ class TriageScreenStructuralTest {
         // `GrillTakeoverViewModel.kt`); nothing here may hold a turn, a
         // session, or a grill draft state.
         for ((name, src) in both) {
-            for (spelling in listOf("MobileGrillTurnState", "grillDraft", "GrillSession", "grillTurn")) {
+            for (spelling in listOf("GrillTurn", "grillDraft", "GrillSession", "grillTurn")) {
                 assertFalse(
                     "$name must not carry any Grill interview state ($spelling)",
                     src.contains(spelling),

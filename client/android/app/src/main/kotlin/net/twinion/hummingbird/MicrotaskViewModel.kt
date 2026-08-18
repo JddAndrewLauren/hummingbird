@@ -13,10 +13,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
+import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.skills.MicrotaskRunner
 import net.twinion.hummingbird.sync.SyncWorker
 import uniffi.hummingbird_ffi_mobile.MobileSkillRunState
-import uniffi.hummingbird_ffi_mobile.skillRunIdle
+import uniffi.hummingbird_ffi_mobile.declinedBackendFallback
 
 /** The microtask affordance's own wiring (#273, landed on the phone at
  * #539): tap, stream, then ask for one sync cycle so the steps arrive
@@ -29,14 +30,49 @@ import uniffi.hummingbird_ffi_mobile.skillRunIdle
  * follows and narrates what comes back. A decline is rendered verbatim,
  * never paraphrased, the same rule [GrillTakeoverViewModel] follows for
  * its own declines.
+ *
+ * **The backend selection (#274) reaches every run through here.** [run]
+ * resolves `model` off the CURRENT [selection] and [BackendPreference
+ * .modelFor] — never a caller-supplied literal — so Settings' picker
+ * actually changes what a tap does, and [declinedFallbackId] /
+ * [switchAndRetry] give a declined, unreachable pin the same one-tap
+ * "switch tiers and retry" offer `useMicrotaskWiring.ts`'s
+ * `declinedFallback` gives the web.
  */
 class MicrotaskViewModel(
     private val runFn: (itemId: String, replace: Boolean, grain: Long?, model: String?) -> Flow<MobileSkillRunState>,
     private val syncFn: suspend () -> Unit,
+    private val readSelectionFn: () -> String,
+    private val writeSelectionFn: (String) -> Unit,
+    private val modelForFn: (String) -> String?,
+    /** [uniffi.hummingbird_ffi_mobile.declinedBackendFallback], injected for
+     * the same off-native-process reason every other core call in this
+     * class is. */
+    private val declinedFallbackFn: (MobileSkillRunState, String, List<String>) -> String?,
+    private val registryIds: List<String>,
 ) : ViewModel() {
 
-    private val _run = MutableStateFlow<MobileSkillRunState>(skillRunIdle())
+    // `MobileSkillRunState.Idle` directly — never a call to the real
+    // `skillRunIdle()` binding here, which would make constructing this
+    // class (with any fakes injected) still require the native library to
+    // be loaded. `Idle` carries no fields, so no uniffi crossing is needed
+    // to produce it; `SkillsSeamTest`'s own reasoning for keeping every
+    // *reducer* a plain constructor default applies the same way to this
+    // one plain value.
+    private val _run = MutableStateFlow<MobileSkillRunState>(MobileSkillRunState.Idle)
     val run: StateFlow<MobileSkillRunState> = _run.asStateFlow()
+
+    private val _selection = MutableStateFlow(readSelectionFn())
+    val selection: StateFlow<String> = _selection.asStateFlow()
+
+    /** #274's one-tap fallback offer for the CURRENT [run] — `null`
+     * whenever there is nothing to offer (see the uniffi door's own doc for
+     * the four exclusions: not declined, Auto already tried everything, a
+     * backend answered, or no token was ever sent). Derived from [run]/
+     * [selection] rather than stored, so it can never go stale against
+     * either. */
+    val declinedFallbackId: String?
+        get() = declinedFallbackFn(_run.value, _selection.value, registryIds)
 
     /** The in-flight run's lock — a duplicate tap while one is streaming is
      * a no-op, the same rule the core's own reducer applies (belt AND
@@ -44,10 +80,37 @@ class MicrotaskViewModel(
      * being started in the first place). */
     private var job: Job? = null
 
-    fun run(itemId: String, replace: Boolean, grain: Long?, model: String?) {
+    /** What [run] was last asked to do — [switchAndRetry]'s own replay
+     * target. Never the item id/replace/grain the CALLER might ask with
+     * next; only this run's. */
+    private var lastRequest: Request? = null
+
+    private data class Request(val itemId: String, val replace: Boolean, val grain: Long?)
+
+    fun run(itemId: String, replace: Boolean, grain: Long?) {
+        startRun(Request(itemId, replace, grain), _selection.value)
+    }
+
+    /** The fallback button's one call: switches the device preference AND
+     * retries the SAME request as the fallback tier, in a single call —
+     * never two. `onSelectBackend(); run()` across two ticks would read a
+     * stale [selection] before the write took effect; handing back one
+     * function makes that miswiring unexpressible, the same reasoning
+     * `useMicrotaskWiring.ts`'s own `onSwitchAndRun` states. */
+    fun switchAndRetry() {
+        val fallback = declinedFallbackId ?: return
+        val request = lastRequest ?: return
+        writeSelectionFn(fallback)
+        _selection.value = fallback
+        startRun(request, fallback)
+    }
+
+    private fun startRun(request: Request, selection: String) {
         if (job?.isActive == true) return
+        lastRequest = request
+        val model = modelForFn(selection)
         job = viewModelScope.launch {
-            runFn(itemId, replace, grain, model).collect { state ->
+            runFn(request.itemId, request.replace, request.grain, model).collect { state ->
                 _run.value = state
                 // Only on a terminal `Done` — never on progress, and never
                 // on a schedule. The same "ask for one cycle, never poll"
@@ -71,6 +134,13 @@ class MicrotaskViewModel(
                         kotlin.random.Random.nextDouble(),
                     )
                 },
+                readSelectionFn = { BackendPreference.read(context) },
+                writeSelectionFn = { selection -> BackendPreference.write(context, selection) },
+                modelForFn = BackendPreference::modelFor,
+                declinedFallbackFn = { state, selection, registryIds ->
+                    declinedBackendFallback(state, selection, registryIds)
+                },
+                registryIds = BackendPreference.REGISTRY,
             )
         }
 

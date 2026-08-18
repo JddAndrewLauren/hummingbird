@@ -22,7 +22,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -184,7 +183,10 @@ private fun QuestionCard(
     choices: List<String>,
     onAnswer: (String) -> Unit,
 ) {
-    var freeText by remember(prompt) { mutableStateOf("") }
+    // Saveable, not `remember`: a fold/rotation mid-answer must not throw
+    // away what was typed — the same rule `ItemDetailScreen.kt`'s own edit
+    // draft follows.
+    var freeText by rememberSaveable(prompt) { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(prompt, style = MaterialTheme.typography.headlineSmall)
         Text(
@@ -225,9 +227,12 @@ private fun ReviewCard(
     onKeepGrilling: () -> Unit,
     onConfirm: (summary: String, patchJson: String, deleteUntickedPlan: Boolean) -> Unit,
 ) {
-    var summaryDraft by remember(summary) { mutableStateOf(summary) }
-    var patchDraft by remember(patchJson) { mutableStateOf(patchJson) }
-    var deleteUntickedPlan by remember(summary, patchJson) { mutableStateOf(false) }
+    // Saveable: the review card's own edits are human-authored content, the
+    // same standard `ItemDetailScreen.kt`'s edit draft and `GrillTakeover
+    // .tsx`'s web precedent both hold themselves to.
+    var summaryDraft by rememberSaveable(summary) { mutableStateOf(summary) }
+    var patchDraft by rememberSaveable(patchJson) { mutableStateOf(patchJson) }
+    var deleteUntickedPlan by rememberSaveable(summary, patchJson) { mutableStateOf(false) }
 
     val offerPlanReplacement = grillWouldStrandPlan(verdict, steps)
 
