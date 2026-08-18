@@ -206,4 +206,9 @@ tasks.withType<Test>().configureEach {
     // outside this Gradle project too.
     inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/fonts.css"))
         .withPropertyName("designTokensFontsCss")
+    // And the launcher backgrounds the colour gate now covers. This one is
+    // in-tree, but res/ is not an input to the unit-test task either, so
+    // editing a hex here leaves the gate UP-TO-DATE just the same.
+    inputs.file(File(repoRoot, "client/android/app/src/main/res/values/colors.xml"))
+        .withPropertyName("launcherColorsXml")
 }

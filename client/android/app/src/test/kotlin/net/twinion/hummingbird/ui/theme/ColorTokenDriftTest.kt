@@ -5,8 +5,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.fail
 import org.junit.Test
 
-// The token drift gate (#483, ADR-0026): every constant in Color.kt must
-// equal its token in the design mirror's tokens/colors.css. The CSS is the
+// The token drift gate (#483, ADR-0026): every constant in Color.kt — and
+// every launcher background in res/values/colors.xml — must equal its token
+// in the design mirror's tokens/colors.css. The CSS is the
 // authority; the Kotlin is what may be wrong. ADR-0026 chose hand-porting
 // over codegen, so this test is the guard against the silent failure that
 // choice admits — a mirror re-pull changes a hex, web picks it up by copy,
@@ -81,6 +82,55 @@ class ColorTokenDriftTest {
         }
     }
 
+    // The launcher backgrounds are hand-ported the same way Color.kt is,
+    // but they live in XML because the manifest's adaptive-icon references
+    // a resource, not a Compose constant — so the gate above can't see
+    // them. Each is a plate the bundled bird artwork sits on, sampled to
+    // match that PNG; when the token moves, the PNG has to be re-exported
+    // and the hex re-sampled together, or the plate shows a seam around
+    // the artwork's own edge. That is what this failure means — see the
+    // message below and colors.xml's own comment on ic_launcher_capture.
+    private val launcherBackgrounds = mapOf(
+        "ic_launcher_background" to ScopedToken("--sand-50", Scope.LIGHT),
+        "ic_launcher_capture_background" to ScopedToken("--ink-700", Scope.LIGHT),
+    )
+
+    @Test
+    fun `every launcher background equals its CSS token`() {
+        val css = parseCss()
+        val declared = parseColorsXml()
+        val problems = mutableListOf<String>()
+
+        for ((name, mapping) in launcherBackgrounds) {
+            val xmlArgb = declared[name]
+            if (xmlArgb == null) {
+                problems += "$name is no longer declared in colors.xml"
+                continue
+            }
+            val cssArgb = css.resolve(mapping)
+            if (cssArgb == null) {
+                problems += "$name maps ${mapping.token} but the CSS no longer has it"
+                continue
+            }
+            if (cssArgb != xmlArgb) {
+                problems += "$name is ${argbHex(xmlArgb)} but ${mapping.token} is ${argbHex(cssArgb)}"
+            }
+        }
+        val unmapped = declared.keys - launcherBackgrounds.keys
+        if (unmapped.isNotEmpty()) {
+            problems += "$unmapped declared in colors.xml with no mapping entry — a value the CSS doesn't have?"
+        }
+        if (problems.isNotEmpty()) {
+            fail(
+                "colors.xml has drifted from tokens/colors.css:\n  " +
+                    problems.joinToString("\n  ") +
+                    "\nThese hexes are sampled off the launcher artwork. Re-export the bird" +
+                    "\nPNGs against the new token first, then re-sample — editing the hex" +
+                    "\nalone leaves a seam between the plate and the artwork it wraps.",
+            )
+        }
+    }
+
     @Test
     fun `rgba alpha rounds to nearest -- point-22 of crimson-500's base is 0x38`() {
         // .22*255 = 56.1 → 56 = 0x38; the other two shipped cases bracket
@@ -144,6 +194,18 @@ class ColorTokenDriftTest {
             .associate { it.groupValues[1] to it.groupValues[2].toLong(16) }
         check(constants.size >= 30) { "only ${constants.size} constants parsed from Color.kt — regex or file drifted" }
         return constants
+    }
+
+    // -- colors.xml parsing -----------------------------------------------
+
+    private fun parseColorsXml(): Map<String, Long> {
+        val xml = repoFile("client/android/app/src/main/res/values/colors.xml")
+            .readText()
+            .replace(Regex("""<!--.*?-->""", RegexOption.DOT_MATCHES_ALL), "")
+        val decl = Regex("""<color\s+name="(\w+)"\s*>\s*(#[0-9a-fA-F]{6})\s*</color>""")
+        val declared = decl.findAll(xml).associate { it.groupValues[1] to cssValueToArgb(it.groupValues[2], emptyMap()) }
+        check(declared.isNotEmpty()) { "colors.xml parsed to no colours — regex or file drifted" }
+        return declared
     }
 
     private fun repoFile(relative: String): File {
