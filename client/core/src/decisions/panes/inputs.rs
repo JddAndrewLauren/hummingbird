@@ -20,7 +20,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::freshness::Freshness;
 
-/// The clock, the bindings table and whatever pane reads have landed.
+/// The clock, the bindings table and whatever pane reads have landed —
+/// plus, for #534's seven new panes, the calendar arm, the actionable items
+/// list, and the sync snapshot the reachability pane reads. Each of the
+/// three was added only once a real sunk pane needed it (this module's own
+/// discipline), never spun up ahead of a caller.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaneInputs {
@@ -35,6 +39,27 @@ pub struct PaneInputs {
     /// is "not read yet", never "no rows".
     #[serde(default)]
     pub pane_reads: HashMap<String, PaneReadFacts>,
+    /// Issue #267's calendar-reads arm (`QuestionInputs.calendarReads`),
+    /// keyed by the caller's own request key, never a source. A missing
+    /// entry is "not requested yet"; [`CalendarReadFacts::NotRead`] is the
+    /// core's further distinction, "requested, but this device has never
+    /// synced its calendar at all".
+    #[serde(default)]
+    pub calendar_reads: HashMap<String, CalendarReadFacts>,
+    /// Whether this device has ever connected a calendar at all —
+    /// `QuestionInputs.calendarConnected`'s own field, distinct from
+    /// whether any one calendar-arm *read* has landed.
+    #[serde(default)]
+    pub calendar_connected: bool,
+    /// Every actionable item this device currently knows about
+    /// (`QuestionInputs.items`), trimmed to the fields a sunk pane reads.
+    #[serde(default)]
+    pub items: Vec<PaneItemFacts>,
+    /// The device's latest authority-sync facts
+    /// (`QuestionInputs.sync`/`QuestionSyncSnapshot`) — read only by the
+    /// reachability pane, which has no `context_snapshots` lane of its own.
+    #[serde(default)]
+    pub sync: SyncFacts,
 }
 
 impl PaneInputs {
@@ -47,6 +72,13 @@ impl PaneInputs {
     /// at all.
     pub fn snapshot(&self, source: &str, key: &str) -> Option<&PaneSnapshotFacts> {
         self.pane_reads.get(source)?.snapshots.iter().find(|snapshot| snapshot.key == key)
+    }
+
+    /// One source's live alerts, or an empty slice when that source has not
+    /// been read at all — never a distinct "not read" state, since no sunk
+    /// pane needs one for alerts (`race.rs`'s own join reads this).
+    pub fn live_alerts(&self, source: &str) -> &[PaneAlertFacts] {
+        self.pane_reads.get(source).map(|read| read.live_alerts.as_slice()).unwrap_or(&[])
     }
 }
 
@@ -73,17 +105,93 @@ pub enum BindingValueFact {
     Other,
 }
 
-/// One source's pane read, as a rule reads it: its snapshot rows.
-///
-/// `liveAlerts` is deliberately absent. The waste pane does not join the
-/// alert lane (a holiday *is* the answer, so joining it would render the
-/// same fact twice), and a field no rule reads has no business crossing —
-/// #534 adds it here if and when a sunk question needs one.
+/// One source's pane read, as a rule reads it: its snapshot rows, plus
+/// (#534) its live alerts — added because the race pane joins its
+/// race-start alert onto a series pane by `subjectKey`, the one field this
+/// crossing carries.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaneReadFacts {
     #[serde(default)]
     pub snapshots: Vec<PaneSnapshotFacts>,
+    #[serde(default)]
+    pub live_alerts: Vec<PaneAlertFacts>,
+}
+
+/// One live alert, trimmed to the one field a sunk pane's join reads
+/// (`PaneAlertDTO`'s `subjectKey`) — `race.rs`'s join is the only reader.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneAlertFacts {
+    pub subject_key: Option<String>,
+}
+
+/// One `items` row, trimmed to the fields the weekend pane's merge reads
+/// (`TaskItemDTO`'s `id`/`title`/`deadline`/`scheduledDate`) — never the
+/// whole DTO, on this module's own discipline.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneItemFacts {
+    pub id: String,
+    pub title: String,
+    pub deadline: Option<String>,
+    pub scheduled_date: Option<String>,
+}
+
+/// One calendar event, trimmed to the fields a sunk pane's calendar arm
+/// reads (`CalendarEventDTO`) — never `recurrenceId`/`organizer`/
+/// `providerUpdatedAtMs`/`htmlLink`, which no sunk pane reads.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarEventFacts {
+    pub provider_event_id: String,
+    pub calendar_id: String,
+    pub title: String,
+    pub when: CalendarEventWhenFacts,
+    pub location: Option<String>,
+    pub status: CalendarEventStatusFact,
+}
+
+/// `CalendarEventWhenDTO` verbatim — an all-day arm carries civil dates and
+/// no instant, a timed arm carries instants and no zone (ADR-0015's
+/// 2026-08-10 amendment); this crossing keeps that split rather than
+/// flattening it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CalendarEventWhenFacts {
+    AllDay { start_date: String, end_date: String },
+    Timed { start_ms: i64, end_ms: i64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CalendarEventStatusFact {
+    Confirmed,
+    Tentative,
+    Cancelled,
+}
+
+/// `CalendarReadDTO` verbatim — the three-state "a gap is not an absence"
+/// read `AnswerState` documents, applied to one calendar request.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CalendarReadFacts {
+    NotRead,
+    Read { events: Vec<CalendarEventFacts>, freshness: FreshnessFact },
+}
+
+/// `QuestionSyncSnapshot` verbatim, trimmed to what the reachability pane
+/// reads. `latest_outcome_kind` carries `TaskRunOutcomeKind`'s own wire
+/// spelling as a plain string rather than a second closed enum here: this
+/// crate has no reason to reject a kind it does not recognise, only to
+/// classify the ones [`super::reachability::sync_outcome_class`] knows —
+/// exactly `Core::bindings`' reading of an unrecognised binding key.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncFacts {
+    pub latest_outcome_kind: Option<String>,
+    pub latest_informative_at_ms: Option<i64>,
+    pub last_successful_at_ms: Option<i64>,
 }
 
 /// One `context_snapshots` row as a rule reads it. `fetchedAtMs` is absent

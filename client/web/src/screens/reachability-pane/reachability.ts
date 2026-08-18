@@ -1,13 +1,28 @@
-import { relativeAge, syncOutcomeClass } from "../../shell/sync-status";
-import { SYNC_TIMER_MS } from "../../shell/sync-cadence";
+import { relativeAge } from "../../shell/sync-status";
+import {
+  reachabilityAnswerFromCore,
+  reachabilityFactsFromCore,
+  type PaneInputsSource,
+} from "../../decisions/seam";
 import type { PaneAnswer, QuestionInputs } from "../questions/contract";
 
+// **The client-side reachability question** (#316), answered over #245's
+// pane shell — and since #534, **the web's rendering half of it only**.
+//
+// Every rule this file used to hold is now
+// `hummingbird_core::decisions::panes::reachability`: the grace window
+// (computed from `SYNC_TIMER_MS` + the sync core's own maximum backoff),
+// the sync-outcome classification, and the band. Read that module for the
+// reasoning behind any of them.
+//
+// What stayed here is the headline sentence: `relativeAge`'s wording, and
+// the choice between "Synced" and "Last synced".
+
 export const SUBJECT_KEY = "reachability";
-const MAX_SYNC_BACKOFF_MS = 5 * 60_000;
-/** One ordinary cycle may fail before the core enters its maximum backoff.
- * Keep the pane quiet until both that cadence and the whole backoff ceiling
- * have elapsed, so it cannot announce failure before a retry is eligible. */
-export const REACHABILITY_GRACE_MS = SYNC_TIMER_MS + MAX_SYNC_BACKOFF_MS;
+/** Pinned against `reachability_constants_json()`'s `graceMs` by
+ * `seam.test.ts` — the same module-evaluation constraint every other
+ * pane's constants stay literal for. */
+export const REACHABILITY_GRACE_MS = 60_000 + 5 * 60_000;
 
 export interface ReachabilityView {
   ageMs: number;
@@ -15,45 +30,42 @@ export interface ReachabilityView {
   stale: boolean;
 }
 
-/** The client-only reachability decision. Its only clock is `inputs.nowMs`;
- * the persisted success is kept even when a newer attempt fails. */
+function paneInputs(inputs: QuestionInputs): PaneInputsSource {
+  return {
+    nowMs: inputs.nowMs,
+    bindings: inputs.bindings,
+    paneReads: inputs.paneReads,
+    sync: inputs.sync,
+  };
+}
+
+/** The client-only reachability decision — `reachability.rs`'s
+ * `reachability_facts` with this client's headline word put back on. */
 export function reachabilityView(inputs: QuestionInputs): ReachabilityView | null {
-  const lastSuccessfulAtMs = inputs.sync.lastSuccessfulAtMs;
-  if (lastSuccessfulAtMs === null) {
+  const facts = reachabilityFactsFromCore(paneInputs(inputs));
+  if (facts === null) {
     return null;
   }
-
-  const ageMs = Math.max(0, inputs.nowMs - lastSuccessfulAtMs);
-  const latestClass = inputs.sync.latestOutcome
-    ? syncOutcomeClass(inputs.sync.latestOutcome.kind)
-    : null;
-  const latestAttemptLanded =
-    latestClass === "landed" && inputs.sync.latestInformativeAtMs === lastSuccessfulAtMs;
-
   return {
-    ageMs,
-    headline: `${latestAttemptLanded ? "Synced" : "Last synced"} ${relativeAge(ageMs)}`,
-    stale: ageMs > REACHABILITY_GRACE_MS,
+    ageMs: facts.ageMs,
+    headline: `${facts.latestAttemptLanded ? "Synced" : "Last synced"} ${relativeAge(facts.ageMs)}`,
+    stale: facts.stale,
   };
 }
 
 export function reachabilityAnswer(inputs: QuestionInputs): PaneAnswer {
-  const lastSuccessfulAtMs = inputs.sync.lastSuccessfulAtMs;
   const view = reachabilityView(inputs);
-  if (view === null || lastSuccessfulAtMs === null) {
+  const answer = reachabilityAnswerFromCore(paneInputs(inputs));
+  if (view === null) {
     return {
-      answerState: "bound-but-unacquired",
-      band: "dormant",
-      withinBand: null,
+      ...answer,
       collapsedHeadline: "Never synced on this device.",
       icon: [{ kind: "icon", name: "cloud-fog", label: "never synced on this device" }],
     };
   }
 
   return {
-    answerState: "answered",
-    band: view.stale ? "live" : "dormant",
-    withinBand: lastSuccessfulAtMs + REACHABILITY_GRACE_MS,
+    ...answer,
     collapsedHeadline: view.headline,
     icon: [
       view.stale

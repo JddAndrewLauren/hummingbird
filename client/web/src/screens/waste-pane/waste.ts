@@ -38,12 +38,12 @@ import { resolveZoneFacts } from "../questions/zone-bridge";
 // **Self-resolving per call.** Each entry point runs the whole bridge —
 // core names its `(zone, civil-date)` queries, `zone-bridge.ts` resolves
 // them with `Intl`, core decides — rather than taking a resolved table as
-// an argument. That is deliberate for this slice: threading facts through
-// `QuestionDef.answer` would change `contract.ts`, `registry.ts`,
-// `RankedRegion.tsx` and all seven other panes. The batched, surface-level
-// path (`rankPanesFromCore`) exists in the core and is exercised by tests;
-// whether the web should hoist onto it is #533's stated ergonomics
-// question.
+// an argument. #533 left open whether the web should hoist its per-question
+// ranking onto the core's batched, surface-level path
+// (`hummingbird_core::decisions::panes::rank_panes`); #534 answered it: no.
+// The seven other panes sank the same way, keeping `registry.ts`'s
+// per-question ranking rather than a rewrite of `contract.ts`,
+// `registry.ts` and `RankedRegion.tsx` for no behavioural gain.
 
 // **The four constants below stay literal TS**, deliberately, and are
 // pinned against `waste_constants_json()` by `seam.test.ts` rather than

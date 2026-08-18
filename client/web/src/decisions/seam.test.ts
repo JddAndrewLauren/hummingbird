@@ -9,18 +9,25 @@ import {
   energyOptionsFromCore,
   FACETS,
   frontierAxesFromCore,
+  githubConstantsFromCore,
   initDecisions,
+  kimiConstantsFromCore,
   noTerminalLineDeclineFromCore,
   noTokenDeclineFromCore,
   orderFrontier,
   outsideSchemaDeclineFromCore,
   priorityRankFromCore,
+  raceConstantsFromCore,
+  reachabilityConstantsFromCore,
   resetDecisionsForTest,
   paneBandOrderFromCore,
   paneQuestionOrderFromCore,
   SIZES,
   sizeOptionsFromCore,
+  uptimeConstantsFromCore,
+  vacationConstantsFromCore,
   wasteConstantsFromCore,
+  weekendConstantsFromCore,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
 import { declineForResponse, declineForTransport, NO_TERMINAL_LINE, NO_TOKEN } from "../skills/decline";
@@ -33,6 +40,42 @@ import {
   STALE_AFTER_MS,
   STREAM_ORDER,
 } from "../screens/waste-pane/waste";
+import {
+  IMMINENT_THRESHOLD_USD,
+  NEAR_THRESHOLD_USD,
+  SNAPSHOT_KEY as KIMI_SNAPSHOT_KEY,
+  SOURCE as KIMI_SOURCE,
+  STALE_AFTER_MS as KIMI_STALE_AFTER_MS,
+} from "../screens/kimi-pane/kimi";
+import {
+  NEVER_POLLED_SUBJECT as GITHUB_NEVER_POLLED_SUBJECT,
+  OVERDUE_MULTIPLIER,
+  SOURCE as GITHUB_SOURCE,
+  STALE_AFTER_MS as GITHUB_STALE_AFTER_MS,
+} from "../screens/github-pane/github";
+import {
+  NEVER_POLLED_SUBJECT as UPTIME_NEVER_POLLED_SUBJECT,
+  SOURCE as UPTIME_SOURCE,
+  STALE_AFTER_MS as UPTIME_STALE_AFTER_MS,
+} from "../screens/uptime-pane/uptime";
+import { REACHABILITY_GRACE_MS, SUBJECT_KEY as REACHABILITY_SUBJECT_KEY } from "../screens/reachability-pane/reachability";
+import {
+  BINDING_KEY as RACE_BINDING_KEY,
+  SETUP_SUBJECT,
+  SOURCE as RACE_SOURCE,
+  STALE_AFTER_MS as RACE_STALE_AFTER_MS,
+} from "../screens/race-pane/race";
+import {
+  CALENDAR_REQUEST_KEY as WEEKEND_CALENDAR_REQUEST_KEY,
+  SUBJECT_KEY as WEEKEND_SUBJECT_KEY,
+} from "../screens/weekend-pane/weekend";
+import {
+  CALENDAR_REQUEST_KEY as VACATION_CALENDAR_REQUEST_KEY,
+  HORIZON_AHEAD_DAYS,
+  HORIZON_BEFORE_DAYS,
+  STALE_AFTER_MS as VACATION_STALE_AFTER_MS,
+  SUBJECT_KEY as VACATION_SUBJECT_KEY,
+} from "../screens/vacation-pane/vacation";
 import { loadDecisionsForTest } from "../test/wasm-setup";
 import type { TaskItemDTO } from "../store/protocol";
 
@@ -166,6 +209,60 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     // from it.
     expect(STALE_AFTER_MS).toBe(constants.staleAfterMs);
     expect([...STREAM_ORDER]).toEqual(constants.streamOrder);
+  });
+
+  // #534: the remaining seven panes' own literal constants, same reason.
+  it("the kimi pane's constants match the core's", () => {
+    const constants = kimiConstantsFromCore();
+    expect(KIMI_SOURCE).toBe(constants.source);
+    expect(KIMI_SNAPSHOT_KEY).toBe(constants.snapshotKey);
+    expect(KIMI_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect(IMMINENT_THRESHOLD_USD).toBe(constants.imminentThresholdUsd);
+    expect(NEAR_THRESHOLD_USD).toBe(constants.nearThresholdUsd);
+  });
+
+  it("the github pane's constants match the core's", () => {
+    const constants = githubConstantsFromCore();
+    expect(GITHUB_SOURCE).toBe(constants.source);
+    expect(GITHUB_NEVER_POLLED_SUBJECT).toBe(constants.neverPolledSubject);
+    expect(GITHUB_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect(OVERDUE_MULTIPLIER).toBe(constants.overdueMultiplier);
+  });
+
+  it("the uptime pane's constants match the core's", () => {
+    const constants = uptimeConstantsFromCore();
+    expect(UPTIME_SOURCE).toBe(constants.source);
+    expect(UPTIME_NEVER_POLLED_SUBJECT).toBe(constants.neverPolledSubject);
+    expect(UPTIME_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+  });
+
+  it("the reachability pane's grace window matches the core's", () => {
+    const constants = reachabilityConstantsFromCore();
+    expect(REACHABILITY_SUBJECT_KEY).toBe(constants.subjectKey);
+    expect(REACHABILITY_GRACE_MS).toBe(constants.graceMs);
+  });
+
+  it("the race pane's constants match the core's", () => {
+    const constants = raceConstantsFromCore();
+    expect(RACE_SOURCE).toBe(constants.source);
+    expect(RACE_BINDING_KEY).toBe(constants.bindingKey);
+    expect(RACE_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect(SETUP_SUBJECT).toBe(constants.setupSubject);
+  });
+
+  it("the weekend pane's constants match the core's", () => {
+    const constants = weekendConstantsFromCore();
+    expect(WEEKEND_SUBJECT_KEY).toBe(constants.subjectKey);
+    expect(WEEKEND_CALENDAR_REQUEST_KEY).toBe(constants.calendarRequestKey);
+  });
+
+  it("the vacation pane's constants match the core's", () => {
+    const constants = vacationConstantsFromCore();
+    expect(VACATION_SUBJECT_KEY).toBe(constants.subjectKey);
+    expect(VACATION_CALENDAR_REQUEST_KEY).toBe(constants.calendarRequestKey);
+    expect(HORIZON_BEFORE_DAYS).toBe(constants.horizonBeforeDays);
+    expect(HORIZON_AHEAD_DAYS).toBe(constants.horizonAheadDays);
+    expect(VACATION_STALE_AFTER_MS).toBe(constants.staleAfterMs);
   });
 });
 
