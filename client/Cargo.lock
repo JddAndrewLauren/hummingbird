@@ -707,6 +707,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "hummingbird-domain",
+ "hummingbird-rules-engine",
  "indexed_db_futures",
  "reqwest",
  "serde",
@@ -744,6 +745,7 @@ version = "0.1.0"
 dependencies = [
  "hummingbird-core",
  "hummingbird-domain",
+ "hummingbird-rules-engine",
  "js-sys",
  "reqwest",
  "serde",
@@ -761,6 +763,14 @@ dependencies = [
  "hummingbird-core",
  "hummingbird-domain",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hummingbird-rules-engine"
+version = "0.1.0"
+dependencies = [
+ "hummingbird-domain",
  "serde_json",
 ]
 

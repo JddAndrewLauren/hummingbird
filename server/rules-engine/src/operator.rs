@@ -15,6 +15,21 @@ pub enum Operator {
 }
 
 impl Operator {
+    /// Every operator, in ADR-0013's own declaration order — the order a
+    /// rules editor offers them in, so the two sides cannot disagree about
+    /// which one a fresh condition starts at (`hummingbird_core::decisions
+    /// ::rules::operators::default_operator_for` takes the first legal one
+    /// from this order).
+    pub const ALL: [Operator; 7] = [
+        Operator::Eq,
+        Operator::Contains,
+        Operator::Gt,
+        Operator::Lt,
+        Operator::Is,
+        Operator::WithinNext,
+        Operator::WithinLast,
+    ];
+
     pub fn parse(s: &str) -> Option<Operator> {
         match s {
             "eq" => Some(Operator::Eq),
@@ -25,6 +40,21 @@ impl Operator {
             "within_next" => Some(Operator::WithinNext),
             "within_last" => Some(Operator::WithinLast),
             _ => None,
+        }
+    }
+
+    /// The wire spelling — [`Operator::parse`]'s exact inverse, so an
+    /// editor can round-trip a stored `Condition.op` through the typed
+    /// enum without a second, hand-written table of the same strings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Operator::Eq => "eq",
+            Operator::Contains => "contains",
+            Operator::Gt => "gt",
+            Operator::Lt => "lt",
+            Operator::Is => "is",
+            Operator::WithinNext => "within_next",
+            Operator::WithinLast => "within_last",
         }
     }
 
@@ -49,6 +79,13 @@ impl Operator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_str_is_parse_s_inverse_across_all() {
+        for op in Operator::ALL {
+            assert_eq!(Operator::parse(op.as_str()), Some(op));
+        }
+    }
 
     #[test]
     fn parses_every_wire_operator() {

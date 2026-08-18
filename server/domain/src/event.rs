@@ -12,7 +12,7 @@
 //! without the other. #140's rules UI renders its field/operator dropdowns
 //! from the JSON export.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The typed catalogue ADR-0013 gates operators by. `Dynamic` exists only
@@ -21,7 +21,12 @@ use std::collections::BTreeMap;
 /// still names them (unknown-field detection still works) but operator
 /// legality for them is checked against the value actually present on the
 /// event, not a fixed descriptor type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+///
+/// `Deserialize` as well as `Serialize`: the registry export
+/// ([`kind_registry_json`]) is read back by the clients' own rules editor
+/// (`hummingbird_core::decisions::rules`), which types a field against this
+/// enum rather than re-deriving a second string vocabulary per platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldType {
     String,
@@ -31,6 +36,38 @@ pub enum FieldType {
     Timestamp,
     Date,
     Dynamic,
+}
+
+impl FieldType {
+    pub const ALL: [FieldType; 7] = [
+        FieldType::String,
+        FieldType::StringList,
+        FieldType::Number,
+        FieldType::Bool,
+        FieldType::Timestamp,
+        FieldType::Date,
+        FieldType::Dynamic,
+    ];
+
+    /// The wire spelling — the same one the `Serialize` derive emits, given
+    /// once so a boundary that carries a bare string (the clients' wasm and
+    /// uniffi seams) round-trips through the enum rather than a second
+    /// vocabulary. [`Tier::as_str`](crate::Tier::as_str)'s pattern.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldType::String => "string",
+            FieldType::StringList => "string_list",
+            FieldType::Number => "number",
+            FieldType::Bool => "bool",
+            FieldType::Timestamp => "timestamp",
+            FieldType::Date => "date",
+            FieldType::Dynamic => "dynamic",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<FieldType> {
+        FieldType::ALL.into_iter().find(|t| t.as_str() == s)
+    }
 }
 
 /// One resolved field value. `Timestamp`- and `Date`-typed fields are
@@ -239,6 +276,18 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_type_spelling_round_trips_and_matches_the_serde_derive() {
+        for field_type in FieldType::ALL {
+            assert_eq!(FieldType::parse(field_type.as_str()), Some(field_type));
+            assert_eq!(
+                serde_json::to_value(field_type).expect("a field type serializes"),
+                serde_json::Value::String(field_type.as_str().to_string()),
+            );
+        }
+        assert_eq!(FieldType::parse("not_a_field_type"), None);
+    }
 
     #[test]
     fn every_kind_key_is_unique() {

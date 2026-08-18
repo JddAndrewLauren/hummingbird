@@ -41,7 +41,15 @@ import type { TaskActionName, TaskStageName } from "../store/protocol";
  * generated `.d.ts`: this file is also the type the node-side test loader
  * satisfies, and the generated package is a build artifact (gitignored) the
  * typechecker only sees after `pnpm run build:wasm`. */
-import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
+import type {
+  ConditionDTO,
+  FieldTypeName,
+  KindFieldDTO,
+  KindRegistryDTO,
+  ProjectDTO,
+  RuleDTO,
+  TaskItemDTO,
+} from "../store/protocol";
 
 export interface DecisionsModule {
   can_submit_capture(draft: string): boolean;
@@ -75,6 +83,38 @@ export interface DecisionsModule {
   item_can_mark_done(stage: string, archived: boolean): boolean;
   item_can_grill(stage: string): boolean;
   item_grill_button_label(hasDraft: boolean): string;
+  // M4 (#540): the rules-editor decision set.
+  rule_legal_operators_json(fieldType: string): string;
+  rule_default_operator(fieldType: string): string | undefined;
+  rule_duration_ms(value: string): number | undefined;
+  rule_format_duration(amount: number, unit: string): string;
+  rule_duration_units_json(fieldType: string): string;
+  rule_is_below_alarm_interval(value: string, alarmIntervalMs: number): boolean;
+  rule_fields_for_kind_json(registryJson: string, eventKind: string | undefined): string;
+  rule_field_type(
+    registryJson: string,
+    eventKind: string | undefined,
+    fieldName: string,
+  ): string | undefined;
+  rule_invalid_fields_json(
+    registryJson: string,
+    eventKind: string | undefined,
+    conditionsJson: string,
+  ): string;
+  rule_is_valid(registryJson: string, eventKind: string | undefined, conditionsJson: string): boolean;
+  rule_widget_for(fieldName: string, fieldType: string, operator: string): string;
+  rule_new_condition_json(fieldName: string, fieldType: string): string;
+  rule_retype_condition_json(conditionJson: string, newFieldType: string): string;
+  rule_toggle_negate_json(conditionJson: string): string;
+  deadline_picker_datetime(durationValue: string, op: string, now: string): string;
+  deadline_picker_duration(inputValue: string, op: string, now: string): string | undefined;
+  rule_backtest_ids(
+    eventKind: string | undefined,
+    conditionsJson: string,
+    itemsJson: string,
+    nowLocal: string,
+    nowUtc: string,
+  ): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -546,4 +586,281 @@ export function canGrill(stage: TaskStageName): boolean {
  * `hummingbird_core::decisions::grill_button_label` verbatim. */
 export function grillButtonLabel(hasDraft: boolean): "Grill me" | "Resume grill" {
   return required().item_grill_button_label(hasDraft) as "Grill me" | "Resume grill";
+}
+
+// ------------------------------------------------------------- M4 (#540)
+// The rules-editor decision set: the operator table, the duration grammar,
+// the kind → field cascade, the validity read, the `deadline` picker, the
+// condition-row widget cascade and the backtest. `screens/rules/`'s seven
+// modules are re-exports of the wrappers below — see
+// `hummingbird_core::decisions::rules`'s own `mod.rs` for what the sink
+// retires, including the two drifts ADR-0025's M1 verdict table recorded as
+// debt (`rules/backtest.ts:52`, `rules/deadline-picker.ts:32`).
+//
+// Every export of those modules was already a function called from event
+// handlers and render bodies, never at module-evaluation time, so (per
+// `field-vocabulary.ts`'s header) the seam call is safe everywhere they
+// made it. The two things that stayed TS are renderings, not decisions:
+// `OPERATOR_LABELS` and `kindLabel`/`kindOptions`.
+
+export type OperatorName = "eq" | "contains" | "gt" | "lt" | "is" | "within_next" | "within_last";
+
+export type DurationUnit = "m" | "h" | "d";
+
+export type ValueWidget = "chips" | "duration" | "datetime" | "boolean" | "number" | "text";
+
+export type DeadlineOperator = "within_next" | "within_last";
+
+/** `hummingbird_core::decisions::rules::legal_operators` — derived from
+ * `hummingbird_rules_engine::Operator::is_legal_for`, so the dropdown and
+ * the authority's own gate cannot drift. */
+export function legalOperators(fieldType: FieldTypeName): OperatorName[] {
+  return JSON.parse(required().rule_legal_operators_json(fieldType)) as OperatorName[];
+}
+
+/** `hummingbird_core::decisions::rules::default_operator_for` — always the
+ * first of `legalOperators`, so a newly added row is never illegal. */
+export function defaultOperatorFor(fieldType: FieldTypeName): OperatorName {
+  return required().rule_default_operator(fieldType) as OperatorName;
+}
+
+/** `hummingbird_core::decisions::rules::parse_duration_ms`. */
+export function parseDurationMs(value: string): number | undefined {
+  return required().rule_duration_ms(value);
+}
+
+/** `hummingbird_core::decisions::rules::format_duration` —
+ * `parseDurationMs`'s inverse. */
+export function formatDuration(amount: number, unit: DurationUnit): string {
+  return required().rule_format_duration(amount, unit);
+}
+
+/** `hummingbird_core::decisions::rules::duration_units_for` — ADR-0013's
+ * own table: a `date` field is day-grained only. */
+export function durationUnitsFor(fieldType: "timestamp" | "date"): DurationUnit[] {
+  return JSON.parse(required().rule_duration_units_json(fieldType)) as DurationUnit[];
+}
+
+/** `hummingbird_core::decisions::rules::is_below_alarm_interval` — the
+ * duration warning (#138). Warn, never reject. */
+export function isBelowAlarmInterval(value: string, alarmIntervalMs: number): boolean {
+  return required().rule_is_below_alarm_interval(value, alarmIntervalMs);
+}
+
+/** The registry crosses in full on every call: it is five kinds, the caller
+ * already holds it from the `kindRegistry` push, and passing it keeps the
+ * client editing against the catalogue its *authority* exported rather than
+ * the one the wasm binary happened to compile (`rules::validity`'s header
+ * argues this at length). */
+function registryPayload(registry: KindRegistryDTO): string {
+  return JSON.stringify(registry);
+}
+
+/** `hummingbird_core::decisions::rules::fields_for_kind` — the Event core
+ * for "any kind", core-first-then-the-kind's-own for a named one, never a
+ * core name listed twice. */
+export function fieldsForKind(registry: KindRegistryDTO, eventKind: string | null): KindFieldDTO[] {
+  return JSON.parse(
+    required().rule_fields_for_kind_json(registryPayload(registry), eventKind ?? undefined),
+  ) as KindFieldDTO[];
+}
+
+/** `hummingbird_core::decisions::rules::field_type` — `undefined` for a
+ * field outside the list `eventKind` offers. */
+export function fieldType(
+  registry: KindRegistryDTO,
+  eventKind: string | null,
+  fieldName: string,
+): FieldTypeName | undefined {
+  return required().rule_field_type(
+    registryPayload(registry),
+    eventKind ?? undefined,
+    fieldName,
+  ) as FieldTypeName | undefined;
+}
+
+export interface RuleInvalidField {
+  field: string;
+}
+
+/** `hummingbird_core::decisions::rules::invalid_fields` — every condition
+ * field the rule's kind no longer declares. Display-only: it never blocks a
+ * save (#133's `validate_rule` does that, server-side) and never mutates
+ * the rule. */
+export function invalidFields(
+  rule: Pick<RuleDTO, "eventKind" | "conditions">,
+  registry: KindRegistryDTO,
+): RuleInvalidField[] {
+  const names = JSON.parse(
+    required().rule_invalid_fields_json(
+      registryPayload(registry),
+      rule.eventKind ?? undefined,
+      JSON.stringify(rule.conditions),
+    ),
+  ) as string[];
+  return names.map((field) => ({ field }));
+}
+
+/** `hummingbird_core::decisions::rules::is_rule_valid` — the boolean an
+ * invalid-rule badge gates on. */
+export function isRuleValid(
+  rule: Pick<RuleDTO, "eventKind" | "conditions">,
+  registry: KindRegistryDTO,
+): boolean {
+  return required().rule_is_valid(
+    registryPayload(registry),
+    rule.eventKind ?? undefined,
+    JSON.stringify(rule.conditions),
+  );
+}
+
+/** `hummingbird_core::decisions::rules::widget_for` — the value control one
+ * condition row offers, `deadline`'s date/time picker included. */
+export function widgetFor(
+  fieldName: string,
+  fieldTypeName: FieldTypeName,
+  operator: OperatorName,
+): ValueWidget {
+  return required().rule_widget_for(fieldName, fieldTypeName, operator) as ValueWidget;
+}
+
+/** `hummingbird_core::decisions::rules::new_condition`. */
+export function newCondition(fieldName: string, fieldTypeName: FieldTypeName): ConditionDTO {
+  return JSON.parse(required().rule_new_condition_json(fieldName, fieldTypeName)) as ConditionDTO;
+}
+
+/** `hummingbird_core::decisions::rules::retype_condition`.
+ *
+ * The Rust side answers `null` for "already legal, leave it exactly as it
+ * is" rather than echoing a structurally equal copy — so this returns the
+ * caller's *own* object in that case, and a React caller keyed on identity
+ * does not re-render on a field pick that changed nothing. The decision is
+ * still entirely Rust-side; only the identity is preserved here. */
+export function retypeCondition(condition: ConditionDTO, newFieldType: FieldTypeName): ConditionDTO {
+  const retyped = JSON.parse(
+    required().rule_retype_condition_json(JSON.stringify(condition), newFieldType),
+  ) as ConditionDTO | null;
+  return retyped ?? condition;
+}
+
+/** `hummingbird_core::decisions::rules::toggle_negate` — the per-row "not"
+ * toggle, and nothing else. */
+export function toggleNegate(condition: ConditionDTO): ConditionDTO {
+  return JSON.parse(required().rule_toggle_negate_json(JSON.stringify(condition))) as ConditionDTO;
+}
+
+/** `hummingbird_core::decisions::rules::datetime_input_value_from_duration`
+ * — the `datetime-local` value that displays a stored duration as a
+ * concrete moment. `nowMs` is a real epoch millisecond count; this wrapper,
+ * not the core, resolves it into the device's own wall clock. */
+export function datetimeInputValueFromDuration(
+  durationValue: string,
+  op: DeadlineOperator,
+  nowMs: number,
+): string {
+  return required().deadline_picker_datetime(durationValue, op, localWallClock(nowMs));
+}
+
+/** `hummingbird_core::decisions::rules::duration_from_datetime_input_value`
+ * — the wire duration literal for a picked moment, in whole minutes. */
+export function durationFromDatetimeInputValue(
+  inputValue: string,
+  op: DeadlineOperator,
+  nowMs: number,
+): string | undefined {
+  return required().deadline_picker_duration(inputValue, op, localWallClock(nowMs));
+}
+
+export type BacktestUnavailableReason = "no_local_history";
+
+export type BacktestResult =
+  | { kind: "unavailable"; reason: BacktestUnavailableReason }
+  | { kind: "ok"; matches: TaskItemDTO[] };
+
+/** `nowMs` in UTC, in the deadline grammar's own shape — `localWallClock`'s
+ * twin, and the TS side of `hummingbird_domain::now_as_deadline`
+ * (minute-precision, seconds truncated never rounded). The backtest needs
+ * both readings of the one instant because `occurred_at` is stamped UTC by
+ * the authority while `deadline`/`scheduled_date` are device-local civil
+ * strings; see `rules::backtest`'s header for why the frames are named at
+ * this boundary rather than inferred inside a crate with no tzdb. */
+function utcWallClock(nowMs: number): string {
+  const d = new Date(Math.floor(nowMs / 60_000) * 60_000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
+/** `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` — `hummingbird_domain::is_valid_deadline`'s
+ * shape, tested here only to decide whether a stored value needs resolving
+ * (the real validation stays Rust-side). */
+const DEADLINE_SHAPE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/;
+
+/** A stored `deadline`/`scheduledDate`, in the civil local frame the core
+ * compares against.
+ *
+ * Anything already deadline-shaped passes through untouched, which is every
+ * value the authority accepts. A value carrying its own zone designator (a
+ * trailing `Z`, an offset) is *this* layer's to resolve — reading a zone is
+ * exactly what the core cannot do and the host can — so it is rendered into
+ * the device's own wall clock, the same reading the retired
+ * `backtest.ts`'s bare `new Date(...)` gave it. Anything neither shaped nor
+ * parseable passes through and simply never matches, as it did before. */
+function localCivil(value: string): string {
+  if (DEADLINE_SHAPE.test(value)) return value;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? value : localWallClock(ms);
+}
+
+/** The fifteen fields `hummingbird_core::decisions::rules::BacktestItem`
+ * reads — exactly the field set `authority::sweep::item_threshold_event`
+ * populates, camelCase, and nothing else `TaskItemDTO` carries. Matches
+ * `BacktestItemDTO` in `ffi-web/src/decisions.rs` field for field. */
+function backtestPayload(items: readonly TaskItemDTO[]): string {
+  return JSON.stringify(
+    items.map((item) => ({
+      id: item.id,
+      // `item_threshold_event` sets `occurred_at: now_as_deadline(item.updated_at)`
+      // — a poll-time-derived core field, not a stored one, but derivable
+      // exactly from the same `updatedAt` this DTO already carries.
+      occurredAt: utcWallClock(item.updatedAt),
+      title: item.title,
+      body: item.description ?? undefined,
+      url: item.sourceUrl ?? undefined,
+      deadline: item.deadline === null ? undefined : localCivil(item.deadline),
+      scheduledDate: item.scheduledDate === null ? undefined : localCivil(item.scheduledDate),
+      stage: item.stage,
+      size: item.size ?? undefined,
+      energy: item.energy ?? undefined,
+      context: item.context ?? undefined,
+      priority: item.priority,
+      projectId: item.projectId ?? undefined,
+      source: item.source ?? undefined,
+      sourceKey: item.sourceKey ?? undefined,
+    })),
+  );
+}
+
+/** `hummingbird_core::decisions::rules::backtest` — which of `items` a
+ * draft rule would have promoted (ADR-0011). Pure: it writes nothing and
+ * calls nothing, and the ids come back rather than whole items (the caller
+ * holds those already), exactly the frontier wrappers' pattern. */
+export function backtest(
+  rule: Pick<RuleDTO, "eventKind" | "conditions">,
+  items: readonly TaskItemDTO[],
+  nowMs: number,
+): BacktestResult {
+  const raw = JSON.parse(
+    required().rule_backtest_ids(
+      rule.eventKind ?? undefined,
+      JSON.stringify(rule.conditions),
+      backtestPayload(items),
+      localWallClock(nowMs),
+      utcWallClock(nowMs),
+    ),
+  ) as { kind: "unavailable"; reason: BacktestUnavailableReason } | { kind: "ok"; ids: string[] };
+  if (raw.kind === "unavailable") {
+    return { kind: "unavailable", reason: raw.reason };
+  }
+  const byId = byIdMap(items);
+  return { kind: "ok", matches: raw.ids.map((id) => byId.get(id)!) };
 }

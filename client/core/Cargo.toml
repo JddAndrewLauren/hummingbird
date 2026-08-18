@@ -10,6 +10,16 @@ chrono = { version = "0.4.45", features = ["serde"] }
 # The owned-schema wire DTOs and domain records (ADR-0008/0009), compiled by
 # both sides — this crate deserialises them, never redefines them (#100/#101).
 hummingbird-domain = { path = "../../server/domain" }
+# ADR-0013's operator vocabulary and its type-gating table, so
+# `decisions::rules` gates an editor's operator dropdown against the exact
+# function the authority evaluates with (`Operator::is_legal_for`) rather
+# than a per-client copy of the same table — #540/M4's whole point.
+# Safe to add here despite this crate's two constrained builds: the crate
+# depends on `hummingbird-domain` + `serde_json` and nothing else, so it
+# carries no HTTP client, no tzdb and no C toolchain into either the
+# `wasm32-unknown-unknown` build (`ffi-web`) or `client/next-up`'s
+# `default-features = false` one.
+hummingbird-rules-engine = { path = "../../server/rules-engine" }
 # NO `chrono-tz`, deliberately, and it is not an omission to be repaired.
 # It was here for exactly one job — resolving a Google all-day boundary
 # (`date`, no time) to the instant of local midnight in the calendar's own
