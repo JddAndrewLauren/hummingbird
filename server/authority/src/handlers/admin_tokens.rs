@@ -3,9 +3,9 @@
 //! only from the operator's terminal. Tokens never bump the workspace
 //! counter: they are machinery outside the delta contract.
 
-use hummingbird_domain::{find_source, MintToken, MintedToken, Scope, TokenInfo};
+use hummingbird_domain::{find_source, is_url_safe_id, MintToken, MintedToken, Scope, TokenInfo};
 
-use super::{auth, error, json, parse_body, ApiResponse, HandleContext};
+use super::{auth, error, json, parse_body, ApiResponse, HandleContext, ID_NOT_URL_SAFE};
 use crate::codec::{bad_cell, RowReader};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -18,8 +18,12 @@ pub fn mint(
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
-    if mint.id.is_empty() {
-        return Ok(error(400, "validation", "id must be non-empty"));
+    // Ahead of the replay select below, deliberately: an id outside
+    // the charset can never be addressed as a path segment, so
+    // already-exists must not answer 200 for one (#548). Empty is
+    // one of the shapes this rejects.
+    if !is_url_safe_id(&mint.id) {
+        return Ok(error(400, "validation", ID_NOT_URL_SAFE));
     }
 
     // Idempotent by client-supplied id — but the plaintext exists only in

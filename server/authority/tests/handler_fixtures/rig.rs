@@ -61,7 +61,7 @@ impl RusqliteSql {
         conn.pragma_update(None, "foreign_keys", true)
             .expect("pragma applies");
         let sql = RusqliteSql { conn };
-        init_schema(&sql).expect("schema initializes");
+        init_schema(&sql, 0).expect("schema initializes");
         for (id, scope, plaintext) in [
             ("rig-device", "device", DEVICE_TOKEN),
             ("rig-sweeper", "sweeper", SWEEPER_TOKEN),

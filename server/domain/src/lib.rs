@@ -15,6 +15,7 @@ mod context;
 mod deadline;
 mod event;
 mod grill;
+mod id;
 mod item;
 mod live;
 mod project;
@@ -40,6 +41,7 @@ pub use event::{
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
 };
 pub use grill::{resulting_stage, Grill, GrillOnDoneItem, GrillVerdict, GrillWithoutTranscript};
+pub use id::is_url_safe_id;
 pub use item::{Energy, Item, Size, Stage};
 pub use live::{is_live, settled_at};
 pub use project::{Fog, Project, Route};

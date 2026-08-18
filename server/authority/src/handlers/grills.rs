@@ -64,9 +64,9 @@
 //! identical to the risk a project-plus-Route create or an item-plus-`seq`
 //! create already carries.
 
-use hummingbird_domain::{CreateGrill, Grill, GrillVerdict, Item, resulting_stage};
+use hummingbird_domain::{is_url_safe_id, resulting_stage, CreateGrill, Grill, GrillVerdict, Item};
 
-use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
+use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse, ID_NOT_URL_SAFE};
 use crate::codec::{bad_cell, RowReader};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -75,8 +75,12 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
-    if create.id.is_empty() {
-        return Ok(error(400, "validation", "id must be non-empty"));
+    // Ahead of the replay select below, deliberately: an id outside
+    // the charset can never be addressed as a path segment, so
+    // already-exists must not answer 200 for one (#548). Empty is
+    // one of the shapes this rejects.
+    if !is_url_safe_id(&create.id) {
+        return Ok(error(400, "validation", ID_NOT_URL_SAFE));
     }
 
     // Idempotent by client-supplied id, same rule as every other create:

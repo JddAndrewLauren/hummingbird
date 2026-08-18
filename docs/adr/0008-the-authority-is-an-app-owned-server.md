@@ -100,6 +100,27 @@ to the owned API).
   already-exists is success. The sweeper's contract, now first-class instead
   of reverse-engineered from Linear error strings.
 
+*Amended 2026-08-18 (#548): a client-supplied id must be a **URL-safe
+literal** — RFC 3986's unreserved set (`A-Za-z0-9-._~`), excluding the dot
+segments — and every create route 400s one that is not. The rule is not new
+taste, it is the other half of a rule already here: an id is addressed back
+as a path segment, and this authority matches segments **exactly as
+received, with no percent-decoding** (`handlers::ApiRequest::path`). Only
+non-empty was checked before, so `POST /api/items` accepted an id with
+spaces in it and minted a row that `PATCH` could never name again — live on
+every client, no DELETE route to reach it. Deciding this at create rather
+than by decoding on the way in was chosen deliberately: decoding would
+re-point every id already stored, and it would have to live in the wasm32
+shim, which has no test harness (`CLAUDE.md`). The check is in `domain`
+(`is_url_safe_id`), where it is testable, and it runs **ahead of the replay
+select** — already-exists must not answer 200 for an id nothing can
+address. The one row that got in before the door closed (#549) is settled
+by `init_schema`, which archives what it cannot address: no API caller can
+reach that row, so the only hand left is the one that runs on boot. It
+**archives**, never deletes — ADR-0020 holds here as everywhere — and takes
+a real version off the workspace counter, so the change reaches devices on
+the ordinary delta pull.*
+
 ### Reads: delta pull, full sweep as backstop
 
 - A workspace-wide monotonic version counter stamps every write. The normal

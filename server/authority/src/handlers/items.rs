@@ -1,11 +1,11 @@
 //! `POST /api/items` and `PATCH /api/items/:id` — the S0 routes, on the
 //! shared codec.
 
-use hummingbird_domain::{is_valid_deadline, CreateItem, Energy, Item, ItemPatch, Size, Stage};
-
-use super::{
-    conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse,
+use hummingbird_domain::{
+    is_url_safe_id, is_valid_deadline, CreateItem, Energy, Item, ItemPatch, Size, Stage,
 };
+
+use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse, ID_NOT_URL_SAFE};
 use crate::codec::{bad_cell, RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -14,8 +14,12 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
-    if create.id.is_empty() {
-        return Ok(error(400, "validation", "id must be non-empty"));
+    // Ahead of the replay select below, deliberately: an id outside
+    // the charset can never be addressed as a path segment, so
+    // already-exists must not answer 200 for one (#548). Empty is
+    // one of the shapes this rejects.
+    if !is_url_safe_id(&create.id) {
+        return Ok(error(400, "validation", ID_NOT_URL_SAFE));
     }
 
     // Idempotent by client-supplied id: a replay is answered with the

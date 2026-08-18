@@ -4,9 +4,9 @@
 //! flag on the same row — a real write. A crash-replay of either lands on
 //! the state it wanted and no-ops.
 
-use hummingbird_domain::{BlockedBy, CreateBlockedBy, BlockedByPatch};
+use hummingbird_domain::{is_url_safe_id, BlockedBy, CreateBlockedBy, BlockedByPatch};
 
-use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse};
+use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse, ID_NOT_URL_SAFE};
 use crate::codec::{RowReader, Sets};
 use crate::sql::{Row, Sql, SqlError, SqlValue};
 
@@ -15,8 +15,11 @@ pub fn create(body: Option<&str>, _now_ms: i64, sql: &dyn Sql) -> Result<ApiResp
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
-    if create.item_id.is_empty() || create.blocker_id.is_empty() {
-        return Ok(error(400, "validation", "item_id and blocker_id must be non-empty"));
+    // Ahead of the existence checks, same reasoning as items::create (#548):
+    // an id outside the charset can never be addressed as a path segment,
+    // so it must not be usable as either half of the composite key.
+    if !is_url_safe_id(&create.item_id) || !is_url_safe_id(&create.blocker_id) {
+        return Ok(error(400, "validation", ID_NOT_URL_SAFE));
     }
     if create.item_id == create.blocker_id {
         return Ok(error(400, "validation", "an item cannot block itself"));
