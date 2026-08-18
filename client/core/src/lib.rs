@@ -6233,6 +6233,100 @@ mod tests {
         );
     }
 
+    /// The one invariant that ties [`Core::frontier`] and
+    /// [`Core::item_detail`] together (#545), pinned as intended
+    /// behaviour rather than made red: the overlay can carry
+    /// `archived_at` for an item whose mirror row is still Live and
+    /// `Ready` — that is exactly what a cancel taken offline (S11/#109)
+    /// is — and the two reads then answer differently about it.
+    ///
+    /// `CONTEXT.md` adjudicates, and it says the divergence is correct.
+    /// They must never disagree about *what the item is*: both lay the
+    /// same overlay over the mirror, so both see the archive stamp the
+    /// instant it is enqueued. They differ only on membership, and each
+    /// membership rule is the term's own: the **Frontier** is "what can
+    /// be started right now", so a cancelled item leaves it immediately,
+    /// offline or not; **Item detail** keeps it, on **Recall**'s rule
+    /// that history stays readable and only what is still live is
+    /// editable. The failures this pins are the reads *agreeing* wrongly
+    /// — a cancelled item still offered as startable, or detail
+    /// presenting one as editable.
+    #[tokio::test]
+    async fn a_pending_cancel_leaves_the_frontier_while_detail_still_reads_it_as_archived() {
+        let mut core = core_with_item_detail_fixtures(
+            vec![fixture_item("a-1", Stage::Ready)],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            core.frontier().iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"],
+            "a Live Ready row is on the frontier before the cancel"
+        );
+
+        core.act("seed-1", "a-1", ItemAction::Cancel, 2_000).await.unwrap();
+
+        // The premise: nothing about the mirror's own row changed. The
+        // contradiction lives in the overlay alone until a cycle confirms it.
+        let mirrored = core.cycle.mirror().item("a-1").expect("the mirror row is still Live");
+        assert_eq!(mirrored.stage, Stage::Ready);
+        assert_eq!(mirrored.archived_at, None);
+
+        assert!(
+            core.frontier().is_empty(),
+            "the frontier is what can be started right now — a cancelled item is not"
+        );
+        let detail = core
+            .item_detail("a-1", 2_000)
+            .expect("history stays readable, so detail still answers for the row");
+        assert_eq!(
+            detail.item.archived_at,
+            Some(2_000),
+            "both reads see the same overlay: detail must not show the pre-cancel row"
+        );
+        assert!(detail.is_archived);
+        assert!(!detail.is_editable);
+        assert!(
+            detail.available_actions.is_empty(),
+            "an item cancelled offline offers no act vocabulary, pending or not"
+        );
+    }
+
+    /// The same pair after a reload, because the state is durable: the
+    /// overlay is never persisted, [`overlay_from_queue`] rebuilds it from
+    /// the queue entry, and the queue entry outlives the process. A reload
+    /// that dropped the archive stamp would put a cancelled item back on
+    /// the frontier and make it editable again from detail.
+    #[tokio::test]
+    async fn a_pending_cancel_still_splits_the_two_reads_after_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-cancel-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let id = first
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .await
+            .unwrap();
+        first
+            .act("seed-act-1", &id, ItemAction::Cancel, 2_000)
+            .await
+            .unwrap();
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        assert!(
+            second.frontier().is_empty(),
+            "a reload must not resurrect a cancelled item onto the frontier"
+        );
+        let detail = second.item_detail(&id, 3_000).expect("history stays readable");
+        assert!(detail.is_archived);
+        assert!(!detail.is_editable);
+    }
+
     /// The overlay wins here exactly as it does on the frontier: an act
     /// taken offline shows on the detail the instant it is enqueued.
     #[tokio::test]
