@@ -618,11 +618,9 @@ export function SettingsScreen({
                 </p>
               ) : null}
               {/* What the last attempt did, in words. Before this the button
-                  simply did nothing on every failure path — no pending state,
-                  no error, and (in an installed iOS app, where the popup
-                  escapes to Safari and loses its opener) no callback ever
-                  either. The copy is `calendar/connect-error.ts`; this only
-                  places it. */}
+                  simply did nothing on every failure path — no pending state
+                  and no error, ever. The copy is `calendar/connect-error.ts`;
+                  this only places it. */}
               {calendar.connectError !== null ? (
                 <ConnectError error={calendar.connectError} />
               ) : null}

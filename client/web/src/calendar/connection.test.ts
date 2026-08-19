@@ -71,13 +71,18 @@ describe("connect", () => {
     expect(d.pushToken).toHaveBeenCalledWith("tok-2");
   });
 
-  it("stays disconnected (not stuck needing reconnect) if the user declines consent", async () => {
-    const tokenClient = fakeTokenClient(() => ({ error: "access_denied" }));
+  it("stays disconnected (not stuck needing reconnect) if the attempt fails", async () => {
+    const tokenClient = fakeTokenClient(() => ({ error: "authority_rejected_device_token" }));
     const d = deps(tokenClient);
 
     const result = await connect(d);
 
-    expect(result).toEqual({ connected: false, needsReconnect: false, expiresAtMs: null, error: "access_denied" });
+    expect(result).toEqual({
+      connected: false,
+      needsReconnect: false,
+      expiresAtMs: null,
+      error: "authority_rejected_device_token",
+    });
     expect(d.pushToken).not.toHaveBeenCalled();
   });
 });

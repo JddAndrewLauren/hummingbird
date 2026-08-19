@@ -60,7 +60,14 @@ export function connectErrorCopy(error: string): ConnectErrorCopy {
     case "no_access_token":
       return {
         message: "The server answered without a token.",
-        hint: "Try again. If it repeats, remove this app's calendar access in your Google account and connect again.",
+        // Not "remove this app's calendar access in your Google account":
+        // under ADR-0028 there is no per-device grant to revoke — the only
+        // grant is the server-held dedicated refresh token, shared by every
+        // device — and this code is the authority's own 200 body lacking a
+        // usable token (`authority-token-client.ts`), a server-side fault,
+        // not something Google is declining per-reader. The fix is on the
+        // server, so the hint points there.
+        hint: "Try again. If it repeats, this is a server-side fault — tell the operator to check the Google calendar credential.",
       };
     default:
       // The unknown case echoes the raw code rather than swallowing it, and a
