@@ -2,6 +2,7 @@ package net.twinion.hummingbird
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -97,6 +98,34 @@ class BottomNavStructuralTest {
         val androidBar = navDestinations.filter { it.onBar }.map { route(it) }.toSet()
         assertEquals(webBarScreens, androidBar)
         assertEquals(4, androidBar.size)
+    }
+
+    @Test
+    fun `a bar destination renders no back affordance`() {
+        // #588 item 1: a bottom-bar tab has nothing to go back to — its
+        // stack root is itself. The Back links the bar tabs carried were
+        // web chrome ported from a surface that had no bar; the More-sheet
+        // screens keep theirs (they are pushed and poppable). Comments are
+        // stripped so a doc sentence may name what this forbids.
+        for (entry in navDestinations.filter { it.onBar }) {
+            val screenFile = route(entry).replaceFirstChar { it.uppercase() } + "Screen.kt"
+            val src = repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/$screenFile")
+                .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+                .replace(Regex("""(?m)^\s*//.*$"""), "")
+            assertFalse(
+                "$screenFile is a bar tab and must not take an onBack callback (#588)",
+                // Word-bounded so onBackground/onBackPressed-style names
+                // stay legal; the callback name itself is the ban.
+                Regex("""\bonBack\b""").containsMatchIn(src),
+            )
+            assertFalse(
+                "$screenFile is a bar tab and must not render a Back control (#588)",
+                // The defect's exact string shapes ("Back", "Back to Now"),
+                // not any string starting with Back — "Background sync
+                // paused" must not trip a nav gate.
+                Regex(""""Back( to [A-Za-z]+)?"""").containsMatchIn(src),
+            )
+        }
     }
 
     @Test

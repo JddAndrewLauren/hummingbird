@@ -36,15 +36,22 @@ import uniffi.hummingbird_ffi_mobile.MobileRecallRowRecord
 // row (#541). Search-as-you-type, no debounce (`RecallViewModel`'s own
 // doc); tapping a live row opens that item's own detail screen through
 // [onOpenItem] — the same door `NowScreen`'s own rows already use. A Done
-// or archived row is shown, labelled, but not tappable: this slice ships
-// no inline edit the way web's #479 does.
+// or archived row is shown, labelled, dimmed, and not tappable (#597):
+// this slice ships no inline edit the way web's #479 does, and the alpha
+// is what says so — an inert row at full opacity carries every affordance
+// cue of the live row above it and answers none of them.
 //
 // This file decides nothing about a row or the result set.
 // [MobileRecallRowRecord]s arrive already matched, grouped and ordered;
 // `total` is the seam's own un-capped count, never re-derived from
 // `rows.size`. There is no sort, filter or group-by anywhere below —
 // `RecallScreenStructuralTest` gates that.
-private const val ARCHIVED_ALPHA = 0.72f
+
+/** The alpha of a row that answers no tap — Done and archived alike
+ * (#597): the dimming tracks inertness, not the archive flag, so the two
+ * inert groups read the same and only the tappable one reads solid.
+ * `LedgerScreen` declares the same 0.72 for its own archived rows. */
+private const val INERT_ALPHA = 0.72f
 
 @Composable
 fun RecallScreen(
@@ -147,11 +154,18 @@ private fun RecallRow(
     row: MobileRecallRowRecord,
     onClick: (() -> Unit)?,
 ) {
-    val archived = row.group == MobileRecallGroup.ARCHIVED
+    // Exhaustive over the groups, no `else` arm (the structural test's
+    // rule for a `uniffi::Enum` crossing): a fourth group added core-side
+    // must be answered for here, not silently full-opacity.
+    val alpha = when (row.group) {
+        MobileRecallGroup.LIVE -> 1f
+        MobileRecallGroup.DONE -> INERT_ALPHA
+        MobileRecallGroup.ARCHIVED -> INERT_ALPHA
+    }
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(if (archived) ARCHIVED_ALPHA else 1f)
+            .alpha(alpha)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {

@@ -603,6 +603,13 @@ pub struct NowItemRecord {
     /// record arrives in.
     pub priority: i64,
     pub context: Option<String>,
+    /// The item's judged size/energy, raw wire words (`quick`..., `low`...)
+    /// or `None` when unjudged — the card's word-free glyphs (#558,
+    /// ADR-0024) draw only a judged dimension and omit an absent one
+    /// entirely, so `None` must survive the seam as `None`, never a
+    /// default.
+    pub size: Option<String>,
+    pub energy: Option<String>,
     pub available_actions: Vec<String>,
     pub stage: String,
 }
@@ -636,6 +643,8 @@ fn to_now_item_record(item: &Item, now: &str) -> NowItemRecord {
         urgency: map_urgency_band(band),
         priority: item.priority,
         context: item.context.clone(),
+        size: item.size.map(|size| size.as_str().to_string()),
+        energy: item.energy.map(|energy| energy.as_str().to_string()),
         available_actions: actions,
         stage: item.stage.as_str().to_string(),
     }
@@ -3497,17 +3506,64 @@ pub struct MobileGrillQuestion {
     pub choices: Vec<String>,
 }
 
-/// `grill-me`'s terminal proposal. **`patch_json` is opaque** — the raw
-/// object text, carried whole to `Core::complete_grill`'s `applied_patch`
-/// and never read into on this side of the boundary. A JSON string rather
-/// than a map because uniffi has no `serde_json::Value`, and because a
-/// typed mirror here would be a second schema for a field whose whole
-/// contract is that nobody parses it.
+/// `grill-me`'s terminal proposal. **`patch_json` is opaque on the write
+/// path** — the raw object text, carried whole to `Core::complete_grill`'s
+/// `applied_patch`; Kotlin never parses it. A JSON string rather than a map
+/// because uniffi has no `serde_json::Value`, and because a typed mirror
+/// here would be a second schema for a field the write path never reads
+/// into. The one reader is [`grill_proposal_rows`] (#595), which turns it
+/// into labelled rows **on this side of the boundary** so the confirm
+/// screen shows words — the parse stays in Rust, per ADR-0025.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct MobileGrillProposal {
     pub summary: String,
     pub verdict: MobileGrillVerdict,
     pub patch_json: String,
+}
+
+/// One labelled row of the review card's "Proposed edit" section (#595) —
+/// [`hummingbird_core::decisions::skills::review::ProposedEditRow`],
+/// mirrored. `current` is `None` when the item holds nothing for the field.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileProposedEditRow {
+    pub field: String,
+    pub label: String,
+    pub current: Option<String>,
+    pub proposed: String,
+}
+
+/// #595: the review card's "Proposed edit" rows, decided core-side — the
+/// same pure-seam shape as [`notification_tap_target`]: applied results,
+/// never a per-row decision function (ADR-0025). Takes the proposal's
+/// `patch_json` and the detail record the takeover already holds; an
+/// unparseable patch yields no rows, and the card states the empty fact.
+/// The rows change nothing about what Confirm records — `patch_json` still
+/// travels whole as `applied_patch`.
+#[uniffi::export]
+pub fn grill_proposal_rows(
+    patch_json: String,
+    item: ItemDetailRecord,
+) -> Vec<MobileProposedEditRow> {
+    let patch: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&patch_json).unwrap_or_default();
+    let current = hummingbird_core::decisions::skills::review::CurrentItemFields {
+        title: item.title,
+        description: item.description,
+        size: item.size,
+        energy: item.energy,
+        context: item.context,
+        priority: item.priority,
+        deadline: item.deadline,
+    };
+    hummingbird_core::decisions::skills::review::proposal_rows(&patch, &current)
+        .into_iter()
+        .map(|row| MobileProposedEditRow {
+            field: row.field,
+            label: row.label,
+            current: row.current,
+            proposed: row.proposed,
+        })
+        .collect()
 }
 
 /// One completed round, threaded back on the next request — `grill-me` is
@@ -4547,6 +4603,48 @@ mod tests {
         assert_eq!(host.projects().await, Vec::<MobileProject>::new());
     }
 
+    /// #595: the two decisions that live in this layer, not in the core —
+    /// an unparseable patch yields no rows rather than an error (the card
+    /// states the empty fact), and a well-formed patch reaches the core's
+    /// `proposal_rows` with the record's own current values beside it.
+    #[test]
+    fn grill_proposal_rows_parse_here_and_never_error() {
+        let item = ItemDetailRecord {
+            id: "hb-1".to_string(),
+            seq: Some(1),
+            title: "Plan India trip".to_string(),
+            description: None,
+            stage: "grilling".to_string(),
+            size: Some("normal".to_string()),
+            energy: None,
+            context: None,
+            agent: false,
+            priority: 2,
+            project_id: None,
+            project_name: None,
+            deadline: None,
+            scheduled_date: None,
+            source_url: None,
+            updated_at: 0,
+            version: 1,
+            steps: vec![],
+            open_blockers: vec![],
+            live_alert: None,
+            is_archived: false,
+            is_editable: true,
+            available_actions: vec![],
+            microtask_affordance: None,
+        };
+
+        assert_eq!(grill_proposal_rows("not json".to_string(), item.clone()), vec![]);
+
+        let rows = grill_proposal_rows(r#"{"size":"deep"}"#.to_string(), item);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Size");
+        assert_eq!(rows[0].current.as_deref(), Some("normal"));
+        assert_eq!(rows[0].proposed, "deep");
+    }
+
     /// `ui/forms/PriorityRow.kt` hardcodes its display order as
     /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
     /// JVM test cannot call a generated JNI binding directly
@@ -4596,7 +4694,7 @@ mod tests {
         assert_eq!(
             sizes,
             vec!["quick", "normal", "deep"],
-            "NowScreen.kt's SIZE_VALUES must match this",
+            "NowScreen.kt's SIZE_VALUES and ItemDetailScreen.kt's SIZE_VOCABULARY must match this — order included, since the level glyphs' ramp position is the list index (#558)",
         );
 
         let energies: Vec<String> = hummingbird_core::decisions::vocabulary::energy_options()
@@ -4606,7 +4704,7 @@ mod tests {
         assert_eq!(
             energies,
             vec!["low", "medium", "high"],
-            "NowScreen.kt's ENERGY_VALUES must match this",
+            "NowScreen.kt's ENERGY_VALUES and ItemDetailScreen.kt's ENERGY_VOCABULARY must match this — order included, since the level glyphs' ramp position is the list index (#558)",
         );
 
         let axes: Vec<&str> = frontier::FRONTIER_GROUP_AXES

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.paddingFromBaseline
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
@@ -45,6 +46,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.EnergyGlyph
+import net.twinion.hummingbird.ui.SizeGlyph
+import net.twinion.hummingbird.ui.StageBadge
+import net.twinion.hummingbird.ui.energyTitle
+import net.twinion.hummingbird.ui.levelColor
+import net.twinion.hummingbird.ui.levelPosition
+import net.twinion.hummingbird.ui.sizeTitle
 import net.twinion.hummingbird.ui.theme.Amber500
 import net.twinion.hummingbird.ui.theme.Crimson500
 import net.twinion.hummingbird.ui.theme.Ember400
@@ -68,10 +76,10 @@ import uniffi.hummingbird_ffi_mobile.NowItemRecord
 // board's own 390px behaviour -- its wrapping columns stacking into one
 // column -- is the reference (`FrontierColumns.tsx`), so this screen is
 // that one-column case made native rather than a second design. `MainActivity`'s
-// `AppRoot` is this composable's host (M0's proof screen moves behind the
-// "Status" action, M1-6's own scope note); no nav library in M1 --
-// `onShowStatus` is a plain callback, the same mode-toggle shape a
-// `NavHost` would later replace. `AppRoot` also owns the foreground sync
+// `AppRoot` hosts this composable inside its `NavHost`; the screen carries
+// no header links of its own — Alerts and Status are bottom-bar tabs, and
+// the M1-era header text links that duplicated them were removed by #588.
+// `AppRoot` also owns the foreground sync
 // cadence and hands this screen its completion via `syncTick` (see that
 // parameter's own note).
 
@@ -133,18 +141,6 @@ internal val ACTION_LABEL: Map<String, String> = mapOf(
     "complete" to "Complete",
     "block" to "Mark blocked",
     "cancel" to "Cancel",
-)
-
-/** [NowItemRecord.stage]'s display word — `ItemRow`'s own
- * `item.stage === "ready" ? null : <StageBadge>` (web), ported: a card
- * shows its stage chip for every stage but `Ready`, which says nothing at
- * card size. `"in_progress"` still renders (`In progress`), matching web. */
-private val STAGE_LABEL: Map<String, String> = mapOf(
-    "triage" to "Triage",
-    "grilling" to "Grilling",
-    "in_progress" to "In progress",
-    "blocked" to "Blocked",
-    "done" to "Done",
 )
 
 /** [MobileFrontierAxis]'s switch label — `AXIS_LABEL` in
@@ -245,8 +241,6 @@ private fun LazyListScope.nowPaneSection(panes: List<MobileRankedPane>) {
 
 @Composable
 fun NowScreen(
-    onShowStatus: () -> Unit,
-    onShowAlerts: () -> Unit,
     onOpenItem: (String) -> Unit,
     syncTick: Int = 0,
 ) {
@@ -319,24 +313,13 @@ fun NowScreen(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // The product name is lowercase everywhere; the screen
-                // title is the one exception the design system already
-                // carries (a verb/noun, not the brand).
-                Text("Now", style = MaterialTheme.typography.headlineLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = onShowAlerts) {
-                        Text("Alerts")
-                    }
-                    TextButton(onClick = onShowStatus) {
-                        Text("Status")
-                    }
-                }
-            }
+            // The product name is lowercase everywhere; the screen
+            // title is the one exception the design system already
+            // carries (a verb/noun, not the brand).
+            // No header links: Alerts and Status are bottom-bar tabs
+            // (#588 item 2) — the header text links predated the bar and
+            // duplicated it.
+            Text("Now", style = MaterialTheme.typography.headlineLarge)
 
             val currentBoard = board
 
@@ -517,7 +500,7 @@ private fun FacetFilterRow(
 }
 
 @Composable
-private fun FacetChipGroup(
+internal fun FacetChipGroup(
     label: String,
     facet: FrontierFacet,
     values: List<String>,
@@ -530,11 +513,17 @@ private fun FacetChipGroup(
     // empty row.
     if (values.isEmpty()) return
 
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // `Alignment.Top`, not `CenterVertically` (#588 item 3): Context is
+    // the one group whose vocabulary is live and can wrap the chip row to
+    // two lines, and a centred label then floats between them. Top-aligned
+    // with a fixed offset, the label sits beside the first line whatever
+    // the row's height — the offset centres it against one 32dp chip.
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.paddingFromBaseline(top = 20.dp),
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             for (value in values) {
@@ -665,8 +654,19 @@ private fun NowRow(
             // reused below, so the guard cannot disagree with what draws.
             val swatch = urgencyColor(record.urgency, dark)
             val urgencyWord = urgencyLabel(record.urgency)
-            val stageChip = if (record.stage == "ready") null else STAGE_LABEL[record.stage] ?: record.stage
-            if (swatch != null || urgencyWord != null || record.deadline != null || stageChip != null) {
+            // `ItemRow`'s own `item.stage === "ready" ? null : <StageBadge>`
+            // (web), ported: `Ready` alone says nothing at card size.
+            val stageChip = if (record.stage == "ready") null else record.stage
+            // Word-free glyph positions (#558, ADR-0024): only a judged,
+            // known dimension draws on a card — an absent one is omitted
+            // entirely (that omission is what licenses dropping the word),
+            // and an unknown wire word maps to position 0, which a card
+            // never draws (the unset ghost is detail-only).
+            val sizePos = record.size?.let { levelPosition(SIZE_VALUES, it) }?.takeIf { it > 0 }
+            val energyPos = record.energy?.let { levelPosition(ENERGY_VALUES, it) }?.takeIf { it > 0 }
+            if (swatch != null || urgencyWord != null || record.deadline != null ||
+                stageChip != null || sizePos != null || energyPos != null
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -695,14 +695,25 @@ private fun NowRow(
                     // The stage chip IS the triage label: a capture riding
                     // inline into these columns is marked by the app's one
                     // stage vocabulary, never a badge invented for this
-                    // surface (`ItemRow`'s own rule, ported). "Ready" says
-                    // nothing at card size and is the default, so it alone
-                    // renders no chip.
+                    // surface (`ItemRow`'s own rule, ported) — and since
+                    // #557 the one treatment too, `ui/StageBadge.kt`.
                     stageChip?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        StageBadge(stage = it, dark = dark)
+                    }
+                    // ADR-0024: drawn, not written — the glyph names itself
+                    // (`Size: quick`) since no word sits beside it here.
+                    sizePos?.let { pos ->
+                        SizeGlyph(
+                            position = pos,
+                            color = levelColor(pos, dark),
+                            contentDescription = sizeTitle(record.size),
+                        )
+                    }
+                    energyPos?.let { pos ->
+                        EnergyGlyph(
+                            position = pos,
+                            color = levelColor(pos, dark),
+                            contentDescription = energyTitle(record.energy),
                         )
                     }
                 }

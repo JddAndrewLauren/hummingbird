@@ -106,6 +106,28 @@ class RecallScreenStructuralTest {
     }
 
     @Test
+    fun `an inert row is dimmed - Done and archived share the alpha the live row does not`() {
+        // #597: dimming tracks inertness, not the archive flag. A Done row
+        // at full opacity carries every affordance cue of the live row
+        // above it and answers none of them — the alpha is what tells the
+        // truth. All three variants must be named (the wildcard test above
+        // holds the no-else rule); this pins which side of the alpha each
+        // lands on.
+        assertTrue(
+            "the live row must render solid",
+            Regex("""MobileRecallGroup\.LIVE\s*->\s*1f""").containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "a Done row must take the inert alpha (#597)",
+            Regex("""MobileRecallGroup\.DONE\s*->\s*INERT_ALPHA""").containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "an archived row must take the inert alpha",
+            Regex("""MobileRecallGroup\.ARCHIVED\s*->\s*INERT_ALPHA""").containsMatchIn(screenSrc),
+        )
+    }
+
+    @Test
     fun `only a live row opens item detail`() {
         assertTrue(
             "RecallScreen.kt must gate onOpenItem on the LIVE group",

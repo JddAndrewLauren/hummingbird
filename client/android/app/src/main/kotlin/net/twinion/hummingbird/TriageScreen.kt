@@ -1,5 +1,6 @@
 package net.twinion.hummingbird
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,6 +31,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.ChoiceRow
+import net.twinion.hummingbird.ui.LevelGlyphFamily
+import net.twinion.hummingbird.ui.StageBadge
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
@@ -53,7 +56,6 @@ import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 @Composable
 fun TriageScreen(
     syncTick: Int = 0,
-    onBack: () -> Unit,
     onGrill: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -68,6 +70,7 @@ fun TriageScreen(
     // capture form already reads (`captureFormMeta`'s own doc: one source,
     // shared).
     val formMeta: CaptureFormMeta = viewModel.formMeta
+    val dark = isSystemInDarkTheme()
 
     suspend fun reload() {
         viewModel.load()
@@ -100,8 +103,6 @@ fun TriageScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            TextButton(onClick = onBack) { Text("Back") }
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -142,6 +143,7 @@ fun TriageScreen(
                         for (item in current.board.items) {
                             TriageRow(
                                 item = item,
+                                dark = dark,
                                 expanded = selectedId == item.id,
                                 draft = if (selectedId == item.id) draft else null,
                                 formMeta = formMeta,
@@ -172,6 +174,7 @@ fun TriageScreen(
 @Composable
 private fun TriageRow(
     item: TriageItemRecord,
+    dark: Boolean,
     expanded: Boolean,
     draft: TriageDraft?,
     formMeta: CaptureFormMeta,
@@ -203,11 +206,10 @@ private fun TriageRow(
                 // stretching, so the row still reads as SpaceBetween.
                 TextButton(onClick = onToggle, modifier = Modifier.weight(1f, fill = false)) {
                     Column {
-                        Text(
-                            item.stage.uppercase(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        // One treatment per stage word (#557) —
+                        // `ui/StageBadge.kt`. Stays inside the TextButton's
+                        // Column so the row's tap target is unchanged.
+                        StageBadge(stage = item.stage, dark = dark)
                         Text(item.title, style = MaterialTheme.typography.bodyLarge)
                     }
                 }
@@ -232,12 +234,14 @@ private fun TriageRow(
                 )
                 LevelSlider(
                     label = "Energy",
+                    glyphFamily = LevelGlyphFamily.ENERGY,
                     options = formMeta.energies,
                     selected = draft.energy.ifEmpty { null },
                     onSelect = { onDraftChange(draft.copy(energy = it.orEmpty())) },
                 )
                 LevelSlider(
                     label = "Size",
+                    glyphFamily = LevelGlyphFamily.SIZE,
                     options = formMeta.sizes,
                     selected = draft.size.ifEmpty { null },
                     onSelect = { onDraftChange(draft.copy(size = it.orEmpty())) },

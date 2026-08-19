@@ -35,6 +35,8 @@ class NowViewModelTest {
         urgency = MobileUrgencyBand.CALM,
         priority = 0L,
         context = null,
+        size = null,
+        energy = null,
         availableActions = actions,
         stage = "ready",
     )

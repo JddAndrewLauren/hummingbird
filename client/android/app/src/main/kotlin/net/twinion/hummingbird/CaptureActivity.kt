@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.LevelGlyphFamily
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
@@ -317,12 +318,14 @@ private fun CaptureScreen(
             // `viewModel.formMeta`, never a literal in this file.
             LevelSlider(
                 label = "Energy",
+                glyphFamily = LevelGlyphFamily.ENERGY,
                 options = viewModel.formMeta.energies,
                 selected = draft.energy.ifEmpty { null },
                 onSelect = { viewModel.updateDraft(draft.copy(energy = it.orEmpty())) },
             )
             LevelSlider(
                 label = "Size",
+                glyphFamily = LevelGlyphFamily.SIZE,
                 options = viewModel.formMeta.sizes,
                 selected = draft.size.ifEmpty { null },
                 onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },

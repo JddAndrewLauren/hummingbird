@@ -202,10 +202,14 @@ already-sunk `hummingbird_core::decisions::queue::triage_process_queue`) and
 at-a-time interview (ADR-0023), mounted from both the item screen's own
 Grill button and the Triage row's (above) — never inline in either caller.
 The review card's predicates (`wouldStrandPlan`/`demotesFromFrontier`/
-`planReplacementLabel`) and the microtask affordance
-(`ItemDetailRecord.microtaskAffordance`) both arrive applied from
+`planReplacementLabel`), its "Proposed edit" rows (`grillProposalRows`,
+#595 — the patch as read-only labelled rows beside the current values;
+Confirm records the proposal unchanged, since this client ships no inline
+edit) and the microtask affordance
+(`ItemDetailRecord.microtaskAffordance`) all arrive applied from
 `hummingbird_core::decisions::skills::{review,affordance}` (ADR-0025); the
-Kotlin side decides neither. A draft auto-saves after every completed round,
+Kotlin side decides none of them and never parses `patch_json`
+(`GrillTakeoverStructuralTest` gates both). A draft auto-saves after every completed round,
 not only on Back, so a fold/rotation mid-interview loses nothing —
 `GrillTakeoverViewModel.open()` is idempotent per item id for the same
 reason, and `ScreenStateRetentionTest` gates that the screen is retrieved
@@ -543,16 +547,15 @@ costs the device token every run.
     `None` at its own early return. Every reachable configuration answers
     `None`, which is correct, not broken. Blocked until #275/#276 append a
     second entry — do not go hunting for the affordance.
-26. **Recall** (#542): search as you type, three groups — Live, Done,
-    Archived — and live rows opening item detail. **Only archived rows are
-    dimmed** (`ARCHIVED_ALPHA`): a Done row is inert but renders at full
-    opacity, identical to the live row above it. That is #597, and it is
-    not a #542 regression — #542 never asked for it, the claim was only
-    ever made here. Neither Done nor archived is tappable, so prove
-    inertness against a **positive control** — tap a live row in the same
-    column first, or "nothing happened" equally describes a tap that
-    missed. Re-find a known archived item; that is the milestone's closing
-    claim. Measured 2026-08-19: `office` populates all three groups (live
+26. **Recall** (#542, dimming corrected by #597): search as you type, three
+    groups — Live, Done, Archived — and live rows opening item detail.
+    **Done and archived rows are both dimmed** (`INERT_ALPHA`) **and both
+    inert**: the alpha tracks tappability, so the two inert groups read the
+    same and only the live row reads solid. Neither Done nor archived is
+    tappable, so prove inertness against a **positive control** — tap a
+    live row in the same column first, or "nothing happened" equally
+    describes a tap that missed. Re-find a known archived item; that is the
+    milestone's closing claim. Measured 2026-08-19: `office` populates all three groups (live
     *Kathryn office disco ball smart plug*, done *Dr. Shira Keri's Office*,
     archived *Fwd: Dr. Shira Keri's Office* ×2) and `526 repro` re-finds
     both archived probes. Seed first if the mirror is thin.
