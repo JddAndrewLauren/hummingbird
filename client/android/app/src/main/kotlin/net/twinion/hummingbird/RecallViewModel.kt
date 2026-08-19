@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,6 +46,16 @@ import uniffi.hummingbird_ffi_mobile.MobileRecallRowRecord
 // distinct "type to search" state before any answer would exist. The web's
 // `useRecallWiring.ts` keeps the identical duplicate for the identical
 // reason.
+//
+// **`rows` is not cleared when `query` changes.** The web's
+// `useRecallWiring.ts` clears its slot on every keystroke because a result
+// row there can be expanded into a live edit (#479), and a stale row under
+// a changed query is one a reader could edit by mistake. This slice ships
+// no inline edit — a result row only ever opens `ItemDetailScreen`, which
+// re-reads the item itself — so a previous query's rows staying on screen
+// until the new answer lands is a display lag, not a correctness risk, and
+// is left alone deliberately rather than flashing an empty list on every
+// keystroke.
 class RecallViewModel(
     private val searchFn: suspend (query: String, nowMs: Long) -> MobileRecallOutcome,
 ) : ViewModel() {
@@ -82,6 +93,16 @@ class RecallViewModel(
             _rows.value = outcome.rows
             _total.value = outcome.total
             _statusLine.value = null
+        } catch (error: CancellationException) {
+            // `LaunchedEffect(query)` cancels this coroutine on every
+            // keystroke that lands mid-crossing — the common case for a
+            // fast typist, and unlike `LedgerViewModel`/`RulesViewModel`
+            // (cancelled only by a screen leave), Recall cancels on nearly
+            // every call. Swallowing it into `statusLine` the way the
+            // catch below does would flash "Couldn't search" on ordinary
+            // typing; the next keystroke's own search is the real answer,
+            // so this one must propagate rather than be reported.
+            throw error
         } catch (error: Exception) {
             _statusLine.value = "Couldn't search — ${error.message}"
         } finally {

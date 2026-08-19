@@ -122,10 +122,10 @@ the web's own populated `RoutesScreen.tsx` branch reads a demo fixture with
 no live counterpart, and parity with a fixture is not parity. The sheet also
 carries a Recall entry (#541) below the screen list, deliberately outside
 `NavDestination` — a gesture, not a screen, the same distinction the web's
-`onSearch` row holds by sitting outside `NAV_BAR_OVERFLOW`. Its screen is a
-placeholder; #542 replaces the body with the real search surface.
-`NavigationStructuralTest` asserts full route reachability and that the
-notification doors below survived the churn.
+`onSearch` row holds by sitting outside `NAV_BAR_OVERFLOW`. #541 shipped its
+placeholder; #542 replaced the body with the real search-as-you-type
+surface (below). `NavigationStructuralTest` asserts full route
+reachability and that the notification doors below survived the churn.
 
 ### The Done and Ledger screens (M3, #532)
 
@@ -214,6 +214,26 @@ own transport is `skills/MicrotaskRunner.kt`, the `skill_run_*` doors' first
 real caller; `skills/BackendPreference.kt` is #274's picker, read into every
 run and into the one-tap "switch tiers" offer a declined, unreachable pin
 gets (`hummingbird_core::decisions::skills::backend::declined_backend_fallback`).
+
+## The Recall screen (M4, #542)
+
+`RecallScreen.kt`/`RecallViewModel.kt` are the milestone's closer: re-find
+one known item across everything the mirror has ever known, live or
+archived. `MobileTaskHost::search(query, nowMs)` hands back a
+`MobileRecallOutcome` — rows already matched, grouped
+(`MobileRecallGroup::{Live, Done, Archived}`) and ordered, plus the core's
+own un-capped `total` — over `hummingbird_core::search` (#478, predating
+this slice; no web change was needed here since the web seam already sank
+it). Neither file re-derives any of that: no sort, filter, group-by or
+title/description scan of its own, gated by `RecallScreenStructuralTest`
+the same way `RulesScreenStructuralTest` gates its own surface. Search is
+as-you-type with no debounce — a mirror read, not a network request, the
+same reasoning `useRecallWiring.ts` states on the web. Tapping a **live**
+row opens `ItemDetailScreen` via `Routes.itemDetail`; Done and archived rows
+are shown, labelled and dimmed, but not tappable — this slice ships no
+inline edit the way the web's #479 does. The route was registered at #541
+as a gesture entry off the More sheet, deliberately outside `NavDestination`
+(above); #542 replaced its placeholder body with this real surface.
 
 ## Proving the lane on hardware
 

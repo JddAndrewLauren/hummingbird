@@ -1,5 +1,6 @@
 package net.twinion.hummingbird
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -64,6 +65,22 @@ class RecallViewModelTest {
             vm.statusLine.value?.contains("Couldn't search") == true,
         )
         assertTrue("loading must settle even on failure", !vm.loading.value)
+    }
+
+    @Test
+    fun `a cancellation from a keystroke landing mid-crossing propagates, never reported as a failure`() = runBlocking {
+        val vm = RecallViewModel(searchFn = { _, _ -> throw CancellationException("keystroke superseded this call") })
+
+        vm.setQueryText("stamps")
+        var caught: CancellationException? = null
+        try {
+            vm.search(1_000)
+        } catch (error: CancellationException) {
+            caught = error
+        }
+
+        assertTrue("the cancellation must propagate rather than be swallowed", caught != null)
+        assertNull("a cancelled search must never flash a failure line", vm.statusLine.value)
     }
 
     @Test
