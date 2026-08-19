@@ -464,16 +464,14 @@ reached.
 Checks 20–27 are the parity checkpoint, not the notification lane: nine
 screens reachable, Status matching the web, one real streamed grill turn,
 and Recall re-finding a known item. They share only the device token with
-1–19. **20–24, 26 and 27 were run on 2026-08-19 against `9fdead3`** (Pixel
-10 Pro Fold, folded); 20, 22, 26 and 27 passed, and 21, 23, 24 and 26 each
-found a defect — #574, #575, #594/#595/#596 and #597. **Only 25's second
-half (a microtask run and the backend picker) has not been run**, because
-it is the one check here that writes and spends.
-
-Check 26's own claim needed correcting by what it found: only **archived**
-rows are dimmed. A Done row is inert but renders at full opacity,
-indistinguishable from the live row above it (#597). Read the wording below
-as the intent, not as a description of what ships, until #597 is decided.
+1–19. **All of 20–27 were run on 2026-08-19 against `9fdead3`** (Pixel 10
+Pro Fold, folded). 20 and 22 passed clean; 26 and 27 passed their own
+claims, though 26 also turned up #597; 21, 23 and 24 found #574, #575 and
+#594/#595/#596; 25 passed every clause it can (#599 explains the one it
+cannot). Two clauses in this section are **unprovable through the shipped
+UI** rather than merely unrun — 24's decline (#594) and 25's tier fallback
+(#599) — so a future pass should re-read those two issues before treating
+either as outstanding work.
 
 Do **not** reach for check 19's instrumented probe to satisfy 24. It was
 the pre-screen substitute; #539 shipped the real takeover, and the probe
@@ -529,11 +527,35 @@ costs the device token every run.
     nothing — `grill-me` has no `apply` (ADR-0023), so there is no cleanup.
 25. **The microtask affordance and the backend picker.** The affordance on
     item detail, a run that narrates as it streams, and Settings' SKILLS
-    BACKEND picker (Auto / Cloud runner) honouring the sunk tier fallback.
+    BACKEND picker (Auto / Cloud runner) persisting device-locally.
+    **Unlike a grill, this writes** — `microtask` has an `apply` and mints
+    Step records (ADR-0023) — so run it against a throwaway item and clean
+    up afterwards: soft-delete the steps (`PATCH /api/steps/:id` with
+    `deleted_at`; there is no DELETE) and archive the item. Measured
+    2026-08-19: narration streamed `reading <id> from the authority` →
+    `item <id> has 0 live steps` → `running skill microtask`, then 11 steps
+    about 100s later; the affordance then flipped to **"Rewrite 11 steps"**,
+    which is `MicrotaskAffordance::Rewrite` applied — a free check that the
+    sunk affordance decision is live.
+    **The tier fallback cannot be checked here (#599).** Android's registry
+    ships one entry, so `fallback_backend_id` finds no id that is not the
+    dead one and a pinned `cloud` offers `None`; an Auto selection returns
+    `None` at its own early return. Every reachable configuration answers
+    `None`, which is correct, not broken. Blocked until #275/#276 append a
+    second entry — do not go hunting for the affordance.
 26. **Recall** (#542): search as you type, three groups — Live, Done,
-    Archived — live rows opening item detail, Done and archived rows dimmed
-    and **not** tappable. Re-find a known archived item; that is the
-    milestone's closing claim. Seed first if the mirror is thin.
+    Archived — and live rows opening item detail. **Only archived rows are
+    dimmed** (`ARCHIVED_ALPHA`): a Done row is inert but renders at full
+    opacity, identical to the live row above it. That is #597, and it is
+    not a #542 regression — #542 never asked for it, the claim was only
+    ever made here. Neither Done nor archived is tappable, so prove
+    inertness against a **positive control** — tap a live row in the same
+    column first, or "nothing happened" equally describes a tap that
+    missed. Re-find a known archived item; that is the milestone's closing
+    claim. Measured 2026-08-19: `office` populates all three groups (live
+    *Kathryn office disco ball smart plug*, done *Dr. Shira Keri's Office*,
+    archived *Fwd: Dr. Shira Keri's Office* ×2) and `526 repro` re-finds
+    both archived probes. Seed first if the mirror is thin.
 27. **The doors survived the nav churn.** #532/#541 rewrote navigation
     under #521/#524, so re-fire the item intent by hand — the block above
     has the command, and `-f 0x24000000` is not optional. A tap on the Now
