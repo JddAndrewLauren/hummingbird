@@ -402,11 +402,11 @@ private fun AppRoot(
 
     Scaffold(
         bottomBar = {
-            // Hidden on a detail/takeover route (item, alert, Grill) —
-            // exactly the routes with no [NavDestination] entry — the same
-            // "not every screen carries the bar" the web's shell holds by
-            // mounting exactly one nav form. Rules and Settings stay
-            // reachable only by their existing incidental doors until #541.
+            // Hidden on a route with no [NavDestination] entry — a
+            // detail/takeover route (item, alert, Grill) or the Recall
+            // placeholder, which is deliberately not one either (its own
+            // doc, above) — the same "not every screen carries the bar"
+            // the web's shell holds by mounting exactly one nav form.
             if (NavDestination.entries.any { it.route == currentRoute }) {
                 BottomNavBar(
                     currentRoute = currentRoute,
@@ -613,7 +613,7 @@ private fun MoreSheet(
             }
             TextButton(onClick = { onNavigate(Routes.RECALL) }) {
                 Text(
-                    "Search",
+                    "Search everything",
                     modifier = Modifier.fillMaxWidth(),
                     color = if (Routes.RECALL == currentRoute) {
                         MaterialTheme.colorScheme.primary

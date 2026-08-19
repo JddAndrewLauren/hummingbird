@@ -62,9 +62,10 @@ import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 //
 // Replaces the debug `ProofScreen`. Most of its affordances moved to
 // Settings in #535; the one that did not — the "Manage device token in
-// Settings" link — moves here instead (#536 review), since #535 left
-// `Routes.SETTINGS` reachable only through that one incidental door and
-// nothing else in the app navigates there until #541.
+// Settings" link — moves here instead (#536 review). `Routes.SETTINGS`
+// also has a permanent More-sheet entry since #541; this link stays as a
+// second, contextual door, the same way `StatusScreen`'s own review
+// requested it.
 
 /** One pane's label, from its [MobileStandingQuestion] and its subject —
  * a rendering choice, never a decision: which words name "the GitHub pane"

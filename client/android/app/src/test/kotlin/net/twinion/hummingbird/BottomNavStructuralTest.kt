@@ -82,13 +82,14 @@ class BottomNavStructuralTest {
         routesConsts.filterValues { !it.contains("{") }.keys - "RECALL"
     }
 
-    /** The nav form's own exception list: a top-level screen `Routes`
-     * declares but this issue deliberately leaves off both the bar and the
-     * sheet, because its reachability is a later slice's job
-     * (`MainActivity.kt`'s own `Routes` doc). Named and explicit so a screen
-     * quietly joining this set — rather than landing in `NavDestination` —
-     * fails loudly instead of passing by construction. Empty since #541,
-     * which wired Rules' and Settings' reachability and closed this out. */
+    /** The nav form's exception mechanism: a place to name a top-level
+     * screen `Routes` declares whose reachability is deliberately left to a
+     * later slice, rather than landing in `NavDestination`. Named and
+     * explicit so such a screen fails loudly instead of passing by
+     * construction. **Empty now** — #541 (this issue) wired Rules' and
+     * Settings' reachability and closed out the last entries it held, and
+     * nothing is presently deferred. The mechanism stays for the next
+     * screen that needs it. */
     private val deferredToLaterSlice = emptySet<String>()
 
     @Test
