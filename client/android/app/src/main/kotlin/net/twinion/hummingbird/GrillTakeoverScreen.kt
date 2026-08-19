@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.ChoiceRow
 import uniffi.hummingbird_ffi_mobile.ItemStepRecord
 import uniffi.hummingbird_ffi_mobile.MobileGrillCompletion
 import uniffi.hummingbird_ffi_mobile.MobileGrillTurn
@@ -160,13 +161,19 @@ fun GrillTakeoverScreen(
 
 @Composable
 private fun DiscardConfirmationRow(onKeep: () -> Unit, onDiscard: () -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // #576: the prompt sits above its two answers rather than beside them,
+    // and the answers wrap. In a plain `Row` the sentence took the width
+    // and `Keep` — the escape from a destructive question — collapsed to an
+    // unreadable sliver, leaving system Back as the only way out.
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             "Discard this grill? The interview so far will be lost.",
             style = MaterialTheme.typography.bodyMedium,
         )
-        Button(onClick = onDiscard) { Text("Discard") }
-        OutlinedButton(onClick = onKeep) { Text("Keep") }
+        ChoiceRow {
+            Button(onClick = onDiscard) { Text("Discard") }
+            OutlinedButton(onClick = onKeep) { Text("Keep") }
+        }
     }
 }
 
@@ -201,7 +208,11 @@ private fun QuestionCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // #576: `grill-me` returns full-sentence choices, so two of them
+        // never share a phone's width — and a plain `Row` did not clip the
+        // second one, it stood it up as a letter column three screens tall
+        // and pushed the free-text field and `Answer` below the fold.
+        ChoiceRow {
             for (choice in choices) {
                 OutlinedButton(onClick = { onAnswer(choice) }) { Text(choice) }
             }

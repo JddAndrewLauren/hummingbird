@@ -135,6 +135,12 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        // #576: Robolectric needs the merged resources/manifest on the unit
+        // test classpath, or `createComposeRule()` cannot inflate anything.
+        unitTests.isIncludeAndroidResources = true
+    }
+
     packaging {
         // The generated binding's JNA `.so` and ours coexist; nothing to
         // exclude yet — kept as the place ABI packaging decisions land.
@@ -204,6 +210,14 @@ dependencies {
     // host's own native dispatch library (`libjnidispatch.jnilib` on
     // macOS) on its classpath, which only this plain jar carries.
     testImplementation(libs.jna)
+    // #576: the width-measuring gate. `ui-test-junit4` brings
+    // `createComposeRule()`; Robolectric is what lets it run without an
+    // emulator, and `ui-test-manifest` supplies the empty activity the rule
+    // launches into (a debug-only manifest merge, hence `debugImplementation`).
+    testImplementation(libs.robolectric)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.test.manifest)
 
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)

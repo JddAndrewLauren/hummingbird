@@ -39,6 +39,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.skills.BackendPreference
+import net.twinion.hummingbird.ui.ChoiceRow
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileMicrotaskAffordance
@@ -418,7 +419,11 @@ private fun ReadBody(
         }
     }
 
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // #576: the same four actions `NowScreen`'s card offers, and the same
+    // reason it wraps them — "Start / Complete / Mark blocked / Cancel" is
+    // wider than a phone, and a plain `Row` left `Cancel` a column of
+    // letters rather than a button.
+    ChoiceRow {
         for (action in record.availableActions) {
             OutlinedButton(onClick = { onAct(action) }) {
                 Text(ACTION_LABEL[action] ?: action)

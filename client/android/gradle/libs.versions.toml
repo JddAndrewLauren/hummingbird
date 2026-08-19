@@ -45,6 +45,13 @@ okhttp = "4.12.0"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
 androidxTestRunner = "1.6.2"
+# #576: the first thing in this module that *measures* a layout. Robolectric
+# is what lets `createComposeRule()` run in `testDebugUnitTest` — i.e. in CI,
+# on a runner with no emulator — so a width-dependent defect can have a gate
+# at all. Pinned like everything else here; `@Config(sdk = 35)` in
+# `ChoiceRowWrappingTest` keeps it off an SDK level it has no android-all jar
+# for (this module compiles against 36).
+robolectric = "4.14.1"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -90,6 +97,10 @@ okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver",
 coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+# Both ride `compose-bom` above, same as every other Compose artifact here.
+compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 
 [plugins]
