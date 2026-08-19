@@ -131,14 +131,16 @@ One row opens at a time into the seeded editor built from #529's shared
 Promote-to-Ready is the only save destination this screen offers — there is
 no "save without promoting" method on `TriageViewModel` at all, unlike item
 detail's own edit mode. The row checkmark goes through the existing
-`act("complete")` path, never a triage. The Grill button renders
-`enabled = false`, with no interview state anywhere in either file — the
-takeover itself lands at #539. **The route is registered and deliberately
-unreachable** — no bar entry, no More sheet, nothing navigates to
-`Routes.TRIAGE` — because reachability is #532's job, the same "registered
-first, wired later" shape `Routes.RULES` established.
-`TriageScreenStructuralTest` asserts that absence, gates the Grill/promotion
-rules above, and — the same foreground-resume discipline `AlertsScreen`,
+`act("complete")` path, never a triage. The Grill button is live (#539):
+gated on the row's own `canGrill` fact from the seam, it navigates to the
+standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
+an interview inline, so neither `TriageScreen.kt` nor `TriageViewModel.kt`
+holds any turn, session or draft state of its own. **The route is registered
+and deliberately unreachable** — no bar entry, no More sheet, nothing
+navigates to `Routes.TRIAGE` — because reachability is #532's job, the same
+"registered first, wired later" shape `Routes.RULES` established.
+`TriageScreenStructuralTest` asserts that absence, gates the header-count and
+Grill rules above, and — the same foreground-resume discipline `AlertsScreen`,
 `NowScreen` and `ItemDetailScreen` all carry — asserts a `LifecycleResumeEffect`
 re-reads the queue on every return to the screen, not only on the app-wide
 `syncTick`: a capture minted from `CaptureActivity` while Triage was
@@ -148,6 +150,25 @@ The seam doors are `MobileTaskHost::triage_board()` (decided from the
 already-sunk `hummingbird_core::decisions::queue::triage_process_queue`) and
 `::triage_item()` (`Core::triage` with a real `promote_to_ready`, sharing
 `to_triage_patch`'s `ItemEdit`→`TriagePatch` conversion with `edit_item`).
+
+## The Grill takeover and the microtask affordance (M4, #539)
+
+`GrillTakeoverScreen.kt`/`GrillTakeoverViewModel.kt` are the one-question-
+at-a-time interview (ADR-0023), mounted from both the item screen's own
+Grill button and the Triage row's (above) — never inline in either caller.
+The review card's predicates (`wouldStrandPlan`/`demotesFromFrontier`/
+`planReplacementLabel`) and the microtask affordance
+(`ItemDetailRecord.microtaskAffordance`) both arrive applied from
+`hummingbird_core::decisions::skills::{review,affordance}` (ADR-0025); the
+Kotlin side decides neither. A draft auto-saves after every completed round,
+not only on Back, so a fold/rotation mid-interview loses nothing —
+`GrillTakeoverViewModel.open()` is idempotent per item id for the same
+reason, and `ScreenStateRetentionTest` gates that the screen is retrieved
+from the `ViewModel` store rather than `remember`. The microtask affordance's
+own transport is `skills/MicrotaskRunner.kt`, the `skill_run_*` doors' first
+real caller; `skills/BackendPreference.kt` is #274's picker, read into every
+run and into the one-tap "switch tiers" offer a declined, unreachable pin
+gets (`hummingbird_core::decisions::skills::backend::declined_backend_fallback`).
 
 ## Proving the lane on hardware
 
