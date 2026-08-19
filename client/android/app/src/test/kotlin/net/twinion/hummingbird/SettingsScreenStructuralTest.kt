@@ -2,6 +2,7 @@ package net.twinion.hummingbird
 
 import java.io.File
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 // The M4 (#535) counterpart of `RulesScreenStructuralTest`, and the gate
@@ -62,6 +63,32 @@ class SettingsScreenStructuralTest {
             assertFalse("$name must not name skipped as a wire string", src.contains("\"skipped\""))
             assertFalse("$name must not name busy as a wire string", src.contains("\"busy\""))
         }
+    }
+
+    /** `BindingRow`'s draft is `remember`ed by binding key, so it survives
+     * every re-read — a seed alone leaves a stale draft sitting over a
+     * value it never showed, with Save enabled to push it back over
+     * another device's edit. `SettingsScreen.tsx`'s `BindingRow` grew this
+     * reseed at #118's review; the phone inherited the seed without it, and
+     * #565's review caught the omission.
+     *
+     * A source gate rather than a behavioural one for the reason this whole
+     * class exists: `client/android` runs no Robolectric, so a `@Composable`
+     * private to `SettingsScreen.kt` cannot be composed in a plain JVM test
+     * — and a dropped reseed compiles, runs, and looks right on every
+     * fixture anyone would think to write. Comments are stripped by
+     * [source], so this matches the code, not the note above it. */
+    @Test
+    fun `the binding row reseeds its draft when the value underneath moves`() {
+        assertTrue(
+            "SettingsScreen.kt's BindingRow must track the value it last seeded from",
+            screenSrc.contains("var seenValue by remember(binding.key)"),
+        )
+        assertTrue(
+            "SettingsScreen.kt's BindingRow must reseed its draft when that value moves",
+            Regex("""if\s*\(seenValue\s*!=\s*binding\.value\)\s*\{[\s\S]{0,200}?draft\s*=\s*bindingDraftSeed\(binding\.value\)""")
+                .containsMatchIn(screenSrc),
+        )
     }
 
     @Test

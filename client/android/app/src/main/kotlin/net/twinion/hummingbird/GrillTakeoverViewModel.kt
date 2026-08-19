@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -150,17 +151,30 @@ class GrillTakeoverViewModel(
     /** One typed answer to the current question — persists the completed
      * round, then re-asks with the whole conversation threaded.
      *
-     * The save runs in [viewModelScope] rather than inside [ask]'s own
-     * [askJob], which the very next gesture cancels: a round already
-     * answered must not lose its persistence to the request that follows
-     * it. A never-answered session (`turns` empty here is impossible — this
-     * appends one) still mints no draft, the rule
-     * `useGrillTakeoverWiring.ts` states for its own save. */
+     * The save runs outside [ask]'s own [askJob], which the very next
+     * gesture cancels: a round already answered must not lose its
+     * persistence to the request that follows it. A never-answered session
+     * (`turns` empty here is impossible — this appends one) still mints no
+     * draft, the rule `useGrillTakeoverWiring.ts` states for its own save.
+     *
+     * **[NonCancellable], not a plain [viewModelScope] launch** (#566
+     * wrap-up). This `ViewModel` is scoped to the takeover's own
+     * `NavBackStackEntry`, so answering and immediately pressing Back pops
+     * that entry, clears its store and cancels [viewModelScope] — taking a
+     * still-suspended save with it and losing the round the human just
+     * typed. That is the same lifetime trap [discard] answers by making the
+     * caller wait; here there is no navigation to sequence against, only a
+     * write that must finish, so it is detached from the scope's
+     * cancellation instead. Back does not save — this is the only
+     * [saveDraftFn] call site there is, which is what makes surviving the
+     * pop load-bearing rather than belt-and-braces. */
     fun answer(itemId: String, text: String) {
         val current = _state.value as? GrillTakeoverState.Ready ?: return
         val question = current.turn as? MobileGrillTurnState.Question ?: return
         val turns = current.turns + MobileGrillTurn(question = question.question, answer = text)
-        viewModelScope.launch { saveDraftFn(itemId, turns, System.currentTimeMillis()) }
+        viewModelScope.launch(NonCancellable) {
+            saveDraftFn(itemId, turns, System.currentTimeMillis())
+        }
         ask(itemId, turns)
     }
 

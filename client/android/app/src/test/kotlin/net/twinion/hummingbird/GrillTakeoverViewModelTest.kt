@@ -1,10 +1,13 @@
 package net.twinion.hummingbird
 
+import androidx.lifecycle.ViewModelStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -69,13 +72,15 @@ class GrillTakeoverViewModelTest {
         completeGrillFn: suspend (String, List<ItemStepRecord>, MobileGrillCompletion, Long) -> String =
             { _, _, _, _ -> "grill-1" },
         grillTurnStates: (List<MobileGrillTurn>) -> Flow<MobileGrillTurnState> = { flowOf(MobileGrillTurnState.Asking(emptyList())) },
+        saveDraftFn: suspend (String, List<MobileGrillTurn>, Long) -> Unit =
+            { id, turns, _ -> recorder.savedDrafts.add(id to turns) },
     ) = GrillTakeoverViewModel(
         itemDetailFn = { id, _ ->
             recorder.itemDetailCalls += 1
             itemDetail(id)
         },
         grillDraftFn = { _ -> draft },
-        saveDraftFn = { id, turns, _ -> recorder.savedDrafts.add(id to turns) },
+        saveDraftFn = saveDraftFn,
         discardDraftFn = { id, _ -> recorder.discardedItemIds.add(id) },
         completeGrillFn = completeGrillFn,
         grillTurn = { _, turns ->
@@ -161,6 +166,50 @@ class GrillTakeoverViewModelTest {
         vm.answer("i", "SEA")
 
         assertEquals(listOf("i" to listOf(MobileGrillTurn(q1, "SEA"))), recorder.savedDrafts)
+    }
+
+    /** #566's wrap-up: answering and immediately pressing Back must not
+     * lose the round. The pop clears this entry's `ViewModelStore`, which
+     * cancels `viewModelScope` — the same lifetime trap `discard` answers
+     * by making the caller wait, except there is no navigation to sequence
+     * against here, only a write that has to finish. Back saves nothing
+     * itself, so this is the round's only chance to reach disk.
+     *
+     * `ViewModelStore.clear()` is the pop, exactly: it is what
+     * `NavBackStackEntry` calls, and it is what invokes `ViewModel.clear()`
+     * and cancels the scope. A plain `viewModelScope.launch` fails this. */
+    @Test
+    fun `a round answered just before the back-stack entry is popped still reaches disk`() = runTest {
+        val recorder = Recorder()
+        val q1 = question("Which airport?")
+        val saveReached = CompletableDeferred<Unit>()
+        val vm = viewModel(
+            recorder,
+            grillTurnStates = { turns ->
+                if (turns.isEmpty()) flowOf(MobileGrillTurnState.Question(emptyList(), q1, null, null))
+                else flowOf(MobileGrillTurnState.Asking(emptyList()))
+            },
+            // Suspends until the test lets it through, standing in for the
+            // real `Core::saveGrillDraft` still in flight when the pop lands.
+            saveDraftFn = { id, turns, _ ->
+                saveReached.await()
+                recorder.savedDrafts.add(id to turns)
+            },
+        )
+        val store = ViewModelStore()
+        store.put("grill", vm)
+        vm.open("i", 1_000)
+
+        vm.answer("i", "SEA")
+        store.clear()
+        saveReached.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(
+            "the answered round must survive the pop that cancels viewModelScope",
+            listOf("i" to listOf(MobileGrillTurn(q1, "SEA"))),
+            recorder.savedDrafts,
+        )
     }
 
     /** No round ever answered yet (a fresh, just-opened session) must not
