@@ -76,10 +76,12 @@ const TIMER_INTERVAL_MS = 15 * 60 * 1000;
 // #585 answered the question the comment above used to ask: the calendar
 // section's Settings gates now key off whether this device holds a device
 // token (`SettingsScreen.tsx`'s `taskTokenState`), since that is what
-// authorises `POST /api/google/calendar_token` — not `VITE_GOOGLE_CLIENT_ID`,
-// which nothing in this file, or anywhere left in `client/web`, reads any
-// more. The variable itself and its Actions/Google-console plumbing are
-// #586's charter ("retire the browser OAuth client").
+// authorises `POST /api/google/calendar_token` — not the browser OAuth
+// client id `VITE_GOOGLE_CLIENT_ID` used to be. #586 retired that variable
+// (gone from the env typings and `deploy-client.yml`) and the CSP
+// allowances that existed only for it. What is still outstanding is
+// operator-only: deleting the OAuth client and its redirect URIs from the
+// Google console.
 
 let cachedTokenClient: TokenClient | null = null;
 let cachedTaskTokenStore: TaskTokenStoreLike | null = null;

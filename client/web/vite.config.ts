@@ -13,9 +13,11 @@ import { readBuildVersion } from "./build-version.node";
 // offline app-shell service worker; deploy config lives in wrangler.toml.
 export default defineConfig({
   // A compile-time literal rather than a `VITE_*` env var, so no build step
-  // anywhere has to remember to set it — the `VITE_GOOGLE_CLIENT_ID`
-  // ordering trap in `deploy-client.yml` is the cautionary tale. It touches
-  // nothing in `core.worker.ts`'s static import graph, so the
+  // anywhere has to remember to set it — a build-time-only Actions secret
+  // has to exist before the deploy meant to carry it, or the shipped
+  // bundle silently keeps the stale value until something triggers another
+  // deploy (#586 retired the one env var that used to illustrate this). It
+  // touches nothing in `core.worker.ts`'s static import graph, so the
   // top-level-`await` invariant is unaffected.
   define: { __APP_VERSION__: JSON.stringify(readBuildVersion()) },
   plugins: [
