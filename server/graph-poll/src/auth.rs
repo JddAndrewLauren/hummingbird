@@ -38,7 +38,7 @@ pub const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-
 const ASSERTION_TTL_SECS: i64 = 600;
 
 /// Slack subtracted from an access token's stated lifetime before the
-/// caller considers it stale — `authority/src/fcm.rs::TOKEN_EXPIRY_SLACK_SECS`'s
+/// caller considers it stale — `authority/src/google_oauth.rs::TOKEN_EXPIRY_SLACK_SECS`'s
 /// own reasoning, so a token can never expire mid-flight between the
 /// staleness check and the request it is used for. This poller is
 /// one-shot per run, so in practice a fresh token is minted every
@@ -143,7 +143,7 @@ struct TokenResponse {
 
 /// Parses Azure AD's token response, converting its relative `expires_in`
 /// into an absolute deadline against the caller's clock, minus
-/// [`TOKEN_EXPIRY_SLACK_SECS`] — `authority/src/fcm.rs::parse_access_token`'s
+/// [`TOKEN_EXPIRY_SLACK_SECS`] — `authority/src/google_oauth.rs::parse_access_token`'s
 /// own logic, verbatim.
 pub fn parse_access_token(body: &str, now_ms: i64) -> Option<AccessToken> {
     let parsed: TokenResponse = serde_json::from_str(body).ok()?;
