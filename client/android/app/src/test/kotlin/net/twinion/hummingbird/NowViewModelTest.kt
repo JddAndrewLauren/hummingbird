@@ -6,7 +6,14 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
+import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
+import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
+import uniffi.hummingbird_ffi_mobile.MobilePaneBand
+import uniffi.hummingbird_ffi_mobile.MobileRankedPane
+import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
+import uniffi.hummingbird_ffi_mobile.MobileZoneFact
+import uniffi.hummingbird_ffi_mobile.MobileZoneQuery
 import uniffi.hummingbird_ffi_mobile.NowBoardRecord
 import uniffi.hummingbird_ffi_mobile.NowColumnRecord
 import uniffi.hummingbird_ffi_mobile.NowFacetSelectionRecord
@@ -44,6 +51,18 @@ class NowViewModelTest {
     private fun columnIds(board: NowBoardRecord): List<String> =
         board.columns.flatMap { column -> column.items.map { it.id } }
 
+    private fun pane(question: MobileStandingQuestion, band: MobilePaneBand = MobilePaneBand.DORMANT) =
+        MobileRankedPane(
+            standingQuestion = question,
+            subjectKey = "the-subject",
+            paneKey = "${question.name.lowercase()}:the-subject",
+            answer = MobilePaneAnswer(
+                answerState = MobilePaneAnswerState.UNBOUND,
+                band = band,
+                withinBand = null,
+            ),
+        )
+
     private fun viewModel(
         fetchBoardFn: suspend (MobileFrontierAxis, NowFacetSelectionRecord, String) -> NowBoardRecord = { _, _, _ -> board() },
         actFn: suspend (String, String, Long) -> Unit = { _, _, _ -> },
@@ -51,7 +70,20 @@ class NowViewModelTest {
         writeAxisFn: suspend (MobileFrontierAxis) -> Unit = {},
         readCollapsedFn: suspend () -> Set<String> = { emptySet() },
         writeCollapsedFn: suspend (Set<String>) -> Unit = {},
-    ) = NowViewModel(fetchBoardFn, actFn, readAxisFn, writeAxisFn, readCollapsedFn, writeCollapsedFn)
+        paneZoneQueriesFn: suspend (Long) -> List<MobileZoneQuery> = { emptyList() },
+        rankPanesFn: suspend (Long, List<MobileZoneFact>) -> List<MobileRankedPane> = { _, _ -> emptyList() },
+        setScheduledDateFn: suspend (String, String?, Long) -> Unit = { _, _, _ -> },
+    ) = NowViewModel(
+        fetchBoardFn,
+        actFn,
+        readAxisFn,
+        writeAxisFn,
+        readCollapsedFn,
+        writeCollapsedFn,
+        paneZoneQueriesFn,
+        rankPanesFn,
+        setScheduledDateFn,
+    )
 
     @Test
     fun `load restores the persisted axis and collapse set before the first fetch`() = runBlocking {
@@ -300,6 +332,97 @@ class NowViewModelTest {
         assertEquals(1, vm.board.value!!.blocked.size)
         assertEquals("blocked-1", vm.board.value!!.blocked[0].item.id)
         assertEquals(listOf("Ship the release"), vm.board.value!!.blocked[0].blockedByTitles)
+    }
+
+    // ------------------------------------------------------ panes (#537)
+
+    @Test
+    fun `loadPanes resolves the zone queries then ranks against the resolved facts`() = runBlocking {
+        val queries = listOf(MobileZoneQuery.CivilDate(zone = "device-local", atMs = 1_000L))
+        var seenNowMsForQueries: Long? = null
+        var seenNowMsForRank: Long? = null
+        var seenFacts: List<MobileZoneFact>? = null
+        val vm = viewModel(
+            paneZoneQueriesFn = { nowMs -> seenNowMsForQueries = nowMs; queries },
+            rankPanesFn = { nowMs, facts ->
+                seenNowMsForRank = nowMs
+                seenFacts = facts
+                listOf(pane(MobileStandingQuestion.WASTE))
+            },
+        )
+
+        vm.loadPanes(1_000L)
+
+        assertEquals(1_000L, seenNowMsForQueries)
+        assertEquals(1_000L, seenNowMsForRank)
+        // The resolved facts are whatever `ZoneBridge.resolve` answers for
+        // the given queries — this pins that `loadPanes` really threads
+        // `paneZoneQueriesFn`'s own output through the resolve leg rather
+        // than an empty list, without re-testing `ZoneBridge` itself here
+        // (`ZoneBridgeTest`'s own job).
+        assertEquals(1, seenFacts?.size)
+        assertEquals(listOf(MobileStandingQuestion.WASTE), vm.panes.value.map { it.standingQuestion })
+    }
+
+    @Test
+    fun `loadPanes replaces the previous list rather than appending`() = runBlocking {
+        var call = 0
+        val vm = viewModel(
+            rankPanesFn = { _, _ ->
+                call += 1
+                if (call == 1) listOf(pane(MobileStandingQuestion.WASTE)) else listOf(pane(MobileStandingQuestion.RACE))
+            },
+        )
+
+        vm.loadPanes(1_000L)
+        vm.loadPanes(2_000L)
+
+        assertEquals(listOf(MobileStandingQuestion.RACE), vm.panes.value.map { it.standingQuestion })
+    }
+
+    @Test
+    fun `setScheduledDate calls the injected write fn with the item, date and clock`() = runBlocking {
+        var seenItemId: String? = null
+        var seenDate: String? = null
+        var seenNowMs: Long? = null
+        val vm = viewModel(
+            setScheduledDateFn = { itemId, date, nowMs ->
+                seenItemId = itemId
+                seenDate = date
+                seenNowMs = nowMs
+            },
+        )
+
+        vm.setScheduledDate("item-1", "2026-08-15", 2_000L)
+
+        assertEquals("item-1", seenItemId)
+        assertEquals("2026-08-15", seenDate)
+        assertEquals(2_000L, seenNowMs)
+    }
+
+    @Test
+    fun `setScheduledDate reloads the panes after writing, reflecting the mutation immediately`() = runBlocking {
+        var written = false
+        val vm = viewModel(
+            setScheduledDateFn = { _, _, _ -> written = true },
+            rankPanesFn = { _, _ ->
+                if (written) listOf(pane(MobileStandingQuestion.WEEKEND, MobilePaneBand.LIVE)) else emptyList()
+            },
+        )
+
+        vm.setScheduledDate("item-1", "2026-08-15", 2_000L)
+
+        assertEquals(listOf(MobileStandingQuestion.WEEKEND), vm.panes.value.map { it.standingQuestion })
+    }
+
+    @Test
+    fun `setScheduledDate with a null date is passed straight through as a clear`() = runBlocking {
+        var seenDate: String? = "unset"
+        val vm = viewModel(setScheduledDateFn = { _, date, _ -> seenDate = date })
+
+        vm.setScheduledDate("item-1", null, 2_000L)
+
+        assertEquals(null, seenDate)
     }
 
     @Test

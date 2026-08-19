@@ -9,7 +9,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
+import net.twinion.hummingbird.core.ZoneBridge
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
+import uniffi.hummingbird_ffi_mobile.MobileRankedPane
+import uniffi.hummingbird_ffi_mobile.MobileSurface
+import uniffi.hummingbird_ffi_mobile.MobileSyncFacts
+import uniffi.hummingbird_ffi_mobile.MobileZoneFact
+import uniffi.hummingbird_ffi_mobile.MobileZoneQuery
 import uniffi.hummingbird_ffi_mobile.NowBoardRecord
 import uniffi.hummingbird_ffi_mobile.NowFacetSelectionRecord
 
@@ -82,10 +88,28 @@ class NowViewModel(
     private val writeAxisFn: suspend (MobileFrontierAxis) -> Unit,
     private val readCollapsedFn: suspend () -> Set<String>,
     private val writeCollapsedFn: suspend (Set<String>) -> Unit,
+    // #537's standing-question panes (waste/weekend/vacation/race), below
+    // the queue: `paneZoneQueriesFn`/`rankPanesFn` are the pane lane's own
+    // two-phase zone bridge (`MobileTaskHost.paneZoneQueries`/`.rankPanes`
+    // in production, `ZoneBridge.resolve` the host-side resolve leg between
+    // them); `setScheduledDateFn` is the weekend pane's do-date write
+    // (`MobileTaskHost.setScheduledDate`) — see that method's own doc for
+    // why it is a dedicated seam call rather than a full `ItemEdit`.
+    private val paneZoneQueriesFn: suspend (nowMs: Long) -> List<MobileZoneQuery>,
+    private val rankPanesFn: suspend (nowMs: Long, zoneFacts: List<MobileZoneFact>) -> List<MobileRankedPane>,
+    private val setScheduledDateFn: suspend (itemId: String, date: String?, nowMs: Long) -> Unit,
 ) : ViewModel() {
 
     private val _board = MutableStateFlow<NowBoardRecord?>(null)
     val board: StateFlow<NowBoardRecord?> = _board.asStateFlow()
+
+    /** The Now surface's own three-or-four panes (#537) — empty until
+     * [loadPanes] first returns, exactly [board]'s own "no crossing has
+     * landed yet" reading (never a distinct loading flag here: the panes
+     * section renders nothing while empty, the same way `NowScreen`'s queue
+     * itself waits on [loading] rather than guessing). */
+    private val _panes = MutableStateFlow<List<MobileRankedPane>>(emptyList())
+    val panes: StateFlow<List<MobileRankedPane>> = _panes.asStateFlow()
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -215,6 +239,30 @@ class NowViewModel(
         refresh(now)
     }
 
+    /** #537's pane load: the zone bridge's two phases, back to back — every
+     * `(zone, civil-date)` fact the Now surface's sunk questions need
+     * ([paneZoneQueriesFn]), resolved by the host
+     * ([net.twinion.hummingbird.core.ZoneBridge], in production), then
+     * ranked against those resolved facts ([rankPanesFn]). Never persisted
+     * and never merged with the previous list — a reload replaces it whole,
+     * [StatusViewModel.load]'s own shape. */
+    suspend fun loadPanes(nowMs: Long) {
+        val queries = paneZoneQueriesFn(nowMs)
+        val facts = ZoneBridge.resolve(queries)
+        _panes.value = rankPanesFn(nowMs, facts)
+    }
+
+    /** The weekend-plans pane's do-date chip (#537, #122): writes through
+     * [setScheduledDateFn] — [uniffi.hummingbird_ffi_mobile.MobileTaskHost.
+     * setScheduledDate], the seam mutation wrapping `Core::triage` with no
+     * destination change — then reloads the panes so the pane's own band
+     * reflects the write immediately, [act]'s own "local-first, reload"
+     * shape. `date == null` clears an already-planned day. */
+    suspend fun setScheduledDate(itemId: String, date: String?, nowMs: Long) {
+        setScheduledDateFn(itemId, date, nowMs)
+        loadPanes(nowMs)
+    }
+
     companion object {
         /** The production wiring: every fn closes over the app's one
          * durable [CoreHolder] handle or the one [FrontierPrefs] DataStore
@@ -232,6 +280,23 @@ class NowViewModel(
                 readCollapsedFn = { FrontierPrefs.readCollapsedColumns(context.applicationContext) },
                 writeCollapsedFn = { collapsed ->
                     FrontierPrefs.writeCollapsedColumns(context.applicationContext, collapsed)
+                },
+                paneZoneQueriesFn = { nowMs ->
+                    CoreHolder.get(context.applicationContext).paneZoneQueries(MobileSurface.NOW, nowMs)
+                },
+                rankPanesFn = { nowMs, zoneFacts ->
+                    CoreHolder.get(context.applicationContext).rankPanes(
+                        MobileSurface.NOW,
+                        nowMs,
+                        zoneFacts,
+                        // No sync history to fold in: the reachability pane
+                        // is the only sunk reader of it, and it never sinks
+                        // into `Surface::Now` (`panes::mod::SUNK`).
+                        MobileSyncFacts(null, null, null),
+                    )
+                },
+                setScheduledDateFn = { itemId, date, nowMs ->
+                    CoreHolder.get(context.applicationContext).setScheduledDate(itemId, date, nowMs)
                 },
             )
 

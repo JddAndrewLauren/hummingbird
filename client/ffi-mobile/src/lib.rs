@@ -66,9 +66,11 @@ use hummingbird_core::decisions::{
 use hummingbird_core::decisions::panes::contract::{
     AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface,
 };
-use hummingbird_core::decisions::panes::inputs::{PaneInputs, PaneReadFacts, SyncFacts};
+use hummingbird_core::decisions::panes::inputs::{
+    BindingFact, BindingValueFact, PaneInputs, PaneItemFacts, PaneReadFacts, SyncFacts,
+};
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
-use hummingbird_core::decisions::panes::{github, kimi, uptime};
+use hummingbird_core::decisions::panes::{github, kimi, race, uptime, waste};
 use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
@@ -1840,14 +1842,18 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // decisions::panes` already carries the whole decision; everything below
 // is exposure, not judgement.
 //
-// **Today this only wires what the Status screen renders**: the status
-// four (kimi/github/uptime/reachability), none of which reads bindings,
-// items or the calendar arm. [`pane_inputs`] leaves those fields at their
-// defaults rather than building them speculatively — `panes::inputs`'s own
-// "a field only once a sunk *caller* reads it" discipline, applied one
-// layer out. #537 (the Now surface: waste/weekend/vacation/race) is the
-// slice that grows this builder to cover them; the door's shape
-// (`surface` in, applied results out) does not change under that growth.
+// **#537 grew the builder to the whole surface pair.** [`mobile_pane_inputs`]
+// (né `status_pane_inputs`, #536) now wires every field a sunk pane reads:
+// the status four's three sources, plus waste's and race's
+// `context_snapshots` sources, the bindings table (waste/race/vacation) and
+// the actionable-items list (weekend's merge). The one field still at its
+// default is the calendar arm — `calendar_connected: false`,
+// `calendar_reads: {}` — because Android has no calendar integration at all
+// yet (#527's out-of-scope list, `#564` the eventual slice); weekend and
+// vacation therefore honestly read as "not connected" on this device until
+// that lands, never a fabricated read. The door's shape (`surface` in,
+// applied results out) did not change under this growth, exactly as #536
+// predicted.
 //
 // **The drift gate.** [`map_standing_question`] matches
 // [`StandingQuestion`] itself, exhaustively and with no wildcard arm — a
@@ -2132,9 +2138,65 @@ fn to_freshness_fact(
     }
 }
 
-/// Builds [`PaneInputs`] for the status four — see this section's header
-/// for why bindings/items/calendar stay at their defaults today.
-fn status_pane_inputs(
+/// [`Binding`] → [`BindingFact`], the one conversion every bindings-reading
+/// pane (waste/race/vacation) needs — [`to_binding_value`]'s twin, into the
+/// pane lane's own input shape rather than [`MobileBindingValue`] (the
+/// Settings screen's own wire type, a different direction across a
+/// different seam).
+fn to_binding_fact(binding: &Binding) -> BindingFact {
+    BindingFact {
+        key: binding.key.clone(),
+        value: match &binding.value {
+            BindingValue::Unset => BindingValueFact::Unset,
+            BindingValue::Text { text } => BindingValueFact::Text { text: text.clone() },
+            BindingValue::Other { .. } => BindingValueFact::Other,
+        },
+    }
+}
+
+/// [`hummingbird_domain::Item`] → [`PaneItemFacts`], trimmed to the four
+/// fields the weekend pane's merge reads (`inputs.rs`'s own doc on
+/// [`PaneItemFacts`]) — never the whole DTO.
+fn to_pane_item_facts(item: &hummingbird_domain::Item) -> PaneItemFacts {
+    PaneItemFacts {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        deadline: item.deadline.clone(),
+        scheduled_date: item.scheduled_date.clone(),
+    }
+}
+
+/// `[...frontier, ...blocked.map(e => e.item)]` — `NowScreen.tsx::
+/// realQuestionInputs`'s own union, matched here rather than `frontier`
+/// alone: [`hummingbird_core::Core::frontier`] deliberately excludes a
+/// relation-blocked item ([`hummingbird_core::Core::blocked`] is the
+/// separate section for those), so a due/scheduled item that happens to be
+/// relation-blocked would silently vanish from the weekend pane's merge
+/// without this — a per-client divergence in a sunk decision's own inputs
+/// (#537 review). A blocked entry's own blockers never join this list:
+/// only the blocked item itself is a due/scheduled candidate, exactly as
+/// `entry.item` (never `entry.blockedByTitles`) is the only thing
+/// `realQuestionInputs` reads off each `blocked` entry.
+///
+/// Factored out of [`mobile_pane_inputs`] so it is unit-testable without a
+/// synced [`Core`]: a relation-blocked item only ever lands in the local
+/// mirror through a real sync cycle, and this crate's own test harness has
+/// no mock HTTP transport to produce one.
+fn pane_item_facts(
+    frontier: &[hummingbird_domain::Item],
+    blocked: &[(hummingbird_domain::Item, Vec<hummingbird_domain::Item>)],
+) -> Vec<PaneItemFacts> {
+    frontier
+        .iter()
+        .chain(blocked.iter().map(|(item, _blockers)| item))
+        .map(to_pane_item_facts)
+        .collect()
+}
+
+/// Builds [`PaneInputs`] for every sunk pane on both surfaces — see this
+/// section's header for what each field is for and why the calendar arm
+/// alone stays at its default.
+fn mobile_pane_inputs(
     core: &Core<FsSnapshotStore, FsSnapshotStore>,
     now_ms: i64,
     sync: MobileSyncFacts,
@@ -2143,13 +2205,21 @@ fn status_pane_inputs(
     pane_reads.insert(kimi::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(kimi::SOURCE, now_ms)));
     pane_reads.insert(github::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(github::SOURCE, now_ms)));
     pane_reads.insert(uptime::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(uptime::SOURCE, now_ms)));
+    pane_reads.insert(waste::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(waste::SOURCE, now_ms)));
+    pane_reads.insert(race::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(race::SOURCE, now_ms)));
+    let bindings: Vec<BindingFact> = core.bindings().iter().map(to_binding_fact).collect();
+    let items: Vec<PaneItemFacts> = pane_item_facts(&core.frontier(), &core.blocked());
     PaneInputs {
         now_ms,
-        bindings: None,
+        // Always `Some`: unlike the web's async table read, `Core::bindings`
+        // is a synchronous local read, so there is no "not read yet" moment
+        // on this seam to preserve (`PaneInputs::bindings`'s own doc names
+        // that state for a host where one is possible).
+        bindings: Some(bindings),
         pane_reads,
         calendar_reads: HashMap::new(),
         calendar_connected: false,
-        items: Vec::new(),
+        items,
         sync: to_sync_facts(sync),
     }
 }
@@ -2842,6 +2912,41 @@ impl MobileTaskHost {
             })
     }
 
+    /// The weekend-plans pane's do-date chip (#537, #122): one new seam
+    /// mutation wrapping [`hummingbird_core::Core::triage`] with
+    /// `promote_to_ready: false` and only `scheduled_date` touched — a
+    /// scheduling write, never a promotion, exactly the shape `Core::
+    /// triage`'s own doc names for this write ("the weekend-plans pane's
+    /// do-date chip"). `scheduled_date: None` clears an already-planned
+    /// day (a second tap on its own chip); `Some(date)` sets it. Not
+    /// [`MobileTaskHost::edit_item`] with an otherwise-`Untouched`
+    /// [`ItemEdit`]: that would make the pane build a nine-field record for
+    /// a one-field write, the same "wrap the entry point, not the whole
+    /// editor" call `App.tsx`'s own `handleSetScheduledDate` makes on web.
+    pub async fn set_scheduled_date(
+        &self,
+        item_id: String,
+        scheduled_date: Option<String>,
+        now_ms: i64,
+    ) -> Result<(), MobileEditError> {
+        let patch = hummingbird_core::TriagePatch {
+            scheduled_date: Some(scheduled_date),
+            ..hummingbird_core::TriagePatch::default()
+        };
+        let seed = mint_mutation_seed("weekend-schedule", now_ms);
+        let mut inner = self.inner.lock().await;
+        inner
+            .core
+            .triage(&seed, &item_id, false, patch, now_ms)
+            .await
+            .map_err(|error| match error {
+                hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
+                other => MobileEditError::EditFailed {
+                    detail: other.to_string(),
+                },
+            })
+    }
+
     /// The alerts surface's whole read (M2/#141): every live alert across
     /// every source, newest raise first —
     /// [`hummingbird_core::Core::live_alerts`] verbatim, each row decided
@@ -3186,7 +3291,7 @@ impl MobileTaskHost {
     /// it unchanged.
     pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
         let inner = self.inner.lock().await;
-        let inputs = status_pane_inputs(&inner.core, now_ms, MobileSyncFacts::default());
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, MobileSyncFacts::default());
         panes::zone_queries(map_surface(surface), &inputs)
             .iter()
             .map(to_mobile_zone_query)
@@ -3207,7 +3312,7 @@ impl MobileTaskHost {
         sync: MobileSyncFacts,
     ) -> Vec<MobileRankedPane> {
         let inner = self.inner.lock().await;
-        let inputs = status_pane_inputs(&inner.core, now_ms, sync);
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, sync);
         let facts = to_zone_facts(zone_facts);
         panes::rank_panes(map_surface(surface), &inputs, &facts)
             .into_iter()
@@ -6737,5 +6842,195 @@ mod settings_tests {
         }]);
         assert_eq!(facts.civil_date("Europe/London", 0).as_deref(), Some("2026-08-17"));
         assert_eq!(facts.civil_date("Europe/Paris", 0), None);
+    }
+
+    // ---------------------------------------------------------- panes (#537)
+
+    /// A [`CaptureDraft`] with only `title` set — this module's own copy of
+    /// `tests::title_only_draft`, since that helper is private to its own
+    /// `mod tests` and this module reaches for the same shape.
+    fn title_only_draft(title: &str) -> CaptureDraft {
+        CaptureDraft {
+            title: title.to_string(),
+            destination: CaptureDestination::Triage,
+            size: String::new(),
+            energy: String::new(),
+            context: String::new(),
+            description: String::new(),
+            project_id: String::new(),
+            priority: String::new(),
+            deadline: String::new(),
+            scheduled_date: String::new(),
+        }
+    }
+
+    /// This module's own copy of `tests::untouched_triage_edit`, same
+    /// reason as [`title_only_draft`] above.
+    fn untouched_triage_edit() -> ItemEdit {
+        ItemEdit {
+            title: None,
+            priority: None,
+            description: FieldPatch::Untouched,
+            size: FieldPatch::Untouched,
+            energy: FieldPatch::Untouched,
+            context: FieldPatch::Untouched,
+            project_id: FieldPatch::Untouched,
+            deadline: FieldPatch::Untouched,
+            scheduled_date: FieldPatch::Untouched,
+        }
+    }
+
+    /// A minimal live [`hummingbird_domain::Item`] for [`pane_item_facts`]'s
+    /// own tests — every field the seam does not read is pinned to a
+    /// neutral default, the same "only the fields a test actually reads
+    /// vary" discipline `tests::item` (this crate's `now_board` fixture)
+    /// uses, kept as this module's own copy since that one is private to
+    /// its sibling `mod tests`.
+    fn pane_item(id: &str, deadline: Option<&str>, scheduled_date: Option<&str>) -> hummingbird_domain::Item {
+        hummingbird_domain::Item {
+            id: id.to_string(),
+            seq: None,
+            title: format!("item {id}"),
+            description: None,
+            stage: hummingbird_domain::Stage::Ready,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: deadline.map(str::to_string),
+            scheduled_date: scheduled_date.map(str::to_string),
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            agent: false,
+            created_at: 0,
+            updated_at: 0,
+            version: 0,
+        }
+    }
+
+    #[test]
+    fn pane_items_include_both_the_frontier_and_the_relation_blocked_section() {
+        // `NowScreen.tsx::realQuestionInputs`'s own union
+        // (`[...frontier, ...blocked.map(e => e.item)]`) — a relation-
+        // blocked item due this weekend must still reach the weekend
+        // pane's merge, never silently drop out just because
+        // `Core::frontier` excludes it (#537 review).
+        let frontier = vec![pane_item("f-1", Some("2026-08-15"), None)];
+        let blocked =
+            vec![(pane_item("b-1", None, Some("2026-08-16")), vec![pane_item("blocker", None, None)])];
+
+        let facts = pane_item_facts(&frontier, &blocked);
+
+        assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-1", "b-1"]);
+        let blocked_fact = facts.iter().find(|f| f.id == "b-1").unwrap();
+        assert_eq!(blocked_fact.scheduled_date.as_deref(), Some("2026-08-16"));
+    }
+
+    #[test]
+    fn pane_items_never_include_a_blocked_entrys_own_blockers() {
+        let blocked = vec![(pane_item("b-1", None, None), vec![pane_item("blocker-only", None, None)])];
+
+        let facts = pane_item_facts(&[], &blocked);
+
+        assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["b-1"]);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_device_ranks_the_now_four_as_unbound() {
+        // Nothing bound (waste/race), no calendar connected (weekend/
+        // vacation) — every Now question is `unbound`, still ranked rather
+        // than vanishing (`panes::mod`'s own "a pane nobody has bound yet
+        // must still be discoverable" rule).
+        let host = pane_host("panes-now-fresh").await;
+        let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+        assert_eq!(ranked.len(), 4);
+        assert!(ranked.iter().all(|pane| pane.answer.answer_state == MobilePaneAnswerState::Unbound));
+        let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
+        assert_eq!(
+            questions,
+            vec![
+                MobileStandingQuestion::Waste,
+                MobileStandingQuestion::Weekend,
+                MobileStandingQuestion::Vacation,
+                MobileStandingQuestion::Race,
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn the_now_surface_asks_for_more_than_the_status_surfaces_empty_list() {
+        // Weekend/vacation/waste are all civil-date reasoning (`panes::mod`'s
+        // own test pins this core-side); the mobile door must carry that
+        // non-empty list through rather than collapsing it, unlike Status.
+        let host = pane_host("panes-now-zone").await;
+        let queries = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+        assert!(!queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bound_waste_page_answers_once_the_source_has_been_read() {
+        // Wiring proof for `mobile_pane_inputs`' new bindings/pane_reads
+        // arms: setting the waste binding and landing a `city-waste/v2`
+        // snapshot must reach the Now surface's waste pane exactly as it
+        // already reaches the panes-family unit tests core-side.
+        let host = pane_host("panes-now-waste").await;
+        host.set_binding(
+            "seed-1".to_string(),
+            waste::BINDING_KEY.to_string(),
+            "https://example.gov".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+        let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+        let waste = ranked
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Waste)
+            .unwrap();
+        // Bound but never polled: no snapshot has landed for this device.
+        assert_eq!(waste.answer.answer_state, MobilePaneAnswerState::BoundButUnacquired);
+    }
+
+    // ------------------------------------------------- set_scheduled_date (#537)
+
+    #[tokio::test]
+    async fn set_scheduled_date_writes_only_the_do_date_and_leaves_stage_alone() {
+        let host = pane_host("panes-now-schedule").await;
+        let id = host.capture(title_only_draft("plan the weekend"), 1_000).await.unwrap();
+        // Promote to Ready first — a triage-only item is never on the
+        // frontier a weekend-plans merge reads, and the write must not be
+        // the thing that promotes it.
+        host.triage_item(id.clone(), true, untouched_triage_edit(), 1_000).await.unwrap();
+
+        host.set_scheduled_date(id.clone(), Some("2026-08-15".to_string()), 2_000).await.unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.scheduled_date.as_deref(), Some("2026-08-15"));
+        assert_eq!(detail.stage, "ready", "a do-date write is not a promotion");
+    }
+
+    #[tokio::test]
+    async fn set_scheduled_date_clears_a_previously_set_do_date() {
+        let host = pane_host("panes-now-schedule-clear").await;
+        let id = host.capture(title_only_draft("plan the weekend"), 1_000).await.unwrap();
+        host.set_scheduled_date(id.clone(), Some("2026-08-15".to_string()), 1_000).await.unwrap();
+
+        host.set_scheduled_date(id.clone(), None, 2_000).await.unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.scheduled_date, None);
+    }
+
+    #[tokio::test]
+    async fn set_scheduled_date_on_an_unknown_item_is_item_not_found() {
+        let host = pane_host("panes-now-schedule-missing").await;
+        assert!(matches!(
+            host.set_scheduled_date("nope".to_string(), Some("2026-08-15".to_string()), 1_000).await,
+            Err(MobileEditError::ItemNotFound)
+        ));
     }
 }

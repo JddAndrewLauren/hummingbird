@@ -5,12 +5,17 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-// The Status surface's own gate (#536/M4, ADR-0025): the pane shell must
-// re-derive no pane decision. `answerState` and `band` arrive already
-// decided, off `hummingbird_core::decisions::panes` through
-// `MobileTaskHost.rankPanes`, and the two `when`s over their uniffi
-// mirrors are the drift gate — a ninth standing question or a sixth band
-// must fail this file's build, never render as a silently-missing row.
+// The Status surface's own gate (#536/M4, #537/M4, ADR-0025): the pane
+// shell must re-derive no pane decision. `answerState` and `band` arrive
+// already decided, off `hummingbird_core::decisions::panes` through
+// `MobileTaskHost.rankPanes`, and the `when`s over their uniffi mirrors are
+// the drift gate — a ninth standing question or a sixth band must fail a
+// build, never render as a silently-missing row. `MobilePaneBand`'s own
+// exhaustive `when` moved to `PaneShell.kt` at #537, when the row/band/
+// status-words rendering `StatusScreen.kt` used to own directly became the
+// shared shell `NowScreen.kt`'s own three panes render through too — this
+// file's gate follows the code, one `screenSrc`/`shellSrc` pair rather than
+// one file.
 class StatusScreenStructuralTest {
 
     private fun repoFile(relative: String): String {
@@ -27,36 +32,44 @@ class StatusScreenStructuralTest {
             .replace(Regex("""(?m)^\s*//.*$"""), "")
 
     private val screenSrc by lazy { source("StatusScreen.kt") }
+    private val shellSrc by lazy { source("PaneShell.kt") }
 
     @Test
     fun `every when over the seam pane enums is exhaustive with no wildcard arm`() {
-        for (enum in listOf("MobileStandingQuestion", "MobilePaneBand")) {
-            val arm = Regex("""$enum\.[A-Z_]+\s*->""")
-            assertTrue(
-                "StatusScreen.kt must map $enum by its variants",
-                arm.containsMatchIn(screenSrc),
+        val arm = Regex("""MobileStandingQuestion\.[A-Z_]+\s*->""")
+        assertTrue(
+            "StatusScreen.kt must map MobileStandingQuestion by its variants",
+            arm.containsMatchIn(screenSrc),
+        )
+        val bandArm = Regex("""MobilePaneBand\.[A-Z_]+\s*->""")
+        assertTrue(
+            "PaneShell.kt must map MobilePaneBand by its variants",
+            bandArm.containsMatchIn(shellSrc),
+        )
+        for (src in listOf(screenSrc, shellSrc)) {
+            assertFalse(
+                "no when over a seam pane enum may carry a wildcard arm",
+                Regex("""(?m)^\s*else\s*->""").containsMatchIn(src),
             )
         }
-        assertFalse(
-            "no when over a seam pane enum may carry a wildcard arm",
-            Regex("""(?m)^\s*else\s*->""").containsMatchIn(screenSrc),
-        )
     }
 
     @Test
-    fun `the screen bands nothing itself — band and answerState are read, never computed`() {
+    fun `the shell bands nothing itself — band and answerState are read, never computed`() {
         assertTrue(
-            "the pane list must read the seam's own band",
-            screenSrc.contains("pane.answer.band"),
+            "the pane row must read the seam's own band",
+            shellSrc.contains("pane.answer.band"),
         )
         assertTrue(
-            "the pane list must read the seam's own answerState",
-            screenSrc.contains("pane.answer.answerState"),
+            "the pane row must read the seam's own answerState",
+            shellSrc.contains("pane.answer.answerState"),
         )
-        assertFalse(
-            "no local comparator may reorder the seam's own display order",
-            screenSrc.contains("sortedBy") || screenSrc.contains("sortedWith"),
-        )
+        for (src in listOf(screenSrc, shellSrc)) {
+            assertFalse(
+                "no local comparator may reorder the seam's own display order",
+                src.contains("sortedBy") || src.contains("sortedWith"),
+            )
+        }
     }
 
     @Test
