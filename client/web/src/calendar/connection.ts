@@ -1,14 +1,18 @@
-import { isTokenResult, type TokenClient } from "../google/gis";
+import { isTokenResult, type TokenClient } from "./token-client";
 
-// Issue #73's consent/token-rotation orchestration, kept free of GIS and
-// the wasm worker so it is unit-testable against a fake `TokenClient` and a
-// spyable `pushToken` — the same discipline as calendar-worker.ts.
+// Issue #73's consent/token-rotation orchestration, kept free of any
+// particular token source and the wasm worker so it is unit-testable
+// against a fake `TokenClient` (`./token-client.ts`) and a spyable
+// `pushToken` — the same discipline as calendar-worker.ts.
 //
-// GIS issues browser SPAs no refresh token (Agent Brief's "Key interfaces"
-// note): silent re-mint (`prompt: "none"`) is the only way to get a fresh
-// access token without interrupting the user, and it only works while the
-// user's Google session is still live. When it fails, the host's job is to
-// surface a re-connect affordance rather than silently going dark.
+// This code did not change when #577/#583 moved the token source from
+// GIS to the authority (`calendar/authority-token-client.ts`) — that is
+// the point of the `TokenClient` seam. Silent re-mint (`prompt: "none"`)
+// is still how a fresh access token is asked for without interrupting the
+// user; the current `TokenClient` ignores the distinction, but the calls
+// here stay in case a future one cares again. When it fails, the host's
+// job is to surface a re-connect affordance rather than silently going
+// dark.
 
 export interface ConnectionResult {
   connected: boolean;

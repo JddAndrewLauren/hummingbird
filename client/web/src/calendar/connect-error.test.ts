@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { connectErrorCopy } from "./connect-error";
-import { TOKEN_TIMEOUT_ERROR } from "../google/gis";
+
+// `google/gis.ts` minted this code (#583 deleted that module); the case
+// itself stays in `connect-error.ts` until #584 removes the whole
+// interactive browser OAuth surface, so the literal moves here rather than
+// being lost with its old home.
+const TOKEN_TIMEOUT_ERROR = "token_request_timed_out";
 
 // Every error the connection can produce. Kept here as a list rather than
 // derived, because most of the union is GIS's and not ours — but the fallback

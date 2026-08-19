@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CALENDAR_READONLY_SCOPE } from "./gis";
-import { buildAuthorizeUrl, createState, parseRedirectFragment } from "./redirect-flow";
+import {
+  buildAuthorizeUrl,
+  CALENDAR_READONLY_SCOPE,
+  createState,
+  parseRedirectFragment,
+} from "./redirect-flow";
 
 const CLIENT_ID = "client-123.apps.googleusercontent.com";
 const REDIRECT_URI = "https://hb.twinion.net/";
