@@ -99,7 +99,7 @@ class StageBadgeTest {
         // a raw `stage.uppercase()` behind the import.
         val sites = mapOf(
             "NowScreen.kt" to 1,
-            "ItemDetailScreen.kt" to 1,
+            "ItemDetailPanel.kt" to 1,
             "TriageScreen.kt" to 1,
             "LedgerScreen.kt" to 1,
         )

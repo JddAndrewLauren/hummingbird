@@ -1,5 +1,7 @@
 package net.twinion.hummingbird
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -40,6 +43,8 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -154,12 +159,12 @@ private val NO_VALUE_LABEL: Map<MobileFrontierAxis, String> = mapOf(
     MobileFrontierAxis.ENERGY to "No energy",
 )
 
-/** `hummingbird_domain::Size`'s closed vocabulary — `ItemDetailScreen.kt`'s
+/** `hummingbird_domain::Size`'s closed vocabulary — `ItemDetailPanel.kt`'s
  * own list (`listOf("quick", "normal", "deep")`), mirrored for the facet
  * chips rather than re-declared with different values. */
 private val SIZE_VALUES = listOf("quick", "normal", "deep")
 
-/** `hummingbird_domain::Energy`'s closed vocabulary — `ItemDetailScreen.kt`'s
+/** `hummingbird_domain::Energy`'s closed vocabulary — `ItemDetailPanel.kt`'s
  * own list, mirrored. */
 private val ENERGY_VALUES = listOf("low", "medium", "high")
 
@@ -224,8 +229,8 @@ private fun LazyListScope.nowPaneSection(panes: List<MobileRankedPane>) {
 
 @Composable
 fun NowScreen(
-    onOpenItem: (String) -> Unit,
     syncTick: Int = 0,
+    onGrill: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -239,7 +244,16 @@ fun NowScreen(
     val expanded by viewModel.expanded.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val panes by viewModel.panes.collectAsState()
+    val selectedId by viewModel.selectedItemId.collectAsState()
     val dark = isSystemInDarkTheme()
+
+    // Collapse before leaving: with a panel open, Back is "close the item",
+    // not "exit the app" — and while a draft is dirty the panel's own
+    // deeper BackHandler wins, so the discard confirmation still comes
+    // first.
+    BackHandler(enabled = selectedId != null) {
+        viewModel.closeItem()
+    }
 
     suspend fun reload() {
         viewModel.refresh(nowDeadlineShaped())
@@ -358,7 +372,47 @@ fun NowScreen(
             // scroll is the fix, not a `weight` modifier on a still-split
             // layout, since the queue's own three states already need to
             // sit inside *some* `LazyListScope` for `item`/`items` below.
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val listState = rememberLazyListState()
+            // The panel is always index 0 when present; opening one (or
+            // switching cards) brings it into view rather than leaving the
+            // reader staring at the still-standing board they tapped in —
+            // `SelectedItemSection`'s own scrollIntoView (`NowScreen.tsx`).
+            LaunchedEffect(selectedId) {
+                if (selectedId != null) listState.animateScrollToItem(0)
+            }
+            LazyColumn(
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // The opened item, ABOVE the board, which keeps rendering
+                // below — never an early return of the panel instead of the
+                // frontier (ADR-0021 decision 7 / #404: the board vanishing
+                // on tap was the bug). The panel lives in its own file, so
+                // acting/editing/steps stay one implementation with the
+                // notification door's full-screen route.
+                selectedId?.let { id ->
+                    item(key = "selected-item") {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                            ),
+                        ) {
+                            ItemDetailPanel(
+                                itemId = id,
+                                syncTick = syncTick,
+                                closeLabel = "Close",
+                                onClose = { viewModel.closeItem() },
+                                onGrill = onGrill,
+                                onMutated = { scope.launch { reload() } },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                            )
+                        }
+                    }
+                }
+
                 when {
                     loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
                     currentBoard == null ||
@@ -415,7 +469,8 @@ fun NowScreen(
                                     NowRow(
                                         record = record,
                                         dark = dark,
-                                        onOpen = { onOpenItem(record.id) },
+                                        selected = record.id == selectedId,
+                                        onOpen = { viewModel.selectItem(record.id) },
                                     )
                                 }
 
@@ -442,7 +497,8 @@ fun NowScreen(
                                 BlockedRow(
                                     entry = entry,
                                     dark = dark,
-                                    onOpen = { onOpenItem(entry.item.id) },
+                                    selected = entry.item.id == selectedId,
+                                    onOpen = { viewModel.selectItem(entry.item.id) },
                                 )
                             }
                         }
@@ -658,13 +714,14 @@ private fun ColumnHeader(
 private fun BlockedRow(
     entry: NowBlockedEntryRecord,
     dark: Boolean,
+    selected: Boolean,
     onOpen: () -> Unit,
 ) {
     Column(
         modifier = Modifier.alpha(0.6f),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        NowRow(record = entry.item, dark = dark, onOpen = onOpen)
+        NowRow(record = entry.item, dark = dark, selected = selected, onOpen = onOpen)
         Text(
             blockedReasonLabel(entry.blockedByTitles),
             style = MaterialTheme.typography.labelSmall,
@@ -678,14 +735,17 @@ private fun BlockedRow(
 private fun NowRow(
     record: NowItemRecord,
     dark: Boolean,
+    selected: Boolean,
     onOpen: () -> Unit,
 ) {
-    // The card itself is the door to item detail (#521). Material3's
-    // `onClick` overload rather than a `clickable` modifier: it carries the
-    // ripple, the `role = Button` semantics and the minimum touch target
-    // that a bare modifier leaves to the caller. No chevron and no other
-    // added chrome -- the design system's `interactive` card is the whole
-    // affordance, and its icon vocabulary has no chevron in it.
+    // The card is the door to the item's expanded panel, in place above
+    // the board (#521's tap target, retargeted from the full-screen route
+    // by the inline-expansion slice). Material3's `onClick` overload
+    // rather than a `clickable` modifier: it carries the ripple, the
+    // `role = Button` semantics and the minimum touch target that a bare
+    // modifier leaves to the caller. No chevron and no other added chrome
+    // -- the design system's `interactive` card is the whole affordance,
+    // and its icon vocabulary has no chevron in it.
     //
     // No action buttons on the card: the web's `ItemCard` carries none —
     // acting is what the opened item is for — and the four-button FlowRow
@@ -693,8 +753,18 @@ private fun NowRow(
     // arrives decided on the record; the opened item renders it.
     Card(
         onClick = onOpen,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { this.selected = selected },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        // The originating card stays marked while its panel stands — an
+        // ember-tinted BORDER, never a fill (the design README's accent
+        // rule; the web ItemCard's `accent` + `aria-current` treatment).
+        border = if (selected) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            null
+        },
     ) {
         Column(
             // --space-5 / --space-2: the web ItemCard's own density class,

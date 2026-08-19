@@ -512,7 +512,7 @@ private fun BacktestPanel(backtest: BacktestRecord?, onRun: () -> Unit) {
     }
 }
 
-/** One choice field as a row of words — `ItemDetailScreen`'s own
+/** One choice field as a row of words — `ItemDetailPanel`'s own
  * `VocabularyRow`, widened to carry a key beside its label so the kind
  * picker can offer ADR-0013's null kind as a real option. Deliberately a
  * private copy rather than a shared component: #529 is where the phone's

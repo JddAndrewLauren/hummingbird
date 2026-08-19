@@ -447,15 +447,13 @@ private fun AppRoot(
         ) {
             composable(Routes.NOW) {
                 NowScreen(
-                    // A plain navigate, deliberately not
-                    // `openItemFromNotification`: that helper's `popUpTo`
-                    // exists because a *restored* back stack may already hold
-                    // debris beneath a cold tap (#518). Here Now is the live
-                    // destination being navigated from, so it is already
-                    // directly beneath and popping to it would be a no-op
-                    // dressed as policy.
-                    onOpenItem = { itemId -> navController.navigate(Routes.itemDetail(itemId)) },
                     syncTick = syncTick,
+                    // A tapped card expands in place (NowScreen's own
+                    // ItemDetailPanel item) — Grill is the one gesture that
+                    // still leaves the screen, and Back from the takeover
+                    // lands on Now with the panel still standing, since the
+                    // selection lives in the Activity-scoped NowViewModel.
+                    onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
                 )
             }
             composable(Routes.STATUS) {

@@ -147,6 +147,23 @@ class NowViewModel(
     private val _expanded = MutableStateFlow<Set<String>>(emptySet())
     val expanded: StateFlow<Set<String>> = _expanded.asStateFlow()
 
+    /** Now's inline expansion: which item's panel stands above the board —
+     * `TriageViewModel`'s one-open-at-a-time shape, tap-again-to-collapse.
+     * Ephemeral view state like [expanded], Activity-scoped for the same
+     * fold/unfold reason, and never persisted: reopening the app onto a
+     * days-old expansion would claim a currency the selection no longer
+     * has. */
+    private val _selectedItemId = MutableStateFlow<String?>(null)
+    val selectedItemId: StateFlow<String?> = _selectedItemId.asStateFlow()
+
+    fun selectItem(itemId: String) {
+        _selectedItemId.value = if (_selectedItemId.value == itemId) null else itemId
+    }
+
+    fun closeItem() {
+        _selectedItemId.value = null
+    }
+
     /** Whether [load] has completed at least once on this (Activity-scoped)
      * instance — `NowScreen`'s resume effect reads it to tell its first
      * resume, which must restore the persisted axis/collapse set, from

@@ -74,7 +74,7 @@ class ChoiceRowWrappingTest {
     @get:Rule
     val composeTestRule = createComposeRule()
 
-    // `ItemDetailScreen`'s own four, worded as `ACTION_LABEL` words
+    // `ItemDetailPanel`'s own four, worded as `ACTION_LABEL` words
     // `decisions::actions::available_actions` — the set that failed on
     // hardware, where `Cancel` was the one that went vertical.
     private val fourActions = listOf("Start", "Complete", "Mark blocked", "Cancel")
@@ -153,7 +153,7 @@ class ChoiceRowWrappingTest {
         // it.
         val sites = mapOf(
             // Site 1: the item's own action row (`Cancel` was vertical).
-            "ItemDetailScreen.kt" to 1,
+            "ItemDetailPanel.kt" to 1,
             // Sites 2 and 3: the interview's answer chips, and the `Keep`
             // that escapes the discard prompt.
             "GrillTakeoverScreen.kt" to 2,

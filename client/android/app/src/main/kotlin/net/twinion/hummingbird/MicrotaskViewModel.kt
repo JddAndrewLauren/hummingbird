@@ -27,7 +27,7 @@ import uniffi.hummingbird_ffi_mobile.declinedBackendFallback
  * through the normal read path — `useMicrotaskWiring.ts`'s own contract,
  * with [syncedTick] telling the mount that cycle has finished.
  *
- * **This screen decides nothing about eligibility.** [ItemDetailScreen]
+ * **This screen decides nothing about eligibility.** [ItemDetailPanel]
  * reads `ItemDetailRecord.microtaskAffordance` — the core's applied result
  * (ADR-0025) — for whether to offer the button at all and which of the two
  * gestures (break/rewrite) it is; this class only runs the tap that
