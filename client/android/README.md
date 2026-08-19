@@ -274,7 +274,10 @@ passed** — the lane is proven end to end, sweep to pixel. Re-run all of
 them after any change to `notify/`, `push/`, or the tap intent. **Check 19
 (#538's skills-runner probe) was run on 2026-08-18 against `5f23ec8` on the
 same device and all three cases passed** (evidence in #560); it shares
-nothing with 1–18 but the device token.
+nothing with 1–18 but the device token. Checks **20–27 are #527's Hardware
+Checkpoint 3** — the nine-screen parity pass, in its own section below;
+they are not part of the notification lane and re-running 1–19 does not
+cover them.
 
 **Check 19 costs you the device token.** `connectedDebugAndroidTest`
 uninstalls both APKs when it finishes, and the token rests in
@@ -300,8 +303,14 @@ needs rules on `alert_raised` keyed on `source` and `severity`.
 
 1. `./gradlew installDebug`, launch, grant `POST_NOTIFICATIONS`.
 2. From Status, follow "Manage device token in Settings" and paste the
-   token there (#535 — Status itself carries no token field); back out to
-   Status and confirm it reads `Synced`.
+   token there (#535 — Status itself carries no token field). The verdict
+   is Settings' own SYNC card, not Status: it reads `Held — device token
+   needed` before the paste and carries a `Sync now` button, and the DEVICE
+   TOKEN card above it flips to `This device has a token`. Status shows no
+   sync line at all since #536 replaced ProofScreen — read the panes
+   instead: an uncredentialed phone renders every one of them `Not read
+   yet` / `Not set up yet`, which is the fastest tell that the token is
+   missing.
 3. Confirm `fcm_token` exists: `adb shell run-as net.twinion.hummingbird cat
    shared_prefs/hummingbird-push.xml`. Its absence means Firebase never
    initialised.
@@ -450,9 +459,85 @@ reached.
     MockWebServer suite plus `:app:assembleDebug` — CI runs those and
     nothing else, so a green badge is not a claim about a real run.
 
+### The nine-screen pass (#527's Hardware Checkpoint 3)
+
+Checks 20–27 are the parity checkpoint, not the notification lane: nine
+screens reachable, Status matching the web, one real streamed grill turn,
+and Recall re-finding a known item. They share only the device token with
+1–19. **20–23 were run on 2026-08-19 against `9fdead3`** (Pixel 10 Pro
+Fold, folded); 20 and 22 passed, 21 and 23 each found a defect — #574 and
+#575 — and 24–27 have not been run yet.
+
+Do **not** reach for check 19's instrumented probe to satisfy 24. It was
+the pre-screen substitute; #539 shipped the real takeover, and the probe
+costs the device token every run.
+
+20. **Install and credential.** `./gradlew installDebug` from
+    `client/android` (about a minute with the toolchain warm), then check 2
+    above. The mirror is populated when Now's Context facets carry real
+    values and the waste pane leaves `Not set up yet`.
+21. **All nine screens.** Four on the bar — Now, Triage, Alerts, Status —
+    and Done, Ledger, Rules, Settings, Routes in the More sheet, with
+    "Search everything" below the screen list (a gesture, outside
+    `NavDestination`; Recall renders no bottom bar at all, which is the
+    tell that it is not a destination). Routes must render **only** "No
+    routes yet": a populated Routes means a demo fixture shipped. Then the
+    back stacks: scroll one tab, visit another, come back — the screencaps
+    should be byte-identical (`shasum` them), which is `saveState`/
+    `restoreState` doing its job. **Tap each bar destination from a
+    *foreign* stack too**, not just from Now — #574 is exactly that case,
+    and a tab that silently restores someone else's screen looks like a
+    dead tap.
+22. **Status against the web** (#536's own proof line). Compare **set,
+    order and band** — never the wording: `RankedPaneRecord` carries
+    `question`, `subject_key`, `pane_key` and the answer, and no copy at
+    all, so "Kimi balance" against "Model credit balance" is two renderings
+    of one record. Expect Uptime to fan out one row per subject
+    (`uptime_subjects` → authority, runner, web) on both clients, and
+    `pending` (`NEVER_POLLED_SUBJECT`) wherever a source is unprovisioned —
+    #416/#486 are open, so unprovisioned is the normal reading and does not
+    block this check. **Reachability is the one legitimately divergent
+    pane**: each client reads its own sync history (Android's
+    `SyncHistoryStore`, the web's own), so its band may honestly differ.
+    The web renders it as a "This device" line that reads like a page
+    header rather than a pane — count it, or you will report a missing
+    pane. Measured 2026-08-19: six panes, identical order both sides —
+    reachability, Uptime ×3, Kimi, GitHub.
+23. **Now's panes, and the weekend do-date write** (#537). The three panes
+    below the queue render through the same shell Status uses. The write
+    half **cannot be run on this device**: `weekend.rs`'s
+    `!calendar_connected` is the only path to `Unbound`, Android reports no
+    calendar (#564), and the affordance was never built anyway (#575). Skip
+    it until #564 lands rather than hunting for the control.
+24. **A real grill turn** (#539), from **both** mounts — item detail's
+    Grill button and a Triage row's (gated on `canGrill`). One turn must
+    show all three: heartbeats **collapsed** (the runner beats every 20s;
+    the same sentence twice running means the core's reducer did not fire —
+    and a turn too short to beat proves nothing, so pick a genuinely foggy
+    item), a decline carried **verbatim** (cheapest deliberate cause is a
+    `ref` the runner cannot resolve — it declines in `prepare`, before a
+    model token is spent), and a mid-stream **cancellation** delivering
+    nothing afterwards. Fold or rotate mid-interview: the draft auto-saves
+    after every completed round. **Spends real model tokens**, and writes
+    nothing — `grill-me` has no `apply` (ADR-0023), so there is no cleanup.
+25. **The microtask affordance and the backend picker.** The affordance on
+    item detail, a run that narrates as it streams, and Settings' SKILLS
+    BACKEND picker (Auto / Cloud runner) honouring the sunk tier fallback.
+26. **Recall** (#542): search as you type, three groups — Live, Done,
+    Archived — live rows opening item detail, Done and archived rows dimmed
+    and **not** tappable. Re-find a known archived item; that is the
+    milestone's closing claim. Seed first if the mirror is thin.
+27. **The doors survived the nav churn.** #532/#541 rewrote navigation
+    under #521/#524, so re-fire the item intent by hand — the block above
+    has the command, and `-f 0x24000000` is not optional. A tap on the Now
+    card is the other door and does not exercise this one.
+
 Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
 adb writes a warning banner into the PNG, and the ids differ inner vs cover
-(`adb shell dumpsys SurfaceFlinger --display-id`).
+(`adb shell dumpsys SurfaceFlinger --display-id`). On a folded Fold the
+outer panel is the live one — `adb shell dumpsys display | grep -c
+mScreenState=ON` will not tell you which; read `state ON` off the
+`DisplayDeviceInfo` block for "Outer Display" / "Inner Display".
 
 Afterwards: revoke the ingest token, disable the test rules (there is no
 DELETE for rules, only PATCH), and dismiss the test alerts.
