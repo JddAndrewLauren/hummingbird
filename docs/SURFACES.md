@@ -454,22 +454,30 @@ is named so nobody mistakes it for a visual gate:
   `StatusScreenStructuralTest`, `SettingsScreenStructuralTest`,
   `RulesScreenStructuralTest`, `TriageScreenStructuralTest`,
   `RecallScreenStructuralTest`, `CaptureSubmitRefusalTest`,
-  `CaptureFieldSetStructuralTest`, `ScreenStateRetentionTest`. They answer
+  `CaptureFieldSetStructuralTest`, `ScreenStateRetentionTest`,
+  `GrillTakeoverStructuralTest` (#595), and the component-scoped
+  `StageBadgeTest`/`LevelGlyphsTest`/`GlyphRenderTest` (#557/#558, which mix
+  source pins with Robolectric semantics renders). They answer
   "is it wired the way the ADRs say", never "does it look right" — and a
   screen added without one of these leaves this surface with no evidence at
   all, so add the test with the screen.
 - **`ColorTokenDriftTest`** (#483, ADR-0026), which pins `ui/theme/Color.kt`
   against the design system's token CSS. It is about appearance, but it
   covers the palette only — never a screen.
-- **`ChoiceRowWrappingTest`** (#576), the one thing here that measures
-  **layout**: a real Compose render under Robolectric at a 320dp qualifier,
-  asserting a row of choices stays hittable rather than squeezing its
-  trailing button into a column of letters. It covers one shared component
-  (`ui/ChoiceRow.kt`) plus a source pin naming the screens that must use it
-  — never a screen's whole composition, and it photographs nothing. Its
+- **`ChoiceRowWrappingTest`** (#576) and **`FacetLabelAlignmentTest`**
+  (#588), the two things here that measure **layout**: real Compose renders
+  under Robolectric at a 320dp qualifier, asserting a row of choices stays
+  hittable and a facet label seats beside its first chip line. Each covers
+  one component shape plus a negative control rendering its defect — never
+  a screen's whole composition, and they photograph nothing. Their
   `@GraphicsMode(NATIVE)` is load-bearing: without it Robolectric measures
   text with a stub and any assertion here passes vacuously, which is the
-  trap to know before writing the second test of this kind.
+  trap to know before writing the next test of this kind. A further edge
+  found at #558: `captureToImage()` **times out** under this Robolectric
+  setup even in NATIVE mode, so pixel-level assertions are off the table —
+  bounds measurement is the ceiling of what this substrate gives, which
+  sharpens the open Roborazzi-or-device question above rather than
+  settling it.
 - **Hardware runs**, recorded in `client/android/README.md`'s "Proving the
   lane on hardware". Operator-run, not CI, and currently the only evidence
   any of these screens has ever rendered.

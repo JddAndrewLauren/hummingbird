@@ -81,7 +81,14 @@ enum class LevelGlyphFamily { SIZE, ENERGY }
 
 /** The ramp colour for a position on the scale — `levelColor` in
  * `size-energy.ts`, ported. Position, never a value name: both
- * vocabularies resolve through this one table. */
+ * vocabularies resolve through this one table.
+ *
+ * The clamp assumes three-level vocabularies (positions 0..3), which the
+ * core pin (`the_now_screen_facet_vocabularies_match_the_core`) holds
+ * today. A fourth level would clamp onto position 3's colour and draw
+ * position 3's geometry — visually a lie — where the web's `POSITION`
+ * record fails to compile instead; if the vocabularies ever grow, the
+ * glyphs and this ramp both need a fourth step, not a wider clamp. */
 fun levelColor(position: Int, dark: Boolean): Color =
     (if (dark) RAMP_DARK else RAMP_LIGHT)[position.coerceIn(0, 3)]
 

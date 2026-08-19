@@ -45,7 +45,11 @@ class GrillTakeoverStructuralTest {
     fun `kotlin never parses patch_json — the parse lives across the seam`() {
         // ADR-0025 plus the seam's own contract (`lib.rs`,
         // `MobileGrillProposal.patch_json`): the one reader is Rust.
-        for (banned in listOf("JSONObject", "Json.decodeFromString", "JsonParser")) {
+        for (banned in listOf(
+            "JSONObject", "JSONArray", "JSONTokener",
+            "Json.decodeFromString", "JsonElement", "JsonParser",
+            "Gson", "fromJson",
+        )) {
             assertFalse(
                 "GrillTakeoverScreen.kt must not parse the patch itself ($banned)",
                 src.contains(banned),

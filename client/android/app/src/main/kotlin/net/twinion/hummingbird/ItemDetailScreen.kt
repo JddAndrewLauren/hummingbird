@@ -77,11 +77,13 @@ import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 
 /** The two level vocabularies, in the core's own order — one copy serving
  * read mode's glyph positions and edit mode's `VocabularyRow`s alike.
- * Order is what `levelPosition` indexes by (#558), and it is pinned against
- * the core by `the_now_screen_facet_vocabularies_match_the_core`
- * (`ffi-mobile`); this file is deliberately outside
- * `CaptureFieldSetStructuralTest`'s literal ban, which guards the capture
- * form's own files. */
+ * Order is what `levelPosition` indexes by (#558). The core's own values
+ * and order are pinned by `the_now_screen_facet_vocabularies_match_the_core`
+ * (`ffi-mobile`), whose failure messages name these constants — that test
+ * reads no Kotlin, so keeping THESE lists right on a core change is the
+ * fixer's job, steered there by the message. This file is deliberately
+ * outside `CaptureFieldSetStructuralTest`'s literal ban, which guards the
+ * capture form's own files. */
 private val SIZE_VOCABULARY = listOf("quick", "normal", "deep")
 private val ENERGY_VOCABULARY = listOf("low", "medium", "high")
 

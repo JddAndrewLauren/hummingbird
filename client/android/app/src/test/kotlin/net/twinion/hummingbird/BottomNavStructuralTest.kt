@@ -114,11 +114,16 @@ class BottomNavStructuralTest {
                 .replace(Regex("""(?m)^\s*//.*$"""), "")
             assertFalse(
                 "$screenFile is a bar tab and must not take an onBack callback (#588)",
-                src.contains("onBack"),
+                // Word-bounded so onBackground/onBackPressed-style names
+                // stay legal; the callback name itself is the ban.
+                Regex("""\bonBack\b""").containsMatchIn(src),
             )
             assertFalse(
                 "$screenFile is a bar tab and must not render a Back control (#588)",
-                src.contains("\"Back"),
+                // The defect's exact string shapes ("Back", "Back to Now"),
+                // not any string starting with Back — "Background sync
+                // paused" must not trip a nav gate.
+                Regex(""""Back( to [A-Za-z]+)?"""").containsMatchIn(src),
             )
         }
     }

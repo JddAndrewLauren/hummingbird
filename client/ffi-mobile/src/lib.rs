@@ -4694,7 +4694,7 @@ mod tests {
         assert_eq!(
             sizes,
             vec!["quick", "normal", "deep"],
-            "NowScreen.kt's SIZE_VALUES must match this",
+            "NowScreen.kt's SIZE_VALUES and ItemDetailScreen.kt's SIZE_VOCABULARY must match this — order included, since the level glyphs' ramp position is the list index (#558)",
         );
 
         let energies: Vec<String> = hummingbird_core::decisions::vocabulary::energy_options()
@@ -4704,7 +4704,7 @@ mod tests {
         assert_eq!(
             energies,
             vec!["low", "medium", "high"],
-            "NowScreen.kt's ENERGY_VALUES must match this",
+            "NowScreen.kt's ENERGY_VALUES and ItemDetailScreen.kt's ENERGY_VOCABULARY must match this — order included, since the level glyphs' ramp position is the list index (#558)",
         );
 
         let axes: Vec<&str> = frontier::FRONTIER_GROUP_AXES

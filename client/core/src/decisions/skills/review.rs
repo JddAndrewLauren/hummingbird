@@ -89,16 +89,21 @@ pub struct CurrentItemFields {
 }
 
 /// The closed patch field set, in the order the card prints it — the
-/// schema's own field order. One table serving label and order both, so a
-/// field added to the schema fails to render until it is answered for here.
-const PATCH_FIELDS: [(&str, &str); 7] = [
-    ("title", "Title"),
-    ("description", "Description"),
-    ("size", "Size"),
-    ("energy", "Energy"),
-    ("context", "Context"),
-    ("priority", "Priority"),
-    ("deadline", "Deadline"),
+/// schema's own field order. One table carrying field, label AND the
+/// current-value reader, so a field added to the schema renders as an
+/// unknown-key verbatim row (shown, never dropped) until it is given a row
+/// here — and giving it one cannot leave a match arm behind to panic,
+/// because there is no match: the getter travels with the entry.
+type CurrentValueReader = fn(&CurrentItemFields) -> Option<String>;
+
+const PATCH_FIELDS: [(&str, &str, CurrentValueReader); 7] = [
+    ("title", "Title", |current| Some(current.title.clone())),
+    ("description", "Description", |current| current.description.clone()),
+    ("size", "Size", |current| current.size.clone()),
+    ("energy", "Energy", |current| current.energy.clone()),
+    ("context", "Context", |current| current.context.clone()),
+    ("priority", "Priority", |current| Some(current.priority.to_string())),
+    ("deadline", "Deadline", |current| current.deadline.clone()),
 ];
 
 /// A JSON patch value as the words the card prints: strings verbatim
@@ -120,28 +125,18 @@ fn display_value(value: &Value) -> String {
 /// rendering a blank.
 pub fn proposal_rows(patch: &Map<String, Value>, current: &CurrentItemFields) -> Vec<ProposedEditRow> {
     let mut rows = Vec::new();
-    for (field, label) in PATCH_FIELDS {
+    for (field, label, current_value) in PATCH_FIELDS {
         if let Some(value) = patch.get(field) {
-            let current_value = match field {
-                "title" => Some(current.title.clone()),
-                "description" => current.description.clone(),
-                "size" => current.size.clone(),
-                "energy" => current.energy.clone(),
-                "context" => current.context.clone(),
-                "priority" => Some(current.priority.to_string()),
-                "deadline" => current.deadline.clone(),
-                _ => unreachable!("PATCH_FIELDS is the closed set"),
-            };
             rows.push(ProposedEditRow {
                 field: field.to_string(),
                 label: label.to_string(),
-                current: current_value,
+                current: current_value(current),
                 proposed: display_value(value),
             });
         }
     }
     for (key, value) in patch {
-        if PATCH_FIELDS.iter().all(|(field, _)| field != key) {
+        if PATCH_FIELDS.iter().all(|(field, _, _)| field != key) {
             rows.push(ProposedEditRow {
                 field: key.clone(),
                 label: key.clone(),

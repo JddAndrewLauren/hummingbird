@@ -22,11 +22,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -129,8 +132,13 @@ fun GrillTakeoverScreen(
                             verdict = turn.proposal.verdict,
                             // Decided core-side (#595, ADR-0025): the rows
                             // are the patch as words; the JSON itself still
-                            // travels whole below, untouched.
-                            proposedEdit = grillProposalRows(turn.proposal.patchJson, current.item),
+                            // travels whole below, untouched. remember():
+                            // the seam crossing (a JSON parse + a record
+                            // clone) prices per proposal, not per
+                            // recomposition.
+                            proposedEdit = remember(turn.proposal, current.item) {
+                                grillProposalRows(turn.proposal.patchJson, current.item)
+                            },
                             turns = current.turns,
                             confirming = current.confirming,
                             completionError = current.completionError,
@@ -301,7 +309,21 @@ private fun ReviewCard(
             )
         } else {
             for (row in proposedEdit) {
-                Column {
+                // The strikethrough carries which value is which only for
+                // eyes; the merged description says it in words, so TalkBack
+                // reads "Size: proposed deep, was normal" rather than three
+                // bare values on the screen that asks for a decision.
+                val spoken = buildString {
+                    append(row.label)
+                    append(": proposed ")
+                    append(row.proposed)
+                    row.current?.let { append(", was ").append(it) }
+                }
+                Column(
+                    modifier = Modifier.semantics(mergeDescendants = true) {
+                        contentDescription = spoken
+                    },
+                ) {
                     Text(
                         row.label,
                         style = MaterialTheme.typography.labelSmall,
