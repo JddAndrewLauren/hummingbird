@@ -16,6 +16,13 @@ argument rested on a corporate-tenant premise that proved false for the
 operator's actual tenant (their own; admin consent available), and the
 Google leg was never a trap (the sweeper's Workspace-Internal refresh token
 is the live precedent).
+**Amended 2026-08-19 by
+[ADR-0028](0028-the-web-host-mints-its-google-token-at-the-authority.md):**
+the web host no longer runs a browser OAuth flow to obtain its Google
+calendar token — the authority mints it from a server-held refresh token
+and serves it over an authenticated route. Hosts-own-the-lifecycle,
+never-persisted, per-device opt-in and device-side polling all stand
+unchanged; only the web host's *source* of the token moves.
 **Context:** the context-polling grilling of 2026-08-08, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#50](https://github.com/JddAndrewLauren/hummingbird/issues/50). Resolves the

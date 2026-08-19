@@ -7,85 +7,78 @@
 // reassurance, no apology. Each answer has two parts, because an error the
 // reader cannot act on is just bad news — `message` says what happened,
 // `hint` says what to do about it.
+//
+// **#584 deleted the interactive browser OAuth surface**, and with it every
+// code that could only come from a popup, GIS's script, or this app's own
+// redirect handling (a CSRF `state` mismatch, a token with no usable
+// expiry). There is also no `standalone` parameter any more — that existed
+// only to change the advice for the redirect flow's dead end on an
+// installed iOS app, and every attempt now, silent or interactive, is the
+// same same-origin POST regardless of where it runs.
+//
+// The whole error space left is `calendar/authority-token-client.ts`'s
+// seven codes (its own header lists and explains them); this switch has one
+// case per code, plus a fallback for anything nobody has classified yet.
 
 export interface ConnectErrorCopy {
   message: string;
   hint: string;
 }
 
-/** `standalone` is whether this is an installed home-screen app rather than a
- * browser tab. It changes the advice, not the diagnosis: an installed iOS app
- * has a storage container separate from Safari's, so "try it in Safari" is
- * actively wrong there — the connection made in a tab would not be the one
- * the app can see. */
-export function connectErrorCopy(error: string, standalone: boolean): ConnectErrorCopy {
+export function connectErrorCopy(error: string): ConnectErrorCopy {
   switch (error) {
-    case "token_request_timed_out":
+    case "no_device_token":
       return {
-        message: "Google never answered.",
-        hint: standalone
-          ? "The sign-in window may have opened outside the app. Close it and try again from here."
-          : "Check the connection and try again.",
+        message: "This device has no token stored.",
+        hint: "Enter a device token below, then try again.",
       };
-    case "popup_failed_to_open":
+    // The hint names Forget first on purpose. This rejection reached the
+    // calendar lane, and the device-token card below keys its entry form off
+    // the *task* lane's `needsReconnect` (`task/token-ui.ts`) — so until task
+    // sync independently takes its own 401, that card is still `resting` and
+    // shows only "Forget token", not a form to type into. Forgetting is the
+    // one gesture that is always on screen, and it reveals the form.
+    case "authority_rejected_device_token":
       return {
-        message: "The Google sign-in window did not open.",
-        hint: "A pop-up blocker is the usual cause. Allow pop-ups for this site and try again.",
+        message: "The stored device token was rejected.",
+        hint: "Forget the device token below, then enter a fresh one and try again.",
       };
-    case "popup_closed":
+    case "authority_unconfigured":
       return {
-        message: "The Google sign-in window closed before it finished.",
-        hint: "Try again and complete the sign-in.",
+        message: "The server has no Google calendar credentials configured.",
+        hint: "Nothing to try from here — tell the operator to check the Google calendar credential.",
       };
-    case "access_denied":
+    case "authority_upstream":
       return {
-        message: "Google declined the request.",
-        hint: "Calendar access has to be granted for the read-only scope. Try again and accept it.",
+        message: "Google declined the server's request for a calendar token.",
+        hint: "Try again later. If it repeats, ask the operator to check the Google calendar credential.",
       };
-    case "gis_script_load_failed":
+    case "authority_unreachable":
       return {
-        message: "Google's sign-in script did not load.",
-        hint: "This device may be offline or blocking accounts.google.com. Try again when it is not.",
+        message: "The server never answered.",
+        hint: "Check the connection and try again.",
       };
-    case "gis_unavailable":
+    case "bad_token_response":
       return {
-        message: "Google's sign-in script loaded but exposed nothing to call.",
-        hint: "Reload the app and try again.",
-      };
-    case "gis_request_failed":
-      return {
-        message: "The sign-in request could not be started.",
-        hint: "Reload the app and try again.",
+        message: "The server's answer could not be read.",
+        hint: "Try again.",
       };
     case "no_access_token":
       return {
-        message: "Google answered without a token.",
-        hint: "Try again. If it repeats, remove this app's calendar access in your Google account and connect again.",
-      };
-    case "state_mismatch":
-      return {
-        message: "The sign-in answer did not match the request this app made.",
-        hint: "Press Connect from this screen and finish the sign-in without leaving it. If this page was opened by following a link from somewhere else, close it and open the app directly.",
-      };
-    case "no_expiry":
-      return {
-        message: "Google returned a token without saying how long it lasts.",
-        hint: "Try again. If it repeats, remove this app's calendar access in your Google account and connect again.",
+        message: "The server answered without a token.",
+        // Not "remove this app's calendar access in your Google account":
+        // under ADR-0028 there is no per-device grant to revoke — the only
+        // grant is the server-held dedicated refresh token, shared by every
+        // device — and this code is the authority's own 200 body lacking a
+        // usable token (`authority-token-client.ts`), a server-side fault,
+        // not something Google is declining per-reader. The fix is on the
+        // server, so the hint points there.
+        hint: "Try again. If it repeats, this is a server-side fault — tell the operator to check the Google calendar credential.",
       };
     default:
       // The unknown case echoes the raw code rather than swallowing it, and a
       // reader who can quote the code is one who can be helped; "something
       // went wrong" is not.
-      //
-      // Note what the wording above this line has to be careful about. The
-      // error space is NOT only Google's: GIS adds `error_callback` types over
-      // time, but `google/redirect-flow.ts` mints codes of its own —
-      // `state_mismatch` (this app's CSRF check failing) and `no_expiry` (this
-      // app refusing an unusable token). Both are cased above precisely so
-      // they stop arriving here, where the sentence would have said Google
-      // reported them and sent the reader off to debug the wrong system. An
-      // unknown code keeps the attribution deliberately vague for the same
-      // reason: at this point nothing knows whose code it is.
       return {
         message: `The connection failed with "${error}".`,
         hint: "Try again. The code above is what to search for if it repeats.",

@@ -14,16 +14,26 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-// The calendar section is gated on a build-time env var
-// (`VITE_GOOGLE_CLIENT_ID`), which vitest runs without — so without this the
-// picker never renders and #121's locked-row tests below would pass on an
-// absent control. The only thing stubbed is that constant.
-vi.mock("../shell/useCalendarWiring", () => ({ GOOGLE_CLIENT_ID: "test-client-id" }));
-
 import { SettingsScreen } from "./SettingsScreen";
+import { connectErrorCopy } from "../calendar/connect-error";
 import { bindingDTO, fireEvent, itemDTO, render, screen, taskState } from "../test/component";
 import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
+import type { TaskTokenUiState } from "../task/token-ui";
+
+// Every code `calendar/authority-token-client.ts` can produce (that
+// module's own header lists and explains them) — kept here rather than
+// exported from `connect-error.ts` itself, since duplicating the list is
+// what lets a test iterate it independently of the switch it is checking.
+const ALL_CONNECT_ERROR_CODES = [
+  "no_device_token",
+  "authority_rejected_device_token",
+  "authority_unconfigured",
+  "authority_upstream",
+  "authority_unreachable",
+  "bad_token_response",
+  "no_access_token",
+] as const;
 
 const calendar: CalendarState = {
   connected: false,
@@ -50,6 +60,10 @@ interface SettingsOptions {
   coreId?: string | null;
   viewOrdinal?: number | null;
   backendSelection?: string;
+  /** #585: the calendar gates key off this, not a build-time env var — most
+   * cases in this file want a token present, so the default is "resting"
+   * and only the device-token-precondition tests below override it. */
+  taskTokenState?: TaskTokenUiState;
 }
 
 function renderSettings(options: SettingsOptions = {}) {
@@ -74,7 +88,7 @@ function renderSettings(options: SettingsOptions = {}) {
       onConnect={onConnect}
       onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
-      taskTokenState="resting"
+      taskTokenState={current.taskTokenState ?? "resting"}
       taskTokenEnteredAtMs={null}
       onSubmitTaskToken={vi.fn()}
       onForgetTaskToken={vi.fn()}
@@ -432,35 +446,48 @@ describe("SettingsScreen — the dead-letter journal", () => {
 describe("SettingsScreen — the calendar connection's state", () => {
   it("says nothing about a connection nobody has attempted", () => {
     renderSettings();
-    expect(screen.getByRole("button", { name: /connect google calendar/i })).toBeDefined();
-    // No error copy, and nothing claiming a failure that has not happened.
-    expect(screen.queryByText(/never answered|did not open|declined/i)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /poll google calendar on this device/i }),
+    ).toBeDefined();
+    // No error copy, and nothing claiming a failure that has not happened —
+    // checked against every real message `connect-error.ts` can produce,
+    // not a hand-picked few, so this cannot pass by accident of which words
+    // happened to be chosen.
+    for (const code of ALL_CONNECT_ERROR_CODES) {
+      expect(screen.queryByText(connectErrorCopy(code).message)).toBeNull();
+    }
   });
 
-  it("renders the last failure as a diagnosis AND a next action", () => {
-    // Both halves matter: `connect-error.ts` pairs them precisely because an
-    // error the reader cannot act on is just bad news. A screen that rendered
-    // only `message` would pass a laxer test and help nobody.
-    renderSettings({ calendar: { connectError: "popup_failed_to_open" } });
-    expect(screen.getByText(/did not open/i)).toBeDefined();
-    expect(screen.getByText(/pop-up blocker/i)).toBeDefined();
-  });
+  it.each(ALL_CONNECT_ERROR_CODES)(
+    "renders %s as a diagnosis AND a next action",
+    (code) => {
+      // Both halves matter: `connect-error.ts` pairs them precisely because an
+      // error the reader cannot act on is just bad news. A screen that rendered
+      // only `message` would pass a laxer test and help nobody. Every code the
+      // client can actually produce is exercised here, so none can ship
+      // without its copy rendering.
+      renderSettings({ calendar: { connectError: code } });
+      const { message, hint } = connectErrorCopy(code);
+      expect(screen.getByText(message)).toBeDefined();
+      expect(screen.getByText(hint)).toBeDefined();
+    },
+  );
 
-  it("does not blame Google for this app's own CSRF check", () => {
-    // `state_mismatch` is `google/redirect-flow.ts` refusing a fragment. It
-    // used to fall through to the default arm and render as `Google reported
-    // "state_mismatch".`, sending the reader to debug the wrong system.
-    renderSettings({ calendar: { connectError: "state_mismatch" } });
-    expect(screen.queryByText(/Google reported/i)).toBeNull();
-    expect(screen.getByText(/did not match the request this app made/i)).toBeDefined();
+  it("echoes an unrecognised code rather than swallowing it", () => {
+    // The fallback arm in `connect-error.ts` — a code nobody has classified
+    // still has to render real words, since the whole failure mode being
+    // fixed is a button that says nothing.
+    renderSettings({ calendar: { connectError: "some_code_nobody_has_seen" } });
+    expect(screen.getByText(/some_code_nobody_has_seen/i)).toBeDefined();
   });
 
   it("disables the button while a connect attempt is in flight", () => {
-    // The redirect path sets this and navigates away; on a desktop popup it
-    // covers a live `await`. Either way a second press must not start a
-    // second consent.
+    // #585: every attempt, silent or interactive, is one same-origin POST to
+    // the authority (ADR-0028) — there is no popup and no page navigation to
+    // survive any more, but the awaited request still needs to keep a second
+    // press from starting a second one.
     const { onConnect } = renderSettings({ calendar: { connectPending: true } });
-    const button = screen.getByRole("button", { name: /connect google calendar/i });
+    const button = screen.getByRole("button", { name: /poll google calendar on this device/i });
     expect((button as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(button);
     expect(onConnect).not.toHaveBeenCalled();
@@ -469,16 +496,52 @@ describe("SettingsScreen — the calendar connection's state", () => {
   it("tells a blocked device that the background renewal has stopped, not just that the credential died", () => {
     // The ordinary reconnect sentence would leave the reader waiting for a
     // recovery that is never coming — `remint-health.ts` has stopped trying.
+    // #585: the thing that needs attention is the server-held Google
+    // credential (ADR-0028), not this browser, so the sentence names that
+    // and points at the operator rather than at a browser session.
     renderSettings({
       calendar: { connected: true, needsReconnect: true, silentRemintBlocked: true },
     });
-    expect(screen.getByText(/renewing it in the background has stopped working/i)).toBeDefined();
-    expect(screen.getByRole("button", { name: /reconnect google calendar/i })).toBeDefined();
+    expect(
+      screen.getByText(/renewing it in the background has stopped working/i),
+    ).toBeDefined();
+    expect(screen.getByText(/server-held google credential needs attention/i)).toBeDefined();
+    expect(screen.getByText(/ask the operator to check it/i)).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: /retry polling on this device/i }),
+    ).toBeDefined();
   });
 
   it("keeps the ordinary reconnect sentence while the silent path is still trying", () => {
     renderSettings({ calendar: { connected: true, needsReconnect: true } });
     expect(screen.getByText(/The credential no longer works\./i)).toBeDefined();
     expect(screen.queryByText(/has stopped working/i)).toBeNull();
+  });
+});
+
+// #585: both calendar gates now key off whether this device holds a device
+// token (`taskTokenState`), not off `VITE_GOOGLE_CLIENT_ID` — that variable
+// is unread anywhere in `client/web` as of this slice.
+describe("SettingsScreen — the device-token precondition for calendar (#585)", () => {
+  it("renders an explanatory note in place of the picker when this device has no device token", () => {
+    renderSettings({ taskTokenState: "unset" });
+    expect(screen.getByText(/this device has no device token/i)).toBeDefined();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("renders no google-calendar status card when this device has no device token", () => {
+    renderSettings({ taskTokenState: "unset" });
+    expect(screen.queryByText("google calendar")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /poll google calendar on this device/i }),
+    ).toBeNull();
+  });
+
+  it("renders the calendar section once a device token is present, with no client id involved", () => {
+    renderSettings({ taskTokenState: "resting" });
+    expect(screen.queryByText(/this device has no device token/i)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /poll google calendar on this device/i }),
+    ).toBeDefined();
   });
 });

@@ -8,6 +8,14 @@ below — see [Amendment: the poller runs out-of-process, and its credential
 is narrowed accordingly](#amendment-the-poller-runs-out-of-process-and-its-credential-is-narrowed-accordingly).
 The evaluate-in-poll persistence principle, the per-source delta cursor, and
 everything else below is unchanged.
+**Amended 2026-08-19 by
+[ADR-0028](0028-the-web-host-mints-its-google-token-at-the-authority.md):**
+partially reverses the #486 amendment below for one consumer — a second,
+dedicated `calendar.readonly`-only Google credential is minted for the web
+host's authority-served calendar token, rather than reusing the shared
+Tasks + `gmail.modify` + `calendar.readonly` credential #486 settled on. #486
+declined a second credential because both its consumers were server-side;
+this one hands a token to a browser, which is a different trust boundary.
 **Context:** the push-notifications grilling of 2026-08-09. Narrows
 [ADR-0005](0005-context-polling-lives-in-the-client-core.md) (device polling
 remains the display path; a server-side ingestion path now exists beside it);

@@ -1,14 +1,18 @@
-import { isTokenResult, type TokenClient } from "../google/gis";
+import { isTokenResult, type TokenClient } from "./token-client";
 
-// Issue #73's consent/token-rotation orchestration, kept free of GIS and
-// the wasm worker so it is unit-testable against a fake `TokenClient` and a
-// spyable `pushToken` — the same discipline as calendar-worker.ts.
+// Issue #73's consent/token-rotation orchestration, kept free of any
+// particular token source and the wasm worker so it is unit-testable
+// against a fake `TokenClient` (`./token-client.ts`) and a spyable
+// `pushToken` — the same discipline as calendar-worker.ts.
 //
-// GIS issues browser SPAs no refresh token (Agent Brief's "Key interfaces"
-// note): silent re-mint (`prompt: "none"`) is the only way to get a fresh
-// access token without interrupting the user, and it only works while the
-// user's Google session is still live. When it fails, the host's job is to
-// surface a re-connect affordance rather than silently going dark.
+// This code did not change when #577/#583 moved the token source from
+// GIS to the authority (`calendar/authority-token-client.ts`) — that is
+// the point of the `TokenClient` seam. Silent re-mint (`prompt: "none"`)
+// is still how a fresh access token is asked for without interrupting the
+// user; the current `TokenClient` ignores the distinction, but the calls
+// here stay in case a future one cares again. When it fails, the host's
+// job is to surface a re-connect affordance rather than silently going
+// dark.
 
 export interface ConnectionResult {
   connected: boolean;
@@ -71,21 +75,13 @@ export async function connect(deps: ConnectionDeps): Promise<ConnectionResult> {
 /** Whether an interactive attempt's result should be discarded, leaving the
  * device's existing connection state alone.
  *
- * TWO callers, and they are easy to forget the second of. [`connect`]'s popup
- * result is one; the other is a return from the redirect flow, whose answer
- * arrives on the next page load and is resolved through
- * `calendar/redirect-return.ts` — that module's header explains why the two
- * share this question but not the remedy for it. For a while only the popup
- * consulted this, and a failed redirect return wiped exactly what the rest of
- * this doc says must never be wiped.
- *
  * The same button is "Connect" and "Reconnect". For a first-time opt-in a
  * declined/failed consent correctly ends disconnected. For a *reconnect* it
  * must not: writing `connected: false` there un-opts-in the device, drops
  * the persisted flag, and takes the last-good (stale but real) tile and the
- * Reconnect affordance itself down with it — so cancelling the Google popup
- * once would cost the user their offline context. The existing connection
- * stands until a reconnect actually succeeds.
+ * Reconnect affordance itself down with it — so cancelling a reconnect once
+ * would cost the user their offline context. The existing connection stands
+ * until a reconnect actually succeeds.
  *
  * Note what this does NOT cover: the FAILURE itself. Keeping the connection
  * is about `connected`/`needsReconnect`, and the caller must still record
@@ -121,16 +117,35 @@ async function silentReconnect(deps: ConnectionDeps): Promise<ConnectionResult> 
   return connected(result.expiresAtMs);
 }
 
+/** How far before the real expiry a proactive re-mint is scheduled.
+ *
+ * **Coupled to the authority's own cache boundary** —
+ * `server/authority/src/google_calendar.rs`'s `CACHE_REMINT_MARGIN_MS`, which
+ * is deliberately *larger*, and `rotation-margin-drift.test.ts` pins the
+ * inequality because nothing else can. The rotation this schedules only
+ * works because the authority already considers its cached token stale by
+ * the time this timer fires. If it did not, the route would answer with the
+ * same token and the same `expires_at_ms`, the rotation effect in
+ * `shell/useCalendarWiring.ts` — keyed on that expiry — would see unchanged
+ * deps, and no further timer would ever be armed: proactive rotation would
+ * stop dead after its first cache hit, silently, with every session left to
+ * rediscover expiry through a live 401. Raising this past that constant
+ * re-breaks it. */
+export const ROTATION_MARGIN_MS = 5 * 60 * 1000;
+
 /** How long to wait, in milliseconds, before proactively re-minting a token
- * ahead of its expiry — GIS gives no refresh token, so this is what keeps a
- * long-lived session from ever hitting a live 401 in the first place.
- * `marginMs` is the safety margin before the real expiry (default 5
- * minutes); the result is clamped to 0 so an already-expired/near-expired
- * token schedules an immediate re-mint rather than a negative delay. */
+ * ahead of its expiry — the token `POST /api/google/calendar_token`
+ * (ADR-0028) hands back is still Google's ~1-hour access token, and the
+ * authority never pushes a refresh token down to the browser, so this is
+ * what keeps a long-lived session from ever hitting a live 401 in the first
+ * place. `marginMs` is the safety margin before the real expiry
+ * ([`ROTATION_MARGIN_MS`]); the result is clamped to 0 so an
+ * already-expired/near-expired token schedules an immediate re-mint rather
+ * than a negative delay. */
 export function msUntilRotation(
   expiresAtMs: number,
   nowMs: number,
-  marginMs = 5 * 60 * 1000,
+  marginMs = ROTATION_MARGIN_MS,
 ): number {
   return Math.max(0, expiresAtMs - marginMs - nowMs);
 }

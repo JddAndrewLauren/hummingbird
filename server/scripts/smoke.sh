@@ -356,6 +356,27 @@ request 503 POST /api/skills/run "$RUN_BODY" "$DEVICE"
 # A known path with the wrong method is a 405, not a 404.
 request 405 GET /api/skills/run '' "$DEVICE"
 
+# --------------------------------------------------- the calendar-token mint
+
+# `POST /api/google/calendar_token` (#577/#582): the authority mints a
+# Google `calendar.readonly` access token for an authenticated device. This
+# is the fail-closed proof — `wrangler dev` sets none of
+# GOOGLE_CALENDAR_CLIENT_ID/_SECRET/_REFRESH_TOKEN, so the route answers a
+# 503, never a 401 (which would make the client re-prompt a device token
+# that is perfectly fine), and the verdict runs before the secrets are read.
+request 401 POST /api/google/calendar_token
+[ -z "$BODY" ] || fail "calendar_token 401 leaked a body: $BODY"
+request 403 POST /api/google/calendar_token '' "$INGEST"
+[ -z "$BODY" ] || fail "calendar_token 403 leaked a body: $BODY"
+request 503 POST /api/google/calendar_token '' "$DEVICE"
+[ "$(jq -r '.error' <<<"$BODY")" = "calendar_unconfigured" ] ||
+  fail "calendar_token unconfigured code: $BODY"
+[ "$(jq -r '.message' <<<"$BODY")" = \
+  "The Google calendar credential is not configured on this server." ] ||
+  fail "calendar_token unconfigured prose: $BODY"
+# A known path with the wrong method is a 405, not a 404.
+request 405 GET /api/google/calendar_token '' "$DEVICE"
+
 # ------------------------------------------------------ sweep = delta
 
 SWEEP=$(curl -s -H "Authorization: Bearer $DEVICE" "$BASE/api/sweep")

@@ -118,10 +118,8 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   sheet, partitioned by `nav-bar.ts`; `App.tsx` mounts exactly one),
   `ShellMeta.tsx` (the core-state and build-version lines both of them show),
   the responsive layer (`breakpoints.ts`, `responsive.css`, `useIsPhone.ts`),
-  `standalone.ts` (installed-app-versus-tab, which changes both the connect
-  flow and its error copy), the OAuth redirect glue (`oauth-redirect.ts`, over
-  the pure `google/redirect-flow.ts`), the header, the screen list, and the
-  app-lifetime wiring hooks, independent of which screen is mounted:
+  the header, the screen list, and the app-lifetime wiring hooks,
+  independent of which screen is mounted:
   `useCalendarWiring` (consent, token rotation, the 15-minute poll and the
   staleness clock), `useTaskTokenWiring` (the device token's entry, rest and
   re-prompt, #106), `useSyncWiring` (the per-cycle reads and the view's own
