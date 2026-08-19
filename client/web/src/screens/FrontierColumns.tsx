@@ -15,7 +15,7 @@
 // Blocked section. Two components because they have genuinely different
 // densities and affordances, not a variant flag on one.
 
-import { useState } from "react";
+import { Children, useState, type ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
@@ -71,7 +71,8 @@ const NO_VALUE_LABEL: Record<FrontierAxis, string> = {
  * takes the same hairline every card already has — the default is not a claim
  * worth colouring. The three coloured values used to be spelled out in a legend
  * above the board; the cards state the same thing in words on each card's own
- * meta line, so the key was one row of permanent chrome saying nothing new. */
+ * meta line — for the three coloured bands — so the key was one row of
+ * permanent chrome saying nothing new. */
 const URGENCY_EDGE: Record<Urgency, string> = {
   overdue: "var(--urgency-overdue)",
   now: "var(--urgency-now)",
@@ -79,6 +80,10 @@ const URGENCY_EDGE: Record<Urgency, string> = {
   calm: "var(--border-subtle)",
 };
 
+/** The `calm` entry is no longer rendered on a card — the same ADR-0021
+ * decision 2 reason `URGENCY_EDGE` gives it no colour. It stays in the record
+ * because the type is `Record<Urgency, string>` and dropping the key buys
+ * nothing. */
 const URGENCY_LABEL: Record<Urgency, string> = {
   overdue: "Overdue",
   now: "Due now",
@@ -114,6 +119,34 @@ const URGENCY_TEXT: Record<Urgency, string> = {
  * whitespace — and it is the honest cap for this surface anyway: the top few
  * of a column is what "what's next" is asking about. */
 const COLUMN_CAP = 6;
+
+/** The card's meta line, which draws **only if it has something on it**.
+ *
+ * Every entry on that line is conditional — stage says nothing when it is
+ * `ready`, size/energy/priority/deadline/scheduled/pending each draw only when
+ * set, and since the `calm` word went the urgency entry is conditional too. So
+ * the ordinary minted action (calm, ready, nothing else judged yet) reaches
+ * this with no children at all, and an empty flex row is not free: the card
+ * body's own `gap` still pays for it, stranding blank space under the title.
+ *
+ * The count is taken from the children rather than from a predicate spelling
+ * out the same eight conditions a second time — a predicate is a copy that
+ * goes stale the first time an entry is added here and not there. */
+function CardMeta({ children }: { children: ReactNode }) {
+  if (Children.toArray(children).length === 0) return null;
+  return (
+    <span
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "var(--space-3)",
+        flexWrap: "wrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
 
 function ItemCard({
   item,
@@ -182,22 +215,18 @@ function ItemCard({
         <span style={{ font: "var(--type-body)", color: "var(--text-primary)", lineHeight: 1.35 }}>
           {item.title}
         </span>
-        <span
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "var(--space-3)",
-            flexWrap: "wrap",
-          }}
-        >
+        <CardMeta>
           {/* Colour carries urgency, so the card says it in words too. Text
               rather than `ItemRow`'s `title` tooltip, which a keyboard or
               screen-reader user does not reliably get (ADR-0021 decision 2) —
               and in `URGENCY_TEXT`, not the swatch colour, for the contrast
-              reason recorded there. */}
-          <span className="hb-meta" style={{ color: URGENCY_TEXT[urgency] }}>
-            {URGENCY_LABEL[urgency]}
-          </span>
+              reason recorded there. `calm` is the exception: it makes no claim
+              to carry, so it gets no word, exactly as it gets no colour. */}
+          {urgency === "calm" ? null : (
+            <span className="hb-meta" style={{ color: URGENCY_TEXT[urgency] }}>
+              {URGENCY_LABEL[urgency]}
+            </span>
+          )}
           {/* "Ready" is the default and says nothing at card size — the stage
               chip earns its width only once the item is already running, or
               (since the captures joined these columns) not yet sorted. That
@@ -253,7 +282,7 @@ function ItemCard({
               Pending
             </span>
           ) : null}
-        </span>
+        </CardMeta>
       </span>
       {onComplete ? (
         <MarkDoneButton

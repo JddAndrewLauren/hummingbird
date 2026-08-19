@@ -452,6 +452,43 @@ describe("NowScreen — the frontier list", () => {
     expect(screen.getAllByText("Overdue")).toHaveLength(1);
   });
 
+  it("says nothing for calm — the default is not a claim", () => {
+    // The other half of ADR-0021 decision 2: `calm` gets no swatch because the
+    // default is not a claim worth colouring, and by the same reasoning it gets
+    // no word. The word is the non-colour carrier for the three bands that do
+    // make a claim; on a calm card it would spend the card's most prominent
+    // meta slot saying nothing.
+    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Renew it" })] }));
+
+    expect(screen.getByText("Renew it")).toBeTruthy();
+    expect(screen.queryByText("Calm")).toBeNull();
+  });
+
+  it("draws no meta row at all when the card has nothing to put on it", () => {
+    // The urgency word was the meta line's one unconditional entry, so
+    // dropping it for `calm` left the ordinary minted action — calm, ready,
+    // nothing else judged — rendering an EMPTY row. The row measures zero but
+    // the card body's `gap` still pays for it, which is blank space under the
+    // title that says nothing. `CardMeta` counts its own children rather than
+    // re-spelling the eight conditions, so this asserts the card body holds
+    // the title alone.
+    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Renew it" })] }));
+
+    const body = screen.getByText("Renew it").parentElement;
+    expect(body?.children).toHaveLength(1);
+  });
+
+  it("keeps the meta row when one entry earns it", () => {
+    // The other half of the same rule — a guard that dropped the row outright
+    // would pass the test above. One deadline is enough to bring it back.
+    renderNow(
+      taskState({ frontier: [itemDTO({ id: "i1", title: "Renew it", deadline: "1999-01-01" })] }),
+    );
+
+    const body = screen.getByText("Renew it").parentElement;
+    expect(body?.children).toHaveLength(2);
+  });
+
   // `docs/SURFACES.md` records the triage section's `60dvh` cap as the ONLY
   // independent scroll container in the centre column, and ADR-0021 decision 3
   // makes that a live constraint rather than a description: the columns wrap
