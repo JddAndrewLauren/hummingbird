@@ -59,10 +59,7 @@ import uniffi.hummingbird_ffi_mobile.RuleRecord
 // compiles, runs, and looks right on every fixture anyone would think to
 // write.
 //
-// **The route is registered but not reachable from the bar or the More
-// sheet** — that is #541's job, and this slice deliberately stops at the
-// registration so its evidence is structural tests rather than a hardware
-// pass.
+// **The route has a permanent More-sheet entry since #541.**
 //
 // The `when`s over the seam's enums carry no `else ->` arm, deliberately:
 // an eighth operator or a seventh widget added to ADR-0013's vocabulary is

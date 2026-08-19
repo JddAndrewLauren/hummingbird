@@ -243,17 +243,25 @@ class RulesScreenStructuralTest {
     }
 
     @Test
-    fun `the rules route is registered and deliberately unreachable`() {
+    fun `the rules route is registered and reachable from the More sheet`() {
         val main = source("MainActivity.kt")
         assertTrue(
             "MainActivity must register the rules route",
             main.contains("composable(Routes.RULES)"),
         )
-        // #541 owns reachability. Until then nothing navigates here, and
-        // that absence is the decision — asserted so a later slice adding
-        // an entry does it on purpose.
+        // #541 gave Rules its home: a `NavDestination` entry, reached
+        // through the generic `onNavigate(destination.route)` the bar and
+        // sheet already share — never a one-off `navigate(Routes.RULES)`
+        // call, which would be a second, ad-hoc door alongside the shared
+        // one. `BottomNavStructuralTest` is the detailed gate on the
+        // bar/sheet partition itself; this only pins that Rules' entry
+        // exists at all.
+        assertTrue(
+            "Routes.RULES must have a NavDestination entry (#541)",
+            main.contains("RULES(Routes.RULES,"),
+        )
         assertFalse(
-            "nothing may navigate to Routes.RULES until #541 gives it a home",
+            "reachability must go through NavDestination/onNavigate, not a one-off navigate(Routes.RULES) call",
             main.contains("navigate(Routes.RULES)"),
         )
     }

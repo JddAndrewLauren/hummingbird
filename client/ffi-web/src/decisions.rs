@@ -467,6 +467,95 @@ pub fn triage_process_queue_json(
     .to_string()
 }
 
+// ------------------------------------------------------------------ M3 (#532)
+// Done's ordering and the Ledger's ordering + row-state read, both sunk from
+// `done-order.ts`/`ledger-order.ts` into `hummingbird_core::decisions::roster`.
+
+use hummingbird_core::decisions::roster::{self, LedgerRosterItem, RosterItem};
+
+/// One item as [`roster::order_done`] reads it: an id and when it was last
+/// touched — the JSON shape `seam.ts` sends, a strict subset of
+/// `TaskItemDTO` exactly like [`QueueItemDTO`] above.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RosterItemDTO {
+    id: String,
+    updated_at: i64,
+}
+
+fn to_roster_item(dto: &RosterItemDTO) -> RosterItem {
+    RosterItem { id: dto.id.clone(), updated_at: dto.updated_at }
+}
+
+/// [`roster::order_done`], JSON-encoded as an ordered array of ids.
+#[wasm_bindgen]
+pub fn order_done_ids(items_json: &str) -> String {
+    match serde_json::from_str::<Vec<RosterItemDTO>>(items_json) {
+        Ok(items) => {
+            let entries: Vec<RosterItem> = items.iter().map(to_roster_item).collect();
+            serde_json::to_string(&roster::order_done(&entries)).unwrap()
+        }
+        Err(error) => serde_json::json!({ "error": error.to_string() }).to_string(),
+    }
+}
+
+/// One Ledger row as [`roster::ledger_row_state`]/[`roster::last_touched_ms`]/
+/// [`roster::order_ledger`] read it — the JSON shape `seam.ts` sends, a
+/// strict subset of `LedgerRowDTO`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerRosterItemDTO {
+    id: String,
+    updated_at: i64,
+    archived_at: Option<i64>,
+    absent_since_ms: Option<i64>,
+}
+
+fn to_ledger_roster_item(dto: &LedgerRosterItemDTO) -> LedgerRosterItem {
+    LedgerRosterItem {
+        id: dto.id.clone(),
+        updated_at: dto.updated_at,
+        archived_at: dto.archived_at,
+        absent_since_ms: dto.absent_since_ms,
+    }
+}
+
+/// [`roster::ledger_row_state`], JSON-encoded as `{"kind":"live"}` or
+/// `{"kind":"archived","sinceMs":N}` — `ledger-order.ts`'s own
+/// `LedgerRowState` union, verbatim.
+#[wasm_bindgen]
+pub fn ledger_row_state_json(row_json: &str) -> String {
+    match serde_json::from_str::<LedgerRosterItemDTO>(row_json) {
+        Ok(dto) => serde_json::to_string(&roster::ledger_row_state(&to_ledger_roster_item(&dto)))
+            .unwrap(),
+        Err(error) => serde_json::json!({ "error": error.to_string() }).to_string(),
+    }
+}
+
+/// [`roster::last_touched_ms`]. An unreadable payload answers `0` — the same
+/// "parse failure degrades to the safe default" convention
+/// `facet_count_json` uses, since this crosses as a raw number with no room
+/// for an `{"error": ...}` object.
+#[wasm_bindgen]
+pub fn ledger_last_touched_ms(row_json: &str) -> f64 {
+    match serde_json::from_str::<LedgerRosterItemDTO>(row_json) {
+        Ok(dto) => roster::last_touched_ms(&to_ledger_roster_item(&dto)) as f64,
+        Err(_) => 0.0,
+    }
+}
+
+/// [`roster::order_ledger`], JSON-encoded as an ordered array of ids.
+#[wasm_bindgen]
+pub fn order_ledger_ids(rows_json: &str) -> String {
+    match serde_json::from_str::<Vec<LedgerRosterItemDTO>>(rows_json) {
+        Ok(rows) => {
+            let entries: Vec<LedgerRosterItem> = rows.iter().map(to_ledger_roster_item).collect();
+            serde_json::to_string(&roster::order_ledger(&entries)).unwrap()
+        }
+        Err(error) => serde_json::json!({ "error": error.to_string() }).to_string(),
+    }
+}
+
 // ----------------------------------------------------------------- M4 (#540)
 // The rules-editor decision set: the operator table, the duration grammar,
 // the kind -> field cascade, the validity read, the `deadline` picker and
@@ -1999,6 +2088,40 @@ mod tests {
         assert_eq!(parsed["ids"], serde_json::json!(["d", "g", "c"]));
         assert_eq!(parsed["capturedCount"], serde_json::json!(2));
         assert_eq!(parsed["grillingCount"], serde_json::json!(1));
+    }
+
+    // ------------------------------------------------------------- #532 roster
+
+    #[test]
+    fn order_done_ids_orders_most_recently_touched_first() {
+        let payload = r#"[{"id":"b","updatedAt":1000},{"id":"a","updatedAt":1000},{"id":"c","updatedAt":4000}]"#;
+        assert_eq!(order_done_ids(payload), r#"["c","a","b"]"#);
+    }
+
+    #[test]
+    fn ledger_row_state_json_reads_live_and_archived() {
+        let live = r#"{"id":"a","updatedAt":1000,"archivedAt":null,"absentSinceMs":null}"#;
+        assert_eq!(ledger_row_state_json(live), r#"{"kind":"live"}"#);
+
+        let archived = r#"{"id":"a","updatedAt":1000,"archivedAt":5000,"absentSinceMs":6000}"#;
+        assert_eq!(ledger_row_state_json(archived), r#"{"kind":"archived","sinceMs":5000}"#);
+    }
+
+    #[test]
+    fn ledger_last_touched_ms_reads_the_latest_of_the_three_stamps() {
+        let row = r#"{"id":"a","updatedAt":3000,"archivedAt":9000,"absentSinceMs":null}"#;
+        assert_eq!(ledger_last_touched_ms(row), 9000.0);
+    }
+
+    #[test]
+    fn order_ledger_ids_orders_last_touched_first() {
+        let payload = r#"[
+            {"id":"b","updatedAt":1000,"archivedAt":null,"absentSinceMs":null},
+            {"id":"a","updatedAt":1000,"archivedAt":null,"absentSinceMs":null},
+            {"id":"c","updatedAt":5000,"archivedAt":null,"absentSinceMs":null},
+            {"id":"d","updatedAt":2000,"archivedAt":9000,"absentSinceMs":null}
+        ]"#;
+        assert_eq!(order_ledger_ids(payload), r#"["d","c","a","b"]"#);
     }
 
     /// A minimal [`FrontierItemDTO`] JSON literal, only the fields the

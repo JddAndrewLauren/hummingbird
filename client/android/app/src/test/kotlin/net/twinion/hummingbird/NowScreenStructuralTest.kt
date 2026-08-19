@@ -1,6 +1,7 @@
 package net.twinion.hummingbird
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -192,6 +193,95 @@ class NowScreenStructuralTest {
         assertTrue(
             "the action buttons must sit in a FlowRow, not a fixed Row",
             actionsBlock.contains("FlowRow("),
+        )
+    }
+
+    // ------------------------------------------------------ panes (#537)
+
+    @Test
+    fun `NowViewModel closes over the real pane-lane and do-date-write bindings, not fakes`() {
+        val factory = Regex("""fun create\(context: Context\)[\s\S]*?\n {4}}""")
+            .find(nowViewModelSrc)
+            ?.value
+            ?: error("could not locate NowViewModel.create in the source")
+        for (call in listOf(".paneZoneQueries(", ".rankPanes(", ".setScheduledDate(")) {
+            assertTrue(
+                "NowViewModel.create must reach CoreHolder.get(...)$call",
+                factory.contains(call),
+            )
+        }
+        assertTrue(
+            "the zone bridge's resolve leg must run through ZoneBridge.resolve",
+            nowViewModelSrc.contains("ZoneBridge.resolve("),
+        )
+    }
+
+    @Test
+    fun `nowPaneLabels when over MobileStandingQuestion is exhaustive with no else arm`() {
+        val block = Regex("""nowPaneLabel\(pane: MobileRankedPane\): String = when \(pane\.standingQuestion\) \{([\s\S]*?)\n}""")
+            .find(nowScreenSrc)
+            ?.groupValues
+            ?.get(1)
+            ?: error("could not locate nowPaneLabel's when block in NowScreen.kt")
+        assertFalse("nowPaneLabel must not carry an else arm", block.contains("else ->"))
+        for (variant in listOf("WASTE", "WEEKEND", "VACATION", "RACE", "KIMI", "GITHUB", "UPTIME", "REACHABILITY")) {
+            assertTrue(
+                "nowPaneLabel is missing the $variant arm",
+                block.contains("MobileStandingQuestion.$variant"),
+            )
+        }
+    }
+
+    @Test
+    fun `the pane section renders through the shared shell, never a second implementation`() {
+        assertTrue(
+            "NowScreen.kt must render its panes through the shared rankedPaneItems",
+            nowScreenSrc.contains("rankedPaneItems(panes"),
+        )
+        assertFalse(
+            "NowScreen.kt must not re-declare its own PaneRow",
+            nowScreenSrc.contains("fun PaneRow("),
+        )
+    }
+
+    @Test
+    fun `the panes section carries no local comparator over the seams own display order`() {
+        assertFalse(
+            "the panes list must not be re-sorted locally",
+            Regex("""panes\.sorted(By|With)?\(""").containsMatchIn(nowScreenSrc),
+        )
+    }
+
+    @Test
+    fun `the panes are appended inside the queues own LazyColumn, not a second container`() {
+        // #537 review: a `NowPaneSection` rendered as a plain `Column` after
+        // an unweighted `LazyColumn` (the queue's own) laid out past the
+        // bottom of the viewport with nothing to scroll it into view once
+        // the frontier was taller than the screen. The fix is one shared
+        // `LazyColumn` for the queue and the panes together — pinned here
+        // three ways: exactly one `LazyColumn(` call in the whole file, the
+        // panes call textually after it opens, and no second `Column(`
+        // between the two (which would be the same off-screen shape again,
+        // just with the container renamed).
+        val lazyColumnCount = Regex("""LazyColumn\(""").findAll(nowScreenSrc).count()
+        assertEquals(
+            "the queue and the panes must render through exactly one LazyColumn",
+            1,
+            lazyColumnCount,
+        )
+        val lazyColumnIndex = nowScreenSrc.indexOf("LazyColumn(")
+        val paneCallIndex = nowScreenSrc.indexOf("nowPaneSection(panes)")
+        assertTrue("could not locate the LazyColumn( call", lazyColumnIndex >= 0)
+        assertTrue("could not locate the nowPaneSection(panes) call", paneCallIndex >= 0)
+        assertTrue(
+            "nowPaneSection(panes) must be appended after the shared LazyColumn opens",
+            paneCallIndex > lazyColumnIndex,
+        )
+        val between = nowScreenSrc.substring(lazyColumnIndex, paneCallIndex)
+        assertFalse(
+            "no Column( may sit between the LazyColumn and the panes call — that " +
+                "would wrap the panes in a second, non-scrolling container again",
+            Regex("""\bColumn\(""").containsMatchIn(between),
         )
     }
 }

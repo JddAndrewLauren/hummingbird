@@ -71,8 +71,10 @@ data class CaptureFormState(
 //
 // **Repository layer deferred** (#503's own scope note, unchanged at #529):
 // `captureFn` is the other seam this ViewModel needs, and [create] closes
-// it over `CoreHolder` directly — the same shape `MainActivity`'s
-// `ProofScreen` already uses.
+// it over `CoreHolder` directly — the same shape every other screen's
+// `create(context)` factory in this package uses (`RulesViewModel`'s own
+// precedent; `MainActivity`'s debug `ProofScreen` used to as well, before
+// #536 deleted it).
 //
 // `submit` is `suspend`, not self-launched on `viewModelScope`: the caller
 // (`CaptureActivity`, or a JVM test) controls the coroutine and can await

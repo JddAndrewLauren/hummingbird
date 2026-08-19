@@ -421,15 +421,19 @@ file.
 ## Surface: native Android
 
 **Built, and deliberately ungated here.** `client/android/` has had a code
-root since M0 (#141) and now renders five screens — Now, Status, Alerts,
-alert detail and item detail — plus the capture box and the notification
-lane's own shade UI. Two of those have grown well past a list of rows: capture
-is a full field set since #529 (destination, size, energy, context,
-description, a project picker over the live project list, priority, deadline,
-scheduled date), and Now is the frontier board in the phone's single-column
-form since #530 (switchable grouping axis, facet chips, per-column collapse, a
-blocked section, axis and collapse state persisted through DataStore). None of
-it is photographed by anything.
+root since M0 (#141) and now renders thirteen screens — the nine the bottom
+nav and its More sheet reach (Now, Status, Alerts, Rules, Triage, Done,
+Ledger, Settings, Routes; #532/#541), Recall (#542), and three deeper
+destinations a row or a notification opens (alert detail, item detail, the
+Grill takeover) — plus the capture box and the notification lane's own shade
+UI. Several have grown well past a list of rows: capture is a full field set
+since #529 (destination, size, energy, context, description, a project picker
+over the live project list, priority, deadline, scheduled date), Now is the
+frontier board in the phone's single-column form since #530 (switchable
+grouping axis, facet chips, per-column collapse, a blocked section, axis and
+collapse state persisted through DataStore) with the now-surface panes below
+its queue since #537, and Status is the ranked region's second surface
+(#536). None of it is photographed by anything.
 
 That is a real gap, not an oversight to fix casually: `android.yml` runs no
 emulator (its own header says why), so a screenshot matrix would need one
@@ -438,10 +442,15 @@ evidence is of two other kinds, and both are named so nobody mistakes them
 for a visual gate:
 
 - **Structural tests**, JVM, reading the Compose source as text —
-  `NavigationStructuralTest`, `NowScreenStructuralTest`,
-  `AlertsScreenStructuralTest`, `CaptureSubmitRefusalTest`,
+  `NavigationStructuralTest`, `BottomNavStructuralTest`,
+  `NowScreenStructuralTest`, `AlertsScreenStructuralTest`,
+  `StatusScreenStructuralTest`, `SettingsScreenStructuralTest`,
+  `RulesScreenStructuralTest`, `TriageScreenStructuralTest`,
+  `RecallScreenStructuralTest`, `CaptureSubmitRefusalTest`,
   `CaptureFieldSetStructuralTest`, `ScreenStateRetentionTest`. They answer
-  "is it wired the way the ADRs say", never "does it look right".
+  "is it wired the way the ADRs say", never "does it look right" — and a
+  screen added without one of these leaves this surface with no evidence at
+  all, so add the test with the screen.
 - **`ColorTokenDriftTest`** (#483, ADR-0026), which pins `ui/theme/Color.kt`
   against the design system's token CSS. It is the one thing here that
   *is* about appearance, and it covers the palette only — never layout,

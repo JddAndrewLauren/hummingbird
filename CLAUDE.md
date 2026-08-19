@@ -37,19 +37,23 @@ grepping it.
 | Ranking / freshness / panes / bindings | `client/core/src/{rank,freshness,pane,bindings}.rs` | each header; ADR-0015 for the Rust/TS carve-out, **as redrawn by ADR-0025** |
 | The decisions every client shares (#141/M1) | `client/core/src/decisions/`, `client/ffi-web/src/decisions.rs`, `client/web/src/decisions/seam.ts` | `decisions/mod.rs`, then `seam.ts`; ADR-0025 |
 | The panes' decision half + the zone bridge (#533/M4) | `client/core/src/decisions/panes/`, `client/web/src/screens/questions/zone-bridge.ts` | `panes/mod.rs`, then `panes/zone.rs`; ADR-0025 |
+| The pane lane's mobile seam (#536/M4) — `paneZoneQueries`/`rankPanes`, applied results only | `client/ffi-mobile/src/lib.rs` (its panes (#536) section) | that section's own header; ADR-0025 |
 | The skills runner lane, client side (#538/M4) | `client/core/src/decisions/skills/`, `client/web/src/skills/`, `client/android/.../hummingbird/skills/` | `decisions/skills/mod.rs`, then `SkillRunner.kt`; ADR-0025 as amended by #538 |
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |
 | The mobile seam + the Android app (#141, through the frontier-board slice) | `client/ffi-mobile/`, `client/android/` | `ffi-mobile/src/lib.rs`, `android/README.md`, ADR-0025 |
+| The bottom nav + Done/Ledger roster sink (M3/#532) | `client/core/src/decisions/roster.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../{MainActivity,Done,Ledger}{Screen,ViewModel}.kt` | `decisions/roster.rs`, then `android/README.md`'s "The bottom nav" section; ADR-0025 |
 | Item detail, and where a tapped notification lands | `client/core/src/{item_detail.rs,decisions/notification.rs}`, `client/android/.../ItemDetail{Screen,ViewModel}.kt` | `item_detail.rs`, then `decisions/notification.rs`; ADR-0027 |
 | The rules surface (#141/M4) — the sink, both seams, the Compose screen | `client/core/src/decisions/rules/`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Rules{Screen,ViewModel}.kt` | `decisions/rules/mod.rs`, then `backtest.rs`; ADR-0013/0025 |
 | The Settings screen (#141/M4) — bindings, token, sync, dead letters, theme | `client/core/src/decisions/settings.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Settings{Screen,ViewModel}.kt`, `theme/` | `decisions/settings.rs`, then `SettingsViewModel.kt`; ADR-0025 |
 | The Grill takeover and the microtask affordance (#141/M4) — the affordance/review/backend-fallback sinks, both seams, the Android takeover and Settings' backend picker | `client/core/src/decisions/skills/{affordance,review,backend}.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../{GrillTakeover,Microtask}{Screen,ViewModel}.kt`, `client/android/.../skills/{MicrotaskRunner,BackendPreference}.kt` | `decisions/skills/mod.rs`, then `affordance.rs`; ADR-0023/0025 |
+| Recall on Android (#478/#542, M4's closer) — the mobile seam door, the Compose screen | `client/core/src/search.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Recall{Screen,ViewModel}.kt` | `search.rs`, then `android/README.md`'s "The Recall screen" section; ADR-0025 |
 | Android's notification lane (#141/M2) | `client/android/app/src/main/kotlin/net/twinion/hummingbird/{notify,push}/` | `notify/NotificationChannels.kt`, `push/AckRunner.kt`; ADR-0012/0014 |
 | The web app | `client/web/` | `client/web/README.md` |
 | The SharedWorker layer | `client/web/src/worker/` | `core.worker.ts` (note its top-level-`await` invariant), ADR-0010 |
 | The standing-question panes | `client/web/src/screens/questions/` + `*-pane/` | `questions/contract.ts`, ADR-0015 |
 | The Status screen (second surface of the ranked region) | `client/web/src/screens/StatusScreen.tsx` (#311) | `questions/contract.ts`, ADR-0017 |
+| Android's Status screen — the status four, plus the phone's own persisted sync history (#536/M4) | `client/android/.../Status{Screen,ViewModel}.kt`, `client/android/.../core/SyncHistoryStore.kt` | `StatusScreen.kt`, then `SyncHistoryStore.kt`; ADR-0017/0025 |
 | Now's centre column — the frontier in columns | `client/web/src/screens/{FrontierColumns.tsx,frontier-columns.ts,frontier-facets.ts,frontier-prefs.ts}` (#399) | `FrontierColumns.tsx`, ADR-0021 |
 | Local dictation into capture (#379) | `client/web/src/speech/local-dictation.ts`, `client/web/src/screens/capture-dictation.ts` | those headers, then ADR-0022 |
 | The responsive layer and the two nav forms | `client/web/src/shell/{breakpoints.ts,responsive.css,useIsPhone.ts,NavBar.tsx,nav-bar.ts}` | `responsive.css` (why classes vs. a hook), then `nav-bar.ts` |

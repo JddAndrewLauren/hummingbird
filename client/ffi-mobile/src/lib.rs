@@ -61,8 +61,17 @@ use std::sync::Arc;
 
 use hummingbird_core::bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_core::decisions::{
-    available_actions, can_grill, can_mark_done, frontier, queue, rules, urgency,
+    available_actions, can_grill, can_mark_done, frontier, panes, queue, roster, rules, urgency,
 };
+use hummingbird_core::decisions::panes::contract::{
+    AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface,
+};
+use hummingbird_core::decisions::panes::inputs::{
+    BindingFact, BindingValueFact, PaneInputs, PaneItemFacts, PaneReadFacts, SyncFacts,
+};
+use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
+use hummingbird_core::decisions::panes::{github, kimi, race, uptime, waste};
+use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
@@ -70,7 +79,7 @@ use hummingbird_core::sync::write::transport::{
 };
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
-use hummingbird_core::{CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
+use hummingbird_core::{search, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
 use hummingbird_domain::{
     Alert, Condition, CreatePushTarget, Energy, FieldType, Item, Platform, Rule, Size, Stage, Tier,
 };
@@ -755,6 +764,81 @@ pub struct NowBoardRecord {
     pub live_column_keys: Vec<String>,
 }
 
+// -------------------------------------------------------------- M3 (#532)
+// Done and the Ledger — the bottom nav's More sheet's first two screens.
+// [`MobileTaskHost::done_items`]/[`MobileTaskHost::ledger_rows`] hand
+// Kotlin a pre-ordered, pre-decided read exactly as [`MobileTaskHost::
+// now_board`]'s own module-header rule states: `hummingbird_core::
+// decisions::roster::{order_done, order_ledger, ledger_row_state,
+// last_touched_ms}` run once here, never per row in Kotlin.
+
+/// [`roster::LedgerRowState`], mirrored as a `uniffi::Enum` — Live or
+/// Archived-with-its-instant, exactly as `ledger-order.ts`'s own
+/// `LedgerRowState` union crosses on the web. [`map_ledger_row_state`] is
+/// the only place the two are allowed to drift apart from, and it is
+/// exhaustive with no wildcard arm for exactly that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileLedgerRowState {
+    Live,
+    Archived { since_ms: i64 },
+}
+
+fn map_ledger_row_state(state: roster::LedgerRowState) -> MobileLedgerRowState {
+    match state {
+        roster::LedgerRowState::Live => MobileLedgerRowState::Live,
+        roster::LedgerRowState::Archived { since_ms } => {
+            MobileLedgerRowState::Archived { since_ms }
+        }
+    }
+}
+
+/// One Done screen row: an already-ordered, already-decided [`Item`] —
+/// index order *is* display order ([`roster::order_done`], most recently
+/// touched first). Read-only by decision: Done offers no act vocabulary
+/// (`DoneScreen.tsx`'s own decision — there is no reopen), so this record
+/// carries nothing to act on.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileDoneRecord {
+    pub id: String,
+    pub title: String,
+    pub updated_at: i64,
+    pub pending: bool,
+}
+
+fn to_roster_item(item: &Item) -> roster::RosterItem {
+    roster::RosterItem { id: item.id.clone(), updated_at: item.updated_at }
+}
+
+/// One Ledger row: an item plus its already-decided [`MobileLedgerRowState`]
+/// and last-touched instant ([`roster::ledger_row_state`]/
+/// [`roster::last_touched_ms`]), the three badges `LedgerScreen.tsx`
+/// renders, and `can_mark_done` — `item-actions.ts`'s own widened one-click
+/// rule (any live, unarchived stage but Done), so the row checkmark never
+/// offers what [`MobileTaskHost::act`] would refuse. Rows arrive
+/// pre-ordered ([`roster::order_ledger`], last touched first); Kotlin does
+/// no ordering.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLedgerRowRecord {
+    pub id: String,
+    pub title: String,
+    pub stage: String,
+    pub state: MobileLedgerRowState,
+    pub last_touched_ms: i64,
+    pub pending: bool,
+    pub dead_lettered: bool,
+    pub has_live_alert: bool,
+    pub can_mark_done: bool,
+}
+
+fn to_ledger_roster_item(entry: &hummingbird_core::LedgerEntry) -> roster::LedgerRosterItem {
+    roster::LedgerRosterItem {
+        id: entry.item.id.clone(),
+        updated_at: entry.item.updated_at,
+        archived_at: entry.item.archived_at,
+        absent_since_ms: entry.absent_since_ms,
+    }
+}
+
 /// [`MobileTaskHost::now_board`]'s pure core: the frontier
 /// ([`hummingbird_core::Core::frontier`]) ordered by
 /// [`frontier::by_priority_then_due`], with the triage-process queue
@@ -842,6 +926,61 @@ fn build_now_board(
         .collect();
 
     NowBoardRecord { columns, blocked, contexts, live_column_keys }
+}
+
+// ------------------------------------------------------------- M4 (#542)
+// Recall: `hummingbird_core::search` handles matching, grouping and
+// ordering entirely core-side (ADR-0025) — this door only maps the
+// already-capped, already-ordered rows to the wire shape and stamps
+// `pending`, the same "no per-row decision in Kotlin" rule the ledger door
+// above follows. `RecallScreen`/`RecallViewModel` re-derive none of it —
+// see `RecallScreenStructuralTest`.
+
+/// [`search::Group`], mirrored as a `uniffi::Enum` — Live, Done or Archived,
+/// exactly as `RecallGroup` crosses on the web (`protocol.ts`).
+/// [`map_recall_group`] is the only place the two are allowed to drift
+/// apart from, and it is exhaustive with no wildcard arm for exactly that
+/// reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileRecallGroup {
+    Live,
+    Done,
+    Archived,
+}
+
+fn map_recall_group(group: search::Group) -> MobileRecallGroup {
+    match group {
+        search::Group::Live => MobileRecallGroup::Live,
+        search::Group::Done => MobileRecallGroup::Done,
+        search::Group::Archived => MobileRecallGroup::Archived,
+    }
+}
+
+/// One Recall result row: an item's display fields flat at the top level
+/// (`LedgerRowRecord`'s own shape), plus the [`MobileRecallGroup`] it
+/// matched in and the same per-item `pending` stamp every other item read
+/// carries. Never carries the resolved project name — the query matched
+/// against it core-side (decision 11), and Recall's output is read-only in
+/// this slice with no reason to duplicate a lookup `MobileTaskHost` already
+/// answers elsewhere.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRecallRowRecord {
+    pub id: String,
+    pub title: String,
+    pub stage: String,
+    pub group: MobileRecallGroup,
+    pub updated_at: i64,
+    pub pending: bool,
+}
+
+/// [`MobileTaskHost::search`]'s whole answer: the capped, ordered rows
+/// (`hummingbird_core::search::CAP`), plus the un-capped `total` match count
+/// the "N more" line reads — core-decided, never a UI invention (decision
+/// 8), the same contract `ffi-web`'s own `SearchResponse` keeps.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRecallOutcome {
+    pub rows: Vec<MobileRecallRowRecord>,
+    pub total: u32,
 }
 
 // ----------------------------------------------------------------- M3 (#531)
@@ -1749,6 +1888,411 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
     }
 }
 
+// ------------------------------------------------------------- panes (#536)
+//
+// The pane lane's mobile door (#536/M4, ADR-0025): the two-phase zone
+// bridge plus the ranked-panes call, mirrored as `uniffi` types so Android
+// receives **applied results** and never a per-pane decision function —
+// this seam's own asymmetry rule (module header). `hummingbird_core::
+// decisions::panes` already carries the whole decision; everything below
+// is exposure, not judgement.
+//
+// **#537 grew the builder to the whole surface pair.** [`mobile_pane_inputs`]
+// (né `status_pane_inputs`, #536) now wires every field a sunk pane reads:
+// the status four's three sources, plus waste's and race's
+// `context_snapshots` sources, the bindings table (waste/race/vacation) and
+// the actionable-items list (weekend's merge). The one field still at its
+// default is the calendar arm — `calendar_connected: false`,
+// `calendar_reads: {}` — because Android has no calendar integration at all
+// yet (#527's out-of-scope list, `#564` the eventual slice); weekend and
+// vacation therefore honestly read as "not connected" on this device until
+// that lands, never a fabricated read. The door's shape (`surface` in,
+// applied results out) did not change under this growth, exactly as #536
+// predicted.
+//
+// **The drift gate.** [`map_standing_question`] matches
+// [`StandingQuestion`] itself, exhaustively and with no wildcard arm — a
+// ninth question sunk into `panes::SUNK` fails *this* match at compile
+// time, before Android ever sees it, which is what forces
+// `StatusScreen.kt`'s own exhaustive `when` to be touched rather than
+// silently skipped.
+
+/// [`Surface`], mirrored as a `uniffi::Enum` — ADR-0017's ranked-region
+/// axis, named on this seam so a caller picks which region it wants
+/// without a string to typo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSurface {
+    Now,
+    Status,
+}
+
+fn map_surface(surface: MobileSurface) -> Surface {
+    match surface {
+        MobileSurface::Now => Surface::Now,
+        MobileSurface::Status => Surface::Status,
+    }
+}
+
+/// [`StandingQuestion`], mirrored as a `uniffi::Enum` — see this section's
+/// header for why this mirror (rather than the plain wire string
+/// `RankedPaneRecord.question` carries core-side) is what Android renders
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileStandingQuestion {
+    Waste,
+    Weekend,
+    Vacation,
+    Race,
+    Kimi,
+    Github,
+    Uptime,
+    Reachability,
+}
+
+/// Exhaustive over [`StandingQuestion`] with no wildcard arm — the whole
+/// drift gate this section's header describes.
+fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
+    match question {
+        StandingQuestion::Waste => MobileStandingQuestion::Waste,
+        StandingQuestion::Weekend => MobileStandingQuestion::Weekend,
+        StandingQuestion::Vacation => MobileStandingQuestion::Vacation,
+        StandingQuestion::Race => MobileStandingQuestion::Race,
+        StandingQuestion::Kimi => MobileStandingQuestion::Kimi,
+        StandingQuestion::Github => MobileStandingQuestion::Github,
+        StandingQuestion::Uptime => MobileStandingQuestion::Uptime,
+        StandingQuestion::Reachability => MobileStandingQuestion::Reachability,
+    }
+}
+
+/// [`AnswerState`], mirrored as a `uniffi::Enum`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobilePaneAnswerState {
+    Answered,
+    BoundButUnacquired,
+    Unbound,
+}
+
+fn map_answer_state(state: AnswerState) -> MobilePaneAnswerState {
+    match state {
+        AnswerState::Answered => MobilePaneAnswerState::Answered,
+        AnswerState::BoundButUnacquired => MobilePaneAnswerState::BoundButUnacquired,
+        AnswerState::Unbound => MobilePaneAnswerState::Unbound,
+    }
+}
+
+/// [`Band`], mirrored as a `uniffi::Enum` — ADR-0015's five-band salience
+/// vocabulary, in [`super::contract::BAND_ORDER`]'s own declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobilePaneBand {
+    Live,
+    Imminent,
+    Near,
+    Distant,
+    Dormant,
+}
+
+fn map_band(band: Band) -> MobilePaneBand {
+    match band {
+        Band::Live => MobilePaneBand::Live,
+        Band::Imminent => MobilePaneBand::Imminent,
+        Band::Near => MobilePaneBand::Near,
+        Band::Distant => MobilePaneBand::Distant,
+        Band::Dormant => MobilePaneBand::Dormant,
+    }
+}
+
+/// [`PaneAnswerCore`], mirrored as a `uniffi::Record` — the three decided
+/// fields and nothing else (no headline, no glyph: both stay per-client,
+/// exactly the core type's own doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct MobilePaneAnswer {
+    pub answer_state: MobilePaneAnswerState,
+    pub band: MobilePaneBand,
+    pub within_band: Option<i64>,
+}
+
+fn to_mobile_pane_answer(answer: PaneAnswerCore) -> MobilePaneAnswer {
+    MobilePaneAnswer {
+        answer_state: map_answer_state(answer.answer_state),
+        band: map_band(answer.band),
+        within_band: answer.within_band,
+    }
+}
+
+/// One ranked pane, as Android renders it — [`panes::contract::
+/// RankedPaneRecord`] with its `question: String` resolved to
+/// [`MobileStandingQuestion`] (this section's drift gate) rather than
+/// carried across as the open wire string.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileRankedPane {
+    pub standing_question: MobileStandingQuestion,
+    /// Which subject this pane answers for (a workflow file name, a
+    /// service id, or a fixed sentinel for a one-subject question) — never
+    /// used to route rendering (that is [`standing_question`]'s job), only
+    /// to label and key one pane among several the same question may
+    /// return (`github_subjects`/`uptime_subjects`).
+    pub subject_key: String,
+    /// The stable per-pane identity ([`panes::contract::pane_key`]) — the
+    /// collapse-state and React-key equivalent on this client.
+    pub pane_key: String,
+    pub answer: MobilePaneAnswer,
+}
+
+/// One `(zone, civil-date)` fact the core named — [`ZoneQuery`], mirrored
+/// as a `uniffi::Enum`. `key` is not carried on this type: `java.time`
+/// answers each query by resolving it itself, and
+/// [`MobileZoneFact::key`] is what pairs a resolved answer back to the
+/// query that asked for it (`ZoneQuery::key`, ported so the two sides
+/// cannot disagree about it — see [`mobile_zone_query_key`]).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileZoneQuery {
+    CivilDate { zone: String, at_ms: i64 },
+    Midnight { zone: String, date: String },
+}
+
+fn to_mobile_zone_query(query: &ZoneQuery) -> MobileZoneQuery {
+    match query {
+        ZoneQuery::CivilDate { zone, at_ms } => {
+            MobileZoneQuery::CivilDate { zone: zone.clone(), at_ms: *at_ms }
+        }
+        ZoneQuery::Midnight { zone, date } => {
+            MobileZoneQuery::Midnight { zone: zone.clone(), date: date.clone() }
+        }
+    }
+}
+
+fn from_mobile_zone_query(query: &MobileZoneQuery) -> ZoneQuery {
+    match query {
+        MobileZoneQuery::CivilDate { zone, at_ms } => {
+            ZoneQuery::CivilDate { zone: zone.clone(), at_ms: *at_ms }
+        }
+        MobileZoneQuery::Midnight { zone, date } => {
+            ZoneQuery::Midnight { zone: zone.clone(), date: date.clone() }
+        }
+    }
+}
+
+/// [`ZoneQuery::key`], exposed so a host can pair its resolved answer back
+/// onto the query that asked for it without re-deriving the key format
+/// itself — the same "sent across rather than re-derived" rule
+/// `zone-bridge.ts`'s own header states for the web resolver.
+#[uniffi::export]
+pub fn mobile_zone_query_key(query: MobileZoneQuery) -> String {
+    from_mobile_zone_query(&query).key()
+}
+
+/// One resolved `(zone, civil-date)` answer, keyed by
+/// [`mobile_zone_query_key`] — [`ZoneFact`], mirrored as a `uniffi::Enum`
+/// and paired with the key the host resolved it for. A host that could not
+/// resolve a query simply omits it from the list handed to
+/// [`MobileTaskHost::rank_panes`] — the zone bridge's own "an unresolvable
+/// zone is an absence" rule (`zone.rs`'s module header), never a null
+/// entry.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileZoneFact {
+    pub key: String,
+    pub value: MobileZoneFactValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileZoneFactValue {
+    Date { value: String },
+    Instant { value: i64 },
+}
+
+fn to_zone_facts(facts: Vec<MobileZoneFact>) -> ZoneFacts {
+    let map: HashMap<String, ZoneFact> = facts
+        .into_iter()
+        .map(|fact| {
+            let value = match fact.value {
+                MobileZoneFactValue::Date { value } => ZoneFact::Date(value),
+                MobileZoneFactValue::Instant { value } => ZoneFact::Instant(value),
+            };
+            (fact.key, value)
+        })
+        .collect();
+    ZoneFacts::from_keyed(map)
+}
+
+/// The device's own authority-sync history (#536) — [`SyncFacts`],
+/// mirrored as a `uniffi::Record`. Unlike bindings or `context_snapshots`,
+/// this is not something `Core` persists at all (it has no reason to: no
+/// other decision reads it) — the host is the one durable copy, exactly
+/// the web's own `QuestionSyncSnapshot`, kept in its store rather than in
+/// `hummingbird-core`. Android persists this across restarts
+/// (`SyncHistoryStore.kt`) so the reachability pane has something to
+/// reason over on a cold start, before the first cycle of this session has
+/// completed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
+pub struct MobileSyncFacts {
+    pub latest_outcome_kind: Option<String>,
+    pub latest_informative_at_ms: Option<i64>,
+    pub last_successful_at_ms: Option<i64>,
+}
+
+fn to_sync_facts(facts: MobileSyncFacts) -> SyncFacts {
+    SyncFacts {
+        latest_outcome_kind: facts.latest_outcome_kind,
+        latest_informative_at_ms: facts.latest_informative_at_ms,
+        last_successful_at_ms: facts.last_successful_at_ms,
+    }
+}
+
+/// One source's pane read, built off [`Core::pane_read`] — the same
+/// conversion `ffi-web::decisions` would need, done once here rather than
+/// crossing the whole [`hummingbird_core::pane::PaneRead`] DTO and
+/// re-deriving it per pane (`panes::inputs`'s own "do not re-cross whole
+/// DTOs" rule, applied at this seam).
+fn to_pane_read_facts(read: &hummingbird_core::pane::PaneRead) -> PaneReadFacts {
+    use hummingbird_core::decisions::panes::inputs::{
+        PaneAlertFacts, PaneEnvelopeFacts, PaneSnapshotFacts,
+    };
+
+    PaneReadFacts {
+        snapshots: read
+            .snapshots
+            .iter()
+            .map(|snapshot| PaneSnapshotFacts {
+                key: snapshot.key.clone(),
+                envelope: match &snapshot.envelope {
+                    PaneEnvelope::Parsed { schema, body, .. } => {
+                        PaneEnvelopeFacts::Ok { schema: schema.clone(), body: body.clone() }
+                    }
+                    PaneEnvelope::Malformed { reason } => {
+                        PaneEnvelopeFacts::Malformed { reason: reason.clone() }
+                    }
+                },
+                freshness: to_freshness_fact(snapshot.freshness),
+            })
+            .collect(),
+        // `PaneRead.alerts` is already this source's live-only rows
+        // (`Core::pane_read`'s own ADR-0014 filter) — trimmed to the one
+        // field a sunk pane's join reads (`race.rs`, the only reader
+        // today, on a Now-surface question no Status caller reaches yet).
+        // Carried through rather than left empty: it costs nothing extra
+        // over the crossing `to_pane_read_facts` already does, and an
+        // empty default here would have been a silent trap for #537's
+        // race pane to land on.
+        live_alerts: read
+            .alerts
+            .iter()
+            .map(|alert| PaneAlertFacts { subject_key: alert.subject_key.clone() })
+            .collect(),
+    }
+}
+
+fn to_freshness_fact(
+    freshness: hummingbird_core::freshness::Freshness,
+) -> hummingbird_core::decisions::panes::inputs::FreshnessFact {
+    use hummingbird_core::decisions::panes::inputs::FreshnessFact;
+    match freshness {
+        hummingbird_core::freshness::Freshness::Unknown => FreshnessFact::Unknown,
+        hummingbird_core::freshness::Freshness::Age { age_ms, declared_cadence_ms } => {
+            FreshnessFact::Age { age_ms, declared_cadence_ms }
+        }
+    }
+}
+
+/// [`Binding`] → [`BindingFact`], the one conversion every bindings-reading
+/// pane (waste/race/vacation) needs — [`to_binding_value`]'s twin, into the
+/// pane lane's own input shape rather than [`MobileBindingValue`] (the
+/// Settings screen's own wire type, a different direction across a
+/// different seam).
+fn to_binding_fact(binding: &Binding) -> BindingFact {
+    BindingFact {
+        key: binding.key.clone(),
+        value: match &binding.value {
+            BindingValue::Unset => BindingValueFact::Unset,
+            BindingValue::Text { text } => BindingValueFact::Text { text: text.clone() },
+            BindingValue::Other { .. } => BindingValueFact::Other,
+        },
+    }
+}
+
+/// [`hummingbird_domain::Item`] → [`PaneItemFacts`], trimmed to the four
+/// fields the weekend pane's merge reads (`inputs.rs`'s own doc on
+/// [`PaneItemFacts`]) — never the whole DTO.
+fn to_pane_item_facts(item: &hummingbird_domain::Item) -> PaneItemFacts {
+    PaneItemFacts {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        deadline: item.deadline.clone(),
+        scheduled_date: item.scheduled_date.clone(),
+    }
+}
+
+/// `[...frontier, ...blocked.map(e => e.item)]` — `NowScreen.tsx::
+/// realQuestionInputs`'s own union, matched here rather than `frontier`
+/// alone: [`hummingbird_core::Core::frontier`] deliberately excludes a
+/// relation-blocked item ([`hummingbird_core::Core::blocked`] is the
+/// separate section for those), so a due/scheduled item that happens to be
+/// relation-blocked would silently vanish from the weekend pane's merge
+/// without this — a per-client divergence in a sunk decision's own inputs
+/// (#537 review). A blocked entry's own blockers never join this list:
+/// only the blocked item itself is a due/scheduled candidate, exactly as
+/// `entry.item` (never `entry.blockedByTitles`) is the only thing
+/// `realQuestionInputs` reads off each `blocked` entry.
+///
+/// Factored out of [`mobile_pane_inputs`] so it is unit-testable without a
+/// synced [`Core`]: a relation-blocked item only ever lands in the local
+/// mirror through a real sync cycle, and this crate's own test harness has
+/// no mock HTTP transport to produce one.
+fn pane_item_facts(
+    frontier: &[hummingbird_domain::Item],
+    blocked: &[(hummingbird_domain::Item, Vec<hummingbird_domain::Item>)],
+) -> Vec<PaneItemFacts> {
+    frontier
+        .iter()
+        .chain(blocked.iter().map(|(item, _blockers)| item))
+        .map(to_pane_item_facts)
+        .collect()
+}
+
+/// Builds [`PaneInputs`] for every sunk pane on both surfaces — see this
+/// section's header for what each field is for and why the calendar arm
+/// alone stays at its default.
+fn mobile_pane_inputs(
+    core: &Core<FsSnapshotStore, FsSnapshotStore>,
+    now_ms: i64,
+    sync: MobileSyncFacts,
+) -> PaneInputs {
+    let mut pane_reads = HashMap::new();
+    pane_reads.insert(kimi::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(kimi::SOURCE, now_ms)));
+    pane_reads.insert(github::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(github::SOURCE, now_ms)));
+    pane_reads.insert(uptime::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(uptime::SOURCE, now_ms)));
+    pane_reads.insert(waste::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(waste::SOURCE, now_ms)));
+    pane_reads.insert(race::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(race::SOURCE, now_ms)));
+    let bindings: Vec<BindingFact> = core.bindings().iter().map(to_binding_fact).collect();
+    let items: Vec<PaneItemFacts> = pane_item_facts(&core.frontier(), &core.blocked());
+    PaneInputs {
+        now_ms,
+        // Always `Some`: unlike the web's async table read, `Core::bindings`
+        // is a synchronous local read, so there is no "not read yet" moment
+        // on this seam to preserve (`PaneInputs::bindings`'s own doc names
+        // that state for a host where one is possible).
+        bindings: Some(bindings),
+        pane_reads,
+        calendar_reads: HashMap::new(),
+        calendar_connected: false,
+        items,
+        sync: to_sync_facts(sync),
+    }
+}
+
+/// Which [`StandingQuestion`] a [`panes::contract::RankedPaneRecord`]'s
+/// `question` string names, resolved through [`panes::SUNK`] rather than a
+/// hand-written string match — the two can never disagree, since `SUNK` is
+/// the same list `rank_panes` itself iterated to produce the string in the
+/// first place. `.expect` is safe here for exactly that reason: every
+/// record `rank_panes` emits came from one of `SUNK`'s own entries.
+fn standing_question_of(question: &str) -> StandingQuestion {
+    panes::SUNK
+        .iter()
+        .map(|(question, _)| *question)
+        .find(|candidate| candidate.as_str() == question)
+        .unwrap_or_else(|| panic!("rank_panes produced an unsunk question {question:?}"))
+}
+
 struct Inner {
     core: Core<FsSnapshotStore, FsSnapshotStore>,
     read_transport: ReqwestSyncTransport,
@@ -2042,6 +2586,70 @@ impl MobileTaskHost {
             .projects()
             .into_iter()
             .map(|project| MobileProject { id: project.id, name: project.name })
+            .collect()
+    }
+
+    /// The Done screen's whole read (M3/#532):
+    /// [`hummingbird_core::Core::done`] — every live `Done` item — ordered
+    /// most-recently-touched first ([`roster::order_done`]), the sink of
+    /// `done-order.ts`'s own `orderDone`. Kotlin does no ordering; the seam
+    /// hands it the finished order.
+    pub async fn done_items(&self) -> Vec<MobileDoneRecord> {
+        let inner = self.inner.lock().await;
+        let items = inner.core.done();
+        let roster_items: Vec<roster::RosterItem> = items.iter().map(to_roster_item).collect();
+        let order = roster::order_done(&roster_items);
+        let by_id: HashMap<&str, &Item> =
+            items.iter().map(|item| (item.id.as_str(), item)).collect();
+        order
+            .into_iter()
+            .filter_map(|id| {
+                by_id.get(id.as_str()).map(|item| MobileDoneRecord {
+                    id: item.id.clone(),
+                    title: item.title.clone(),
+                    updated_at: item.updated_at,
+                    pending: inner.core.is_pending(&item.id),
+                })
+            })
+            .collect()
+    }
+
+    /// The Ledger's whole read (M3/#532):
+    /// [`hummingbird_core::Core::ledger`] — every item this mirror has ever
+    /// known — pre-ordered ([`roster::order_ledger`], last-touched first)
+    /// with each row already carrying its [`MobileLedgerRowState`]
+    /// ([`roster::ledger_row_state`]), last-touched instant
+    /// ([`roster::last_touched_ms`]) and one-click `can_mark_done` gate: the
+    /// sink of `ledger-order.ts`'s three exports plus `item-actions.ts`'s
+    /// widened rule, applied once here rather than per row in Kotlin.
+    pub async fn ledger_rows(&self, now_ms: i64) -> Vec<MobileLedgerRowRecord> {
+        let inner = self.inner.lock().await;
+        let entries = inner.core.ledger(now_ms);
+        let roster_items: Vec<roster::LedgerRosterItem> =
+            entries.iter().map(to_ledger_roster_item).collect();
+        let order = roster::order_ledger(&roster_items);
+        let by_id: HashMap<&str, &hummingbird_core::LedgerEntry> =
+            entries.iter().map(|entry| (entry.item.id.as_str(), entry)).collect();
+        order
+            .into_iter()
+            .filter_map(|id| {
+                by_id.get(id.as_str()).map(|entry| {
+                    let roster_item = to_ledger_roster_item(entry);
+                    let state = roster::ledger_row_state(&roster_item);
+                    MobileLedgerRowRecord {
+                        id: entry.item.id.clone(),
+                        title: entry.item.title.clone(),
+                        stage: entry.item.stage.as_str().to_string(),
+                        state: map_ledger_row_state(state),
+                        last_touched_ms: roster::last_touched_ms(&roster_item),
+                        pending: inner.core.is_pending(&entry.item.id),
+                        dead_lettered: entry.dead_lettered,
+                        has_live_alert: entry.has_live_alert,
+                        can_mark_done: matches!(state, roster::LedgerRowState::Live)
+                            && can_mark_done(entry.item.stage, entry.item.archived_at.is_some()),
+                    }
+                })
+            })
             .collect()
     }
 
@@ -2350,6 +2958,41 @@ impl MobileTaskHost {
         inner
             .core
             .triage(&seed, &item_id, promote_to_ready, patch, now_ms)
+            .await
+            .map_err(|error| match error {
+                hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
+                other => MobileEditError::EditFailed {
+                    detail: other.to_string(),
+                },
+            })
+    }
+
+    /// The weekend-plans pane's do-date chip (#537, #122): one new seam
+    /// mutation wrapping [`hummingbird_core::Core::triage`] with
+    /// `promote_to_ready: false` and only `scheduled_date` touched — a
+    /// scheduling write, never a promotion, exactly the shape `Core::
+    /// triage`'s own doc names for this write ("the weekend-plans pane's
+    /// do-date chip"). `scheduled_date: None` clears an already-planned
+    /// day (a second tap on its own chip); `Some(date)` sets it. Not
+    /// [`MobileTaskHost::edit_item`] with an otherwise-`Untouched`
+    /// [`ItemEdit`]: that would make the pane build a nine-field record for
+    /// a one-field write, the same "wrap the entry point, not the whole
+    /// editor" call `App.tsx`'s own `handleSetScheduledDate` makes on web.
+    pub async fn set_scheduled_date(
+        &self,
+        item_id: String,
+        scheduled_date: Option<String>,
+        now_ms: i64,
+    ) -> Result<(), MobileEditError> {
+        let patch = hummingbird_core::TriagePatch {
+            scheduled_date: Some(scheduled_date),
+            ..hummingbird_core::TriagePatch::default()
+        };
+        let seed = mint_mutation_seed("weekend-schedule", now_ms);
+        let mut inner = self.inner.lock().await;
+        inner
+            .core
+            .triage(&seed, &item_id, false, patch, now_ms)
             .await
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
@@ -2693,6 +3336,75 @@ impl MobileTaskHost {
             &items,
             &clock,
         )))
+    }
+
+    /// Phase one of the pane lane's zone bridge (#536, ADR-0025): every
+    /// `(zone, civil-date)` fact `surface`'s sunk questions need, given
+    /// this device's own state. Empty for [`MobileSurface::Status`] today —
+    /// none of the status four is civil-date reasoning (`panes::mod`'s own
+    /// test) — kept generic over `surface` so #537's Now questions reach
+    /// it unchanged.
+    pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
+        let inner = self.inner.lock().await;
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, MobileSyncFacts::default());
+        panes::zone_queries(map_surface(surface), &inputs)
+            .iter()
+            .map(to_mobile_zone_query)
+            .collect()
+    }
+
+    /// Phase two: `surface`'s sunk questions, ranked and ready to render —
+    /// [`panes::rank_panes`], with the host's resolved [`MobileZoneFact`]s
+    /// and its own persisted sync history ([`MobileSyncFacts`], since
+    /// `hummingbird-core` keeps none — see that type's own doc) folded in.
+    /// Already in display order; `StatusScreen.kt` renders the list
+    /// directly.
+    pub async fn rank_panes(
+        &self,
+        surface: MobileSurface,
+        now_ms: i64,
+        zone_facts: Vec<MobileZoneFact>,
+        sync: MobileSyncFacts,
+    ) -> Vec<MobileRankedPane> {
+        let inner = self.inner.lock().await;
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, sync);
+        let facts = to_zone_facts(zone_facts);
+        panes::rank_panes(map_surface(surface), &inputs, &facts)
+            .into_iter()
+            .map(|record| MobileRankedPane {
+                standing_question: map_standing_question(standing_question_of(&record.question)),
+                subject_key: record.subject_key,
+                pane_key: record.pane_key,
+                answer: to_mobile_pane_answer(record.answer),
+            })
+            .collect()
+    }
+
+    /// Recall's whole read (#542/#478): [`hummingbird_core::Core::search`]
+    /// matches, groups and orders entirely core-side, capped at
+    /// [`hummingbird_core::search::CAP`] — this door only maps the answer
+    /// to the wire shape and stamps `pending`. `query` crosses unmodified;
+    /// an empty or whitespace-only one already answers empty rows and a
+    /// zero `total` from `Core::search` itself, so there is no client-side
+    /// short-circuit to duplicate here.
+    pub async fn search(&self, query: String, now_ms: i64) -> MobileRecallOutcome {
+        let inner = self.inner.lock().await;
+        let outcome = inner.core.search(&query, now_ms);
+        MobileRecallOutcome {
+            rows: outcome
+                .rows
+                .iter()
+                .map(|row| MobileRecallRowRecord {
+                    id: row.item.id.clone(),
+                    title: row.item.title.clone(),
+                    stage: row.item.stage.as_str().to_string(),
+                    group: map_recall_group(row.group),
+                    updated_at: row.item.updated_at,
+                    pending: inner.core.is_pending(&row.item.id),
+                })
+                .collect(),
+            total: outcome.total as u32,
+        }
     }
 }
 
@@ -4461,6 +5173,130 @@ mod tests {
         assert_eq!(board_ids(&board), vec![urgent_id, low_id]);
     }
 
+    // -------------------------------------------------------------- M3 (#532)
+
+    #[tokio::test]
+    async fn done_items_orders_most_recently_touched_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-done-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let first = host.capture(title_only_draft("first"), 1_000).await.unwrap();
+        let second = host.capture(title_only_draft("second"), 1_000).await.unwrap();
+        host.act(first.clone(), "complete".to_string(), 2_000).await.unwrap();
+        host.act(second.clone(), "complete".to_string(), 3_000).await.unwrap();
+
+        let done = host.done_items().await;
+        assert_eq!(done.iter().map(|record| record.id.clone()).collect::<Vec<_>>(), vec![
+            second.clone(),
+            first,
+        ]);
+        // Both completions are still unconfirmed local writes, both pending.
+        assert!(done.iter().all(|record| record.pending));
+        assert_eq!(done[0].title, "second");
+    }
+
+    #[tokio::test]
+    async fn ledger_rows_are_pre_ordered_and_pre_gated_for_mark_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-ledger-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let older = host.capture(title_only_draft("older"), 1_000).await.unwrap();
+        let newer = host.capture(title_only_draft("newer"), 2_000).await.unwrap();
+
+        let rows = host.ledger_rows(3_000).await;
+        assert_eq!(
+            rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>(),
+            vec![newer, older],
+        );
+        // A fresh Triage-stage capture is live and offers the one-click
+        // checkmark — `item-actions.ts`'s widened rule, mirrored.
+        assert!(rows.iter().all(|row| matches!(row.state, MobileLedgerRowState::Live)));
+        assert!(rows.iter().all(|row| row.can_mark_done));
+        assert!(rows.iter().all(|row| !row.dead_lettered && !row.has_live_alert));
+    }
+
+    // -------------------------------------------------------------- M4 (#542)
+
+    #[tokio::test]
+    async fn search_reaches_a_completed_item_and_labels_it_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m4-recall-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let live = host.capture(title_only_draft("buy stamps"), 1_000).await.unwrap();
+        let done = host.capture(title_only_draft("buy stamps too"), 1_000).await.unwrap();
+        host.act(done.clone(), "complete".to_string(), 2_000).await.unwrap();
+
+        let outcome = host.search("stamps".to_string(), 3_000).await;
+        let by_id: std::collections::HashMap<String, &MobileRecallRowRecord> =
+            outcome.rows.iter().map(|row| (row.id.clone(), row)).collect();
+
+        assert_eq!(outcome.total, 2);
+        assert_eq!(by_id.get(&live).unwrap().group, MobileRecallGroup::Live);
+        assert_eq!(by_id.get(&done).unwrap().group, MobileRecallGroup::Done);
+        // Both are still-unconfirmed local writes, both pending.
+        assert!(outcome.rows.iter().all(|row| row.pending));
+    }
+
+    #[tokio::test]
+    async fn search_reaches_an_archived_item_and_labels_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m4-recall-archived-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let item_id = host.capture(title_only_draft("widget report"), 1_000).await.unwrap();
+        host.act(item_id.clone(), "cancel".to_string(), 2_000).await.unwrap();
+
+        let outcome = host.search("widget".to_string(), 3_000).await;
+        assert_eq!(outcome.rows.len(), 1);
+        assert_eq!(outcome.rows[0].id, item_id);
+        assert_eq!(outcome.rows[0].group, MobileRecallGroup::Archived);
+    }
+
+    #[tokio::test]
+    async fn an_empty_query_answers_no_rows_and_a_zero_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m4-recall-empty-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        host.capture(title_only_draft("anything"), 1_000).await.unwrap();
+
+        let outcome = host.search(String::new(), 2_000).await;
+        assert!(outcome.rows.is_empty());
+        assert_eq!(outcome.total, 0);
+    }
+
     #[tokio::test]
     async fn act_start_moves_a_ready_item_to_in_progress_in_the_local_mirror() {
         let dir = tempfile::tempdir().unwrap();
@@ -6036,5 +6872,315 @@ mod settings_tests {
         assert!(!is_informative_sync_outcome("busy".to_string()));
         assert!(is_informative_sync_outcome("completed".to_string()));
         assert!(is_informative_sync_outcome("held".to_string()));
+    }
+
+    // -------------------------------------------------------------- panes (#536)
+
+    async fn pane_host(namespace: &str) -> Arc<MobileTaskHost> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(namespace);
+        std::mem::forget(dir);
+        MobileTaskHost::init(
+            path.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            "token".to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_fresh_device_ranks_the_status_four_as_never_polled_sentinels() {
+        let host = pane_host("panes-status-fresh").await;
+        let ranked = host.rank_panes(MobileSurface::Status, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+        assert_eq!(ranked.len(), 4);
+        assert!(ranked.iter().all(|pane| pane.answer.answer_state == MobilePaneAnswerState::BoundButUnacquired));
+        let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
+        assert_eq!(
+            questions,
+            vec![
+                MobileStandingQuestion::Kimi,
+                MobileStandingQuestion::Github,
+                MobileStandingQuestion::Uptime,
+                MobileStandingQuestion::Reachability,
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn the_status_surface_asks_for_no_zone_facts_none_of_the_four_is_civil_date_reasoning() {
+        let host = pane_host("panes-status-zone").await;
+        let queries = host.pane_zone_queries(MobileSurface::Status, 1_000).await;
+        assert!(queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_synced_device_reads_reachability_off_its_own_persisted_sync_history() {
+        let host = pane_host("panes-status-sync").await;
+        let now_ms: i64 = 1_700_000_000_000;
+        // Fresh and just synced: dormant, quiet.
+        let fresh = host
+            .rank_panes(
+                MobileSurface::Status,
+                now_ms,
+                Vec::new(),
+                MobileSyncFacts {
+                    latest_outcome_kind: Some("completed".to_string()),
+                    latest_informative_at_ms: Some(now_ms - 60_000),
+                    last_successful_at_ms: Some(now_ms - 60_000),
+                },
+            )
+            .await;
+        let reachability = fresh
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Reachability)
+            .unwrap();
+        assert_eq!(reachability.answer.answer_state, MobilePaneAnswerState::Answered);
+        assert_eq!(reachability.answer.band, MobilePaneBand::Dormant);
+
+        // Nothing synced in a long while: escalates to live.
+        let stale = host
+            .rank_panes(
+                MobileSurface::Status,
+                now_ms,
+                Vec::new(),
+                MobileSyncFacts {
+                    latest_outcome_kind: Some("pull_failed".to_string()),
+                    latest_informative_at_ms: Some(now_ms - 6 * 60_000),
+                    last_successful_at_ms: Some(now_ms - 10 * 60 * 60 * 1000),
+                },
+            )
+            .await;
+        let reachability = stale
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Reachability)
+            .unwrap();
+        assert_eq!(reachability.answer.band, MobilePaneBand::Live);
+    }
+
+    #[test]
+    fn every_standing_question_maps_to_a_distinct_mobile_variant() {
+        let cases = [
+            (StandingQuestion::Waste, MobileStandingQuestion::Waste),
+            (StandingQuestion::Weekend, MobileStandingQuestion::Weekend),
+            (StandingQuestion::Vacation, MobileStandingQuestion::Vacation),
+            (StandingQuestion::Race, MobileStandingQuestion::Race),
+            (StandingQuestion::Kimi, MobileStandingQuestion::Kimi),
+            (StandingQuestion::Github, MobileStandingQuestion::Github),
+            (StandingQuestion::Uptime, MobileStandingQuestion::Uptime),
+            (StandingQuestion::Reachability, MobileStandingQuestion::Reachability),
+        ];
+        for (core_question, expected) in cases {
+            assert_eq!(map_standing_question(core_question), expected);
+        }
+    }
+
+    #[test]
+    fn a_zone_query_key_round_trips_through_the_mobile_mirror() {
+        let civil = MobileZoneQuery::CivilDate { zone: "America/Los_Angeles".to_string(), at_ms: 17 };
+        assert_eq!(mobile_zone_query_key(civil), "civil:America/Los_Angeles:17");
+        let midnight =
+            MobileZoneQuery::Midnight { zone: "Europe/London".to_string(), date: "2026-08-17".to_string() };
+        assert_eq!(mobile_zone_query_key(midnight), "midnight:Europe/London:2026-08-17");
+    }
+
+    #[test]
+    fn zone_facts_cross_by_key_and_an_unresolved_key_reads_as_absent() {
+        let facts = to_zone_facts(vec![MobileZoneFact {
+            key: "civil:Europe/London:0".to_string(),
+            value: MobileZoneFactValue::Date { value: "2026-08-17".to_string() },
+        }]);
+        assert_eq!(facts.civil_date("Europe/London", 0).as_deref(), Some("2026-08-17"));
+        assert_eq!(facts.civil_date("Europe/Paris", 0), None);
+    }
+
+    // ---------------------------------------------------------- panes (#537)
+
+    /// A [`CaptureDraft`] with only `title` set — this module's own copy of
+    /// `tests::title_only_draft`, since that helper is private to its own
+    /// `mod tests` and this module reaches for the same shape.
+    fn title_only_draft(title: &str) -> CaptureDraft {
+        CaptureDraft {
+            title: title.to_string(),
+            destination: CaptureDestination::Triage,
+            size: String::new(),
+            energy: String::new(),
+            context: String::new(),
+            description: String::new(),
+            project_id: String::new(),
+            priority: String::new(),
+            deadline: String::new(),
+            scheduled_date: String::new(),
+        }
+    }
+
+    /// This module's own copy of `tests::untouched_triage_edit`, same
+    /// reason as [`title_only_draft`] above.
+    fn untouched_triage_edit() -> ItemEdit {
+        ItemEdit {
+            title: None,
+            priority: None,
+            description: FieldPatch::Untouched,
+            size: FieldPatch::Untouched,
+            energy: FieldPatch::Untouched,
+            context: FieldPatch::Untouched,
+            project_id: FieldPatch::Untouched,
+            deadline: FieldPatch::Untouched,
+            scheduled_date: FieldPatch::Untouched,
+        }
+    }
+
+    /// A minimal live [`hummingbird_domain::Item`] for [`pane_item_facts`]'s
+    /// own tests — every field the seam does not read is pinned to a
+    /// neutral default, the same "only the fields a test actually reads
+    /// vary" discipline `tests::item` (this crate's `now_board` fixture)
+    /// uses, kept as this module's own copy since that one is private to
+    /// its sibling `mod tests`.
+    fn pane_item(id: &str, deadline: Option<&str>, scheduled_date: Option<&str>) -> hummingbird_domain::Item {
+        hummingbird_domain::Item {
+            id: id.to_string(),
+            seq: None,
+            title: format!("item {id}"),
+            description: None,
+            stage: hummingbird_domain::Stage::Ready,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: deadline.map(str::to_string),
+            scheduled_date: scheduled_date.map(str::to_string),
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            agent: false,
+            created_at: 0,
+            updated_at: 0,
+            version: 0,
+        }
+    }
+
+    #[test]
+    fn pane_items_include_both_the_frontier_and_the_relation_blocked_section() {
+        // `NowScreen.tsx::realQuestionInputs`'s own union
+        // (`[...frontier, ...blocked.map(e => e.item)]`) — a relation-
+        // blocked item due this weekend must still reach the weekend
+        // pane's merge, never silently drop out just because
+        // `Core::frontier` excludes it (#537 review).
+        let frontier = vec![pane_item("f-1", Some("2026-08-15"), None)];
+        let blocked =
+            vec![(pane_item("b-1", None, Some("2026-08-16")), vec![pane_item("blocker", None, None)])];
+
+        let facts = pane_item_facts(&frontier, &blocked);
+
+        assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-1", "b-1"]);
+        let blocked_fact = facts.iter().find(|f| f.id == "b-1").unwrap();
+        assert_eq!(blocked_fact.scheduled_date.as_deref(), Some("2026-08-16"));
+    }
+
+    #[test]
+    fn pane_items_never_include_a_blocked_entrys_own_blockers() {
+        let blocked = vec![(pane_item("b-1", None, None), vec![pane_item("blocker-only", None, None)])];
+
+        let facts = pane_item_facts(&[], &blocked);
+
+        assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["b-1"]);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_device_ranks_the_now_four_as_unbound() {
+        // Nothing bound (waste/race), no calendar connected (weekend/
+        // vacation) — every Now question is `unbound`, still ranked rather
+        // than vanishing (`panes::mod`'s own "a pane nobody has bound yet
+        // must still be discoverable" rule).
+        let host = pane_host("panes-now-fresh").await;
+        let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+        assert_eq!(ranked.len(), 4);
+        assert!(ranked.iter().all(|pane| pane.answer.answer_state == MobilePaneAnswerState::Unbound));
+        let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
+        assert_eq!(
+            questions,
+            vec![
+                MobileStandingQuestion::Waste,
+                MobileStandingQuestion::Weekend,
+                MobileStandingQuestion::Vacation,
+                MobileStandingQuestion::Race,
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn the_now_surface_asks_for_more_than_the_status_surfaces_empty_list() {
+        // Weekend/vacation/waste are all civil-date reasoning (`panes::mod`'s
+        // own test pins this core-side); the mobile door must carry that
+        // non-empty list through rather than collapsing it, unlike Status.
+        let host = pane_host("panes-now-zone").await;
+        let queries = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+        assert!(!queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bound_waste_page_answers_once_the_source_has_been_read() {
+        // Wiring proof for `mobile_pane_inputs`' new bindings/pane_reads
+        // arms: setting the waste binding and landing a `city-waste/v2`
+        // snapshot must reach the Now surface's waste pane exactly as it
+        // already reaches the panes-family unit tests core-side.
+        let host = pane_host("panes-now-waste").await;
+        host.set_binding(
+            "seed-1".to_string(),
+            waste::BINDING_KEY.to_string(),
+            "https://example.gov".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+        let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+        let waste = ranked
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Waste)
+            .unwrap();
+        // Bound but never polled: no snapshot has landed for this device.
+        assert_eq!(waste.answer.answer_state, MobilePaneAnswerState::BoundButUnacquired);
+    }
+
+    // ------------------------------------------------- set_scheduled_date (#537)
+
+    #[tokio::test]
+    async fn set_scheduled_date_writes_only_the_do_date_and_leaves_stage_alone() {
+        let host = pane_host("panes-now-schedule").await;
+        let id = host.capture(title_only_draft("plan the weekend"), 1_000).await.unwrap();
+        // Promote to Ready first — a triage-only item is never on the
+        // frontier a weekend-plans merge reads, and the write must not be
+        // the thing that promotes it.
+        host.triage_item(id.clone(), true, untouched_triage_edit(), 1_000).await.unwrap();
+
+        host.set_scheduled_date(id.clone(), Some("2026-08-15".to_string()), 2_000).await.unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.scheduled_date.as_deref(), Some("2026-08-15"));
+        assert_eq!(detail.stage, "ready", "a do-date write is not a promotion");
+    }
+
+    #[tokio::test]
+    async fn set_scheduled_date_clears_a_previously_set_do_date() {
+        let host = pane_host("panes-now-schedule-clear").await;
+        let id = host.capture(title_only_draft("plan the weekend"), 1_000).await.unwrap();
+        host.set_scheduled_date(id.clone(), Some("2026-08-15".to_string()), 1_000).await.unwrap();
+
+        host.set_scheduled_date(id.clone(), None, 2_000).await.unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.scheduled_date, None);
+    }
+
+    #[tokio::test]
+    async fn set_scheduled_date_on_an_unknown_item_is_item_not_found() {
+        let host = pane_host("panes-now-schedule-missing").await;
+        assert!(matches!(
+            host.set_scheduled_date("nope".to_string(), Some("2026-08-15".to_string()), 1_000).await,
+            Err(MobileEditError::ItemNotFound)
+        ));
     }
 }

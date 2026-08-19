@@ -26,6 +26,7 @@ pub mod frontier;
 pub mod notification;
 pub mod panes;
 pub mod queue;
+pub mod roster;
 pub mod rules;
 pub mod settings;
 pub mod skills;

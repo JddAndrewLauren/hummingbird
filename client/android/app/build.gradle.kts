@@ -195,6 +195,15 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coroutines.test)
+    // The plain (non-`@aar`) JNA artifact, for `testDebugUnitTest` alone:
+    // the `@aar` variant above bundles only Android per-ABI `.so`s, so a
+    // JVM unit test that reaches a real uniffi call (`ZoneBridgeTest`,
+    // #537 — the pane lane's zone-bridge resolver, which crosses
+    // `mobileZoneQueryKey` rather than re-deriving `ZoneQuery::key` in
+    // Kotlin, `ffi-mobile::mobile_zone_query_key`'s own doc) needs the
+    // host's own native dispatch library (`libjnidispatch.jnilib` on
+    // macOS) on its classpath, which only this plain jar carries.
+    testImplementation(libs.jna)
 
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)
@@ -210,6 +219,14 @@ tasks.matching { it.name.startsWith("merge") && it.name.contains("AndroidTestAss
 val repoRoot: File = rootProject.projectDir.parentFile.parentFile
 tasks.withType<Test>().configureEach {
     systemProperty("hummingbird.repoRoot", repoRoot.absolutePath)
+    // #537: `cargoHostBuild`'s own output dir, so a JVM unit test that
+    // reaches a real uniffi call (`ZoneBridgeTest`) can load the host
+    // cdylib JNA dlopens against — `generateUniffiBindings`'s dependency on
+    // `cargoHostBuild` already guarantees this file exists by the time any
+    // test task runs, since compiling this module's Kotlin needs the
+    // generated binding first.
+    dependsOn(cargoHostBuild)
+    systemProperty("jna.library.path", File(cargoWorkspace, "target/debug").absolutePath)
     // The CSS sits outside this Gradle project, so without this line a
     // token change leaves testDebugUnitTest UP-TO-DATE and the drift gate
     // silently doesn't rerun — a stale local green. (CI runs fresh either
@@ -225,6 +242,11 @@ tasks.withType<Test>().configureEach {
     // editing a hex here leaves the gate UP-TO-DATE just the same.
     inputs.file(File(repoRoot, "client/android/app/src/main/res/values/colors.xml"))
         .withPropertyName("launcherColorsXml")
+    // Same freshness fix for BottomNavStructuralTest (#532): nav-bar.ts
+    // sits outside this Gradle project too, and a change to the web's
+    // ON_THE_BAR set would otherwise leave the bar-set pin UP-TO-DATE.
+    inputs.file(File(repoRoot, "client/web/src/shell/nav-bar.ts"))
+        .withPropertyName("navBarTs")
 }
 
 // ---------------------------------------------------------------------------

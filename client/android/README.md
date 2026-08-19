@@ -99,14 +99,58 @@ at the first newline. Pipe it minified.
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
 
+## The bottom nav and the More sheet (M3/#532, completed M4/#541)
+
+`MainActivity.kt`'s `NavDestination` is the one route list the app's
+navigation surface generates from — the same "one list, two derived halves"
+rule `client/web/src/shell/nav-bar.ts`'s `ON_THE_BAR` follows, ported rather
+than reinvented. `NavDestination.ON_BAR`/`.OVERFLOW` filter that one enum, so
+a screen added to it lands on the bottom bar or in the "More" sheet by
+construction, never neither. Four screens are on the bar — Now, Triage,
+Alerts, Status, pinned against the web's own `ON_THE_BAR` set by
+`BottomNavStructuralTest` — and Done, the Ledger, Rules, Settings and Routes
+are in the sheet: #532 landed the first two, #541 the last three, completing
+all nine screens' reachability and shrinking `BottomNavStructuralTest`'s own
+exception list to empty. A bar or sheet tap goes through `goToTab`'s
+`popUpTo`/`saveState`/`launchSingleTop`/`restoreState`, the standard
+bottom-nav idiom: each tab keeps its own back stack across switches rather
+than stacking a fresh copy of Now underneath every visit.
+
+`routes` (#541) renders its **live empty state only** — "No routes yet" —
+because `client/ffi-mobile/src/lib.rs` exposes no Route query at all yet;
+the web's own populated `RoutesScreen.tsx` branch reads a demo fixture with
+no live counterpart, and parity with a fixture is not parity. The sheet also
+carries a Recall entry (#541) below the screen list, deliberately outside
+`NavDestination` — a gesture, not a screen, the same distinction the web's
+`onSearch` row holds by sitting outside `NAV_BAR_OVERFLOW`. #541 shipped its
+placeholder; #542 replaced the body with the real search-as-you-type
+surface (below). `NavigationStructuralTest` asserts full route
+reachability and that the notification doors below survived the churn.
+
+### The Done and Ledger screens (M3, #532)
+
+`DoneScreen.kt`/`DoneViewModel.kt` and `LedgerScreen.kt`/`LedgerViewModel.kt`
+are M3's one real sink. `MobileTaskHost::doneItems()`/`.ledgerRows(nowMs)`
+hand Kotlin a pre-ordered, pre-decided record set —
+`hummingbird_core::decisions::roster::{order_done, order_ledger,
+ledger_row_state, last_touched_ms}` (ADR-0025) run once Rust-side, never
+per row here — carrying a `MobileLedgerRowState::{Live, Archived{sinceMs}}`
+enum and a `canMarkDone` gate that mirrors the web's `item-actions.ts`
+widened one-click rule. Neither screen re-derives an order or a state; the
+Ledger's one-click mark-done goes through the same `act("complete")` path
+Triage's row checkmark uses, then reloads so the row's own state (and its
+departure from the live set the checkmark gates on) reflects the mutation
+immediately. `done-order.ts`/`ledger-order.ts` on the web are now seam
+re-exports of the same sink, with their existing test suites untouched.
+
 ## The rules screen (M4, #540)
 
 `RulesScreen.kt`/`RulesViewModel.kt` list the rules, toggle one
 enabled/disabled (one CAS field), create and edit one, and show a draft's
-backtest count. **The route is registered and deliberately unreachable** —
-no bar entry, no More sheet, nothing navigates to `Routes.RULES` — because
-reachability and the nav form it needs are #541's. `RulesScreenStructuralTest`
-asserts that absence, so a later slice adding an entry does it on purpose.
+backtest count. **The route has a permanent More-sheet entry since #541**;
+`RulesScreenStructuralTest` asserts that reachability goes through the
+shared `NavDestination`/`onNavigate` door, never a one-off
+`navigate(Routes.RULES)` call.
 
 Every rule verdict arrives applied from
 `hummingbird_core::decisions::rules` (ADR-0025's M4 sink): validity,
@@ -135,11 +179,12 @@ detail's own edit mode. The row checkmark goes through the existing
 gated on the row's own `canGrill` fact from the seam, it navigates to the
 standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
 an interview inline, so neither `TriageScreen.kt` nor `TriageViewModel.kt`
-holds any turn, session or draft state of its own. **The route is registered
-and deliberately unreachable** — no bar entry, no More sheet, nothing
-navigates to `Routes.TRIAGE` — because reachability is #532's job, the same
-"registered first, wired later" shape `Routes.RULES` established.
-`TriageScreenStructuralTest` asserts that absence, gates the header-count and
+holds any turn, session or draft state of its own. **The route is reachable
+from the bottom nav bar** (#532, above) — `NavDestination.TRIAGE` with
+`onBar = true`, not an ad-hoc `navigate(Routes.TRIAGE)` call, which the
+"registered first, wired later" shape `Routes.RULES` still holds now
+resolves to: registered here at #531, wired at #532.
+`TriageScreenStructuralTest` asserts that reachability, gates the header-count and
 Grill rules above, and — the same foreground-resume discipline `AlertsScreen`,
 `NowScreen` and `ItemDetailScreen` all carry — asserts a `LifecycleResumeEffect`
 re-reads the queue on every return to the screen, not only on the app-wide
@@ -169,6 +214,26 @@ own transport is `skills/MicrotaskRunner.kt`, the `skill_run_*` doors' first
 real caller; `skills/BackendPreference.kt` is #274's picker, read into every
 run and into the one-tap "switch tiers" offer a declined, unreachable pin
 gets (`hummingbird_core::decisions::skills::backend::declined_backend_fallback`).
+
+## The Recall screen (M4, #542)
+
+`RecallScreen.kt`/`RecallViewModel.kt` are the milestone's closer: re-find
+one known item across everything the mirror has ever known, live or
+archived. `MobileTaskHost::search(query, nowMs)` hands back a
+`MobileRecallOutcome` — rows already matched, grouped
+(`MobileRecallGroup::{Live, Done, Archived}`) and ordered, plus the core's
+own un-capped `total` — over `hummingbird_core::search` (#478, predating
+this slice; no web change was needed here since the web seam already sank
+it). Neither file re-derives any of that: no sort, filter, group-by or
+title/description scan of its own, gated by `RecallScreenStructuralTest`
+the same way `RulesScreenStructuralTest` gates its own surface. Search is
+as-you-type with no debounce — a mirror read, not a network request, the
+same reasoning `useRecallWiring.ts` states on the web. Tapping a **live**
+row opens `ItemDetailScreen` via `Routes.itemDetail`; Done and archived rows
+are shown, labelled and dimmed, but not tappable — this slice ships no
+inline edit the way the web's #479 does. The route was registered at #541
+as a gesture entry off the More sheet, deliberately outside `NavDestination`
+(above); #542 replaced its placeholder body with this real surface.
 
 ## Proving the lane on hardware
 
