@@ -42,6 +42,7 @@ grepping it.
 | The skills runner lane, client side (#538/M4) | `client/core/src/decisions/skills/`, `client/web/src/skills/`, `client/android/.../hummingbird/skills/` | `decisions/skills/mod.rs`, then `SkillRunner.kt`; ADR-0025 as amended by #538 |
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |
+| The OpenClaw task agent (third interactive arm, ADR-0029) | `openclaw/` | `docs/openclaw.md` |
 | The mobile seam + the Android app (#141, through the frontier-board slice) | `client/ffi-mobile/`, `client/android/` | `ffi-mobile/src/lib.rs`, `android/README.md`, ADR-0025 |
 | The bottom nav + Done/Ledger roster sink (M3/#532) | `client/core/src/decisions/roster.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../{MainActivity,Done,Ledger}{Screen,ViewModel}.kt` | `decisions/roster.rs`, then `android/README.md`'s "The bottom nav" section; ADR-0025 |
 | Item detail, and where a tapped notification lands | `client/core/src/{item_detail.rs,decisions/notification.rs}`, `client/android/.../ItemDetail{Screen,ViewModel}.kt` | `item_detail.rs`, then `decisions/notification.rs`; ADR-0027 |
@@ -91,7 +92,10 @@ scope and is write-everything, so anything holding one is treated as a write
 credential however read-only it looks — since #273 it can also *cause
 spend*, via `POST /api/skills/run`, and since #577 it can also mint a Google
 `calendar.readonly` access token via `POST /api/google/calendar_token`,
-against a server-held credential shared by every device (ADR-0028). See
+against a server-held credential shared by every device (ADR-0028). The
+population of `device` tokens is: one per operator device, the runner's
+(`runner`), and the OpenClaw agent's (`openclaw-agent`, on the gateway
+machine — ADR-0029, minted and rotated per `docs/openclaw.md`). See
 ADR-0011 for the per-source table.
 
 **No competing clocks.** Exactly one thing owns each cadence: supercronic owns

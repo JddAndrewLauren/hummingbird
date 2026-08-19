@@ -10,10 +10,12 @@ tiny concrete steps. Write first, offer company second. Speed is the value.
 
 Vocabulary (Action, **Step**, Route, Fog) is in the root `CONTEXT.md`.
 
-## The two arms
+## The two arms (of this file — a third, OpenClaw's, lives at `openclaw/microtask/`)
 
 **Interactive** (a session, with the operator's credential): you read and write through
-`scripts/hb.sh` yourself, and everything below applies as written.
+`scripts/hb.sh` yourself, and everything below applies as written. (The OpenClaw arm,
+ADR-0029, is the same posture under its own SKILL.md, with a verbatim, CI-pinned copy of
+`scripts/hb.sh` — edits to the script happen here and are re-copied there.)
 
 **Hosted runner** (#272's third op; #307's decline; #317's rewrite): the runner has
 already read the item's live steps from the authority. A bare run only ever reaches you

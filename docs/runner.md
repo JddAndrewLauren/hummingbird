@@ -251,11 +251,13 @@ fourth reads that same credential but writes nothing either:
     `--json-schema` and `$schema` both turned out narrower than expected
     for.
 
-  No interactive arm ships in this slice -- `.claude/skills/grill-me/` is
-  `SKILL.md` + `schema.json` only, and the hosted runner is the only way to
-  drive it (`POST /run`, or the equivalent `curl` in the smoke-test section
-  below). #349 is the plan this discharges the first slice of; #351 is the
-  live-run gate the rest of that plan is blocked behind.
+  `.claude/skills/grill-me/` is `SKILL.md` + `schema.json` only -- the hosted
+  runner is the only way to drive *this* arm (`POST /run`, or the equivalent
+  `curl` in the smoke-test section below). Since ADR-0029 an OpenClaw arm of
+  the same interview exists at `openclaw/grill-me/`, on that agent's own
+  model and credential -- it never calls this runner. #349 is the plan this
+  discharges the first slice of; #351 is the live-run gate the rest of that
+  plan is blocked behind.
 
 `/to-actions` uses the app-owned authority helpers in interactive sessions,
 but it is not a hosted runner operation. The retired `next-up-personal`

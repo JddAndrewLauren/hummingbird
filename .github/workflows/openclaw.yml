@@ -1,0 +1,58 @@
+# The OpenClaw agent's skills (ADR-0029, docs/openclaw.md).
+#
+# **Why this exists at all:** `openclaw/` is a new top-level directory, and a
+# new top-level directory matches no other workflow's `paths:` filter — a PR
+# touching only it would run zero checks and still look green (the exact trap
+# skills.yml's header names). This workflow's triggers match what it guards.
+#
+# Two jobs' worth of gate in one:
+#
+#   1. shellcheck + `bash -n` + executability over every script here — same
+#      cheap gate skills.yml runs over the personal skills' helpers, plus
+#      shellcheck since these scripts ship to a machine no session watches.
+#   2. **The step-id parity pin.** `openclaw/microtask/scripts/hb.sh` must be
+#      byte-identical to `.claude/skills/microtask/scripts/hb.sh`: it is a
+#      deliberate copy (that skill's per-arm self-containment pattern), and
+#      the frozen id namespace + recipe inside it is what keeps the OpenClaw
+#      arm from minting a step another arm already wrote. Byte-identity is
+#      stronger than pinning the recipe alone and needs no test harness.
+#      Edit the `.claude` copy and re-copy; never edit the `openclaw` copy.
+#
+# Nothing is deployed: these files reach the gateway machine by `git pull`
+# on a clone there (docs/openclaw.md's runbook), never from Actions.
+name: openclaw
+
+on:
+  pull_request:
+    paths:
+      - "openclaw/**"
+      - ".claude/skills/microtask/scripts/hb.sh"
+      - ".github/workflows/openclaw.yml"
+  push:
+    branches: [main]
+    paths:
+      - "openclaw/**"
+      - ".claude/skills/microtask/scripts/hb.sh"
+      - ".github/workflows/openclaw.yml"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse and shellcheck every script
+        run: |
+          for script in openclaw/*/scripts/*.sh; do
+            bash -n "$script" || exit 1
+            [ -x "$script" ] || { echo "$script is not executable" >&2; exit 1; }
+            shellcheck "$script" || exit 1
+          done
+
+      - name: Pin the microtask copy byte-identical to its source
+        run: |
+          if ! diff -u .claude/skills/microtask/scripts/hb.sh openclaw/microtask/scripts/hb.sh; then
+            echo "openclaw/microtask/scripts/hb.sh has drifted from .claude/skills/microtask/scripts/hb.sh" >&2
+            echo "Edit the .claude copy and re-copy it here — the step-id recipe must stay identical across arms (ADR-0029)." >&2
+            exit 1
+          fi
