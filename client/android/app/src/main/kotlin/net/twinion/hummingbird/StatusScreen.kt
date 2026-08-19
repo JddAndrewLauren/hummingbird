@@ -110,7 +110,18 @@ fun StatusScreen(
 
             when (val current = state) {
                 StatusState.Loading -> CircularProgressIndicator()
-                is StatusState.Loaded -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // `weight(fill = false)`, never a bare `LazyColumn`: an
+                // unweighted lazy list in a `Column` measures against the
+                // whole remaining height, and enough GitHub/uptime panes
+                // then push the Settings link below the viewport with
+                // nothing to scroll it back into view. Weighted, the link
+                // is measured first and the panes take what is left;
+                // `fill = false` keeps a short list from stranding the link
+                // at the bottom of the screen.
+                is StatusState.Loaded -> LazyColumn(
+                    modifier = Modifier.weight(1f, fill = false),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     rankedPaneItems(current.panes, paneLabel = ::paneLabel)
                 }
             }

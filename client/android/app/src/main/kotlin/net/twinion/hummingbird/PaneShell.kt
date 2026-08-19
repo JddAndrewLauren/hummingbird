@@ -117,10 +117,12 @@ internal fun PaneRow(pane: MobileRankedPane, label: String) {
  * Both current callers append these into a `LazyColumn` they already own
  * rather than a `Column` of their own (#537 review — a plain `Column`
  * placed after, or beside, an unweighted `LazyColumn` can lay out past the
- * viewport with nothing to scroll it into view): `StatusScreen` wraps this
- * call in its own dedicated `LazyColumn` (its panes are the whole screen),
- * and `NowScreen` appends it into the same `LazyColumn` the queue's rows
- * already populate, so the queue and the panes share one outer scroll. */
+ * viewport with nothing to scroll it into view): `NowScreen` appends it
+ * into the same `LazyColumn` the queue's rows already populate, so the
+ * queue and the panes share one outer scroll, and `StatusScreen` wraps this
+ * call in a dedicated `LazyColumn` of its own — a *weighted* one, because
+ * its panes are not quite the whole screen and its Settings link sits below
+ * them (that file's own note says why `fill = false`). */
 internal fun LazyListScope.rankedPaneItems(
     panes: List<MobileRankedPane>,
     paneLabel: (MobileRankedPane) -> String,
