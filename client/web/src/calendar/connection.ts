@@ -75,21 +75,13 @@ export async function connect(deps: ConnectionDeps): Promise<ConnectionResult> {
 /** Whether an interactive attempt's result should be discarded, leaving the
  * device's existing connection state alone.
  *
- * TWO callers, and they are easy to forget the second of. [`connect`]'s popup
- * result is one; the other is a return from the redirect flow, whose answer
- * arrives on the next page load and is resolved through
- * `calendar/redirect-return.ts` — that module's header explains why the two
- * share this question but not the remedy for it. For a while only the popup
- * consulted this, and a failed redirect return wiped exactly what the rest of
- * this doc says must never be wiped.
- *
  * The same button is "Connect" and "Reconnect". For a first-time opt-in a
  * declined/failed consent correctly ends disconnected. For a *reconnect* it
  * must not: writing `connected: false` there un-opts-in the device, drops
  * the persisted flag, and takes the last-good (stale but real) tile and the
- * Reconnect affordance itself down with it — so cancelling the Google popup
- * once would cost the user their offline context. The existing connection
- * stands until a reconnect actually succeeds.
+ * Reconnect affordance itself down with it — so cancelling a reconnect once
+ * would cost the user their offline context. The existing connection stands
+ * until a reconnect actually succeeds.
  *
  * Note what this does NOT cover: the FAILURE itself. Keeping the connection
  * is about `connected`/`needsReconnect`, and the caller must still record

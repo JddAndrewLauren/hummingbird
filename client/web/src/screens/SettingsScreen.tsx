@@ -21,7 +21,6 @@ import {
 } from "./bindings";
 import type { DemoData } from "../fixtures/demo";
 import { APP_VERSION } from "../shell/build-version";
-import { isStandalone } from "../shell/standalone";
 import { coreInstanceLabel } from "../shell/status-label";
 import { effectiveCalendarIds, tripsCalendarId } from "../calendar/selection";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
@@ -63,7 +62,7 @@ function isThemePreference(value: string): value is ThemePreference {
  * just bad news. Both come from `calendar/connect-error.ts`; this places them
  * and nothing else. */
 function ConnectError({ error }: { error: string }) {
-  const { message, hint } = connectErrorCopy(error, isStandalone());
+  const { message, hint } = connectErrorCopy(error);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
       <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{message}</p>
@@ -619,11 +618,9 @@ export function SettingsScreen({
                 </p>
               ) : null}
               {/* What the last attempt did, in words. Before this the button
-                  simply did nothing on every failure path — no pending state,
-                  no error, and (in an installed iOS app, where the popup
-                  escapes to Safari and loses its opener) no callback ever
-                  either. The copy is `calendar/connect-error.ts`; this only
-                  places it. */}
+                  simply did nothing on every failure path — no pending state
+                  and no error, ever. The copy is `calendar/connect-error.ts`;
+                  this only places it. */}
               {calendar.connectError !== null ? (
                 <ConnectError error={calendar.connectError} />
               ) : null}
