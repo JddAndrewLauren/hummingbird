@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import java.io.File
 import net.twinion.hummingbird.ui.ChoiceRow
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -144,23 +145,32 @@ class ChoiceRowWrappingTest {
 
     @Test
     fun `the four sites reach for ChoiceRow, not a bare Row`() {
-        val sites = listOf(
+        // The **call** form with a count, never `contains("ChoiceRow")`:
+        // the import line alone satisfies a bare name check, so a site
+        // reverted to a plain `Row` with its import left behind would keep
+        // this green — and this pin is the only automated link there is
+        // between the component measured above and the screens that need
+        // it.
+        val sites = mapOf(
             // Site 1: the item's own action row (`Cancel` was vertical).
-            "ItemDetailScreen.kt",
+            "ItemDetailScreen.kt" to 1,
             // Sites 2 and 3: the interview's answer chips, and the `Keep`
             // that escapes the discard prompt.
-            "GrillTakeoverScreen.kt",
+            "GrillTakeoverScreen.kt" to 2,
             // Site 4: `Grill me` + `Promote to ready` — same shape, never
             // sighted failing, fixed with the rest so it cannot start.
-            "TriageScreen.kt",
+            "TriageScreen.kt" to 1,
         )
-        for (file in sites) {
+        for ((file, expected) in sites) {
             val src = repoFile(
                 "client/android/app/src/main/kotlin/net/twinion/hummingbird/$file",
             )
-            assertTrue(
-                "$file must lay its choices out with ChoiceRow (#576)",
-                src.contains("ChoiceRow"),
+            val found = Regex("""ChoiceRow\s*\{""").findAll(src).count()
+            assertEquals(
+                "$file must lay its choices out with ChoiceRow (#576) — " +
+                    "expected $expected call site(s), found $found",
+                expected,
+                found,
             )
         }
     }
