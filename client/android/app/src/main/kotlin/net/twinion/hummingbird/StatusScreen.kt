@@ -175,11 +175,11 @@ fun StatusScreen(
     syncTick: Int = 0,
     onBack: () -> Unit,
     /** `ProofScreen`'s one incidental door onto Settings, carried forward
-     * (#536 review) — #541 still owns *permanent* nav, but a device with
-     * no token needs a way to reach the one screen that can enter one
-     * (`SettingsScreen`'s own token card) between now and then, since
-     * nothing else in the app currently navigates to
-     * [Routes.SETTINGS]. */
+     * (#536 review). [Routes.SETTINGS] has a permanent More-sheet entry
+     * since #541; this link stays as a second, contextual door — a device
+     * with no token reaches the one screen that can enter one
+     * (`SettingsScreen`'s own token card) from the surface that told it
+     * so, this file's own header. */
     onGoToSettings: () -> Unit,
 ) {
     val context = LocalContext.current
