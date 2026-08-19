@@ -99,6 +99,47 @@ at the first newline. Pipe it minified.
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
 
+## The bottom nav and the More sheet (M3, #532)
+
+`MainActivity.kt`'s `NavDestination` is the one route list the app's
+navigation surface generates from — the same "one list, two derived halves"
+rule `client/web/src/shell/nav-bar.ts`'s `ON_THE_BAR` follows, ported rather
+than reinvented. `NavDestination.ON_BAR`/`.OVERFLOW` filter that one enum, so
+a screen added to it lands on the bottom bar or in the "More" sheet by
+construction, never neither. Four screens are on the bar today — Now,
+Triage, Alerts, Status, pinned against the web's own `ON_THE_BAR` set by
+`BottomNavStructuralTest` — and Done and the Ledger (below) are in the
+sheet, M3's one real sink landing its two screens. A bar or sheet tap goes
+through `goToTab`'s `popUpTo`/`saveState`/`launchSingleTop`/`restoreState`,
+the standard bottom-nav idiom: each tab keeps its own back stack across
+switches rather than stacking a fresh copy of Now underneath every visit.
+
+Rules and Settings are *not* on this list yet, on purpose:
+`BottomNavStructuralTest` asserts every top-level screen `Routes` declares
+is on the bar, in the sheet, or on a small, explicitly named exception set
+pointing at #541 — so a screen quietly missing all three fails loudly
+rather than passing because `ON_BAR`/`OVERFLOW` partition whatever
+`NavDestination` happens to contain. #541 is the milestone's acceptance
+slice: it wires Rules' and Settings' reachability, adds the ninth screen
+(`routes`, not yet registered at all), and is expected to shrink that
+exception set to empty.
+
+### The Done and Ledger screens (M3, #532)
+
+`DoneScreen.kt`/`DoneViewModel.kt` and `LedgerScreen.kt`/`LedgerViewModel.kt`
+are M3's one real sink. `MobileTaskHost::doneItems()`/`.ledgerRows(nowMs)`
+hand Kotlin a pre-ordered, pre-decided record set —
+`hummingbird_core::decisions::roster::{order_done, order_ledger,
+ledger_row_state, last_touched_ms}` (ADR-0025) run once Rust-side, never
+per row here — carrying a `MobileLedgerRowState::{Live, Archived{sinceMs}}`
+enum and a `canMarkDone` gate that mirrors the web's `item-actions.ts`
+widened one-click rule. Neither screen re-derives an order or a state; the
+Ledger's one-click mark-done goes through the same `act("complete")` path
+Triage's row checkmark uses, then reloads so the row's own state (and its
+departure from the live set the checkmark gates on) reflects the mutation
+immediately. `done-order.ts`/`ledger-order.ts` on the web are now seam
+re-exports of the same sink, with their existing test suites untouched.
+
 ## The rules screen (M4, #540)
 
 `RulesScreen.kt`/`RulesViewModel.kt` list the rules, toggle one
@@ -135,11 +176,12 @@ detail's own edit mode. The row checkmark goes through the existing
 gated on the row's own `canGrill` fact from the seam, it navigates to the
 standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
 an interview inline, so neither `TriageScreen.kt` nor `TriageViewModel.kt`
-holds any turn, session or draft state of its own. **The route is registered
-and deliberately unreachable** — no bar entry, no More sheet, nothing
-navigates to `Routes.TRIAGE` — because reachability is #532's job, the same
-"registered first, wired later" shape `Routes.RULES` established.
-`TriageScreenStructuralTest` asserts that absence, gates the header-count and
+holds any turn, session or draft state of its own. **The route is reachable
+from the bottom nav bar** (#532, above) — `NavDestination.TRIAGE` with
+`onBar = true`, not an ad-hoc `navigate(Routes.TRIAGE)` call, which the
+"registered first, wired later" shape `Routes.RULES` still holds now
+resolves to: registered here at #531, wired at #532.
+`TriageScreenStructuralTest` asserts that reachability, gates the header-count and
 Grill rules above, and — the same foreground-resume discipline `AlertsScreen`,
 `NowScreen` and `ItemDetailScreen` all carry — asserts a `LifecycleResumeEffect`
 re-reads the queue on every return to the screen, not only on the app-wide

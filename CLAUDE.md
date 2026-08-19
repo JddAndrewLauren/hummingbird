@@ -41,6 +41,7 @@ grepping it.
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |
 | The mobile seam + the Android app (#141, through the frontier-board slice) | `client/ffi-mobile/`, `client/android/` | `ffi-mobile/src/lib.rs`, `android/README.md`, ADR-0025 |
+| The bottom nav + Done/Ledger roster sink (M3/#532) | `client/core/src/decisions/roster.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../{MainActivity,Done,Ledger}{Screen,ViewModel}.kt` | `decisions/roster.rs`, then `android/README.md`'s "The bottom nav" section; ADR-0025 |
 | Item detail, and where a tapped notification lands | `client/core/src/{item_detail.rs,decisions/notification.rs}`, `client/android/.../ItemDetail{Screen,ViewModel}.kt` | `item_detail.rs`, then `decisions/notification.rs`; ADR-0027 |
 | The rules surface (#141/M4) — the sink, both seams, the Compose screen | `client/core/src/decisions/rules/`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Rules{Screen,ViewModel}.kt` | `decisions/rules/mod.rs`, then `backtest.rs`; ADR-0013/0025 |
 | The Settings screen (#141/M4) — bindings, token, sync, dead letters, theme | `client/core/src/decisions/settings.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Settings{Screen,ViewModel}.kt`, `theme/` | `decisions/settings.rs`, then `SettingsViewModel.kt`; ADR-0025 |

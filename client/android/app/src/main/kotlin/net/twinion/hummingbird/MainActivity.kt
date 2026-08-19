@@ -19,7 +19,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -39,6 +43,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import kotlin.random.Random
 import kotlinx.coroutines.delay
@@ -150,26 +155,27 @@ private data class NotificationTap(
     }
 }
 
-/** The seven routes. Strings, because that is what `NavHost` takes; kept in
+/** The nine routes. Strings, because that is what `NavHost` takes; kept in
  * one place so a typo is a compile error at the use site rather than a
  * silently unreachable screen.
  *
- * [RULES], [TRIAGE] and [SETTINGS] are **registered and not yet
- * reachable** — no bar entry, no More sheet, no other screen navigates to
- * any of them (#540/#531/#535, M3/M4), except [SETTINGS]'s one incidental
- * door via `ProofScreen`'s "Manage device token in Settings" link, since
- * token entry/forget moved off that debug surface in this slice. None has
- * a permanent nav entry yet. Reachability is #532's job for Triage and
- * #541's for Rules and Settings, along with the nav form that will carry
- * them; registering the route here first is what lets each screen exist,
- * compile and be gated without inventing a navigation shape this slice has
- * not decided. */
+ * [RULES] and [SETTINGS] are **registered and not yet reachable** — no bar
+ * entry, no More sheet entry, no other screen navigates to either
+ * (#535/#540), except [SETTINGS]'s one incidental door via `ProofScreen`'s
+ * "Manage device token in Settings" link, since token entry/forget moved
+ * off that debug surface in an earlier slice. [TRIAGE] is now reachable
+ * from the bar, and [DONE]/[LEDGER] from the More sheet — both the bottom
+ * nav's own doing (#532, below). Reachability for Rules and Settings is
+ * #541's job, along with `routes` (not yet registered at all — #541 adds
+ * the ninth screen too), the milestone's acceptance slice. */
 private object Routes {
     const val NOW = "now"
     const val STATUS = "status"
     const val ALERTS = "alerts"
     const val RULES = "rules"
     const val TRIAGE = "triage"
+    const val DONE = "done"
+    const val LEDGER = "ledger"
     const val SETTINGS = "settings"
     const val ALERT_DETAIL = "alert/{alertId}"
     const val ITEM_DETAIL = "item/{itemId}"
@@ -184,6 +190,35 @@ private object Routes {
      * words its Back control names (#355 review round 1's own rule, ported
      * from the web's two `backLabel` call sites). */
     fun grill(itemId: String, from: String) = "grill/$itemId/$from"
+}
+
+/** The bottom nav's one route list (#532) — `nav-bar.ts`'s own rule ported:
+ * "a second hand-written list here would silently drop a screen the day one
+ * is added". [ON_BAR] and [OVERFLOW] both filter this one enum, so a
+ * destination added here lands on the bar or in the More sheet by
+ * construction, never neither and never both — `BottomNavStructuralTest`
+ * pins both halves against the web's own `nav-bar.ts` for the same reason
+ * that file's own test reconstructs `SCREENS` from its two halves.
+ *
+ * Four on the bar today (`ON_THE_BAR` on the web: Now, Triage, Alerts,
+ * Status — "the surfaces you *act* on, in the order the day runs",
+ * `nav-bar.ts`'s own doc), plus Done and the Ledger in the sheet — M3's one
+ * real sink (#532) landing its two screens. Rules and Settings are not
+ * here yet: their reachability is #541's job, the milestone's acceptance
+ * slice that completes all nine. */
+private enum class NavDestination(val route: String, val label: String, val onBar: Boolean) {
+    NOW(Routes.NOW, "Now", onBar = true),
+    TRIAGE(Routes.TRIAGE, "Triage", onBar = true),
+    ALERTS(Routes.ALERTS, "Alerts", onBar = true),
+    STATUS(Routes.STATUS, "Status", onBar = true),
+    DONE(Routes.DONE, "Done", onBar = false),
+    LEDGER(Routes.LEDGER, "Ledger", onBar = false),
+    ;
+
+    companion object {
+        val ON_BAR: List<NavDestination> = entries.filter { it.onBar }
+        val OVERFLOW: List<NavDestination> = entries.filterNot { it.onBar }
+    }
 }
 
 // The always-composed content root. The #141 sync cadence (one `user` cycle
@@ -343,93 +378,236 @@ private fun AppRoot(
         statusLine = "No device token — paste one to sync."
     }
 
-    NavHost(navController = navController, startDestination = Routes.NOW) {
-        composable(Routes.NOW) {
-            NowScreen(
-                onShowStatus = { navController.navigate(Routes.STATUS) },
-                onShowAlerts = { navController.navigate(Routes.ALERTS) },
-                // A plain navigate, deliberately not
-                // `openItemFromNotification`: that helper's `popUpTo`
-                // exists because a *restored* back stack may already hold
-                // debris beneath a cold tap (#518). Here Now is the live
-                // destination being navigated from, so it is already
-                // directly beneath and popping to it would be a no-op
-                // dressed as policy.
-                onOpenItem = { itemId -> navController.navigate(Routes.itemDetail(itemId)) },
-                syncTick = syncTick,
+    // The bottom nav's own state (#532): which sheet, if any, is open, and
+    // the live route — read from the back stack rather than held as a
+    // second copy, so a destination reached any other way (a notification
+    // deep link, `onShowStatus`) still lights up the right tab.
+    var moreSheetOpen by remember { mutableStateOf(false) }
+    val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+
+    // A bar or More-sheet tap: `popUpTo` + `saveState` + `restoreState` is
+    // the standard bottom-nav idiom — each tab keeps its own back stack
+    // across switches instead of stacking a new copy of Now underneath
+    // every visit, and `launchSingleTop` covers a re-tap of the tab already
+    // open. Deliberately not reused by `onShowStatus`/`onShowAlerts` below,
+    // which predate the bar and push a plain, poppable destination — two
+    // gestures reaching the same screens, unified by this issue only where
+    // it had to touch them (the bar and the sheet themselves).
+    fun goToTab(route: String) {
+        moreSheetOpen = false
+        navController.navigate(route) {
+            popUpTo(Routes.NOW) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
+    Scaffold(
+        bottomBar = {
+            // Hidden on a detail/takeover route (item, alert, Grill) —
+            // exactly the routes with no [NavDestination] entry — the same
+            // "not every screen carries the bar" the web's shell holds by
+            // mounting exactly one nav form. Rules and Settings stay
+            // reachable only by their existing incidental doors until #541.
+            if (NavDestination.entries.any { it.route == currentRoute }) {
+                BottomNavBar(
+                    currentRoute = currentRoute,
+                    onNavigate = ::goToTab,
+                    onMore = { moreSheetOpen = true },
+                )
+            }
+        },
+    ) { padding ->
+        NavHost(
+            navController = navController,
+            startDestination = Routes.NOW,
+            modifier = Modifier.padding(padding),
+        ) {
+            composable(Routes.NOW) {
+                NowScreen(
+                    onShowStatus = { navController.navigate(Routes.STATUS) },
+                    onShowAlerts = { navController.navigate(Routes.ALERTS) },
+                    // A plain navigate, deliberately not
+                    // `openItemFromNotification`: that helper's `popUpTo`
+                    // exists because a *restored* back stack may already hold
+                    // debris beneath a cold tap (#518). Here Now is the live
+                    // destination being navigated from, so it is already
+                    // directly beneath and popping to it would be a no-op
+                    // dressed as policy.
+                    onOpenItem = { itemId -> navController.navigate(Routes.itemDetail(itemId)) },
+                    syncTick = syncTick,
+                )
+            }
+            composable(Routes.STATUS) {
+                ProofScreen(
+                    facts = facts,
+                    statusLine = statusLine,
+                    syncing = syncing,
+                    needsToken = needsToken,
+                    onBack = { navController.popBackStack() },
+                    onSync = { scope.launch { sync("user") } },
+                    onGoToSettings = { navController.navigate(Routes.SETTINGS) },
+                )
+            }
+            composable(Routes.SETTINGS) {
+                SettingsScreen(
+                    syncTick = syncTick,
+                    needsToken = needsToken,
+                    onSaveToken = { token -> scope.launch { saveToken(token) } },
+                    onForgetToken = { scope.launch { forgetToken() } },
+                    themePreference = themePreference,
+                    onThemePreference = onThemePreference,
+                    // #535 review: the real cadence's own state, not a
+                    // screen-local copy — see the `lastSyncOutcomeKind`/
+                    // `lastSyncAtMs` note above `sync()`.
+                    lastSyncOutcomeKind = lastSyncOutcomeKind,
+                    lastSyncAtMs = lastSyncAtMs,
+                    onSync = { scope.launch { sync("user") } },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(Routes.ALERTS) {
+                AlertsScreen(
+                    syncTick = syncTick,
+                    onBack = { navController.popBackStack() },
+                    onOpenAlert = { alertId ->
+                        navController.navigate(Routes.alertDetail(alertId))
+                    },
+                )
+            }
+            composable(Routes.RULES) {
+                RulesScreen(
+                    syncTick = syncTick,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(Routes.TRIAGE) {
+                TriageScreen(
+                    syncTick = syncTick,
+                    onBack = { navController.popBackStack() },
+                    onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "triage")) },
+                )
+            }
+            composable(Routes.DONE) {
+                DoneScreen(
+                    syncTick = syncTick,
+                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                )
+            }
+            composable(Routes.LEDGER) {
+                LedgerScreen(
+                    syncTick = syncTick,
+                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                )
+            }
+            composable(Routes.ITEM_DETAIL) { entry ->
+                ItemDetailScreen(
+                    itemId = entry.arguments?.getString("itemId").orEmpty(),
+                    syncTick = syncTick,
+                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                    onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
+                )
+            }
+            composable(Routes.GRILL) { entry ->
+                GrillTakeoverScreen(
+                    itemId = entry.arguments?.getString("itemId").orEmpty(),
+                    backLabel = if (entry.arguments?.getString("from") == "triage") "Back to Triage" else "Back to item",
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(Routes.ALERT_DETAIL) { entry ->
+                AlertDetailScreen(
+                    alertId = entry.arguments?.getString("alertId").orEmpty(),
+                    syncTick = syncTick,
+                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                )
+            }
+        }
+    }
+
+    if (moreSheetOpen) {
+        MoreSheet(
+            currentRoute = currentRoute,
+            onNavigate = ::goToTab,
+            onDismiss = { moreSheetOpen = false },
+        )
+    }
+}
+
+/** The four bar destinations plus a fifth "More" control — `nav-bar.ts`'s
+ * phone form, ported. `NavigationBarItem` takes no accessible-name
+ * parameter beyond its own `label`, which is what Compose announces for it,
+ * the same "one visible name is the accessible one" rule the web's own
+ * `aria-label` follows. No icon set exists on Android yet (ADR-0026 hand-
+ * ports design tokens into the Compose theme, not a glyph library), so each
+ * item carries its label only — the same plain-text-button idiom every
+ * other screen in this app already uses instead of icons.
+ *
+ * "More" reads as selected whenever the open screen is one it hides
+ * (`NAV_BAR_OVERFLOW` on the web) — the identical "you are nowhere"
+ * correction `nav-bar.ts`'s own `isOverflowScreen` documents. */
+@Composable
+private fun BottomNavBar(
+    currentRoute: String?,
+    onNavigate: (String) -> Unit,
+    onMore: () -> Unit,
+) {
+    val overflowActive = NavDestination.OVERFLOW.any { it.route == currentRoute }
+    NavigationBar {
+        for (destination in NavDestination.ON_BAR) {
+            NavigationBarItem(
+                selected = destination.route == currentRoute,
+                onClick = { onNavigate(destination.route) },
+                icon = {},
+                label = { Text(destination.label) },
+                alwaysShowLabel = true,
             )
         }
-        composable(Routes.STATUS) {
-            ProofScreen(
-                facts = facts,
-                statusLine = statusLine,
-                syncing = syncing,
-                needsToken = needsToken,
-                onBack = { navController.popBackStack() },
-                onSync = { scope.launch { sync("user") } },
-                onGoToSettings = { navController.navigate(Routes.SETTINGS) },
+        NavigationBarItem(
+            selected = overflowActive,
+            onClick = onMore,
+            icon = {},
+            label = { Text("More") },
+            alwaysShowLabel = true,
+        )
+    }
+}
+
+/** The sheet the bar's "More" control opens: the destinations the bar
+ * cannot hold — Done and the Ledger today (#532), the same "one tap
+ * further" trade `nav-bar.ts`'s own header names. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MoreSheet(
+    currentRoute: String?,
+    onNavigate: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                "More",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.padding(bottom = 12.dp),
             )
-        }
-        composable(Routes.SETTINGS) {
-            SettingsScreen(
-                syncTick = syncTick,
-                needsToken = needsToken,
-                onSaveToken = { token -> scope.launch { saveToken(token) } },
-                onForgetToken = { scope.launch { forgetToken() } },
-                themePreference = themePreference,
-                onThemePreference = onThemePreference,
-                // #535 review: the real cadence's own state, not a
-                // screen-local copy — see the `lastSyncOutcomeKind`/
-                // `lastSyncAtMs` note above `sync()`.
-                lastSyncOutcomeKind = lastSyncOutcomeKind,
-                lastSyncAtMs = lastSyncAtMs,
-                onSync = { scope.launch { sync("user") } },
-                onBack = { navController.popBackStack() },
-            )
-        }
-        composable(Routes.ALERTS) {
-            AlertsScreen(
-                syncTick = syncTick,
-                onBack = { navController.popBackStack() },
-                onOpenAlert = { alertId ->
-                    navController.navigate(Routes.alertDetail(alertId))
-                },
-            )
-        }
-        composable(Routes.RULES) {
-            RulesScreen(
-                syncTick = syncTick,
-                onBack = { navController.popBackStack() },
-            )
-        }
-        composable(Routes.TRIAGE) {
-            TriageScreen(
-                syncTick = syncTick,
-                onBack = { navController.popBackStack() },
-                onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "triage")) },
-            )
-        }
-        composable(Routes.ITEM_DETAIL) { entry ->
-            ItemDetailScreen(
-                itemId = entry.arguments?.getString("itemId").orEmpty(),
-                syncTick = syncTick,
-                onBack = { navController.popBackStackOrHome(Routes.NOW) },
-                onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
-            )
-        }
-        composable(Routes.GRILL) { entry ->
-            GrillTakeoverScreen(
-                itemId = entry.arguments?.getString("itemId").orEmpty(),
-                backLabel = if (entry.arguments?.getString("from") == "triage") "Back to Triage" else "Back to item",
-                onBack = { navController.popBackStack() },
-            )
-        }
-        composable(Routes.ALERT_DETAIL) { entry ->
-            AlertDetailScreen(
-                alertId = entry.arguments?.getString("alertId").orEmpty(),
-                syncTick = syncTick,
-                onBack = { navController.popBackStackOrHome(Routes.NOW) },
-            )
+            for (destination in NavDestination.OVERFLOW) {
+                TextButton(onClick = { onNavigate(destination.route) }) {
+                    Text(
+                        destination.label,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (destination.route == currentRoute) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                }
+            }
         }
     }
 }
