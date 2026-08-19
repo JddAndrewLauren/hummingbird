@@ -48,6 +48,8 @@ class NowViewModelTest {
         blocked = emptyList(),
         contexts = emptyList(),
         liveColumnKeys = liveColumnKeys,
+        shownCount = ids.size.toUInt(),
+        totalCount = ids.size.toUInt(),
     )
 
     private fun columnIds(board: NowBoardRecord): List<String> =
@@ -287,6 +289,8 @@ class NowViewModelTest {
             ),
             contexts = emptyList(),
             liveColumnKeys = emptyList(),
+            shownCount = 0u,
+            totalCount = 0u,
         )
         val vm = viewModel(fetchBoardFn = { _, _, _ -> blockedBoard })
 

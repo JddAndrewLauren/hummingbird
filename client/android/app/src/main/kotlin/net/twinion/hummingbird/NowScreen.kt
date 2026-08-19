@@ -234,6 +234,7 @@ fun NowScreen(
     val board by viewModel.board.collectAsState()
     val axis by viewModel.axis.collectAsState()
     val facets by viewModel.facets.collectAsState()
+    val filtersOpen by viewModel.filtersOpen.collectAsState()
     val collapsed by viewModel.collapsed.collectAsState()
     val expanded by viewModel.expanded.collectAsState()
     val loading by viewModel.loading.collectAsState()
@@ -300,24 +301,53 @@ fun NowScreen(
 
             val currentBoard = board
 
+            // "N of M shown" — the seam's own pre/post-facet counts
+            // ([uniffi.hummingbird_ffi_mobile.NowBoardRecord.shownCount]/
+            // [.totalCount], never re-derived here), spoken only while a
+            // facet actually narrows the board: an unfiltered "12 of 12
+            // shown" is reassurance, not information.
+            val shownLine = currentBoard
+                ?.takeIf { facets.count() > 0 }
+                ?.let { "${it.shownCount} of ${it.totalCount} shown" }
+
             AxisRow(
                 axis = axis,
                 onPick = { next -> scope.launch { viewModel.setAxis(next, nowDeadlineShaped()) } },
+                filtersOpen = filtersOpen,
+                facetCount = facets.count(),
+                // Beside the Filter chip only while the panel is shut —
+                // open, the panel's own footer carries it, and saying it
+                // twice would claim two different facts can disagree.
+                shownLine = shownLine.takeIf { !filtersOpen },
+                onToggleFilters = { viewModel.toggleFiltersOpen() },
             )
 
-            FacetFilterRow(
-                facets = facets,
-                // The live vocabulary the axis's own board carries
-                // (`contexts_of` over the pre-facet list, `board.contexts`
-                // — never a hardcoded suggested list, which would offer a
-                // chip for a context nothing on the board has, or omit one
-                // an item actually carries).
-                contexts = currentBoard?.contexts ?: emptyList(),
-                onToggle = { facet, value ->
-                    scope.launch { viewModel.toggleFacet(facet, value, nowDeadlineShaped()) }
-                },
-                onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
-            )
+            // Behind the disclosure — filtering is the occasional gesture,
+            // so only the axis switch earns permanent space
+            // (`FrontierColumns.tsx`'s own split, ported).
+            if (filtersOpen) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        FacetFilterRow(
+                            facets = facets,
+                            // The live vocabulary the axis's own board carries
+                            // (`contexts_of` over the pre-facet list, `board.contexts`
+                            // — never a hardcoded suggested list, which would offer a
+                            // chip for a context nothing on the board has, or omit one
+                            // an item actually carries).
+                            contexts = currentBoard?.contexts ?: emptyList(),
+                            shownLine = shownLine,
+                            onToggle = { facet, value ->
+                                scope.launch { viewModel.toggleFacet(facet, value, nowDeadlineShaped()) }
+                            },
+                            onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
+                        )
+                    }
+                }
+            }
 
             // One LazyColumn for the whole rest of the screen — the queue
             // (whichever of its three states applies) and, appended after
@@ -432,17 +462,55 @@ fun NowScreen(
     }
 }
 
-/** The axis switch — every grouping axis, in [FRONTIER_AXES]'s order. Never
- * decides which axis groups what; picking one only tells [NowViewModel]
- * which already-decided board to ask for next. */
+/** The axis switch — every grouping axis, in [FRONTIER_AXES]'s order —
+ * plus the facet panel's one piece of permanent chrome: the Filter
+ * disclosure chip, carrying the active-facet count in its label and the
+ * "N of M shown" meta line beside it while shut (`FrontierColumns.tsx`'s
+ * own row, ported). A `FlowRow`, not a `Row`: five chips and a meta line
+ * are wider than the Fold's cover display, and clipping the disclosure
+ * would hide the only door to an active filter. Never decides which axis
+ * groups what; picking one only tells [NowViewModel] which
+ * already-decided board to ask for next. */
 @Composable
-private fun AxisRow(axis: MobileFrontierAxis, onPick: (MobileFrontierAxis) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun AxisRow(
+    axis: MobileFrontierAxis,
+    onPick: (MobileFrontierAxis) -> Unit,
+    filtersOpen: Boolean,
+    facetCount: Int,
+    shownLine: String?,
+    onToggleFilters: () -> Unit,
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
         for (candidate in FRONTIER_AXES) {
             FilterChip(
                 selected = axis == candidate,
                 onClick = { onPick(candidate) },
                 label = { Text(AXIS_LABEL[candidate] ?: candidate.name) },
+            )
+        }
+        FilterChip(
+            selected = filtersOpen,
+            onClick = onToggleFilters,
+            leadingIcon = {
+                Icon(
+                    painterResource(R.drawable.ic_search),
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+            },
+            // The middle dot is punctuation, not an icon (design README) —
+            // the count rides in the label so an active filter stays
+            // visible while the panel is shut.
+            label = { Text(if (facetCount > 0) "Filter · $facetCount" else "Filter") },
+        )
+        shownLine?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -460,6 +528,7 @@ private fun AxisRow(axis: MobileFrontierAxis, onPick: (MobileFrontierAxis) -> Un
 private fun FacetFilterRow(
     facets: FrontierFacetSelection,
     contexts: List<String>,
+    shownLine: String?,
     onToggle: (FrontierFacet, String) -> Unit,
     onClear: () -> Unit,
 ) {
@@ -469,7 +538,18 @@ private fun FacetFilterRow(
         FacetChipGroup("Energy", FrontierFacet.ENERGY, ENERGY_VALUES, facets.energy, onToggle)
         FacetChipGroup("Urgency", FrontierFacet.URGENCY, URGENCY_VALUES, facets.urgency, onToggle)
         if (facets.count() > 0) {
-            TextButton(onClick = onClear) { Text("Clear filters") }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    shownLine ?: "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onClear) { Text("Clear filters") }
+            }
         }
     }
 }

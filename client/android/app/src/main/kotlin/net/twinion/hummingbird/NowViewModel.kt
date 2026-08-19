@@ -121,6 +121,19 @@ class NowViewModel(
     private val _facets = MutableStateFlow(FrontierFacetSelection())
     val facets: StateFlow<FrontierFacetSelection> = _facets.asStateFlow()
 
+    /** The facet panel's disclosure — shut by default, filtering is the
+     * occasional gesture (`FrontierColumns.tsx`'s own reasoning: only the
+     * axis switch earns permanent space). Ephemeral like [facets] itself
+     * and never persisted, but Activity-scoped here rather than a
+     * Composable `remember`, the same fold/unfold reasoning [factory]
+     * states for the whole class. */
+    private val _filtersOpen = MutableStateFlow(false)
+    val filtersOpen: StateFlow<Boolean> = _filtersOpen.asStateFlow()
+
+    fun toggleFiltersOpen() {
+        _filtersOpen.value = !_filtersOpen.value
+    }
+
     private val _collapsed = MutableStateFlow<Set<String>>(emptySet())
     val collapsed: StateFlow<Set<String>> = _collapsed.asStateFlow()
 
