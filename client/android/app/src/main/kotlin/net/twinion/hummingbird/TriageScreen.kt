@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
+import net.twinion.hummingbird.ui.forms.PriorityRow
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.TriageItemRecord
@@ -231,6 +232,15 @@ private fun TriageRow(
                     options = formMeta.sizes,
                     selected = draft.size.ifEmpty { null },
                     onSelect = { onDraftChange(draft.copy(size = it.orEmpty())) },
+                )
+                // #565's review: `TriageDraft.priority` seeds from the row
+                // and `toEdit` sends it, so without this control the field
+                // was carried through every promote as state nothing could
+                // reach. The same shared component the capture box renders,
+                // for the same reason `LevelSlider` is shared.
+                PriorityRow(
+                    selected = draft.priority,
+                    onSelect = { onDraftChange(draft.copy(priority = it)) },
                 )
                 ContextField(
                     value = draft.context,

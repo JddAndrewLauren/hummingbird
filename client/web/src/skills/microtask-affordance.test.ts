@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StepDTO } from "../store/protocol";
-import { liveUndoneSteps, microtaskAffordance } from "./microtask-affordance";
+import { microtaskAffordance } from "./microtask-affordance";
 
 function step(overrides: Partial<StepDTO> = {}): StepDTO {
   return {
@@ -14,23 +14,6 @@ function step(overrides: Partial<StepDTO> = {}): StepDTO {
     ...overrides,
   };
 }
-
-describe("liveUndoneSteps", () => {
-  it("is live and not done — both predicates, in that order", () => {
-    const steps = [
-      step({ id: "a" }),
-      step({ id: "b", done: true }),
-      step({ id: "c", deletedAt: 1_000 }),
-      step({ id: "d", done: true, deletedAt: 1_000 }),
-      step({ id: "e" }),
-    ];
-    expect(liveUndoneSteps(steps).map((s) => s.id)).toEqual(["a", "e"]);
-  });
-
-  it("is empty for no steps at all", () => {
-    expect(liveUndoneSteps([])).toEqual([]);
-  });
-});
 
 describe("microtaskAffordance", () => {
   it("an item with no steps offers break", () => {

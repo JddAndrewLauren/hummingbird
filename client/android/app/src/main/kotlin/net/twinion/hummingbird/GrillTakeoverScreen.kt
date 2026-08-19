@@ -92,8 +92,15 @@ fun GrillTakeoverScreen(
                     onKeep = { confirmingDiscard = false },
                     onDiscard = {
                         confirmingDiscard = false
-                        viewModel.discard(itemId, System.currentTimeMillis())
-                        onBack()
+                        // Pop only once the delete has landed (#565
+                        // review): the pop clears this entry's
+                        // `ViewModelStore`, and a still-suspended discard
+                        // would be cancelled with it — see
+                        // `GrillTakeoverViewModel.discard`.
+                        scope.launch {
+                            viewModel.discard(itemId, System.currentTimeMillis())
+                            onBack()
+                        }
                     },
                 )
             }

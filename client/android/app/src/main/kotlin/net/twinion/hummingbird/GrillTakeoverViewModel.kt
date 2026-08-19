@@ -52,11 +52,21 @@ sealed interface GrillTakeoverState {
  * the Triage row) render against.
  *
  * **The draft auto-saves after every completed round**, never only on Back
- * — [ask] calls [saveDraftFn] the moment a fresh [MobileGrillTurnState
- * .Question] or `.Proposal` lands, which is what makes a backgrounded app
- * lose nothing (#539's own AC): the save already landed durably before the
+ * — [answer] calls [saveDraftFn] the moment the round is complete, BEFORE
+ * the next request goes out, which is what makes a backgrounded app lose
+ * nothing (#539's own AC): the save already landed durably before the
  * process could be killed, not queued behind a lifecycle callback that
  * might not run.
+ *
+ * **Before, not after the answer comes back** (#565 review). Saving only
+ * once a fresh `Question`/`Proposal` landed made durability depend on the
+ * network: a decline, a hang, or a process death while `Asking` lost the
+ * round the human had already typed, and re-opening resumed an older
+ * transcript. The web saves on every change to its `turns`
+ * (`useGrillTakeoverWiring.ts`'s continuous-save effect), which is the
+ * contract this class states it follows. Nothing else here mutates `turns`
+ * — `keepGrilling`/`retry`/`open` all re-ask with a list that is already
+ * durable — so this one call site covers every round there is.
  */
 class GrillTakeoverViewModel(
     private val itemDetailFn: suspend (itemId: String, nowMs: Long) -> ItemDetailRecord?,
@@ -133,28 +143,24 @@ class GrillTakeoverViewModel(
             grillTurn(itemId, turns).collect { turn ->
                 val current = _state.value as? GrillTakeoverState.Ready ?: return@collect
                 _state.value = current.copy(turn = turn, turns = turns)
-                // Auto-save (#539's AC): a completed round is one that
-                // landed a Question or a Proposal — an `Asking`/`Declined`
-                // phase has nothing new worth persisting, and a completed
-                // round with zero turns (a fresh, never-answered session)
-                // is not worth resuming either, the identical rule
-                // `useGrillTakeoverWiring.ts` states for its own continuous
-                // save.
-                if (turns.isNotEmpty() &&
-                    (turn is MobileGrillTurnState.Question || turn is MobileGrillTurnState.Proposal)
-                ) {
-                    saveDraftFn(itemId, turns, System.currentTimeMillis())
-                }
             }
         }
     }
 
-    /** One typed answer to the current question — appends the completed
-     * round and re-asks with the whole conversation threaded. */
+    /** One typed answer to the current question — persists the completed
+     * round, then re-asks with the whole conversation threaded.
+     *
+     * The save runs in [viewModelScope] rather than inside [ask]'s own
+     * [askJob], which the very next gesture cancels: a round already
+     * answered must not lose its persistence to the request that follows
+     * it. A never-answered session (`turns` empty here is impossible — this
+     * appends one) still mints no draft, the rule
+     * `useGrillTakeoverWiring.ts` states for its own save. */
     fun answer(itemId: String, text: String) {
         val current = _state.value as? GrillTakeoverState.Ready ?: return
         val question = current.turn as? MobileGrillTurnState.Question ?: return
         val turns = current.turns + MobileGrillTurn(question = question.question, answer = text)
+        viewModelScope.launch { saveDraftFn(itemId, turns, System.currentTimeMillis()) }
         ask(itemId, turns)
     }
 
@@ -209,9 +215,16 @@ class GrillTakeoverViewModel(
     }
 
     /** #356's explicit, confirmed "Discard" gesture — the caller confirms
-     * with the human first; this only carries it out. */
-    fun discard(itemId: String, nowMs: Long) {
-        viewModelScope.launch { discardDraftFn(itemId, nowMs) }
+     * with the human first; this only carries it out.
+     *
+     * `suspend`, not a fire-and-forget `launch` (#565 review): this
+     * `ViewModel` is scoped to the takeover's own `NavBackStackEntry`, so
+     * popping that entry clears the store and cancels [viewModelScope]. A
+     * caller that popped immediately could cancel the delete mid-flight and
+     * leave the supposedly discarded draft resumable — so the navigation
+     * waits on this instead. */
+    suspend fun discard(itemId: String, nowMs: Long) {
+        discardDraftFn(itemId, nowMs)
     }
 
     companion object {

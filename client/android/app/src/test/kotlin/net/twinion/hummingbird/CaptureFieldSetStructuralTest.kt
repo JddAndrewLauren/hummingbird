@@ -135,7 +135,9 @@ class CaptureFieldSetStructuralTest {
     @Test
     fun `the shared form components live under ui-forms, not inline in the capture screen`() {
         val captureActivitySrc = captureFieldSrcByName.getValue("CaptureActivity.kt")
-        for (component in listOf("LevelSlider", "ContextField", "CaptureDateField")) {
+        // `PriorityRow` joined them at #565's review, when the Triage
+        // editor turned out to seed a priority it had no control for.
+        for (component in listOf("LevelSlider", "ContextField", "CaptureDateField", "PriorityRow")) {
             assertTrue(
                 "expected CaptureActivity.kt to import the shared $component rather than " +
                     "defining its own",
@@ -189,11 +191,11 @@ class CaptureFieldSetStructuralTest {
      * `NowScreenStructuralTest` does for the action buttons. */
     @Test
     fun `the priority chips wrap rather than clipping at a phone width`() {
-        val captureActivitySrc = captureFieldSrcByName.getValue("CaptureActivity.kt")
-        val row = Regex("""private fun PriorityRow\([\s\S]*?\n}""")
-            .find(captureActivitySrc)
+        val priorityRowSrc = captureFieldSrcByName.getValue("ui/forms/PriorityRow.kt")
+        val row = Regex("""fun PriorityRow\([\s\S]*?\n}""")
+            .find(priorityRowSrc)
             ?.value
-            ?: error("could not locate PriorityRow in CaptureActivity.kt")
+            ?: error("could not locate PriorityRow in ui/forms/PriorityRow.kt")
         assertTrue(
             "PriorityRow's chips must sit in a FlowRow, not a fixed Row",
             row.contains("FlowRow("),

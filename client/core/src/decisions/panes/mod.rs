@@ -1,6 +1,6 @@
 //! The standing-question panes' decision half (#533/M4, ADR-0025) — the
-//! pane shell contract, the cross-pane sort, the zone bridge, and one real
-//! pane (waste).
+//! pane shell contract, the cross-pane sort, the zone bridge, and all eight
+//! real panes.
 //!
 //! # Why this family exists
 //!
@@ -13,29 +13,31 @@
 //! them, and the core decides — including deciding what an unresolvable
 //! zone means.
 //!
-//! # Scope, stated so the next slice does not have to guess
+//! # Scope, as it stands after #534
 //!
-//! This slice sinks **waste alone**. [`zone_queries`] and [`rank_panes`]
-//! are the surface-level pair the whole family will be driven through, and
-//! they ship now — with a one-question list — so #534 grows [`SUNK`] rather
-//! than the surface API.
+//! #533's probe sank **waste alone**, shipping [`zone_queries`] and
+//! [`rank_panes`] with a one-question list so the slice that followed would
+//! grow [`SUNK`] rather than the surface API. **#534 did exactly that**:
+//! it sank the remaining seven — the status four
+//! (kimi/github/uptime/reachability) and the now three
+//! (race/weekend/vacation) — leaving the surface pair unchanged, which is
+//! the evidence that the probe's shape held.
 //!
-//! **That is true of the surface pair and not yet of the facts.** A
+//! **The facts still cross per question, not as one union.** A
 //! [`RankedPaneRecord`] carries identity and [`PaneAnswerCore`]; a
 //! question's *facts* cross on their own per-question seam export
-//! (`waste_facts_json`, and `waste::waste_facts` behind it), so pane two
-//! adds a seam function rather than a row. Whether those collapse into one
-//! tagged facts union hung off the ranked record is **#534's call, with two
-//! real arms to shape it from** — shaping a union from a single arm is the
-//! thing this probe is meant to avoid, not the thing it should do. What is
-//! already settled is the part the acceptance criterion names: facts cross
-//! as structured data and gaps cross as *kinds*, never as sentences.
+//! (`waste_facts_json`, and `waste::waste_facts` behind it), so each pane
+//! adds a seam function rather than a row. #534 settled the question #533
+//! left open and kept it that way: no caller ever needs a pane's full facts
+//! and its rank in one call — the shell reads [`PaneAnswerCore`] to rank,
+//! and a pane's facts only inside its own expanded render — so the union
+//! would be a type nobody was blocked on (ADR-0025's #534 amendment). What
+//! the acceptance criterion names is what holds: facts cross as structured
+//! data and gaps cross as *kinds*, never as sentences.
 //!
-//! The other seven questions are still answered entirely in the web's own
-//! `*-pane/` modules and are simply not in [`SUNK`] yet; a surface's ranked
-//! region is the union of both, which is why the web
-//! keeps ranking per-question rather than hoisting to [`rank_panes`] in
-//! this slice.
+//! The web still ranks per question rather than hoisting to [`rank_panes`]
+//! — that is a rendering-side move, not a decision, and no slice has asked
+//! for it yet.
 //!
 //! Everything here is pure and clock-free: `now` arrives on
 //! [`inputs::PaneInputs`], exactly as the module header in

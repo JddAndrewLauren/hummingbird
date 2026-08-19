@@ -110,6 +110,16 @@ fun ItemDetailScreen(
         if (syncTick > 0) reload()
     }
 
+    // A microtask run's own cycle (#565 review). It drives the core
+    // directly, so `syncTick` above never moves for it and the new steps —
+    // and the affordance they change — would wait for the 60-second
+    // cadence tick. `MicrotaskViewModel.syncedTick` is that run's
+    // completion, published only after its sync returned.
+    val microtaskSyncedTick by microtaskViewModel.syncedTick.collectAsState()
+    LaunchedEffect(microtaskSyncedTick) {
+        if (microtaskSyncedTick > 0) reload()
+    }
+
     // Only while there is something to lose. An idle Back is never fought.
     BackHandler(enabled = draft != null && viewModel.isDirty) {
         confirmingDiscard = true

@@ -9,23 +9,16 @@
 // gesture is legal before the tap and offers only that one — the seam's
 // decline stays a backstop for races and non-client callers, and #307's
 // body says not to string-match its prose to pick an affordance.
+//
+// `liveUndoneSteps` used to sit here too. #539 took its last caller away —
+// `grill-review.ts`'s predicates read the full step list through the seam
+// now — leaving an exported, tested TS copy of a rule the core already owns
+// (`decisions::skills::live_undone_steps`), which is exactly what ADR-0025
+// says not to keep. Deleted at that review rather than left as a helper
+// waiting for a caller to re-copy the rule from.
 
 import { microtaskAffordanceFromCore } from "../decisions/seam";
 import type { StepDTO } from "../store/protocol";
-
-/**
- * The steps that still have a plan left in them — live (not soft-deleted)
- * and not done. Soft-deleted rows are history, and a `done` step is
- * *record*: neither is something a continuation would clobber.
- *
- * Kept as plain TS (not sunk): it is a one-line filter with no client
- * disagreement possible, and `grill-review.ts`'s own predicates now read
- * the full step list directly through the seam rather than through this
- * helper.
- */
-export function liveUndoneSteps(steps: StepDTO[]): StepDTO[] {
-  return steps.filter((step) => step.deletedAt === null && !step.done);
-}
 
 export type MicrotaskAffordance =
   | { kind: "break" }

@@ -141,6 +141,13 @@ class TriageScreenStructuralTest {
         assertTrue(screenSrc.contains("LevelSlider("))
         assertTrue(screenSrc.contains("ContextField("))
         assertTrue(screenSrc.contains("CaptureDateField("))
+        // #565's review: `TriageDraft.priority` seeds from the row and
+        // `toEdit` sends it, so a missing control made it unreachable
+        // state rather than an omitted field.
+        assertTrue(
+            "the editor must offer the priority control its draft already carries",
+            screenSrc.contains("PriorityRow("),
+        )
         // Every vocabulary word rendered comes from the seam's own door —
         // never a Kotlin literal list of size/energy words.
         assertTrue(

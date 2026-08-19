@@ -140,6 +140,29 @@ class GrillTakeoverViewModelTest {
         assertEquals(listOf("i" to expectedTurns), recorder.savedDrafts)
     }
 
+    /** #565's review: the save must not wait on the answer coming back. A
+     * decline (or a hang, or a process death while `Asking`) leaves the
+     * round the human already typed, and saving only once a fresh
+     * `Question`/`Proposal` landed lost it — reopening then resumed an
+     * older transcript. */
+    @Test
+    fun `a round whose request declines still persists the answer`() = runTest {
+        val recorder = Recorder()
+        val q1 = question("Which airport?")
+        val vm = viewModel(
+            recorder,
+            grillTurnStates = { turns ->
+                if (turns.isEmpty()) flowOf(MobileGrillTurnState.Question(emptyList(), q1, null, null))
+                else flowOf(MobileGrillTurnState.Declined(emptyList(), "no runner", null, null, true))
+            },
+        )
+        vm.open("i", 1_000)
+
+        vm.answer("i", "SEA")
+
+        assertEquals(listOf("i" to listOf(MobileGrillTurn(q1, "SEA"))), recorder.savedDrafts)
+    }
+
     /** No round ever answered yet (a fresh, just-opened session) must not
      * mint a resumable draft — the identical rule the web's continuous-save
      * effect states for itself. */

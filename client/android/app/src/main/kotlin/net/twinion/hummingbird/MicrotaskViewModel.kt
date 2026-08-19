@@ -24,7 +24,8 @@ import uniffi.hummingbird_ffi_mobile.declinedBackendFallback
 
 /** The microtask affordance's own wiring (#273, landed on the phone at
  * #539): tap, stream, then ask for one sync cycle so the steps arrive
- * through the normal read path — `useMicrotaskWiring.ts`'s own contract.
+ * through the normal read path — `useMicrotaskWiring.ts`'s own contract,
+ * with [syncedTick] telling the mount that cycle has finished.
  *
  * **This screen decides nothing about eligibility.** [ItemDetailScreen]
  * reads `ItemDetailRecord.microtaskAffordance` — the core's applied result
@@ -84,6 +85,18 @@ class MicrotaskViewModel(
         declinedFallbackFn(run, selection, registryIds)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /** Increments once per completed post-run sync, and is how the mount
+     * knows to re-read the item (#565 review). [syncFn] drives the core
+     * directly rather than through `AppRoot`'s own `sync()`, so `syncTick`
+     * — every other screen's re-read signal — never moves for a microtask
+     * run, and the new steps sat invisible until the 60-second cadence tick
+     * or a navigation. A tick of its own rather than an effect on
+     * [MobileSkillRunState.Done]: `Done` is published *before* [syncFn]
+     * runs, so a reader keyed on it would re-read the mirror the run has
+     * not landed in yet. */
+    private val _syncedTick = MutableStateFlow(0)
+    val syncedTick: StateFlow<Int> = _syncedTick.asStateFlow()
+
     /** The in-flight run's lock — a duplicate tap while one is streaming is
      * a no-op, the same rule the core's own reducer applies (belt AND
      * braces: the reducer alone cannot stop a second network request from
@@ -126,7 +139,10 @@ class MicrotaskViewModel(
                 // on a schedule. The same "ask for one cycle, never poll"
                 // rule `useMicrotaskWiring.ts` documents for its own
                 // `triggerSyncManual` call.
-                if (state is MobileSkillRunState.Done) syncFn()
+                if (state is MobileSkillRunState.Done) {
+                    syncFn()
+                    _syncedTick.value += 1
+                }
             }
         }
     }

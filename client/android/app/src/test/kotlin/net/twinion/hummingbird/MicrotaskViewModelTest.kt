@@ -64,6 +64,37 @@ class MicrotaskViewModelTest {
         registryIds = registryIds,
     )
 
+    /** #565's review: the run drives the core directly, so `AppRoot`'s
+     * `syncTick` never moves for it — this tick is how the mount knows to
+     * re-read, and it must publish only AFTER the sync returned, or the
+     * reader re-reads a mirror the run has not landed in yet. */
+    @Test
+    fun `the synced tick moves only once the post-run sync has returned`() = runTest {
+        val recorder = Recorder()
+        var vmRef: MicrotaskViewModel? = null
+        var tickDuringSync = -1
+        val vm = MicrotaskViewModel(
+            runFn = { _, _, _, _ -> flowOf(MobileSkillRunState.Done(emptyList(), "kept 2", "cloud", null)) },
+            syncFn = {
+                recorder.syncCalls += 1
+                tickDuringSync = vmRef!!.syncedTick.value
+            },
+            readSelectionFn = { "cloud" },
+            writeSelectionFn = {},
+            modelForFn = { null },
+            declinedFallbackFn = { _, _, _ -> null },
+            registryIds = listOf("cloud"),
+        )
+        vmRef = vm
+        assertEquals(0, vm.syncedTick.value)
+
+        vm.run("i", false, null)
+
+        assertEquals(1, recorder.syncCalls)
+        assertEquals("the tick must not move before the sync returns", 0, tickDuringSync)
+        assertEquals(1, vm.syncedTick.value)
+    }
+
     @Test
     fun `a run narrates as it streams and syncs once on the terminal done`() = runTest {
         val recorder = Recorder()

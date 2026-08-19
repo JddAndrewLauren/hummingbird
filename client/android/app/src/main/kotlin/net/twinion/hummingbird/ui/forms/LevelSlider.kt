@@ -38,9 +38,8 @@ import uniffi.hummingbird_ffi_mobile.VocabOption
  * a `Set<String>` in a wrapping `FlowRow`, this is single-select over a
  * `String?` in a `Row`, and one component spanning both would be abstraction
  * for its own sake. Note the sentinel these two do not agree on: cleared here
- * is `null`, while `PriorityRow` (`CaptureActivity.kt`) clears to `""` because
- * its own value is a non-null `String` — a caller moving a field between them
- * has to translate.
+ * is `null`, while [PriorityRow] clears to `""` because its own value is a
+ * non-null `String` — a caller moving a field between them has to translate.
  */
 @Composable
 fun LevelSlider(

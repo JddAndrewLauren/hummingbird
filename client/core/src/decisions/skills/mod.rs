@@ -4,8 +4,14 @@
 //!
 //! **What is here and what is not.** Here: what an NDJSON line is
 //! ([`envelope`]), how a run's state advances ([`run`], [`grill`]), what a
-//! decline says ([`decline`]), and what the request body's bytes are
-//! ([`args`]). Not here, and deliberately per-client: the transport itself,
+//! decline says ([`decline`]), what the request body's bytes are
+//! ([`args`]), and — added at #539, when the affordance lane got its second
+//! caller — which microtask gesture an item's steps make legal
+//! ([`affordance`]), which id a stale backend selection degrades to and
+//! which one a declined pin falls back to ([`backend`]), and whether
+//! confirming a review would strand a live plan or demote the item off the
+//! frontier ([`review`]). Not here, and
+//! deliberately per-client: the transport itself,
 //! and the line splitting that feeds this family — each platform's stream
 //! reader owns that (the web's `TextDecoder`, okio's `readUtf8Line` on
 //! Android), because a byte-level reader is a platform fact, not a

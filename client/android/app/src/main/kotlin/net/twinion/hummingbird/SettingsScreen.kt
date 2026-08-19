@@ -325,6 +325,19 @@ private fun BindingRow(
     onSave: (String) -> Unit,
 ) {
     var draft by remember(binding.key) { mutableStateOf(bindingDraftSeed(binding.value)) }
+    // Reseed the field whenever the value underneath it moves — a sync
+    // carrying another device's edit, or this device's own write
+    // confirming. The row is remembered by binding key and so survives
+    // every re-read, which means the seed alone would leave a stale draft
+    // sitting over a value it never showed, with Save enabled to push it
+    // back. `SettingsScreen.tsx`'s `BindingRow` does exactly this (#118
+    // review finding); #565's review found the phone had inherited the
+    // seed without the reseed.
+    var seenValue by remember(binding.key) { mutableStateOf(binding.value) }
+    if (seenValue != binding.value) {
+        seenValue = binding.value
+        draft = bindingDraftSeed(binding.value)
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

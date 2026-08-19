@@ -141,6 +141,29 @@ therefore stay literal TS, pinned against `weekend.rs`'s own
 runtime — `field-vocabulary.ts`'s precedent, for a collection-order trap
 rather than a module-evaluation one. `weekendAnswer` itself (called only
 inside `it()` bodies) does cross.
+**Amended 2026-08-18 (#539):** M4 decided what #538 deliberately left open,
+with the real second caller in hand — the Grill takeover and the microtask
+affordance landing on the phone. Sunk: `decisions::skills::affordance`
+(which gesture an item's steps make legal, and `live_undone_steps` behind
+it), `decisions::skills::review` (whether confirming a verdict strands a
+live plan or demotes the item off the frontier, out of
+`screens/grill-review.ts`), and `decisions::skills::backend` (the
+degrade-to-Auto rule out of `backend-selection.ts`'s
+`readBackendSelection`, and the tier fallback out of
+`backend-registry.ts`'s `fallbackEntry`). **Not sunk, and now
+verdict-table rows rather than an open question:** the backend registry's
+own *data* — label, model, endpoint, timeout — which is configuration two
+clients may render differently without either being wrong; and
+`route-plan.ts`/`reachability-memo.ts`, which stayed per-client because
+Android's runner reaches one backend at a time under a device preference
+and has no Auto sequence to plan, so sinking a router with a single live
+caller would be shaping the rule from one arm — the trap #533 named and
+#534 honoured. One finding worth the record: sinking
+`microtaskAffordance` took the last caller away from
+`microtask-affordance.ts`'s `liveUndoneSteps`, leaving an exported, tested
+TS copy of a rule the core now owns. This ADR's no-hand-copied-decisions
+rule covers a copy with no caller too, so it was **deleted** at #565's
+review rather than kept as a helper a future caller could re-copy from.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -316,7 +339,11 @@ not permanent — it is where the line fell for the capture/Now slice.
 | the NDJSON **line splitting** (`skills/ndjson.ts`'s `takeLines`, okio's `readUtf8Line`) (M4, #538) | stays per-client: a byte-level stream reader is a platform fact, not a decision. The web decodes a `ReadableStream` with a streaming `TextDecoder`; Android reads okio's buffered source. What each *line means* did sink (`decisions::skills::envelope`) |
 | the **transport** — `run-skill.ts`, `route-run.ts`, `skills/SkillRunner.kt` (M4, #538) | stays per-client: `fetch` + `AbortSignal` vs OkHttp + `Call.cancel()` have no shared expression, and neither decides anything. Each reports what happened to *its* socket (no token / never resolved / a status / the stream ended) and the core answers with the next state |
 | `skills/decline.ts`'s `NO_TOKEN`/`NO_TERMINAL_LINE` and `grill-turn-state.ts`'s `OUTSIDE_SCHEMA` (M4, #538) | the rule sank (`decisions::skills::decline`, `grill::OUTSIDE_SCHEMA`); the three constants stay literal TS for the same module-evaluation-order constraint as `field-vocabulary.ts`'s arrays — `route-run.ts`/`useMicrotaskWiring.ts`/`useGrillWiring.ts` read them at module evaluation, statically reachable from `main.tsx` — pinned against the core by `seam.test.ts`. Kotlin needs no equivalent: it never holds the strings at all |
-| #274's `backend-registry.ts`/`backend-selection.ts`/`route-plan.ts`/`reachability-memo.ts`, and `microtask-affordance.ts` (M4, #538) | out of #538 deliberately — the probe needed one lane end to end, not the whole surface. #539 decides them with a real second caller in hand |
+| #274's `backend-registry.ts`/`backend-selection.ts`/`route-plan.ts`/`reachability-memo.ts`, and `microtask-affordance.ts` (M4, #538) | out of #538 deliberately — the probe needed one lane end to end, not the whole surface. **Decided at #539** (see the amendment above), in the four rows below |
+| `microtask-affordance.ts`'s `microtaskAffordance`, `grill-review.ts`'s `wouldStrandPlan`/`demotesFromFrontier`/`planReplacementLabel` (M4, #539) | sunk to `decisions::skills::{affordance,review}` — the phone's item detail and review card ask the same questions of the same steps, and a Kotlin copy would have been the third. `microtask-affordance.ts` is now a seam wrapper; its `liveUndoneSteps` had no caller left after the sink and was deleted rather than kept |
+| `backend-selection.ts`'s `readBackendSelection`, `backend-registry.ts`'s `fallbackEntry` (M4, #539) | the *rules* sank (`decisions::skills::backend`'s `resolve_backend_selection`, `fallback_backend_id`, `declined_backend_fallback`) — which id a stale selection degrades to, and which one a declined pin offers next |
+| `backend-registry.ts`'s `BACKEND_REGISTRY` entries and Android's `BackendPreference.ENTRIES` (M4, #539) | **stays per-client**: label, model, endpoint and timeout are configuration, not a decision two clients could disagree about being *wrong*. Both rules above take the registry as a bare ordered list of ids — the only part of an entry either reads |
+| `route-plan.ts`/`reachability-memo.ts` (M4, #539) | **stays per-client, for now**: Android runs one backend at a time under the device preference and plans no Auto sequence, so there is a single live caller. Sinking a router from one arm is the trap #533 named and #534 honoured — #275/#276 (on-device and home runners) are what would give it a second |
 | `item-actions.ts`'s `applyItemAction`/`resolveFallbackPending` (M1-4, #502) | screen-local optimistic UI reconciliation over `TaskItemDTO` — `Date.now()`, `archivedAt` writes and the live-vs-optimistic `pending` merge are not a decision two clients could disagree about, even though the same file's affordance rules (`availableActions`, `canMarkDone`, `canGrill`, `grillButtonLabel`, `applyItemAction`'s stage lookup) did sink |
 | `shell/sync-outcome-informative.ts`'s `isInformativeSyncOutcome` (M4, #535) | stays literal TS, for a **new** reason distinct from the module-evaluation-order rows above: `worker/ports.ts` needs this exact predicate and runs inside `core.worker.ts`'s own static import graph (ADR-0010), which must never statically reach the main-thread seam (`worker-import-graph.test.ts`'s gate) — a static import anywhere in a file pulls that file's whole graph in regardless of which export is used, so the predicate could not share a file with `sync-status.ts`'s seam-backed functions. Pinned against `decisions::settings::is_informative_sync_outcome` by `sync-outcome-informative.test.ts` |
 | `theme/ThemePreference.kt`'s `resolveDarkTheme` (M4, #535) | stays per-client, on `frontier-prefs.ts`'s existing "view prefs" verdict widened to cover a theme choice explicitly — a device's dark/light/system preference is not a decision two clients could disagree about |

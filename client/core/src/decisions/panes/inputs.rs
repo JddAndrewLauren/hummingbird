@@ -2,10 +2,12 @@
 //! shape for the whole `panes` family (#533/M4).
 //!
 //! Same discipline as [`super::super::frontier::FrontierItem`]: **do not
-//! re-cross whole DTOs**. `QuestionInputs` (`contract.ts`) carries a sync
-//! snapshot, a calendar-read map, a connected flag and every actionable
-//! item; the sunk rules read three of its fields, so three is what crosses.
-//! A caller adding a field here is making a claim that some rule reads it.
+//! re-cross whole DTOs**. Every field here was added only once a sunk pane
+//! actually read it — three at #533's waste-only probe, then the calendar
+//! arm, the connected flag, the actionable items and the sync snapshot as
+//! #534's seven arrived. A caller adding a field here is making a claim
+//! that some rule reads it, and what crosses within a field is trimmed the
+//! same way (see [`PaneItemFacts`], which is not an item DTO).
 //!
 //! Deliberately **not** [`crate::pane::PaneRead`]. That type is
 //! `Serialize`-only and is a *read* type — what the core hands the host on

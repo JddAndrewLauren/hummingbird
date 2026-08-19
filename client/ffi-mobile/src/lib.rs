@@ -3835,14 +3835,14 @@ mod tests {
         assert_eq!(host.projects().await, Vec::<MobileProject>::new());
     }
 
-    /// `CaptureActivity.kt`'s `PriorityRow` hardcodes its display order as
+    /// `ui/forms/PriorityRow.kt` hardcodes its display order as
     /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
     /// JVM test cannot call a generated JNI binding directly
     /// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
     /// process), so the pin lives here, on the Rust side of the seam: if
     /// `decisions::frontier::priority_rank`'s ordering ever changes, this
     /// test breaks and names the Kotlin literal (`PriorityRow`,
-    /// `CaptureActivity.kt`) that must change to match.
+    /// `ui/forms/PriorityRow.kt`) that must change to match.
     ///
     /// It reads the core rule **directly**, never through a
     /// `#[uniffi::export]`ed pass-through: exporting one would put a
@@ -3856,7 +3856,7 @@ mod tests {
         assert_eq!(
             wire_values,
             vec![1, 2, 3, 4, 0],
-            "PriorityRow's hardcoded Kotlin order (CaptureActivity.kt) must match this",
+            "PriorityRow's hardcoded Kotlin order (ui/forms/PriorityRow.kt) must match this",
         );
     }
 
