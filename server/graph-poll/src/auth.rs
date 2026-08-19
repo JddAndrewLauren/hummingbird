@@ -128,7 +128,7 @@ pub fn client_assertion(cred: &CertCredential, now_secs: i64, jti: &str) -> Resu
 }
 
 /// An access token and the wall-clock millisecond after which the caller
-/// must mint a new one — `authority/src/fcm.rs::AccessToken`'s own shape.
+/// must mint a new one — `authority/src/google_oauth.rs::AccessToken`'s own shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessToken {
     pub token: String,
