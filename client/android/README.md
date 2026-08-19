@@ -99,30 +99,33 @@ at the first newline. Pipe it minified.
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
 
-## The bottom nav and the More sheet (M3, #532)
+## The bottom nav and the More sheet (M3/#532, completed M4/#541)
 
 `MainActivity.kt`'s `NavDestination` is the one route list the app's
 navigation surface generates from — the same "one list, two derived halves"
 rule `client/web/src/shell/nav-bar.ts`'s `ON_THE_BAR` follows, ported rather
 than reinvented. `NavDestination.ON_BAR`/`.OVERFLOW` filter that one enum, so
 a screen added to it lands on the bottom bar or in the "More" sheet by
-construction, never neither. Four screens are on the bar today — Now,
-Triage, Alerts, Status, pinned against the web's own `ON_THE_BAR` set by
-`BottomNavStructuralTest` — and Done and the Ledger (below) are in the
-sheet, M3's one real sink landing its two screens. A bar or sheet tap goes
-through `goToTab`'s `popUpTo`/`saveState`/`launchSingleTop`/`restoreState`,
-the standard bottom-nav idiom: each tab keeps its own back stack across
-switches rather than stacking a fresh copy of Now underneath every visit.
+construction, never neither. Four screens are on the bar — Now, Triage,
+Alerts, Status, pinned against the web's own `ON_THE_BAR` set by
+`BottomNavStructuralTest` — and Done, the Ledger, Rules, Settings and Routes
+are in the sheet: #532 landed the first two, #541 the last three, completing
+all nine screens' reachability and shrinking `BottomNavStructuralTest`'s own
+exception list to empty. A bar or sheet tap goes through `goToTab`'s
+`popUpTo`/`saveState`/`launchSingleTop`/`restoreState`, the standard
+bottom-nav idiom: each tab keeps its own back stack across switches rather
+than stacking a fresh copy of Now underneath every visit.
 
-Rules and Settings are *not* on this list yet, on purpose:
-`BottomNavStructuralTest` asserts every top-level screen `Routes` declares
-is on the bar, in the sheet, or on a small, explicitly named exception set
-pointing at #541 — so a screen quietly missing all three fails loudly
-rather than passing because `ON_BAR`/`OVERFLOW` partition whatever
-`NavDestination` happens to contain. #541 is the milestone's acceptance
-slice: it wires Rules' and Settings' reachability, adds the ninth screen
-(`routes`, not yet registered at all), and is expected to shrink that
-exception set to empty.
+`routes` (#541) renders its **live empty state only** — "No routes yet" —
+because `client/ffi-mobile/src/lib.rs` exposes no Route query at all yet;
+the web's own populated `RoutesScreen.tsx` branch reads a demo fixture with
+no live counterpart, and parity with a fixture is not parity. The sheet also
+carries a Recall entry (#541) below the screen list, deliberately outside
+`NavDestination` — a gesture, not a screen, the same distinction the web's
+`onSearch` row holds by sitting outside `NAV_BAR_OVERFLOW`. Its screen is a
+placeholder; #542 replaces the body with the real search surface.
+`NavigationStructuralTest` asserts full route reachability and that the
+notification doors below survived the churn.
 
 ### The Done and Ledger screens (M3, #532)
 
@@ -144,10 +147,10 @@ re-exports of the same sink, with their existing test suites untouched.
 
 `RulesScreen.kt`/`RulesViewModel.kt` list the rules, toggle one
 enabled/disabled (one CAS field), create and edit one, and show a draft's
-backtest count. **The route is registered and deliberately unreachable** —
-no bar entry, no More sheet, nothing navigates to `Routes.RULES` — because
-reachability and the nav form it needs are #541's. `RulesScreenStructuralTest`
-asserts that absence, so a later slice adding an entry does it on purpose.
+backtest count. **The route has a permanent More-sheet entry since #541**;
+`RulesScreenStructuralTest` asserts that reachability goes through the
+shared `NavDestination`/`onNavigate` door, never a one-off
+`navigate(Routes.RULES)` call.
 
 Every rule verdict arrives applied from
 `hummingbird_core::decisions::rules` (ADR-0025's M4 sink): validity,

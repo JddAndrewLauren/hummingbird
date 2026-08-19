@@ -78,11 +78,9 @@ import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 // `AppRoot`'s own `sync("user")`, for the same reason: one cadence, one
 // writer.
 //
-// **The route is registered but not reachable from the bar or the More
-// sheet** — `RulesScreen`'s own precedent: that is #541's job, and this
-// slice stops at the registration so its evidence is JVM tests rather
-// than a hardware pass. `ProofScreen`'s "Manage device token in Settings"
-// link is the one way in today.
+// **The route has a permanent More-sheet entry since #541**, alongside its
+// pre-existing incidental door — `StatusScreen`'s own "Manage device token
+// in Settings" link (#536 review), which stays.
 
 @Composable
 fun SettingsScreen(
