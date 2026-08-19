@@ -61,7 +61,7 @@ use std::sync::Arc;
 
 use hummingbird_core::bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_core::decisions::{
-    available_actions, can_grill, can_mark_done, frontier, queue, rules, urgency,
+    available_actions, can_grill, can_mark_done, frontier, queue, roster, rules, urgency,
 };
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
@@ -753,6 +753,81 @@ pub struct NowBoardRecord {
     pub blocked: Vec<NowBlockedEntryRecord>,
     pub contexts: Vec<String>,
     pub live_column_keys: Vec<String>,
+}
+
+// -------------------------------------------------------------- M3 (#532)
+// Done and the Ledger — the bottom nav's More sheet's first two screens.
+// [`MobileTaskHost::done_items`]/[`MobileTaskHost::ledger_rows`] hand
+// Kotlin a pre-ordered, pre-decided read exactly as [`MobileTaskHost::
+// now_board`]'s own module-header rule states: `hummingbird_core::
+// decisions::roster::{order_done, order_ledger, ledger_row_state,
+// last_touched_ms}` run once here, never per row in Kotlin.
+
+/// [`roster::LedgerRowState`], mirrored as a `uniffi::Enum` — Live or
+/// Archived-with-its-instant, exactly as `ledger-order.ts`'s own
+/// `LedgerRowState` union crosses on the web. [`map_ledger_row_state`] is
+/// the only place the two are allowed to drift apart from, and it is
+/// exhaustive with no wildcard arm for exactly that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileLedgerRowState {
+    Live,
+    Archived { since_ms: i64 },
+}
+
+fn map_ledger_row_state(state: roster::LedgerRowState) -> MobileLedgerRowState {
+    match state {
+        roster::LedgerRowState::Live => MobileLedgerRowState::Live,
+        roster::LedgerRowState::Archived { since_ms } => {
+            MobileLedgerRowState::Archived { since_ms }
+        }
+    }
+}
+
+/// One Done screen row: an already-ordered, already-decided [`Item`] —
+/// index order *is* display order ([`roster::order_done`], most recently
+/// touched first). Read-only by decision: Done offers no act vocabulary
+/// (`DoneScreen.tsx`'s own decision — there is no reopen), so this record
+/// carries nothing to act on.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileDoneRecord {
+    pub id: String,
+    pub title: String,
+    pub updated_at: i64,
+    pub pending: bool,
+}
+
+fn to_roster_item(item: &Item) -> roster::RosterItem {
+    roster::RosterItem { id: item.id.clone(), updated_at: item.updated_at }
+}
+
+/// One Ledger row: an item plus its already-decided [`MobileLedgerRowState`]
+/// and last-touched instant ([`roster::ledger_row_state`]/
+/// [`roster::last_touched_ms`]), the three badges `LedgerScreen.tsx`
+/// renders, and `can_mark_done` — `item-actions.ts`'s own widened one-click
+/// rule (any live, unarchived stage but Done), so the row checkmark never
+/// offers what [`MobileTaskHost::act`] would refuse. Rows arrive
+/// pre-ordered ([`roster::order_ledger`], last touched first); Kotlin does
+/// no ordering.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLedgerRowRecord {
+    pub id: String,
+    pub title: String,
+    pub stage: String,
+    pub state: MobileLedgerRowState,
+    pub last_touched_ms: i64,
+    pub pending: bool,
+    pub dead_lettered: bool,
+    pub has_live_alert: bool,
+    pub can_mark_done: bool,
+}
+
+fn to_ledger_roster_item(entry: &hummingbird_core::LedgerEntry) -> roster::LedgerRosterItem {
+    roster::LedgerRosterItem {
+        id: entry.item.id.clone(),
+        updated_at: entry.item.updated_at,
+        archived_at: entry.item.archived_at,
+        absent_since_ms: entry.absent_since_ms,
+    }
 }
 
 /// [`MobileTaskHost::now_board`]'s pure core: the frontier
@@ -2042,6 +2117,70 @@ impl MobileTaskHost {
             .projects()
             .into_iter()
             .map(|project| MobileProject { id: project.id, name: project.name })
+            .collect()
+    }
+
+    /// The Done screen's whole read (M3/#532):
+    /// [`hummingbird_core::Core::done`] — every live `Done` item — ordered
+    /// most-recently-touched first ([`roster::order_done`]), the sink of
+    /// `done-order.ts`'s own `orderDone`. Kotlin does no ordering; the seam
+    /// hands it the finished order.
+    pub async fn done_items(&self) -> Vec<MobileDoneRecord> {
+        let inner = self.inner.lock().await;
+        let items = inner.core.done();
+        let roster_items: Vec<roster::RosterItem> = items.iter().map(to_roster_item).collect();
+        let order = roster::order_done(&roster_items);
+        let by_id: HashMap<&str, &Item> =
+            items.iter().map(|item| (item.id.as_str(), item)).collect();
+        order
+            .into_iter()
+            .filter_map(|id| {
+                by_id.get(id.as_str()).map(|item| MobileDoneRecord {
+                    id: item.id.clone(),
+                    title: item.title.clone(),
+                    updated_at: item.updated_at,
+                    pending: inner.core.is_pending(&item.id),
+                })
+            })
+            .collect()
+    }
+
+    /// The Ledger's whole read (M3/#532):
+    /// [`hummingbird_core::Core::ledger`] — every item this mirror has ever
+    /// known — pre-ordered ([`roster::order_ledger`], last-touched first)
+    /// with each row already carrying its [`MobileLedgerRowState`]
+    /// ([`roster::ledger_row_state`]), last-touched instant
+    /// ([`roster::last_touched_ms`]) and one-click `can_mark_done` gate: the
+    /// sink of `ledger-order.ts`'s three exports plus `item-actions.ts`'s
+    /// widened rule, applied once here rather than per row in Kotlin.
+    pub async fn ledger_rows(&self, now_ms: i64) -> Vec<MobileLedgerRowRecord> {
+        let inner = self.inner.lock().await;
+        let entries = inner.core.ledger(now_ms);
+        let roster_items: Vec<roster::LedgerRosterItem> =
+            entries.iter().map(to_ledger_roster_item).collect();
+        let order = roster::order_ledger(&roster_items);
+        let by_id: HashMap<&str, &hummingbird_core::LedgerEntry> =
+            entries.iter().map(|entry| (entry.item.id.as_str(), entry)).collect();
+        order
+            .into_iter()
+            .filter_map(|id| {
+                by_id.get(id.as_str()).map(|entry| {
+                    let roster_item = to_ledger_roster_item(entry);
+                    let state = roster::ledger_row_state(&roster_item);
+                    MobileLedgerRowRecord {
+                        id: entry.item.id.clone(),
+                        title: entry.item.title.clone(),
+                        stage: entry.item.stage.as_str().to_string(),
+                        state: map_ledger_row_state(state),
+                        last_touched_ms: roster::last_touched_ms(&roster_item),
+                        pending: inner.core.is_pending(&entry.item.id),
+                        dead_lettered: entry.dead_lettered,
+                        has_live_alert: entry.has_live_alert,
+                        can_mark_done: matches!(state, roster::LedgerRowState::Live)
+                            && can_mark_done(entry.item.stage, entry.item.archived_at.is_some()),
+                    }
+                })
+            })
             .collect()
     }
 
@@ -4459,6 +4598,62 @@ mod tests {
             )
             .await;
         assert_eq!(board_ids(&board), vec![urgent_id, low_id]);
+    }
+
+    // -------------------------------------------------------------- M3 (#532)
+
+    #[tokio::test]
+    async fn done_items_orders_most_recently_touched_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-done-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let first = host.capture(title_only_draft("first"), 1_000).await.unwrap();
+        let second = host.capture(title_only_draft("second"), 1_000).await.unwrap();
+        host.act(first.clone(), "complete".to_string(), 2_000).await.unwrap();
+        host.act(second.clone(), "complete".to_string(), 3_000).await.unwrap();
+
+        let done = host.done_items().await;
+        assert_eq!(done.iter().map(|record| record.id.clone()).collect::<Vec<_>>(), vec![
+            second.clone(),
+            first,
+        ]);
+        // Both completions are still unconfirmed local writes, both pending.
+        assert!(done.iter().all(|record| record.pending));
+        assert_eq!(done[0].title, "second");
+    }
+
+    #[tokio::test]
+    async fn ledger_rows_are_pre_ordered_and_pre_gated_for_mark_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-ledger-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let older = host.capture(title_only_draft("older"), 1_000).await.unwrap();
+        let newer = host.capture(title_only_draft("newer"), 2_000).await.unwrap();
+
+        let rows = host.ledger_rows(3_000).await;
+        assert_eq!(
+            rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>(),
+            vec![newer, older],
+        );
+        // A fresh Triage-stage capture is live and offers the one-click
+        // checkmark — `item-actions.ts`'s widened rule, mirrored.
+        assert!(rows.iter().all(|row| matches!(row.state, MobileLedgerRowState::Live)));
+        assert!(rows.iter().all(|row| row.can_mark_done));
+        assert!(rows.iter().all(|row| !row.dead_lettered && !row.has_live_alert));
     }
 
     #[tokio::test]

@@ -1,10 +1,9 @@
-import type { TaskItemDTO } from "../store/protocol";
+// Done's order: most recently touched first. No longer implemented here —
+// it is `hummingbird_core::decisions::roster::order_done` (ADR-0025,
+// #141/M3, #532), reached through the main-thread wasm seam.
+//
+// This module is kept as the import site rather than deleted so the sink
+// stayed a rewire: every caller (`DoneScreen.tsx`) and `done-order.test.ts`
+// are untouched, the same pattern `triage-order.ts` established at M1-3.
 
-/** The Done screen's order: most recently touched first. The schema has no
- * `done_at` (declined in the grilling that shaped this screen — a later
- * additive column if the caveat grates), so `updatedAt` is the only stamp
- * available, and a later edit to a done item honestly re-sorts it. Ties
- * break on id so the order is total. Pure: returns a new array. */
-export function orderDone(items: readonly TaskItemDTO[]): TaskItemDTO[] {
-  return [...items].sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
-}
+export { orderDone } from "../decisions/seam";

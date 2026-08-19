@@ -50,6 +50,7 @@ import type {
   FreshnessDTO,
   KindFieldDTO,
   KindRegistryDTO,
+  LedgerRowDTO,
   PaneReadDTO,
   PaneSnapshotDTO,
   ProjectDTO,
@@ -84,6 +85,11 @@ export interface DecisionsModule {
   contexts_of_json(itemsJson: string): string;
   order_triage_ids(itemsJson: string): string;
   triage_process_queue_json(triageJson: string, grillingJson: string, draftIdsJson: string): string;
+  // M3 (#532): Done's ordering and the Ledger's ordering + row-state read.
+  order_done_ids(itemsJson: string): string;
+  ledger_row_state_json(rowJson: string): string;
+  ledger_last_touched_ms(rowJson: string): number;
+  order_ledger_ids(rowsJson: string): string;
   // M1-4 (#502): the item stage-transition rules.
   item_available_actions(stage: string): string;
   item_applied_stage(action: string): string | undefined;
@@ -652,6 +658,62 @@ export function triageProcessQueue(
     capturedCount: raw.capturedCount,
     grillingCount: raw.grillingCount,
   };
+}
+
+// -------------------------------------------------------------- M3 (#532)
+// Done's ordering and the Ledger's ordering + row-state read, sunk from
+// `screens/done-order.ts` and `screens/ledger-order.ts` into
+// `hummingbird_core::decisions::roster`. Both files are now seam
+// re-exports of the wrappers below.
+
+function rosterPayload(items: readonly TaskItemDTO[]): string {
+  return JSON.stringify(items.map((item) => ({ id: item.id, updatedAt: item.updatedAt })));
+}
+
+/** `hummingbird_core::decisions::roster::order_done` — most recently
+ * touched first, id as the tie-break. */
+export function orderDone(items: readonly TaskItemDTO[]): TaskItemDTO[] {
+  const ids = JSON.parse(required().order_done_ids(rosterPayload(items))) as string[];
+  const byId = byIdMap(items);
+  return ids.map((id) => byId.get(id)!);
+}
+
+type LedgerRosterFields = Pick<LedgerRowDTO, "id" | "updatedAt" | "archivedAt" | "absentSinceMs">;
+
+function ledgerRosterFields(row: LedgerRosterFields): LedgerRosterFields {
+  return {
+    id: row.id,
+    updatedAt: row.updatedAt,
+    archivedAt: row.archivedAt,
+    absentSinceMs: row.absentSinceMs,
+  };
+}
+
+function ledgerRosterPayload(row: LedgerRosterFields): string {
+  return JSON.stringify(ledgerRosterFields(row));
+}
+
+/** `ledger-order.ts`'s own union, verbatim —
+ * `hummingbird_core::decisions::roster::LedgerRowState`. */
+export type LedgerRowState = { kind: "live" } | { kind: "archived"; sinceMs: number };
+
+/** `hummingbird_core::decisions::roster::ledger_row_state`. */
+export function ledgerRowState(row: LedgerRowDTO): LedgerRowState {
+  return JSON.parse(required().ledger_row_state_json(ledgerRosterPayload(row))) as LedgerRowState;
+}
+
+/** `hummingbird_core::decisions::roster::last_touched_ms`. */
+export function lastTouchedMs(row: LedgerRowDTO): number {
+  return required().ledger_last_touched_ms(ledgerRosterPayload(row));
+}
+
+/** `hummingbird_core::decisions::roster::order_ledger` — last touched
+ * first, id as the tie-break. */
+export function orderLedger(rows: readonly LedgerRowDTO[]): LedgerRowDTO[] {
+  const payload = JSON.stringify(rows.map((row) => ledgerRosterFields(row)));
+  const ids = JSON.parse(required().order_ledger_ids(payload)) as string[];
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return ids.map((id) => byId.get(id)!);
 }
 
 // ------------------------------------------------------------ M1-4 (#502)
