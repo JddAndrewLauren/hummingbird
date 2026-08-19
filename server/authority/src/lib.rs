@@ -10,6 +10,7 @@ mod codec;
 mod delivery;
 mod entropy;
 mod fcm;
+mod google_calendar;
 mod google_oauth;
 mod handlers;
 mod schema;
@@ -24,7 +25,12 @@ pub use fcm::{
     pkcs8_der_from_pem, revoke_dead_target, send_url, token_request_body, FcmConfigError,
     SendVerdict, ServiceAccount, FCM_SCOPE,
 };
-pub use google_oauth::{parse_access_token, AccessToken, OAUTH_TOKEN_URL, TOKEN_EXPIRY_SLACK_SECS};
+pub use google_calendar::{
+    calendar_invalid_grant, calendar_refresh_grant_body, calendar_secrets_unset,
+    calendar_token_success, calendar_unreachable, calendar_upstream_status, is_invalid_grant,
+    token_is_fresh,
+};
+pub use google_oauth::{parse_access_token, AccessToken, OAUTH_TOKEN_URL};
 pub use handlers::{handle, ApiRequest, ApiResponse, HandleContext};
 pub use schema::{init_schema, SCHEMA_VERSION};
 pub use skills::{

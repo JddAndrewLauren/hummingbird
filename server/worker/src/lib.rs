@@ -9,7 +9,11 @@
 //! behaviour lives in `hummingbird-authority`, fixture-tested there.
 
 #[cfg(target_arch = "wasm32")]
+mod calendar;
+#[cfg(target_arch = "wasm32")]
 mod fcm;
+#[cfg(target_arch = "wasm32")]
+mod http;
 
 #[cfg(target_arch = "wasm32")]
 mod shim {
@@ -18,14 +22,16 @@ mod shim {
     use std::rc::Rc;
 
     use hummingbird_authority::{
-        credential_rejected, forwardable, handle, init_schema, revoke_dead_target, run_url,
-        unconfigured, unreachable, upstream_status, ApiRequest, DeliveryOutcome, Entropy,
-        HandleContext, ProxyFailure, Row, SendVerdict, Sql, SqlError, SqlValue,
+        calendar_secrets_unset, credential_rejected, forwardable, handle, init_schema,
+        revoke_dead_target, run_url, unconfigured, unreachable, upstream_status, ApiRequest,
+        DeliveryOutcome, Entropy, HandleContext, ProxyFailure, Row, SendVerdict, Sql, SqlError,
+        SqlValue,
     };
     use hummingbird_domain::ApiError;
     use wasm_bindgen::JsValue;
     use worker::*;
 
+    use crate::calendar::CalendarMinter;
     use crate::fcm::FcmSender;
 
     /// [`Entropy`] over the platform CSPRNG (`crypto.getRandomValues` via
@@ -106,6 +112,12 @@ mod shim {
         /// `alarm()` handler stays fully `.await`ed and never needs the
         /// clone, since nothing there returns before sending completes.
         fcm: Option<Rc<FcmSender>>,
+        /// The calendar-token mint (#577/#582), over the three
+        /// `GOOGLE_CALENDAR_*` secrets; absent means the lane fails closed
+        /// with a 503. Holds its own cache, so no `Rc` is needed here —
+        /// unlike `fcm`, nothing calling into it ever needs to outlive this
+        /// `fetch()` inside a `wait_until` future.
+        calendar: Option<CalendarMinter>,
     }
 
     impl DurableObject for Authority {
@@ -115,6 +127,7 @@ mod shim {
                 schema_ready: Cell::new(false),
                 admin_secret: env.secret("ADMIN_SECRET").map(|s| s.to_string()).ok(),
                 fcm: FcmSender::from_env(&env).map(Rc::new),
+                calendar: CalendarMinter::from_env(&env),
             }
         }
 
@@ -182,6 +195,21 @@ mod shim {
                 self.state.wait_until(async move {
                     send_logged_deliveries(fcm.as_deref(), &sql, now_ms, deliveries).await;
                 });
+            }
+
+            // The calendar-token mint's authorization verdict (#577/#582):
+            // `handle()`'s 204 means "device-scoped, proceed" — the actual
+            // exchange (or cache hit) is async, so it happens here rather
+            // than inside `handle()`. Unlike the skill-runner proxy this
+            // needs no second subrequest to reach the DO: this *is* the DO,
+            // already inside its own `fetch()`, and there is no cycle
+            // forcing the exchange above it.
+            if url.path() == "/api/google/calendar_token" && api.status == 204 {
+                let (status, body) = match &self.calendar {
+                    Some(minter) => minter.token_response(now_ms).await,
+                    None => calendar_secrets_unset(),
+                };
+                return calendar_json_response(status, body);
             }
 
             json_response(api.status, api.body)
@@ -315,6 +343,17 @@ mod shim {
         }
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
+        Ok(Response::ok(body)?.with_status(status).with_headers(headers))
+    }
+
+    /// The calendar-token route's response shape (#577/#582): JSON, like
+    /// [`json_response`], plus `cache-control: no-store` on every status —
+    /// the bearer this route can carry, and the fact of whether the lane is
+    /// even provisioned, are both things a shared cache must never retain.
+    fn calendar_json_response(status: u16, body: String) -> Result<Response> {
+        let headers = Headers::new();
+        headers.set("content-type", "application/json")?;
+        headers.set("cache-control", "no-store")?;
         Ok(Response::ok(body)?.with_status(status).with_headers(headers))
     }
 

@@ -6,6 +6,7 @@ mod admin_tokens;
 mod alerts;
 mod auth;
 mod blocked_by;
+mod calendar_token;
 mod changes;
 mod fog;
 mod grills;
@@ -187,6 +188,11 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         // performs the egress above this dispatch. The body never reaches
         // here — the preflight is deliberately bodiless.
         ("POST", ["skills", "run"]) => Ok(skills::run_verdict()),
+        // The calendar-token mint's authorization verdict (#577/#582): same
+        // pattern as the skill-runner proxy just above — the DO answers
+        // only whether the caller may mint, and the `wasm32` shim performs
+        // the exchange (or serves its cache) above this dispatch.
+        ("POST", ["google", "calendar_token"]) => Ok(calendar_token::verdict()),
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
         (
@@ -212,6 +218,8 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         // without this it would 404 on a `GET`, unlike every other known
         // route.
         (_, ["skills", "run"]) => Ok(method_not_allowed()),
+        // Same reason as `["skills", "run"]` just above.
+        (_, ["google", "calendar_token"]) => Ok(method_not_allowed()),
         _ => Ok(error(404, "not_found", "no such route")),
     }
 }

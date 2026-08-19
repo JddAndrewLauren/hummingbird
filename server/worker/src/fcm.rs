@@ -37,6 +37,8 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::*;
 
+use crate::http::post;
+
 /// The RS256 key/signature algorithm, spelled as WebCrypto names it.
 const RSASSA_PKCS1_V1_5: &str = "RSASSA-PKCS1-v1_5";
 
@@ -178,32 +180,6 @@ fn subtle_crypto() -> Result<web_sys::SubtleCrypto> {
         .dyn_into::<web_sys::Crypto>()
         .map_err(|_| Error::RustError("the runtime exposes no `crypto` global".into()))?;
     Ok(crypto.subtle())
-}
-
-/// One POST, returning the status and body together — the pair every
-/// classifier in the pure crate takes. A non-2xx is a normal return, not an
-/// error: an FCM rejection *is* the answer, and `classify_response` is what
-/// reads it.
-async fn post(
-    url: &str,
-    body: &str,
-    bearer: Option<&str>,
-    content_type: &str,
-) -> Result<(u16, String)> {
-    let headers = Headers::new();
-    headers.set("content-type", content_type)?;
-    if let Some(token) = bearer {
-        headers.set("authorization", &format!("Bearer {token}"))?;
-    }
-
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post)
-        .with_headers(headers)
-        .with_body(Some(JsValue::from_str(body)));
-
-    let mut response = Fetch::Request(Request::new_with_init(url, &init)?).send().await?;
-    let status = response.status_code();
-    Ok((status, response.text().await?))
 }
 
 fn js_err(value: JsValue) -> Error {
