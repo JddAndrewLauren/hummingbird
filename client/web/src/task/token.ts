@@ -6,10 +6,11 @@ import type { TaskTokenStoreLike } from "./token-store";
 // and spyable `pushApiKey`/`clearApiKey` callbacks — the same discipline
 // `calendar/connection.ts` uses for the calendar credential.
 //
-// There is no rotation timer here (unlike the calendar's GIS-driven
-// `connection.ts`): a device token is long-lived and entered by hand, so
-// the only lifecycle events are "load whatever is stored, once, at
-// startup", "a fresh one was typed in", and "forget the one that's here".
+// There is no rotation timer here (unlike the calendar's authority-backed
+// `connection.ts`, whose token is minted server-side and rotated roughly
+// hourly): a device token is long-lived and entered by hand, so the only
+// lifecycle events are "load whatever is stored, once, at startup", "a
+// fresh one was typed in", and "forget the one that's here".
 
 export interface TaskTokenDeps {
   store: TaskTokenStoreLike;
@@ -55,8 +56,8 @@ const NO_TOKEN: TaskTokenLoadResult = { hasToken: false, enteredAtMs: null };
 /** Core-start wiring: reads whatever device token this browser has stored
  * and, if present, rehydrates it into the core immediately — mirroring
  * `calendar/connection.ts`'s `initConnection`, but for a token the user
- * typed in rather than one GIS silently re-mints. A never-entered device
- * does nothing here and stays in the "unset" state.
+ * typed in rather than one the authority silently re-mints. A never-entered
+ * device does nothing here and stays in the "unset" state.
  *
  * Calls `deps.initApiKey`, deliberately NOT `deps.pushApiKey` (issue #196):
  * this fires on EVERY view that reaches `ready`, not just the first, and

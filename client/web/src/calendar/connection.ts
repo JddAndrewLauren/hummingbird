@@ -126,9 +126,11 @@ async function silentReconnect(deps: ConnectionDeps): Promise<ConnectionResult> 
 }
 
 /** How long to wait, in milliseconds, before proactively re-minting a token
- * ahead of its expiry — GIS gives no refresh token, so this is what keeps a
- * long-lived session from ever hitting a live 401 in the first place.
- * `marginMs` is the safety margin before the real expiry (default 5
+ * ahead of its expiry — the token `POST /api/google/calendar_token`
+ * (ADR-0028) hands back is still Google's ~1-hour access token, and the
+ * authority never pushes a refresh token down to the browser, so this is
+ * what keeps a long-lived session from ever hitting a live 401 in the first
+ * place. `marginMs` is the safety margin before the real expiry (default 5
  * minutes); the result is clamped to 0 so an already-expired/near-expired
  * token schedules an immediate re-mint rather than a negative delay. */
 export function msUntilRotation(

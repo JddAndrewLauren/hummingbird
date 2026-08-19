@@ -261,11 +261,11 @@ export function useCalendarWiring(
     }
     // At most one recovery poll per timer interval. The retry closes a loop
     // — its own 401 records another credential event, which flips
-    // `needsReconnect` back on and re-enters this path — so a token GIS
-    // keeps minting and Google keeps rejecting (a revoked scope, say) would
-    // otherwise spin re-mint/poll pairs as fast as the network allows. The
-    // cooldown makes the pathological case degrade to exactly the cadence
-    // this recovery replaced, and never worse.
+    // `needsReconnect` back on and re-enters this path — so a token the
+    // authority keeps minting and Google keeps rejecting (a revoked scope,
+    // say) would otherwise spin re-mint/poll pairs as fast as the network
+    // allows. The cooldown makes the pathological case degrade to exactly
+    // the cadence this recovery replaced, and never worse.
     const now = Date.now();
     if (now - lastRecoveryPollAtRef.current < TIMER_INTERVAL_MS) {
       return;
