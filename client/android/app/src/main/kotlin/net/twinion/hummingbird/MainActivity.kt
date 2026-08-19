@@ -165,8 +165,9 @@ private data class NotificationTap(
  * same distinction `nav-bar.ts`'s own `onSearch` row holds on the web (a
  * button in the sheet, deliberately outside `NAV_BAR_OVERFLOW`) — so it
  * carries no `NavDestination` entry and `BottomNavStructuralTest` excludes
- * it from the top-level-screen universe by name. Its composable is #541's
- * placeholder; #542 replaces the body with the real search surface. */
+ * it from the top-level-screen universe by name. #541 shipped its
+ * placeholder; #542 replaced the body with the real search-as-you-type
+ * surface over the mobile seam's pre-grouped rows. */
 private object Routes {
     const val NOW = "now"
     const val STATUS = "status"
@@ -498,7 +499,10 @@ private fun AppRoot(
                 RoutesScreen(onBack = { navController.popBackStackOrHome(Routes.NOW) })
             }
             composable(Routes.RECALL) {
-                RecallScreen(onBack = { navController.popBackStackOrHome(Routes.NOW) })
+                RecallScreen(
+                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                    onOpenItem = { itemId -> navController.navigate(Routes.itemDetail(itemId)) },
+                )
             }
             composable(Routes.ITEM_DETAIL) { entry ->
                 ItemDetailScreen(

@@ -77,7 +77,7 @@ use hummingbird_core::sync::write::transport::{
 };
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
-use hummingbird_core::{CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
+use hummingbird_core::{search, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
 use hummingbird_domain::{
     Alert, Condition, CreatePushTarget, Energy, FieldType, Item, Platform, Rule, Size, Stage, Tier,
 };
@@ -924,6 +924,61 @@ fn build_now_board(
         .collect();
 
     NowBoardRecord { columns, blocked, contexts, live_column_keys }
+}
+
+// ------------------------------------------------------------- M4 (#542)
+// Recall: `hummingbird_core::search` handles matching, grouping and
+// ordering entirely core-side (ADR-0025) — this door only maps the
+// already-capped, already-ordered rows to the wire shape and stamps
+// `pending`, the same "no per-row decision in Kotlin" rule the ledger door
+// above follows. `RecallScreen`/`RecallViewModel` re-derive none of it —
+// see `RecallScreenStructuralTest`.
+
+/// [`search::Group`], mirrored as a `uniffi::Enum` — Live, Done or Archived,
+/// exactly as `RecallGroup` crosses on the web (`protocol.ts`).
+/// [`map_recall_group`] is the only place the two are allowed to drift
+/// apart from, and it is exhaustive with no wildcard arm for exactly that
+/// reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileRecallGroup {
+    Live,
+    Done,
+    Archived,
+}
+
+fn map_recall_group(group: search::Group) -> MobileRecallGroup {
+    match group {
+        search::Group::Live => MobileRecallGroup::Live,
+        search::Group::Done => MobileRecallGroup::Done,
+        search::Group::Archived => MobileRecallGroup::Archived,
+    }
+}
+
+/// One Recall result row: an item's display fields flat at the top level
+/// (`LedgerRowRecord`'s own shape), plus the [`MobileRecallGroup`] it
+/// matched in and the same per-item `pending` stamp every other item read
+/// carries. Never carries the resolved project name — the query matched
+/// against it core-side (decision 11), and Recall's output is read-only in
+/// this slice with no reason to duplicate a lookup `MobileTaskHost` already
+/// answers elsewhere.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRecallRowRecord {
+    pub id: String,
+    pub title: String,
+    pub stage: String,
+    pub group: MobileRecallGroup,
+    pub updated_at: i64,
+    pub pending: bool,
+}
+
+/// [`MobileTaskHost::search`]'s whole answer: the capped, ordered rows
+/// (`hummingbird_core::search::CAP`), plus the un-capped `total` match count
+/// the "N more" line reads — core-decided, never a UI invention (decision
+/// 8), the same contract `ffi-web`'s own `SearchResponse` keeps.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRecallOutcome {
+    pub rows: Vec<MobileRecallRowRecord>,
+    pub total: u32,
 }
 
 // ----------------------------------------------------------------- M3 (#531)
@@ -3219,6 +3274,33 @@ impl MobileTaskHost {
             })
             .collect()
     }
+
+    /// Recall's whole read (#542/#478): [`hummingbird_core::Core::search`]
+    /// matches, groups and orders entirely core-side, capped at
+    /// [`hummingbird_core::search::CAP`] — this door only maps the answer
+    /// to the wire shape and stamps `pending`. `query` crosses unmodified;
+    /// an empty or whitespace-only one already answers empty rows and a
+    /// zero `total` from `Core::search` itself, so there is no client-side
+    /// short-circuit to duplicate here.
+    pub async fn search(&self, query: String, now_ms: i64) -> MobileRecallOutcome {
+        let inner = self.inner.lock().await;
+        let outcome = inner.core.search(&query, now_ms);
+        MobileRecallOutcome {
+            rows: outcome
+                .rows
+                .iter()
+                .map(|row| MobileRecallRowRecord {
+                    id: row.item.id.clone(),
+                    title: row.item.title.clone(),
+                    stage: row.item.stage.as_str().to_string(),
+                    group: map_recall_group(row.group),
+                    updated_at: row.item.updated_at,
+                    pending: inner.core.is_pending(&row.item.id),
+                })
+                .collect(),
+            total: outcome.total as u32,
+        }
+    }
 }
 
 /// One `reqwest::Client` per host, cloned into both transports — connection
@@ -5040,6 +5122,74 @@ mod tests {
         assert!(rows.iter().all(|row| matches!(row.state, MobileLedgerRowState::Live)));
         assert!(rows.iter().all(|row| row.can_mark_done));
         assert!(rows.iter().all(|row| !row.dead_lettered && !row.has_live_alert));
+    }
+
+    // -------------------------------------------------------------- M4 (#542)
+
+    #[tokio::test]
+    async fn search_reaches_a_completed_item_and_labels_it_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m4-recall-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let live = host.capture(title_only_draft("buy stamps"), 1_000).await.unwrap();
+        let done = host.capture(title_only_draft("buy stamps too"), 1_000).await.unwrap();
+        host.act(done.clone(), "complete".to_string(), 2_000).await.unwrap();
+
+        let outcome = host.search("stamps".to_string(), 3_000).await;
+        let by_id: std::collections::HashMap<String, &MobileRecallRowRecord> =
+            outcome.rows.iter().map(|row| (row.id.clone(), row)).collect();
+
+        assert_eq!(outcome.total, 2);
+        assert_eq!(by_id.get(&live).unwrap().group, MobileRecallGroup::Live);
+        assert_eq!(by_id.get(&done).unwrap().group, MobileRecallGroup::Done);
+        // Both are still-unconfirmed local writes, both pending.
+        assert!(outcome.rows.iter().all(|row| row.pending));
+    }
+
+    #[tokio::test]
+    async fn search_reaches_an_archived_item_and_labels_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m4-recall-archived-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let item_id = host.capture(title_only_draft("widget report"), 1_000).await.unwrap();
+        host.act(item_id.clone(), "cancel".to_string(), 2_000).await.unwrap();
+
+        let outcome = host.search("widget".to_string(), 3_000).await;
+        assert_eq!(outcome.rows.len(), 1);
+        assert_eq!(outcome.rows[0].id, item_id);
+        assert_eq!(outcome.rows[0].group, MobileRecallGroup::Archived);
+    }
+
+    #[tokio::test]
+    async fn an_empty_query_answers_no_rows_and_a_zero_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m4-recall-empty-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        host.capture(title_only_draft("anything"), 1_000).await.unwrap();
+
+        let outcome = host.search(String::new(), 2_000).await;
+        assert!(outcome.rows.is_empty());
+        assert_eq!(outcome.total, 0);
     }
 
     #[tokio::test]
