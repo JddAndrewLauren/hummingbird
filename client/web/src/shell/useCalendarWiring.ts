@@ -8,14 +8,12 @@ import {
   msUntilRotation,
   shouldKeepExistingConnection,
 } from "../calendar/connection";
-import { watchConnectPendingRestore } from "../calendar/connect-pending";
 import {
   readConnected,
   readSelectedCalendarIds,
   writeConnected,
   writeSelectedCalendarIds,
 } from "../calendar/persistence";
-import { resolveRedirectReturn } from "../calendar/redirect-return";
 import {
   INITIAL_REMINT_HEALTH,
   recordInteractiveConnect,
@@ -25,10 +23,6 @@ import {
 import { acceptSelectionChange, effectiveSelection } from "../calendar/selection";
 import { createAuthorityTokenClient } from "../calendar/authority-token-client";
 import type { TokenClient } from "../calendar/token-client";
-import type { RedirectOutcome } from "../google/redirect-flow";
-import { PHONE_QUERY } from "./breakpoints";
-import { startOAuthRedirect, takeOAuthRedirect } from "./oauth-redirect";
-import { isStandalone } from "./standalone";
 import { coreStore, type CalendarState, type CoreStatus } from "../store/store";
 import { createIndexedDbTaskTokenStore, type TaskTokenStoreLike } from "../task/token-store";
 import {
@@ -50,26 +44,22 @@ import {
 //
 // Everything here is intentionally thin: every decision (silent re-mint vs.
 // re-connect, staleness, selection toggling, which errors mean a human is
-// required, how to read a redirect fragment) is delegated to a unit-tested
-// pure module under calendar/ or google/; this file only wires their results
-// into the store and the worker.
+// required) is delegated to a unit-tested pure module under `calendar/`;
+// this file only wires their results into the store and the worker.
 //
-// **#577/#583: the silent path no longer touches Google at all.** Every
-// `TokenClient` call — the start-up re-mint, the proactive rotation below,
-// and a core 401's credential-needed round-trip — now reaches
+// **#577/#583/#584: there is one path, and it never opens a popup or leaves
+// the page.** Every `TokenClient` call — the start-up re-mint, the proactive
+// rotation below, a core 401's credential-needed round-trip, and an
+// interactive Connect/Reconnect press — reaches
 // `calendar/authority-token-client.ts`, a same-origin authenticated POST to
 // `POST /api/google/calendar_token` (ADR-0028), usually answered from the
-// authority's own cache. `google/gis.ts` and its popup are gone; **the
-// hourly popup is gone with them.**
-//
-// The redirect flow (`google/redirect-flow.ts`, `shouldUseRedirect` below)
-// is untouched by this slice and still navigates to Google directly on a
-// standalone/phone-sized Connect click — #584 retires it once Settings'
-// prerequisite copy (#585) no longer assumes a client-side consent step
-// exists. On desktop, `connect()`'s `requestToken("consent")` now reaches
-// the same authority-backed client the silent path uses, which ignores the
-// prompt: a desktop Connect click no longer opens any popup either, because
-// there is nothing left in the browser for it to open.
+// authority's own cache. `google/gis.ts` (#583) and `google/redirect-flow.ts`
+// (#584) are both gone, and with the redirect flow went the only reason this
+// hook ever cared whether the view was standalone or phone-sized, or whether
+// a click needed to survive a full page navigation. A Connect press now
+// simply awaits `connect()`, the same way the silent paths await
+// `initConnection`/`handleCredentialNeeded` — one shape, one file, no branch
+// on how this view happens to be presented.
 
 // The 15-minute context-poll foreground timer (#46, under ADR-0005). The
 // host is responsible for only ticking while online and foregrounded —
@@ -83,20 +73,18 @@ const TIMER_INTERVAL_MS = 15 * 60 * 1000;
 // `useSyncWiring.ts`'s existing unconditional 30-second `nowMs` is the one
 // clock the Now screen gets.
 
-// Still gates every calendar effect below, even though the authority-backed
-// `TokenClient` itself needs no client id at all — it authenticates with the
-// device token, not this. Kept as the prerequisite for this slice: the
-// redirect flow above still needs it, and rewriting what "connected" needs
-// is #585's job ("Settings tells the truth about what a calendar connection
-// needs"), not this one's.
+// Still gates the "Google calendar" section's rendering in Settings
+// (`SettingsScreen.tsx` imports this) even though the authority-backed
+// `TokenClient` below needs no client id at all — it authenticates with the
+// device token, not this. What this gate should mean now that nothing left
+// in the browser talks to Google directly is #585's question ("Settings
+// tells the truth about what a calendar connection needs"), not this
+// slice's.
 export const GOOGLE_CLIENT_ID: string | undefined = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
 let cachedTokenClient: TokenClient | null = null;
 let cachedTaskTokenStore: TaskTokenStoreLike | null = null;
-function tokenClient(): TokenClient | null {
-  if (!GOOGLE_CLIENT_ID) {
-    return null;
-  }
+function tokenClient(): TokenClient {
   cachedTaskTokenStore ??= createIndexedDbTaskTokenStore();
   const taskTokenStore = cachedTaskTokenStore;
   cachedTokenClient ??= createAuthorityTokenClient({
@@ -106,66 +94,15 @@ function tokenClient(): TokenClient | null {
   return cachedTokenClient;
 }
 
-/** Turns a redirect return into the same `ConnectionResult` the popup path
- * produces, so everything downstream — the persisted flag, the store write,
- * the rotation timer, the poll — is one code path with one shape. Synchronous:
- * the token is already in hand, there is nothing to await. */
-function applyRedirect(
-  // `Exclude<…, "none">`: "this load is not a return from Google" is the
-  // caller's branch, not a case here, and typing it out makes that structural
-  // rather than a convention.
-  outcome: Exclude<RedirectOutcome, { kind: "none" }>,
-  deps: ConnectionDeps,
-): ConnectionResult {
-  if (outcome.kind === "error") {
-    return { connected: false, needsReconnect: false, expiresAtMs: null, error: outcome.error };
-  }
-  deps.pushToken(outcome.accessToken);
+/** Builds the deps every connection call below needs. Cannot fail: the
+ * authority-backed `TokenClient` authenticates with the stored device token
+ * (or reports `no_device_token` itself, same as any other request failure),
+ * not with anything this function could find absent. */
+function connectionDeps(worker: WorkerLike): ConnectionDeps {
   return {
-    connected: true,
-    needsReconnect: false,
-    expiresAtMs: outcome.expiresAtMs,
-    error: null,
+    tokenClient: tokenClient(),
+    pushToken: (token) => pushTokenToWorker(worker, token),
   };
-}
-
-/** Whether this device should navigate to Google directly (`google/redirect-
- * flow.ts`) instead of taking the desktop `connect()` path, which — since
- * #583 deleted `google/gis.ts` — opens no popup of its own and simply asks
- * the authority for a token like every other path here.
- *
- * Standalone is the real criterion — an installed iOS web app is where a
- * popup escapes to Safari and loses its opener, and where Safari's own storage
- * container is no use because the app cannot see it. A phone-sized browser tab
- * is included because the same popup on a small screen is a full-screen
- * takeover with no visible relationship to the app it came from, and because a
- * phone tab is one "Add to Home Screen" away from being the standalone case
- * anyway. This function and the redirect flow it guards are #584's to
- * retire, not this slice's — see this file's header.
- *
- * **Measured with `matchMedia(PHONE_QUERY)`, not `window.innerWidth`.** Every
- * other consumer of this breakpoint — `useIsPhone`, and `responsive.css`'s
- * `@media` literals — asks the media query, and `innerWidth` is not the same
- * question: it counts a classic scrollbar's width and it tracks the VISUAL
- * (pinch-zoomed) viewport rather than the layout viewport the query resolves
- * against. So the two disagree in a narrow band, and they disagreed in the
- * harmful direction: a view already rendering the phone form could still be
- * handed the popup, which on that surface can never come back.
- *
- * The `matchMedia` guard is `useIsPhone`'s, and for the reason its header
- * spells out at length: this repo's jsdom does not implement `matchMedia` at
- * all, so an unguarded call throws. "No `matchMedia`" is read as "not a phone",
- * which is both the honest answer to a viewport question a runtime cannot
- * answer and the safe one — it selects the popup, and a test environment has
- * no popup to lose. */
-function shouldUseRedirect(): boolean {
-  if (isStandalone()) {
-    return true;
-  }
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return false;
-  }
-  return window.matchMedia(PHONE_QUERY).matches;
 }
 
 export interface CalendarWiring {
@@ -198,12 +135,6 @@ export function useCalendarWiring(
   // would not re-run it when the value changed.
   const remintHealthRef = useRef<RemintHealth>(INITIAL_REMINT_HEALTH);
 
-  // Whether a redirect attempt was started from THIS document and has not
-  // been answered. Only the restore watcher below reads it; see
-  // `calendar/connect-pending.ts` for why the reset is predicated on it rather
-  // than fired at every resume.
-  const redirectInFlightRef = useRef(false);
-
   /** Folds one silent-re-mint outcome in, and publishes `blocked` when it
    * moves. Every silent path calls this — start, credential-needed and the
    * rotation timer — so there is no third place a failure can be forgotten. */
@@ -211,13 +142,12 @@ export function useCalendarWiring(
     publishRemintHealth(recordSilentRemint(remintHealthRef.current, result.error));
   }
 
-  /** Folds an INTERACTIVE connect outcome in — the button, by either route.
-   * Both interactive paths call this, and they must: `recordRemint` above is
-   * reached only from the three silent paths, so before this existed a
-   * successful Reconnect left `blocked` standing for the rest of the page's
-   * life. Both effects that drive the silent path bail on that flag, so the
-   * calendar went quietly stale immediately after the very gesture that fixed
-   * it, with nothing on screen saying why. */
+  /** Folds an INTERACTIVE connect outcome in — the Connect/Reconnect button.
+   * Kept distinct from `recordRemint`: before this existed a successful
+   * Reconnect left `blocked` standing for the rest of the page's life. Both
+   * effects that drive the silent path bail on that flag, so the calendar
+   * went quietly stale immediately after the very gesture that fixed it,
+   * with nothing on screen saying why. */
   function recordInteractive(result: ConnectionResult) {
     publishRemintHealth(recordInteractiveConnect(remintHealthRef.current, result.error));
   }
@@ -238,17 +168,6 @@ export function useCalendarWiring(
   // fifth.
   function pushSelection(storedIds: string[]) {
     setCalendarSelectionsOnWorker(worker, effectiveSelection(storedIds, tripsCalendarId));
-  }
-
-  function connectionDeps(): ConnectionDeps | null {
-    const client = tokenClient();
-    if (!client) {
-      return null;
-    }
-    return {
-      tokenClient: client,
-      pushToken: (token) => pushTokenToWorker(worker, token),
-    };
   }
 
   // Re-polls and re-reads the tile after a credential *recovery* — the
@@ -287,56 +206,19 @@ export function useCalendarWiring(
     if (status !== "ready") {
       return;
     }
-    const deps = connectionDeps();
-    if (!deps) {
-      return;
-    }
+    const deps = connectionDeps(worker);
     let cancelled = false;
     void (async () => {
       const wasConnected = readConnected(localStorage);
       const selectedCalendarIds = readSelectedCalendarIds(localStorage);
-      // A return from the redirect flow lands here, not in a click handler:
-      // the round-trip is a full page load, so the component that started it
-      // no longer exists. `takeOAuthRedirect` is one-shot, which is what keeps
-      // StrictMode's double-invoke from applying the same token twice.
-      const redirect = takeOAuthRedirect();
-      const attempt =
-        redirect.kind === "none"
-          ? await initConnection(deps, wasConnected)
-          : applyRedirect(redirect, deps);
+      const result = await initConnection(deps, wasConnected);
       if (cancelled) {
         return;
       }
-      // What the attempt DID is `attempt`; what this load should apply is
-      // `result`, and for a redirect return the two differ. A failed return —
-      // a cancelled consent, or merely a crafted `#error=…` link somebody
-      // opened — must not un-connect a device that was connected before it
-      // left, exactly as the popup path's `shouldKeepExistingConnection` check
-      // must not. `calendar/redirect-return.ts` holds that decision and its
-      // header explains why the remedy here has to be a positive write rather
-      // than the popup's "return and touch nothing": on this path the store is
-      // still at its initial disconnected default, so touching nothing is
-      // itself the wipe.
-      const result =
-        redirect.kind === "none" ? attempt : resolveRedirectReturn(wasConnected, attempt);
-      if (redirect.kind === "none") {
-        if (wasConnected) {
-          // Only then was this a silent re-mint. A never-opted-in device did
-          // not attempt one.
-          recordRemint(attempt);
-        }
-      } else {
-        // A redirect return is the interactive path, and a successful one is
-        // as good a reason to lift a silent block as a silent success is.
-        recordInteractive(attempt);
-        // The redirect path is the one that can report a failure at start-up:
-        // an ordinary open has nothing to say, and a silent re-mint's failure
-        // is `needsReconnect`, not a message. Written unconditionally so a
-        // successful return also clears whatever the last attempt left — and
-        // the error is `attempt`'s, not `result`'s, because keeping the
-        // connection is about `connected`/`needsReconnect` only: a reconnect
-        // that failed is precisely when the reader needs telling.
-        coreStore.setCalendarState({ connectPending: false, connectError: attempt.error });
+      if (wasConnected) {
+        // Only then was this a silent re-mint. A never-opted-in device did
+        // not attempt one.
+        recordRemint(result);
       }
       writeConnected(localStorage, result.connected);
       coreStore.setCalendarState({
@@ -346,8 +228,8 @@ export function useCalendarWiring(
       });
       setExpiresAtMs(result.expiresAtMs);
       if (result.connected) {
-        // Both of these run even when the silent re-mint failed — the
-        // offline-start case, which is exactly when they matter most.
+        // Runs even when the silent re-mint failed — the offline-start
+        // case, which is exactly when this matters most.
         //
         // Because the worker was constructed with an empty selection:
         // leaving it empty means a later Reconnect polls zero calendars, and
@@ -379,10 +261,7 @@ export function useCalendarWiring(
     if (!calendar.needsReconnect || calendar.silentRemintBlocked) {
       return;
     }
-    const deps = connectionDeps();
-    if (!deps) {
-      return;
-    }
+    const deps = connectionDeps(worker);
     let cancelled = false;
     void (async () => {
       const result = await handleCredentialNeeded(deps);
@@ -426,10 +305,7 @@ export function useCalendarWiring(
     ) {
       return;
     }
-    const deps = connectionDeps();
-    if (!deps) {
-      return;
-    }
+    const deps = connectionDeps(worker);
     const delayMs = msUntilRotation(expiresAtMs, Date.now());
     const id = window.setTimeout(() => {
       void (async () => {
@@ -460,26 +336,6 @@ export function useCalendarWiring(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, calendar.connected, calendar.needsReconnect, tripsCalendarId]);
 
-  // Un-sticks a Connect button left spinning by a redirect that was never
-  // answered — the Back button from Google's consent screen, where the page
-  // usually comes back from bfcache and no module scope, no effect and no
-  // start-up path re-runs at all. Mount-once: the listeners are the document's
-  // and the decision behind them is in `calendar/connect-pending.ts`.
-  useEffect(() => {
-    return watchConnectPendingRestore({
-      isRedirectInFlight: () => redirectInFlightRef.current,
-      onRestore: () => {
-        // The marker is cleared with the flag, so a later resume does not keep
-        // firing against an attempt that is over.
-        redirectInFlightRef.current = false;
-        // `connectError` is deliberately left alone: nothing failed. The
-        // reader chose to come back, and inventing an error for a gesture they
-        // abandoned would be the app telling them something untrue.
-        coreStore.setCalendarState({ connectPending: false });
-      },
-    });
-  }, []);
-
   // The foreground 15-minute context-poll timer (#46, under ADR-0005).
   useEffect(() => {
     if (!calendar.connected || calendar.needsReconnect) {
@@ -496,32 +352,12 @@ export function useCalendarWiring(
   }, [calendar.connected, calendar.needsReconnect]);
 
   async function handleConnectClick() {
-    const deps = connectionDeps();
-    if (!deps) {
-      return;
-    }
+    const deps = connectionDeps(worker);
     const wasConnected = calendar.connected;
     coreStore.setCalendarState({ connectPending: true, connectError: null });
-    if (GOOGLE_CLIENT_ID && shouldUseRedirect()) {
-      // The document is about to be replaced, so nothing after this runs and
-      // there is nothing to await. The result comes back through the start
-      // effect above on the next load. `connectPending` stays set, which is
-      // correct: the attempt genuinely is in flight, and if the navigation
-      // fails to happen at all the button stays visibly busy rather than
-      // silently idle.
-      //
-      // Marked in-flight FIRST, before the navigation: this ref is what the
-      // restore watcher above consults to tell "the reader pressed Back out of
-      // Google" from "the reader switched tabs while a popup is open", and it
-      // survives the round trip only in the bfcache case — which is precisely
-      // the case that has no other way back.
-      redirectInFlightRef.current = true;
-      startOAuthRedirect(GOOGLE_CLIENT_ID);
-      return;
-    }
     const result = await connect(deps);
-    // A successful popup connect is a success for the silent path's health
-    // too, and lifts a block; a failed one is not evidence either way. See
+    // A successful connect is a success for the silent path's health too,
+    // and lifts a block; a failed one is not evidence either way. See
     // `recordInteractive`.
     recordInteractive(result);
     // The error is written FIRST, above the early return below — not folded

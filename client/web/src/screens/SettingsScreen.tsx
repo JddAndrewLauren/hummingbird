@@ -21,7 +21,6 @@ import {
 } from "./bindings";
 import type { DemoData } from "../fixtures/demo";
 import { APP_VERSION } from "../shell/build-version";
-import { isStandalone } from "../shell/standalone";
 import { coreInstanceLabel } from "../shell/status-label";
 import { effectiveCalendarIds, tripsCalendarId } from "../calendar/selection";
 import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
@@ -63,7 +62,7 @@ function isThemePreference(value: string): value is ThemePreference {
  * just bad news. Both come from `calendar/connect-error.ts`; this places them
  * and nothing else. */
 function ConnectError({ error }: { error: string }) {
-  const { message, hint } = connectErrorCopy(error, isStandalone());
+  const { message, hint } = connectErrorCopy(error);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
       <p style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>{message}</p>

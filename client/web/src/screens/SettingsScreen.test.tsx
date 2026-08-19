@@ -441,18 +441,17 @@ describe("SettingsScreen — the calendar connection's state", () => {
     // Both halves matter: `connect-error.ts` pairs them precisely because an
     // error the reader cannot act on is just bad news. A screen that rendered
     // only `message` would pass a laxer test and help nobody.
-    renderSettings({ calendar: { connectError: "popup_failed_to_open" } });
-    expect(screen.getByText(/did not open/i)).toBeDefined();
-    expect(screen.getByText(/pop-up blocker/i)).toBeDefined();
+    renderSettings({ calendar: { connectError: "authority_unreachable" } });
+    expect(screen.getByText(/never answered/i)).toBeDefined();
+    expect(screen.getByText(/check the connection/i)).toBeDefined();
   });
 
-  it("does not blame Google for this app's own CSRF check", () => {
-    // `state_mismatch` is `google/redirect-flow.ts` refusing a fragment. It
-    // used to fall through to the default arm and render as `Google reported
-    // "state_mismatch".`, sending the reader to debug the wrong system.
-    renderSettings({ calendar: { connectError: "state_mismatch" } });
-    expect(screen.queryByText(/Google reported/i)).toBeNull();
-    expect(screen.getByText(/did not match the request this app made/i)).toBeDefined();
+  it("echoes an unrecognised code rather than swallowing it", () => {
+    // The fallback arm in `connect-error.ts` — a code nobody has classified
+    // still has to render real words, since the whole failure mode being
+    // fixed is a button that says nothing.
+    renderSettings({ calendar: { connectError: "some_code_nobody_has_seen" } });
+    expect(screen.getByText(/some_code_nobody_has_seen/i)).toBeDefined();
   });
 
   it("disables the button while a connect attempt is in flight", () => {
