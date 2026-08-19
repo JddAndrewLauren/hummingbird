@@ -93,7 +93,8 @@ workspace singleton, so N devices × 1 rotation/hour collapses to one
 upstream exchange per hour. Persisting a plaintext Google bearer would be a
 new class of stored credential — the `tokens` table holds only sha256
 digests — and eviction on a cache miss costs one extra exchange, the same
-call `server/authority/src/fcm.rs` already made and documented. Not the
+call `server/worker/src/fcm.rs`'s `FcmSender` already makes and documents
+(its `RefCell<Option<AccessToken>>` cache). Not the
 Workers Cache API either: that is zone-keyed by URL, which would put a
 bearer behind a guessable path.
 
@@ -105,14 +106,17 @@ it must say so in its header.
 ### Server shape
 
 The precedent is already in the repo and is copied, not invented:
-`server/authority/src/fcm.rs` holds the pure, natively-tested half and
-`server/worker/src/fcm.rs` holds the shim that fetches and caches. The same
-split applies here, with the OAuth-token-parsing half shared with the FCM
-module rather than duplicated (`#579`). Every literal and every status
-lives in the pure, tested crate; the wasm32 worker shim holds no string
-literal and no status arithmetic of its own — CLAUDE.md's thin-worker rule,
-sharpened by the fact that `server/worker` has no test harness at all, so
-anything expressed there is untested by construction.
+`server/authority/src/google_oauth.rs` (#579) holds the pure,
+natively-tested Google OAuth2 token half — the token endpoint, the
+expiry-slack policy, the `AccessToken` value, and the response parser —
+shared by `fcm.rs`'s JWT-bearer assertion grant and this route's
+`refresh_token` grant alike, so the second consumer is a caller instead of
+a copy. Each consumer keeps its own runtime shim in `server/worker` —
+`fcm.rs` today, and a calendar-token twin here — holding only the `fetch`
+call and the `RefCell` cache described above: no string literal and no
+status arithmetic of its own. CLAUDE.md's thin-worker rule, sharpened by
+the fact that `server/worker` has no test harness at all, so anything
+expressed there is untested by construction.
 
 ## Rejected alternatives
 
@@ -157,10 +161,20 @@ anything expressed there is untested by construction.
   hammer Google's token endpoint or to mint tokens faster than the
   legitimate rotation cadence already does.
 - **The client's credential surface shrinks, net.** One OAuth client (the
-  web browser client in the Google console) and three CSP allowances
-  (`frame-src`/`connect-src` entries the hidden-iframe belief had put in
-  place for a mechanism that was never used) go away in the slices this
-  ADR precedes (#584, #586).
+  web browser client in the Google console) goes away, and so does the
+  `https://accounts.google.com` origin from each of the three
+  `client/web/csp-worker/csp.ts` directives that carry it today: `script-src`
+  (:47, required by GIS loading `https://accounts.google.com/gsi/client` as
+  a same-document `<script>` tag), `connect-src` (:49, required by GIS's own
+  XHRs to that origin while minting a token), and `frame-src` (:53 — the one
+  entry that actually traces to the hidden-iframe belief, since GIS's silent
+  re-mint round-trips through a hidden iframe served from that origin).
+  **`connect-src`'s `https://www.googleapis.com` allowance stays** — the
+  device keeps polling Google Calendar directly under this ADR, from the
+  wasm core's own transport, and that allowance is what its calls use. #577
+  counts this as "one OAuth client and three CSP allowances" going away
+  (#584, #586); read that as the three `accounts.google.com` origins above,
+  one per directive, not as three whole directives disappearing.
 - **The three new secrets are provisioned like the credential-blast-radius
   rule's most sensitive tier.** `GOOGLE_CALENDAR_CLIENT_ID` /
   `_SECRET` / `_REFRESH_TOKEN` become Wrangler secrets on
