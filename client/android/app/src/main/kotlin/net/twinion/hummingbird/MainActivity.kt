@@ -380,7 +380,7 @@ private fun AppRoot(
     // The bottom nav's own state (#532): which sheet, if any, is open, and
     // the live route — read from the back stack rather than held as a
     // second copy, so a destination reached any other way (a notification
-    // deep link, `onShowStatus`) still lights up the right tab.
+    // deep link) still lights up the right tab.
     var moreSheetOpen by remember { mutableStateOf(false) }
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
 
@@ -388,10 +388,10 @@ private fun AppRoot(
     // the standard bottom-nav idiom — each tab keeps its own back stack
     // across switches instead of stacking a new copy of Now underneath
     // every visit, and `launchSingleTop` covers a re-tap of the tab already
-    // open. Deliberately not reused by `onShowStatus`/`onShowAlerts` below,
-    // which predate the bar and push a plain, poppable destination — two
-    // gestures reaching the same screens, unified by this issue only where
-    // it had to touch them (the bar and the sheet themselves).
+    // open. Every route with a `NavDestination` entry is reached through
+    // this door, including cross-surface links (#574); the plain `navigate`
+    // calls below all push detail/takeover routes, which are poppable by
+    // design and carry no tab.
     fun goToTab(route: String) {
         moreSheetOpen = false
         navController.navigate(route) {
@@ -424,8 +424,6 @@ private fun AppRoot(
         ) {
             composable(Routes.NOW) {
                 NowScreen(
-                    onShowStatus = { navController.navigate(Routes.STATUS) },
-                    onShowAlerts = { navController.navigate(Routes.ALERTS) },
                     // A plain navigate, deliberately not
                     // `openItemFromNotification`: that helper's `popUpTo`
                     // exists because a *restored* back stack may already hold
@@ -440,8 +438,14 @@ private fun AppRoot(
             composable(Routes.STATUS) {
                 StatusScreen(
                     syncTick = syncTick,
-                    onBack = { navController.popBackStack() },
-                    onGoToSettings = { navController.navigate(Routes.SETTINGS) },
+                    // Through `goToTab`, never a plain `navigate` (#574):
+                    // Settings is a More destination, so it must land in the
+                    // More stack wherever it was entered from. A plain
+                    // `navigate` here made Settings the Status tab's top
+                    // entry, which `restoreState` then faithfully restored on
+                    // every later Status tap — the tab was unreachable from
+                    // its own bar button.
+                    onGoToSettings = { goToTab(Routes.SETTINGS) },
                 )
             }
             composable(Routes.SETTINGS) {
@@ -464,7 +468,6 @@ private fun AppRoot(
             composable(Routes.ALERTS) {
                 AlertsScreen(
                     syncTick = syncTick,
-                    onBack = { navController.popBackStack() },
                     onOpenAlert = { alertId ->
                         navController.navigate(Routes.alertDetail(alertId))
                     },
@@ -479,7 +482,6 @@ private fun AppRoot(
             composable(Routes.TRIAGE) {
                 TriageScreen(
                     syncTick = syncTick,
-                    onBack = { navController.popBackStack() },
                     onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "triage")) },
                 )
             }

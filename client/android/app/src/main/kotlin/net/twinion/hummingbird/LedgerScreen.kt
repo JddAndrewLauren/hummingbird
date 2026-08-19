@@ -1,5 +1,6 @@
 package net.twinion.hummingbird
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.StageBadge
 import uniffi.hummingbird_ffi_mobile.MobileLedgerRowRecord
 import uniffi.hummingbird_ffi_mobile.MobileLedgerRowState
 
@@ -50,6 +52,7 @@ fun LedgerScreen(
     val scope = rememberCoroutineScope()
     val viewModel: LedgerViewModel = viewModel(factory = LedgerViewModel.factory(context))
     val rows by viewModel.rows.collectAsState()
+    val dark = isSystemInDarkTheme()
     val loading by viewModel.loading.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
 
@@ -106,6 +109,7 @@ fun LedgerScreen(
                 else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(rows, key = { it.id }) { row ->
                         LedgerRow(
+                            dark = dark,
                             row = row,
                             onComplete = {
                                 scope.launch { viewModel.complete(row.id, System.currentTimeMillis()) }
@@ -121,6 +125,7 @@ fun LedgerScreen(
 @Composable
 private fun LedgerRow(
     row: MobileLedgerRowRecord,
+    dark: Boolean,
     onComplete: () -> Unit,
 ) {
     val archived = row.state is MobileLedgerRowState.Archived
@@ -140,11 +145,22 @@ private fun LedgerRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(row.title, style = MaterialTheme.typography.bodyLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        if (archived) "archived" else row.stage,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    // The stage goes through the one treatment (#557,
+                    // `ui/StageBadge.kt`); an archived row substitutes the
+                    // word "archived" instead — a deliberate divergence
+                    // from web's `LedgerScreen.tsx`, which badges archived
+                    // rows too and recedes them by opacity alone. Here the
+                    // row is already receded and "archived" is the fact the
+                    // reader needs; the stage a thing died in is not.
+                    if (archived) {
+                        Text(
+                            "archived",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        StageBadge(stage = row.stage, dark = dark)
+                    }
                     if (row.pending) {
                         Text(
                             "Pending",

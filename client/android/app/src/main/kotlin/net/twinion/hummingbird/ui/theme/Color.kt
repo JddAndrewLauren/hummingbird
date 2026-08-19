@@ -37,6 +37,10 @@ val Sand300 = Color(0xFFE8DACD)
 val Sky100 = Color(0xFFD9EDF6)
 val Sky600 = Color(0xFF166588)
 
+val Moss100 = Color(0xFFD8F0E6)
+
+val Amber100 = Color(0xFFFDEFCC)
+
 val Crimson100 = Color(0xFFFADEDB)
 val Crimson500 = Color(0xFFB3261E) // --urgency-overdue (light)
 val Crimson600 = Color(0xFF961D16)
@@ -73,3 +77,22 @@ val UrgencySoonDark = Color(0xFFF0B429) // --urgency-soon (dark)
 // (`--status-danger-fg`) — the same divergent-value pattern as
 // `UrgencySoonDark`.
 val UrgencyOverdueDark = Color(0xFFF08076) // --urgency-overdue (dark)
+
+// The stage vocabulary's dark scope (#557, `StageBadge`). Light pairs are
+// all ramp aliases (`--stage-triage: var(--sky-600)` and so on — the ramp
+// constants above already carry them); dark declares literals and
+// translucent overlays instead, so each divergent value gets its own name
+// here, the `UrgencySoonDark` pattern. The two dark values that DO alias a
+// ramp — `--stage-progress: var(--ember-400)` and `--stage-done:
+// var(--ink-400)` — reuse `Ember400`/`Ink400` directly at the use site
+// (`urgencyColor`'s own precedent) rather than minting a duplicate name.
+val StageTriageFgDark = Color(0xFF5CB6D8) // --stage-triage (dark)
+val StageTriageBgDark = Color(0x331E7FA8) // --stage-triage-bg (dark): sky 20%
+val StageGrillingFgDark = Color(0xFFF0B429) // --stage-grilling (dark)
+val StageGrillingBgDark = Color(0x2ED99A06) // --stage-grilling-bg (dark): amber 18%
+val StageReadyFgDark = Color(0xFF4CC79B) // --stage-ready (dark)
+val StageReadyBgDark = Color(0x2E17916B) // --stage-ready-bg (dark): moss 18%
+val StageProgressBgDark = Color(0x2EEB6D06) // --stage-progress-bg (dark): ember 18%
+val StageBlockedFgDark = Color(0xFFF08076) // --stage-blocked (dark)
+val StageBlockedBgDark = Color(0x38B3261E) // --stage-blocked-bg (dark): crimson 22%
+val StageDoneBgDark = Color(0x0FFFFFFF) // --stage-done-bg (dark): white 6%

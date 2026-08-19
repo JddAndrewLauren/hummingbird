@@ -27,6 +27,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
@@ -36,10 +37,12 @@ import uniffi.hummingbird_ffi_mobile.MobileGrillCompletion
 import uniffi.hummingbird_ffi_mobile.MobileGrillTurn
 import uniffi.hummingbird_ffi_mobile.MobileGrillTurnState
 import uniffi.hummingbird_ffi_mobile.MobileGrillVerdict
+import uniffi.hummingbird_ffi_mobile.MobileProposedEditRow
 import uniffi.hummingbird_ffi_mobile.formatGrillTranscript
 import uniffi.hummingbird_ffi_mobile.grillDemotesFromFrontier
 import uniffi.hummingbird_ffi_mobile.grillFrontierDemotionWarning
 import uniffi.hummingbird_ffi_mobile.grillPlanReplacementLabel
+import uniffi.hummingbird_ffi_mobile.grillProposalRows
 import uniffi.hummingbird_ffi_mobile.grillWouldStrandPlan
 
 // The Grill takeover (#355/#539, ADR-0023): the one-typed-question-at-a-time
@@ -124,12 +127,15 @@ fun GrillTakeoverScreen(
                             steps = current.sessionSteps,
                             summary = turn.proposal.summary,
                             verdict = turn.proposal.verdict,
-                            patchJson = turn.proposal.patchJson,
+                            // Decided core-side (#595, ADR-0025): the rows
+                            // are the patch as words; the JSON itself still
+                            // travels whole below, untouched.
+                            proposedEdit = grillProposalRows(turn.proposal.patchJson, current.item),
                             turns = current.turns,
                             confirming = current.confirming,
                             completionError = current.completionError,
                             onKeepGrilling = { viewModel.keepGrilling(itemId) },
-                            onConfirm = { summary, patchJson, deleteUntickedPlan ->
+                            onConfirm = { summary, deleteUntickedPlan ->
                                 scope.launch {
                                     val ok = viewModel.confirm(
                                         itemId,
@@ -138,7 +144,14 @@ fun GrillTakeoverScreen(
                                             summary = summary,
                                             verdict = turn.proposal.verdict,
                                             modelProposal = turn.proposal.patchJson,
-                                            appliedPatch = patchJson,
+                                            // Identical to modelProposal by
+                                            // construction (#595): Android
+                                            // ships no inline edit, so what
+                                            // was proposed is what is
+                                            // recorded — web's editable
+                                            // textarea is the affordance
+                                            // this client does not have.
+                                            appliedPatch = turn.proposal.patchJson,
                                             deleteUntickedPlan = deleteUntickedPlan,
                                         ),
                                         System.currentTimeMillis(),
@@ -238,19 +251,18 @@ private fun ReviewCard(
     steps: List<ItemStepRecord>,
     summary: String,
     verdict: MobileGrillVerdict,
-    patchJson: String,
+    proposedEdit: List<MobileProposedEditRow>,
     turns: List<MobileGrillTurn>,
     confirming: Boolean,
     completionError: String?,
     onKeepGrilling: () -> Unit,
-    onConfirm: (summary: String, patchJson: String, deleteUntickedPlan: Boolean) -> Unit,
+    onConfirm: (summary: String, deleteUntickedPlan: Boolean) -> Unit,
 ) {
     // Saveable: the review card's own edits are human-authored content, the
     // same standard `ItemDetailScreen.kt`'s edit draft and `GrillTakeover
     // .tsx`'s web precedent both hold themselves to.
     var summaryDraft by rememberSaveable(summary) { mutableStateOf(summary) }
-    var patchDraft by rememberSaveable(patchJson) { mutableStateOf(patchJson) }
-    var deleteUntickedPlan by rememberSaveable(summary, patchJson) { mutableStateOf(false) }
+    var deleteUntickedPlan by rememberSaveable(summary, proposedEdit) { mutableStateOf(false) }
 
     val offerPlanReplacement = grillWouldStrandPlan(verdict, steps)
 
@@ -272,11 +284,47 @@ private fun ReviewCard(
             label = { Text("Summary") },
             modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = patchDraft,
-            onValueChange = { patchDraft = it },
-            label = { Text("Proposed edit") },
-            modifier = Modifier.fillMaxWidth(),
+        // #595: the proposed edit renders as labelled rows decided
+        // core-side (`grill_proposal_rows`), never as escaped JSON on the
+        // one screen that asks for a decision. Read-only: Android ships no
+        // inline edit anywhere, so Confirm records the proposal unchanged —
+        // the web keeps its editable textarea because its edit affordance
+        // is real (`GrillTakeover.tsx`).
+        Text("Proposed edit", style = MaterialTheme.typography.labelSmall)
+        if (proposedEdit.isEmpty()) {
+            // `fog_remains` commonly carries an empty patch — a stated
+            // fact, not a blank (design README: empty states are facts).
+            Text(
+                "No item edits proposed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            for (row in proposedEdit) {
+                Column {
+                    Text(
+                        row.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    row.current?.let { currentValue ->
+                        Text(
+                            currentValue,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textDecoration = TextDecoration.LineThrough,
+                        )
+                    }
+                    Text(row.proposed, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+        Text(
+            // The web hint, verbatim (`GrillTakeover.tsx`): Confirm records
+            // the edit on the Grill; nothing writes it onto the item.
+            "Recorded on the Grill — never applied to the item automatically.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (offerPlanReplacement) {
             Row {
@@ -290,7 +338,7 @@ private fun ReviewCard(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onKeepGrilling, enabled = !confirming) { Text("Keep grilling") }
             Button(
-                onClick = { onConfirm(summaryDraft, patchDraft, deleteUntickedPlan) },
+                onClick = { onConfirm(summaryDraft, deleteUntickedPlan) },
                 enabled = !confirming,
             ) {
                 Text("Confirm")

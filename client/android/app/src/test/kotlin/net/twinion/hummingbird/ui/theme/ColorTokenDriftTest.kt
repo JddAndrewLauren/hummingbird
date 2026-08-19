@@ -45,6 +45,21 @@ class ColorTokenDriftTest {
         // The Settings sync card's WARN/SUCCESS tones (#535 review).
         "StatusWarnFgDark" to ScopedToken("--status-warn-fg", Scope.DARK),
         "StatusDoneFgDark" to ScopedToken("--status-done-fg", Scope.DARK),
+        // The stage vocabulary's dark scope (#557, `StageBadge`) — every
+        // dark value that is a literal or an rgba overlay rather than a
+        // ramp alias. `--stage-progress`/`--stage-done` dark alias
+        // `--ember-400`/`--ink-400` and reuse those ramp constants, so
+        // they need no entry here.
+        "StageTriageFgDark" to ScopedToken("--stage-triage", Scope.DARK),
+        "StageTriageBgDark" to ScopedToken("--stage-triage-bg", Scope.DARK),
+        "StageGrillingFgDark" to ScopedToken("--stage-grilling", Scope.DARK),
+        "StageGrillingBgDark" to ScopedToken("--stage-grilling-bg", Scope.DARK),
+        "StageReadyFgDark" to ScopedToken("--stage-ready", Scope.DARK),
+        "StageReadyBgDark" to ScopedToken("--stage-ready-bg", Scope.DARK),
+        "StageProgressBgDark" to ScopedToken("--stage-progress-bg", Scope.DARK),
+        "StageBlockedFgDark" to ScopedToken("--stage-blocked", Scope.DARK),
+        "StageBlockedBgDark" to ScopedToken("--stage-blocked-bg", Scope.DARK),
+        "StageDoneBgDark" to ScopedToken("--stage-done-bg", Scope.DARK),
     )
 
     // A ramp name is CamelCase-with-trailing-digits; anything else must be

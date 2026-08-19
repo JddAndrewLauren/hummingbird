@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,6 +41,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.ui.ChoiceRow
+import net.twinion.hummingbird.ui.EnergyGlyph
+import net.twinion.hummingbird.ui.SizeGlyph
+import net.twinion.hummingbird.ui.StageBadge
+import net.twinion.hummingbird.ui.levelColor
+import net.twinion.hummingbird.ui.levelPosition
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileMicrotaskAffordance
@@ -68,6 +74,16 @@ import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 // of a changed edit form would do exactly that. An *unchanged* draft is
 // never fought over: the `BackHandler` is conditional on the draft
 // actually differing from the record.
+
+/** The two level vocabularies, in the core's own order — one copy serving
+ * read mode's glyph positions and edit mode's `VocabularyRow`s alike.
+ * Order is what `levelPosition` indexes by (#558), and it is pinned against
+ * the core by `the_now_screen_facet_vocabularies_match_the_core`
+ * (`ffi-mobile`); this file is deliberately outside
+ * `CaptureFieldSetStructuralTest`'s literal ban, which guards the capture
+ * form's own files. */
+private val SIZE_VOCABULARY = listOf("quick", "normal", "deep")
+private val ENERGY_VOCABULARY = listOf("low", "medium", "high")
 
 @Composable
 fun ItemDetailScreen(
@@ -264,11 +280,9 @@ private fun ReadBody(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            record.stage.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // One treatment per stage word (#557) — `ui/StageBadge.kt`, never
+        // a raw `stage.uppercase()`.
+        StageBadge(stage = record.stage, dark = dark)
         record.seq?.let {
             Text(
                 "HB-$it",
@@ -300,21 +314,55 @@ private fun ReadBody(
     }
 
     // The four axes and the two dates, in the mono meta style: values the
-    // system holds, not words a human wrote.
-    val axes = buildList {
-        record.size?.let { add("SIZE:${it.uppercase()}") }
-        record.energy?.let { add("ENERGY:${it.uppercase()}") }
-        record.context?.let { add(it.uppercase()) }
-        if (record.agent) add("AGENT")
-        add("PRIORITY:${record.priority}")
-        record.deadline?.let { add("DUE:$it") }
-        record.scheduledDate?.let { add("SCHEDULED:$it") }
+    // system holds, not words a human wrote. Size and energy are drawn as
+    // well as written (#558, ADR-0024) — glyph beside word, one ramp colour
+    // over both — and this surface has the room the ADR requires, so it is
+    // the ONE place the unset ghost renders (position 0 beside an em dash):
+    // `size-unset` and `size-deep` are the same three rings told apart by
+    // opacity alone, which is why nothing word-free ever draws a ghost.
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        val sizePos = levelPosition(SIZE_VOCABULARY, record.size)
+        val sizeColor = levelColor(sizePos, dark)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            SizeGlyph(position = sizePos, color = sizeColor, size = 13.dp)
+            Text(
+                "SIZE:${record.size?.uppercase() ?: "—"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = sizeColor,
+            )
+        }
+        val energyPos = levelPosition(ENERGY_VOCABULARY, record.energy)
+        val energyColor = levelColor(energyPos, dark)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            EnergyGlyph(position = energyPos, color = energyColor, size = 13.dp)
+            Text(
+                "ENERGY:${record.energy?.uppercase() ?: "—"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = energyColor,
+            )
+        }
+        val axes = buildList {
+            record.context?.let { add(it.uppercase()) }
+            if (record.agent) add("AGENT")
+            add("PRIORITY:${record.priority}")
+            record.deadline?.let { add("DUE:$it") }
+            record.scheduledDate?.let { add("SCHEDULED:$it") }
+        }
+        Text(
+            axes.joinToString(" · "),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
-    Text(
-        axes.joinToString(" · "),
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
 
     if (record.openBlockers.isNotEmpty()) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -620,13 +668,13 @@ private fun EditBody(
     // would invite exactly that refusal.
     VocabularyRow(
         label = "SIZE",
-        options = listOf("quick", "normal", "deep"),
+        options = SIZE_VOCABULARY,
         selected = draft.size,
         onSelect = { onChange(draft.copy(size = it)) },
     )
     VocabularyRow(
         label = "ENERGY",
-        options = listOf("low", "medium", "high"),
+        options = ENERGY_VOCABULARY,
         selected = draft.energy,
         onSelect = { onChange(draft.copy(energy = it)) },
     )

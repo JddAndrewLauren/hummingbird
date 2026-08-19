@@ -68,7 +68,6 @@ private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuest
 @Composable
 fun StatusScreen(
     syncTick: Int = 0,
-    onBack: () -> Unit,
     /** `ProofScreen`'s one incidental door onto Settings, carried forward
      * (#536 review). [Routes.SETTINGS] has a permanent More-sheet entry
      * since #541; this link stays as a second, contextual door — a device
@@ -104,9 +103,6 @@ fun StatusScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text("Status", style = MaterialTheme.typography.headlineLarge)
-            TextButton(onClick = onBack) {
-                Text("Back")
-            }
 
             when (val current = state) {
                 StatusState.Loading -> CircularProgressIndicator()

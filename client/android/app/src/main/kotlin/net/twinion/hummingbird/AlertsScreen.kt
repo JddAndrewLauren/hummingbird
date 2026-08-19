@@ -22,7 +22,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -102,7 +101,6 @@ private const val ACKED_ALPHA = 0.55f
 @Composable
 fun AlertsScreen(
     syncTick: Int = 0,
-    onBack: () -> Unit,
     onOpenAlert: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -143,16 +141,7 @@ fun AlertsScreen(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Alerts", style = MaterialTheme.typography.headlineLarge)
-                TextButton(onClick = onBack) {
-                    Text("Back to Now")
-                }
-            }
+            Text("Alerts", style = MaterialTheme.typography.headlineLarge)
 
             NotificationHealthRows()
 

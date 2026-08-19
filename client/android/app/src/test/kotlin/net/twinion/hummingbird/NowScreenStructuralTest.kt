@@ -178,11 +178,55 @@ class NowScreenStructuralTest {
             )
         }
         assertTrue(
-            "the meta Row must be guarded on all four of its entries being absent",
+            "the meta Row must be guarded on all six of its entries being absent",
             Regex(
-                """if \(swatch != null \|\| urgencyWord != null \|\| """ +
-                    """record\.deadline != null \|\| stageChip != null\)""",
+                """if \(swatch != null \|\| urgencyWord != null \|\|\s*""" +
+                    """record\.deadline != null \|\|\s*""" +
+                    """stageChip != null \|\| sizePos != null \|\| energyPos != null\s*\)""",
             ).containsMatchIn(nowScreenSrc),
+        )
+    }
+
+    @Test
+    fun `the card's stage chip goes through StageBadge, not a local Text`() {
+        // #557: the stage's word, colour and (for triage) glyph live in
+        // `ui/StageBadge.kt` — the one treatment every screen shares. The
+        // call form, not a bare name (the import alone would satisfy that),
+        // and the null-for-ready call-site rule stays hoisted in the
+        // `stageChip` val the guard test above pins.
+        assertTrue(
+            "the stage chip must render through StageBadge (#557)",
+            Regex("""stageChip\?\.let \{[\s\S]{0,120}?StageBadge\(""").containsMatchIn(nowScreenSrc),
+        )
+        assertFalse(
+            "no STAGE_LABEL word map may return — the label lives in StageBadge now",
+            nowScreenSrc.contains("STAGE_LABEL"),
+        )
+    }
+
+    @Test
+    fun `the card's glyphs take their position from the core-pinned lists and omit the absent`() {
+        // #558/ADR-0024: position comes from SIZE_VALUES/ENERGY_VALUES —
+        // the lists the ffi test `the_now_screen_facet_vocabularies_match_
+        // the_core` pins — never a value-name table; and only a judged,
+        // known dimension draws (`?.let` + `takeIf { it > 0 }`), because a
+        // word-free ghost is indistinguishable from deep at card size.
+        assertTrue(
+            "size position must come from levelPosition over SIZE_VALUES, judged-only",
+            nowScreenSrc.contains(
+                "record.size?.let { levelPosition(SIZE_VALUES, it) }?.takeIf { it > 0 }",
+            ),
+        )
+        assertTrue(
+            "energy position must come from levelPosition over ENERGY_VALUES, judged-only",
+            nowScreenSrc.contains(
+                "record.energy?.let { levelPosition(ENERGY_VALUES, it) }?.takeIf { it > 0 }",
+            ),
+        )
+        assertTrue(
+            "the size glyph draws word-free, naming itself through sizeTitle",
+            Regex("""SizeGlyph\([\s\S]{0,200}?contentDescription = sizeTitle\(record\.size\)""")
+                .containsMatchIn(nowScreenSrc),
         )
     }
 

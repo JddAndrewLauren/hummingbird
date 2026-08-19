@@ -111,6 +111,27 @@ class NavigationStructuralTest {
     }
 
     @Test
+    fun `a cross-surface link to a static destination goes through goToTab, never a plain navigate`() {
+        // #574: a plain `navigate(Routes.SETTINGS)` from inside another
+        // tab's stack made Settings that tab's top entry, and `goToTab`'s
+        // `restoreState` then restored it on every later tap of that tab —
+        // the bar button stopped reaching its own screen. The bottom-nav
+        // contract is that a bar or sheet destination lands in its own
+        // stack from anywhere, so every static route (an UPPERCASE `Routes`
+        // constant) must be reached through `goToTab`; the plain `navigate`
+        // calls that remain all build a detail/takeover route through a
+        // lowercase `Routes` function, and those are poppable by design.
+        assertFalse(
+            "a static destination must be reached through goToTab, not a plain navigate (#574)",
+            Regex("""navController\.navigate\(Routes\.[A-Z]""").containsMatchIn(src),
+        )
+        assertTrue(
+            "the goToTab door onto Settings (#574's own case) is missing",
+            src.contains("goToTab(Routes.SETTINGS)"),
+        )
+    }
+
+    @Test
     fun `the M1 showStatus toggle is gone`() {
         // It was the stand-in for exactly this NavHost; leaving both would
         // give Status two ways to be reached and one of them no back stack.

@@ -1,0 +1,23 @@
+<!-- Lucide `inbox` at 24dp — the design system's own named glyph for
+     triage (README's ICONOGRAPHY roster), outline, 1.75px stroke, rounded
+     caps — `ic_alert.xml`'s recipe. Drawn in white and tinted at use
+     (`Icon(tint = ...)` in `ui/StageBadge.kt`): icons never carry colour
+     independently of their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M22,12L16,12L14,15L10,15L8,12L2,12"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M5.45,5.11L2,12v6a2,2 0,0 0,2 2h16a2,2 0,0 0,2 -2v-6l-3.45,-6.89A2,2 0,0 0,16.76 4H7.24a2,2 0,0 0,-1.79 1.11z"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

@@ -130,9 +130,12 @@ pub struct GrillQuestion {
 }
 
 /// `grill-me`'s terminal `proposal` shape. `patch` is whatever item-field
-/// edits the interview turned up, as an opaque object: **no key is ever
-/// read out of it here**, on any platform — it is carried through to
-/// `Core::complete_grill`'s `applied_patch` and nowhere else.
+/// edits the interview turned up, as an opaque object on the **write
+/// path**: what travels to `Core::complete_grill`'s `applied_patch` is the
+/// object whole, never a key read out of it. The one reader is the review
+/// card's *render* (#595): `super::review::proposal_rows` turns it into
+/// labelled rows so the person confirms words, not escaped JSON — a
+/// display decision that records nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GrillProposal {
     pub summary: String,
