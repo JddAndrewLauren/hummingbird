@@ -12,13 +12,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -50,6 +45,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
+import net.twinion.hummingbird.core.SyncHistoryStore
 import net.twinion.hummingbird.core.TokenStore
 import net.twinion.hummingbird.notify.AlertNotifier
 import net.twinion.hummingbird.notify.NotificationChannels
@@ -62,15 +58,16 @@ import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 import uniffi.hummingbird_ffi_mobile.notificationTapTarget
-import uniffi.hummingbird_ffi_mobile.RunOutcome
 
 // `NowScreen` (M1-6/#504) is this activity's start destination — the
 // frontier, decided core-side and rendered verbatim (`NowScreen.kt`'s own
-// doc). M0's proof screen (#141: the embedded core's API version, the
-// mirror's active-item count, and one live sync against the authority)
-// lives behind the "Status" action rather than being deleted — still the
-// cheapest manual check that the generated binding and the loaded `.so`
-// agree.
+// doc). The "Status" action behind it used to open the debug `ProofScreen`
+// (#141's embedded-core proof pair plus one manual sync); #536 replaces it
+// with the real Status screen — the panes shell over
+// `hummingbird_core::decisions::panes`, ADR-0017's second ranked-region
+// surface — and `ProofScreen` is deleted entirely, its useful affordances
+// (token entry/forget, the sync card) having already moved to Settings in
+// #535.
 //
 // **M1 deferred a nav library; M2 adopts one.** The recorded deferral was
 // that a `showStatus` boolean stood in for the `NavHost` a later milestone
@@ -159,15 +156,18 @@ private data class NotificationTap(
  * one place so a typo is a compile error at the use site rather than a
  * silently unreachable screen.
  *
- * [RULES] and [SETTINGS] are **registered and not yet reachable** — no bar
- * entry, no More sheet entry, no other screen navigates to either
- * (#535/#540), except [SETTINGS]'s one incidental door via `ProofScreen`'s
- * "Manage device token in Settings" link, since token entry/forget moved
- * off that debug surface in an earlier slice. [TRIAGE] is now reachable
- * from the bar, and [DONE]/[LEDGER] from the More sheet — both the bottom
- * nav's own doing (#532, below). Reachability for Rules and Settings is
- * #541's job, along with `routes` (not yet registered at all — #541 adds
- * the ninth screen too), the milestone's acceptance slice. */
+ * [STATUS] renders the real Status screen (#536, replacing the debug
+ * `ProofScreen` that used to sit behind it) and sits on the bottom bar
+ * itself (#532, below). [RULES] is **registered and not yet reachable** —
+ * no bar entry, no More sheet entry, no other screen navigates to it
+ * (#540). [SETTINGS] keeps the one incidental door `ProofScreen` used to
+ * carry — `StatusScreen`'s own "Manage device token in Settings" link
+ * (#536 review) — since nothing else navigates there yet either.
+ * [TRIAGE] is reachable from the bar, and [DONE]/[LEDGER] from the More
+ * sheet — both the bottom nav's own doing (#532). Reachability for Rules
+ * and Settings' own permanent nav entry is #541's job, along with
+ * `routes` (not yet registered at all — #541 adds the ninth screen too),
+ * the milestone's acceptance slice. */
 private object Routes {
     const val NOW = "now"
     const val STATUS = "status"
@@ -247,9 +247,6 @@ private fun AppRoot(
     val navController = rememberNavController()
 
     var core by remember { mutableStateOf<MobileTaskHost?>(null) }
-    var facts by remember { mutableStateOf<CoreFacts?>(null) }
-    var statusLine by remember { mutableStateOf<String?>(null) }
-    var syncing by remember { mutableStateOf(false) }
     var needsToken by remember { mutableStateOf(false) }
     var syncTick by remember { mutableIntStateOf(0) }
     // #535 review: the sync card's real input. Held here, above the
@@ -267,7 +264,6 @@ private fun AppRoot(
 
     suspend fun sync(trigger: String) {
         val host = core ?: return
-        syncing = true
         val nowMs = System.currentTimeMillis()
         val outcome = host.run(
             nowMs,
@@ -277,22 +273,22 @@ private fun AppRoot(
         )
         val credentialEvent =
             host.takeEvents().any { it.kind == "credential_needed" }
-        statusLine = describe(outcome)
         needsToken = credentialEvent ||
             outcome.kind == "no_credential" || outcome.kind == "held"
         if (isInformativeSyncOutcome(outcome.kind)) {
             lastSyncOutcomeKind = outcome.kind
             lastSyncAtMs = nowMs
+            // #536: the reachability pane's own durable copy — see
+            // `SyncHistoryStore`'s header for why this lives here rather
+            // than in `hummingbird-core`.
+            SyncHistoryStore.recordInformative(context, outcome.kind, nowMs)
         }
-        facts = readFacts(host)
-        syncing = false
         syncTick += 1
     }
 
     LaunchedEffect(Unit) {
         val host = CoreHolder.get(context)
         core = host
-        facts = readFacts(host)
         needsToken = TokenStore.load(context) == null
     }
 
@@ -351,13 +347,13 @@ private fun AppRoot(
         onPauseOrDispose { }
     }
 
-    // The token entry/forget gestures — shared between `ProofScreen`
-    // (which no longer carries the widgets themselves, #535) and
-    // `SettingsScreen` (their one home now). Hoisted here rather than
-    // inlined in either `composable {}` body, the same reason `sync`
-    // above is: both destinations reach the same `core`/`needsToken`
-    // state, and duplicating the two lambdas per screen would be the
-    // Kotlin copy this slice moved away from.
+    // The token entry/forget gestures — `SettingsScreen`'s own widgets
+    // (moved off the debug `ProofScreen` entirely in #535, `ProofScreen`
+    // itself deleted in #536). Hoisted here rather than inlined in its
+    // `composable {}` body, the same reason `sync` above is: `AppRoot` is
+    // the one place that reaches both `core` and `needsToken`, whichever
+    // route is on screen, and a screen-scoped copy would have to re-derive
+    // state `AppRoot` already tracks.
     suspend fun saveToken(token: String) {
         TokenStore.save(context, token)
         core?.pushApiKey(token)
@@ -375,7 +371,6 @@ private fun AppRoot(
         TokenStore.clear(context)
         core?.clearApiKey()
         needsToken = true
-        statusLine = "No device token — paste one to sync."
     }
 
     // The bottom nav's own state (#532): which sheet, if any, is open, and
@@ -439,13 +434,9 @@ private fun AppRoot(
                 )
             }
             composable(Routes.STATUS) {
-                ProofScreen(
-                    facts = facts,
-                    statusLine = statusLine,
-                    syncing = syncing,
-                    needsToken = needsToken,
+                StatusScreen(
+                    syncTick = syncTick,
                     onBack = { navController.popBackStack() },
-                    onSync = { scope.launch { sync("user") } },
                     onGoToSettings = { navController.navigate(Routes.SETTINGS) },
                 )
             }
@@ -684,114 +675,3 @@ private fun NotificationPermissionRequest() {
         if (!granted) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
-
-private data class CoreFacts(
-    val apiVersion: UInt,
-    val activeItems: UInt,
-    val queueDepth: UInt,
-)
-
-private suspend fun readFacts(core: MobileTaskHost) = CoreFacts(
-    apiVersion = core.apiVersion(),
-    activeItems = core.activeItemCount(),
-    queueDepth = core.queueDepth(),
-)
-
-/** The run-outcome line, in the product's own honest register. */
-private fun describe(outcome: RunOutcome): String = when (outcome.kind) {
-    "completed" ->
-        if (outcome.deadLettered != null && outcome.deadLettered!! > 0u) {
-            "Synced — ${outcome.deadLettered} edit(s) didn't apply."
-        } else {
-            "Synced."
-        }
-    "skipped" -> "Skipped — backing off after a failure."
-    "no_credential" -> "No device token — paste one to sync."
-    "held", "credential_needed" -> "Device token rejected — paste a fresh one."
-    "blocked" -> "A queued edit is failing; sync stopped early."
-    "pull_failed" -> "The authority couldn't be reached."
-    "persist_failed" -> "Couldn't persist sync state."
-    else -> outcome.kind
-}
-
-// The M0 proof screen's display, with no state or cadence of its own — both
-// live in `AppRoot` (#514 review), since the cadence must keep running
-// while this screen isn't the one on top.
-@Composable
-private fun ProofScreen(
-    facts: CoreFacts?,
-    statusLine: String?,
-    syncing: Boolean,
-    needsToken: Boolean,
-    onBack: () -> Unit,
-    onSync: () -> Unit,
-    /** #535: token entry/forget moved off this screen entirely — Settings
-     * is their one home now. A device with no token still needs a way
-     * *out* of here to go get one, hence this link rather than a bare
-     * "no token" sentence with nothing to do about it. */
-    onGoToSettings: () -> Unit,
-) {
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // The product name is lowercase everywhere.
-            Text("hummingbird", style = MaterialTheme.typography.headlineLarge)
-            TextButton(onClick = onBack) {
-                Text("Back to Now")
-            }
-
-            if (facts == null) {
-                CircularProgressIndicator()
-            } else {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                    ),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        // The mono meta style: data the system computed.
-                        Text(
-                            "CORE API V${facts.apiVersion} · " +
-                                "${facts.activeItems} ACTIVE · " +
-                                "${facts.queueDepth} QUEUED",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        statusLine?.let {
-                            Text(it, style = MaterialTheme.typography.bodyLarge)
-                        }
-                    }
-                }
-
-                if (needsToken) {
-                    Text(
-                        "No device token — add one from Settings.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                } else {
-                    SyncButton(syncing = syncing, onSync = onSync)
-                }
-                TextButton(onClick = onGoToSettings) {
-                    Text("Manage device token in Settings")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SyncButton(syncing: Boolean, onSync: () -> Unit) {
-    Button(onClick = onSync, enabled = !syncing) {
-        Text(if (syncing) "Syncing…" else "Sync now")
-    }
-}
-

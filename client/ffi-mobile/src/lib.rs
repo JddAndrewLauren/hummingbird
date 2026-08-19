@@ -61,8 +61,15 @@ use std::sync::Arc;
 
 use hummingbird_core::bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_core::decisions::{
-    available_actions, can_grill, can_mark_done, frontier, queue, roster, rules, urgency,
+    available_actions, can_grill, can_mark_done, frontier, panes, queue, roster, rules, urgency,
 };
+use hummingbird_core::decisions::panes::contract::{
+    AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface,
+};
+use hummingbird_core::decisions::panes::inputs::{PaneInputs, PaneReadFacts, SyncFacts};
+use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
+use hummingbird_core::decisions::panes::{github, kimi, uptime};
+use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
@@ -1824,6 +1831,329 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
     }
 }
 
+// ------------------------------------------------------------- panes (#536)
+//
+// The pane lane's mobile door (#536/M4, ADR-0025): the two-phase zone
+// bridge plus the ranked-panes call, mirrored as `uniffi` types so Android
+// receives **applied results** and never a per-pane decision function —
+// this seam's own asymmetry rule (module header). `hummingbird_core::
+// decisions::panes` already carries the whole decision; everything below
+// is exposure, not judgement.
+//
+// **Today this only wires what the Status screen renders**: the status
+// four (kimi/github/uptime/reachability), none of which reads bindings,
+// items or the calendar arm. [`pane_inputs`] leaves those fields at their
+// defaults rather than building them speculatively — `panes::inputs`'s own
+// "a field only once a sunk *caller* reads it" discipline, applied one
+// layer out. #537 (the Now surface: waste/weekend/vacation/race) is the
+// slice that grows this builder to cover them; the door's shape
+// (`surface` in, applied results out) does not change under that growth.
+//
+// **The drift gate.** [`map_standing_question`] matches
+// [`StandingQuestion`] itself, exhaustively and with no wildcard arm — a
+// ninth question sunk into `panes::SUNK` fails *this* match at compile
+// time, before Android ever sees it, which is what forces
+// `StatusScreen.kt`'s own exhaustive `when` to be touched rather than
+// silently skipped.
+
+/// [`Surface`], mirrored as a `uniffi::Enum` — ADR-0017's ranked-region
+/// axis, named on this seam so a caller picks which region it wants
+/// without a string to typo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSurface {
+    Now,
+    Status,
+}
+
+fn map_surface(surface: MobileSurface) -> Surface {
+    match surface {
+        MobileSurface::Now => Surface::Now,
+        MobileSurface::Status => Surface::Status,
+    }
+}
+
+/// [`StandingQuestion`], mirrored as a `uniffi::Enum` — see this section's
+/// header for why this mirror (rather than the plain wire string
+/// `RankedPaneRecord.question` carries core-side) is what Android renders
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileStandingQuestion {
+    Waste,
+    Weekend,
+    Vacation,
+    Race,
+    Kimi,
+    Github,
+    Uptime,
+    Reachability,
+}
+
+/// Exhaustive over [`StandingQuestion`] with no wildcard arm — the whole
+/// drift gate this section's header describes.
+fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
+    match question {
+        StandingQuestion::Waste => MobileStandingQuestion::Waste,
+        StandingQuestion::Weekend => MobileStandingQuestion::Weekend,
+        StandingQuestion::Vacation => MobileStandingQuestion::Vacation,
+        StandingQuestion::Race => MobileStandingQuestion::Race,
+        StandingQuestion::Kimi => MobileStandingQuestion::Kimi,
+        StandingQuestion::Github => MobileStandingQuestion::Github,
+        StandingQuestion::Uptime => MobileStandingQuestion::Uptime,
+        StandingQuestion::Reachability => MobileStandingQuestion::Reachability,
+    }
+}
+
+/// [`AnswerState`], mirrored as a `uniffi::Enum`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobilePaneAnswerState {
+    Answered,
+    BoundButUnacquired,
+    Unbound,
+}
+
+fn map_answer_state(state: AnswerState) -> MobilePaneAnswerState {
+    match state {
+        AnswerState::Answered => MobilePaneAnswerState::Answered,
+        AnswerState::BoundButUnacquired => MobilePaneAnswerState::BoundButUnacquired,
+        AnswerState::Unbound => MobilePaneAnswerState::Unbound,
+    }
+}
+
+/// [`Band`], mirrored as a `uniffi::Enum` — ADR-0015's five-band salience
+/// vocabulary, in [`super::contract::BAND_ORDER`]'s own declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobilePaneBand {
+    Live,
+    Imminent,
+    Near,
+    Distant,
+    Dormant,
+}
+
+fn map_band(band: Band) -> MobilePaneBand {
+    match band {
+        Band::Live => MobilePaneBand::Live,
+        Band::Imminent => MobilePaneBand::Imminent,
+        Band::Near => MobilePaneBand::Near,
+        Band::Distant => MobilePaneBand::Distant,
+        Band::Dormant => MobilePaneBand::Dormant,
+    }
+}
+
+/// [`PaneAnswerCore`], mirrored as a `uniffi::Record` — the three decided
+/// fields and nothing else (no headline, no glyph: both stay per-client,
+/// exactly the core type's own doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct MobilePaneAnswer {
+    pub answer_state: MobilePaneAnswerState,
+    pub band: MobilePaneBand,
+    pub within_band: Option<i64>,
+}
+
+fn to_mobile_pane_answer(answer: PaneAnswerCore) -> MobilePaneAnswer {
+    MobilePaneAnswer {
+        answer_state: map_answer_state(answer.answer_state),
+        band: map_band(answer.band),
+        within_band: answer.within_band,
+    }
+}
+
+/// One ranked pane, as Android renders it — [`panes::contract::
+/// RankedPaneRecord`] with its `question: String` resolved to
+/// [`MobileStandingQuestion`] (this section's drift gate) rather than
+/// carried across as the open wire string.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileRankedPane {
+    pub standing_question: MobileStandingQuestion,
+    /// Which subject this pane answers for (a workflow file name, a
+    /// service id, or a fixed sentinel for a one-subject question) — never
+    /// used to route rendering (that is [`standing_question`]'s job), only
+    /// to label and key one pane among several the same question may
+    /// return (`github_subjects`/`uptime_subjects`).
+    pub subject_key: String,
+    /// The stable per-pane identity ([`panes::contract::pane_key`]) — the
+    /// collapse-state and React-key equivalent on this client.
+    pub pane_key: String,
+    pub answer: MobilePaneAnswer,
+}
+
+/// One `(zone, civil-date)` fact the core named — [`ZoneQuery`], mirrored
+/// as a `uniffi::Enum`. `key` is not carried on this type: `java.time`
+/// answers each query by resolving it itself, and
+/// [`MobileZoneFact::key`] is what pairs a resolved answer back to the
+/// query that asked for it (`ZoneQuery::key`, ported so the two sides
+/// cannot disagree about it — see [`mobile_zone_query_key`]).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileZoneQuery {
+    CivilDate { zone: String, at_ms: i64 },
+    Midnight { zone: String, date: String },
+}
+
+fn to_mobile_zone_query(query: &ZoneQuery) -> MobileZoneQuery {
+    match query {
+        ZoneQuery::CivilDate { zone, at_ms } => {
+            MobileZoneQuery::CivilDate { zone: zone.clone(), at_ms: *at_ms }
+        }
+        ZoneQuery::Midnight { zone, date } => {
+            MobileZoneQuery::Midnight { zone: zone.clone(), date: date.clone() }
+        }
+    }
+}
+
+fn from_mobile_zone_query(query: &MobileZoneQuery) -> ZoneQuery {
+    match query {
+        MobileZoneQuery::CivilDate { zone, at_ms } => {
+            ZoneQuery::CivilDate { zone: zone.clone(), at_ms: *at_ms }
+        }
+        MobileZoneQuery::Midnight { zone, date } => {
+            ZoneQuery::Midnight { zone: zone.clone(), date: date.clone() }
+        }
+    }
+}
+
+/// [`ZoneQuery::key`], exposed so a host can pair its resolved answer back
+/// onto the query that asked for it without re-deriving the key format
+/// itself — the same "sent across rather than re-derived" rule
+/// `zone-bridge.ts`'s own header states for the web resolver.
+#[uniffi::export]
+pub fn mobile_zone_query_key(query: MobileZoneQuery) -> String {
+    from_mobile_zone_query(&query).key()
+}
+
+/// One resolved `(zone, civil-date)` answer, keyed by
+/// [`mobile_zone_query_key`] — [`ZoneFact`], mirrored as a `uniffi::Enum`
+/// and paired with the key the host resolved it for. A host that could not
+/// resolve a query simply omits it from the list handed to
+/// [`MobileTaskHost::rank_panes`] — the zone bridge's own "an unresolvable
+/// zone is an absence" rule (`zone.rs`'s module header), never a null
+/// entry.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileZoneFact {
+    pub key: String,
+    pub value: MobileZoneFactValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileZoneFactValue {
+    Date { value: String },
+    Instant { value: i64 },
+}
+
+fn to_zone_facts(facts: Vec<MobileZoneFact>) -> ZoneFacts {
+    let map: HashMap<String, ZoneFact> = facts
+        .into_iter()
+        .map(|fact| {
+            let value = match fact.value {
+                MobileZoneFactValue::Date { value } => ZoneFact::Date(value),
+                MobileZoneFactValue::Instant { value } => ZoneFact::Instant(value),
+            };
+            (fact.key, value)
+        })
+        .collect();
+    ZoneFacts::from_keyed(map)
+}
+
+/// The device's own authority-sync history (#536) — [`SyncFacts`],
+/// mirrored as a `uniffi::Record`. Unlike bindings or `context_snapshots`,
+/// this is not something `Core` persists at all (it has no reason to: no
+/// other decision reads it) — the host is the one durable copy, exactly
+/// the web's own `QuestionSyncSnapshot`, kept in its store rather than in
+/// `hummingbird-core`. Android persists this across restarts
+/// (`SyncHistoryStore.kt`) so the reachability pane has something to
+/// reason over on a cold start, before the first cycle of this session has
+/// completed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
+pub struct MobileSyncFacts {
+    pub latest_outcome_kind: Option<String>,
+    pub latest_informative_at_ms: Option<i64>,
+    pub last_successful_at_ms: Option<i64>,
+}
+
+fn to_sync_facts(facts: MobileSyncFacts) -> SyncFacts {
+    SyncFacts {
+        latest_outcome_kind: facts.latest_outcome_kind,
+        latest_informative_at_ms: facts.latest_informative_at_ms,
+        last_successful_at_ms: facts.last_successful_at_ms,
+    }
+}
+
+/// One source's pane read, built off [`Core::pane_read`] — the same
+/// conversion `ffi-web::decisions` would need, done once here rather than
+/// crossing the whole [`hummingbird_core::pane::PaneRead`] DTO and
+/// re-deriving it per pane (`panes::inputs`'s own "do not re-cross whole
+/// DTOs" rule, applied at this seam).
+fn to_pane_read_facts(read: &hummingbird_core::pane::PaneRead) -> PaneReadFacts {
+    use hummingbird_core::decisions::panes::inputs::{PaneEnvelopeFacts, PaneSnapshotFacts};
+
+    PaneReadFacts {
+        snapshots: read
+            .snapshots
+            .iter()
+            .map(|snapshot| PaneSnapshotFacts {
+                key: snapshot.key.clone(),
+                envelope: match &snapshot.envelope {
+                    PaneEnvelope::Parsed { schema, body, .. } => {
+                        PaneEnvelopeFacts::Ok { schema: schema.clone(), body: body.clone() }
+                    }
+                    PaneEnvelope::Malformed { reason } => {
+                        PaneEnvelopeFacts::Malformed { reason: reason.clone() }
+                    }
+                },
+                freshness: to_freshness_fact(snapshot.freshness),
+            })
+            .collect(),
+        live_alerts: Vec::new(),
+    }
+}
+
+fn to_freshness_fact(
+    freshness: hummingbird_core::freshness::Freshness,
+) -> hummingbird_core::decisions::panes::inputs::FreshnessFact {
+    use hummingbird_core::decisions::panes::inputs::FreshnessFact;
+    match freshness {
+        hummingbird_core::freshness::Freshness::Unknown => FreshnessFact::Unknown,
+        hummingbird_core::freshness::Freshness::Age { age_ms, declared_cadence_ms } => {
+            FreshnessFact::Age { age_ms, declared_cadence_ms }
+        }
+    }
+}
+
+/// Builds [`PaneInputs`] for the status four — see this section's header
+/// for why bindings/items/calendar stay at their defaults today.
+fn status_pane_inputs(
+    core: &Core<FsSnapshotStore, FsSnapshotStore>,
+    now_ms: i64,
+    sync: MobileSyncFacts,
+) -> PaneInputs {
+    let mut pane_reads = HashMap::new();
+    pane_reads.insert(kimi::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(kimi::SOURCE, now_ms)));
+    pane_reads.insert(github::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(github::SOURCE, now_ms)));
+    pane_reads.insert(uptime::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(uptime::SOURCE, now_ms)));
+    PaneInputs {
+        now_ms,
+        bindings: None,
+        pane_reads,
+        calendar_reads: HashMap::new(),
+        calendar_connected: false,
+        items: Vec::new(),
+        sync: to_sync_facts(sync),
+    }
+}
+
+/// Which [`StandingQuestion`] a [`panes::contract::RankedPaneRecord`]'s
+/// `question` string names, resolved through [`panes::SUNK`] rather than a
+/// hand-written string match — the two can never disagree, since `SUNK` is
+/// the same list `rank_panes` itself iterated to produce the string in the
+/// first place. `.expect` is safe here for exactly that reason: every
+/// record `rank_panes` emits came from one of `SUNK`'s own entries.
+fn standing_question_of(question: &str) -> StandingQuestion {
+    panes::SUNK
+        .iter()
+        .map(|(question, _)| *question)
+        .find(|candidate| candidate.as_str() == question)
+        .unwrap_or_else(|| panic!("rank_panes produced an unsunk question {question:?}"))
+}
+
 struct Inner {
     core: Core<FsSnapshotStore, FsSnapshotStore>,
     read_transport: ReqwestSyncTransport,
@@ -2832,6 +3162,48 @@ impl MobileTaskHost {
             &items,
             &clock,
         )))
+    }
+
+    /// Phase one of the pane lane's zone bridge (#536, ADR-0025): every
+    /// `(zone, civil-date)` fact `surface`'s sunk questions need, given
+    /// this device's own state. Empty for [`MobileSurface::Status`] today —
+    /// none of the status four is civil-date reasoning (`panes::mod`'s own
+    /// test) — kept generic over `surface` so #537's Now questions reach
+    /// it unchanged.
+    pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
+        let inner = self.inner.lock().await;
+        let inputs = status_pane_inputs(&inner.core, now_ms, MobileSyncFacts::default());
+        panes::zone_queries(map_surface(surface), &inputs)
+            .iter()
+            .map(to_mobile_zone_query)
+            .collect()
+    }
+
+    /// Phase two: `surface`'s sunk questions, ranked and ready to render —
+    /// [`panes::rank_panes`], with the host's resolved [`MobileZoneFact`]s
+    /// and its own persisted sync history ([`MobileSyncFacts`], since
+    /// `hummingbird-core` keeps none — see that type's own doc) folded in.
+    /// Already in display order; `StatusScreen.kt` renders the list
+    /// directly.
+    pub async fn rank_panes(
+        &self,
+        surface: MobileSurface,
+        now_ms: i64,
+        zone_facts: Vec<MobileZoneFact>,
+        sync: MobileSyncFacts,
+    ) -> Vec<MobileRankedPane> {
+        let inner = self.inner.lock().await;
+        let inputs = status_pane_inputs(&inner.core, now_ms, sync);
+        let facts = to_zone_facts(zone_facts);
+        panes::rank_panes(map_surface(surface), &inputs, &facts)
+            .into_iter()
+            .map(|record| MobileRankedPane {
+                standing_question: map_standing_question(standing_question_of(&record.question)),
+                subject_key: record.subject_key,
+                pane_key: record.pane_key,
+                answer: to_mobile_pane_answer(record.answer),
+            })
+            .collect()
     }
 }
 
@@ -6231,5 +6603,125 @@ mod settings_tests {
         assert!(!is_informative_sync_outcome("busy".to_string()));
         assert!(is_informative_sync_outcome("completed".to_string()));
         assert!(is_informative_sync_outcome("held".to_string()));
+    }
+
+    // -------------------------------------------------------------- panes (#536)
+
+    async fn pane_host(namespace: &str) -> Arc<MobileTaskHost> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(namespace);
+        std::mem::forget(dir);
+        MobileTaskHost::init(
+            path.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            "token".to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_fresh_device_ranks_the_status_four_as_never_polled_sentinels() {
+        let host = pane_host("panes-status-fresh").await;
+        let ranked = host.rank_panes(MobileSurface::Status, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+        assert_eq!(ranked.len(), 4);
+        assert!(ranked.iter().all(|pane| pane.answer.answer_state == MobilePaneAnswerState::BoundButUnacquired));
+        let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
+        assert_eq!(
+            questions,
+            vec![
+                MobileStandingQuestion::Kimi,
+                MobileStandingQuestion::Github,
+                MobileStandingQuestion::Uptime,
+                MobileStandingQuestion::Reachability,
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn the_status_surface_asks_for_no_zone_facts_none_of_the_four_is_civil_date_reasoning() {
+        let host = pane_host("panes-status-zone").await;
+        let queries = host.pane_zone_queries(MobileSurface::Status, 1_000).await;
+        assert!(queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_synced_device_reads_reachability_off_its_own_persisted_sync_history() {
+        let host = pane_host("panes-status-sync").await;
+        let now_ms: i64 = 1_700_000_000_000;
+        // Fresh and just synced: dormant, quiet.
+        let fresh = host
+            .rank_panes(
+                MobileSurface::Status,
+                now_ms,
+                Vec::new(),
+                MobileSyncFacts {
+                    latest_outcome_kind: Some("completed".to_string()),
+                    latest_informative_at_ms: Some(now_ms - 60_000),
+                    last_successful_at_ms: Some(now_ms - 60_000),
+                },
+            )
+            .await;
+        let reachability = fresh
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Reachability)
+            .unwrap();
+        assert_eq!(reachability.answer.answer_state, MobilePaneAnswerState::Answered);
+        assert_eq!(reachability.answer.band, MobilePaneBand::Dormant);
+
+        // Nothing synced in a long while: escalates to live.
+        let stale = host
+            .rank_panes(
+                MobileSurface::Status,
+                now_ms,
+                Vec::new(),
+                MobileSyncFacts {
+                    latest_outcome_kind: Some("pull_failed".to_string()),
+                    latest_informative_at_ms: Some(now_ms - 6 * 60_000),
+                    last_successful_at_ms: Some(now_ms - 10 * 60 * 60 * 1000),
+                },
+            )
+            .await;
+        let reachability = stale
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Reachability)
+            .unwrap();
+        assert_eq!(reachability.answer.band, MobilePaneBand::Live);
+    }
+
+    #[test]
+    fn every_standing_question_maps_to_a_distinct_mobile_variant() {
+        let cases = [
+            (StandingQuestion::Waste, MobileStandingQuestion::Waste),
+            (StandingQuestion::Weekend, MobileStandingQuestion::Weekend),
+            (StandingQuestion::Vacation, MobileStandingQuestion::Vacation),
+            (StandingQuestion::Race, MobileStandingQuestion::Race),
+            (StandingQuestion::Kimi, MobileStandingQuestion::Kimi),
+            (StandingQuestion::Github, MobileStandingQuestion::Github),
+            (StandingQuestion::Uptime, MobileStandingQuestion::Uptime),
+            (StandingQuestion::Reachability, MobileStandingQuestion::Reachability),
+        ];
+        for (core_question, expected) in cases {
+            assert_eq!(map_standing_question(core_question), expected);
+        }
+    }
+
+    #[test]
+    fn a_zone_query_key_round_trips_through_the_mobile_mirror() {
+        let civil = MobileZoneQuery::CivilDate { zone: "America/Los_Angeles".to_string(), at_ms: 17 };
+        assert_eq!(mobile_zone_query_key(civil), "civil:America/Los_Angeles:17");
+        let midnight =
+            MobileZoneQuery::Midnight { zone: "Europe/London".to_string(), date: "2026-08-17".to_string() };
+        assert_eq!(mobile_zone_query_key(midnight), "midnight:Europe/London:2026-08-17");
+    }
+
+    #[test]
+    fn zone_facts_cross_by_key_and_an_unresolved_key_reads_as_absent() {
+        let facts = to_zone_facts(vec![MobileZoneFact {
+            key: "civil:Europe/London:0".to_string(),
+            value: MobileZoneFactValue::Date { value: "2026-08-17".to_string() },
+        }]);
+        assert_eq!(facts.civil_date("Europe/London", 0).as_deref(), Some("2026-08-17"));
+        assert_eq!(facts.civil_date("Europe/Paris", 0), None);
     }
 }
