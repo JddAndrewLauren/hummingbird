@@ -104,9 +104,15 @@ private fun urgencyColor(band: MobileUrgencyBand, dark: Boolean): Color? = when 
 
 /** [MobileUrgencyBand]'s mono-meta label (README: "UPPERCASE only in the
  * 11px mono meta style") — exhaustive, no `else` arm, the same discipline
- * [urgencyColor] uses. */
-private fun urgencyLabel(band: MobileUrgencyBand): String = when (band) {
-    MobileUrgencyBand.CALM -> "CALM"
+ * [urgencyColor] uses.
+ *
+ * `CALM` maps to `null` for the same reason it takes no swatch: ADR-0021
+ * decision 2 says "the default is not a claim worth colouring", and a card
+ * that spends its most prominent meta slot printing "CALM" claims exactly
+ * that. The word is the non-colour carrier for the three bands that *do*
+ * make a claim, so only this arm goes. */
+private fun urgencyLabel(band: MobileUrgencyBand): String? = when (band) {
+    MobileUrgencyBand.CALM -> null
     MobileUrgencyBand.SOON -> "SOON"
     MobileUrgencyBand.NOW -> "NOW"
     MobileUrgencyBand.OVERDUE -> "OVERDUE"
@@ -650,41 +656,55 @@ private fun NowRow(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                urgencyColor(record.urgency, dark)?.let { swatch ->
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(swatch, CircleShape),
-                    )
-                }
-                Text(
-                    urgencyLabel(record.urgency),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                record.deadline?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                // The stage chip IS the triage label: a capture riding
-                // inline into these columns is marked by the app's one
-                // stage vocabulary, never a badge invented for this
-                // surface (`ItemRow`'s own rule, ported). "Ready" says
-                // nothing at card size and is the default, so it alone
-                // renders no chip.
-                if (record.stage != "ready") {
-                    Text(
-                        STAGE_LABEL[record.stage] ?: record.stage,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            // Every entry on the meta row is conditional -- the swatch and the
+            // word both go for `calm`, the deadline draws only when set, and
+            // `ready` says nothing -- so the ordinary minted action reaches
+            // this row with nothing to put on it. An empty `Row` is not free:
+            // it measures zero high but the Column's `spacedBy(8.dp)` still
+            // pays for it, stranding 8dp above the title. Read once here and
+            // reused below, so the guard cannot disagree with what draws.
+            val swatch = urgencyColor(record.urgency, dark)
+            val urgencyWord = urgencyLabel(record.urgency)
+            val stageChip = if (record.stage == "ready") null else STAGE_LABEL[record.stage] ?: record.stage
+            if (swatch != null || urgencyWord != null || record.deadline != null || stageChip != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    swatch?.let {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(it, CircleShape),
+                        )
+                    }
+                    urgencyWord?.let { label ->
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    record.deadline?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // The stage chip IS the triage label: a capture riding
+                    // inline into these columns is marked by the app's one
+                    // stage vocabulary, never a badge invented for this
+                    // surface (`ItemRow`'s own rule, ported). "Ready" says
+                    // nothing at card size and is the default, so it alone
+                    // renders no chip.
+                    stageChip?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
