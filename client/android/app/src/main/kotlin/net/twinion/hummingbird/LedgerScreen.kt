@@ -3,6 +3,7 @@ package net.twinion.hummingbird
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -106,7 +107,11 @@ fun LedgerScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                else -> LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    // The last row scrolls clear of the Capture FAB.
+                    contentPadding = PaddingValues(bottom = 64.dp),
+                ) {
                     items(rows, key = { it.id }) { row ->
                         LedgerRow(
                             dark = dark,

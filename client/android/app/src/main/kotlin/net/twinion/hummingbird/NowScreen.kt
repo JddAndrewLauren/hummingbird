@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -383,6 +384,8 @@ fun NowScreen(
             LazyColumn(
                 state = listState,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
+                // The last row scrolls clear of the Capture FAB.
+                contentPadding = PaddingValues(bottom = 64.dp),
             ) {
                 // The opened item, ABOVE the board, which keeps rendering
                 // below — never an early return of the panel instead of the

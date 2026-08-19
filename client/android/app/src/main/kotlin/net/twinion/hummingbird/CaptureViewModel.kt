@@ -155,6 +155,18 @@ class CaptureViewModel(
         _draft.value = draft
     }
 
+    /** Resets the form to its resting state after a submitted capture.
+     * `CaptureActivity` never needed this — its `finish()` destroys the
+     * whole store — but `CaptureSheet` resolves this ViewModel against
+     * `MainActivity`'s store, which lives on after the sheet closes, and
+     * without a reset the next open would replay the submitted capture's
+     * words as a fresh draft. Only for after a submit: a *dismissed*
+     * sheet keeps its draft on purpose, the same words-a-person-typed
+     * rule the item editor's discard confirmation guards. */
+    fun clearDraft() {
+        _draft.value = CaptureFormState()
+    }
+
     /** Clears any previous notice as a fresh attempt begins — a stale "no
      * match" hanging over a listening mic reads as the new attempt already
      * having failed. */

@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -32,6 +34,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -405,6 +408,12 @@ private fun AppRoot(
     // second copy, so a destination reached any other way (a notification
     // deep link) still lights up the right tab.
     var moreSheetOpen by remember { mutableStateOf(false) }
+    // `rememberSaveable`, unlike the More sheet's flag: a fold/unfold
+    // mid-capture recreates the Activity, and the sheet must come back
+    // standing over its surviving draft (the draft itself lives in
+    // `CaptureViewModel`'s store) — the More sheet holds nothing, so
+    // losing it to recreation costs one tap and no words.
+    var captureSheetOpen by rememberSaveable { mutableStateOf(false) }
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
 
     // A bar or More-sheet tap: `popUpTo` + `saveState` + `restoreState` is
@@ -436,6 +445,32 @@ private fun AppRoot(
                     currentRoute = currentRoute,
                     onNavigate = ::goToTab,
                     onMore = { moreSheetOpen = true },
+                )
+            }
+        },
+        floatingActionButton = {
+            // The bar's own visibility condition: capture is the app's
+            // global primary action on every top-level surface, and a
+            // detail/takeover route is a task mid-flight that a floating
+            // "Capture" would talk over. The extended-FAB shape, wording
+            // and fill are the design kit's own (`ui_kits/android/`, its
+            // `Fab`): feather at 20dp, the word "Capture", 20dp corners —
+            // and the one place brand orange appears as a large fill on
+            // Android (`colorScheme.primary` is the ember accent).
+            if (NavDestination.entries.any { it.route == currentRoute }) {
+                ExtendedFloatingActionButton(
+                    onClick = { captureSheetOpen = true },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    shape = RoundedCornerShape(20.dp),
+                    icon = {
+                        Icon(
+                            painterResource(R.drawable.ic_feather),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    },
+                    text = { Text("Capture") },
                 )
             }
         },
@@ -557,6 +592,18 @@ private fun AppRoot(
             currentRoute = currentRoute,
             onNavigate = ::goToTab,
             onDismiss = { moreSheetOpen = false },
+        )
+    }
+
+    if (captureSheetOpen) {
+        CaptureSheet(
+            onDismiss = { captureSheetOpen = false },
+            // A user-attributed cycle, not a wait for the 60-second timer
+            // leg: the capture is already durable locally
+            // (`CaptureViewModel.submit`'s local-first contract), so this
+            // only hurries the mirror — `syncTick` bumps when it lands and
+            // Now/Triage re-read.
+            onCaptured = { scope.launch { sync("user") } },
         )
     }
 }

@@ -100,7 +100,10 @@ fun RulesScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(24.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                // Scrolled, not a fixed inset: the last row
+                // clears the Capture FAB (24dp outer + this).
+                .padding(bottom = 64.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             TextButton(

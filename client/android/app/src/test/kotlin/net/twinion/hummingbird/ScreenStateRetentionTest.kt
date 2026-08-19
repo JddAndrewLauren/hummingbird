@@ -29,6 +29,11 @@ class ScreenStateRetentionTest {
 
     private val screens = listOf(
         "CaptureActivity.kt" to "CaptureViewModel",
+        // The FAB's sheet shares the Activity form's ViewModel shape but
+        // resolves it against MainActivity's store — a fold mid-draft is
+        // exactly the transition this gate exists for, and the sheet has
+        // words to lose like the Activity does.
+        "CaptureSheet.kt" to "CaptureViewModel",
         "NowScreen.kt" to "NowViewModel",
         "AlertsScreen.kt" to "AlertsViewModel",
         "AlertDetailScreen.kt" to "AlertDetailViewModel",
