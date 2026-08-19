@@ -27,7 +27,8 @@ grepping it.
 | The owned schema + wire DTOs | `server/domain/` | `src/lib.rs`, ADR-0009 |
 | The authority server | `server/authority/` (+ `worker/` wasm32 shim) | `src/lib.rs`; DDL and its migration traps in `src/schema.rs` |
 | Rule evaluation | `server/rules-engine/` | `src/lib.rs`, ADR-0013 |
-| The notification lane | `authority/src/{delivery,sweep,fcm}.rs`, `worker/src/fcm.rs` | `delivery.rs`, ADR-0012/0014 |
+| The notification lane | `authority/src/{delivery,sweep,fcm,google_oauth}.rs`, `worker/src/fcm.rs` | `delivery.rs`, ADR-0012/0014 |
+| The authority mints the web host's Google calendar token (#577) | `server/authority/src/{google_oauth,google_calendar}.rs`, `server/authority/src/handlers/calendar_token.rs`, `server/worker/src/calendar.rs`, `client/web/src/calendar/authority-token-client.ts` | `google_calendar.rs`, then ADR-0028 |
 | Grill (interview + the immutable per-item attachment) | `domain/src/grill.rs`, `authority/src/handlers/grills.rs` | `grill.rs`, ADR-0023 |
 | The which-cans poller | `server/city-waste/` | `src/lib.rs`, then `src/judge.rs` |
 | Evaluated-stream pollers | `server/{gmail-poll,calendar-poll,graph-poll}/` | each `src/lib.rs`, ADR-0011 |
@@ -87,8 +88,11 @@ faucet**. Cloudflare Worker secret plus a Fly secret, both set from the
 operator's terminal, never Actions; since #273 rotating it is a two-place
 operation (ADR-0018). A `device` token is the authority's only read-capable
 scope and is write-everything, so anything holding one is treated as a write
-credential however read-only it looks — and since #273 it can also *cause
-spend*, via `POST /api/skills/run`. See ADR-0011 for the per-source table.
+credential however read-only it looks — since #273 it can also *cause
+spend*, via `POST /api/skills/run`, and since #577 it can also mint a Google
+`calendar.readonly` access token via `POST /api/google/calendar_token`,
+against a server-held credential shared by every device (ADR-0028). See
+ADR-0011 for the per-source table.
 
 **No competing clocks.** Exactly one thing owns each cadence: supercronic owns
 the sweeper's, the Durable Object's `alarm()` owns the sweep tick's. A second
