@@ -1,6 +1,7 @@
 package net.twinion.hummingbird
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,6 +32,16 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.theme.Amber500
+import net.twinion.hummingbird.ui.theme.Crimson500
+import net.twinion.hummingbird.ui.theme.Ember400
+import net.twinion.hummingbird.ui.theme.Ember500
+import net.twinion.hummingbird.ui.theme.Ink300
+import net.twinion.hummingbird.ui.theme.Ink400
+import net.twinion.hummingbird.ui.theme.Moss600
+import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
+import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
+import net.twinion.hummingbird.ui.theme.UrgencySoonDark
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
@@ -42,13 +53,18 @@ import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 // `hummingbird_core::decisions::panes` shell the web reads.
 //
 // **This file decides nothing about a pane.** `answerState` and `band`
-// arrive already decided (`MobileTaskHost.rankPanes`); the two `when`s
-// below ([paneLabel], [BandDot]) carry no `else ->` arm on purpose — a
-// ninth standing question or a sixth band added core-side is a Kotlin
-// compile error here rather than a row that silently renders as nothing
-// (this file's own drift gate, `ffi-mobile::MobileStandingQuestion`'s own
-// doc). Replaces the debug `ProofScreen`, whose useful affordances moved to
-// Settings in #535.
+// arrive already decided (`MobileTaskHost.rankPanes`); every `when` below
+// ([paneLabel], [bandColor], [paneStatusWords]) carries no `else ->` arm
+// on purpose — a ninth standing question or a sixth band added core-side
+// is a Kotlin compile error here rather than a row that silently renders
+// as nothing (this file's own drift gate, `ffi-mobile::
+// MobileStandingQuestion`'s own doc).
+//
+// Replaces the debug `ProofScreen`. Most of its affordances moved to
+// Settings in #535; the one that did not — the "Manage device token in
+// Settings" link — moves here instead (#536 review), since #535 left
+// `Routes.SETTINGS` reachable only through that one incidental door and
+// nothing else in the app navigates there until #541.
 
 /** One pane's label, from its [MobileStandingQuestion] and its subject —
  * a rendering choice, never a decision: which words name "the GitHub pane"
@@ -71,10 +87,19 @@ private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuest
 
 /** The state sentence beside a pane's dot — decided facts
  * ([MobilePaneAnswerState]/[MobilePaneBand]) in the product's own honest
- * register, `MainActivity`'s `describe(RunOutcome)` precedent. */
+ * register, `MainActivity`'s `describe(RunOutcome)` precedent.
+ *
+ * None of the status four ever answers [MobilePaneAnswerState.UNBOUND]
+ * today (`kimi.rs`/`github.rs`/`uptime.rs`/`reachability.rs` — no per-device
+ * binding, so a gap is always [MobilePaneAnswerState.BOUND_BUT_UNACQUIRED]);
+ * the arm below is named anyway, on the same "never render as nothing"
+ * reasoning `paneLabel`'s exhaustive `when` uses, in case a future pane
+ * sunk into `Surface::Status` ever has a binding. */
 private fun paneStatusWords(pane: MobileRankedPane): String {
-    if (pane.answer.answerState != MobilePaneAnswerState.ANSWERED) {
-        return "Not read yet"
+    when (pane.answer.answerState) {
+        MobilePaneAnswerState.UNBOUND -> return "Not set up yet"
+        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return "Not read yet"
+        MobilePaneAnswerState.ANSWERED -> Unit
     }
     return when (pane.answer.band) {
         MobilePaneBand.LIVE -> "Needs attention now"
@@ -85,17 +110,29 @@ private fun paneStatusWords(pane: MobileRankedPane): String {
     }
 }
 
-private fun bandColor(band: MobilePaneBand): Color = when (band) {
-    MobilePaneBand.LIVE -> Color(0xFFDC2626)
-    MobilePaneBand.IMMINENT -> Color(0xFFEA580C)
-    MobilePaneBand.NEAR -> Color(0xFFD97706)
-    MobilePaneBand.DISTANT -> Color(0xFF6B7280)
-    MobilePaneBand.DORMANT -> Color(0xFF16A34A)
+/** [MobilePaneBand]'s dot colour — design-mirror tokens
+ * (`.claude/skills/hummingbird-design/tokens/colors.css`), light/dark
+ * split exactly [urgencyColor]'s own pattern in `NowScreen.kt`. [LIVE]
+ * reuses the urgency ramp's most severe rung (`--urgency-overdue`) rather
+ * than a fresh red: a pane needing attention *now* is the same salience
+ * [urgencyColor] already names, not a second vocabulary for it.
+ * [DISTANT] is the one band with no urgency-ramp or status-tone analogue
+ * (ADR-0015's own five bands are a superset of the three-band urgency
+ * scale), so it takes the plain secondary-text ink rather than inventing a
+ * sixth accent colour for "not yet looked at". Exhaustive, no `else` arm —
+ * the same discipline [urgencyColor] uses, for the same reason. */
+private fun bandColor(band: MobilePaneBand, dark: Boolean): Color = when (band) {
+    MobilePaneBand.LIVE -> if (dark) UrgencyOverdueDark else Crimson500
+    MobilePaneBand.IMMINENT -> if (dark) Ember400 else Ember500
+    MobilePaneBand.NEAR -> if (dark) UrgencySoonDark else Amber500
+    MobilePaneBand.DISTANT -> if (dark) Ink300 else Ink400
+    MobilePaneBand.DORMANT -> if (dark) StatusDoneFgDark else Moss600
 }
 
 @Composable
 private fun BandDot(band: MobilePaneBand) {
-    Column(modifier = Modifier.size(10.dp).background(bandColor(band), CircleShape)) {}
+    val dark = isSystemInDarkTheme()
+    Column(modifier = Modifier.size(10.dp).background(bandColor(band, dark), CircleShape)) {}
 }
 
 @Composable
@@ -136,6 +173,13 @@ private fun RankedPaneList(panes: List<MobileRankedPane>) {
 fun StatusScreen(
     syncTick: Int = 0,
     onBack: () -> Unit,
+    /** `ProofScreen`'s one incidental door onto Settings, carried forward
+     * (#536 review) — #541 still owns *permanent* nav, but a device with
+     * no token needs a way to reach the one screen that can enter one
+     * (`SettingsScreen`'s own token card) between now and then, since
+     * nothing else in the app currently navigates to
+     * [Routes.SETTINGS]. */
+    onGoToSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -171,6 +215,10 @@ fun StatusScreen(
             when (val current = state) {
                 StatusState.Loading -> CircularProgressIndicator()
                 is StatusState.Loaded -> RankedPaneList(current.panes)
+            }
+
+            TextButton(onClick = onGoToSettings) {
+                Text("Manage device token in Settings")
             }
         }
     }

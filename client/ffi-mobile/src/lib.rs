@@ -2083,7 +2083,9 @@ fn to_sync_facts(facts: MobileSyncFacts) -> SyncFacts {
 /// re-deriving it per pane (`panes::inputs`'s own "do not re-cross whole
 /// DTOs" rule, applied at this seam).
 fn to_pane_read_facts(read: &hummingbird_core::pane::PaneRead) -> PaneReadFacts {
-    use hummingbird_core::decisions::panes::inputs::{PaneEnvelopeFacts, PaneSnapshotFacts};
+    use hummingbird_core::decisions::panes::inputs::{
+        PaneAlertFacts, PaneEnvelopeFacts, PaneSnapshotFacts,
+    };
 
     PaneReadFacts {
         snapshots: read
@@ -2102,7 +2104,19 @@ fn to_pane_read_facts(read: &hummingbird_core::pane::PaneRead) -> PaneReadFacts 
                 freshness: to_freshness_fact(snapshot.freshness),
             })
             .collect(),
-        live_alerts: Vec::new(),
+        // `PaneRead.alerts` is already this source's live-only rows
+        // (`Core::pane_read`'s own ADR-0014 filter) — trimmed to the one
+        // field a sunk pane's join reads (`race.rs`, the only reader
+        // today, on a Now-surface question no Status caller reaches yet).
+        // Carried through rather than left empty: it costs nothing extra
+        // over the crossing `to_pane_read_facts` already does, and an
+        // empty default here would have been a silent trap for #537's
+        // race pane to land on.
+        live_alerts: read
+            .alerts
+            .iter()
+            .map(|alert| PaneAlertFacts { subject_key: alert.subject_key.clone() })
+            .collect(),
     }
 }
 
