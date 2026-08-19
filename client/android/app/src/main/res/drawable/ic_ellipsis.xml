@@ -1,0 +1,27 @@
+<!-- Lucide `ellipsis` at 24dp — the More tab (the web NavBar's own overflow glyph) — outline, 1.75px stroke,
+     rounded caps, `ic_inbox.xml`'s recipe. Drawn in white and tinted at
+     use: icons never carry colour independently of their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M11,12 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M18,12 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M4,12 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

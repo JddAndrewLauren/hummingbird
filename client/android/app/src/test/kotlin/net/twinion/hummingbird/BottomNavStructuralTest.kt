@@ -231,4 +231,57 @@ class BottomNavStructuralTest {
             navDestinations.none { it.routeConst == "RECALL" },
         )
     }
+
+    @Test
+    fun `every destination names a glyph, exhaustively and without an else arm`() {
+        // The glyph map is a `when` with no `else` so a tenth destination
+        // fails to compile until it names one — a stronger completeness
+        // gate than any regex here. What this test pins instead is the
+        // mechanism itself: that the `when` exists, stays exhaustive over
+        // the enum's entries by name, and never grows the `else` arm that
+        // would quietly turn "compile error" back into "same icon as
+        // whatever the fallback is".
+        val body = mainActivitySrc
+            .substringAfter("private fun navIcon(")
+            .substringBefore("\n}")
+        val enumNames = Regex("""(\w+)\(Routes\.\w+,""").findAll(
+            mainActivitySrc
+                .substringAfter("private enum class NavDestination(")
+                .substringBefore("\n}"),
+        ).map { it.groupValues[1] }.toSet()
+        val named = Regex("""NavDestination\.(\w+) ->""").findAll(body)
+            .map { it.groupValues[1] }.toSet()
+        assertEquals(
+            "navIcon's when must cover exactly NavDestination's entries",
+            enumNames,
+            named,
+        )
+        assertFalse(
+            "navIcon must not carry an else arm — exhaustiveness is the completeness gate",
+            body.contains("else ->"),
+        )
+    }
+
+    @Test
+    fun `no nav control renders an empty icon slot`() {
+        // #532 shipped the bar icon-less by policy ("no icon set exists on
+        // Android yet"); this slice vendors the web's own glyphs
+        // (`screen-icons.ts` → `res/drawable/ic_*.xml`), so an `icon = {}`
+        // reappearing anywhere in the bar or sheet is a regression to that
+        // pre-icon state, not a neutral choice.
+        val fromBar = mainActivitySrc.substringAfter("private fun BottomNavBar(")
+        assertFalse(
+            "BottomNavBar (and everything after it) must not pass an empty icon slot",
+            Regex("""icon\s*=\s*\{\s*\}""").containsMatchIn(fromBar),
+        )
+        val barBody = fromBar.substringBefore("\n}\n")
+        assertTrue(
+            "the bar's destination items must draw their navIcon glyph",
+            barBody.contains("painterResource(navIcon(destination))"),
+        )
+        assertTrue(
+            "the More control must draw the web's own overflow glyph",
+            barBody.contains("R.drawable.ic_ellipsis"),
+        )
+    }
 }
