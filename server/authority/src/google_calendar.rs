@@ -7,11 +7,19 @@
 //! `fetch` to `oauth2.googleapis.com`, and the one-`RefCell`-per-DO-instance
 //! cache the whole "N devices collapse to one exchange per hour" story
 //! depends on — is `hummingbird-authority-worker`'s `calendar` module. That
-//! cache is not just an optimisation: it caps what a stolen `device` token
-//! can do to Google's token endpoint at one exchange per hour, and it is
-//! never persisted (a plaintext Google bearer at rest would be a new class
-//! of stored credential — the `tokens` table holds only sha256 digests —
-//! and eviction costs exactly one extra exchange).
+//! cache is not just an optimisation: while a token is cached, a caller
+//! holding a stolen `device` token gets that cached token rather than a
+//! fresh exchange, so steady-state abuse of Google's token endpoint stays at
+//! one exchange per hour. **It is a steady-state cap, not a hard throttle**
+//! — nothing here caches an in-flight or *failed* exchange, so requests that
+//! overlap a cache miss can each start one, and a credential Google is
+//! refusing (`invalid_grant`) is re-attempted on every request. Bounding
+//! those would mean an in-flight lock and negative caching in the untested
+//! shim; the exposure is a personal workspace's own dead credential, so the
+//! claim is narrowed rather than the mechanism grown. The cache is never
+//! persisted (a plaintext Google bearer at rest would be a new class of
+//! stored credential — the `tokens` table holds only sha256 digests — and
+//! eviction costs exactly one extra exchange).
 //!
 //! **No path here answers 401.** Per ADR-0004 that would make the client
 //! re-prompt a device token that is perfectly fine. Unset secrets are a
@@ -64,12 +72,27 @@ pub fn calendar_refresh_grant_body(
     )
 }
 
-/// Whether a cached token is still safe to hand out. The boundary itself —
-/// subtracting the expiry slack — is already baked into `expires_at_ms` by
-/// [`crate::google_oauth::parse_access_token`], so this is a plain
-/// comparison against the caller's clock.
+/// How long before a cached token's deadline this module starts minting a
+/// new one instead of handing the old one back.
+///
+/// **This must exceed the web client's rotation margin** —
+/// `client/web/src/calendar/connection.ts`'s `msUntilRotation`, 5 minutes —
+/// and that coupling is the whole point of the constant. The client wakes a
+/// timer at `expires_at_ms - 5min` and re-mints; if this module still called
+/// the cached token fresh at that moment it would answer with the *same*
+/// token and the *same* `expires_at_ms`, the client's rotation effect would
+/// see unchanged inputs, no new timer would be armed, and proactive rotation
+/// would be a permanent no-op after its first cache hit — leaving every
+/// session to discover expiry through a live 401 instead.
+pub const CACHE_REMINT_MARGIN_MS: i64 = 6 * 60 * 1000;
+
+/// Whether a cached token is still safe to hand out. `expires_at_ms` already
+/// carries [`crate::google_oauth::TOKEN_EXPIRY_SLACK_SECS`], baked in by
+/// [`crate::google_oauth::parse_access_token`]; the extra margin subtracted
+/// here is not about the token's own validity but about staying ahead of the
+/// client's rotation timer — see [`CACHE_REMINT_MARGIN_MS`].
 pub fn token_is_fresh(token: &AccessToken, now_ms: i64) -> bool {
-    now_ms < token.expires_at_ms
+    now_ms < token.expires_at_ms - CACHE_REMINT_MARGIN_MS
 }
 
 /// The 200 body.
@@ -166,14 +189,30 @@ mod tests {
         AccessToken { token: "ya29.abc".into(), expires_at_ms }
     }
 
-    /// Both sides of the boundary: `expires_at_ms` is already the deadline
-    /// (slack baked in by `parse_access_token`), so "fresh" is a strict `<`
-    /// against the caller's clock.
+    /// Both sides of the boundary: "fresh" is a strict `<` against the
+    /// caller's clock, one re-mint margin ahead of the deadline.
     #[test]
     fn token_freshness_is_a_strict_boundary() {
-        assert!(token_is_fresh(&token(10_001), 10_000), "not yet expired is fresh");
-        assert!(!token_is_fresh(&token(10_000), 10_000), "exactly at the deadline is stale");
+        let deadline = 10_000 + CACHE_REMINT_MARGIN_MS;
+        assert!(token_is_fresh(&token(deadline + 1), 10_000), "before the margin is fresh");
+        assert!(!token_is_fresh(&token(deadline), 10_000), "exactly at the margin is stale");
+        assert!(!token_is_fresh(&token(10_000), 10_000), "at the deadline is stale");
         assert!(!token_is_fresh(&token(9_999), 10_000), "past the deadline is stale");
+    }
+
+    /// The coupling [`CACHE_REMINT_MARGIN_MS`] exists for: the web client
+    /// wakes its rotation timer 5 minutes before `expires_at_ms`, and that
+    /// call must get a *new* token, or the client's effect deps never change
+    /// and it never arms another timer.
+    #[test]
+    fn a_token_the_client_wakes_to_rotate_is_no_longer_fresh() {
+        const CLIENT_ROTATION_MARGIN_MS: i64 = 5 * 60 * 1000;
+        let expires_at_ms = 3_600_000;
+        let client_wakes_at = expires_at_ms - CLIENT_ROTATION_MARGIN_MS;
+        assert!(
+            !token_is_fresh(&token(expires_at_ms), client_wakes_at),
+            "the server must consider a token stale before the client wakes to rotate it",
+        );
     }
 
     #[test]

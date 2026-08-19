@@ -63,6 +63,15 @@ unreachable / `invalid_grant` / other upstream failure is 502. The verdict
 is checked before any secret is read, so an unauthenticated caller gets 401
 and never learns whether the lane is provisioned at all.
 
+*Amended 2026-08-19 (#577, post-review): "before any secret is read" states
+the observable property, not the mechanism. The three `GOOGLE_CALENDAR_*`
+bindings are read once in the Durable Object's constructor, beside
+`ADMIN_SECRET` and `FCM_SERVICE_ACCOUNT` — reading a binding into the isolate
+is not a credential use. What is gated on the verdict is everything a caller
+could observe: `worker/src/lib.rs` consults the minter only after `handle()`
+returns 204, and a 401 is answered empty, so an unauthenticated caller still
+cannot tell a provisioned lane from an unprovisioned one.*
+
 ### The credential
 
 ADR-0011's #486 amendment settled on **one broad Google credential**,
@@ -102,6 +111,26 @@ The cache is not only a performance choice: it caps what a stolen `device`
 token can do to Google's token endpoint at **one exchange per hour**,
 regardless of how many times the route is called. The module implementing
 it must say so in its header.
+
+*Amended 2026-08-19 (#577, post-review): that cap is **steady-state, not a
+hard throttle**, and the module header says so in those terms instead. The
+cache holds only successful exchanges, so requests that overlap a cache miss
+can each start one, and a credential Google is refusing (`invalid_grant`) is
+re-attempted on every call rather than remembered. Closing both would take an
+in-flight lock and negative caching inside `server/worker`, which has no test
+harness; what is actually exposed is one personal workspace's own dead
+credential against Google's rate limits, so the claim was narrowed and the
+mechanism left alone.*
+
+*Amended 2026-08-19 (#577, post-review): the freshness boundary is **one
+re-mint margin ahead of `expires_at_ms`**, not the deadline itself —
+`google_calendar.rs`'s `CACHE_REMINT_MARGIN_MS`, deliberately larger than the
+web client's 5-minute `msUntilRotation` margin. Without it the two constants
+deadlock: the client wakes to rotate while the server still calls the cached
+token fresh, gets back the identical token and expiry, and its rotation
+effect — keyed on that expiry — never arms another timer, so proactive
+rotation dies after its first cache hit and every session rediscovers expiry
+through a live 401.*
 
 ### Server shape
 

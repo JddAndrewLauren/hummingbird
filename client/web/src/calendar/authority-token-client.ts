@@ -61,16 +61,32 @@ interface CalendarTokenResponseBody {
   expires_at_ms?: unknown;
 }
 
+/** Total on every value `response.json()` can return — `null` is valid JSON,
+ * and reading a field off it would throw out of a client documented never to.
+ * A non-object body is `no_access_token` like any other unusable answer. */
 function isUsableToken(
-  body: CalendarTokenResponseBody,
+  body: unknown,
 ): body is { access_token: string; expires_at_ms: number } {
-  return typeof body.access_token === "string" && typeof body.expires_at_ms === "number";
+  if (body === null || typeof body !== "object") {
+    return false;
+  }
+  const { access_token, expires_at_ms } = body as CalendarTokenResponseBody;
+  return typeof access_token === "string" && typeof expires_at_ms === "number";
 }
 
 export function createAuthorityTokenClient(deps: AuthorityTokenClientDeps): TokenClient {
   return {
     async requestToken(_prompt: TokenPrompt): Promise<TokenResult | TokenError> {
-      const token = await deps.readToken();
+      // `readToken` reads IndexedDB, which rejects outright when the store is
+      // blocked or corrupt (private windows, a wedged upgrade). This client
+      // never throws, so an unreadable store reads as "no token stored" —
+      // which is what it means from here: nothing to authenticate with.
+      let token: string | null;
+      try {
+        token = await deps.readToken();
+      } catch {
+        return { error: "no_device_token" };
+      }
       if (token === null || token === "") {
         return { error: "no_device_token" };
       }
@@ -99,9 +115,9 @@ export function createAuthorityTokenClient(deps: AuthorityTokenClientDeps): Toke
         return { error: "bad_token_response" };
       }
 
-      let body: CalendarTokenResponseBody;
+      let body: unknown;
       try {
-        body = (await response.json()) as CalendarTokenResponseBody;
+        body = await response.json();
       } catch {
         return { error: "bad_token_response" };
       }

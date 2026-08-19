@@ -32,10 +32,16 @@ export function connectErrorCopy(error: string): ConnectErrorCopy {
         message: "This device has no token stored.",
         hint: "Enter a device token below, then try again.",
       };
+    // The hint names Forget first on purpose. This rejection reached the
+    // calendar lane, and the device-token card below keys its entry form off
+    // the *task* lane's `needsReconnect` (`task/token-ui.ts`) — so until task
+    // sync independently takes its own 401, that card is still `resting` and
+    // shows only "Forget token", not a form to type into. Forgetting is the
+    // one gesture that is always on screen, and it reveals the form.
     case "authority_rejected_device_token":
       return {
         message: "The stored device token was rejected.",
-        hint: "Enter a fresh device token below and try again.",
+        hint: "Forget the device token below, then enter a fresh one and try again.",
       };
     case "authority_unconfigured":
       return {

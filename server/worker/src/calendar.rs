@@ -1,14 +1,20 @@
 //! The runtime half of the calendar-token mint (#577/#582): the token-
 //! endpoint `fetch`, and the one-`RefCell`-per-DO-instance cache the whole
 //! "N devices collapse to one exchange per hour" cost story — and its
-//! security cap on a stolen `device` token — depends on.
+//! steady-state cap on a stolen `device` token — depends on. What that cap
+//! does and does not cover (overlapping misses, failed exchanges) is stated
+//! where the boundary lives, in [`hummingbird_authority::google_calendar`].
 //!
 //! Everything else — the grant body, the freshness boundary, the response
-//! DTO, and every failure's status and prose — lives in
-//! [`hummingbird_authority::google_calendar`]'s pure surface, where a
-//! native test can execute it. This file holds zero string literals and
-//! zero status arithmetic, same discipline as `fcm.rs`: `server/worker` has
-//! no test harness of any kind, so anything expressed here is untested by
+//! DTO, and every failure's status and prose — lives in that pure surface,
+//! where a native test can execute it. This file holds zero *policy*: no
+//! wording, no status arithmetic, no freshness boundary. The only literals
+//! it may carry are the names of its own Worker bindings and the request's
+//! content type, exactly as `fcm.rs` carries `FCM_SERVICE_ACCOUNT` and the
+//! same form encoding — a binding name is what this file *is*, and both
+//! shims spell the content type at their `post` call so the two token legs
+//! stay one shape. The discipline matters because `server/worker` has no test
+//! harness of any kind, so anything expressed here is untested by
 //! construction.
 //!
 //! # Credential

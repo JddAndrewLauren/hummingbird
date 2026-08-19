@@ -18,10 +18,14 @@
 //
 // Four invariants, each pinned by a test:
 //
-// 1. **It never throws.** A rejected `fetch`, a non-200, a missing token
-//    and a body that ends without a terminal line all become a synthesized
-//    terminal event, so the consumer's `for await` is total and needs no
-//    try/catch of its own.
+// 1. **It never throws.** A rejected `fetch`, a non-200, a missing token, a
+//    token store that *rejects* rather than answering, and a body that ends
+//    without a terminal line all become a synthesized terminal event, so the
+//    consumer's `for await` is total and needs no try/catch of its own. The
+//    token-store case is the one that was missing: `readToken` reads
+//    IndexedDB, which rejects outright when the store is blocked or corrupt,
+//    and an unguarded read there rejects the *generator*, which is the one
+//    failure a `for await` cannot absorb.
 // 2. **Exactly one terminal event**, and anything after it is discarded —
 //    a stream carrying two terminal lines is malformed, and the first one
 //    is the answer.
@@ -66,7 +70,15 @@ export async function* runSkill(
 ): AsyncGenerator<SkillEvent> {
   yield { kind: "started" };
 
-  const token = await deps.readToken();
+  // A store that cannot be read is the same answer as a store with nothing
+  // in it: there is nothing to authenticate with. Anything else here would
+  // reject the generator itself and break invariant 1.
+  let token: string | null;
+  try {
+    token = await deps.readToken();
+  } catch {
+    token = null;
+  }
   if (token === null || token === "") {
     // Asserted by a test: `fetch` is never called. There is nothing to
     // authenticate with, and issuing the request anyway would spend a round

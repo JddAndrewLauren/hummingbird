@@ -25,6 +25,22 @@ describe("createAuthorityTokenClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  /** The token store is IndexedDB, which rejects outright when it is blocked
+   * or corrupt. This client is documented never to throw, so that has to read
+   * as "no token" rather than escaping as an unhandled rejection. */
+  it("never calls fetch when the token store itself rejects, and returns no_device_token", async () => {
+    const fetch = vi.fn();
+    const client = createAuthorityTokenClient({
+      fetch,
+      readToken: async () => {
+        throw new Error("InvalidStateError: the database is closing");
+      },
+    });
+
+    expect(await client.requestToken("none")).toEqual({ error: "no_device_token" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("posts same-origin, authenticated, ignoring the prompt argument", async () => {
     const fetch = vi.fn(async (..._args: Parameters<typeof globalThis.fetch>) =>
       jsonResponse(200, { access_token: "ya29.x", expires_at_ms: 123 }),
@@ -124,6 +140,18 @@ describe("createAuthorityTokenClient", () => {
     });
 
     expect(await client.requestToken("none")).toEqual({ error: "no_access_token" });
+  });
+
+  /** `null` and `"ya29.x"` are both valid JSON, so `response.json()` resolves
+   * and the guard — not the parse `try` — is what has to survive them. Reading
+   * a field off either would throw out of a client documented never to. */
+  it.each([null, "ya29.x", 7])("maps a 200 body that is not an object (%p) to no_access_token", async (body) => {
+    const client = createAuthorityTokenClient({
+      fetch: async () => jsonResponse(200, body),
+      readToken: async () => "tok",
+    });
+
+    await expect(client.requestToken("none")).resolves.toEqual({ error: "no_access_token" });
   });
 
   it("never puts the device token in any returned string", async () => {

@@ -26,6 +26,16 @@ describe("connectErrorCopy", () => {
     expect(hint).toMatch(/try again|check|remove/i);
   });
 
+  /** A rejection that arrives through the calendar lane leaves the device-token
+   * card in `resting` (`task/token-ui.ts` derives it from the *task* lane's
+   * `needsReconnect`), and `SettingsScreen` renders only "Forget token" in
+   * that state. So the hint must not send the reader to an entry form that is
+   * not on screen — Forget is the gesture that is, and it reveals the form. */
+  it("sends a rejected device token through Forget, not straight to a form", () => {
+    const { hint } = connectErrorCopy("authority_rejected_device_token");
+    expect(hint).toMatch(/forget/i);
+  });
+
   it("echoes an unrecognised code rather than swallowing it", () => {
     const { message, hint } = connectErrorCopy("some_code_nobody_has_seen");
     expect(message).toContain("some_code_nobody_has_seen");

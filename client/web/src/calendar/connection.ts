@@ -117,18 +117,35 @@ async function silentReconnect(deps: ConnectionDeps): Promise<ConnectionResult> 
   return connected(result.expiresAtMs);
 }
 
+/** How far before the real expiry a proactive re-mint is scheduled.
+ *
+ * **Coupled to the authority's own cache boundary** —
+ * `server/authority/src/google_calendar.rs`'s `CACHE_REMINT_MARGIN_MS`, which
+ * is deliberately *larger*, and `rotation-margin-drift.test.ts` pins the
+ * inequality because nothing else can. The rotation this schedules only
+ * works because the authority already considers its cached token stale by
+ * the time this timer fires. If it did not, the route would answer with the
+ * same token and the same `expires_at_ms`, the rotation effect in
+ * `shell/useCalendarWiring.ts` — keyed on that expiry — would see unchanged
+ * deps, and no further timer would ever be armed: proactive rotation would
+ * stop dead after its first cache hit, silently, with every session left to
+ * rediscover expiry through a live 401. Raising this past that constant
+ * re-breaks it. */
+export const ROTATION_MARGIN_MS = 5 * 60 * 1000;
+
 /** How long to wait, in milliseconds, before proactively re-minting a token
  * ahead of its expiry — the token `POST /api/google/calendar_token`
  * (ADR-0028) hands back is still Google's ~1-hour access token, and the
  * authority never pushes a refresh token down to the browser, so this is
  * what keeps a long-lived session from ever hitting a live 401 in the first
- * place. `marginMs` is the safety margin before the real expiry (default 5
- * minutes); the result is clamped to 0 so an already-expired/near-expired
- * token schedules an immediate re-mint rather than a negative delay. */
+ * place. `marginMs` is the safety margin before the real expiry
+ * ([`ROTATION_MARGIN_MS`]); the result is clamped to 0 so an
+ * already-expired/near-expired token schedules an immediate re-mint rather
+ * than a negative delay. */
 export function msUntilRotation(
   expiresAtMs: number,
   nowMs: number,
-  marginMs = 5 * 60 * 1000,
+  marginMs = ROTATION_MARGIN_MS,
 ): number {
   return Math.max(0, expiresAtMs - marginMs - nowMs);
 }

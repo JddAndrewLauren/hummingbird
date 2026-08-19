@@ -155,6 +155,26 @@ describe("runSkill", () => {
     }
   });
 
+  /** Invariant 1's missing case. `readToken` reads IndexedDB, which rejects
+   * outright when the store is blocked or corrupt — and an unguarded read
+   * there rejects the *generator*, which is the one failure the consumer's
+   * `for await` cannot absorb. A store that cannot be read is the same answer
+   * as an empty one: nothing to authenticate with. */
+  it("with a token store that rejects it declines like an empty one, and never throws", async () => {
+    const fetchSpy = vi.fn();
+    const events = await collect({
+      fetch: fetchSpy as never,
+      readToken: async () => {
+        throw new Error("InvalidStateError: the database is closing");
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      { kind: "started" },
+      { kind: "failed", error: NO_TOKEN, backend: null, model: null },
+    ]);
+  });
+
   it("sends the token as a bearer, and never puts it in a message", async () => {
     const fetchSpy = vi.fn(
       async (_input: unknown, _init?: RequestInit) =>
