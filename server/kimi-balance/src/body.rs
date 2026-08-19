@@ -2,12 +2,13 @@
 //! around a `kimi-balance/v1` body.
 //!
 //! **This is one half of a cross-language contract.** The other half is
-//! `client/web/src/screens/kimi-pane/kimi.ts`'s parser, and nothing
+//! `client/core/src/decisions/panes/kimi.rs`'s `parse_kimi_body` (sunk out
+//! of `client/web/src/screens/kimi-pane/kimi.ts` at #534), and nothing
 //! mechanically connects them — the body inside the envelope is deliberately
 //! unfrozen and opaque to the server. `tests/contract.rs`'s
 //! `the_body_this_poller_writes_is_the_body_the_pane_parses` is the only
 //! guard against the two drifting, on `city-waste`'s own reasoning: it
-//! asserts the literal snake_case key names against the TypeScript's own
+//! asserts the literal snake_case key names against that Rust module's own
 //! text rather than going through this module's serde.
 //!
 //! The body is exactly the three numbers Moonshot's endpoint reports —

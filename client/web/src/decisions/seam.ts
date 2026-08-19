@@ -43,6 +43,8 @@ import type { TaskActionName, TaskStageName } from "../store/protocol";
  * typechecker only sees after `pnpm run build:wasm`. */
 import type {
   BindingDTO,
+  CalendarEventDTO,
+  CalendarReadDTO,
   ConditionDTO,
   FieldTypeName,
   FreshnessDTO,
@@ -52,6 +54,7 @@ import type {
   PaneSnapshotDTO,
   ProjectDTO,
   RuleDTO,
+  StepDTO,
   TaskItemDTO,
 } from "../store/protocol";
 
@@ -135,6 +138,17 @@ export interface DecisionsModule {
   no_token_decline(): string;
   no_terminal_line_decline(): string;
   outside_schema_decline(): string;
+  // #539: the microtask affordance, the backend picker's tier fallback,
+  // and the Grill review card's predicates.
+  microtask_affordance_json(stepsJson: string): string;
+  fallback_backend_id(registryIdsJson: string, deadId: string): string | undefined;
+  resolve_backend_selection(stored: string | undefined, registryIdsJson: string): string;
+  backend_auto_selection(): string;
+  declined_backend_fallback(stateJson: string, selection: string, registryIdsJson: string): string | undefined;
+  grill_would_strand_plan(verdict: string, stepsJson: string): boolean;
+  grill_plan_replacement_label(stepsJson: string): string;
+  grill_demotes_from_frontier(verdict: string, stage: string): boolean;
+  grill_frontier_demotion_warning(): string;
   // M4 (#533): the pane shell contract's decided half, the cross-pane
   // sort, the zone bridge, and the waste pane.
   waste_zone_queries_json(inputsJson: string): string;
@@ -149,6 +163,57 @@ export interface DecisionsModule {
   pane_band_order_json(): string;
   pane_question_order_json(): string;
   waste_constants_json(): string;
+  // #535 (M4): the Settings screen's sync-status readout and dead-letter
+  // heading.
+  sync_status_summary_json(inputJson: string): string;
+  dead_letter_heading(count: number): string;
+  sync_outcome_class(kind: string): string;
+  is_informative_sync_outcome(kind: string): boolean;
+  relative_age(ageMs: number): string;
+  // #534: the remaining seven panes.
+  parse_kimi_body_json(snapshotJson: string): string;
+  kimi_facts_json(inputsJson: string): string;
+  kimi_answer_json(inputsJson: string): string;
+  kimi_band_json(availableBalance: number): string;
+  kimi_constants_json(): string;
+  parse_workflow_body_json(snapshotJson: string): string;
+  github_band_json(bodyJson: string, nowMs: number): string;
+  github_subjects_json(inputsJson: string): string;
+  github_facts_json(subjectKey: string, inputsJson: string): string;
+  github_answer_json(subjectKey: string, inputsJson: string): string;
+  github_constants_json(): string;
+  parse_uptime_body_json(snapshotJson: string): string;
+  uptime_band_json(bodyJson: string): string;
+  uptime_subjects_json(inputsJson: string): string;
+  uptime_facts_json(subjectKey: string, inputsJson: string): string;
+  uptime_answer_json(subjectKey: string, inputsJson: string): string;
+  uptime_constants_json(): string;
+  reachability_facts_json(inputsJson: string): string;
+  reachability_answer_json(inputsJson: string): string;
+  reachability_constants_json(): string;
+  parse_race_body_json(snapshotJson: string): string;
+  race_series_from_binding_json(text: string): string;
+  race_setup_json(inputsJson: string): string;
+  race_subjects_json(inputsJson: string): string;
+  next_race_at_json(eventsJson: string, nowMs: number): string;
+  race_facts_json(series: string, inputsJson: string): string;
+  race_answer_json(subjectKey: string, inputsJson: string): string;
+  race_constants_json(): string;
+  weekend_zone_queries_json(nowMs: number): string;
+  weekend_window_json(nowMs: number, zoneFactsJson: string): string;
+  weekend_facts_json(inputsJson: string, zoneFactsJson: string): string;
+  weekend_answer_json(inputsJson: string, zoneFactsJson: string): string;
+  weekend_band_json(windowJson: string, nowMs: number): string;
+  weekend_within_band_json(windowJson: string): string;
+  weekend_constants_json(): string;
+  vacation_zone_queries_json(inputsJson: string): string;
+  vacation_setup_json(inputsJson: string): string;
+  trip_queue_json(eventsJson: string, calendarId: string, today: string, zoneFactsJson: string): string;
+  vacation_band_json(nextTripJson: string): string;
+  vacation_view_json(inputsJson: string, zoneFactsJson: string): string;
+  vacation_answer_json(inputsJson: string, zoneFactsJson: string): string;
+  vacation_constants_json(): string;
+  device_zone(): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -1021,6 +1086,89 @@ export function outsideSchemaDeclineFromCore(): string {
   return required().outside_schema_decline();
 }
 
+// -------------------------------------------------------------- M4 (#539)
+// The microtask affordance (`skills/microtask-affordance.ts`), the backend
+// picker's tier fallback and degrade-to-Auto rule
+// (`skills/backend-registry.ts`'s `fallbackEntry`,
+// `skills/backend-selection.ts`'s `readBackendSelection`), and the Grill
+// review card's predicates (`screens/grill-review.ts`) — all sunk to
+// `hummingbird_core::decisions::skills`.
+
+/** The seven fields [`skills::affordance`]/`grill-review.ts`'s own
+ * predicates read off a `StepDTO` — everything but `deletedAt`/`done` rides
+ * along unread, the same "cross the whole DTO, read only what the rule
+ * needs" shape [`backtestPayload`] already uses. Named once here rather
+ * than repeated across every signature below that takes a step list. */
+function stepsPayload(steps: readonly StepDTO[]): string {
+  return JSON.stringify(steps);
+}
+
+/** `hummingbird_core::decisions::skills::microtask_affordance`, parsed —
+ * the object shape is `microtask-affordance.ts`'s own `MicrotaskAffordance`. */
+export function microtaskAffordanceFromCore(steps: readonly StepDTO[]): unknown {
+  return JSON.parse(required().microtask_affordance_json(stepsPayload(steps)));
+}
+
+/** `hummingbird_core::decisions::skills::fallback_backend_id` — the next
+ * registered id that is not `deadId`, `undefined` when there is none.
+ * `registryIds` is a bare list of ids, the only part of a `BackendEntry`
+ * this rule reads. */
+export function fallbackBackendIdFromCore(registryIds: readonly string[], deadId: string): string | undefined {
+  return required().fallback_backend_id(JSON.stringify(registryIds), deadId);
+}
+
+/** `hummingbird_core::decisions::skills::resolve_backend_selection` — Auto
+ * when nothing is stored, or when the stored id no longer names a
+ * registered entry. */
+export function resolveBackendSelectionFromCore(stored: string | undefined, registryIds: readonly string[]): string {
+  return required().resolve_backend_selection(stored, JSON.stringify(registryIds));
+}
+
+/** The sentinel selection value — module-evaluation-time in
+ * `backend-registry.ts`'s own `AUTO_SELECTION`, pinned against this by
+ * `seam.test.ts` for the same reason the three decline constants above
+ * are. */
+export function backendAutoSelectionFromCore(): string {
+  return required().backend_auto_selection();
+}
+
+/** `hummingbird_core::decisions::skills::declined_backend_fallback` — #274's
+ * one-tap fallback offer, decided whole: not declined / Auto / answered /
+ * NO_TOKEN are all excluded inside this one call, never assembled from
+ * three separate reads on this side (#539's round-2 review moved the
+ * predicate out of `ffi-mobile` for the identical reason). `state` crosses
+ * as the `SkillRunState` JSON `reduce_skill_run` already round-trips. */
+export function declinedBackendFallbackFromCore(
+  state: unknown,
+  selection: string,
+  registryIds: readonly string[],
+): string | undefined {
+  return required().declined_backend_fallback(JSON.stringify(state), selection, JSON.stringify(registryIds));
+}
+
+/** `hummingbird_core::decisions::skills::would_strand_plan`. */
+export function grillWouldStrandPlanFromCore(verdict: string, steps: readonly StepDTO[]): boolean {
+  return required().grill_would_strand_plan(verdict, stepsPayload(steps));
+}
+
+/** `hummingbird_core::decisions::skills::plan_replacement_label`. */
+export function grillPlanReplacementLabelFromCore(steps: readonly StepDTO[]): string {
+  return required().grill_plan_replacement_label(stepsPayload(steps));
+}
+
+/** `hummingbird_core::decisions::skills::demotes_from_frontier`. */
+export function grillDemotesFromFrontierFromCore(verdict: string, stage: string): boolean {
+  return required().grill_demotes_from_frontier(verdict, stage);
+}
+
+/** `hummingbird_core::decisions::skills::FRONTIER_DEMOTION_WARNING` —
+ * pinning-test-only; `grill-review.ts`'s own copy stays a literal TS
+ * string for the same module-evaluation-order reason the three decline
+ * constants above do. */
+export function grillFrontierDemotionWarningFromCore(): string {
+  return required().grill_frontier_demotion_warning();
+}
+
 // -------------------------------------------------------------- M4 (#533)
 // The standing-question panes: the pane shell contract's decided half
 // (`AnswerState`, `Band`, `withinBand`, pane identity), the cross-pane
@@ -1058,15 +1206,25 @@ export type ZoneQuery =
  * means. */
 export type ZoneFacts = Record<string, string | number>;
 
-/** The three fields `hummingbird_core::decisions::panes::inputs::PaneInputs`
- * reads out of the shell's whole `QuestionInputs` — the same "do not
- * re-cross whole DTOs" discipline as `frontierPayload` above. The sync
- * snapshot, the calendar arms and the item list are read by no sunk rule
- * and never leave the main thread. */
+/** The fields `hummingbird_core::decisions::panes::inputs::PaneInputs` reads
+ * out of the shell's whole `QuestionInputs` — the same "do not re-cross
+ * whole DTOs" discipline as `frontierPayload` above. Grew at #534 from
+ * waste's original three (`nowMs`/`bindings`/`paneReads`) to also carry the
+ * calendar arm, the item list and the sync snapshot, since weekend/vacation
+ * read the former two and reachability reads the latter — each field added
+ * only once a real sunk pane needed it. */
 export interface PaneInputsSource {
   nowMs: number;
   bindings: BindingDTO[] | null;
   paneReads: Record<string, PaneReadDTO | undefined>;
+  calendarReads?: Record<string, CalendarReadDTO | undefined>;
+  calendarConnected?: boolean;
+  items?: TaskItemDTO[];
+  sync?: {
+    latestOutcome: { kind: string } | null;
+    latestInformativeAtMs: number | null;
+    lastSuccessfulAtMs: number | null;
+  };
 }
 
 function paneInputsPayload(inputs: PaneInputsSource): string {
@@ -1074,6 +1232,14 @@ function paneInputsPayload(inputs: PaneInputsSource): string {
     nowMs: inputs.nowMs,
     bindings: inputs.bindings,
     paneReads: inputs.paneReads,
+    calendarReads: inputs.calendarReads ?? {},
+    calendarConnected: inputs.calendarConnected ?? false,
+    items: inputs.items ?? [],
+    sync: {
+      latestOutcomeKind: inputs.sync?.latestOutcome?.kind ?? null,
+      latestInformativeAtMs: inputs.sync?.latestInformativeAtMs ?? null,
+      lastSuccessfulAtMs: inputs.sync?.lastSuccessfulAtMs ?? null,
+    },
   });
 }
 
@@ -1161,20 +1327,20 @@ function panePayload(panes: readonly RankedPaneLike[]): string {
   );
 }
 
-/** `hummingbird_core::decisions::panes::rank_panes` — phase two for a whole
- * surface, already in display order, covering only the questions the core
- * decides today (`SUNK`). Exercised by tests; whether the web should hoist
- * its per-question ranking onto this is #533's stated ergonomics question,
- * answered in that PR rather than here. */
-export function rankPanesFromCore(
-  inputs: PaneInputsSource,
-  facts: ZoneFacts,
-  surface: PaneSurface,
-): RankedPaneLike[] {
-  return JSON.parse(
-    required().rank_panes_json(paneInputsPayload(inputs), JSON.stringify(facts), surface),
-  ) as RankedPaneLike[];
-}
+// `hummingbird_core::decisions::panes::rank_panes` — the batched,
+// surface-level ranking path — is deliberately NOT wrapped here. #533 left
+// it as an open ergonomics question ("whether the web should hoist onto
+// it"); #534's answer is no: every pane's `answer`/`subjects` sank
+// individually, but `registry.ts`'s `panesFrom` still ranks per-question,
+// exactly as it did before this slice (hoisting would mean rewriting
+// `contract.ts`'s `QuestionDef`, `registry.ts` and `RankedRegion.tsx` for
+// no behavioural gain — the per-question path already produces the same
+// ranked, sorted result `rank_panes` would). The core's own
+// `rank_panes`/`zone_queries` stay exercised by `client/core`'s and
+// `hummingbird-ffi-web`'s own test suites; this file no longer carries a
+// second, uncalled copy of the wrapper (the finding #534's own issue
+// recorded: an export with no production caller is exactly what
+// TypeScript's checker cannot flag on its own).
 
 /** `hummingbird_core::decisions::panes::waste::Stream` — kerb vocabulary. */
 export type WasteStream = "trash" | "recycling" | "yard";
@@ -1292,4 +1458,567 @@ export interface WasteConstants {
  * `sources` array. */
 export function wasteConstantsFromCore(): WasteConstants {
   return JSON.parse(required().waste_constants_json()) as WasteConstants;
+}
+
+// -------------------------------------------------------------- #535 (M4)
+// The Settings screen's decision half: `hummingbird_core::decisions::
+// settings` — the sync-status readout and the dead-letter heading, sunk so
+// Android does not carry its own copy of what "stale"/"held"/"synced"
+// mean. `shell/sync-status.ts` is the one caller; everything else in this
+// app reaches these through that module, never this one directly.
+
+/** `hummingbird_core::decisions::settings::SyncStatusInput`, camelCase to
+ * match the JSON the wasm seam reads. */
+export interface SyncStatusInputCore {
+  online: boolean;
+  lastSyncOutcomeKind: string | null;
+  lastSyncAtMs: number | null;
+  queueDepth: number | null;
+  nowMs: number;
+}
+
+/** `hummingbird_core::decisions::settings::SyncStatusTone`. */
+export type SyncStatusToneCore = "neutral" | "warn" | "danger" | "success";
+
+export interface SyncStatusSummaryCore {
+  tone: SyncStatusToneCore;
+  label: string;
+  toneWord: string;
+}
+
+/** `hummingbird_core::decisions::settings::{sync_status_tone,
+ * sync_status_label, sync_status_tone_word}`, answered together off one
+ * input so the badge and its label can never disagree about which state
+ * they describe. */
+export function syncStatusSummaryFromCore(input: SyncStatusInputCore): SyncStatusSummaryCore {
+  return JSON.parse(required().sync_status_summary_json(JSON.stringify(input))) as SyncStatusSummaryCore;
+}
+
+/** `hummingbird_core::decisions::settings::dead_letter_heading`. */
+export function deadLetterHeadingFromCore(count: number): string {
+  return required().dead_letter_heading(count);
+}
+
+/** `hummingbird_core::decisions::settings::SyncOutcomeClass`'s wire
+ * spelling. */
+export type SyncOutcomeClassCore = "held" | "failed" | "not-run" | "landed";
+
+/** `hummingbird_core::decisions::settings::sync_outcome_class`. */
+export function syncOutcomeClassFromCore(kind: string): SyncOutcomeClassCore {
+  return required().sync_outcome_class(kind) as SyncOutcomeClassCore;
+}
+
+/** `hummingbird_core::decisions::settings::is_informative_sync_outcome`. */
+export function isInformativeSyncOutcomeFromCore(kind: string): boolean {
+  return required().is_informative_sync_outcome(kind);
+}
+
+/** `hummingbird_core::decisions::settings::relative_age`. */
+export function relativeAgeFromCore(ageMs: number): string {
+  return required().relative_age(ageMs);
+}
+
+// ------------------------------------------------------------------- #534
+// The remaining seven panes: the status four (kimi/github/uptime/
+// reachability) and the now three (race/weekend/vacation). Same house style
+// as waste's own section: structured values only, never a rendered
+// sentence — each pane's own module composes its words from these.
+
+function snapshotPayload(snapshot: PaneSnapshotDTO | undefined): string {
+  return JSON.stringify(snapshot ?? null);
+}
+
+// -- kimi (#313) -------------------------------------------------------
+
+export type KimiGap =
+  | { gap: "notFetched" }
+  | { gap: "malformed"; reason: string }
+  | { gap: "unknownSchema"; schema: string }
+  | { gap: "notJson" }
+  | { gap: "notAnObject" }
+  | { gap: "badNumbers" };
+
+export interface KimiBodyCore {
+  availableBalance: number;
+  voucherBalance: number;
+  cashBalance: number;
+}
+
+export interface KimiFacts {
+  availableBalance: number;
+  voucherBalance: number;
+  cashBalance: number;
+  stale: boolean;
+  freshness: FreshnessDTO;
+}
+
+export type KimiResolved = ({ kind: "facts" } & KimiFacts) | { kind: "gap"; gap: KimiGap };
+
+export function parseKimiBodyFromCore(
+  snapshot: PaneSnapshotDTO | undefined,
+): { kind: "ok"; body: KimiBodyCore } | { kind: "gap"; gap: KimiGap } {
+  return JSON.parse(required().parse_kimi_body_json(snapshotPayload(snapshot))) as
+    | { kind: "ok"; body: KimiBodyCore }
+    | { kind: "gap"; gap: KimiGap };
+}
+
+export function kimiFactsFromCore(inputs: PaneInputsSource): KimiResolved {
+  return JSON.parse(required().kimi_facts_json(paneInputsPayload(inputs))) as KimiResolved;
+}
+
+export function kimiAnswerFromCore(inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(required().kimi_answer_json(paneInputsPayload(inputs))) as PaneAnswerCore;
+}
+
+export function kimiBandFromCore(availableBalance: number): PaneBand {
+  return JSON.parse(required().kimi_band_json(availableBalance)) as PaneBand;
+}
+
+export interface KimiConstants {
+  source: string;
+  snapshotKey: string;
+  staleAfterMs: number;
+  imminentThresholdUsd: number;
+  nearThresholdUsd: number;
+}
+
+export function kimiConstantsFromCore(): KimiConstants {
+  return JSON.parse(required().kimi_constants_json()) as KimiConstants;
+}
+
+// -- github (#314) -------------------------------------------------------
+
+export type WorkflowGap =
+  | { gap: "notFetched" }
+  | { gap: "malformed"; reason: string }
+  | { gap: "unknownSchema"; schema: string }
+  | { gap: "notJson" }
+  | { gap: "notAnObject" }
+  | { gap: "unreadableFields" };
+
+export interface WorkflowBodyCore {
+  displayName: string;
+  declaredCadenceMs: number | null;
+  lastRunConclusion: string | null;
+  lastRunEvent: string | null;
+  lastRunAtMs: number | null;
+  lastScheduledSuccessAtMs: number | null;
+}
+
+export interface WorkflowFacts {
+  body: WorkflowBodyCore;
+  stale: boolean;
+  freshness: FreshnessDTO;
+}
+
+export type WorkflowResolved =
+  | { kind: "view" } & WorkflowFacts
+  | { kind: "gap"; gap: WorkflowGap };
+
+export function parseWorkflowBodyFromCore(
+  snapshot: PaneSnapshotDTO | undefined,
+): { kind: "ok"; body: WorkflowBodyCore } | { kind: "gap"; gap: WorkflowGap } {
+  return JSON.parse(required().parse_workflow_body_json(snapshotPayload(snapshot))) as
+    | { kind: "ok"; body: WorkflowBodyCore }
+    | { kind: "gap"; gap: WorkflowGap };
+}
+
+export function githubBandFromCore(body: WorkflowBodyCore, nowMs: number): PaneBand {
+  return JSON.parse(required().github_band_json(JSON.stringify(body), nowMs)) as PaneBand;
+}
+
+export function githubSubjectsFromCore(inputs: PaneInputsSource): string[] {
+  return JSON.parse(required().github_subjects_json(paneInputsPayload(inputs))) as string[];
+}
+
+export function githubFactsFromCore(subjectKey: string, inputs: PaneInputsSource): WorkflowResolved {
+  return JSON.parse(
+    required().github_facts_json(subjectKey, paneInputsPayload(inputs)),
+  ) as WorkflowResolved;
+}
+
+export function githubAnswerFromCore(subjectKey: string, inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(
+    required().github_answer_json(subjectKey, paneInputsPayload(inputs)),
+  ) as PaneAnswerCore;
+}
+
+export interface GithubConstants {
+  source: string;
+  neverPolledSubject: string;
+  staleAfterMs: number;
+  overdueMultiplier: number;
+}
+
+export function githubConstantsFromCore(): GithubConstants {
+  return JSON.parse(required().github_constants_json()) as GithubConstants;
+}
+
+// -- uptime (#315) -------------------------------------------------------
+
+export type UptimeExpected = "on" | "off";
+
+export type ProbeGap =
+  | { gap: "notFetched" }
+  | { gap: "malformed"; reason: string }
+  | { gap: "unknownSchema"; schema: string }
+  | { gap: "notJson" }
+  | { gap: "notAnObject" }
+  | { gap: "fieldsUnreadable" }
+  | { gap: "observationUnreadable" };
+
+export interface ProbeBodyCore {
+  expected: UptimeExpected;
+  expectStatus: number;
+  observedStatus: number | null;
+  error: string | null;
+}
+
+export interface ProbeFacts {
+  serviceId: string;
+  body: ProbeBodyCore;
+  stale: boolean;
+  freshness: FreshnessDTO;
+}
+
+export type ProbeResolved = ({ kind: "facts" } & ProbeFacts) | { kind: "gap"; gap: ProbeGap };
+
+export function parseUptimeBodyFromCore(
+  snapshot: PaneSnapshotDTO | undefined,
+): { kind: "ok"; body: ProbeBodyCore } | { kind: "gap"; gap: ProbeGap } {
+  return JSON.parse(required().parse_uptime_body_json(snapshotPayload(snapshot))) as
+    | { kind: "ok"; body: ProbeBodyCore }
+    | { kind: "gap"; gap: ProbeGap };
+}
+
+export function uptimeBandFromCore(body: ProbeBodyCore): PaneBand {
+  return JSON.parse(required().uptime_band_json(JSON.stringify(body))) as PaneBand;
+}
+
+export function uptimeSubjectsFromCore(inputs: PaneInputsSource): string[] {
+  return JSON.parse(required().uptime_subjects_json(paneInputsPayload(inputs))) as string[];
+}
+
+export function uptimeFactsFromCore(subjectKey: string, inputs: PaneInputsSource): ProbeResolved {
+  return JSON.parse(
+    required().uptime_facts_json(subjectKey, paneInputsPayload(inputs)),
+  ) as ProbeResolved;
+}
+
+export function uptimeAnswerFromCore(subjectKey: string, inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(
+    required().uptime_answer_json(subjectKey, paneInputsPayload(inputs)),
+  ) as PaneAnswerCore;
+}
+
+export interface UptimeConstants {
+  source: string;
+  neverPolledSubject: string;
+  staleAfterMs: number;
+}
+
+export function uptimeConstantsFromCore(): UptimeConstants {
+  return JSON.parse(required().uptime_constants_json()) as UptimeConstants;
+}
+
+// -- reachability (#316) --------------------------------------------------
+
+export interface ReachabilityFacts {
+  ageMs: number;
+  stale: boolean;
+  latestAttemptLanded: boolean;
+}
+
+export function reachabilityFactsFromCore(inputs: PaneInputsSource): ReachabilityFacts | null {
+  return JSON.parse(required().reachability_facts_json(paneInputsPayload(inputs))) as
+    | ReachabilityFacts
+    | null;
+}
+
+export function reachabilityAnswerFromCore(inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(required().reachability_answer_json(paneInputsPayload(inputs))) as PaneAnswerCore;
+}
+
+export interface ReachabilityConstants {
+  subjectKey: string;
+  graceMs: number;
+}
+
+export function reachabilityConstantsFromCore(): ReachabilityConstants {
+  return JSON.parse(required().reachability_constants_json()) as ReachabilityConstants;
+}
+
+// -- race (#119) -----------------------------------------------------------
+
+export interface RaceSessionCore {
+  kind: string;
+  label: string;
+  startsAtMs: number;
+}
+
+export interface RaceEventCore {
+  name: string;
+  locality: string;
+  startsAtMs: number;
+  sessions: RaceSessionCore[];
+}
+
+export interface RaceBodyCore {
+  events: RaceEventCore[];
+}
+
+export type RaceGap =
+  | { gap: "notFetched" }
+  | { gap: "malformed"; reason: string }
+  | { gap: "unknownSchema"; schema: string }
+  | { gap: "notJson" }
+  | { gap: "notAnObject" }
+  | { gap: "noSeason" }
+  | { gap: "badEvent" };
+
+export type RaceSetupCore =
+  | { kind: "bound"; series: string[] }
+  | { kind: "unread" }
+  | { kind: "unusable" }
+  | { kind: "unset" };
+
+export interface RaceFacts {
+  series: string;
+  event: RaceEventCore | null;
+  nextStart: [string, number] | null;
+  hasLiveAlert: boolean;
+  stale: boolean;
+  freshness: FreshnessDTO;
+}
+
+export type RaceResolved = ({ kind: "facts" } & RaceFacts) | { kind: "gap"; gap: RaceGap };
+
+export function parseRaceBodyFromCore(
+  snapshot: PaneSnapshotDTO | undefined,
+): { kind: "ok"; body: RaceBodyCore } | { kind: "gap"; gap: RaceGap } {
+  return JSON.parse(required().parse_race_body_json(snapshotPayload(snapshot))) as
+    | { kind: "ok"; body: RaceBodyCore }
+    | { kind: "gap"; gap: RaceGap };
+}
+
+export function raceSeriesFromBindingFromCore(text: string): string[] {
+  return JSON.parse(required().race_series_from_binding_json(text)) as string[];
+}
+
+export function raceSetupFromCore(inputs: PaneInputsSource): RaceSetupCore {
+  return JSON.parse(required().race_setup_json(paneInputsPayload(inputs))) as RaceSetupCore;
+}
+
+export function raceSubjectsFromCore(inputs: PaneInputsSource): string[] {
+  return JSON.parse(required().race_subjects_json(paneInputsPayload(inputs))) as string[];
+}
+
+export function nextRaceAtFromCore(events: RaceEventCore[], nowMs: number): RaceEventCore | null {
+  return JSON.parse(required().next_race_at_json(JSON.stringify(events), nowMs)) as RaceEventCore | null;
+}
+
+export function raceFactsFromCore(series: string, inputs: PaneInputsSource): RaceResolved {
+  return JSON.parse(required().race_facts_json(series, paneInputsPayload(inputs))) as RaceResolved;
+}
+
+export function raceAnswerFromCore(subjectKey: string, inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(
+    required().race_answer_json(subjectKey, paneInputsPayload(inputs)),
+  ) as PaneAnswerCore;
+}
+
+export interface RaceConstants {
+  source: string;
+  bindingKey: string;
+  staleAfterMs: number;
+  setupSubject: string;
+}
+
+export function raceConstantsFromCore(): RaceConstants {
+  return JSON.parse(required().race_constants_json()) as RaceConstants;
+}
+
+// -- weekend (#122) ---------------------------------------------------------
+
+export interface WeekendDayCore {
+  date: string;
+  startMs: number;
+  endMs: number;
+}
+
+export interface WeekendWindowCore {
+  startMs: number;
+  endMs: number;
+  days: WeekendDayCore[];
+  underWay: boolean;
+}
+
+export type WeekendGap = "notConnected" | "unacquired" | "unresolvableZone";
+
+export interface WeekendCountsCore {
+  events: number;
+  due: number;
+  scheduled: number;
+}
+
+export interface WeekendFactsCore {
+  window: WeekendWindowCore;
+  counts: WeekendCountsCore;
+}
+
+export type WeekendResolvedCore =
+  | ({ kind: "facts" } & WeekendFactsCore)
+  | { kind: "gap"; gap: WeekendGap };
+
+export function weekendZoneQueriesFromCore(nowMs: number): ZoneQuery[] {
+  return JSON.parse(required().weekend_zone_queries_json(nowMs)) as ZoneQuery[];
+}
+
+export function weekendWindowFromCore(nowMs: number, facts: ZoneFacts): WeekendWindowCore | null {
+  return JSON.parse(
+    required().weekend_window_json(nowMs, JSON.stringify(facts)),
+  ) as WeekendWindowCore | null;
+}
+
+export function weekendFactsFromCore(inputs: PaneInputsSource, facts: ZoneFacts): WeekendResolvedCore {
+  return JSON.parse(
+    required().weekend_facts_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as WeekendResolvedCore;
+}
+
+export function weekendAnswerFromCore(
+  inputs: PaneInputsSource,
+  facts: ZoneFacts,
+): PaneAnswerCore {
+  return JSON.parse(
+    required().weekend_answer_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as PaneAnswerCore;
+}
+
+/** `hummingbird_core::decisions::panes::weekend::weekend_band` — exposed
+ * standalone so `weekend.ts`'s locally-kept `weekendBand` can be pinned
+ * directly against it, on `githubBandFromCore`'s own precedent. */
+export function weekendBandFromCore(window: WeekendWindowCore, nowMs: number): PaneBand {
+  return JSON.parse(required().weekend_band_json(JSON.stringify(window), nowMs)) as PaneBand;
+}
+
+/** `hummingbird_core::decisions::panes::weekend::weekend_within_band`. */
+export function weekendWithinBandFromCore(window: WeekendWindowCore): number {
+  return JSON.parse(required().weekend_within_band_json(JSON.stringify(window))) as number;
+}
+
+export interface WeekendConstants {
+  subjectKey: string;
+  calendarRequestKey: string;
+  imminentWithinMs: number;
+  nearWithinMs: number;
+}
+
+export function weekendConstantsFromCore(): WeekendConstants {
+  return JSON.parse(required().weekend_constants_json()) as WeekendConstants;
+}
+
+// -- vacation (#121) ---------------------------------------------------------
+
+export type TripPhaseCore = "upcoming" | "departs_today" | "under_way" | "returns_today" | "past";
+
+export interface TripCore {
+  id: string;
+  location: string | null;
+  startDate: string;
+  lastDate: string;
+  startMs: number;
+  endMs: number;
+  phase: TripPhaseCore;
+  daysUntil: number;
+  lengthDays: number;
+  dayOfTrip: number;
+}
+
+export function vacationZoneQueriesFromCore(inputs: PaneInputsSource): ZoneQuery[] {
+  return JSON.parse(
+    required().vacation_zone_queries_json(paneInputsPayload(inputs)),
+  ) as ZoneQuery[];
+}
+
+/** `hummingbird_core::decisions::panes::vacation::VacationSetupKind` — the
+ * kind-only projection of `VacationSetup` (which cannot itself cross the
+ * seam; its `Bound` arm borrows). `Bound` carries only `calendarId`; the
+ * caller already has the bound read's events/freshness on its own
+ * `QuestionInputs`. */
+export type VacationSetupKindCore =
+  | { kind: "noCalendar" }
+  | { kind: "unbound" }
+  | { kind: "unread" }
+  | { kind: "bound"; calendarId: string };
+
+/** `hummingbird_core::decisions::panes::vacation::vacation_setup_kind`. */
+export function vacationSetupFromCore(inputs: PaneInputsSource): VacationSetupKindCore {
+  return JSON.parse(required().vacation_setup_json(paneInputsPayload(inputs))) as VacationSetupKindCore;
+}
+
+export function tripQueueFromCore(
+  events: CalendarEventDTO[],
+  calendarId: string,
+  today: string,
+  facts: ZoneFacts,
+): TripCore[] {
+  return JSON.parse(
+    required().trip_queue_json(JSON.stringify(events), calendarId, today, JSON.stringify(facts)),
+  ) as TripCore[];
+}
+
+export function vacationBandFromCore(next: TripCore | null): PaneBand {
+  return JSON.parse(required().vacation_band_json(JSON.stringify(next))) as PaneBand;
+}
+
+export type VacationGap = { gap: "unresolvableZone" };
+
+export interface VacationFacts {
+  next: TripCore | null;
+  later: TripCore[];
+  freshness: FreshnessDTO;
+  stale: boolean;
+}
+
+export type VacationResolved =
+  | ({ kind: "facts" } & VacationFacts)
+  | { kind: "gap"; gap: VacationGap };
+
+export function vacationViewFromCore(
+  inputs: PaneInputsSource,
+  facts: ZoneFacts,
+): VacationResolved | null {
+  return JSON.parse(
+    required().vacation_view_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as VacationResolved | null;
+}
+
+export function vacationAnswerFromCore(
+  inputs: PaneInputsSource,
+  facts: ZoneFacts,
+): PaneAnswerCore {
+  return JSON.parse(
+    required().vacation_answer_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as PaneAnswerCore;
+}
+
+export interface VacationConstants {
+  subjectKey: string;
+  calendarRequestKey: string;
+  horizonBeforeDays: number;
+  horizonAheadDays: number;
+  staleAfterMs: number;
+  imminentWithinDays: number;
+  nearWithinDays: number;
+}
+
+export function vacationConstantsFromCore(): VacationConstants {
+  return JSON.parse(required().vacation_constants_json()) as VacationConstants;
+}
+
+/** `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
+ * `zone-bridge.ts`'s literal copy is pinned against, by `seam.test.ts`. */
+export function deviceZoneFromCore(): string {
+  return required().device_zone();
 }

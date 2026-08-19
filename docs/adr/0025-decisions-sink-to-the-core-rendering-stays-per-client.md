@@ -89,6 +89,81 @@ in `decisions::rules::backtest`. The frames are named at the boundary
 (`BacktestClock`), never inferred. The M1 module-evaluation-order
 constraint did not bite here: every export of the seven `screens/rules/`
 modules is a function called from an event handler or a render body.
+**Amended 2026-08-18 (#535):** M4 sank the Settings screen's sync-status
+readout and the dead-letter heading — `decisions::settings::{
+sync_outcome_class, is_informative_sync_outcome, relative_age,
+sync_status_tone, sync_status_label, sync_status_tone_word,
+dead_letter_heading}` — and rewired `shell/sync-status.ts` onto them in the
+same slice, plus exposed the same set through `client/ffi-mobile`'s free
+`sync_status_summary`/`dead_letter_heading`/`is_informative_sync_outcome`
+doors and a `MobileTaskHost::bindings`/`set_binding`/`dead_letters` read/write
+trio mirroring `ffi-web::task_host`'s DTOs. Two carve-outs this slice
+introduced, both now in the verdict table below: `isInformativeSyncOutcome`
+stays a literal TS copy in its own module
+(`shell/sync-outcome-informative.ts`) for a **new** kind of reason — not
+M1's module-evaluation-order constraint, but a worker/main-thread
+static-import-graph separation (ADR-0010): `worker/ports.ts` needs the
+identical predicate and runs inside `core.worker.ts`'s own script
+evaluation, which must never statically reach the seam
+(`worker-import-graph.test.ts`'s gate) — and any static import anywhere in
+a file pulls that file's *whole* graph in, regardless of which export is
+used, so the predicate could not stay in `sync-status.ts` once that file
+imported the seam for its other functions. `ThemePreference`/
+`resolveDarkTheme` stay per-client on `frontier-prefs.ts`'s existing
+"view prefs" verdict, widened here to cover a theme choice explicitly, not
+only a frontier grouping/facet preference.
+**Amended 2026-08-18 (#534):** M4 sank the remaining seven standing-question
+panes — the status four (kimi/github/uptime/reachability) and the now three
+(race/weekend/vacation) — growing `decisions::panes::SUNK` from waste alone
+to all eight. Three findings worth the record, beyond the per-pane verdict
+rows in [What does not sink with the panes, continued](#what-does-not-sink-with-the-panes-continued-534).
+**First**, the facts-union question #533 deliberately left open is settled:
+each pane's *facts* still cross on its own seam export (`kimi_facts_json`,
+`github_facts_json`, …) rather than a single tagged union hung off
+`RankedPaneRecord` — seven real arms made the union's shape obvious enough
+to write, but no caller ever needs a pane's full facts and its rank in one
+call (the shell reads `PaneAnswerCore` for ranking and a pane's own facts
+only inside that pane's own `Expanded` render), so a union would cost a
+type nobody was blocked on. **Second**, a new zone-bridge case:
+`weekend.rs`/`vacation.rs` both need "the reader's own zone" rather than a
+payload-carried IANA name, so [`zone::DEVICE_ZONE`](../../client/core/src/decisions/panes/zone.rs)
+is a sentinel `zone` string the two-phase crossing already carried without
+a new `ZoneQuery` variant — `zone-bridge.ts` is the one place it is given
+meaning (`Intl.DateTimeFormat().resolvedOptions().timeZone`). **Third**, a
+harder version of the M1 module-evaluation-order constraint: `weekend.ts`'s
+`weekendWindow` is called at `describe`-body top level by `weekend.test.ts`
+(before any `it()` runs), which executes during vitest's synchronous test
+*collection* — before `wasm-setup.ts`'s `beforeAll` resolves
+`initDecisions()`. `weekendWindow`/`weekendBand`/`weekendWithinBand`
+therefore stay literal TS, pinned against `weekend.rs`'s own
+`weekend_window`/`weekend_band`/`weekend_within_band` by
+`weekend-window.shared.test.ts` rather than called through the seam at
+runtime — `field-vocabulary.ts`'s precedent, for a collection-order trap
+rather than a module-evaluation one. `weekendAnswer` itself (called only
+inside `it()` bodies) does cross.
+**Amended 2026-08-18 (#539):** M4 decided what #538 deliberately left open,
+with the real second caller in hand — the Grill takeover and the microtask
+affordance landing on the phone. Sunk: `decisions::skills::affordance`
+(which gesture an item's steps make legal, and `live_undone_steps` behind
+it), `decisions::skills::review` (whether confirming a verdict strands a
+live plan or demotes the item off the frontier, out of
+`screens/grill-review.ts`), and `decisions::skills::backend` (the
+degrade-to-Auto rule out of `backend-selection.ts`'s
+`readBackendSelection`, and the tier fallback out of
+`backend-registry.ts`'s `fallbackEntry`). **Not sunk, and now
+verdict-table rows rather than an open question:** the backend registry's
+own *data* — label, model, endpoint, timeout — which is configuration two
+clients may render differently without either being wrong; and
+`route-plan.ts`/`reachability-memo.ts`, which stayed per-client because
+Android's runner reaches one backend at a time under a device preference
+and has no Auto sequence to plan, so sinking a router with a single live
+caller would be shaping the rule from one arm — the trap #533 named and
+#534 honoured. One finding worth the record: sinking
+`microtaskAffordance` took the last caller away from
+`microtask-affordance.ts`'s `liveUndoneSteps`, leaving an exported, tested
+TS copy of a rule the core now owns. This ADR's no-hand-copied-decisions
+rule covers a copy with no caller too, so it was **deleted** at #565's
+review rather than kept as a helper a future caller could re-copy from.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -264,8 +339,14 @@ not permanent — it is where the line fell for the capture/Now slice.
 | the NDJSON **line splitting** (`skills/ndjson.ts`'s `takeLines`, okio's `readUtf8Line`) (M4, #538) | stays per-client: a byte-level stream reader is a platform fact, not a decision. The web decodes a `ReadableStream` with a streaming `TextDecoder`; Android reads okio's buffered source. What each *line means* did sink (`decisions::skills::envelope`) |
 | the **transport** — `run-skill.ts`, `route-run.ts`, `skills/SkillRunner.kt` (M4, #538) | stays per-client: `fetch` + `AbortSignal` vs OkHttp + `Call.cancel()` have no shared expression, and neither decides anything. Each reports what happened to *its* socket (no token / never resolved / a status / the stream ended) and the core answers with the next state |
 | `skills/decline.ts`'s `NO_TOKEN`/`NO_TERMINAL_LINE` and `grill-turn-state.ts`'s `OUTSIDE_SCHEMA` (M4, #538) | the rule sank (`decisions::skills::decline`, `grill::OUTSIDE_SCHEMA`); the three constants stay literal TS for the same module-evaluation-order constraint as `field-vocabulary.ts`'s arrays — `route-run.ts`/`useMicrotaskWiring.ts`/`useGrillWiring.ts` read them at module evaluation, statically reachable from `main.tsx` — pinned against the core by `seam.test.ts`. Kotlin needs no equivalent: it never holds the strings at all |
-| #274's `backend-registry.ts`/`backend-selection.ts`/`route-plan.ts`/`reachability-memo.ts`, and `microtask-affordance.ts` (M4, #538) | out of #538 deliberately — the probe needed one lane end to end, not the whole surface. #539 decides them with a real second caller in hand |
+| #274's `backend-registry.ts`/`backend-selection.ts`/`route-plan.ts`/`reachability-memo.ts`, and `microtask-affordance.ts` (M4, #538) | out of #538 deliberately — the probe needed one lane end to end, not the whole surface. **Decided at #539** (see the amendment above), in the four rows below |
+| `microtask-affordance.ts`'s `microtaskAffordance`, `grill-review.ts`'s `wouldStrandPlan`/`demotesFromFrontier`/`planReplacementLabel` (M4, #539) | sunk to `decisions::skills::{affordance,review}` — the phone's item detail and review card ask the same questions of the same steps, and a Kotlin copy would have been the third. `microtask-affordance.ts` is now a seam wrapper; its `liveUndoneSteps` had no caller left after the sink and was deleted rather than kept |
+| `backend-selection.ts`'s `readBackendSelection`, `backend-registry.ts`'s `fallbackEntry` (M4, #539) | the *rules* sank (`decisions::skills::backend`'s `resolve_backend_selection`, `fallback_backend_id`, `declined_backend_fallback`) — which id a stale selection degrades to, and which one a declined pin offers next |
+| `backend-registry.ts`'s `BACKEND_REGISTRY` entries and Android's `BackendPreference.ENTRIES` (M4, #539) | **stays per-client**: label, model, endpoint and timeout are configuration, not a decision two clients could disagree about being *wrong*. Both rules above take the registry as a bare ordered list of ids — the only part of an entry either reads |
+| `route-plan.ts`/`reachability-memo.ts` (M4, #539) | **stays per-client, for now**: Android runs one backend at a time under the device preference and plans no Auto sequence, so there is a single live caller. Sinking a router from one arm is the trap #533 named and #534 honoured — #275/#276 (on-device and home runners) are what would give it a second |
 | `item-actions.ts`'s `applyItemAction`/`resolveFallbackPending` (M1-4, #502) | screen-local optimistic UI reconciliation over `TaskItemDTO` — `Date.now()`, `archivedAt` writes and the live-vs-optimistic `pending` merge are not a decision two clients could disagree about, even though the same file's affordance rules (`availableActions`, `canMarkDone`, `canGrill`, `grillButtonLabel`, `applyItemAction`'s stage lookup) did sink |
+| `shell/sync-outcome-informative.ts`'s `isInformativeSyncOutcome` (M4, #535) | stays literal TS, for a **new** reason distinct from the module-evaluation-order rows above: `worker/ports.ts` needs this exact predicate and runs inside `core.worker.ts`'s own static import graph (ADR-0010), which must never statically reach the main-thread seam (`worker-import-graph.test.ts`'s gate) — a static import anywhere in a file pulls that file's whole graph in regardless of which export is used, so the predicate could not share a file with `sync-status.ts`'s seam-backed functions. Pinned against `decisions::settings::is_informative_sync_outcome` by `sync-outcome-informative.test.ts` |
+| `theme/ThemePreference.kt`'s `resolveDarkTheme` (M4, #535) | stays per-client, on `frontier-prefs.ts`'s existing "view prefs" verdict widened to cover a theme choice explicitly — a device's dark/light/system preference is not a decision two clients could disagree about |
 
 
 ## The zone bridge, fixed by M4's probe
@@ -346,3 +427,30 @@ rewrite rather than a probe.
 | `contract.ts`'s `BAND_ORDER`/`QUESTION_ORDER` | the vocabularies sank (`decisions::panes::contract`); the two arrays stay literal TS for a *harder* version of #500's module-evaluation-order constraint — `registry.ts` builds `QUESTIONS` at module evaluation and reads `QUESTION_ORDER` there — pinned against the core by `seam.test.ts` |
 | `waste.ts`'s `SOURCE`/`SNAPSHOT_KEY`/`BINDING_KEY`/`STALE_AFTER_MS`/`STREAM_ORDER` | same constraint via `question.ts`'s `sources: [SOURCE]`; pinned by `seam.test.ts`, not sunk at runtime |
 | The weekday *word* | per-client, from `WasteFacts.weekdayIndex` — the core decides which day, the client names it |
+
+## What does not sink with the panes, continued (#534)
+
+*The remaining seven panes, sunk at #534, on the same split waste drew at
+#533: a question's answer state, band, `withinBand` and its structured
+**facts**/**gap kinds** are decisions and sink; its headline wording,
+glyphs, and whole `Expanded` rendering are per-client and do not.*
+
+| Module | Verdict |
+|---|---|
+| `kimi.ts`'s `formatUsd`/`kimiCollapsedHeadline`/`kimiGlyph`/`kimiGapReason` | headline wording, formatting and glyph — `KimiGap` sank as a kind, the sentences did not |
+| `github.ts`'s `githubCollapsedHeadline`/`githubGlyph`/`ageWords`/`githubGapReason` | same split; `githubBand`'s stale-poller escalation is decided in the core (`github_answer`), the web only recomputes the *raw* band locally to tell "genuinely imminent" apart from "escalated because stale" when composing the headline |
+| `uptime.ts`'s `uptimeCollapsedHeadline`/`uptimeGlyph`/`ageWords`/`uptimeGapReason` | same split as github's |
+| `reachability.ts`'s headline sentence (`"Synced"`/`"Last synced" ${relativeAge(...)}`) | `relativeAge`'s wording stays per-client; `reachability_facts`'s `latestAttemptLanded` boolean is what the core decides, so the web is choosing a verb, not deciding one |
+| `race.ts`'s `countdown`'s numeric split, `abbreviate`, `seriesLabel`, `raceHeadlineParts`, `raceCollapsedHeadline` | number/name formatting and headline composition |
+| `race.ts`'s `dayLabel`/`clock` | explicitly device-local wall-clock words (ADR-0015) — no zone anywhere, deliberately |
+| `race.ts`'s `RaceView.liveAlert`'s own `title`/`body` | the alert join stays client-side (`liveAlertFor`, re-derived from `inputs.paneReads` directly) — `race.rs`'s `RaceFacts.hasLiveAlert` is the boolean the *band* reads; the alert's own display fields are data the client already holds locally and would be a whole-DTO re-crossing for no decision to read |
+| `weekend.ts`'s `weekendWindow`/`weekendBand`/`weekendWithinBand` | **stays literal TS, pinned rather than called** — `weekend.test.ts` calls `weekendWindow` at `describe`-body top level, before `wasm-setup.ts`'s `beforeAll` resolves `initDecisions()`; a collection-order version of #500's module-evaluation-order constraint. Pinned against `weekend.rs`'s own `weekend_window`/`weekend_band`/`weekend_within_band` by `weekend-window.shared.test.ts`. `weekendAnswer` (called only inside `it()` bodies) does cross |
+| `weekend.ts`'s `mergeWindow`/`WindowEntry`/`countKinds`/`timeLabel`/`shortDayLabel`/`dayKeyOf` | the full per-entry merge, with titles, ids and anchors — the decision only ever needs the *counts* (`weekend.rs`'s `WindowCounts`), and every title/id crossing the seam with no decision reading it would violate `inputs.rs`'s own "do not re-cross whole DTOs" discipline |
+| `weekend.ts`'s `entryUrgency` | reads `computeUrgency`, already `hummingbird_core::decisions::urgency` (M1-2, #500) under a different name — nothing second to sink |
+| `vacation.ts`'s `Trip.name`/`tripName` | `vacation.rs`'s `Trip` carries no `name` field — no core decision reads it (only the headline does), so this file recovers it locally by matching a core `Trip`'s `id` back to the `CalendarEventDTO` it came from |
+| `vacation.ts`'s `vacationHeadline`/`tripDateRange`/`tripDayLabel`/`MONTH_NAMES`/`civilParts` | headline and date-range wording |
+| `vacation.ts`'s `vacationSetup`'s `Bound` arm's `read` field | the seam carries only `calendarId` (`vacation_setup_kind`'s kind-only projection — `VacationSetup::Bound` itself borrows the inputs' own event slice and has no `Serialize`); `read` is attached locally from the same `calendarReads` the core already consulted to decide `Bound`, never a second guess about its state |
+| `weekend-pane/question.ts`'s and `vacation-pane/question.ts`'s `calendarRequests` (`vacationCalendarInterval`, the weekend window's civil bounds) | **calendar-request building stays per-client, keeping the tzdb at request-build time** — #267's calendar arm is asked in civil dates resolved in the device's own zone at the moment of the request, which is a per-render host concern (`useCalendarEventsWiring`'s effect), not a fact the core needs to have decided in advance of asking for it |
+| `WastePaneExpanded.tsx`-shaped `Expanded` components for all seven (`KimiPaneExpanded`, `GithubPaneExpanded`, `UptimePaneExpanded`, `ReachabilityPaneExpanded`, `RacePaneExpanded`, `WeekendPaneExpanded`, `VacationPaneExpanded`) | whole renderings |
+| `kimi.ts`/`github.ts`/`uptime.ts`/`reachability.ts`/`race.ts`/`weekend.ts`/`vacation.ts`'s own `SOURCE`/`SNAPSHOT_KEY`/`BINDING_KEY`/`STALE_AFTER_MS`-shaped constants | same module-evaluation-order constraint as waste's own four (each question's `sources: [SOURCE]` in its `question.ts` is built at module evaluation); pinned against the core's own `*_constants_json()` by `seam.test.ts`, not sunk at runtime |
+| The weekday/month *words* everywhere they appear | per-client, from the core's own civil-date/index facts (`weekendDay.date`, `Trip.startDate`) — the core decides which day, the client names it |

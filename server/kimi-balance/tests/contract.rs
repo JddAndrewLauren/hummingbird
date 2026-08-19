@@ -2,15 +2,20 @@
 //!
 //! The body inside ADR-0015's envelope is deliberately unfrozen and opaque
 //! to the server: `SnapshotEnvelope` carries it through as text, `POST
-//! /api/snapshots` never looks inside it, and the pane's own parser
-//! (`client/web/src/screens/kimi-pane/kimi.ts::parseKimiBody`) is what pins
-//! its shape. So this file asserts the literal snake_case key names twice —
-//! once on the JSON this crate actually produces, and once against the text
-//! of the TypeScript that consumes it — on `city-waste/tests/contract.rs`'s
-//! own reasoning: **no type, no schema and no compiler on either side can
-//! see the other**, and a rename made on only one side would otherwise still
-//! pass every test in both languages while the pane silently read "no
-//! balance has been fetched yet" forever.
+//! /api/snapshots` never looks inside it, and the pane's own parser is what
+//! pins its shape. So this file asserts the literal snake_case key names
+//! twice — once on the JSON this crate actually produces, and once against
+//! the text of the code that consumes it — on `city-waste/tests/
+//! contract.rs`'s own reasoning: **no type, no schema and no compiler on
+//! either side can see the other**, and a rename made on only one side
+//! would otherwise still pass every test in both languages while the pane
+//! silently read "no balance has been fetched yet" forever.
+//!
+//! **Retargeted at #534.** ADR-0025/#534 sank the pane's parser out of
+//! `client/web/src/screens/kimi-pane/kimi.ts` and into
+//! `client/core/src/decisions/panes/kimi.rs::parse_kimi_body` — the real
+//! parse surface now lives there (`kimi.ts` kept its name but is now a thin
+//! rendering wrapper over the seam, and no longer spells `body.…` anywhere).
 
 use hummingbird_kimi_balance::balance::Balance;
 use hummingbird_kimi_balance::body::{KimiBalanceBody, POLLED_EVERY_MS, SNAPSHOT_KEY};
@@ -19,9 +24,9 @@ use hummingbird_kimi_balance::body::{KimiBalanceBody, POLLED_EVERY_MS, SNAPSHOT_
 /// on the wire.
 const KEYS_THE_PANE_READS: &[&str] = &["available_balance", "voucher_balance", "cash_balance"];
 
-const KIMI_TS: &str = include_str!(concat!(
+const KIMI_RS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../client/web/src/screens/kimi-pane/kimi.ts"
+    "/../../client/core/src/decisions/panes/kimi.rs"
 ));
 
 fn sample() -> KimiBalanceBody {
@@ -41,13 +46,13 @@ fn the_body_this_poller_writes_is_the_body_the_pane_parses() {
     for key in KEYS_THE_PANE_READS {
         assert!(
             object.contains_key(*key),
-            "`{key}` is gone from the body this poller writes — `parseKimiBody` \
+            "`{key}` is gone from the body this poller writes — `parse_kimi_body` \
              would answer a gap and the pane would read 'not fetched yet' forever"
         );
         assert!(
-            KIMI_TS.contains(&format!("body.{key}")),
-            "`{key}` is written here but no longer read by kimi.ts — one side \
-             was renamed alone"
+            KIMI_RS.contains(&format!("number(\"{key}\")")),
+            "`number(\"{key}\")` is gone from kimi.rs's parser — `{key}` is written \
+             here but no longer read there, one side was renamed alone"
         );
     }
 
@@ -65,11 +70,11 @@ fn the_body_this_poller_writes_is_the_body_the_pane_parses() {
 #[test]
 fn the_source_and_snapshot_key_agree_with_the_pane() {
     assert!(
-        KIMI_TS.contains(r#"export const SOURCE = "kimi-balance/v1""#),
+        KIMI_RS.contains(r#"pub const SOURCE: &str = "kimi-balance/v1";"#),
         "the pane reads a different source than this poller writes"
     );
     assert!(
-        KIMI_TS.contains(r#"export const SNAPSHOT_KEY = "balance""#),
+        KIMI_RS.contains(r#"pub const SNAPSHOT_KEY: &str = "balance";"#),
         "the pane reads a different snapshot key than this poller writes"
     );
     assert_eq!(hummingbird_domain::KIMI_BALANCE_V1, "kimi-balance/v1");

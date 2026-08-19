@@ -4,8 +4,14 @@
 //!
 //! **What is here and what is not.** Here: what an NDJSON line is
 //! ([`envelope`]), how a run's state advances ([`run`], [`grill`]), what a
-//! decline says ([`decline`]), and what the request body's bytes are
-//! ([`args`]). Not here, and deliberately per-client: the transport itself,
+//! decline says ([`decline`]), what the request body's bytes are
+//! ([`args`]), and — added at #539, when the affordance lane got its second
+//! caller — which microtask gesture an item's steps make legal
+//! ([`affordance`]), which id a stale backend selection degrades to and
+//! which one a declined pin falls back to ([`backend`]), and whether
+//! confirming a review would strand a live plan or demote the item off the
+//! frontier ([`review`]). Not here, and
+//! deliberately per-client: the transport itself,
 //! and the line splitting that feeds this family — each platform's stream
 //! reader owns that (the web's `TextDecoder`, okio's `readUtf8Line` on
 //! Android), because a byte-level reader is a platform fact, not a
@@ -23,17 +29,23 @@
 //! hardcoded at the render site" a property of the code on every client at
 //! once rather than a review note per shell.
 
+pub mod affordance;
 pub mod args;
+pub mod backend;
 pub mod decline;
 pub mod envelope;
 pub mod grill;
+pub mod review;
 pub mod run;
 
+pub use affordance::{live_undone_steps, microtask_affordance, MicrotaskAffordance};
 pub use args::{format_grill_transcript, grill_run_body, microtask_run_body, GrillTurn, MicrotaskRunInput};
+pub use backend::{declined_backend_fallback, fallback_backend_id, resolve_backend_selection, AUTO_SELECTION};
 pub use decline::{decline_for_response, decline_for_transport, NO_TERMINAL_LINE, NO_TOKEN};
 pub use envelope::{
     classify_line, grill_result, microtask_result, GrillProposal, GrillQuestion, GrillTurnResult,
     MicrotaskResult, SkillLine,
 };
 pub use grill::{reduce_grill_turn, GrillTurnState, OUTSIDE_SCHEMA};
+pub use review::{demotes_from_frontier, plan_replacement_label, would_strand_plan, FRONTIER_DEMOTION_WARNING};
 pub use run::{is_running, reduce_run, stamp_label, SkillEvent, SkillRunState};

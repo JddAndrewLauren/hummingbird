@@ -43,11 +43,19 @@ val Crimson600 = Color(0xFF961D16)
 val CrimsonDark = Color(0xFFF08076) // --status-danger-fg (dark)
 
 val Amber500 = Color(0xFFD99A06) // --urgency-soon (light)
+val Amber600 = Color(0xFFB57F04) // --status-warn-fg (light) — NOT the same token as Amber500
+
+val Moss600 = Color(0xFF0F7455) // --status-done-fg (light)
 
 // Semantic values with no ramp entry of their own in the CSS.
 val BorderDefaultLight = Color(0xFFE2D9D0) // --border-default (light)
 val SurfaceSunkenDark = Color(0xFF0A0E13) // --surface-sunken (dark)
 val StatusInfoFgDark = Color(0xFF5CB6D8) // --status-info-fg (dark)
+// The Settings sync card's WARN/SUCCESS tones (#535 review) — `--status-
+// warn-fg`/`--status-done-fg` dark, literals like the other `*Dark`
+// divergences on this page.
+val StatusWarnFgDark = Color(0xFFF0B429) // --status-warn-fg (dark)
+val StatusDoneFgDark = Color(0xFF4CC79B) // --status-done-fg (dark)
 // The alerts surface's `normal` tier chip in dark mode. Its light twin is
 // `Sky100` (`--status-info-bg` light is `var(--sky-100)`), but the dark
 // scope declares a translucent literal instead of aliasing the ramp — the

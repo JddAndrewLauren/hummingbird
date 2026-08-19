@@ -50,6 +50,24 @@ use serde::{Deserialize, Serialize};
 /// at a zone boundary.
 pub type CivilDate = String;
 
+/// The sentinel [`ZoneQuery::zone`] a pane names when the zone it means is
+/// **the reader's own device**, never an address carried on a payload
+/// (`waste.rs`'s zone, read off `WasteBody`). `weekend.rs` and
+/// `vacation.rs` both ask "what day is it right now, here" — there is no
+/// IANA name in either payload to ask about, on purpose: a trip is booked
+/// on the calendar the reader is holding, in the zone the reader is
+/// standing in, and asking `Intl`/`java.time` to resolve *this* string
+/// means "your own current zone" rather than a name this crate looked up.
+///
+/// This is not a third [`ZoneQuery`] variant: the query shape is already
+/// generic over `zone: String`, so a sentinel is one constant rather than a
+/// new arm every resolver has to branch on. The host's own resolver is what
+/// gives the string meaning (`zone-bridge.ts` special-cases it to
+/// `Intl.DateTimeFormat().resolvedOptions().timeZone` before calling
+/// `Intl` with it); this crate never resolves it and never fabricates a
+/// zone name of its own.
+pub const DEVICE_ZONE: &str = "device-local";
+
 /// Whether `value` is a well-formed `YYYY-MM-DD` **and a real date**.
 /// Stricter than `zoned-day.ts`'s regex on purpose: the TS half rejects
 /// `"next tuesday"` and accepts `"2026-02-31"`, whose every downstream

@@ -2,8 +2,7 @@
 //!
 //! The body inside ADR-0015's envelope is deliberately unfrozen and opaque to
 //! the server: `SnapshotEnvelope` carries it through as text, `POST
-//! /api/snapshots` never looks inside it, and the pane's own parser
-//! (`client/web/src/screens/waste-pane/waste.ts::parseWasteBody`) is what
+//! /api/snapshots` never looks inside it, and the pane's own parser is what
 //! pins its shape. That is the right design — and it means **no type, no
 //! schema and no compiler on either side can see the other**. Rename
 //! `collected_on` here and every test in both languages still passes while
@@ -11,23 +10,39 @@
 //! forever.
 //!
 //! So this file asserts the literal snake_case key names twice: once on the
-//! JSON this crate actually produces, and once against the text of the
-//! TypeScript that consumes it. The second half is the one that catches a
-//! rename made on either side alone.
+//! JSON this crate actually produces, and once against the text of the code
+//! that consumes it. The second half is the one that catches a rename made
+//! on either side alone.
+//!
+//! **Retargeted at #534.** ADR-0025/#533 sank the pane's parser out of
+//! `client/web/src/screens/waste-pane/waste.ts` and into
+//! `client/core/src/decisions/panes/waste.rs::parse_waste_body` — the real
+//! parse surface now lives there, and this file's text-greps had gone stale
+//! against the TS file's own words (`waste.ts` still exists, but only as a
+//! thin rendering wrapper that no longer spells `body.zone` or
+//! `value === "trash"` anywhere). Retargeting at the Rust parser is what
+//! makes this file a contract test again rather than a permanently-red one.
 
 use hummingbird_city_waste::body::WasteBody;
 use hummingbird_city_waste::cadence::Cadence;
 use hummingbird_city_waste::date::Date;
 
-/// Every key the pane reads out of the body, spelled exactly as it appears
-/// on the wire. `cadence` is not here: it is this poller's own addition, the
-/// pane ignores it (`parseWasteBody` does no unknown-field rejection), and
-/// pinning it against the TS would assert a coupling that does not exist.
-const KEYS_THE_PANE_READS: &[&str] = &["zone", "scheduled", "collected_on", "streams"];
+/// Every key the pane reads out of the body, paired with the exact
+/// substring `parse_waste_body` reads it through — `zone`/`streams` go
+/// through a bare `object.get("…")`, `scheduled`/`collected_on` through the
+/// shared `day("…")` closure. `cadence` is not here: it is this poller's
+/// own addition, the pane ignores it (no unknown-field rejection), and
+/// pinning it against the core would assert a coupling that does not exist.
+const KEYS_THE_PANE_READS: &[(&str, &str)] = &[
+    ("zone", "object.get(\"zone\")"),
+    ("scheduled", "day(\"scheduled\")"),
+    ("collected_on", "day(\"collected_on\")"),
+    ("streams", "object.get(\"streams\")"),
+];
 
-const WASTE_TS: &str = include_str!(concat!(
+const WASTE_RS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../client/web/src/screens/waste-pane/waste.ts"
+    "/../../client/core/src/decisions/panes/waste.rs"
 ));
 
 fn sample() -> WasteBody {
@@ -45,16 +60,16 @@ fn the_body_this_poller_writes_is_the_body_the_pane_parses() {
     let body = payload.get("body").expect("the envelope carries a body");
     let object = body.as_object().expect("the body is an object");
 
-    for key in KEYS_THE_PANE_READS {
+    for (key, read_through) in KEYS_THE_PANE_READS {
         assert!(
             object.contains_key(*key),
-            "`{key}` is gone from the body this poller writes — `parseWasteBody` \
+            "`{key}` is gone from the body this poller writes — `parse_waste_body` \
              would answer a gap and the pane would read 'not fetched yet' forever"
         );
         assert!(
-            WASTE_TS.contains(&format!("body.{key}")),
-            "`{key}` is written here but no longer read by waste.ts — one side \
-             was renamed alone"
+            WASTE_RS.contains(read_through),
+            "`{read_through}` is gone from waste.rs's parser — `{key}` is written \
+             here but no longer read there, one side was renamed alone"
         );
     }
 
@@ -66,31 +81,32 @@ fn the_body_this_poller_writes_is_the_body_the_pane_parses() {
     assert_eq!(object["streams"], serde_json::json!(["trash", "recycling"]));
 }
 
-/// The pane's stream vocabulary is closed (`isStream`), so a bin name this
-/// poller invents would fail its whole parse — "the collection payload lists
-/// an unknown kind of bin" — rather than being ignored.
+/// The pane's stream vocabulary is closed (`Stream::parse`), so a bin name
+/// this poller invents would fail its whole parse — `WasteGap::UnknownStream`
+/// — rather than being ignored. Checked against `Stream::as_str`'s own match
+/// arms, the one place each name is spelled as the wire's literal string.
 #[test]
 fn every_stream_name_this_poller_can_write_is_one_the_pane_knows() {
     for stream in ["trash", "recycling", "yard"] {
         assert!(
-            WASTE_TS.contains(&format!("value === \"{stream}\"")),
-            "`{stream}` is not in waste.ts's closed stream vocabulary"
+            WASTE_RS.contains(&format!("=> \"{stream}\",")),
+            "`{stream}` is not in waste.rs's closed stream vocabulary (`Stream::as_str`)"
         );
     }
 }
 
 /// The two constants that have to agree across the seam, checked against the
-/// TypeScript's own literals: the source string (which is also the envelope's
+/// core's own literals: the source string (which is also the envelope's
 /// `schema`, and the pane refuses anything else) and the snapshot key (which
 /// is also the alert's `subject_key`).
 #[test]
 fn the_source_and_snapshot_key_agree_with_the_pane() {
     assert!(
-        WASTE_TS.contains(r#"export const SOURCE = "city-waste/v2""#),
+        WASTE_RS.contains(r#"pub const SOURCE: &str = "city-waste/v2";"#),
         "the pane reads a different source than this poller writes"
     );
     assert!(
-        WASTE_TS.contains(r#"export const SNAPSHOT_KEY = "collection""#),
+        WASTE_RS.contains(r#"pub const SNAPSHOT_KEY: &str = "collection";"#),
         "the pane reads a different snapshot key than this poller writes"
     );
     assert_eq!(hummingbird_domain::CITY_WASTE_V2, "city-waste/v2");

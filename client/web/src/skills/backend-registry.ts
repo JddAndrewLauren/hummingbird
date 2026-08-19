@@ -8,6 +8,14 @@
 // `model` is fixed per entry (never chosen separately, the way
 // `skills/models.ts` used to offer): a future entry with a different model
 // is a different entry, not a variant of this one.
+//
+// **The registry's data stays here, per-client.** Sunk at #539 is only the
+// TIER-FALLBACK rule ([fallbackEntry]'s own body) — which id to offer next
+// when a pin declines — since that is the one two clients could disagree
+// about being *wrong*. The entries themselves (label, model, endpoint,
+// timeout) are configuration, not a decision.
+
+import { fallbackBackendIdFromCore } from "../decisions/seam";
 
 export interface BackendEntry {
   /** Stable id, persisted as the device's selection and read back on
@@ -39,7 +47,12 @@ export const BACKEND_REGISTRY: BackendEntry[] = [CLOUD_RUNNER_ENTRY];
 
 /** The sentinel selection value. Not a `BackendEntry` id — no registry entry
  * may ever be named `"auto"`, which is why picker code checks this constant
- * rather than `registry.length === 0`. */
+ * rather than `registry.length === 0`.
+ *
+ * A module-evaluation-time literal, pinned against
+ * `hummingbird_core::decisions::skills::AUTO_SELECTION` by `seam.test.ts` —
+ * the same reason the three decline constants in `skills/decline.ts` stay
+ * literal rather than a seam call (`seam.ts`'s own header). */
 export const AUTO_SELECTION = "auto";
 
 export function findBackendEntry(registry: BackendEntry[], id: string): BackendEntry | null {
@@ -47,9 +60,14 @@ export function findBackendEntry(registry: BackendEntry[], id: string): BackendE
 }
 
 /** The one-tap fallback offered when a pin is declined: the next registered
- * entry that is not the dead one, in registry order. `null` when there is
- * none — this slice's single-entry registry means that is always true today,
- * and is exactly why the picker renders no fallback button yet. */
+ * entry that is not the dead one, in registry order — `null` when there is
+ * none. The rule itself is `hummingbird_core::decisions::skills::
+ * fallback_backend_id`; this resolves the id it answers back to the full
+ * entry the caller's registry holds. */
 export function fallbackEntry(registry: BackendEntry[], deadId: string): BackendEntry | null {
-  return registry.find((entry) => entry.id !== deadId) ?? null;
+  const id = fallbackBackendIdFromCore(
+    registry.map((entry) => entry.id),
+    deadId,
+  );
+  return id === undefined ? null : findBackendEntry(registry, id);
 }

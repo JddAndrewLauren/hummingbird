@@ -1,30 +1,56 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  backendAutoSelectionFromCore,
   canSubmitCapture,
+  declinedBackendFallbackFromCore,
   declineForResponseFromCore,
   declineForTransportFromCore,
   decisionsReady,
+  deviceZoneFromCore,
   ENERGIES,
   energyOptionsFromCore,
   FACETS,
+  fallbackBackendIdFromCore,
   frontierAxesFromCore,
+  githubConstantsFromCore,
+  grillDemotesFromFrontierFromCore,
+  grillFrontierDemotionWarningFromCore,
+  grillPlanReplacementLabelFromCore,
+  grillWouldStrandPlanFromCore,
   initDecisions,
+  kimiConstantsFromCore,
+  microtaskAffordanceFromCore,
   noTerminalLineDeclineFromCore,
   noTokenDeclineFromCore,
   orderFrontier,
   outsideSchemaDeclineFromCore,
   priorityRankFromCore,
+  raceConstantsFromCore,
+  reachabilityConstantsFromCore,
   resetDecisionsForTest,
+  resolveBackendSelectionFromCore,
   paneBandOrderFromCore,
   paneQuestionOrderFromCore,
   SIZES,
   sizeOptionsFromCore,
+  uptimeConstantsFromCore,
+  vacationConstantsFromCore,
   wasteConstantsFromCore,
+  weekendConstantsFromCore,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
+import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry } from "../skills/backend-registry";
+import { readBackendSelection } from "../skills/backend-selection";
 import { declineForResponse, declineForTransport, NO_TERMINAL_LINE, NO_TOKEN } from "../skills/decline";
 import { OUTSIDE_SCHEMA } from "../skills/grill-turn-state";
+import { microtaskAffordance } from "../skills/microtask-affordance";
+import {
+  demotesFromFrontier,
+  FRONTIER_DEMOTION_WARNING,
+  planReplacementLabel,
+  wouldStrandPlan,
+} from "../screens/grill-review";
 import { BAND_ORDER, QUESTION_ORDER } from "../screens/questions/contract";
 import {
   BINDING_KEY,
@@ -33,8 +59,47 @@ import {
   STALE_AFTER_MS,
   STREAM_ORDER,
 } from "../screens/waste-pane/waste";
+import {
+  IMMINENT_THRESHOLD_USD,
+  NEAR_THRESHOLD_USD,
+  SNAPSHOT_KEY as KIMI_SNAPSHOT_KEY,
+  SOURCE as KIMI_SOURCE,
+  STALE_AFTER_MS as KIMI_STALE_AFTER_MS,
+} from "../screens/kimi-pane/kimi";
+import {
+  NEVER_POLLED_SUBJECT as GITHUB_NEVER_POLLED_SUBJECT,
+  OVERDUE_MULTIPLIER,
+  SOURCE as GITHUB_SOURCE,
+  STALE_AFTER_MS as GITHUB_STALE_AFTER_MS,
+} from "../screens/github-pane/github";
+import {
+  NEVER_POLLED_SUBJECT as UPTIME_NEVER_POLLED_SUBJECT,
+  SOURCE as UPTIME_SOURCE,
+  STALE_AFTER_MS as UPTIME_STALE_AFTER_MS,
+} from "../screens/uptime-pane/uptime";
+import { REACHABILITY_GRACE_MS, SUBJECT_KEY as REACHABILITY_SUBJECT_KEY } from "../screens/reachability-pane/reachability";
+import {
+  BINDING_KEY as RACE_BINDING_KEY,
+  SETUP_SUBJECT,
+  SOURCE as RACE_SOURCE,
+  STALE_AFTER_MS as RACE_STALE_AFTER_MS,
+} from "../screens/race-pane/race";
+import {
+  CALENDAR_REQUEST_KEY as WEEKEND_CALENDAR_REQUEST_KEY,
+  IMMINENT_WITHIN_MS as WEEKEND_IMMINENT_WITHIN_MS,
+  NEAR_WITHIN_MS as WEEKEND_NEAR_WITHIN_MS,
+  SUBJECT_KEY as WEEKEND_SUBJECT_KEY,
+} from "../screens/weekend-pane/weekend";
+import {
+  CALENDAR_REQUEST_KEY as VACATION_CALENDAR_REQUEST_KEY,
+  HORIZON_AHEAD_DAYS,
+  HORIZON_BEFORE_DAYS,
+  STALE_AFTER_MS as VACATION_STALE_AFTER_MS,
+  SUBJECT_KEY as VACATION_SUBJECT_KEY,
+} from "../screens/vacation-pane/vacation";
+import { DEVICE_ZONE } from "../screens/questions/zone-bridge";
 import { loadDecisionsForTest } from "../test/wasm-setup";
-import type { TaskItemDTO } from "../store/protocol";
+import type { StepDTO, TaskItemDTO } from "../store/protocol";
 
 // The node half of "vitest executes the seam in both environments" — this
 // file runs under the default `environment: "node"`, and
@@ -136,6 +201,89 @@ describe("the skills lane's literal decline prose, pinned against the core", () 
   });
 });
 
+// M4 (#539): the microtask affordance, the backend picker's tier fallback
+// and degrade-to-Auto rule, and the Grill review card's predicates —
+// `microtask-affordance.ts`, `backend-registry.ts`/`backend-selection.ts`
+// and `grill-review.ts` are now thin wrappers over the seam. `AUTO_SELECTION`
+// and `FRONTIER_DEMOTION_WARNING` stay literal TS for the same
+// module-evaluation-order reason the three decline constants above do
+// (`backend-registry.ts`'s and `grill-review.ts`'s own headers).
+describe("the microtask affordance, the backend fallback and the Grill review predicates, out of the core", () => {
+  function step(overrides: Partial<StepDTO> = {}): StepDTO {
+    return {
+      id: "step-1",
+      itemId: "item-1",
+      body: "pack",
+      done: false,
+      position: 0,
+      deletedAt: null,
+      version: 1,
+      ...overrides,
+    };
+  }
+
+  it("microtaskAffordance answers out of the core", () => {
+    expect(microtaskAffordance([])).toEqual(microtaskAffordanceFromCore([]));
+    const steps = [step()];
+    expect(microtaskAffordance(steps)).toEqual(microtaskAffordanceFromCore(steps));
+  });
+
+  it("AUTO_SELECTION matches the core's sentinel", () => {
+    expect(AUTO_SELECTION).toBe(backendAutoSelectionFromCore());
+  });
+
+  it("fallbackEntry answers out of the core's fallback_backend_id", () => {
+    const registry = [
+      { id: "a", label: "A", model: null, endpoint: "/a", connectTimeoutMs: 1 },
+      { id: "b", label: "B", model: null, endpoint: "/b", connectTimeoutMs: 1 },
+    ];
+    expect(fallbackEntry(registry, "a")?.id).toBe(fallbackBackendIdFromCore(["a", "b"], "a"));
+    expect(fallbackEntry(BACKEND_REGISTRY, "cloud")).toBe(null);
+    expect(fallbackBackendIdFromCore(["cloud"], "cloud")).toBeUndefined();
+  });
+
+  it("declinedBackendFallbackFromCore decides the whole #274 offer, not just the fallback id", () => {
+    const declined = { phase: "declined", messages: [], reason: "Could not reach the server.", backend: null, model: null, answered: false };
+    expect(declinedBackendFallbackFromCore(declined, "cloud", ["cloud", "home"])).toBe("home");
+    expect(declinedBackendFallbackFromCore({ phase: "idle" }, "cloud", ["cloud", "home"])).toBeUndefined();
+    expect(declinedBackendFallbackFromCore(declined, AUTO_SELECTION, ["cloud", "home"])).toBeUndefined();
+    expect(
+      declinedBackendFallbackFromCore({ ...declined, answered: true }, "cloud", ["cloud", "home"]),
+    ).toBeUndefined();
+  });
+
+  it("readBackendSelection answers out of the core's resolve_backend_selection", () => {
+    const storage = {
+      store: { "hb.backend-selection": "retired" } as Record<string, string>,
+      getItem(key: string) {
+        return this.store[key] ?? null;
+      },
+      setItem(key: string, value: string) {
+        this.store[key] = value;
+      },
+      removeItem(key: string) {
+        delete this.store[key];
+      },
+    };
+    expect(readBackendSelection(storage, BACKEND_REGISTRY)).toBe(
+      resolveBackendSelectionFromCore("retired", ["cloud"]),
+    );
+  });
+
+  it("wouldStrandPlan/planReplacementLabel/demotesFromFrontier answer out of the core", () => {
+    const steps = [step()];
+    expect(wouldStrandPlan("fog_remains", steps)).toBe(grillWouldStrandPlanFromCore("fog_remains", steps));
+    expect(planReplacementLabel(steps)).toBe(grillPlanReplacementLabelFromCore(steps));
+    expect(demotesFromFrontier("fog_remains", "ready")).toBe(
+      grillDemotesFromFrontierFromCore("fog_remains", "ready"),
+    );
+  });
+
+  it("FRONTIER_DEMOTION_WARNING matches the core's words", () => {
+    expect(FRONTIER_DEMOTION_WARNING).toBe(grillFrontierDemotionWarningFromCore());
+  });
+});
+
 // M4 (#533): the panes' vocabularies. `BAND_ORDER` and `QUESTION_ORDER`
 // stay literal TS in `contract.ts` for a HARDER version of the same
 // module-evaluation-order constraint as above — `registry.ts` builds its
@@ -166,6 +314,75 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     // from it.
     expect(STALE_AFTER_MS).toBe(constants.staleAfterMs);
     expect([...STREAM_ORDER]).toEqual(constants.streamOrder);
+  });
+
+  // #534: the remaining seven panes' own literal constants, same reason.
+  it("the kimi pane's constants match the core's", () => {
+    const constants = kimiConstantsFromCore();
+    expect(KIMI_SOURCE).toBe(constants.source);
+    expect(KIMI_SNAPSHOT_KEY).toBe(constants.snapshotKey);
+    expect(KIMI_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect(IMMINENT_THRESHOLD_USD).toBe(constants.imminentThresholdUsd);
+    expect(NEAR_THRESHOLD_USD).toBe(constants.nearThresholdUsd);
+  });
+
+  it("the github pane's constants match the core's", () => {
+    const constants = githubConstantsFromCore();
+    expect(GITHUB_SOURCE).toBe(constants.source);
+    expect(GITHUB_NEVER_POLLED_SUBJECT).toBe(constants.neverPolledSubject);
+    expect(GITHUB_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect(OVERDUE_MULTIPLIER).toBe(constants.overdueMultiplier);
+  });
+
+  it("the uptime pane's constants match the core's", () => {
+    const constants = uptimeConstantsFromCore();
+    expect(UPTIME_SOURCE).toBe(constants.source);
+    expect(UPTIME_NEVER_POLLED_SUBJECT).toBe(constants.neverPolledSubject);
+    expect(UPTIME_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+  });
+
+  it("the reachability pane's grace window matches the core's", () => {
+    const constants = reachabilityConstantsFromCore();
+    expect(REACHABILITY_SUBJECT_KEY).toBe(constants.subjectKey);
+    expect(REACHABILITY_GRACE_MS).toBe(constants.graceMs);
+  });
+
+  it("the race pane's constants match the core's", () => {
+    const constants = raceConstantsFromCore();
+    expect(RACE_SOURCE).toBe(constants.source);
+    expect(RACE_BINDING_KEY).toBe(constants.bindingKey);
+    expect(RACE_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+    expect(SETUP_SUBJECT).toBe(constants.setupSubject);
+  });
+
+  it("the weekend pane's constants match the core's", () => {
+    const constants = weekendConstantsFromCore();
+    expect(WEEKEND_SUBJECT_KEY).toBe(constants.subjectKey);
+    expect(WEEKEND_CALENDAR_REQUEST_KEY).toBe(constants.calendarRequestKey);
+    // `weekendBand`'s own thresholds — kept literal TS on the
+    // describe-collection-order reasoning `weekend.ts`'s module header
+    // states, pinned here rather than read through the seam at runtime.
+    expect(WEEKEND_IMMINENT_WITHIN_MS).toBe(constants.imminentWithinMs);
+    expect(WEEKEND_NEAR_WITHIN_MS).toBe(constants.nearWithinMs);
+  });
+
+  it("the vacation pane's constants match the core's", () => {
+    const constants = vacationConstantsFromCore();
+    expect(VACATION_SUBJECT_KEY).toBe(constants.subjectKey);
+    expect(VACATION_CALENDAR_REQUEST_KEY).toBe(constants.calendarRequestKey);
+    expect(HORIZON_BEFORE_DAYS).toBe(constants.horizonBeforeDays);
+    expect(HORIZON_AHEAD_DAYS).toBe(constants.horizonAheadDays);
+    expect(VACATION_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+  });
+
+  // `zone-bridge.ts`'s `DEVICE_ZONE` special-cases exactly this string to
+  // mean "the reader's own device zone" — a drift here would silently turn
+  // every weekend/vacation query into a permanently-unresolvable one
+  // (`resolveZone` would pass a literal `"device-local"` straight to
+  // `Intl`, which throws, so every query is simply omitted and the pane
+  // reads as a permanent gap, never a loud failure).
+  it("zone-bridge.ts's DEVICE_ZONE sentinel matches the core's", () => {
+    expect(DEVICE_ZONE).toBe(deviceZoneFromCore());
   });
 });
 

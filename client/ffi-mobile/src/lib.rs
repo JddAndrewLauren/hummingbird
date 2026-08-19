@@ -59,9 +59,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use hummingbird_core::bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_core::decisions::{
-    available_actions, can_mark_done, frontier, queue, rules, urgency,
+    available_actions, can_grill, can_mark_done, frontier, queue, rules, urgency,
 };
+use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
     HttpMethod, MutationRequest, MutationTransport,
@@ -842,6 +844,123 @@ fn build_now_board(
     NowBoardRecord { columns, blocked, contexts, live_column_keys }
 }
 
+// ----------------------------------------------------------------- M3 (#531)
+// The Triage screen's own door — the "triage process" queue
+// (`hummingbird_core::decisions::queue`), already sunk from web and already
+// riding inline into `build_now_board`'s combined list, exposed here as its
+// own decided read so a dedicated screen never has to pick triage/grilling
+// rows back out of the frontier board's columns.
+
+/// One Triage-screen row: an already-decided [`Item`], carrying every field
+/// [`hummingbird_core::TriagePatch`] can touch — the seeded editor's whole
+/// starting draft — plus `stage` (a combined queue can hold a Grilling row
+/// beside a Triage one, so the badge reads the item's own stage rather than
+/// assuming "triage") and `can_mark_done`.
+///
+/// `can_mark_done` rides along rather than `available_actions`
+/// ([`NowItemRecord`]'s own field): [`available_actions`] answers `&[]` for
+/// both Triage and Grilling (`hummingbird_core::decisions::actions`'s own
+/// doc — "neither is action yet"), so a row built the frontier board's way
+/// would never offer the checkmark the web's `TriageRow` renders today.
+/// [`can_mark_done`] is the wider, deliberately-separate rule that answers
+/// this instead — the same one [`to_blocked_item_record`] already reaches
+/// for.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TriageItemRecord {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub stage: String,
+    pub size: Option<String>,
+    pub energy: Option<String>,
+    pub context: Option<String>,
+    pub priority: i64,
+    pub project_id: Option<String>,
+    pub deadline: Option<String>,
+    pub scheduled_date: Option<String>,
+    pub source: Option<String>,
+    pub created_at: i64,
+    pub can_mark_done: bool,
+    /// Whether the row's Grill button is live — `hummingbird_core::
+    /// decisions::can_grill` verbatim (#539). The Triage board's own rows
+    /// are always Triage or Grilling, so this reads `true` today, but the
+    /// field crosses decided rather than assumed.
+    pub can_grill: bool,
+    /// Whether this item already carries a saved Grill draft (#356) — the
+    /// button's own "Grill me"/"Resume grill" label source.
+    pub has_grill_draft: bool,
+}
+
+fn to_triage_item_record(item: &Item, has_grill_draft: bool) -> TriageItemRecord {
+    TriageItemRecord {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        description: item.description.clone(),
+        stage: item.stage.as_str().to_string(),
+        size: item.size.map(|size| size.as_str().to_string()),
+        energy: item.energy.map(|energy| energy.as_str().to_string()),
+        context: item.context.clone(),
+        priority: item.priority,
+        project_id: item.project_id.clone(),
+        deadline: item.deadline.clone(),
+        scheduled_date: item.scheduled_date.clone(),
+        source: item.source.clone(),
+        created_at: item.created_at,
+        can_mark_done: can_mark_done(item.stage, item.archived_at.is_some()),
+        can_grill: can_grill(item.stage),
+        has_grill_draft,
+    }
+}
+
+/// [`MobileTaskHost::triage_board`]'s whole read, decided: [`queue::
+/// triage_process_queue`]'s own ordered id list, resolved back to full rows
+/// and its two record-field counts carried verbatim — never recomputed from
+/// `items.len()` in Kotlin, which is exactly the "N captured · M grilling"
+/// header's own acceptance criterion.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TriageBoardRecord {
+    pub items: Vec<TriageItemRecord>,
+    pub captured_count: u32,
+    pub grilling_count: u32,
+}
+
+/// [`MobileTaskHost::triage_board`]'s pure core, free of `Core`/
+/// `MobileTaskHost` for the same fixture-driven-test reason
+/// [`build_now_board`]'s own doc gives.
+fn build_triage_board(
+    triage_items: &[Item],
+    grilling_items: &[Item],
+    draft_item_ids: &[String],
+) -> TriageBoardRecord {
+    let by_id: HashMap<&str, &Item> = triage_items
+        .iter()
+        .chain(grilling_items.iter())
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+
+    let triage_queue: Vec<queue::QueueItem> = triage_items.iter().map(to_queue_item).collect();
+    let grilling_queue: Vec<queue::QueueItem> = grilling_items.iter().map(to_queue_item).collect();
+    let process = queue::triage_process_queue(&triage_queue, &grilling_queue, draft_item_ids);
+
+    let draft_ids: std::collections::HashSet<&str> =
+        draft_item_ids.iter().map(String::as_str).collect();
+    let items = process
+        .ids
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id.as_str())
+                .map(|item| to_triage_item_record(item, draft_ids.contains(id.as_str())))
+        })
+        .collect();
+
+    TriageBoardRecord {
+        items,
+        captured_count: process.captured_count as u32,
+        grilling_count: process.grilling_count as u32,
+    }
+}
+
 // ----------------------------------------------------------------- M2 (#141)
 // The notification lane's read side. Same asymmetry as the M1-6 section
 // above: Kotlin receives decided records, never a predicate to apply.
@@ -925,6 +1044,11 @@ pub struct ItemStepRecord {
     pub body: String,
     pub done: bool,
     pub position: i64,
+    /// ms epoch, or `None` for a live step — #539's addition, carried so a
+    /// Grill confirm's `session_steps` argument can be rebuilt from this
+    /// same record rather than a second, deleted-at-blind read of the
+    /// checklist.
+    pub deleted_at: Option<i64>,
 }
 
 /// One open blocker. `title` is `None` for an id this device has not
@@ -982,6 +1106,11 @@ pub struct ItemDetailRecord {
     pub is_archived: bool,
     pub is_editable: bool,
     pub available_actions: Vec<String>,
+    /// [`MobileMicrotaskAffordance`], mirrored — #539's applied result.
+    /// `None` for a non-editable (archived) item, exactly matching
+    /// [`ItemDetailRecord::is_editable`]. Kotlin renders this; it decides
+    /// nothing.
+    pub microtask_affordance: Option<MobileMicrotaskAffordance>,
 }
 
 fn to_item_detail_record(
@@ -1015,6 +1144,7 @@ fn to_item_detail_record(
                 body: step.body.clone(),
                 done: step.done,
                 position: step.position,
+                deleted_at: step.deleted_at,
             })
             .collect(),
         open_blockers: detail
@@ -1036,6 +1166,25 @@ fn to_item_detail_record(
             .iter()
             .map(|action| action.as_str().to_string())
             .collect(),
+        microtask_affordance: detail.microtask_affordance.map(to_mobile_microtask_affordance),
+    }
+}
+
+/// [`hummingbird_core::decisions::skills::MicrotaskAffordance`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileMicrotaskAffordance {
+    Break,
+    Rewrite { undone_count: u32 },
+}
+
+fn to_mobile_microtask_affordance(
+    affordance: hummingbird_core::decisions::skills::MicrotaskAffordance,
+) -> MobileMicrotaskAffordance {
+    match affordance {
+        hummingbird_core::decisions::skills::MicrotaskAffordance::Break => MobileMicrotaskAffordance::Break,
+        hummingbird_core::decisions::skills::MicrotaskAffordance::Rewrite { undone_count } => {
+            MobileMicrotaskAffordance::Rewrite { undone_count }
+        }
     }
 }
 
@@ -1100,6 +1249,26 @@ pub struct ItemEdit {
     pub project_id: FieldPatch,
     pub deadline: FieldPatch,
     pub scheduled_date: FieldPatch,
+}
+
+/// [`ItemEdit`] → [`hummingbird_core::TriagePatch`], the one conversion
+/// [`MobileTaskHost::edit_item`] and [`MobileTaskHost::triage_item`] both
+/// need (review finding on #531's own PR — the two calls carried the
+/// identical nine-field literal before this was pulled out). `Err` is an
+/// unrecognised vocabulary word, rejected before the seam exactly as every
+/// other closed-vocabulary string crossing here is.
+fn to_triage_patch(edit: &ItemEdit) -> Result<hummingbird_core::TriagePatch, String> {
+    Ok(hummingbird_core::TriagePatch {
+        title: edit.title.clone(),
+        priority: edit.priority,
+        description: edit.description.to_text(),
+        size: edit.size.to_vocabulary(Size::parse)?,
+        energy: edit.energy.to_vocabulary(Energy::parse)?,
+        context: edit.context.to_text(),
+        project_id: edit.project_id.to_text(),
+        deadline: edit.deadline.to_text(),
+        scheduled_date: edit.scheduled_date.to_text(),
+    })
 }
 
 /// [`MobileTaskHost::edit_item`] failed. `ItemNotFound` covers the archived
@@ -1672,6 +1841,62 @@ impl MobileTaskHost {
         self.inner.lock().await.core.queue_depth() as u32
     }
 
+    /// Every dead-lettered entry (#535), per [`Core::dead_letters`] — S9's
+    /// "1 edit didn't apply" affordance, mapped the same shape
+    /// `ffi-web::task_host::map_dead_letter` uses (that crate's own copy,
+    /// since the two FFI crates share no DTO layer — ADR-0001 seam rule 2
+    /// is that each surfaces `Core` verbatim, not that they surface each
+    /// other).
+    pub async fn dead_letters(&self) -> Vec<MobileDeadLetterRecord> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .dead_letters()
+            .iter()
+            .map(to_dead_letter_record)
+            .collect()
+    }
+
+    /// Every standing-question binding (#535/#118), per [`Core::bindings`].
+    pub async fn bindings(&self) -> Vec<MobileBindingRecord> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .bindings()
+            .iter()
+            .map(to_binding_record)
+            .collect()
+    }
+
+    /// Sets one binding (#535/#118). `key` is the wire's kebab-case binding
+    /// name, resolved through [`BindingKey::parse`] before it ever reaches
+    /// [`Core::set_binding`] — the same "reject before the seam" discipline
+    /// [`MobileTaskHost::capture`] applies to its own vocabulary, and
+    /// load-bearing here for a second reason: `settings` has no DELETE, so
+    /// a key minted by mistake can never be taken back out of the table.
+    pub async fn set_binding(
+        &self,
+        seed: String,
+        key: String,
+        value: String,
+        now_ms: i64,
+    ) -> Result<(), MobileSetBindingError> {
+        let Some(key) = BindingKey::parse(&key) else {
+            return Err(MobileSetBindingError::UnknownKey);
+        };
+        self.inner
+            .lock()
+            .await
+            .core
+            .set_binding(&seed, key, &value, now_ms)
+            .await
+            .map_err(|error| MobileSetBindingError::WriteFailed {
+                detail: error.to_string(),
+            })
+    }
+
     /// A fresh device token from the person (first entry, or rotation
     /// after a `credential_needed` event). Always resumes a hold — see
     /// [`Core::push_api_key`].
@@ -1949,6 +2174,113 @@ impl MobileTaskHost {
             .map(|detail| to_item_detail_record(&detail, now_ms))
     }
 
+    /// Confirms a completed Grill interview (#354/#539, ADR-0023) —
+    /// [`hummingbird_core::Core::complete_grill`] verbatim: one atomic
+    /// mutation, `session_steps` compared against the item's LIVE steps to
+    /// force a re-review on drift ([`MobileGrillCompletionError::NeedsReReview`]).
+    /// Returns the minted Grill id, the same "the takeover stays up until
+    /// this answers `ok`" contract the web's own `useGrillTakeoverWiring.ts`
+    /// documents — this door decides nothing about when to close; the
+    /// caller does, off this result.
+    pub async fn complete_grill(
+        &self,
+        item_id: String,
+        session_steps: Vec<ItemStepRecord>,
+        completion: MobileGrillCompletion,
+        now_ms: i64,
+    ) -> Result<String, MobileGrillCompletionError> {
+        let seed = mint_mutation_seed("grill", now_ms);
+        let steps = to_domain_steps(&session_steps);
+        let mut inner = self.inner.lock().await;
+        inner
+            .core
+            .complete_grill(
+                &seed,
+                &item_id,
+                &steps,
+                hummingbird_core::GrillCompletion {
+                    transcript: completion.transcript,
+                    summary: completion.summary,
+                    verdict: unmap_verdict(completion.verdict),
+                    model_proposal: completion.model_proposal,
+                    applied_patch: completion.applied_patch,
+                    delete_unticked_plan: completion.delete_unticked_plan,
+                },
+                now_ms,
+            )
+            .await
+            .map_err(|error| match error {
+                hummingbird_core::CompleteGrillError::ItemNotFound => {
+                    MobileGrillCompletionError::ItemNotFound
+                }
+                hummingbird_core::CompleteGrillError::ItemDone => MobileGrillCompletionError::ItemDone,
+                hummingbird_core::CompleteGrillError::NeedsReReview => {
+                    MobileGrillCompletionError::NeedsReReview
+                }
+                other => MobileGrillCompletionError::CompletionFailed { detail: other.to_string() },
+            })
+    }
+
+    /// #356's device-local draft read: this item's saved Grill turns,
+    /// typed — `None` when the item has no draft. Kotlin never parses JSON
+    /// (ADR-0025's own rule for this seam): the draft is opaque
+    /// `serde_json::Value` on the core side, and this door is where it
+    /// becomes the same typed `Vec<MobileGrillTurn>` [`save_grill_draft`]
+    /// takes, resolved through [`skills::GrillTurn`]'s own shape. A draft
+    /// this build cannot read back as that shape (a future format, or
+    /// corruption) answers `None`, exactly like no draft at all — nothing
+    /// worth resuming.
+    pub async fn grill_draft(&self, item_id: String) -> Option<Vec<MobileGrillTurn>> {
+        let value = self.inner.lock().await.core.grill_draft(&item_id)?.clone();
+        let turns: Vec<skills::GrillTurn> = serde_json::from_value(value).ok()?;
+        Some(turns.into_iter().map(from_domain_turn).collect())
+    }
+
+    /// Whether `item_id` carries a saved draft — the Triage row's own
+    /// "Grill me"/"Resume grill" label source, one item at a time.
+    pub async fn has_grill_draft(&self, item_id: String) -> bool {
+        self.inner.lock().await.core.has_grill_draft(&item_id)
+    }
+
+    /// Saves (or replaces) `item_id`'s draft — #356's "every completed turn
+    /// re-saves automatically" contract.
+    pub async fn save_grill_draft(
+        &self,
+        item_id: String,
+        turns: Vec<MobileGrillTurn>,
+        now_ms: i64,
+    ) -> Result<(), MobileGrillDraftError> {
+        let turns: Vec<skills::GrillTurn> = turns.into_iter().map(map_turn).collect();
+        let value = serde_json::to_value(&turns)
+            .map_err(|error| MobileGrillDraftError::SaveFailed { detail: error.to_string() })?;
+        self.inner
+            .lock()
+            .await
+            .core
+            .save_grill_draft(&item_id, value, now_ms)
+            .await
+            .map_err(|error| MobileGrillDraftError::SaveFailed { detail: error.to_string() })
+    }
+
+    /// #356's explicit, confirmed "Discard" gesture — a no-op, not an
+    /// error, when no draft exists. Also the one place a completed Grill's
+    /// `"ok"` clears the interview that produced it; the caller's job to
+    /// call this only then, matching the web's own
+    /// `useGrillTakeoverWiring.ts`.
+    pub async fn discard_grill_draft(
+        &self,
+        item_id: String,
+        now_ms: i64,
+    ) -> Result<(), MobileGrillDraftError> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .discard_grill_draft(&item_id, now_ms)
+            .await
+            .map_err(|error| MobileGrillDraftError::SaveFailed { detail: error.to_string() })
+    }
+
     /// Edits an item's fields —
     /// [`hummingbird_core::Core::triage`] with `promote_to_ready` pinned
     /// **`false`** at this seam, because promotion is triage's gesture and
@@ -1966,28 +2298,58 @@ impl MobileTaskHost {
         edit: ItemEdit,
         now_ms: i64,
     ) -> Result<(), MobileEditError> {
-        let patch = hummingbird_core::TriagePatch {
-            title: edit.title.clone(),
-            priority: edit.priority,
-            description: edit.description.to_text(),
-            size: edit
-                .size
-                .to_vocabulary(Size::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            energy: edit
-                .energy
-                .to_vocabulary(Energy::parse)
-                .map_err(|detail| MobileEditError::EditFailed { detail })?,
-            context: edit.context.to_text(),
-            project_id: edit.project_id.to_text(),
-            deadline: edit.deadline.to_text(),
-            scheduled_date: edit.scheduled_date.to_text(),
-        };
+        let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
         let seed = mint_mutation_seed("edit", now_ms);
         let mut inner = self.inner.lock().await;
         inner
             .core
             .triage(&seed, &item_id, false, patch, now_ms)
+            .await
+            .map_err(|error| match error {
+                hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
+                other => MobileEditError::EditFailed {
+                    detail: other.to_string(),
+                },
+            })
+    }
+
+    /// The Triage screen's whole read (M3/#531) — [`build_triage_board`]'s
+    /// pure core over [`hummingbird_core::Core::triage_inbox`],
+    /// [`hummingbird_core::Core::grilling_items`] and
+    /// [`hummingbird_core::Core::grill_draft_item_ids`], the same three
+    /// reads [`MobileTaskHost::now_board`] already combines for the
+    /// frontier board's inline triage rows — this door decides the same
+    /// queue on its own, for the screen whose whole reason to exist is that
+    /// queue.
+    pub async fn triage_board(&self) -> TriageBoardRecord {
+        let inner = self.inner.lock().await;
+        let triage_items = inner.core.triage_inbox();
+        let grilling_items = inner.core.grilling_items();
+        let draft_item_ids = inner.core.grill_draft_item_ids();
+        build_triage_board(&triage_items, &grilling_items, &draft_item_ids)
+    }
+
+    /// The Triage screen's mutation (M3/#531) —
+    /// [`hummingbird_core::Core::triage`] verbatim, the same [`ItemEdit`]→
+    /// [`hummingbird_core::TriagePatch`] conversion [`to_triage_patch`]
+    /// [`MobileTaskHost::edit_item`] shares, except `promote_to_ready` rides
+    /// as a real caller-supplied argument rather than pinned `false`:
+    /// promoting to Ready is this screen's one destination, and every edit
+    /// alongside it still lands in the same single CAS `PATCH`
+    /// [`Core::triage`]'s own doc argues for.
+    pub async fn triage_item(
+        &self,
+        item_id: String,
+        promote_to_ready: bool,
+        edit: ItemEdit,
+        now_ms: i64,
+    ) -> Result<(), MobileEditError> {
+        let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
+        let seed = mint_mutation_seed("triage", now_ms);
+        let mut inner = self.inner.lock().await;
+        inner
+            .core
+            .triage(&seed, &item_id, promote_to_ready, patch, now_ms)
             .await
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
@@ -2444,6 +2806,63 @@ pub struct MobileGrillTurn {
     pub answer: String,
 }
 
+/// [`hummingbird_core::GrillCompletion`], mirrored — the review card's
+/// Confirm (#354/#539, ADR-0023).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MobileGrillCompletion {
+    pub transcript: String,
+    pub summary: String,
+    pub verdict: MobileGrillVerdict,
+    pub model_proposal: String,
+    pub applied_patch: String,
+    pub delete_unticked_plan: bool,
+}
+
+/// [`hummingbird_core::CompleteGrillError`], mirrored — the same
+/// `ItemNotFound`/`ActFailed`-shaped split [`MobileActError`] draws for its
+/// own seam, plus `NeedsReReview` (#354's own guard: the item's live steps
+/// drifted from this session's snapshot, and the caller must send the
+/// reader back to the review card rather than close it).
+#[derive(Debug, uniffi::Error)]
+pub enum MobileGrillCompletionError {
+    ItemNotFound,
+    ItemDone,
+    NeedsReReview,
+    CompletionFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileGrillCompletionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileGrillCompletionError::ItemNotFound => write!(f, "item not found"),
+            MobileGrillCompletionError::ItemDone => write!(f, "item is done"),
+            MobileGrillCompletionError::NeedsReReview => {
+                write!(f, "the item's steps changed since this review started")
+            }
+            MobileGrillCompletionError::CompletionFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileGrillCompletionError {}
+
+/// #356's device-local draft store failed to persist — a storage failure,
+/// not a validation one.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileGrillDraftError {
+    SaveFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileGrillDraftError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileGrillDraftError::SaveFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileGrillDraftError {}
+
 /// [`skills::GrillTurnState`], mirrored. The narration field is
 /// **`messages`**, plural, and the line's own `message` never crosses at
 /// all: a uniffi field named `message` generates a Kotlin `val message`
@@ -2535,6 +2954,10 @@ fn unmap_proposal(proposal: MobileGrillProposal) -> skills::GrillProposal {
 
 fn map_turn(turn: MobileGrillTurn) -> skills::GrillTurn {
     skills::GrillTurn { question: unmap_question(turn.question), answer: turn.answer }
+}
+
+fn from_domain_turn(turn: skills::GrillTurn) -> MobileGrillTurn {
+    MobileGrillTurn { question: map_question(turn.question), answer: turn.answer }
 }
 
 fn map_grill_state(state: skills::GrillTurnState) -> MobileGrillTurnState {
@@ -2795,6 +3218,21 @@ pub fn skill_run_stamp_label(state: MobileSkillRunState) -> Option<String> {
     skills::stamp_label(&unmap_run_state(state))
 }
 
+/// #274's one-tap fallback offer — [`skills::declined_backend_fallback`]
+/// verbatim (ADR-0001 rule 2/ADR-0025: this crate maps, it does not decide;
+/// the four-clause predicate itself lives in `hummingbird_core::decisions::
+/// skills::backend`, not here, since #539's round-2 review). A thin mapping
+/// wrapper the same shape [`notification_tap_target`] is for its own
+/// core-decided verdict.
+#[uniffi::export]
+pub fn declined_backend_fallback(
+    state: MobileSkillRunState,
+    selection: String,
+    registry_ids: Vec<String>,
+) -> Option<String> {
+    skills::declined_backend_fallback(&unmap_run_state(state), &selection, &registry_ids)
+}
+
 fn reduce_run_state(state: MobileSkillRunState, event: skills::SkillEvent) -> MobileSkillRunState {
     map_run_state(skills::reduce_run(&unmap_run_state(state), &event))
 }
@@ -2810,6 +3248,344 @@ pub fn microtask_run_body(
     model: Option<String>,
 ) -> String {
     skills::microtask_run_body(&skills::MicrotaskRunInput { item_id, replace, grain, model })
+}
+
+/// The Grill button's own label — `hummingbird_core::decisions::
+/// grill_button_label` verbatim (#539: the Triage row's button is live).
+#[uniffi::export]
+pub fn item_grill_button_label(has_draft: bool) -> String {
+    hummingbird_core::decisions::grill_button_label(has_draft).to_string()
+}
+
+/// Whether item detail's own Grill button renders at all —
+/// `hummingbird_core::decisions::can_grill` verbatim (#539: item detail's
+/// mount, the Triage board's own rows read this through
+/// [`TriageItemRecord::can_grill`] instead, already decided per row).
+#[uniffi::export]
+pub fn item_can_grill(stage: String) -> bool {
+    match hummingbird_domain::Stage::parse(&stage) {
+        Some(stage) => can_grill(stage),
+        None => false,
+    }
+}
+
+// ---- #274's backend picker (#539): the tier fallback and the
+// degrade-to-Auto rule. The registry itself — label, model, endpoint,
+// connect timeout — stays a Kotlin-side list of ids; see
+// `hummingbird_core::decisions::skills::backend`'s own header for why.
+
+/// The sentinel selection value — never a registered id.
+#[uniffi::export]
+pub fn backend_auto_selection() -> String {
+    skills::AUTO_SELECTION.to_string()
+}
+
+/// The one-tap fallback offered when a pin declines: the next registered id
+/// that is not the dead one, in registry order.
+#[uniffi::export]
+pub fn fallback_backend_id(registry_ids: Vec<String>, dead_id: String) -> Option<String> {
+    skills::fallback_backend_id(&registry_ids, &dead_id)
+}
+
+/// Auto when nothing is stored, or when the stored id no longer names a
+/// registered entry.
+#[uniffi::export]
+pub fn resolve_backend_selection(stored: Option<String>, registry_ids: Vec<String>) -> String {
+    skills::resolve_backend_selection(stored.as_deref(), &registry_ids)
+}
+
+// ---- the Grill review card's predicates (#355/#359, ADR-0023; sunk here
+// from `client/web/src/screens/grill-review.ts` at #539).
+
+/// Whether confirming this verdict risks stranding a live plan.
+#[uniffi::export]
+pub fn grill_would_strand_plan(verdict: MobileGrillVerdict, steps: Vec<ItemStepRecord>) -> bool {
+    skills::would_strand_plan(unmap_verdict(verdict), &to_domain_steps(&steps))
+}
+
+/// The plan-replacement tick's own label, naming the live undone count.
+#[uniffi::export]
+pub fn grill_plan_replacement_label(steps: Vec<ItemStepRecord>) -> String {
+    skills::plan_replacement_label(&to_domain_steps(&steps))
+}
+
+/// Whether confirming this verdict takes a STARTED item off the frontier.
+/// `false` for a `stage` this build does not recognise — every stage that
+/// matters here (`ready`, `in_progress`) always parses.
+#[uniffi::export]
+pub fn grill_demotes_from_frontier(verdict: MobileGrillVerdict, stage: String) -> bool {
+    match hummingbird_domain::Stage::parse(&stage) {
+        Some(stage) => skills::demotes_from_frontier(unmap_verdict(verdict), stage),
+        None => false,
+    }
+}
+
+/// The sentence [`grill_demotes_from_frontier`] gates.
+#[uniffi::export]
+pub fn grill_frontier_demotion_warning() -> String {
+    skills::FRONTIER_DEMOTION_WARNING.to_string()
+}
+
+/// [`ItemStepRecord`] back to the domain [`hummingbird_domain::Step`] the
+/// review predicates read — `item_id` and `version` ride along as whatever
+/// this call already knows/does not need; neither predicate reads either
+/// field, only `id`/`body`/`done`/`deleted_at`.
+fn to_domain_steps(steps: &[ItemStepRecord]) -> Vec<hummingbird_domain::Step> {
+    steps
+        .iter()
+        .map(|step| hummingbird_domain::Step {
+            id: step.id.clone(),
+            item_id: String::new(),
+            body: step.body.clone(),
+            done: step.done,
+            position: step.position,
+            deleted_at: step.deleted_at,
+            version: 0,
+        })
+        .collect()
+}
+
+// -------------------------------------------------------------- #535 (M4)
+// The Settings screen: bindings, the outbound queue's dead-letter journal,
+// and the sync-status readout — the last of these sunk to
+// `hummingbird_core::decisions::settings` in the same slice (ADR-0025), so
+// this screen carries no Kotlin-side classification of what "stale"/
+// "held"/"synced" mean, matching the web's `shell/sync-status.ts` rewire.
+
+use hummingbird_core::decisions::settings;
+
+/// [`BindingValue`], mirrored as a `uniffi::Enum` — [`bindings.rs`]'s own
+/// three states, never collapsed into a nullable string.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileBindingValue {
+    Unset,
+    Text { text: String },
+    Other { raw: String },
+}
+
+fn to_binding_value(value: &BindingValue) -> MobileBindingValue {
+    match value {
+        BindingValue::Unset => MobileBindingValue::Unset,
+        BindingValue::Text { text } => MobileBindingValue::Text { text: text.clone() },
+        BindingValue::Other { raw } => MobileBindingValue::Other { raw: raw.clone() },
+    }
+}
+
+/// [`Binding`], mirrored — every [`BindingKey`] this build knows (set or
+/// not) plus every other live `settings` row, exactly as
+/// [`Core::bindings`]'s own doc describes.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileBindingRecord {
+    pub key: String,
+    pub known: bool,
+    pub pending: bool,
+    pub value: MobileBindingValue,
+}
+
+fn to_binding_record(binding: &Binding) -> MobileBindingRecord {
+    MobileBindingRecord {
+        key: binding.key.clone(),
+        known: binding.known,
+        pending: binding.pending,
+        value: to_binding_value(&binding.value),
+    }
+}
+
+/// [`MobileTaskHost::set_binding`] failed. `UnknownKey` is the seam
+/// rejecting a key that is not in ADR-0015's closed vocabulary — a caller
+/// mistake, and the one outcome that never reaches [`Core::set_binding`] at
+/// all; `WriteFailed` is a durability failure enqueueing the write. Same
+/// split [`MobileRuleError`] draws for its own seam.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileSetBindingError {
+    UnknownKey,
+    WriteFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileSetBindingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileSetBindingError::UnknownKey => write!(f, "unrecognised binding key"),
+            MobileSetBindingError::WriteFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileSetBindingError {}
+
+/// One field a dead-lettered [`DeadLetterReason::Conflict`] disagreed on —
+/// the local and server values carried as their own canonical JSON text
+/// (uniffi has no `serde_json::Value` equivalent, and this is opaque
+/// material the screen only displays, never parses further).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeadLetterFieldRecord {
+    pub field: String,
+    pub local_json: String,
+    pub server_json: String,
+}
+
+/// [`DeadLetterReason`], mirrored. `Permanent` carries `detail` (never
+/// `message` — the uniffi field-naming trap [`MobileInitError`]'s own doc
+/// records); `Conflict` and `Contention` carry no fields of their own here,
+/// since [`MobileDeadLetterRecord::fields`] already carries a `Conflict`'s
+/// field-level detail alongside the reason, matching
+/// `ffi-web::task_host::DeadLetterEntryDTO`'s split.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDeadLetterReason {
+    Permanent { detail: String },
+    Conflict,
+    Contention,
+}
+
+/// One dead-lettered entry — S9's "1 edit didn't apply" affordance.
+/// `entity`/`entity_id` are what the abandoned change was *about*
+/// ([`MutationIntent::subject`]), not the queue entry's own tracking id.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeadLetterRecord {
+    pub id: String,
+    pub reason: MobileDeadLetterReason,
+    pub fields: Vec<MobileDeadLetterFieldRecord>,
+    pub at_ms: i64,
+    pub entity: String,
+    pub entity_id: Option<String>,
+}
+
+/// The touched fields' *intended* (local) values a [`MutationIntent`]
+/// carries — [`ffi-web::task_host::local_field_values`]'s own copy of this
+/// reasoning: only a `Patch` has any.
+fn local_field_values(intent: &MutationIntent) -> serde_json::Map<String, serde_json::Value> {
+    match intent {
+        MutationIntent::Patch { patch_fields, .. } => {
+            patch_fields.as_object().cloned().unwrap_or_default()
+        }
+        MutationIntent::Create { .. } | MutationIntent::CompleteGrill { .. } => {
+            serde_json::Map::new()
+        }
+    }
+}
+
+fn to_dead_letter_record(entry: &DeadLetterEntry) -> MobileDeadLetterRecord {
+    let subject = entry.entry.intent.subject();
+    match &entry.reason {
+        DeadLetterReason::Permanent(detail) => MobileDeadLetterRecord {
+            id: entry.entry.id.clone(),
+            reason: MobileDeadLetterReason::Permanent { detail: detail.clone() },
+            fields: Vec::new(),
+            at_ms: entry.at_ms,
+            entity: subject.entity,
+            entity_id: subject.id,
+        },
+        DeadLetterReason::Conflict { fields, current } => {
+            let local = local_field_values(&entry.entry.intent);
+            let mapped_fields = fields
+                .iter()
+                .map(|field| MobileDeadLetterFieldRecord {
+                    field: field.clone(),
+                    local_json: local
+                        .get(field)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
+                        .to_string(),
+                    server_json: current
+                        .get(field)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
+                        .to_string(),
+                })
+                .collect();
+            MobileDeadLetterRecord {
+                id: entry.entry.id.clone(),
+                reason: MobileDeadLetterReason::Conflict,
+                fields: mapped_fields,
+                at_ms: entry.at_ms,
+                entity: subject.entity,
+                entity_id: subject.id,
+            }
+        }
+        DeadLetterReason::Contention { .. } => MobileDeadLetterRecord {
+            id: entry.entry.id.clone(),
+            reason: MobileDeadLetterReason::Contention,
+            fields: Vec::new(),
+            at_ms: entry.at_ms,
+            entity: subject.entity,
+            entity_id: subject.id,
+        },
+    }
+}
+
+/// [`settings::SyncStatusInput`], mirrored — the sync card's whole input,
+/// gathered so the summary below can never answer off three different
+/// snapshots of "now". `last_sync_outcome_kind` is the wire's own kind
+/// string (`RunOutcome::kind`), never re-parsed into a Kotlin enum.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileSyncStatusInput {
+    pub online: bool,
+    pub last_sync_outcome_kind: Option<String>,
+    pub last_sync_at_ms: Option<i64>,
+    pub queue_depth: Option<u32>,
+    pub now_ms: i64,
+}
+
+/// [`settings::SyncStatusTone`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSyncStatusTone {
+    Neutral,
+    Warn,
+    Danger,
+    Success,
+}
+
+fn map_sync_status_tone(tone: settings::SyncStatusTone) -> MobileSyncStatusTone {
+    match tone {
+        settings::SyncStatusTone::Neutral => MobileSyncStatusTone::Neutral,
+        settings::SyncStatusTone::Warn => MobileSyncStatusTone::Warn,
+        settings::SyncStatusTone::Danger => MobileSyncStatusTone::Danger,
+        settings::SyncStatusTone::Success => MobileSyncStatusTone::Success,
+    }
+}
+
+/// [`settings::sync_status_tone`]/[`settings::sync_status_label`]/
+/// [`settings::sync_status_tone_word`], answered together off one input —
+/// the badge and its label can never disagree about which state they
+/// describe.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileSyncStatusSummary {
+    pub tone: MobileSyncStatusTone,
+    pub label: String,
+    pub tone_word: String,
+}
+
+#[uniffi::export]
+pub fn sync_status_summary(input: MobileSyncStatusInput) -> MobileSyncStatusSummary {
+    let core_input = settings::SyncStatusInput {
+        online: input.online,
+        last_sync_outcome_kind: input.last_sync_outcome_kind,
+        last_sync_at_ms: input.last_sync_at_ms,
+        queue_depth: input.queue_depth,
+        now_ms: input.now_ms,
+    };
+    MobileSyncStatusSummary {
+        tone: map_sync_status_tone(settings::sync_status_tone(&core_input)),
+        label: settings::sync_status_label(&core_input),
+        tone_word: settings::sync_status_tone_word(&core_input),
+    }
+}
+
+/// [`settings::dead_letter_heading`] — the dead-letter affordance's
+/// heading, pluralised off the real count.
+#[uniffi::export]
+pub fn dead_letter_heading(count: u32) -> String {
+    settings::dead_letter_heading(count)
+}
+
+/// [`settings::is_informative_sync_outcome`] — whether a completed cycle's
+/// `RunOutcome::kind` says anything about how stale the mirror is. The
+/// host filters on this before overwriting its own last-outcome/
+/// last-synced-at state, the same guard `store/worker-client.ts` applies
+/// on the web side.
+#[uniffi::export]
+pub fn is_informative_sync_outcome(kind: String) -> bool {
+    settings::is_informative_sync_outcome(&kind)
 }
 
 #[cfg(test)]
@@ -2931,8 +3707,9 @@ mod tests {
     /// `active_item_count`/`frontier` stay at zero on purpose: a capture is
     /// born into `Stage::Triage`, which `Core::frontier`'s own
     /// Ready/InProgress filter never surfaces — `Core::triage_inbox` is the
-    /// query that would show it, not yet exposed to a mobile host (deferred
-    /// to the Now-list screen, M1-6).
+    /// query that shows it instead, exposed to a mobile host by
+    /// `MobileTaskHost::now_board` (M3/#530) and again, on its own, by
+    /// `MobileTaskHost::triage_board` (M3/#531).
     #[tokio::test]
     async fn capture_is_durable_before_any_network_is_touched() {
         let dir = tempfile::tempdir().unwrap();
@@ -3058,14 +3835,14 @@ mod tests {
         assert_eq!(host.projects().await, Vec::<MobileProject>::new());
     }
 
-    /// `CaptureActivity.kt`'s `PriorityRow` hardcodes its display order as
+    /// `ui/forms/PriorityRow.kt` hardcodes its display order as
     /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
     /// JVM test cannot call a generated JNI binding directly
     /// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
     /// process), so the pin lives here, on the Rust side of the seam: if
     /// `decisions::frontier::priority_rank`'s ordering ever changes, this
     /// test breaks and names the Kotlin literal (`PriorityRow`,
-    /// `CaptureActivity.kt`) that must change to match.
+    /// `ui/forms/PriorityRow.kt`) that must change to match.
     ///
     /// It reads the core rule **directly**, never through a
     /// `#[uniffi::export]`ed pass-through: exporting one would put a
@@ -3079,7 +3856,7 @@ mod tests {
         assert_eq!(
             wire_values,
             vec![1, 2, 3, 4, 0],
-            "PriorityRow's hardcoded Kotlin order (CaptureActivity.kt) must match this",
+            "PriorityRow's hardcoded Kotlin order (ui/forms/PriorityRow.kt) must match this",
         );
     }
 
@@ -3757,6 +4534,230 @@ mod tests {
         assert!(matches!(result, Err(MobileActError::ItemNotFound)));
     }
 
+    // ------------------------------------------------------- M3 (#531)
+
+    /// Captured and Grilling items combine into one queue, in the core's
+    /// order — local drafts first (none here), then Grilling, then captured
+    /// Triage, oldest-first within each group — the same order
+    /// `queue::triage_process_queue` itself pins.
+    #[test]
+    fn triage_board_orders_grilling_before_captured_triage() {
+        let captured = Item { stage: Stage::Triage, ..item("captured-1", 0, None) };
+        let grilling = Item {
+            stage: Stage::Grilling,
+            created_at: 1,
+            ..item("grilling-1", 0, None)
+        };
+
+        let board = build_triage_board(&[captured], &[grilling], &[]);
+
+        assert_eq!(
+            board.items.iter().map(|record| record.id.clone()).collect::<Vec<_>>(),
+            vec!["grilling-1", "captured-1"],
+        );
+    }
+
+    /// The header's two counts are the record's own fields, never a caller
+    /// recomputation over `items.len()`.
+    #[test]
+    fn triage_board_counts_are_exact_never_recomputed() {
+        let captured = vec![
+            Item { stage: Stage::Triage, ..item("c-1", 0, None) },
+            Item { stage: Stage::Triage, ..item("c-2", 0, None) },
+        ];
+        let grilling = vec![Item { stage: Stage::Grilling, ..item("g-1", 0, None) }];
+
+        let board = build_triage_board(&captured, &grilling, &[]);
+
+        assert_eq!(board.captured_count, 2);
+        assert_eq!(board.grilling_count, 1);
+        assert_eq!(board.items.len(), 3);
+    }
+
+    /// A row carries every field the seeded editor needs, and its own
+    /// stage — a combined queue can hold a Grilling row beside a Triage
+    /// one, so the badge must never assume "triage".
+    #[test]
+    fn triage_item_records_carry_the_seeded_editor_fields_and_own_stage() {
+        let grilling = Item {
+            stage: Stage::Grilling,
+            description: Some("notes".to_string()),
+            context: Some("@computer".to_string()),
+            ..item("g-1", 2, Some("2026-08-20"))
+        };
+
+        let board = build_triage_board(&[], &[grilling], &[]);
+
+        let record = &board.items[0];
+        assert_eq!(record.stage, "grilling");
+        assert_eq!(record.description.as_deref(), Some("notes"));
+        assert_eq!(record.context.as_deref(), Some("@computer"));
+        assert_eq!(record.priority, 2);
+        assert_eq!(record.deadline.as_deref(), Some("2026-08-20"));
+    }
+
+    /// Triage and Grilling both offer nothing in `available_actions`
+    /// (neither is action yet), so the checkmark rides on the wider,
+    /// separate `can_mark_done` rule instead — never `&[]`-implies-false.
+    #[test]
+    fn triage_item_records_carry_can_mark_done_not_available_actions() {
+        let triage = Item { stage: Stage::Triage, ..item("t-1", 0, None) };
+        let archived = Item {
+            stage: Stage::Triage,
+            archived_at: Some(1),
+            ..item("t-2", 0, None)
+        };
+
+        let board = build_triage_board(&[triage, archived], &[], &[]);
+
+        let live = board.items.iter().find(|record| record.id == "t-1").unwrap();
+        let done = board.items.iter().find(|record| record.id == "t-2").unwrap();
+        assert!(live.can_mark_done);
+        assert!(!done.can_mark_done);
+    }
+
+    /// #539: the Grill button's own two facts, decided rather than left for
+    /// `TriageRow.kt` to gate on `enabled = false` forever.
+    #[test]
+    fn triage_item_records_carry_can_grill_and_has_grill_draft() {
+        let triage = Item { stage: Stage::Triage, ..item("t-1", 0, None) };
+        let drafted = Item { stage: Stage::Triage, ..item("t-2", 0, None) };
+
+        let board = build_triage_board(&[triage, drafted], &[], &["t-2".to_string()]);
+
+        let no_draft = board.items.iter().find(|record| record.id == "t-1").unwrap();
+        let has_draft = board.items.iter().find(|record| record.id == "t-2").unwrap();
+        assert!(no_draft.can_grill);
+        assert!(!no_draft.has_grill_draft);
+        assert!(has_draft.can_grill);
+        assert!(has_draft.has_grill_draft);
+    }
+
+    fn untouched_triage_edit() -> ItemEdit {
+        ItemEdit {
+            title: None,
+            priority: None,
+            description: FieldPatch::Untouched,
+            size: FieldPatch::Untouched,
+            energy: FieldPatch::Untouched,
+            context: FieldPatch::Untouched,
+            project_id: FieldPatch::Untouched,
+            deadline: FieldPatch::Untouched,
+            scheduled_date: FieldPatch::Untouched,
+        }
+    }
+
+    /// The read door, end to end: a fresh capture lands in the board with
+    /// the right count, and disappears from it once promoted.
+    #[tokio::test]
+    async fn triage_board_reads_a_fresh_capture_and_drops_it_once_promoted() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-board-ns").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
+
+        let board = host.triage_board().await;
+        assert_eq!(board.captured_count, 1);
+        assert_eq!(board.grilling_count, 0);
+        assert_eq!(board.items[0].id, id);
+
+        host.triage_item(id, true, untouched_triage_edit(), 2_000).await.unwrap();
+
+        let board = host.triage_board().await;
+        assert_eq!(board.captured_count, 0);
+        assert!(board.items.is_empty());
+    }
+
+    /// Promotion and a field edit are one CAS `PATCH`: the edit lands, and
+    /// the item leaves Triage, in a single durable entry.
+    #[tokio::test]
+    async fn triage_item_promotes_and_edits_in_one_durable_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-item-ns").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
+
+        host.triage_item(
+            id.clone(),
+            true,
+            ItemEdit {
+                title: Some("buy oat milk".into()),
+                ..untouched_triage_edit()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.title, "buy oat milk");
+        assert_eq!(detail.stage, "ready");
+        assert_eq!(
+            host.queue_depth().await,
+            2,
+            "the capture and the triage are two durable entries"
+        );
+    }
+
+    /// `promote_to_ready: false` is a pure edit — the item stays in Triage,
+    /// exactly the weekend-plans-pane reasoning `Core::triage`'s own doc
+    /// gives for the same flag on `edit_item`.
+    #[tokio::test]
+    async fn triage_item_with_promotion_false_edits_without_promoting() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-item-ns-2").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
+
+        host.triage_item(
+            id.clone(),
+            false,
+            ItemEdit {
+                context: FieldPatch::Set { value: "@errands".into() },
+                ..untouched_triage_edit()
+            },
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.stage, "triage");
+        assert_eq!(detail.context.as_deref(), Some("@errands"));
+    }
+
+    #[tokio::test]
+    async fn triaging_an_item_this_device_has_never_seen_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("triage-item-ns-3").to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            host.triage_item("nope".to_string(), true, untouched_triage_edit(), 1_000).await,
+            Err(MobileEditError::ItemNotFound)
+        ));
+    }
+
     // ------------------------------------------------------- M2 (#141)
 
     fn alert(id: &str, raised_at: i64) -> Alert {
@@ -3987,6 +4988,11 @@ mod tests {
             } else {
                 vec![ItemAction::Start, ItemAction::Complete]
             },
+            microtask_affordance: if archived {
+                None
+            } else {
+                Some(hummingbird_core::decisions::skills::MicrotaskAffordance::Rewrite { undone_count: 1 })
+            },
         }
     }
 
@@ -4009,11 +5015,17 @@ mod tests {
             vec![OpenBlockerRecord { item_id: "b-unseen".into(), title: None }],
             "an unseen blocker crosses as a titleless row, never dropped"
         );
+        assert_eq!(
+            record.microtask_affordance,
+            Some(MobileMicrotaskAffordance::Rewrite { undone_count: 1 }),
+            "#539: the applied result, not left for Kotlin to re-derive",
+        );
 
         let archived = to_item_detail_record(&fixture_detail(true), 1_000);
         assert!(archived.is_archived);
         assert!(!archived.is_editable);
         assert!(archived.available_actions.is_empty());
+        assert_eq!(archived.microtask_affordance, None, "an archived item has no live gesture");
     }
 
     /// The double-`Option` that cannot cross UniFFI, pinned at the one
@@ -4657,5 +5669,372 @@ mod skills_tests {
         for name in ["anthropic", "claude-", "sonnet", "opus", "haiku", "moonshot"] {
             assert!(!lowercase.contains(name), "the decline prose names {name}");
         }
+    }
+
+    // ---- #539's backend-picker doors
+
+    #[test]
+    fn item_grill_button_label_is_the_cores_rule_verbatim() {
+        assert_eq!(item_grill_button_label(false), "Grill me");
+        assert_eq!(item_grill_button_label(true), "Resume grill");
+    }
+
+    #[test]
+    fn item_can_grill_matches_the_cores_rule_and_refuses_an_unrecognised_stage() {
+        assert!(item_can_grill("triage".to_string()));
+        assert!(item_can_grill("grilling".to_string()));
+        assert!(!item_can_grill("done".to_string()));
+        assert!(!item_can_grill("not-a-stage".to_string()));
+    }
+
+    #[test]
+    fn backend_auto_selection_is_the_cores_sentinel() {
+        assert_eq!(backend_auto_selection(), skills::AUTO_SELECTION);
+    }
+
+    /// The predicate itself is `hummingbird_core::decisions::skills::backend
+    /// ::declined_backend_fallback`'s own test to own (#539's round-2
+    /// review) — this only pins that the mapping wrapper reaches it and
+    /// answers unchanged.
+    #[test]
+    fn declined_backend_fallback_maps_and_answers_the_cores_verdict_unchanged() {
+        let declined = MobileSkillRunState::Declined {
+            messages: Vec::new(),
+            reason: "Could not reach the server.".to_string(),
+            backend: None,
+            model: None,
+            answered: false,
+        };
+        assert_eq!(
+            declined_backend_fallback(declined, "cloud".to_string(), vec!["cloud".to_string(), "home".to_string()]),
+            Some("home".to_string()),
+        );
+        assert_eq!(
+            declined_backend_fallback(skill_run_idle(), "cloud".to_string(), vec!["cloud".to_string()]),
+            None,
+        );
+    }
+
+    #[test]
+    fn fallback_backend_id_skips_the_dead_entry() {
+        assert_eq!(
+            fallback_backend_id(vec!["a".to_string(), "b".to_string()], "a".to_string()).as_deref(),
+            Some("b"),
+        );
+        assert_eq!(fallback_backend_id(vec!["cloud".to_string()], "cloud".to_string()), None);
+    }
+
+    #[test]
+    fn resolve_backend_selection_degrades_a_retired_pin_to_auto() {
+        assert_eq!(
+            resolve_backend_selection(Some("retired".to_string()), vec!["cloud".to_string()]),
+            skills::AUTO_SELECTION,
+        );
+        assert_eq!(
+            resolve_backend_selection(Some("cloud".to_string()), vec!["cloud".to_string()]),
+            "cloud",
+        );
+        assert_eq!(resolve_backend_selection(None, vec!["cloud".to_string()]), skills::AUTO_SELECTION);
+    }
+
+    // ---- #539's Grill review predicates
+
+    fn undone_step(id: &str) -> ItemStepRecord {
+        ItemStepRecord {
+            id: id.to_string(),
+            body: "pack".to_string(),
+            done: false,
+            position: 0,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn grill_would_strand_plan_is_true_only_for_fog_remains_with_a_live_undone_step() {
+        assert!(grill_would_strand_plan(MobileGrillVerdict::FogRemains, vec![undone_step("s")]));
+        assert!(!grill_would_strand_plan(MobileGrillVerdict::FogRemains, Vec::new()));
+        assert!(!grill_would_strand_plan(MobileGrillVerdict::Resolved, vec![undone_step("s")]));
+    }
+
+    #[test]
+    fn grill_plan_replacement_label_names_the_live_undone_count() {
+        assert_eq!(grill_plan_replacement_label(vec![undone_step("a")]), "Also delete 1 unfinished step");
+        assert_eq!(
+            grill_plan_replacement_label(vec![undone_step("a"), undone_step("b")]),
+            "Also delete 2 unfinished steps",
+        );
+    }
+
+    #[test]
+    fn grill_demotes_from_frontier_matches_the_cores_stage_table() {
+        assert!(grill_demotes_from_frontier(MobileGrillVerdict::FogRemains, "ready".to_string()));
+        assert!(grill_demotes_from_frontier(MobileGrillVerdict::FogRemains, "in_progress".to_string()));
+        assert!(!grill_demotes_from_frontier(MobileGrillVerdict::FogRemains, "triage".to_string()));
+        assert!(!grill_demotes_from_frontier(MobileGrillVerdict::Resolved, "ready".to_string()));
+        assert!(!grill_demotes_from_frontier(MobileGrillVerdict::FogRemains, "not-a-stage".to_string()));
+    }
+
+    #[test]
+    fn grill_frontier_demotion_warning_is_the_cores_sentence() {
+        assert_eq!(grill_frontier_demotion_warning(), skills::FRONTIER_DEMOTION_WARNING);
+    }
+
+    // ---- #539's complete_grill / draft doors (host-level)
+
+    async fn grill_test_host(namespace: &str) -> std::sync::Arc<MobileTaskHost> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(namespace);
+        // Leaked deliberately: the tempdir must outlive the host for the
+        // duration of the test, and these tests are short-lived processes
+        // (the same trade every other tempdir-backed test here already
+        // makes implicitly by never calling `.close()`).
+        std::mem::forget(dir);
+        MobileTaskHost::init(path.to_str().unwrap().to_string(), "https://invalid.invalid".to_string(), String::new())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn complete_grill_resolves_and_promotes_a_triage_item_to_ready() {
+        let host = grill_test_host("grill-complete").await;
+        let id = host
+            .capture(
+                CaptureDraft {
+                    title: "book flights".to_string(),
+                    destination: CaptureDestination::Triage,
+                    size: String::new(),
+                    energy: String::new(),
+                    context: String::new(),
+                    description: String::new(),
+                    project_id: String::new(),
+                    priority: String::new(),
+                    deadline: String::new(),
+                    scheduled_date: String::new(),
+                },
+                1_000,
+            )
+            .await
+            .unwrap();
+
+        let grill_id = host
+            .complete_grill(
+                id.clone(),
+                Vec::new(),
+                MobileGrillCompletion {
+                    transcript: "Q: Which airport?\nA: SEA".to_string(),
+                    summary: "Settled on SEA".to_string(),
+                    verdict: MobileGrillVerdict::Resolved,
+                    model_proposal: "{}".to_string(),
+                    applied_patch: "{}".to_string(),
+                    delete_unticked_plan: false,
+                },
+                2_000,
+            )
+            .await
+            .unwrap();
+        assert!(!grill_id.is_empty());
+
+        let detail = host.item_detail(id, 3_000).await.expect("captured item");
+        assert_eq!(detail.stage, "ready");
+    }
+
+    #[tokio::test]
+    async fn complete_grill_on_an_unknown_item_is_item_not_found() {
+        let host = grill_test_host("grill-not-found").await;
+        let error = host
+            .complete_grill(
+                "nope".to_string(),
+                Vec::new(),
+                MobileGrillCompletion {
+                    transcript: String::new(),
+                    summary: String::new(),
+                    verdict: MobileGrillVerdict::Resolved,
+                    model_proposal: "{}".to_string(),
+                    applied_patch: "{}".to_string(),
+                    delete_unticked_plan: false,
+                },
+                1_000,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MobileGrillCompletionError::ItemNotFound));
+    }
+
+    #[tokio::test]
+    async fn a_saved_draft_reads_back_and_marks_the_item_as_having_one() {
+        let host = grill_test_host("grill-draft").await;
+        let id = host
+            .capture(
+                CaptureDraft {
+                    title: "renew the passport".to_string(),
+                    destination: CaptureDestination::Triage,
+                    size: String::new(),
+                    energy: String::new(),
+                    context: String::new(),
+                    description: String::new(),
+                    project_id: String::new(),
+                    priority: String::new(),
+                    deadline: String::new(),
+                    scheduled_date: String::new(),
+                },
+                1_000,
+            )
+            .await
+            .unwrap();
+
+        assert!(!host.has_grill_draft(id.clone()).await);
+        assert_eq!(host.grill_draft(id.clone()).await, None);
+
+        let turn = MobileGrillTurn {
+            question: MobileGrillQuestion {
+                prompt: "Which airport?".to_string(),
+                recommended_answer: "SEA".to_string(),
+                choices: vec!["SEA".to_string(), "PDX".to_string()],
+            },
+            answer: "SEA".to_string(),
+        };
+        host.save_grill_draft(id.clone(), vec![turn.clone()], 2_000).await.unwrap();
+        assert!(host.has_grill_draft(id.clone()).await);
+        assert_eq!(host.grill_draft(id.clone()).await, Some(vec![turn]));
+
+        host.discard_grill_draft(id.clone(), 3_000).await.unwrap();
+        assert!(!host.has_grill_draft(id.clone()).await);
+        assert_eq!(host.grill_draft(id).await, None);
+    }
+}
+
+/// The M4 (#535) Settings doors. Every exported function above is
+/// exercised here, for the same `dead_code` reason `skills_tests` states.
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    fn dummy_entry(id: &str, patch_fields: serde_json::Value) -> DeadLetterEntry {
+        DeadLetterEntry {
+            entry: hummingbird_core::sync::queue::QueueEntry {
+                id: id.to_string(),
+                intent: MutationIntent::Patch {
+                    path: "settings/city-waste-page".to_string(),
+                    method: hummingbird_core::sync::write::transport::HttpMethod::Put,
+                    base: serde_json::json!({}),
+                    base_updated_at: 0,
+                    patch_fields,
+                    rebase_fields: None,
+                },
+            },
+            reason: DeadLetterReason::Permanent("rejected".to_string()),
+            at_ms: 5_000,
+        }
+    }
+
+    #[test]
+    fn a_binding_record_carries_its_three_states_verbatim() {
+        assert_eq!(
+            to_binding_value(&BindingValue::Unset),
+            MobileBindingValue::Unset,
+        );
+        assert_eq!(
+            to_binding_value(&BindingValue::Text { text: "f1".to_string() }),
+            MobileBindingValue::Text { text: "f1".to_string() },
+        );
+        assert_eq!(
+            to_binding_value(&BindingValue::Other { raw: "7".to_string() }),
+            MobileBindingValue::Other { raw: "7".to_string() },
+        );
+
+        let binding = Binding {
+            key: "race-series".to_string(),
+            known: true,
+            pending: false,
+            value: BindingValue::Text { text: "motogp".to_string() },
+        };
+        let record = to_binding_record(&binding);
+        assert_eq!(record.key, "race-series");
+        assert!(record.known);
+        assert!(!record.pending);
+        assert_eq!(record.value, MobileBindingValue::Text { text: "motogp".to_string() });
+    }
+
+    #[test]
+    fn a_permanent_dead_letter_carries_its_detail_and_no_fields() {
+        let entry = dummy_entry("q-1", serde_json::json!({}));
+        let record = to_dead_letter_record(&entry);
+        assert_eq!(record.id, "q-1");
+        assert_eq!(
+            record.reason,
+            MobileDeadLetterReason::Permanent { detail: "rejected".to_string() },
+        );
+        assert!(record.fields.is_empty());
+        assert_eq!(record.at_ms, 5_000);
+        assert_eq!(record.entity, "settings");
+        assert_eq!(record.entity_id.as_deref(), Some("city-waste-page"));
+    }
+
+    #[test]
+    fn a_conflict_dead_letter_pairs_each_named_field_with_its_local_and_server_value() {
+        let mut entry = dummy_entry(
+            "q-2",
+            serde_json::json!({ "value": "new-page" }),
+        );
+        entry.reason = DeadLetterReason::Conflict {
+            fields: vec!["value".to_string()],
+            current: serde_json::json!({ "value": "someone-elses-page" }),
+        };
+        let record = to_dead_letter_record(&entry);
+        assert_eq!(record.reason, MobileDeadLetterReason::Conflict);
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].field, "value");
+        assert_eq!(record.fields[0].local_json, "\"new-page\"");
+        assert_eq!(record.fields[0].server_json, "\"someone-elses-page\"");
+    }
+
+    #[test]
+    fn a_contention_dead_letter_carries_neither_detail_nor_fields() {
+        let mut entry = dummy_entry("q-3", serde_json::json!({}));
+        entry.reason = DeadLetterReason::Contention { current: serde_json::json!({}) };
+        let record = to_dead_letter_record(&entry);
+        assert_eq!(record.reason, MobileDeadLetterReason::Contention);
+        assert!(record.fields.is_empty());
+    }
+
+    #[test]
+    fn the_sync_status_summary_is_the_core_rule_verbatim() {
+        let summary = sync_status_summary(MobileSyncStatusInput {
+            online: true,
+            last_sync_outcome_kind: Some("completed".to_string()),
+            last_sync_at_ms: Some(0),
+            queue_depth: Some(2),
+            now_ms: 60_000,
+        });
+        assert_eq!(summary.tone, MobileSyncStatusTone::Success);
+        assert_eq!(summary.label, "Synced — as of 1m ago · 2 queued");
+        assert_eq!(summary.tone_word, "synced");
+    }
+
+    #[test]
+    fn a_held_outcome_reads_as_held_never_a_silent_success() {
+        let summary = sync_status_summary(MobileSyncStatusInput {
+            online: true,
+            last_sync_outcome_kind: Some("credential_needed".to_string()),
+            last_sync_at_ms: Some(0),
+            queue_depth: None,
+            now_ms: 60_000,
+        });
+        assert_eq!(summary.tone, MobileSyncStatusTone::Warn);
+        assert_eq!(summary.label, "Held — device token needed");
+    }
+
+    #[test]
+    fn the_dead_letter_heading_is_the_core_rule_verbatim() {
+        assert_eq!(dead_letter_heading(1), "1 edit didn't apply");
+        assert_eq!(dead_letter_heading(2), "2 edits didn't apply");
+    }
+
+    #[test]
+    fn informativeness_is_the_core_rule_verbatim() {
+        assert!(!is_informative_sync_outcome("skipped".to_string()));
+        assert!(!is_informative_sync_outcome("busy".to_string()));
+        assert!(is_informative_sync_outcome("completed".to_string()));
+        assert!(is_informative_sync_outcome("held".to_string()));
     }
 }

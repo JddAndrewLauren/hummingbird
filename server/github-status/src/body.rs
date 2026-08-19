@@ -2,9 +2,10 @@
 //! around a `github-hummingbird/v1` body, one row per scheduled workflow.
 //!
 //! **This is one half of a cross-language contract.** The other half is
-//! `client/web/src/screens/github-pane/github.ts`'s parser, and nothing
-//! mechanically connects them — the same "no type, no schema, no compiler
-//! on either side can see the other" posture `kimi-balance`'s
+//! `client/core/src/decisions/panes/github.rs`'s `parse_workflow_body`
+//! (sunk out of `client/web/src/screens/github-pane/github.ts` at #534),
+//! and nothing mechanically connects them — the same "no type, no schema,
+//! no compiler on either side can see the other" posture `kimi-balance`'s
 //! `tests/contract.rs` documents, and this crate's own `tests/contract.rs`
 //! asserts the same way.
 //!

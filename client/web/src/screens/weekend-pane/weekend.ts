@@ -1,39 +1,53 @@
-import type { CalendarEventDTO, CalendarReadDTO, TaskItemDTO } from "../../store/protocol";
+import {
+  weekendAnswerFromCore,
+  weekendZoneQueriesFromCore,
+  type PaneInputsSource,
+} from "../../decisions/seam";
+import { resolveZoneFacts } from "../questions/zone-bridge";
+import type { CalendarEventDTO, TaskItemDTO } from "../../store/protocol";
 import type { Band, PaneAnswer, PaneGlyph, QuestionInputs } from "../questions/contract";
 import { computeUrgency, deadlineSortKey, type Urgency } from "../urgency";
 
-// The weekend-plans pane (#122), rewritten from
-// `screens/prototype-weekend-pane/` (deleted with this slice — variant A
-// won on 2026-08-10; see that directory's NOTES.md for the settled UI
-// verdicts this module does not re-litigate).
+// The weekend-plans pane (#122), answered over #245's pane shell — and
+// since #534, **the web's rendering half, plus one pinned-not-called
+// exception**.
 //
-// The merge, at read time, nothing stored: calendar events overlapping the
-// window, items scheduled in the window and items due in the window,
-// interleaved chronologically within each day. `scheduled_date` never feeds
-// this pane's own urgency reading — `entryUrgency` below reads only
-// `item.deadline`, the same read-time-only discipline `urgency.ts` documents
-// for the frontier.
+// **What sank to `hummingbird_core::decisions::panes::weekend`, and is
+// actually called from here**: `weekendAnswer`'s three decided fields
+// (answerState/band/withinBand — `weekend_answer`), computed from the
+// window, resolved through the zone bridge's `DEVICE_ZONE` rather than
+// raw `Date` math, plus the gap kinds.
+//
+// **`weekendWindow` itself stays local TS, pinned rather than called.**
+// `weekend.test.ts` calls `weekendWindow` at `describe`-body top level
+// (`const window = weekendWindow(...)`, before any `it()` runs), which
+// executes during vitest's synchronous test *collection* — before
+// `wasm-setup.ts`'s `beforeAll` has resolved `initDecisions()`. Routing
+// the window computation itself through the seam would throw the "used
+// before ready" guard on every collection pass, the same
+// module-evaluation-order trap `field-vocabulary.ts`'s vocab arrays hit
+// at #500 — except here the constraint is describe-collection order
+// rather than module-evaluation order. The resolution is the same:
+// `weekendWindow` (and the trivial `weekendBand`/`weekendWithinBand`
+// arithmetic built from it) stay literal TS, and `weekend.rs`'s own
+// `weekend_window`/`weekend_band`/`weekend_within_band` are the pinned
+// canonical definitions — cross-checked by
+// `weekend-window.shared.test.ts` rather than called at runtime, on
+// `field-vocabulary.test.ts`'s own precedent.
+//
+// **The full per-entry merge (`mergeWindow`) also stays here**, with its
+// titles, ids and anchors — the decision only ever needs the *counts*
+// (`weekend.rs`'s own module header), and every title/id crossing the
+// seam with no decision reading it would be exactly the "do not re-cross
+// whole DTOs" violation `inputs.rs`'s own discipline forbids.
+// `entryUrgency` is also unsunk — it reads `computeUrgency`, which is
+// already `hummingbird_core::decisions::urgency` (M1-2, #500) under a
+// different name; there is nothing second to sink.
 
-/** The one subject this question ever has — always present, even unbound,
- * so the setup prompt is discoverable (`waste.ts`'s own reasoning). */
 export const SUBJECT_KEY = "coming-weekend";
-
-/** The registry's `requiredCalendarRequests()` key, and the
- * `QuestionInputs.calendarReads` lookup key — this pane's own choice, since
- * the calendar mirror has no source vocabulary of its own to key on. */
 export const CALENDAR_REQUEST_KEY = "weekend";
 
 const HOUR_MS = 60 * 60 * 1000;
-
-/** The window opens this many hours before it starts to read as `imminent`
- * rather than `near` — the same "read-time threshold beside the band
- * function" discipline `waste.ts`'s `STALE_AFTER_MS` documents. */
-const IMMINENT_WITHIN_MS = 48 * HOUR_MS;
-
-/** Beyond `IMMINENT_WITHIN_MS` but inside this reads as `near`; beyond it,
- * `dormant`. Four days: long enough that the pane goes quiet for most of a
- * normal week and wakes as the weekend actually approaches. */
-const NEAR_WITHIN_MS = 96 * HOUR_MS;
 
 function startOfLocalDay(ms: number): number {
   const d = new Date(ms);
@@ -57,50 +71,28 @@ export function dayKeyOf(ms: number): string {
 
 export interface WeekendDay {
   key: string;
-  /** "Friday". */
   label: string;
-  /** "Aug 14". */
   dateLabel: string;
-  /** Local midnight. */
   startMs: number;
-  /** Local midnight of the next day, minus one millisecond. */
   endMs: number;
   entries: WindowEntry[];
 }
 
 export interface WeekendWindow {
-  /** Friday 17:00 local. */
   startMs: number;
-  /** Sunday 23:59:59.999 local. */
   endMs: number;
-  /** Always exactly three days — Friday, Saturday, Sunday — even once some
-   * are in the past: "what are my plans", not "what is left" (#122's own
-   * acceptance criterion; contrast the prototype, which dropped days
-   * already spent). */
   days: WeekendDay[];
-  /** Whether `nowMs` falls inside `[startMs, endMs]` — the weekend answered
-   * is the one under way, not the next one. */
   underWay: boolean;
 }
 
 /**
  * Friday 17:00 local through Sunday 23:59:59.999 local — #122's pinned
- * window (triaged 2026-08-10; do not re-litigate). Local means the
- * device's own zone, resolved as civil wall-clock time via plain `Date`
- * arithmetic — never a UTC-offset shortcut.
- *
- * Rolls forward to the *next* weekend from Sunday 20:00 local: the
- * threshold is computed once, as the current candidate window's own Sunday
- * 20:00, and if `nowMs` has already passed it the whole window shifts
- * forward by exactly one week. This is what makes a weekday's "coming
- * weekend" the upcoming Friday (the naive "last Friday on or before today"
- * candidate is always in the past by the time a weekday asks) and what
- * keeps a weekend already under way answering as itself, right up to
- * Sunday 19:59.
- */
+ * window, rolling forward from Sunday 20:00 local. Pinned against
+ * `weekend.rs`'s `weekend_window` by `weekend-window.shared.test.ts`
+ * rather than called through the seam — see the module header for why. */
 export function weekendWindow(nowMs: number): WeekendWindow {
   const today = startOfLocalDay(nowMs);
-  const dow = new Date(nowMs).getDay(); // 0 Sun … 6 Sat
+  const dow = new Date(nowMs).getDay();
   const daysSinceLastFriday = (dow - 5 + 7) % 7;
 
   let fridayMidnight = addLocalDays(today, -daysSinceLastFriday);
@@ -137,24 +129,12 @@ export interface WindowEntry {
   id: string;
   kind: EntryKind;
   title: string;
-  /** Where this sorts inside its day. */
   atMs: number;
-  /** `"time"` — the entry names a moment. `"day"` — it only names a day (a
-   * scheduled item, a day-only deadline, an all-day event). An all-day
-   * event is always `"day"`, structurally: its `when` carries no instant
-   * to anchor a time to. */
   anchor: "time" | "day";
   dayKey: string;
   event?: CalendarEventDTO;
   item?: TaskItemDTO;
-  /** Due entries only — the dedupe rule's residue: this item is ALSO
-   * scheduled inside the window, and is rendered once, here, as due, but
-   * the do-date it carries is a real fact the reader chose and is kept
-   * rather than swallowed. */
   alsoScheduledOn?: string;
-  /** Scheduled entries only: the item has a deadline outside the window —
-   * a do-date this weekend for something due later must still show that
-   * it is due, or the work reads as having no deadline at all. */
   deadlineOutsideWindow?: string;
 }
 
@@ -176,10 +156,6 @@ function inWindow(ms: number, window: WeekendWindow): boolean {
   return ms >= lowerMs && ms <= window.endMs;
 }
 
-/** Parses a naive-local `YYYY-MM-DD[THH:MM]` deadline to an instant,
- * resolving a day-only value through `deadlineSortKey` (end of that day)
- * exactly as `urgency.ts` does — the pane and the urgency dot must agree
- * about what "due Saturday" means. */
 function deadlineToMs(deadline: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(deadlineSortKey(deadline));
   if (!match) return null;
@@ -188,10 +164,6 @@ function deadlineToMs(deadline: string): number | null {
   return Number.isNaN(at.getTime()) ? null : at.getTime();
 }
 
-/** A scheduled date is day-only by construction (ADR-0009/0013), so it
- * anchors to the START of its day — a do-date says "this day", never a
- * time, and sorts above that day's booked time rather than being buried
- * inside it. */
 function scheduledToMs(scheduled: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(scheduled);
   if (!match) return null;
@@ -202,8 +174,9 @@ function scheduledToMs(scheduled: string): number | null {
 
 /**
  * The merge, run fresh on every render: events + due items + scheduled
- * items, grouped by day, chronological within a day. Nothing here is
- * stored, and nothing here writes back onto an item.
+ * items, grouped by day, chronological within a day — for the expanded
+ * rendering alone; see the module header for why this is not the
+ * decision's own path.
  *
  * The dedupe rule is #122's own acceptance criterion — an item both
  * scheduled and due inside the window appears **once, as due** (a deadline
@@ -236,7 +209,7 @@ export function mergeWindow(
     if (event.when.kind === "allDay") {
       const { startDate, endDate } = event.when;
       for (const day of days) {
-        if (!(startDate <= day.key && day.key < endDate)) continue; // exclusive end date.
+        if (!(startDate <= day.key && day.key < endDate)) continue;
         day.entries.push({
           id: `${event.providerEventId}@${day.key}`,
           kind: "event",
@@ -319,9 +292,6 @@ export function mergeWindow(
   return { ...window, days };
 }
 
-/** Urgency is read from the item's deadline and NOTHING else — #122's own
- * acceptance criterion: setting or clearing a do-date re-runs the whole
- * merge and can never move this dot. */
 export function entryUrgency(entry: WindowEntry, nowMs: number): Urgency {
   return computeUrgency(entry.item?.deadline ?? null, nowMs);
 }
@@ -346,7 +316,6 @@ export function timeLabel(entry: WindowEntry): string {
   return `${from} – ${to}`;
 }
 
-/** Short "Fri" / "Sat" / "Sun" for a day key, for the plan chips. */
 export function shortDayLabel(dayKey: string): string {
   const ms = scheduledToMs(dayKey);
   return ms === null ? dayKey : new Date(ms).toLocaleDateString([], { weekday: "short" });
@@ -372,15 +341,35 @@ export function countKinds(window: WeekendWindow): WindowCounts {
 
 // -- the shell's answer (#245) ---------------------------------------------
 
-/** This request's read — never a second calendar read (#267 owns the
- * seam; this pane only ever reads through `QuestionInputs.calendarReads`). */
-export function weekendCalendarRead(inputs: QuestionInputs): CalendarReadDTO | undefined {
+export function weekendCalendarRead(inputs: QuestionInputs) {
   return inputs.calendarReads[CALENDAR_REQUEST_KEY];
 }
 
-/** How soon the window matters — never `distant`: the window is at most a
- * handful of days away by construction (`weekendWindow`'s own rollover), so
- * the fifth band never applies (ADR-0015's own tripwire on that word). */
+/** The window opens this many hours before it starts to read as `imminent`
+ * rather than `near`. Kept literal TS on `weekendWindow`'s own
+ * describe-collection-order reasoning (the module header above) — pinned
+ * against `weekend_constants_json()`'s `imminentWithinMs` by
+ * `seam.test.ts`, not read through the seam at runtime. */
+export const IMMINENT_WITHIN_MS = 48 * HOUR_MS;
+
+/** Beyond `IMMINENT_WITHIN_MS` but inside this reads as `near`; beyond it,
+ * `dormant`. Pinned against `weekend_constants_json()`'s `nearWithinMs`,
+ * same reason. */
+export const NEAR_WITHIN_MS = 96 * HOUR_MS;
+
+/** `weekend.rs`'s `weekend_band` — kept literal TS for the same
+ * describe-collection-order reason `weekendWindow` is (this module's own
+ * header), pinned against the core directly by
+ * `weekend-window.shared.test.ts` rather than called through the seam.
+ *
+ * **No production caller.** `weekendAnswer` gets its band from
+ * `weekendAnswerFromCore` (the real decision), not from this — this export
+ * exists so a pin test can hold the local arithmetic against the core's
+ * own `weekend_band` directly, on `wasteSetup`-adjacent test-only exports
+ * elsewhere in this family. Kept exported (rather than folded into the pin
+ * test itself) because a caller-side desync between this and
+ * `weekendAnswerFromCore` is exactly the class of bug ADR-0025 exists to
+ * catch, and a private copy inside a test file could drift unnoticed. */
 export function weekendBand(window: WeekendWindow, nowMs: number): Band {
   if (window.underWay) return "live";
   const untilStartMs = window.startMs - nowMs;
@@ -389,10 +378,8 @@ export function weekendBand(window: WeekendWindow, nowMs: number): Band {
   return "dormant";
 }
 
-/** Epoch ms of the window's next relevant moment — its start while that is
- * still ahead, its end once the weekend is under way (so a live weekend
- * still under way sorts by how much longer it has left, not by when it
- * began). */
+/** `weekend.rs`'s `weekend_within_band` — same reason, same pin, and the
+ * same "no production caller" note as [`weekendBand`]. */
 export function weekendWithinBand(window: WeekendWindow): number {
   return window.underWay ? window.endMs : window.startMs;
 }
@@ -428,23 +415,21 @@ export function weekendGlyphs(window: WeekendWindow): PaneGlyph[] {
   return glyphs;
 }
 
-/** This question's answer for the shell (#245/#122).
- *
- * Answer state reads `calendarConnected` first — #122 review fix. The
- * criterion the brief draws is "no calendar → `unbound`" vs. "no snapshot →
- * `bound-but-unacquired`", and those are two different facts:
- * `CalendarState.connected` (`store/store.ts`) is "has this device ever
- * connected a calendar", while the calendar arm's `"not_read"` state is the
- * core's "no snapshot at all" — which is ALSO true of a connected device
- * that has not polled yet, is offline, or is sitting on `needsReconnect`.
- * Collapsing `"not_read"` straight to `unbound` told an already-configured
- * reader to go set the pane up. So: `!calendarConnected` is the only path to
- * `unbound`; a missing calendar-arm entry (never requested / a busy core the
- * worker dropped) or a connected-but-unacquired `"not_read"` read are both
- * `bound-but-unacquired` — the same "the table hasn't answered yet" reading
- * `waste.ts`'s `"unread"` pane read gives — and a real `"read"` answer is
- * always `answered`, including a genuinely empty weekend: a question that
- * answered nothing has not failed, and must not sort with the failures. */
+function paneInputs(inputs: QuestionInputs): PaneInputsSource {
+  return {
+    nowMs: inputs.nowMs,
+    bindings: inputs.bindings,
+    paneReads: inputs.paneReads,
+    calendarReads: inputs.calendarReads,
+    calendarConnected: inputs.calendarConnected,
+    items: inputs.items,
+  };
+}
+
+/** This question's answer for the shell (#245/#122). The three decided
+ * fields come from `weekend.rs`'s `weekend_answer`; the headline and the
+ * glyphs are composed here from a locally-merged window, exactly the cut
+ * ADR-0025 draws through `PaneAnswer`. */
 export function weekendAnswer(inputs: QuestionInputs): PaneAnswer {
   if (!inputs.calendarConnected) {
     return {
@@ -456,31 +441,30 @@ export function weekendAnswer(inputs: QuestionInputs): PaneAnswer {
     };
   }
 
+  const queries = weekendZoneQueriesFromCore(inputs.nowMs);
+  const facts = resolveZoneFacts(queries);
+  const answer = weekendAnswerFromCore(paneInputs(inputs), facts);
+
   const read = weekendCalendarRead(inputs);
   if (read === undefined || read.state === "not_read") {
     return {
-      answerState: "bound-but-unacquired",
-      band: "dormant",
-      withinBand: null,
+      ...answer,
       collapsedHeadline: "Checking calendar",
       icon: [{ kind: "icon", name: "cloud-fog", label: "checking calendar" }],
     };
   }
 
   const window = mergeWindow(weekendWindow(inputs.nowMs), read.events, inputs.items);
-
   return {
-    answerState: "answered",
-    band: weekendBand(window, inputs.nowMs),
-    withinBand: weekendWithinBand(window),
+    ...answer,
     collapsedHeadline: weekendCollapsedHeadline(window),
     icon: weekendGlyphs(window),
   };
 }
 
 /** The merged window an answered pane's expanded rendering draws — `null`
- * for every gap state (including `!calendarConnected`, #122 review fix),
- * mirroring `waste.ts`'s `wasteView`. */
+ * for every gap state (including `!calendarConnected`), mirroring
+ * `waste.ts`'s `wasteView`. */
 export function weekendView(inputs: QuestionInputs): WeekendWindow | null {
   if (!inputs.calendarConnected) return null;
   const read = weekendCalendarRead(inputs);

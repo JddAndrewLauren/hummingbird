@@ -4,7 +4,7 @@ import type {
   TaskWorkerRequest,
   WorkerResponse,
 } from "../store/protocol";
-import { isInformativeSyncOutcome } from "../shell/sync-status";
+import { isInformativeSyncOutcome } from "../shell/sync-outcome-informative";
 import { announceReady } from "./announce";
 
 type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest;

@@ -119,6 +119,57 @@ this app reads a timezone: the core takes "now" as an already-resolved
 civil string, and the backtest needs two readings of one instant
 (`deadline` is device-local, `occurred_at` is UTC).
 
+## The Triage screen (M3, #531)
+
+`TriageScreen.kt`/`TriageViewModel.kt` render the "triage process" queue —
+captured and Grilling items together, in the core's order — headed by the
+"N captured · M grilling" counts read straight off the record
+(`TriageBoardRecord.capturedCount`/`grillingCount`; `TriageScreenStructuralTest`
+gates that neither figure is ever recomputed from `items.size`/`items.count`).
+One row opens at a time into the seeded editor built from #529's shared
+`ui/forms/` components (`LevelSlider`/`ContextField`/`CaptureDateField`);
+Promote-to-Ready is the only save destination this screen offers — there is
+no "save without promoting" method on `TriageViewModel` at all, unlike item
+detail's own edit mode. The row checkmark goes through the existing
+`act("complete")` path, never a triage. The Grill button is live (#539):
+gated on the row's own `canGrill` fact from the seam, it navigates to the
+standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
+an interview inline, so neither `TriageScreen.kt` nor `TriageViewModel.kt`
+holds any turn, session or draft state of its own. **The route is registered
+and deliberately unreachable** — no bar entry, no More sheet, nothing
+navigates to `Routes.TRIAGE` — because reachability is #532's job, the same
+"registered first, wired later" shape `Routes.RULES` established.
+`TriageScreenStructuralTest` asserts that absence, gates the header-count and
+Grill rules above, and — the same foreground-resume discipline `AlertsScreen`,
+`NowScreen` and `ItemDetailScreen` all carry — asserts a `LifecycleResumeEffect`
+re-reads the queue on every return to the screen, not only on the app-wide
+`syncTick`: a capture minted from `CaptureActivity` while Triage was
+backgrounded must not wait for the next tick to appear.
+
+The seam doors are `MobileTaskHost::triage_board()` (decided from the
+already-sunk `hummingbird_core::decisions::queue::triage_process_queue`) and
+`::triage_item()` (`Core::triage` with a real `promote_to_ready`, sharing
+`to_triage_patch`'s `ItemEdit`→`TriagePatch` conversion with `edit_item`).
+
+## The Grill takeover and the microtask affordance (M4, #539)
+
+`GrillTakeoverScreen.kt`/`GrillTakeoverViewModel.kt` are the one-question-
+at-a-time interview (ADR-0023), mounted from both the item screen's own
+Grill button and the Triage row's (above) — never inline in either caller.
+The review card's predicates (`wouldStrandPlan`/`demotesFromFrontier`/
+`planReplacementLabel`) and the microtask affordance
+(`ItemDetailRecord.microtaskAffordance`) both arrive applied from
+`hummingbird_core::decisions::skills::{review,affordance}` (ADR-0025); the
+Kotlin side decides neither. A draft auto-saves after every completed round,
+not only on Back, so a fold/rotation mid-interview loses nothing —
+`GrillTakeoverViewModel.open()` is idempotent per item id for the same
+reason, and `ScreenStateRetentionTest` gates that the screen is retrieved
+from the `ViewModel` store rather than `remember`. The microtask affordance's
+own transport is `skills/MicrotaskRunner.kt`, the `skill_run_*` doors' first
+real caller; `skills/BackendPreference.kt` is #274's picker, read into every
+run and into the one-tap "switch tiers" offer a declined, unreachable pin
+gets (`hummingbird_core::decisions::skills::backend::declined_backend_fallback`).
+
 ## Proving the lane on hardware
 
 CI cannot cover any of this: there is no emulator in `android.yml` and no FCM
@@ -139,8 +190,10 @@ app data. Every run therefore ends with the phone un-credentialed and the
 *next* run failing three cases with `no device token on this device` —
 which is the check's own named error doing its job, not a regression.
 Re-install (`./gradlew installDebug`) and paste the token from
-`hummingbird-device-pixel-fold` again before the next run. Checks 1–18 are
-unaffected only because nothing in them runs an instrumented suite.
+`hummingbird-device-pixel-fold` again before the next run, from Status's
+"Manage device token in Settings" link (#535 moved the field itself off
+Status). Checks 1–18 are unaffected only because nothing in them runs an
+instrumented suite.
 
 You need the device on USB, a `device`-scope token for **this** device (there
 is one per device — `hummingbird-device-pixel-fold` in 1Password; do not
@@ -153,7 +206,9 @@ Rules matter too: an ingested alert raises kind **`alert_raised`**, not
 needs rules on `alert_raised` keyed on `source` and `severity`.
 
 1. `./gradlew installDebug`, launch, grant `POST_NOTIFICATIONS`.
-2. Paste the device token on Status; confirm it reads `Synced`.
+2. From Status, follow "Manage device token in Settings" and paste the
+   token there (#535 — Status itself carries no token field); back out to
+   Status and confirm it reads `Synced`.
 3. Confirm `fcm_token` exists: `adb shell run-as net.twinion.hummingbird cat
    shared_prefs/hummingbird-push.xml`. Its absence means Firebase never
    initialised.

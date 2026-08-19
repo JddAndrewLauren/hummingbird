@@ -29,15 +29,39 @@ import { civilDateInZone, zonedMidnightMs } from "../waste-pane/zoned-day";
 // `zoned-day.ts` itself is unchanged by this slice: it stops being the
 // waste pane's rule module and becomes the web's *resolver*, which is why
 // its own suite still passes as-is.
+//
+// **`DEVICE_ZONE` (#534).** `weekend.rs`/`vacation.rs` ask about "the
+// reader's own zone" rather than a payload-carried IANA name — there is no
+// address to look up, only the device the reader is holding. Rather than a
+// third `ZoneQuery` variant, the core names that zone with one sentinel
+// string (`hummingbird_core::decisions::panes::zone::DEVICE_ZONE`,
+// `"device-local"`); this file is the one place that string is given
+// meaning, by resolving it to `Intl.DateTimeFormat().resolvedOptions()
+// .timeZone` before calling the ordinary `Intl` resolver with it. No other
+// module ever sees `"device-local"` as an argument.
+
+/** `hummingbird_core::decisions::panes::zone::DEVICE_ZONE`, pinned against
+ * `deviceZoneFromCore()` by `seam.test.ts` (see that file) rather than read
+ * through the seam on every call: this constant is compared once, in a
+ * loop-free `resolveZone` — a real seam round trip per query would be a
+ * live dependency for zero benefit, since the sentinel's whole point is
+ * that it never changes at runtime. Exported so the pinning test can
+ * import the literal side of the comparison. */
+export const DEVICE_ZONE = "device-local";
+
+function resolveZone(zone: string): string {
+  return zone === DEVICE_ZONE ? Intl.DateTimeFormat().resolvedOptions().timeZone : zone;
+}
 
 /** Resolve every query this runtime knows how to, and **omit** the rest. */
 export function resolveZoneFacts(queries: readonly ZoneQuery[]): ZoneFacts {
   const facts: ZoneFacts = {};
   for (const query of queries) {
+    const zone = resolveZone(query.zone);
     const resolved =
       query.kind === "civilDate"
-        ? civilDateInZone(query.atMs, query.zone)
-        : zonedMidnightMs(query.date, query.zone);
+        ? civilDateInZone(query.atMs, zone)
+        : zonedMidnightMs(query.date, zone);
     if (resolved !== null) {
       facts[query.key] = resolved;
     }
