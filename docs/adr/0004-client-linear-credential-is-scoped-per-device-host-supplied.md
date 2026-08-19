@@ -15,6 +15,14 @@ supplies the credential *after* init rather than at it, and must supply its
 state](#amendment-the-credential-is-supplied-after-init-and-the-core-owns-its-state)
 below. The never-persisted rule, the per-device scoping, the resting places
 and the 401-holds-the-queue rule are unchanged.
+**Amended 2026-08-19 by
+[ADR-0028](0028-the-web-host-mints-its-google-token-at-the-authority.md):**
+the `device` token gains a new power — minting a `calendar.readonly` Google
+token via `POST /api/google/calendar_token`, rate-limited server-side to one
+upstream exchange per hour. This ADR's 401-means-re-prompt semantics are
+precisely why that route never answers 401 for a provisioning or upstream
+failure: a false 401 would make the client discard a `device` token that is
+perfectly fine, so those failures are 503/502 instead.
 **Context:** the credentials grilling of 2026-08-07, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#49](https://github.com/JddAndrewLauren/hummingbird/issues/49). Amends
