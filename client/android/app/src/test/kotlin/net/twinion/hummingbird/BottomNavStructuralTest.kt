@@ -72,18 +72,25 @@ class BottomNavStructuralTest {
      * `{…}` placeholder — a detail/takeover route (`ALERT_DETAIL`,
      * `ITEM_DETAIL`, `GRILL`) is parameterised and reached by `navigate(...)`
      * from inside a screen, never from the bar or the sheet, so it is not
-     * part of this nav form's universe at all. */
+     * part of this nav form's universe at all. `RECALL` is excluded for a
+     * different reason: it is a gesture entry point, not a screen — the same
+     * distinction the web's `nav-bar.ts` draws by keeping its `onSearch` row
+     * outside `NAV_BAR_OVERFLOW` and `SCREENS` entirely, so it carries no
+     * `NavDestination` entry here either and this universe stays "the nine
+     * screens", matching the web's own `SCREENS` count. */
     private val topLevelScreenConsts: Set<String> by lazy {
-        routesConsts.filterValues { !it.contains("{") }.keys
+        routesConsts.filterValues { !it.contains("{") }.keys - "RECALL"
     }
 
-    /** The nav form's own exception list: a top-level screen `Routes`
-     * already declares but this issue deliberately leaves off both the bar
-     * and the sheet, because its reachability is a later slice's job
-     * (`MainActivity.kt`'s own `Routes` doc). Named and explicit so a THIRD
-     * screen quietly joining this set — rather than landing in
-     * `NavDestination` — fails loudly instead of passing by construction. */
-    private val deferredToLaterSlice = setOf("RULES", "SETTINGS") // #541
+    /** The nav form's exception mechanism: a place to name a top-level
+     * screen `Routes` declares whose reachability is deliberately left to a
+     * later slice, rather than landing in `NavDestination`. Named and
+     * explicit so such a screen fails loudly instead of passing by
+     * construction. **Empty now** — #541 (this issue) wired Rules' and
+     * Settings' reachability and closed out the last entries it held, and
+     * nothing is presently deferred. The mechanism stays for the next
+     * screen that needs it. */
+    private val deferredToLaterSlice = emptySet<String>()
 
     @Test
     fun `the bar carries exactly the web's four acting surfaces`() {
@@ -93,24 +100,25 @@ class BottomNavStructuralTest {
     }
 
     @Test
-    fun `bar and sheet, plus the named #541 exceptions, cover every top-level screen Routes declares`() {
+    fun `bar and sheet cover every top-level screen Routes declares, with no pending exceptions`() {
         // The AC's real claim: nothing may go missing from `Routes`
         // silently. A tenth screen added there now fails this test until it
-        // lands on the bar, in the sheet, or on `deferredToLaterSlice` —
-        // which is itself a change someone has to make and justify, not a
-        // side effect of `NavDestination`'s own filter/filterNot partition.
+        // lands on the bar, in the sheet, or is added to
+        // `deferredToLaterSlice` with a name and a reason — which is itself
+        // a change someone has to make and justify, not a side effect of
+        // `NavDestination`'s own filter/filterNot partition.
         val navDestinationConsts = navDestinations.map { it.routeConst }.toSet()
         assertEquals(
             "every Routes top-level screen must be on the bar, in the sheet, or named in " +
-                "deferredToLaterSlice (#541) — dropping off all three is the silent failure " +
-                "this test exists to catch",
+                "deferredToLaterSlice — dropping off all three is the silent failure this " +
+                "test exists to catch",
             topLevelScreenConsts,
             navDestinationConsts + deferredToLaterSlice,
         )
         assertTrue(
-            "the exception list itself must still be pending — remove an entry once #541 " +
-                "wires its reachability, rather than leaving a satisfied exception behind",
-            deferredToLaterSlice.all { it !in navDestinationConsts },
+            "deferredToLaterSlice is empty since #541 — all nine screens are reachable now, " +
+                "so any entry here would be a satisfied exception left behind",
+            deferredToLaterSlice.isEmpty(),
         )
     }
 
@@ -153,9 +161,9 @@ class BottomNavStructuralTest {
     }
 
     @Test
-    fun `Done and the Ledger sit in the sheet, not on the bar`() {
+    fun `Done, the Ledger, Rules, Settings and Routes sit in the sheet, not on the bar`() {
         val overflow = navDestinations.filterNot { it.onBar }.map { it.routeConst }.toSet()
-        assertEquals(setOf("DONE", "LEDGER"), overflow)
+        assertEquals(setOf("DONE", "LEDGER", "RULES", "SETTINGS", "ROUTES"), overflow)
     }
 
     @Test
@@ -171,6 +179,27 @@ class BottomNavStructuralTest {
         assertTrue(
             "the More control's selected state must read the overflow-active flag",
             body.contains("selected = overflowActive"),
+        )
+    }
+
+    @Test
+    fun `the More sheet carries a Recall entry point, reachable but not a top-level screen`() {
+        // #541's other half of the AC: "all nine screens ... plus the
+        // Recall entry." Routes.RECALL is deliberately absent from
+        // `NavDestination` (see `topLevelScreenConsts`'s own doc), so this
+        // is the one place that pins its reachability instead.
+        assertTrue(
+            "MainActivity must register composable(Routes.RECALL)",
+            mainActivitySrc.contains("composable(Routes.RECALL)"),
+        )
+        val sheetBody = mainActivitySrc.substringAfter("private fun MoreSheet(").substringBefore("\n}\n")
+        assertTrue(
+            "the More sheet must offer a way to Routes.RECALL",
+            sheetBody.contains("Routes.RECALL"),
+        )
+        assertTrue(
+            "RECALL must not be one of NavDestination's entries — it is a gesture, not a screen",
+            navDestinations.none { it.routeConst == "RECALL" },
         )
     }
 }

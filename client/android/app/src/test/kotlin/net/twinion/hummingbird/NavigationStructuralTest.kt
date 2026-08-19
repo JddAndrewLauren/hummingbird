@@ -170,4 +170,27 @@ class NavigationStructuralTest {
             notifier.contains("hummingbird://item/"),
         )
     }
+
+    @Test
+    fun `nav completion (#541) leaves every screen reachable and both notification doors intact`() {
+        // #541's own acceptance slice grew this file by design: several
+        // slices of nav churn (the bar, the sheet, the ninth screen, the
+        // Recall entry) all touch `MainActivity.kt`'s NavHost, and any one
+        // of them could quietly break the deep-link doors above.
+        // `BottomNavStructuralTest` gates the bar/sheet partition itself in
+        // detail; this test restates the two claims #541's own AC makes,
+        // together, as a regression net against exactly that churn.
+        for (routeConst in listOf("NOW", "TRIAGE", "ALERTS", "STATUS", "DONE", "LEDGER", "RULES", "SETTINGS", "ROUTES")) {
+            assertTrue(
+                "Routes.$routeConst must have a registered composable — full route reachability",
+                src.contains("composable(Routes.$routeConst)"),
+            )
+        }
+        for (door in listOf("openAlertFromNotification", "openItemFromNotification")) {
+            assertTrue(
+                "$door must still exist — a tapped alert or item deep link must still resolve",
+                src.contains("fun NavHostController.$door"),
+            )
+        }
+    }
 }

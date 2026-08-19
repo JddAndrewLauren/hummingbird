@@ -152,22 +152,21 @@ private data class NotificationTap(
     }
 }
 
-/** The nine routes. Strings, because that is what `NavHost` takes; kept in
- * one place so a typo is a compile error at the use site rather than a
- * silently unreachable screen.
+/** The nine screens' routes, plus Recall's (#541, ADR-0025's map row).
+ * Strings, because that is what `NavHost` takes; kept in one place so a
+ * typo is a compile error at the use site rather than a silently
+ * unreachable screen.
  *
- * [STATUS] renders the real Status screen (#536, replacing the debug
- * `ProofScreen` that used to sit behind it) and sits on the bottom bar
- * itself (#532, below). [RULES] is **registered and not yet reachable** —
- * no bar entry, no More sheet entry, no other screen navigates to it
- * (#540). [SETTINGS] keeps the one incidental door `ProofScreen` used to
- * carry — `StatusScreen`'s own "Manage device token in Settings" link
- * (#536 review) — since nothing else navigates there yet either.
- * [TRIAGE] is reachable from the bar, and [DONE]/[LEDGER] from the More
- * sheet — both the bottom nav's own doing (#532). Reachability for Rules
- * and Settings' own permanent nav entry is #541's job, along with
- * `routes` (not yet registered at all — #541 adds the ninth screen too),
- * the milestone's acceptance slice. */
+ * All nine top-level screens are reachable now: [NOW]/[TRIAGE]/[ALERTS]/
+ * [STATUS] from the bar, [DONE]/[LEDGER]/[RULES]/[SETTINGS]/[ROUTES] from
+ * the More sheet (#541 wires the last three's `NavDestination` entries and
+ * adds [ROUTES] outright — it had no route at all before this slice).
+ * [RECALL] is **not** a top-level screen — it is a gesture entry point, the
+ * same distinction `nav-bar.ts`'s own `onSearch` row holds on the web (a
+ * button in the sheet, deliberately outside `NAV_BAR_OVERFLOW`) — so it
+ * carries no `NavDestination` entry and `BottomNavStructuralTest` excludes
+ * it from the top-level-screen universe by name. Its composable is #541's
+ * placeholder; #542 replaces the body with the real search surface. */
 private object Routes {
     const val NOW = "now"
     const val STATUS = "status"
@@ -177,6 +176,8 @@ private object Routes {
     const val DONE = "done"
     const val LEDGER = "ledger"
     const val SETTINGS = "settings"
+    const val ROUTES = "routes"
+    const val RECALL = "recall"
     const val ALERT_DETAIL = "alert/{alertId}"
     const val ITEM_DETAIL = "item/{itemId}"
     const val GRILL = "grill/{itemId}/{from}"
@@ -200,12 +201,11 @@ private object Routes {
  * pins both halves against the web's own `nav-bar.ts` for the same reason
  * that file's own test reconstructs `SCREENS` from its two halves.
  *
- * Four on the bar today (`ON_THE_BAR` on the web: Now, Triage, Alerts,
- * Status — "the surfaces you *act* on, in the order the day runs",
- * `nav-bar.ts`'s own doc), plus Done and the Ledger in the sheet — M3's one
- * real sink (#532) landing its two screens. Rules and Settings are not
- * here yet: their reachability is #541's job, the milestone's acceptance
- * slice that completes all nine. */
+ * Four on the bar (`ON_THE_BAR` on the web: Now, Triage, Alerts, Status —
+ * "the surfaces you *act* on, in the order the day runs", `nav-bar.ts`'s own
+ * doc); Done, the Ledger, Rules, Settings and Routes in the sheet — #532
+ * landed the first two, #541 the last three, completing all nine
+ * screens' reachability. */
 private enum class NavDestination(val route: String, val label: String, val onBar: Boolean) {
     NOW(Routes.NOW, "Now", onBar = true),
     TRIAGE(Routes.TRIAGE, "Triage", onBar = true),
@@ -213,6 +213,9 @@ private enum class NavDestination(val route: String, val label: String, val onBa
     STATUS(Routes.STATUS, "Status", onBar = true),
     DONE(Routes.DONE, "Done", onBar = false),
     LEDGER(Routes.LEDGER, "Ledger", onBar = false),
+    RULES(Routes.RULES, "Rules", onBar = false),
+    SETTINGS(Routes.SETTINGS, "Settings", onBar = false),
+    ROUTES(Routes.ROUTES, "Routes", onBar = false),
     ;
 
     companion object {
@@ -399,11 +402,11 @@ private fun AppRoot(
 
     Scaffold(
         bottomBar = {
-            // Hidden on a detail/takeover route (item, alert, Grill) —
-            // exactly the routes with no [NavDestination] entry — the same
-            // "not every screen carries the bar" the web's shell holds by
-            // mounting exactly one nav form. Rules and Settings stay
-            // reachable only by their existing incidental doors until #541.
+            // Hidden on a route with no [NavDestination] entry — a
+            // detail/takeover route (item, alert, Grill) or the Recall
+            // placeholder, which is deliberately not one either (its own
+            // doc, above) — the same "not every screen carries the bar"
+            // the web's shell holds by mounting exactly one nav form.
             if (NavDestination.entries.any { it.route == currentRoute }) {
                 BottomNavBar(
                     currentRoute = currentRoute,
@@ -491,6 +494,12 @@ private fun AppRoot(
                     onBack = { navController.popBackStackOrHome(Routes.NOW) },
                 )
             }
+            composable(Routes.ROUTES) {
+                RoutesScreen(onBack = { navController.popBackStackOrHome(Routes.NOW) })
+            }
+            composable(Routes.RECALL) {
+                RecallScreen(onBack = { navController.popBackStackOrHome(Routes.NOW) })
+            }
             composable(Routes.ITEM_DETAIL) { entry ->
                 ItemDetailScreen(
                     itemId = entry.arguments?.getString("itemId").orEmpty(),
@@ -565,8 +574,11 @@ private fun BottomNavBar(
 }
 
 /** The sheet the bar's "More" control opens: the destinations the bar
- * cannot hold — Done and the Ledger today (#532), the same "one tap
- * further" trade `nav-bar.ts`'s own header names. */
+ * cannot hold — Done, the Ledger, Rules, Settings and Routes (#532, #541) —
+ * plus, last, the Recall entry point (#541): a gesture, not a destination,
+ * so it is drawn separately from the [NavDestination.OVERFLOW] loop rather
+ * than folded into it, the same separation `nav-bar.ts`'s own `onSearch` row
+ * holds on the web. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MoreSheet(
@@ -598,6 +610,17 @@ private fun MoreSheet(
                         },
                     )
                 }
+            }
+            TextButton(onClick = { onNavigate(Routes.RECALL) }) {
+                Text(
+                    "Search everything",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = if (Routes.RECALL == currentRoute) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
             }
         }
     }
