@@ -619,7 +619,7 @@ export function SettingsScreen({
               {calendar.connected && calendar.needsReconnect ? (
                 <p style={{ font: "var(--type-body-sm)", color: "var(--status-warn-fg)" }}>
                   {calendar.silentRemintBlocked
-                    ? "The credential no longer works, and renewing it in the background has stopped working too — the server-held Google credential needs attention, most likely a revoked refresh token. Ask the operator to check it. The last snapshot is still showing, and stays honest about its age. Reconnect once it's fixed."
+                    ? "The credential no longer works, and renewing it in the background has stopped working too — the server-held Google credential needs attention, most likely a revoked refresh token. Ask the operator to check it. The last snapshot is still showing, and stays honest about its age. Retry polling on this device once it's fixed."
                     : "The credential no longer works. The last snapshot is still showing, and stays honest about its age."}
                 </p>
               ) : null}
