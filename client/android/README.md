@@ -464,9 +464,16 @@ reached.
 Checks 20–27 are the parity checkpoint, not the notification lane: nine
 screens reachable, Status matching the web, one real streamed grill turn,
 and Recall re-finding a known item. They share only the device token with
-1–19. **20–23 were run on 2026-08-19 against `9fdead3`** (Pixel 10 Pro
-Fold, folded); 20 and 22 passed, 21 and 23 each found a defect — #574 and
-#575 — and 24–27 have not been run yet.
+1–19. **20–24, 26 and 27 were run on 2026-08-19 against `9fdead3`** (Pixel
+10 Pro Fold, folded); 20, 22, 26 and 27 passed, and 21, 23, 24 and 26 each
+found a defect — #574, #575, #594/#595/#596 and #597. **Only 25's second
+half (a microtask run and the backend picker) has not been run**, because
+it is the one check here that writes and spends.
+
+Check 26's own claim needed correcting by what it found: only **archived**
+rows are dimmed. A Done row is inert but renders at full opacity,
+indistinguishable from the live row above it (#597). Read the wording below
+as the intent, not as a description of what ships, until #597 is decided.
 
 Do **not** reach for check 19's instrumented probe to satisfy 24. It was
 the pre-screen substitute; #539 shipped the real takeover, and the probe
@@ -530,7 +537,14 @@ costs the device token every run.
 27. **The doors survived the nav churn.** #532/#541 rewrote navigation
     under #521/#524, so re-fire the item intent by hand — the block above
     has the command, and `-f 0x24000000` is not optional. A tap on the Now
-    card is the other door and does not exercise this one.
+    card is the other door and does not exercise this one. Measured
+    2026-08-19: warm (from Recall) and cold both land, and firing two
+    payloads naming **different** items landed on each in turn — check that,
+    not merely that some detail screen opened, or a hardcoded destination
+    would pass. `am` printing "Activity not started, intent has been
+    delivered to currently running top-most instance" is the **success**
+    line for the warm case. The `healthchecks/v1` fallback was fired too and
+    landed on alert detail.
 
 Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
 adb writes a warning banner into the PNG, and the ids differ inner vs cover
