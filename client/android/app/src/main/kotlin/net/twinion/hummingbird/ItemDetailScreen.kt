@@ -87,6 +87,22 @@ import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 private val SIZE_VOCABULARY = listOf("quick", "normal", "deep")
 private val ENERGY_VOCABULARY = listOf("low", "medium", "high")
 
+/** S11/#109's wire vocabulary, mapped to its button label and nothing more
+ * — `ItemPanel.tsx`'s `ACTION_BUTTON` verbatim (`client/web/src/components/
+ * domain/ItemPanel.tsx:74`; `Mark blocked` says what `Blocked` means, per
+ * the design README's voice rule; "Blocked" means an external wait and
+ * nothing else). Which actions an item *offers* is decided entirely
+ * core-side ([ItemDetailRecord.availableActions]) — this map only ever
+ * renders whatever that list already contains. It lives here because the
+ * opened item is now the one surface that acts: the Now cards carry no
+ * action buttons (the web `ItemCard`'s own shape). */
+internal val ACTION_LABEL: Map<String, String> = mapOf(
+    "start" to "Start",
+    "complete" to "Complete",
+    "block" to "Mark blocked",
+    "cancel" to "Cancel",
+)
+
 @Composable
 fun ItemDetailScreen(
     itemId: String,

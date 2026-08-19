@@ -77,7 +77,7 @@ fun LedgerScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -106,7 +106,7 @@ fun LedgerScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(rows, key = { it.id }) { row ->
                         LedgerRow(
                             dark = dark,
@@ -138,7 +138,7 @@ private fun LedgerRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {

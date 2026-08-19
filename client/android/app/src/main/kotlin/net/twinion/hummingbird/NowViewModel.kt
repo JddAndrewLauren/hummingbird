@@ -65,15 +65,17 @@ private fun Set<String>.toggled(value: String): Set<String> =
     if (contains(value)) this - value else this + value
 
 // M1-6's whole surface (#141/#504), widened to the frontier board by
-// M3/#530: `NowScreen`'s read/act pair, over the same "ViewModel over
+// M3/#530: `NowScreen`'s board reader, over the same "ViewModel over
 // CoreHolder, injected-fn wiring" shape `CaptureViewModel` (M1-5/#503)
-// established. [fetchBoardFn] and [actFn] are the uniffi doors onto
-// `MobileTaskHost.nowBoard`/`MobileTaskHost.act` verbatim in production
+// established. [fetchBoardFn] is the uniffi door onto
+// `MobileTaskHost.nowBoard` verbatim in production
 // ([create]) — never a re-derived ordering, grouping, urgency banding or
 // affordance list on this side of the seam (the module doc on
 // `hummingbird-ffi-mobile`'s `lib.rs` states why: Android calls no per-item
 // decision function, only reads the already-decided [NowBoardRecord] this
-// class holds). [readAxisFn]/[writeAxisFn]/[readCollapsedFn]/
+// class holds). Acting left with the cards' action buttons: the opened
+// item acts through `ItemDetailViewModel`, and this class only re-reads
+// the board afterwards. [readAxisFn]/[writeAxisFn]/[readCollapsedFn]/
 // [writeCollapsedFn] are `FrontierPrefs`'s DataStore doors, injected the
 // same way for the same reason: a plain JVM test can drive every method
 // here without a host-architecture `.so` or a real `Context`.
@@ -83,7 +85,6 @@ class NowViewModel(
         facets: NowFacetSelectionRecord,
         now: String,
     ) -> NowBoardRecord,
-    private val actFn: suspend (itemId: String, action: String, nowMs: Long) -> Unit,
     private val readAxisFn: suspend () -> MobileFrontierAxis,
     private val writeAxisFn: suspend (MobileFrontierAxis) -> Unit,
     private val readCollapsedFn: suspend () -> Set<String>,
@@ -228,17 +229,6 @@ class NowViewModel(
         _expanded.value = _expanded.value.toggled(key)
     }
 
-    /** Applies `action` (S11/#109's wire vocabulary) to `itemId`, then
-     * reloads so the row's own available-actions list (and its removal
-     * from the frontier, for `complete`/`block`/`cancel`) reflects the
-     * mutation immediately — local-first, the same "the overlay is
-     * readable before any network is touched" criterion
-     * [CaptureViewModel.submit] leans on. */
-    suspend fun act(itemId: String, action: String, nowMs: Long, now: String) {
-        actFn(itemId, action, nowMs)
-        refresh(now)
-    }
-
     /** #537's pane load: the zone bridge's two phases, back to back — every
      * `(zone, civil-date)` fact the Now surface's sunk questions need
      * ([paneZoneQueriesFn]), resolved by the host
@@ -256,8 +246,10 @@ class NowViewModel(
      * [setScheduledDateFn] — [uniffi.hummingbird_ffi_mobile.MobileTaskHost.
      * setScheduledDate], the seam mutation wrapping `Core::triage` with no
      * destination change — then reloads the panes so the pane's own band
-     * reflects the write immediately, [act]'s own "local-first, reload"
-     * shape. `date == null` clears an already-planned day. */
+     * reflects the write immediately — local-first, the same "the overlay
+     * is readable before any network is touched" criterion
+     * [CaptureViewModel.submit] leans on. `date == null` clears an
+     * already-planned day. */
     suspend fun setScheduledDate(itemId: String, date: String?, nowMs: Long) {
         setScheduledDateFn(itemId, date, nowMs)
         loadPanes(nowMs)
@@ -271,9 +263,6 @@ class NowViewModel(
             NowViewModel(
                 fetchBoardFn = { axis, facets, now ->
                     CoreHolder.get(context.applicationContext).nowBoard(axis, facets, now)
-                },
-                actFn = { itemId, action, nowMs ->
-                    CoreHolder.get(context.applicationContext).act(itemId, action, nowMs)
                 },
                 readAxisFn = { FrontierPrefs.readAxis(context.applicationContext) },
                 writeAxisFn = { axis -> FrontierPrefs.writeAxis(context.applicationContext, axis) },

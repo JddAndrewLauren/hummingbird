@@ -126,23 +126,6 @@ private fun urgencyLabel(band: MobileUrgencyBand): String? = when (band) {
     MobileUrgencyBand.OVERDUE -> "OVERDUE"
 }
 
-/** S11/#109's wire vocabulary, mapped to its button label and nothing more
- * — `ItemPanel.tsx`'s `ACTION_BUTTON` verbatim (`client/web/src/components/
- * domain/ItemPanel.tsx:74`; `Mark blocked` says what `Blocked` means, per
- * the design README's voice rule; "Blocked" means an external wait and
- * nothing else). Which actions a row *offers* is decided
- * entirely core-side ([NowItemRecord.availableActions]) — this map only
- * ever renders whatever that list already contains. Shared with
- * `ItemDetailScreen`, which offers the same vocabulary from the same
- * core-decided list — two spellings of "Mark blocked" would be two
- * spellings of one domain word. */
-internal val ACTION_LABEL: Map<String, String> = mapOf(
-    "start" to "Start",
-    "complete" to "Complete",
-    "block" to "Mark blocked",
-    "cancel" to "Cancel",
-)
-
 /** [MobileFrontierAxis]'s switch label — `AXIS_LABEL` in
  * `FrontierColumns.tsx`, ported. */
 private val AXIS_LABEL: Map<MobileFrontierAxis, String> = mapOf(
@@ -299,19 +282,13 @@ fun NowScreen(
         if (syncTick > 0) reload()
     }
 
-    fun act(itemId: String, action: String) {
-        scope.launch {
-            viewModel.act(itemId, action, System.currentTimeMillis(), nowDeadlineShaped())
-        }
-    }
-
     Scaffold { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // The product name is lowercase everywhere; the screen
             // title is the one exception the design system already
@@ -351,7 +328,7 @@ fun NowScreen(
             // scroll is the fix, not a `weight` modifier on a still-split
             // layout, since the queue's own three states already need to
             // sit inside *some* `LazyListScope` for `item`/`items` below.
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when {
                     loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
                     currentBoard == null ||
@@ -409,7 +386,6 @@ fun NowScreen(
                                         record = record,
                                         dark = dark,
                                         onOpen = { onOpenItem(record.id) },
-                                        onAct = { action -> act(record.id, action) },
                                     )
                                 }
 
@@ -437,7 +413,6 @@ fun NowScreen(
                                     entry = entry,
                                     dark = dark,
                                     onOpen = { onOpenItem(entry.item.id) },
-                                    onAct = { action -> act(entry.item.id, action) },
                                 )
                             }
                         }
@@ -604,18 +579,17 @@ private fun BlockedRow(
     entry: NowBlockedEntryRecord,
     dark: Boolean,
     onOpen: () -> Unit,
-    onAct: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier.alpha(0.6f),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        NowRow(record = entry.item, dark = dark, onOpen = onOpen, onAct = onAct)
+        NowRow(record = entry.item, dark = dark, onOpen = onOpen)
         Text(
             blockedReasonLabel(entry.blockedByTitles),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp),
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp),
         )
     }
 }
@@ -625,7 +599,6 @@ private fun NowRow(
     record: NowItemRecord,
     dark: Boolean,
     onOpen: () -> Unit,
-    onAct: (String) -> Unit,
 ) {
     // The card itself is the door to item detail (#521). Material3's
     // `onClick` overload rather than a `clickable` modifier: it carries the
@@ -634,23 +607,27 @@ private fun NowRow(
     // added chrome -- the design system's `interactive` card is the whole
     // affordance, and its icon vocabulary has no chevron in it.
     //
-    // The action buttons below stay reachable: a nested clickable consumes
-    // its own press, so `Complete` still completes rather than opening.
+    // No action buttons on the card: the web's `ItemCard` carries none —
+    // acting is what the opened item is for — and the four-button FlowRow
+    // was most of the card's ~130dp height. `availableActions` still
+    // arrives decided on the record; the opened item renders it.
     Card(
         onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            // --space-5 / --space-2: the web ItemCard's own density class,
+            // not the 16/8 a full-width content card gets.
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             // Every entry on the meta row is conditional -- the swatch and the
             // word both go for `calm`, the deadline draws only when set, and
             // `ready` says nothing -- so the ordinary minted action reaches
             // this row with nothing to put on it. An empty `Row` is not free:
-            // it measures zero high but the Column's `spacedBy(8.dp)` still
-            // pays for it, stranding 8dp above the title. Read once here and
+            // it measures zero high but the Column's `spacedBy(4.dp)` still
+            // pays for it, stranding 4dp above the title. Read once here and
             // reused below, so the guard cannot disagree with what draws.
             val swatch = urgencyColor(record.urgency, dark)
             val urgencyWord = urgencyLabel(record.urgency)
@@ -672,9 +649,10 @@ private fun NowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     swatch?.let {
+                        // 6dp: the web ItemRow's own dot size.
                         Box(
                             modifier = Modifier
-                                .size(8.dp)
+                                .size(6.dp)
                                 .background(it, CircleShape),
                         )
                     }
@@ -720,27 +698,6 @@ private fun NowRow(
             }
 
             Text(record.title, style = MaterialTheme.typography.bodyLarge)
-
-            if (record.availableActions.isNotEmpty()) {
-                // A `FlowRow`, not a `Row`: a `Ready` item offers all four
-                // actions (`decisions::actions::available_actions`), and
-                // "Start / Complete / Mark blocked / Cancel" is wider than
-                // a phone card — a fixed, non-scrolling Row clipped the
-                // trailing action on the ordinary case, not just on the
-                // Fold's cover display. Wrapping keeps every offered action
-                // reachable at any width without this file deciding which
-                // ones matter.
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    for (action in record.availableActions) {
-                        OutlinedButton(onClick = { onAct(action) }) {
-                            Text(ACTION_LABEL[action] ?: action)
-                        }
-                    }
-                }
-            }
         }
     }
 }

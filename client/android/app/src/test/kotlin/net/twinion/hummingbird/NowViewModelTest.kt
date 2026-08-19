@@ -67,7 +67,6 @@ class NowViewModelTest {
 
     private fun viewModel(
         fetchBoardFn: suspend (MobileFrontierAxis, NowFacetSelectionRecord, String) -> NowBoardRecord = { _, _, _ -> board() },
-        actFn: suspend (String, String, Long) -> Unit = { _, _, _ -> },
         readAxisFn: suspend () -> MobileFrontierAxis = { MobileFrontierAxis.CONTEXT },
         writeAxisFn: suspend (MobileFrontierAxis) -> Unit = {},
         readCollapsedFn: suspend () -> Set<String> = { emptySet() },
@@ -77,7 +76,6 @@ class NowViewModelTest {
         setScheduledDateFn: suspend (String, String?, Long) -> Unit = { _, _, _ -> },
     ) = NowViewModel(
         fetchBoardFn,
-        actFn,
         readAxisFn,
         writeAxisFn,
         readCollapsedFn,
@@ -275,43 +273,6 @@ class NowViewModelTest {
         vm.toggleExpanded("@phone")
         assertEquals(emptySet<String>(), vm.expanded.value)
         assertEquals(0, collapsedWrites)
-    }
-
-    @Test
-    fun `act calls the injected act fn with the given item, action and clock`() = runBlocking {
-        var seenItemId: String? = null
-        var seenAction: String? = null
-        var seenNowMs: Long? = null
-        val vm = viewModel(
-            actFn = { itemId, action, nowMs ->
-                seenItemId = itemId
-                seenAction = action
-                seenNowMs = nowMs
-            },
-        )
-
-        vm.act("item-1", "complete", 5_000L, "2026-08-15T12:00")
-
-        assertEquals("item-1", seenItemId)
-        assertEquals("complete", seenAction)
-        assertEquals(5_000L, seenNowMs)
-    }
-
-    @Test
-    fun `act reloads the board after acting, reflecting the mutation immediately`() = runBlocking {
-        var actHasRun = false
-        val vm = viewModel(
-            fetchBoardFn = { _, _, _ ->
-                if (actHasRun) board("still-here") else board("gone", "still-here")
-            },
-            actFn = { _, _, _ -> actHasRun = true },
-        )
-        vm.refresh("2026-08-15T12:00")
-        assertEquals(listOf("gone", "still-here"), columnIds(vm.board.value!!))
-
-        vm.act("gone", "complete", 1_000L, "2026-08-15T12:00")
-
-        assertEquals(listOf("still-here"), columnIds(vm.board.value!!))
     }
 
     @Test
