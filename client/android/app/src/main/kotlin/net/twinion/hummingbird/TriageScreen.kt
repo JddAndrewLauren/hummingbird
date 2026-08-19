@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.ChoiceRow
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
@@ -192,7 +193,15 @@ private fun TriageRow(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onToggle) {
+                // #576's fifth site, sighted alongside the four in the
+                // issue: a long title took the whole width and left `Done`
+                // squeezed to nothing. **Not the `ChoiceRow` remedy** — the
+                // two are not peers to wrap, they are a title and its one
+                // trailing action, so the title yields instead. `weight`
+                // measures the unweighted `Done` first and hands the title
+                // what is left; `fill = false` keeps a short title from
+                // stretching, so the row still reads as SpaceBetween.
+                TextButton(onClick = onToggle, modifier = Modifier.weight(1f, fill = false)) {
                     Column {
                         Text(
                             item.stage.uppercase(),
@@ -260,7 +269,11 @@ private fun TriageRow(
                     onValueChange = { onDraftChange(draft.copy(scheduledDate = it)) },
                 )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // #576: these two fit today and were never sighted failing,
+                // but they are the same shape as the three rows that did —
+                // and `Resume grill` is wider than `Grill me`, so the
+                // margin is not the one it looks like.
+                ChoiceRow {
                     // Live (#539): navigates to the standalone takeover.
                     // `item.canGrill` is the seam's own decided fact — both
                     // Triage and Grilling rows on this board offer it.

@@ -235,6 +235,34 @@ inline edit the way the web's #479 does. The route was registered at #541
 as a gesture entry off the More sheet, deliberately outside `NavDestination`
 (above); #542 replaced its placeholder body with this real surface.
 
+## Choice rows, and the app's one layout gate (#576)
+
+`ui/ChoiceRow.kt` is the container every row of buttons or chips the user
+picks from goes in. It is a `FlowRow`, so a choice too wide for the display
+moves to the next line — which matters because a plain `Row` does not clip
+its overflow: it hands the trailing child whatever width is left, and the
+label then wraps one character per line into a column of letters that still
+takes up layout height. That shipped to four screens (item detail's action
+row, the takeover's answer chips and its discard prompt, the Triage row's
+two buttons) before it was sighted on hardware; on the discard prompt the
+squeezed child was `Keep`, the escape from a destructive question, so the
+failure was not always cosmetic. `NowScreen.kt`, `RulesScreen.kt` and
+`ui/forms/PriorityRow.kt` had each already answered it with their own inline
+`FlowRow`, and are left as they are.
+
+`ChoiceRowWrappingTest` is **the only test in this module that measures a
+layout**, and the reason the defect got this far is that no other one does —
+`*StructuralTest.kt` assert presence and wiring, and the squeezed buttons
+were all present and all wired. It runs `createComposeRule()` under
+Robolectric at a 320dp qualifier and asserts each choice stays at least 48dp
+wide and one line tall. Two things in it are load-bearing:
+`@GraphicsMode(NATIVE)`, without which Robolectric measures text with a stub
+that returns near-identical widths for every string and the defect does not
+reproduce at all; and a control case that renders the old plain `Row` and
+asserts the trailing button *is* squeezed (0dp × 136dp), so a widened
+qualifier or a text-measurement regression cannot leave the file green while
+measuring nothing.
+
 ## Proving the lane on hardware
 
 CI cannot cover any of this: there is no emulator in `android.yml` and no FCM

@@ -437,9 +437,16 @@ its queue since #537, and Status is the ranked region's second surface
 
 That is a real gap, not an oversight to fix casually: `android.yml` runs no
 emulator (its own header says why), so a screenshot matrix would need one
-stood up in CI before it could gate anything. Until then this surface's
-evidence is of two other kinds, and both are named so nobody mistakes them
-for a visual gate:
+stood up in CI before it could gate anything — **though #576 weakened that
+premise, and the next person to read this row should re-open it rather than
+inherit it.** That slice put Robolectric and `compose-ui-test-junit4` in the
+module, which is the substrate a screenshot gate (Roborazzi and its kin)
+runs on *without* an emulator. Whether a Robolectric render is evidence for
+this row, or whether this surface still wants a real device, is an open
+question and not one a wrap-up should settle by itself.
+
+Until it is settled, this surface's evidence is of the kinds below, and each
+is named so nobody mistakes it for a visual gate:
 
 - **Structural tests**, JVM, reading the Compose source as text —
   `NavigationStructuralTest`, `BottomNavStructuralTest`,
@@ -452,9 +459,17 @@ for a visual gate:
   screen added without one of these leaves this surface with no evidence at
   all, so add the test with the screen.
 - **`ColorTokenDriftTest`** (#483, ADR-0026), which pins `ui/theme/Color.kt`
-  against the design system's token CSS. It is the one thing here that
-  *is* about appearance, and it covers the palette only — never layout,
-  never a screen.
+  against the design system's token CSS. It is about appearance, but it
+  covers the palette only — never a screen.
+- **`ChoiceRowWrappingTest`** (#576), the one thing here that measures
+  **layout**: a real Compose render under Robolectric at a 320dp qualifier,
+  asserting a row of choices stays hittable rather than squeezing its
+  trailing button into a column of letters. It covers one shared component
+  (`ui/ChoiceRow.kt`) plus a source pin naming the screens that must use it
+  — never a screen's whole composition, and it photographs nothing. Its
+  `@GraphicsMode(NATIVE)` is load-bearing: without it Robolectric measures
+  text with a stub and any assertion here passes vacuously, which is the
+  trap to know before writing the second test of this kind.
 - **Hardware runs**, recorded in `client/android/README.md`'s "Proving the
   lane on hardware". Operator-run, not CI, and currently the only evidence
   any of these screens has ever rendered.
