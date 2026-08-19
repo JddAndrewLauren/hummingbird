@@ -7,17 +7,17 @@
 // include this file, so the declaration lives in that module instead.
 
 interface ImportMetaEnv {
-  /** The Google OAuth client id issue #73 introduced — the sweeper's
-   * Workspace Internal OAuth client id may be reused here (an independent
-   * per-device credential; its refresh token and Tasks/Gmail scopes are
-   * untouched). Unset in dev by default: the calendar opt-in UI simply
-   * doesn't render without it. #583/#584 moved every token request — silent
-   * re-mint, rotation, and the interactive Connect/Reconnect press — onto
-   * the authority (`calendar/authority-token-client.ts`), which authenticates
-   * with the device token and never reads this id at all. What remains of
-   * this gate is the Settings section's rendering condition
-   * (`shell/useCalendarWiring.ts`'s `GOOGLE_CLIENT_ID` export); whether that
-   * is still the right gate is #585's question. */
+  /** The Google OAuth client id issue #73 introduced. #583/#584 moved every
+   * token request — silent re-mint, rotation, and the interactive
+   * Connect/Reconnect press — onto the authority
+   * (`calendar/authority-token-client.ts`, ADR-0028), which authenticates
+   * with the device token and never reads this id. #585 answered the
+   * question the previous revision of this comment left open: the Settings
+   * calendar section now gates on `taskTokenState` (whether this device
+   * holds a device token), not on this variable, so **nothing in
+   * `client/web` reads it any more.** It is dead, not yet deleted — retiring
+   * the browser OAuth client itself (Google console, this variable, and its
+   * Actions/CSP plumbing) is #586's charter. */
   readonly VITE_GOOGLE_CLIENT_ID?: string;
   /** The owned authority's origin (ADR-0003/0008) the task binding's
    * `TaskHost::runSync` sends `Core::run`'s two `reqwest` transports

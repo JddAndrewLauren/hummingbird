@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 
-// The board world's calendar card (#452, piece 4) has no reader in the
-// environment #454 photographs unless it survives `useCalendarWiring`'s
-// live-only preconditions with no `VITE_GOOGLE_CLIENT_ID` set — exactly the
-// vitest default this file, deliberately, does NOT stub away.
-// `SettingsScreen.test.tsx` mocks `GOOGLE_CLIENT_ID` to a truthy value for
+// The board world's calendar card (#452, piece 4) has no reader unless it
+// survives `SettingsScreen`'s live-only preconditions — until #585 that was
+// `VITE_GOOGLE_CLIENT_ID` unset (the vitest default this file deliberately
+// did not stub away); now it is `taskTokenState === "unset"` (#585: the
+// gates key off whether this device holds a device token, not off a
+// build-time env var, which nothing in `client/web` reads any more).
+// `SettingsScreen.test.tsx` defaults `taskTokenState` to `"resting"` for
 // every one of its cases, which is right for that file's own concerns but
 // would hide a regression here: this pins that `calendarIsDemo` bypasses the
-// "no Google client id" and "core not ready" gates, so the fixture calendar
-// still renders under `?demo=board` in a build with no client id configured
-// at all — piece 4's actual reader.
+// "no device token" and "core not ready" gates, so the fixture calendar
+// still renders under `?demo=board` on a device with no device token at
+// all — piece 4's actual reader.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,6 +19,7 @@ import { SettingsScreen } from "./SettingsScreen";
 import { DEMO_DATA } from "../fixtures/demo-data";
 import { fireEvent, render, screen, taskState } from "../test/component";
 import type { CalendarState } from "../store/store";
+import type { TaskTokenUiState } from "../task/token-ui";
 
 const demoCalendar: CalendarState = {
   connected: true,
@@ -33,7 +36,10 @@ const demoCalendar: CalendarState = {
   eventReads: {},
 };
 
-function renderBoardSettings(status: "loading" | "ready" = "loading") {
+function renderBoardSettings(
+  status: "loading" | "ready" = "loading",
+  taskTokenState: TaskTokenUiState = "unset",
+) {
   const onSelectionChange = vi.fn();
   render(
     <SettingsScreen
@@ -52,7 +58,7 @@ function renderBoardSettings(status: "loading" | "ready" = "loading") {
       onConnect={vi.fn()}
       onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
-      taskTokenState="resting"
+      taskTokenState={taskTokenState}
       taskTokenEnteredAtMs={null}
       onSubmitTaskToken={vi.fn()}
       onForgetTaskToken={vi.fn()}
@@ -66,15 +72,17 @@ function renderBoardSettings(status: "loading" | "ready" = "loading") {
 }
 
 describe("SettingsScreen — the board world's calendar card", () => {
-  it("renders the fixture calendars with no Google client id configured", () => {
-    renderBoardSettings("loading");
-    expect(screen.queryByText(/no Google client id/i)).toBeNull();
+  it("renders the fixture calendars with no device token on this device", () => {
+    // `calendarIsDemo` bypasses the device-token gate entirely — the board
+    // fixture is not a live connection and needs no token to show.
+    renderBoardSettings("loading", "unset");
+    expect(screen.queryByText(/no device token/i)).toBeNull();
     expect(screen.getByText("Fictional (personal)")).toBeDefined();
     expect(screen.getByText("Fictional (family)")).toBeDefined();
   });
 
   it("renders the fixture calendars even while the core is not ready", () => {
-    renderBoardSettings("loading");
+    renderBoardSettings("loading", "unset");
     expect(screen.queryByText(/calendar context is unavailable/i)).toBeNull();
     expect(screen.getByText("Fictional (personal)")).toBeDefined();
   });
@@ -85,7 +93,7 @@ describe("SettingsScreen — the board world's calendar card", () => {
   // exist. `demo` is null in this world, so the toggle must branch on
   // `calendarIsDemo`, not `demo`.
   it("toggles locally and never calls onSelectionChange", () => {
-    const { onSelectionChange } = renderBoardSettings("loading");
+    const { onSelectionChange } = renderBoardSettings("loading", "unset");
     const family = screen.getByRole("checkbox", { name: /Fictional \(family\)/ });
     fireEvent.click(family);
     expect(onSelectionChange).not.toHaveBeenCalled();
@@ -93,21 +101,21 @@ describe("SettingsScreen — the board world's calendar card", () => {
   });
 
   // The board world has no bindings table to read (`demo-calendar.ts`), so no
-  // row may render locked off the live `task.bindings` — every fixture row
+  // row may render locked off the live `task.bindings`— every fixture row
   // stays toggleable.
   it("locks no row off the live bindings", () => {
-    renderBoardSettings("loading");
+    renderBoardSettings("loading", "unset");
     for (const name of [/Fictional \(personal\)/, /Fictional \(family\)/]) {
       expect((screen.getByRole("checkbox", { name }) as HTMLInputElement).disabled).toBe(false);
     }
   });
 
-  // Round-2's kit-world pin: bare `?demo` in a tree with no client id (this
-  // repo ships only `.env.example`, and the visual gate's dev server reads no
-  // `.env.local`) shows the "no Google client id" Note, exactly as it did
-  // before #452 — `SettingsScreen.test.tsx` cannot see this because it mocks
-  // the client id truthy.
-  it("keeps the kit world's no-client-id Note unchanged", () => {
+  // Round-2's kit-world pin: bare `?demo` on a device with no device token
+  // (this repo ships only `.env.example`, and the visual gate's dev server
+  // never carries a stored token) shows the "no device token" Note, exactly
+  // as the pre-#585 "no client id" Note did — `SettingsScreen.test.tsx`
+  // cannot see this because it defaults `taskTokenState` to `"resting"`.
+  it("keeps the kit world's no-device-token Note unchanged", () => {
     render(
       <SettingsScreen
         demo={DEMO_DATA}
@@ -125,7 +133,7 @@ describe("SettingsScreen — the board world's calendar card", () => {
         onConnect={vi.fn()}
         onSelectionChange={vi.fn()}
         onRefresh={vi.fn()}
-        taskTokenState="resting"
+        taskTokenState="unset"
         taskTokenEnteredAtMs={null}
         onSubmitTaskToken={vi.fn()}
         onForgetTaskToken={vi.fn()}
@@ -135,11 +143,11 @@ describe("SettingsScreen — the board world's calendar card", () => {
         onDownloadMirror={vi.fn()}
       />,
     );
-    expect(screen.getByText(/no Google client id/i)).toBeDefined();
+    expect(screen.getByText(/no device token/i)).toBeDefined();
     expect(screen.queryByText("Andrew (personal)")).toBeNull();
   });
 
-  it("still gates a live (non-demo) render on the client id, unchanged", () => {
+  it("still gates a live (non-demo) render on the device token, unchanged", () => {
     render(
       <SettingsScreen
         demo={null}
@@ -157,7 +165,7 @@ describe("SettingsScreen — the board world's calendar card", () => {
         onConnect={vi.fn()}
         onSelectionChange={vi.fn()}
         onRefresh={vi.fn()}
-        taskTokenState="resting"
+        taskTokenState="unset"
         taskTokenEnteredAtMs={null}
         onSubmitTaskToken={vi.fn()}
         onForgetTaskToken={vi.fn()}
@@ -167,6 +175,11 @@ describe("SettingsScreen — the board world's calendar card", () => {
         onDownloadMirror={vi.fn()}
       />,
     );
-    expect(screen.getByText(/no Google client id/i)).toBeDefined();
+    // `status: "ready"` here also renders the device-token card's own
+    // "No device token yet" sentence, so this pins the *calendar* section's
+    // wording specifically rather than any "no device token" text on screen.
+    expect(
+      screen.getByText(/calendar context is unavailable: this device has no device token/i),
+    ).toBeDefined();
   });
 });
