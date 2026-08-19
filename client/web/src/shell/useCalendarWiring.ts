@@ -23,12 +23,14 @@ import {
   type RemintHealth,
 } from "../calendar/remint-health";
 import { acceptSelectionChange, effectiveSelection } from "../calendar/selection";
-import { createGisTokenClient, type TokenClient } from "../google/gis";
+import { createAuthorityTokenClient } from "../calendar/authority-token-client";
+import type { TokenClient } from "../calendar/token-client";
 import type { RedirectOutcome } from "../google/redirect-flow";
 import { PHONE_QUERY } from "./breakpoints";
 import { startOAuthRedirect, takeOAuthRedirect } from "./oauth-redirect";
 import { isStandalone } from "./standalone";
 import { coreStore, type CalendarState, type CoreStatus } from "../store/store";
+import { createIndexedDbTaskTokenStore, type TaskTokenStoreLike } from "../task/token-store";
 import {
   pollRefresh,
   pollStart,
@@ -39,7 +41,7 @@ import {
   type WorkerLike,
 } from "../store/worker-client";
 
-// The web host's calendar opt-in wiring (issue #73): GIS consent, the
+// The web host's calendar opt-in wiring (issue #73): the token source, the
 // proactive token rotation, the context poll cadence and the clock tick that
 // keeps staleness honest. Extracted from App.tsx unchanged when the shell was
 // decomposed (#107) — these effects must run for the app's whole lifetime
@@ -52,17 +54,22 @@ import {
 // pure module under calendar/ or google/; this file only wires their results
 // into the store and the worker.
 //
-// There are now TWO interactive paths, and the choice is `shouldUseRedirect`
-// below. Desktop keeps GIS's popup. A standalone or phone-sized view takes a
-// top-level redirect (`google/redirect-flow.ts`), because the popup escapes to
-// Safari in an installed iOS web app and loses its opener — it can never come
-// back. The redirect's answer arrives on the NEXT page load, so it is applied
-// in the start effect rather than in the click handler that asked for it.
+// **#577/#583: the silent path no longer touches Google at all.** Every
+// `TokenClient` call — the start-up re-mint, the proactive rotation below,
+// and a core 401's credential-needed round-trip — now reaches
+// `calendar/authority-token-client.ts`, a same-origin authenticated POST to
+// `POST /api/google/calendar_token` (ADR-0028), usually answered from the
+// authority's own cache. `google/gis.ts` and its popup are gone; **the
+// hourly popup is gone with them.**
 //
-// The silent path stays one path and stays iframe-based — `prompt=none` over a
-// redirect would be a full-page navigation, which cannot run hourly — so it
-// stays subject to iOS ITP, and `calendar/remint-health.ts` is what stops it
-// retrying something only a human can fix.
+// The redirect flow (`google/redirect-flow.ts`, `shouldUseRedirect` below)
+// is untouched by this slice and still navigates to Google directly on a
+// standalone/phone-sized Connect click — #584 retires it once Settings'
+// prerequisite copy (#585) no longer assumes a client-side consent step
+// exists. On desktop, `connect()`'s `requestToken("consent")` now reaches
+// the same authority-backed client the silent path uses, which ignores the
+// prompt: a desktop Connect click no longer opens any popup either, because
+// there is nothing left in the browser for it to open.
 
 // The 15-minute context-poll foreground timer (#46, under ADR-0005). The
 // host is responsible for only ticking while online and foregrounded —
@@ -76,14 +83,26 @@ const TIMER_INTERVAL_MS = 15 * 60 * 1000;
 // `useSyncWiring.ts`'s existing unconditional 30-second `nowMs` is the one
 // clock the Now screen gets.
 
+// Still gates every calendar effect below, even though the authority-backed
+// `TokenClient` itself needs no client id at all — it authenticates with the
+// device token, not this. Kept as the prerequisite for this slice: the
+// redirect flow above still needs it, and rewriting what "connected" needs
+// is #585's job ("Settings tells the truth about what a calendar connection
+// needs"), not this one's.
 export const GOOGLE_CLIENT_ID: string | undefined = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
 let cachedTokenClient: TokenClient | null = null;
+let cachedTaskTokenStore: TaskTokenStoreLike | null = null;
 function tokenClient(): TokenClient | null {
   if (!GOOGLE_CLIENT_ID) {
     return null;
   }
-  cachedTokenClient ??= createGisTokenClient(GOOGLE_CLIENT_ID);
+  cachedTaskTokenStore ??= createIndexedDbTaskTokenStore();
+  const taskTokenStore = cachedTaskTokenStore;
+  cachedTokenClient ??= createAuthorityTokenClient({
+    fetch: globalThis.fetch.bind(globalThis),
+    readToken: async () => (await taskTokenStore.read())?.token ?? null,
+  });
   return cachedTokenClient;
 }
 
@@ -110,16 +129,19 @@ function applyRedirect(
   };
 }
 
-/** Whether this device should use the redirect flow instead of GIS's popup.
+/** Whether this device should navigate to Google directly (`google/redirect-
+ * flow.ts`) instead of taking the desktop `connect()` path, which — since
+ * #583 deleted `google/gis.ts` — opens no popup of its own and simply asks
+ * the authority for a token like every other path here.
  *
- * Standalone is the real criterion — an installed iOS web app is where the
+ * Standalone is the real criterion — an installed iOS web app is where a
  * popup escapes to Safari and loses its opener, and where Safari's own storage
  * container is no use because the app cannot see it. A phone-sized browser tab
  * is included because the same popup on a small screen is a full-screen
  * takeover with no visible relationship to the app it came from, and because a
  * phone tab is one "Add to Home Screen" away from being the standalone case
- * anyway. A desktop keeps GIS: it works there, and it is the less disruptive
- * of the two.
+ * anyway. This function and the redirect flow it guards are #584's to
+ * retire, not this slice's — see this file's header.
  *
  * **Measured with `matchMedia(PHONE_QUERY)`, not `window.innerWidth`.** Every
  * other consumer of this breakpoint — `useIsPhone`, and `responsive.css`'s
@@ -239,11 +261,11 @@ export function useCalendarWiring(
     }
     // At most one recovery poll per timer interval. The retry closes a loop
     // — its own 401 records another credential event, which flips
-    // `needsReconnect` back on and re-enters this path — so a token GIS
-    // keeps minting and Google keeps rejecting (a revoked scope, say) would
-    // otherwise spin re-mint/poll pairs as fast as the network allows. The
-    // cooldown makes the pathological case degrade to exactly the cadence
-    // this recovery replaced, and never worse.
+    // `needsReconnect` back on and re-enters this path — so a token the
+    // authority keeps minting and Google keeps rejecting (a revoked scope,
+    // say) would otherwise spin re-mint/poll pairs as fast as the network
+    // allows. The cooldown makes the pathological case degrade to exactly
+    // the cadence this recovery replaced, and never worse.
     const now = Date.now();
     if (now - lastRecoveryPollAtRef.current < TIMER_INTERVAL_MS) {
       return;
@@ -385,9 +407,16 @@ export function useCalendarWiring(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.needsReconnect, calendar.silentRemintBlocked]);
 
-  // Proactive rotation: GIS issues no refresh token, so a fresh silent
-  // re-mint ahead of the current token's expiry is what keeps a long-lived
-  // session from ever needing the reactive credential-needed path above.
+  // Proactive rotation. This timer is what fired the hourly popup before
+  // #583 — the popup is gone because `google/gis.ts` is gone, not because
+  // this timer went with it. The access token the authority hands back is
+  // still ~1 hour long (ADR-0028: the authority itself holds the refresh
+  // token now, but does not push one down), so a device that only re-minted
+  // reactively would still take a live 401 on every calendar poll that
+  // landed after expiry. Re-minting ahead of it, here, is what keeps a
+  // long-lived session from ever needing the reactive credential-needed
+  // path above — and it is now one same-origin POST, not a popup, so
+  // nothing about running it every ~55 minutes is disruptive any more.
   useEffect(() => {
     if (
       !calendar.connected ||

@@ -28,9 +28,15 @@
 // must list `https://hb.twinion.net/` and `http://localhost:5173/` as
 // Authorized redirect URIs — exact match, no fragment. Done 2026-08-13.
 
-import { CALENDAR_READONLY_SCOPE } from "./gis";
-
 const AUTHORIZE_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+
+// Requests exactly `calendar.readonly` — no write scope, ever (issue #73's
+// Agent Brief). This constant used to live in `google/gis.ts`; #583 deleted
+// that module along with the browser-minting path it implemented, and
+// moved the constant here for the one slice this redirect flow has left —
+// #584 deletes both wholesale.
+export const CALENDAR_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/calendar.readonly";
 
 /** Where the one-shot `state` value is parked across the navigation.
  * `sessionStorage`, chosen by the caller: it is scoped to this tab/window and
@@ -69,8 +75,8 @@ export type RedirectOutcome =
 
 /** Reads a returned fragment. `expectedState` is what the caller parked before
  * navigating (`null` if nothing was parked). `nowMs` is injected rather than
- * sampled, the `gis.ts` rule — `expires_in` is a duration and only the caller
- * knows when the answer arrived.
+ * sampled — `expires_in` is a duration and only the caller knows when the
+ * answer arrived.
  *
  * Anything unrecognised is `none`, not an error: this runs on every single app
  * open, including deep links and a stray `#section` anchor, and reporting a

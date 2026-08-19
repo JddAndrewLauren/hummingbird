@@ -1,14 +1,18 @@
-import { isTokenResult, type TokenClient } from "../google/gis";
+import { isTokenResult, type TokenClient } from "./token-client";
 
-// Issue #73's consent/token-rotation orchestration, kept free of GIS and
-// the wasm worker so it is unit-testable against a fake `TokenClient` and a
-// spyable `pushToken` — the same discipline as calendar-worker.ts.
+// Issue #73's consent/token-rotation orchestration, kept free of any
+// particular token source and the wasm worker so it is unit-testable
+// against a fake `TokenClient` (`./token-client.ts`) and a spyable
+// `pushToken` — the same discipline as calendar-worker.ts.
 //
-// GIS issues browser SPAs no refresh token (Agent Brief's "Key interfaces"
-// note): silent re-mint (`prompt: "none"`) is the only way to get a fresh
-// access token without interrupting the user, and it only works while the
-// user's Google session is still live. When it fails, the host's job is to
-// surface a re-connect affordance rather than silently going dark.
+// This code did not change when #577/#583 moved the token source from
+// GIS to the authority (`calendar/authority-token-client.ts`) — that is
+// the point of the `TokenClient` seam. Silent re-mint (`prompt: "none"`)
+// is still how a fresh access token is asked for without interrupting the
+// user; the current `TokenClient` ignores the distinction, but the calls
+// here stay in case a future one cares again. When it fails, the host's
+// job is to surface a re-connect affordance rather than silently going
+// dark.
 
 export interface ConnectionResult {
   connected: boolean;
@@ -122,9 +126,11 @@ async function silentReconnect(deps: ConnectionDeps): Promise<ConnectionResult> 
 }
 
 /** How long to wait, in milliseconds, before proactively re-minting a token
- * ahead of its expiry — GIS gives no refresh token, so this is what keeps a
- * long-lived session from ever hitting a live 401 in the first place.
- * `marginMs` is the safety margin before the real expiry (default 5
+ * ahead of its expiry — the token `POST /api/google/calendar_token`
+ * (ADR-0028) hands back is still Google's ~1-hour access token, and the
+ * authority never pushes a refresh token down to the browser, so this is
+ * what keeps a long-lived session from ever hitting a live 401 in the first
+ * place. `marginMs` is the safety margin before the real expiry (default 5
  * minutes); the result is clamped to 0 so an already-expired/near-expired
  * token schedules an immediate re-mint rather than a negative delay. */
 export function msUntilRotation(

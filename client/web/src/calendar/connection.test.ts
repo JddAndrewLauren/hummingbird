@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { TokenClient, TokenPrompt } from "../google/gis";
+import type { TokenClient } from "./token-client";
 import {
   connect,
   type ConnectionDeps,
@@ -9,10 +9,14 @@ import {
   shouldKeepExistingConnection,
 } from "./connection";
 
+// `prompt` is accepted but ignored by every real fake's caller here: the
+// current `TokenClient` (`authority-token-client.ts`) ignores it too, so
+// this module's own behaviour never depends on which value was passed —
+// only that `requestToken` was (or was not) called.
 function fakeTokenClient(
-  respond: (prompt: TokenPrompt) => Awaited<ReturnType<TokenClient["requestToken"]>>,
+  respond: () => Awaited<ReturnType<TokenClient["requestToken"]>>,
 ): TokenClient {
-  return { requestToken: vi.fn(async (prompt) => respond(prompt)) };
+  return { requestToken: vi.fn(async () => respond()) };
 }
 
 function deps(tokenClient: TokenClient): ConnectionDeps & { pushToken: ReturnType<typeof vi.fn> } {
@@ -36,10 +40,7 @@ describe("initConnection", () => {
   });
 
   it("silently re-mints and pushes the token for a previously-connected device", async () => {
-    const tokenClient = fakeTokenClient((prompt) => {
-      expect(prompt).toBe("none");
-      return { accessToken: "tok-1", expiresAtMs: 10_000 };
-    });
+    const tokenClient = fakeTokenClient(() => ({ accessToken: "tok-1", expiresAtMs: 10_000 }));
     const d = deps(tokenClient);
 
     const result = await initConnection(d, true);
@@ -61,10 +62,7 @@ describe("initConnection", () => {
 
 describe("connect", () => {
   it("requests interactive consent and pushes the resulting token", async () => {
-    const tokenClient = fakeTokenClient((prompt) => {
-      expect(prompt).toBe("consent");
-      return { accessToken: "tok-2", expiresAtMs: 20_000 };
-    });
+    const tokenClient = fakeTokenClient(() => ({ accessToken: "tok-2", expiresAtMs: 20_000 }));
     const d = deps(tokenClient);
 
     const result = await connect(d);
@@ -86,10 +84,7 @@ describe("connect", () => {
 
 describe("handleCredentialNeeded", () => {
   it("silently re-mints and pushes a fresh token, resolving the hold", async () => {
-    const tokenClient = fakeTokenClient((prompt) => {
-      expect(prompt).toBe("none");
-      return { accessToken: "tok-3", expiresAtMs: 30_000 };
-    });
+    const tokenClient = fakeTokenClient(() => ({ accessToken: "tok-3", expiresAtMs: 30_000 }));
     const d = deps(tokenClient);
 
     const result = await handleCredentialNeeded(d);

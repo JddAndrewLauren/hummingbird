@@ -9,8 +9,9 @@
 //
 // `TaskTokenStoreLike` is the injectable seam: `token.ts`'s logic is
 // unit-tested against an in-memory fake, and `createIndexedDbTaskTokenStore`
-// below is the real, browser-only implementation — the same split
-// `google/gis.ts` uses for its own untestable environment glue.
+// below is the real, browser-only implementation — the same
+// tested-logic/untested-browser-glue split `worker/calendar-worker.ts` uses
+// against its wasm-bindgen `CalendarHostLike` seam.
 
 /** One stored device token. `enteredAtMs` is metadata only (rendered via the
  * mono meta style, per the design system) — never logged or displayed as
@@ -43,10 +44,10 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 /** The real, browser-only `TaskTokenStoreLike` — untested here for the same
- * reason `google/gis.ts`'s `createGisTokenClient` is: it is thin glue over
- * a browser API vitest's node environment does not have. The logic that
- * decides what to do with what it reads (`token.ts`) is what carries the
- * test coverage. */
+ * reason `worker/calendar-worker.ts`'s real `CalendarHostLike` (the wasm
+ * core) is: it is thin glue over a browser/wasm surface vitest's node
+ * environment does not have. The logic that decides what to do with what it
+ * reads (`token.ts`) is what carries the test coverage. */
 export function createIndexedDbTaskTokenStore(): TaskTokenStoreLike {
   return {
     async read() {
