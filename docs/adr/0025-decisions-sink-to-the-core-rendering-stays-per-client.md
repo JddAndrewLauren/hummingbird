@@ -164,6 +164,43 @@ caller would be shaping the rule from one arm — the trap #533 named and
 TS copy of a rule the core now owns. This ADR's no-hand-copied-decisions
 rule covers a copy with no caller too, so it was **deleted** at #565's
 review rather than kept as a helper a future caller could re-copy from.
+**Amended 2026-08-18 (#564):** the Android calendar-connect slice ruled on
+`client/web/src/calendar/`'s seven modules, and the ruling is a **split**
+rather than either arm #564 originally offered. Sunk: `selection.ts`'s
+derivation half — `effectiveSelection`, `effectiveCalendarIds`,
+`acceptSelectionChange`, `unavailableSelectedIds`, `toggleCalendarId` —
+plus `connection.ts`'s `shouldKeepExistingConnection`. Four modules take
+divergence rows and one takes a **deliberate-deferral** row; see the six
+new entries in the verdict table below. Three things this ADR had not had
+to say before. **First**, the module-evaluation-order constraint recorded
+at #500/#501/#538 has a *second, independent* form that no earlier row
+names: `fixtures/demo-task-state.ts` must stay provably side-effect-free
+at top level or Rollup retains it and `pnpm assert-no-fixtures` fails —
+that file's own header records a 5.3 KB production-bundle regression from
+exactly this — so a seam call inside a top-level `const` defeats
+**tree-shaking**, not merely the readiness guard. `TRIPS_CALENDAR_BINDING_KEY`
+is read at `demo-task-state.ts:597` in a top-level `const boundTripsBinding`
+and therefore stays literal TS for both reasons at once. **Second**, this
+slice establishes *"sink only what has a demonstrated second caller"* as
+the tie-breaker the ADR's own reversibility asymmetry implies: a divergence
+row is a paragraph the next slice can amend, while a sink is a wasm
+surface, a UniFFI surface, generated Kotlin and a web rewire, unwound only
+by amendment. `msUntilRotation` and `tripsCalendarId` were both proposed
+for sinking and both withdrawn under it — the first because Play Services
+re-authorizes silently and so has no Android caller for a proactive
+re-mint schedule (GIS's missing refresh token is what makes it necessary
+on the web, and that is a web fact), the second because its live consumer
+is `screens/vacation-pane/vacation.ts` and the vacation pane's sink is
+#534's, which must decide it with its real callers in hand. **Third**, the
+one-door mobile seam has a *lock* consequence: `MobileTaskHost` guards its
+state with a single `tokio::sync::Mutex` held across the sync cycle's
+awaits, so the calendar half takes its own mutex inside the same object —
+sharing it would let a slow calendar fetch stall a sync and vice versa.
+The compensating gain is real and is why one door was chosen over
+mirroring `ffi-web`'s two: the core holds *both* the synced binding and
+the per-device selection, so `effectiveSelection` runs entirely inside
+Rust and Kotlin never carries the fact across a seam the way `App.tsx`
+must.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -335,7 +372,17 @@ not permanent — it is where the line fell for the capture/Now slice.
 | `rules/condition-editor.ts` (`widgetFor`, `newCondition`, `retypeCondition`, `toggleNegate`) (sunk at #540) | sunk to `decisions::rules::editor` — not one of #540's five named items, and forced by them: the phone's create-and-edit form needs the same kind → field → operator → widget cascade, and this ADR forbids Kotlin holding a per-row decision function, so a Kotlin copy would have been the third |
 | `rules/operators.ts`'s `OPERATOR_LABELS`, `registry.ts`'s `kindLabel`/`kindOptions` (#540) | **stays** — display copy plus the registry's own declared order. Two clients wording "is within the next" or "Calendar event" differently is a difference, not a bug |
 | The epoch ⇄ civil wall-clock conversion, at each host's edge (#540) | **stays per-client, deliberately.** `client/core` holds no tzdb (its `Cargo.toml` argues this at length), so every rules function takes an already-resolved deadline-shaped `now`, exactly as `decisions::urgency` does. The backtest needs *two* readings of one instant — `occurred_at` is stamped UTC by the authority, `deadline`/`scheduled_date` are device-local civil strings — so `BacktestClock` names both frames at the boundary rather than letting the core infer either |
-| Calendar / #169's two doors | out of M1 entirely |
+| Calendar / #169's two doors | out of M1 entirely. **Ruled at M4 (#564)** for `client/web/src/calendar/`'s seven modules — the six rows below, plus the two withdrawals recorded in the amendment above |
+| `selection.ts`'s `effectiveSelection`/`effectiveCalendarIds`/`acceptSelectionChange`/`unavailableSelectedIds`/`toggleCalendarId` (sunk at #564) | sunk. Not named by #564's own body, and the strongest candidate in that directory: these derive **which calendars a device polls** from two facts held in different places — the per-device selection and the *synced* `trips-calendar` binding — so two clients disagreeing means one polls the wrong set off the same `settings` row. `unavailableSelectedIds` carries the same false-quiet distinction ADR-0015 rules out elsewhere ("we haven't looked" must not read as "none of these exist"). The core already owns the key vocabulary (`bindings::BindingKey::TripsCalendar`), so the sink invents nothing |
+| `connection.ts`'s `shouldKeepExistingConnection` (sunk at #564) | sunk. "May a failed interactive attempt un-connect this device?" — answered `no`, and its own header records the cost of `yes`: losing the last-good snapshot and the Reconnect affordance together, so one cancelled consent would cost the reader their offline context. On Android the same rule is what keeps an **offline** phone from rendering as a never-connected one, since the phone cannot reach Play Services to confirm a grant it still holds |
+| `connection.ts`'s `msUntilRotation` (#564) | **stays** — and the reason is the tie-breaker, not the shape. It exists because GIS issues browser SPAs no refresh token, so the web must schedule a proactive re-mint against `expiresAtMs`. `AuthorizationClient` re-authorizes silently in later sessions while the grant stands, so Android calls `authorize()` on demand and has no rotation schedule to keep. Sinking it would cross the seam for exactly one caller |
+| `connect-error.ts` (#564) | **stays** — display copy, on the same verdict as `OPERATOR_LABELS`/`kindLabel` and `wasteGapReason` ("the kinds sank, the words did not"). Four of its nine arms name browser popup and GIS-script failures (`popup_failed_to_open`, `popup_closed`, `gis_script_load_failed`, `gis_unavailable`) that cannot occur on Android, so a sink would carry permanently unreachable branches across the seam with no Kotlin caller able to reach them and no test able to justify them |
+| `connect-pending.ts` (#564) | **stays** — `pageshow`/`visibilitychange`/bfcache wiring, a platform fact on #538's line-splitting verdict. Android has neither bfcache nor the redirect flow that arms the flag, so there is no second answer to disagree with |
+| `redirect-return.ts` (#564) | **stays** — the redirect flow is web-only. Note the shape it lands in, which is the one this ADR wants: it *consumes* a sunk rule (`shouldKeepExistingConnection`) while staying per-client itself |
+| `persistence.ts` (#564) | **stays** — storage mechanism (`localStorage` vs Preferences DataStore). What must not diverge is the *policy*: never the credential, only the opt-in flag and the selection. That is stated in the module headers and here, not expressed as a sunk function. #564 adds an Android-specific corollary — the Google access token is **never** persisted at all there, since Play Services re-mints it silently, so the phone stores strictly less than the browser does |
+| `remint-health.ts` (#564) | **deliberate deferral, not a divergence.** Its *question* — "does this error mean a human must be involved?" — is decision logic Android must also answer, but over an `AuthorizationClient` outcome vocabulary no one has yet seen on hardware, and #419 Phase 9's degradation is an ITP-specific remedy that must not be ported blindly. Deferred until Android's real failure codes are in hand; the slice that sees them decides it. Recorded here so the lag is a decision rather than the "silently lag" drift this ADR's sequencing rule exists to prevent |
+| `TRIPS_CALENDAR_BINDING_KEY` (#564) | stays literal TS, pinned by `seam.test.ts`, for **two** constraints at once — the familiar "used before ready" throw, and a second one no earlier row names: `fixtures/demo-task-state.ts:597` builds `const boundTripsBinding` at top level, and that module must stay provably side-effect-free or Rollup retains it and `pnpm assert-no-fixtures` fails (its header records the 5.3 KB regression). A seam call there defeats **tree-shaking**, independently of readiness |
+| `selection.ts`'s `tripsCalendarId` (#564) | **not sunk here — handed to #534.** Its live consumer is `screens/vacation-pane/vacation.ts`, so it belongs to the vacation pane's sink, which #534 decides with the seven pane examples in hand. Taking it at #564 would land a pane-lane decision while the pane lane's own gate (#533's zone-bridge ergonomics checkpoint) is still shut |
 | the NDJSON **line splitting** (`skills/ndjson.ts`'s `takeLines`, okio's `readUtf8Line`) (M4, #538) | stays per-client: a byte-level stream reader is a platform fact, not a decision. The web decodes a `ReadableStream` with a streaming `TextDecoder`; Android reads okio's buffered source. What each *line means* did sink (`decisions::skills::envelope`) |
 | the **transport** — `run-skill.ts`, `route-run.ts`, `skills/SkillRunner.kt` (M4, #538) | stays per-client: `fetch` + `AbortSignal` vs OkHttp + `Call.cancel()` have no shared expression, and neither decides anything. Each reports what happened to *its* socket (no token / never resolved / a status / the stream ended) and the core answers with the next state |
 | `skills/decline.ts`'s `NO_TOKEN`/`NO_TERMINAL_LINE` and `grill-turn-state.ts`'s `OUTSIDE_SCHEMA` (M4, #538) | the rule sank (`decisions::skills::decline`, `grill::OUTSIDE_SCHEMA`); the three constants stay literal TS for the same module-evaluation-order constraint as `field-vocabulary.ts`'s arrays — `route-run.ts`/`useMicrotaskWiring.ts`/`useGrillWiring.ts` read them at module evaluation, statically reachable from `main.tsx` — pinned against the core by `seam.test.ts`. Kotlin needs no equivalent: it never holds the strings at all |
