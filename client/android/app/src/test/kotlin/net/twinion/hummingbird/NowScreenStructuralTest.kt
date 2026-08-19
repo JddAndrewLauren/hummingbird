@@ -125,11 +125,64 @@ class NowScreenStructuralTest {
         )
         assertTrue(
             "urgencyColor must map MobileUrgencyBand.CALM to null",
-            Regex("""MobileUrgencyBand\.CALM\s*->\s*null""").containsMatchIn(nowScreenSrc),
+            // Anchored on urgencyColor's own `fun`: since urgencyLabel maps CALM
+            // to null too, a bare arm regex would pass on either one's mapping.
+            Regex("""fun urgencyColor\([\s\S]*?MobileUrgencyBand\.CALM\s*->\s*null""")
+                .containsMatchIn(nowScreenSrc),
         )
         assertTrue(
             "the swatch Box must be rendered only when urgencyColor gives one",
-            Regex("""urgencyColor\([^)]*\)\?\.let""").containsMatchIn(nowScreenSrc),
+            // The call is hoisted into `val swatch` so the meta Row's own
+            // emptiness guard reads the same value the Box draws from — the
+            // null is honoured on that val rather than on the call itself.
+            Regex("""val swatch = urgencyColor\([^)]*\)[\s\S]*?swatch\?\.let""")
+                .containsMatchIn(nowScreenSrc),
+        )
+    }
+
+    @Test
+    fun `calm gets no urgency word`() {
+        // The same ADR-0021 decision 2 reason, on the other carrier: the word
+        // exists so colour is never load-bearing, but `calm` makes no claim to
+        // carry, so "CALM" spent the card's most prominent meta slot saying
+        // nothing. Held in urgencyLabel's own mapping, like the swatch rule.
+        assertTrue(
+            "urgencyLabel must return a nullable String so CALM can map to no word",
+            Regex("""fun urgencyLabel\([^)]*\): String\?""").containsMatchIn(nowScreenSrc),
+        )
+        assertTrue(
+            "urgencyLabel must map MobileUrgencyBand.CALM to null",
+            Regex("""fun urgencyLabel\([\s\S]*?MobileUrgencyBand\.CALM\s*->\s*null""")
+                .containsMatchIn(nowScreenSrc),
+        )
+        assertTrue(
+            "the urgency Text must be rendered only when urgencyLabel gives a word",
+            // Hoisted for the same reason the swatch is — see that test.
+            Regex("""val urgencyWord = urgencyLabel\([^)]*\)[\s\S]*?urgencyWord\?\.let""")
+                .containsMatchIn(nowScreenSrc),
+        )
+    }
+
+    @Test
+    fun `a card with nothing to say draws no meta row`() {
+        // The urgency word was the meta Row's one unconditional child, so
+        // dropping it for `calm` left the ordinary record — calm, ready, no
+        // deadline — composing an EMPTY Row, which measures zero high while
+        // the Column's `spacedBy(8.dp)` still pays for it: 8dp of blank space
+        // above the title. The guard reads the same three values the Row
+        // draws, so it cannot disagree with them.
+        for (value in listOf("val swatch = urgencyColor(", "val urgencyWord = urgencyLabel(")) {
+            assertTrue(
+                "NowRow must read $value once and reuse it, not recompute it inside the Row",
+                nowScreenSrc.contains(value),
+            )
+        }
+        assertTrue(
+            "the meta Row must be guarded on all four of its entries being absent",
+            Regex(
+                """if \(swatch != null \|\| urgencyWord != null \|\| """ +
+                    """record\.deadline != null \|\| stageChip != null\)""",
+            ).containsMatchIn(nowScreenSrc),
         )
     }
 
