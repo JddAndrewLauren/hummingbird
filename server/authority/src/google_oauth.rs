@@ -85,4 +85,22 @@ mod tests {
         assert_eq!(parse_access_token(r#"{"access_token":"","expires_in":3600}"#, 0), None);
         assert_eq!(parse_access_token("", 0), None);
     }
+
+    /// The `refresh_token` grant's response carries `scope` and
+    /// `token_type` alongside the two fields the JWT-bearer grant's
+    /// response also carries (#577/#582's second consumer) — unlike
+    /// `TokenResponse`'s `#[derive(Deserialize)]`, which has no
+    /// `deny_unknown_fields`, both extra fields must be silently ignored
+    /// rather than failing the parse.
+    #[test]
+    fn a_refresh_grant_response_with_scope_and_token_type_still_parses() {
+        let body = r#"{
+            "access_token": "ya29.refresh-grant",
+            "expires_in": 3599,
+            "scope": "https://www.googleapis.com/auth/calendar.readonly",
+            "token_type": "Bearer"
+        }"#;
+        let parsed = parse_access_token(body, 0).expect("extra fields are ignored");
+        assert_eq!(parsed.token, "ya29.refresh-grant");
+    }
 }

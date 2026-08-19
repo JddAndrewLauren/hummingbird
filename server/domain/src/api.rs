@@ -540,6 +540,18 @@ impl ChangesResponse {
     }
 }
 
+/// `POST /api/google/calendar_token` 200 response (#577/#582): a Google
+/// `calendar.readonly` access token the authority minted from its
+/// server-held refresh token, and the absolute wall-clock millisecond it
+/// expires. `expires_at_ms` already carries the authority's expiry slack —
+/// the client does no arithmetic on it, dropping it straight into
+/// `TokenResult.expiresAtMs`/`msUntilRotation`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CalendarTokenResponse {
+    pub access_token: String,
+    pub expires_at_ms: i64,
+}
+
 /// Every non-2xx body except the 409 and the empty-bodied 401/403:
 /// `{"error": code, "message": …}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
