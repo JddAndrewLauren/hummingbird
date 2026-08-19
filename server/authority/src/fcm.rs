@@ -22,30 +22,29 @@
 //! single exception is a *dead token*, which is not a failure of this send
 //! but a fact about the device: see [`SendVerdict::TokenDead`].
 //!
+//! The token endpoint, the expiry-slack policy, the [`AccessToken`] value
+//! and the response parser are *not* here (#579): they moved to
+//! [`crate::google_oauth`], the half every Google OAuth consumer shares —
+//! this module keeps only what is specific to the JWT-bearer assertion
+//! grant and the FCM v1 wire format.
+//!
 //! [`deliver`]: crate::delivery::deliver
+//! [`AccessToken`]: crate::google_oauth::AccessToken
 
 use hummingbird_domain::Tier;
 use serde::Deserialize;
 
 use crate::delivery::PushNotification;
+use crate::google_oauth::OAUTH_TOKEN_URL;
 use crate::sql::{Sql, SqlError, SqlValue};
 
 /// The OAuth2 scope an FCM v1 send needs — the only scope this server ever
 /// asks the service account for.
 pub const FCM_SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 
-/// Google's OAuth2 token endpoint (the `aud` of the assertion, and where
-/// the worker POSTs it).
-pub const OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-
 /// How long an assertion claims validity for. Google caps this at one hour;
 /// the access token it buys back carries its own (also ~1h) expiry.
 const ASSERTION_TTL_SECS: i64 = 3600;
-
-/// Slack subtracted from an access token's stated lifetime before the
-/// worker considers it stale, so a token can never expire mid-flight
-/// between the staleness check and the send.
-pub const TOKEN_EXPIRY_SLACK_SECS: i64 = 60;
 
 // ---------------------------------------------------------------------------
 // The operator credential
@@ -141,36 +140,6 @@ pub fn token_request_body(assertion: &str) -> String {
     format!(
         "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion={assertion}"
     )
-}
-
-/// An access token and the wall-clock millisecond after which the worker
-/// must mint a new one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccessToken {
-    pub token: String,
-    pub expires_at_ms: i64,
-}
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    expires_in: i64,
-}
-
-/// Parses Google's token response, converting its relative `expires_in`
-/// into an absolute deadline against the caller's clock — minus
-/// [`TOKEN_EXPIRY_SLACK_SECS`], so a token that is about to expire is
-/// treated as already expired rather than being sent and rejected.
-pub fn parse_access_token(body: &str, now_ms: i64) -> Option<AccessToken> {
-    let parsed: TokenResponse = serde_json::from_str(body).ok()?;
-    if parsed.access_token.is_empty() {
-        return None;
-    }
-    let lifetime = (parsed.expires_in - TOKEN_EXPIRY_SLACK_SECS).max(0);
-    Some(AccessToken {
-        token: parsed.access_token,
-        expires_at_ms: now_ms + lifetime * 1000,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -506,31 +475,6 @@ mod tests {
             body,
             "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=aaa.bbb.ccc",
         );
-    }
-
-    #[test]
-    fn access_token_expiry_is_absolute_and_carries_the_slack() {
-        let parsed = parse_access_token(r#"{"access_token":"ya29.abc","expires_in":3600}"#, 10_000)
-            .expect("a normal token response parses");
-        assert_eq!(parsed.token, "ya29.abc");
-        // 3600s minus the 60s slack, in ms, from the caller's clock.
-        assert_eq!(parsed.expires_at_ms, 10_000 + 3_540_000);
-    }
-
-    /// A token that expires sooner than the slack must not produce a
-    /// deadline in the past-relative-to-now arithmetic's negative range —
-    /// it is simply already stale.
-    #[test]
-    fn access_token_with_a_lifetime_under_the_slack_is_already_stale() {
-        let parsed = parse_access_token(r#"{"access_token":"t","expires_in":30}"#, 10_000).unwrap();
-        assert_eq!(parsed.expires_at_ms, 10_000);
-    }
-
-    #[test]
-    fn access_token_rejects_an_error_or_empty_response() {
-        assert_eq!(parse_access_token(r#"{"error":"invalid_grant"}"#, 0), None);
-        assert_eq!(parse_access_token(r#"{"access_token":"","expires_in":3600}"#, 0), None);
-        assert_eq!(parse_access_token("", 0), None);
     }
 
     fn notification(tier: Tier) -> PushNotification {
