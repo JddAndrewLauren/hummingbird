@@ -2166,6 +2166,33 @@ fn to_pane_item_facts(item: &hummingbird_domain::Item) -> PaneItemFacts {
     }
 }
 
+/// `[...frontier, ...blocked.map(e => e.item)]` — `NowScreen.tsx::
+/// realQuestionInputs`'s own union, matched here rather than `frontier`
+/// alone: [`hummingbird_core::Core::frontier`] deliberately excludes a
+/// relation-blocked item ([`hummingbird_core::Core::blocked`] is the
+/// separate section for those), so a due/scheduled item that happens to be
+/// relation-blocked would silently vanish from the weekend pane's merge
+/// without this — a per-client divergence in a sunk decision's own inputs
+/// (#537 review). A blocked entry's own blockers never join this list:
+/// only the blocked item itself is a due/scheduled candidate, exactly as
+/// `entry.item` (never `entry.blockedByTitles`) is the only thing
+/// `realQuestionInputs` reads off each `blocked` entry.
+///
+/// Factored out of [`mobile_pane_inputs`] so it is unit-testable without a
+/// synced [`Core`]: a relation-blocked item only ever lands in the local
+/// mirror through a real sync cycle, and this crate's own test harness has
+/// no mock HTTP transport to produce one.
+fn pane_item_facts(
+    frontier: &[hummingbird_domain::Item],
+    blocked: &[(hummingbird_domain::Item, Vec<hummingbird_domain::Item>)],
+) -> Vec<PaneItemFacts> {
+    frontier
+        .iter()
+        .chain(blocked.iter().map(|(item, _blockers)| item))
+        .map(to_pane_item_facts)
+        .collect()
+}
+
 /// Builds [`PaneInputs`] for every sunk pane on both surfaces — see this
 /// section's header for what each field is for and why the calendar arm
 /// alone stays at its default.
@@ -2181,7 +2208,7 @@ fn mobile_pane_inputs(
     pane_reads.insert(waste::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(waste::SOURCE, now_ms)));
     pane_reads.insert(race::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(race::SOURCE, now_ms)));
     let bindings: Vec<BindingFact> = core.bindings().iter().map(to_binding_fact).collect();
-    let items: Vec<PaneItemFacts> = core.frontier().iter().map(to_pane_item_facts).collect();
+    let items: Vec<PaneItemFacts> = pane_item_facts(&core.frontier(), &core.blocked());
     PaneInputs {
         now_ms,
         // Always `Some`: unlike the web's async table read, `Core::bindings`
@@ -6851,6 +6878,65 @@ mod settings_tests {
             deadline: FieldPatch::Untouched,
             scheduled_date: FieldPatch::Untouched,
         }
+    }
+
+    /// A minimal live [`hummingbird_domain::Item`] for [`pane_item_facts`]'s
+    /// own tests — every field the seam does not read is pinned to a
+    /// neutral default, the same "only the fields a test actually reads
+    /// vary" discipline `tests::item` (this crate's `now_board` fixture)
+    /// uses, kept as this module's own copy since that one is private to
+    /// its sibling `mod tests`.
+    fn pane_item(id: &str, deadline: Option<&str>, scheduled_date: Option<&str>) -> hummingbird_domain::Item {
+        hummingbird_domain::Item {
+            id: id.to_string(),
+            seq: None,
+            title: format!("item {id}"),
+            description: None,
+            stage: hummingbird_domain::Stage::Ready,
+            size: None,
+            energy: None,
+            context: None,
+            priority: 0,
+            project_id: None,
+            project_pos: None,
+            deadline: deadline.map(str::to_string),
+            scheduled_date: scheduled_date.map(str::to_string),
+            source: None,
+            source_key: None,
+            source_url: None,
+            archived_at: None,
+            agent: false,
+            created_at: 0,
+            updated_at: 0,
+            version: 0,
+        }
+    }
+
+    #[test]
+    fn pane_items_include_both_the_frontier_and_the_relation_blocked_section() {
+        // `NowScreen.tsx::realQuestionInputs`'s own union
+        // (`[...frontier, ...blocked.map(e => e.item)]`) — a relation-
+        // blocked item due this weekend must still reach the weekend
+        // pane's merge, never silently drop out just because
+        // `Core::frontier` excludes it (#537 review).
+        let frontier = vec![pane_item("f-1", Some("2026-08-15"), None)];
+        let blocked =
+            vec![(pane_item("b-1", None, Some("2026-08-16")), vec![pane_item("blocker", None, None)])];
+
+        let facts = pane_item_facts(&frontier, &blocked);
+
+        assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-1", "b-1"]);
+        let blocked_fact = facts.iter().find(|f| f.id == "b-1").unwrap();
+        assert_eq!(blocked_fact.scheduled_date.as_deref(), Some("2026-08-16"));
+    }
+
+    #[test]
+    fn pane_items_never_include_a_blocked_entrys_own_blockers() {
+        let blocked = vec![(pane_item("b-1", None, None), vec![pane_item("blocker-only", None, None)])];
+
+        let facts = pane_item_facts(&[], &blocked);
+
+        assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["b-1"]);
     }
 
     #[tokio::test]

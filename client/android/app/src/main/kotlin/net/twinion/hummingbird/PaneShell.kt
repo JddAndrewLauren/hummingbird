@@ -35,12 +35,12 @@ import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 
 // The ranked-region shell (#536/M4, #537/M4, ADR-0017): the Status screen's
-// own `PaneRow`/`RankedPaneList`, pulled out so the Now screen's own three
-// panes (#537) render through the identical shell rather than a second
-// implementation — the issue's own "through the same pane shell the Status
-// screen uses" line. `paneLabel` alone stays a caller-supplied argument:
-// which words name a pane's row is a per-surface rendering choice (Status's
-// four questions vs. Now's four), never a decision this shell makes.
+// own `PaneRow`, pulled out so the Now screen's own four panes (#537)
+// render through the identical shell rather than a second implementation —
+// the issue's own "through the same pane shell the Status screen uses"
+// line. `paneLabel` alone stays a caller-supplied argument: which words
+// name a pane's row is a per-surface rendering choice (Status's four
+// questions vs. Now's four), never a decision this shell makes.
 //
 // **This file decides nothing about a pane.** `answerState` and `band`
 // arrive already decided ([MobileRankedPane]'s own doc); everything below
@@ -112,20 +112,15 @@ internal fun PaneRow(pane: MobileRankedPane, label: String) {
  * no comparator of its own. `paneLabel` is the one thing a caller supplies:
  * Status's four questions and Now's four name themselves differently, and
  * an unrecognised question is the caller's own drift gate to fail on
- * (`StatusScreen.kt`/`NowScreen.kt`'s own exhaustive `when`s). */
-@Composable
-internal fun RankedPaneList(panes: List<MobileRankedPane>, paneLabel: (MobileRankedPane) -> String) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        for (pane in panes) {
-            PaneRow(pane, paneLabel(pane))
-        }
-    }
-}
-
-/** [RankedPaneList]'s items, for a caller (`NowScreen`) whose panes live
- * inside a single outer `LazyColumn` alongside other sections rather than
- * in their own scrollable list — `Status` renders [RankedPaneList] wrapped
- * in its own `LazyColumn` instead, since its panes are the whole screen. */
+ * (`StatusScreen.kt`/`NowScreen.kt`'s own exhaustive `when`s).
+ *
+ * Both current callers append these into a `LazyColumn` they already own
+ * rather than a `Column` of their own (#537 review — a plain `Column`
+ * placed after, or beside, an unweighted `LazyColumn` can lay out past the
+ * viewport with nothing to scroll it into view): `StatusScreen` wraps this
+ * call in its own dedicated `LazyColumn` (its panes are the whole screen),
+ * and `NowScreen` appends it into the same `LazyColumn` the queue's rows
+ * already populate, so the queue and the panes share one outer scroll. */
 internal fun LazyListScope.rankedPaneItems(
     panes: List<MobileRankedPane>,
     paneLabel: (MobileRankedPane) -> String,

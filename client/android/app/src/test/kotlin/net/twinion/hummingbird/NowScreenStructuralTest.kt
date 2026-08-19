@@ -1,6 +1,7 @@
 package net.twinion.hummingbird
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -234,8 +235,8 @@ class NowScreenStructuralTest {
     @Test
     fun `the pane section renders through the shared shell, never a second implementation`() {
         assertTrue(
-            "NowScreen.kt must render its panes through the shared RankedPaneList",
-            nowScreenSrc.contains("RankedPaneList(panes"),
+            "NowScreen.kt must render its panes through the shared rankedPaneItems",
+            nowScreenSrc.contains("rankedPaneItems(panes"),
         )
         assertFalse(
             "NowScreen.kt must not re-declare its own PaneRow",
@@ -248,6 +249,39 @@ class NowScreenStructuralTest {
         assertFalse(
             "the panes list must not be re-sorted locally",
             Regex("""panes\.sorted(By|With)?\(""").containsMatchIn(nowScreenSrc),
+        )
+    }
+
+    @Test
+    fun `the panes are appended inside the queues own LazyColumn, not a second container`() {
+        // #537 review: a `NowPaneSection` rendered as a plain `Column` after
+        // an unweighted `LazyColumn` (the queue's own) laid out past the
+        // bottom of the viewport with nothing to scroll it into view once
+        // the frontier was taller than the screen. The fix is one shared
+        // `LazyColumn` for the queue and the panes together — pinned here
+        // three ways: exactly one `LazyColumn(` call in the whole file, the
+        // panes call textually after it opens, and no second `Column(`
+        // between the two (which would be the same off-screen shape again,
+        // just with the container renamed).
+        val lazyColumnCount = Regex("""LazyColumn\(""").findAll(nowScreenSrc).count()
+        assertEquals(
+            "the queue and the panes must render through exactly one LazyColumn",
+            1,
+            lazyColumnCount,
+        )
+        val lazyColumnIndex = nowScreenSrc.indexOf("LazyColumn(")
+        val paneCallIndex = nowScreenSrc.indexOf("nowPaneSection(panes)")
+        assertTrue("could not locate the LazyColumn( call", lazyColumnIndex >= 0)
+        assertTrue("could not locate the nowPaneSection(panes) call", paneCallIndex >= 0)
+        assertTrue(
+            "nowPaneSection(panes) must be appended after the shared LazyColumn opens",
+            paneCallIndex > lazyColumnIndex,
+        )
+        val between = nowScreenSrc.substring(lazyColumnIndex, paneCallIndex)
+        assertFalse(
+            "no Column( may sit between the LazyColumn and the panes call — that " +
+                "would wrap the panes in a second, non-scrolling container again",
+            Regex("""\bColumn\(""").containsMatchIn(between),
         )
     }
 }

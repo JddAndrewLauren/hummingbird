@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
@@ -217,18 +218,23 @@ private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQu
 }
 
 /** Now's own standing-question panes (#537), below the queue — through the
- * same [RankedPaneList]/[PaneRow] shell `StatusScreen.kt` renders its own
- * four through (`PaneShell.kt`). Renders nothing while [panes] is empty
+ * same [PaneRow] shell `StatusScreen.kt` renders its own four through
+ * (`PaneShell.kt`'s [rankedPaneItems]). Adds nothing while [panes] is empty
  * (the pre-first-load state, [NowViewModel.panes]'s own doc) rather than an
  * empty-state card: unlike the queue, "no panes yet" is never a fact worth
- * reporting on its own, only a moment before the first crossing lands. */
-@Composable
-private fun NowPaneSection(panes: List<MobileRankedPane>) {
+ * reporting on its own, only a moment before the first crossing lands.
+ *
+ * Appends into the caller's own [LazyListScope] rather than a nested
+ * `Column`/`LazyColumn` of its own — the queue and the panes must share one
+ * outer scroll, or a frontier taller than the viewport pushes the panes
+ * section past the bottom of the screen with nothing to scroll it into view
+ * (#537 review). */
+private fun LazyListScope.nowPaneSection(panes: List<MobileRankedPane>) {
     if (panes.isEmpty()) return
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    item(key = "panes-header") {
         Text("This week", style = MaterialTheme.typography.titleMedium)
-        RankedPaneList(panes, paneLabel = ::nowPaneLabel)
     }
+    rankedPaneItems(panes, paneLabel = ::nowPaneLabel)
 }
 
 @Composable
@@ -347,103 +353,117 @@ fun NowScreen(
                 onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
             )
 
-            when {
-                loading && currentBoard == null -> CircularProgressIndicator()
-                currentBoard == null ||
-                    (currentBoard.columns.isEmpty() && currentBoard.blocked.isEmpty()) ->
-                    Text(
-                        // "Nothing matches what you picked" and "nothing is
-                        // startable" are different facts and must not look
-                        // alike (`FrontierColumns.tsx`'s own empty-result
-                        // branch, ADR-0021 decision 5's whole reason for
-                        // never persisting the filter): a facet-emptied
-                        // board says so, rather than reporting an empty
-                        // frontier it is not.
-                        if (facets.count() > 0) {
-                            "Nothing matches what you picked."
-                        } else {
-                            // Honesty over reassurance (README): an empty
-                            // frontier is reported as a fact, not
-                            // apologised for.
-                            "Nothing on the frontier."
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    for (column in currentBoard.columns) {
-                        val key = column.value ?: ""
-                        val isCollapsed = collapsed.contains(key)
-                        val heading = if (column.value == null) {
-                            NO_VALUE_LABEL[axis] ?: "No value"
-                        } else {
-                            column.label ?: "Project ${column.value}"
-                        }
-
-                        item(key = "header-$key") {
-                            ColumnHeader(
-                                heading = heading,
-                                count = column.items.size,
-                                collapsed = isCollapsed,
-                                onToggleCollapsed = {
-                                    scope.launch { viewModel.toggleCollapsed(key) }
+            // One LazyColumn for the whole rest of the screen — the queue
+            // (whichever of its three states applies) and, appended after
+            // it, the now-surface panes (#537). A second, non-scrolling
+            // container after this one pushed the panes past the bottom of
+            // the viewport with nothing to scroll them into view once the
+            // frontier was taller than the screen (#537 review); one shared
+            // scroll is the fix, not a `weight` modifier on a still-split
+            // layout, since the queue's own three states already need to
+            // sit inside *some* `LazyListScope` for `item`/`items` below.
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                when {
+                    loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
+                    currentBoard == null ||
+                        (currentBoard.columns.isEmpty() && currentBoard.blocked.isEmpty()) ->
+                        item(key = "empty") {
+                            Text(
+                                // "Nothing matches what you picked" and
+                                // "nothing is startable" are different facts
+                                // and must not look alike
+                                // (`FrontierColumns.tsx`'s own empty-result
+                                // branch, ADR-0021 decision 5's whole reason
+                                // for never persisting the filter): a
+                                // facet-emptied board says so, rather than
+                                // reporting an empty frontier it is not.
+                                if (facets.count() > 0) {
+                                    "Nothing matches what you picked."
+                                } else {
+                                    // Honesty over reassurance (README): an
+                                    // empty frontier is reported as a fact,
+                                    // not apologised for.
+                                    "Nothing on the frontier."
                                 },
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                    else -> {
+                        for (column in currentBoard.columns) {
+                            val key = column.value ?: ""
+                            val isCollapsed = collapsed.contains(key)
+                            val heading = if (column.value == null) {
+                                NO_VALUE_LABEL[axis] ?: "No value"
+                            } else {
+                                column.label ?: "Project ${column.value}"
+                            }
 
-                        if (!isCollapsed) {
-                            val isExpanded = expanded.contains(key)
-                            val visible = if (isExpanded) column.items else column.items.take(COLUMN_CAP)
-                            val hidden = column.items.size - visible.size
-
-                            items(visible, key = { "$key-${it.id}" }) { record ->
-                                NowRow(
-                                    record = record,
-                                    dark = dark,
-                                    onOpen = { onOpenItem(record.id) },
-                                    onAct = { action -> act(record.id, action) },
+                            item(key = "header-$key") {
+                                ColumnHeader(
+                                    heading = heading,
+                                    count = column.items.size,
+                                    collapsed = isCollapsed,
+                                    onToggleCollapsed = {
+                                        scope.launch { viewModel.toggleCollapsed(key) }
+                                    },
                                 )
                             }
 
-                            if (hidden > 0 || (isExpanded && column.items.size > COLUMN_CAP)) {
-                                item(key = "more-$key") {
-                                    TextButton(onClick = { viewModel.toggleExpanded(key) }) {
-                                        Text(if (isExpanded) "Show fewer" else "$hidden more")
+                            if (!isCollapsed) {
+                                val isExpanded = expanded.contains(key)
+                                val visible = if (isExpanded) column.items else column.items.take(COLUMN_CAP)
+                                val hidden = column.items.size - visible.size
+
+                                items(visible, key = { "$key-${it.id}" }) { record ->
+                                    NowRow(
+                                        record = record,
+                                        dark = dark,
+                                        onOpen = { onOpenItem(record.id) },
+                                        onAct = { action -> act(record.id, action) },
+                                    )
+                                }
+
+                                if (hidden > 0 || (isExpanded && column.items.size > COLUMN_CAP)) {
+                                    item(key = "more-$key") {
+                                        TextButton(onClick = { viewModel.toggleExpanded(key) }) {
+                                            Text(if (isExpanded) "Show fewer" else "$hidden more")
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    if (currentBoard.blocked.isNotEmpty()) {
-                        item(key = "blocked-header") {
-                            ColumnHeader(
-                                heading = "Blocked",
-                                count = currentBoard.blocked.size,
-                                collapsed = false,
-                                onToggleCollapsed = null,
-                            )
-                        }
-                        items(currentBoard.blocked, key = { "blocked-${it.item.id}" }) { entry ->
-                            BlockedRow(
-                                entry = entry,
-                                dark = dark,
-                                onOpen = { onOpenItem(entry.item.id) },
-                                onAct = { action -> act(entry.item.id, action) },
-                            )
+                        if (currentBoard.blocked.isNotEmpty()) {
+                            item(key = "blocked-header") {
+                                ColumnHeader(
+                                    heading = "Blocked",
+                                    count = currentBoard.blocked.size,
+                                    collapsed = false,
+                                    onToggleCollapsed = null,
+                                )
+                            }
+                            items(currentBoard.blocked, key = { "blocked-${it.item.id}" }) { entry ->
+                                BlockedRow(
+                                    entry = entry,
+                                    dark = dark,
+                                    onOpen = { onOpenItem(entry.item.id) },
+                                    onAct = { action -> act(entry.item.id, action) },
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            // #537: the now-surface panes — waste/weekend/vacation/race —
-            // below the queue, the same placement the web's own aside
-            // stacks into at 390px (this issue's own "the parity reference,
-            // not a simplification" line). Rendered whatever the queue's
-            // own state is (loading, empty, populated): the panes are a
-            // separate crossing ([NowViewModel.loadPanes]) with their own
-            // section, never gated on the board's.
-            NowPaneSection(panes)
+                // #537: the now-surface panes — waste/weekend/vacation/race
+                // — below the queue, the same placement the web's own aside
+                // stacks into at 390px (this issue's own "the parity
+                // reference, not a simplification" line). Appended whatever
+                // the queue's own state above was (loading, empty,
+                // populated): the panes are a separate crossing
+                // ([NowViewModel.loadPanes]), never gated on the board's.
+                nowPaneSection(panes)
+            }
         }
     }
 }
