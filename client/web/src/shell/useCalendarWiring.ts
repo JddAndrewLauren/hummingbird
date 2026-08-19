@@ -73,14 +73,13 @@ const TIMER_INTERVAL_MS = 15 * 60 * 1000;
 // `useSyncWiring.ts`'s existing unconditional 30-second `nowMs` is the one
 // clock the Now screen gets.
 
-// Still gates the "Google calendar" section's rendering in Settings
-// (`SettingsScreen.tsx` imports this) even though the authority-backed
-// `TokenClient` below needs no client id at all — it authenticates with the
-// device token, not this. What this gate should mean now that nothing left
-// in the browser talks to Google directly is #585's question ("Settings
-// tells the truth about what a calendar connection needs"), not this
-// slice's.
-export const GOOGLE_CLIENT_ID: string | undefined = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+// #585 answered the question the comment above used to ask: the calendar
+// section's Settings gates now key off whether this device holds a device
+// token (`SettingsScreen.tsx`'s `taskTokenState`), since that is what
+// authorises `POST /api/google/calendar_token` — not `VITE_GOOGLE_CLIENT_ID`,
+// which nothing in this file, or anywhere left in `client/web`, reads any
+// more. The variable itself and its Actions/Google-console plumbing are
+// #586's charter ("retire the browser OAuth client").
 
 let cachedTokenClient: TokenClient | null = null;
 let cachedTaskTokenStore: TaskTokenStoreLike | null = null;

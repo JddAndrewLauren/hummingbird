@@ -23,7 +23,6 @@ import type { DemoData } from "../fixtures/demo";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
 import { effectiveCalendarIds, tripsCalendarId } from "../calendar/selection";
-import { GOOGLE_CLIENT_ID } from "../shell/useCalendarWiring";
 import {
   deadLetterHeading,
   syncStatusLabel,
@@ -352,9 +351,9 @@ export interface SettingsScreenProps {
   /** True only when `calendar` is the board world's fixture (#452, piece 4),
    * never for a live `CalendarState` — `demo` (above) stays `null` in that
    * world (the two worlds are mutually exclusive, `demo.test.ts`), so the
-   * calendar card needs its own signal to bypass the `GOOGLE_CLIENT_ID`/
-   * `status` gates below, which describe the live wiring's preconditions and
-   * mean nothing for a fixture that was never fetched through it. It also
+   * calendar card needs its own signal to bypass the device-token/`status`
+   * gates below, which describe the live wiring's preconditions and mean
+   * nothing for a fixture that was never fetched through it. It also
    * routes the card's toggles to the local demo copy — through
    * `onSelectionChange` they would persist fixture ids to the real device
    * selection and poll Google for calendars that do not exist. */
@@ -447,8 +446,11 @@ export function SettingsScreen({
     <TwoColumn>
       <Column>
         <Section title="Calendar context">
-          {!calendarIsDemo && !GOOGLE_CLIENT_ID ? (
-            <Note>Calendar context is unavailable: this build has no Google client id.</Note>
+          {!calendarIsDemo && taskTokenState === "unset" ? (
+            <Note>
+              Calendar context is unavailable: this device has no device token, and a token is
+              what authorises polling. Enter one under "device token" to opt this device in.
+            </Note>
           ) : !calendarIsDemo && status !== "ready" ? (
             <Note>Calendar context is unavailable until the local core loads.</Note>
           ) : demo || hasCalendars ? (
@@ -598,7 +600,7 @@ export function SettingsScreen({
           ) : null}
         </Card>
 
-        {status === "ready" && GOOGLE_CLIENT_ID ? (
+        {status === "ready" && taskTokenState !== "unset" ? (
           <>
             <span className="hb-meta">google calendar</span>
             <Card
@@ -609,11 +611,15 @@ export function SettingsScreen({
                   replaces the ordinary sentence rather than joining it: the
                   app has stopped retrying, and saying only "the credential no
                   longer works" would leave the reader waiting for a recovery
-                  that is never coming. `calendar/remint-health.ts` decides. */}
+                  that is never coming. `calendar/remint-health.ts` decides.
+                  ADR-0028: the credential that can go bad now is the
+                  server-held `GOOGLE_CALENDAR_REFRESH_TOKEN`, not anything
+                  this browser holds, so the blocked sentence names that and
+                  points at the operator rather than at a browser session. */}
               {calendar.connected && calendar.needsReconnect ? (
                 <p style={{ font: "var(--type-body-sm)", color: "var(--status-warn-fg)" }}>
                   {calendar.silentRemintBlocked
-                    ? "The credential no longer works, and renewing it in the background has stopped working too — this browser will not hand the session over without you. The last snapshot is still showing, and stays honest about its age. Reconnect when you want it live again."
+                    ? "The credential no longer works, and renewing it in the background has stopped working too — the server-held Google credential needs attention, most likely a revoked refresh token. Ask the operator to check it. The last snapshot is still showing, and stays honest about its age. Reconnect once it's fixed."
                     : "The credential no longer works. The last snapshot is still showing, and stays honest about its age."}
                 </p>
               ) : null}
@@ -624,6 +630,10 @@ export function SettingsScreen({
               {calendar.connectError !== null ? (
                 <ConnectError error={calendar.connectError} />
               ) : null}
+              {/* #585: there is no sign-in any more — consent happened once
+                  in the operator's terminal (ADR-0028) — so the button reads
+                  as what it does, opting this one device into polling,
+                  never as a login. */}
               {!calendar.connected ? (
                 <Button
                   iconLeft="calendar-clock"
@@ -632,7 +642,7 @@ export function SettingsScreen({
                   loading={calendar.connectPending}
                   disabled={calendar.connectPending}
                 >
-                  Connect Google Calendar
+                  Poll Google Calendar on this device
                 </Button>
               ) : calendar.needsReconnect ? (
                 <Button
@@ -642,7 +652,7 @@ export function SettingsScreen({
                   loading={calendar.connectPending}
                   disabled={calendar.connectPending}
                 >
-                  Reconnect Google Calendar
+                  Retry polling on this device
                 </Button>
               ) : (
                 <Button
