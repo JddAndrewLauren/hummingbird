@@ -68,6 +68,23 @@ class BottomNavStructuralTest {
     private fun route(entry: NavEntry): String =
         routesConsts[entry.routeConst] ?: error("Routes.${entry.routeConst} is not a const val")
 
+    /** `Routes`' top-level screens: every `const val` whose value carries no
+     * `{…}` placeholder — a detail/takeover route (`ALERT_DETAIL`,
+     * `ITEM_DETAIL`, `GRILL`) is parameterised and reached by `navigate(...)`
+     * from inside a screen, never from the bar or the sheet, so it is not
+     * part of this nav form's universe at all. */
+    private val topLevelScreenConsts: Set<String> by lazy {
+        routesConsts.filterValues { !it.contains("{") }.keys
+    }
+
+    /** The nav form's own exception list: a top-level screen `Routes`
+     * already declares but this issue deliberately leaves off both the bar
+     * and the sheet, because its reachability is a later slice's job
+     * (`MainActivity.kt`'s own `Routes` doc). Named and explicit so a THIRD
+     * screen quietly joining this set — rather than landing in
+     * `NavDestination` — fails loudly instead of passing by construction. */
+    private val deferredToLaterSlice = setOf("RULES", "SETTINGS") // #541
+
     @Test
     fun `the bar carries exactly the web's four acting surfaces`() {
         val androidBar = navDestinations.filter { it.onBar }.map { route(it) }.toSet()
@@ -76,13 +93,33 @@ class BottomNavStructuralTest {
     }
 
     @Test
-    fun `bar and sheet together cover every route this nav form carries, with nothing doubled`() {
+    fun `bar and sheet, plus the named #541 exceptions, cover every top-level screen Routes declares`() {
+        // The AC's real claim: nothing may go missing from `Routes`
+        // silently. A tenth screen added there now fails this test until it
+        // lands on the bar, in the sheet, or on `deferredToLaterSlice` —
+        // which is itself a change someone has to make and justify, not a
+        // side effect of `NavDestination`'s own filter/filterNot partition.
+        val navDestinationConsts = navDestinations.map { it.routeConst }.toSet()
+        assertEquals(
+            "every Routes top-level screen must be on the bar, in the sheet, or named in " +
+                "deferredToLaterSlice (#541) — dropping off all three is the silent failure " +
+                "this test exists to catch",
+            topLevelScreenConsts,
+            navDestinationConsts + deferredToLaterSlice,
+        )
+        assertTrue(
+            "the exception list itself must still be pending — remove an entry once #541 " +
+                "wires its reachability, rather than leaving a satisfied exception behind",
+            deferredToLaterSlice.all { it !in navDestinationConsts },
+        )
+    }
+
+    @Test
+    fun `no route sits on both the bar and in the sheet`() {
         val bar = navDestinations.filter { it.onBar }.map { route(it) }
         val overflow = navDestinations.filterNot { it.onBar }.map { route(it) }
-        val everyRoute = navDestinations.map { route(it) }
-
-        assertEquals((bar + overflow).sorted(), everyRoute.sorted())
-        assertEquals(everyRoute.size, everyRoute.toSet().size)
+        assertTrue(bar.intersect(overflow.toSet()).isEmpty())
+        assertEquals((bar + overflow).size, (bar + overflow).toSet().size)
     }
 
     @Test
@@ -97,6 +134,20 @@ class BottomNavStructuralTest {
             assertTrue(
                 "route string \"$routeString\" is missing from Routes",
                 routesConsts.containsValue(routeString),
+            )
+        }
+        // The reverse direction the test's own name promises: every
+        // registered composable() for a top-level screen must be reachable
+        // from `NavDestination` (bar, sheet) or be named in the exception
+        // list — the same guard as the coverage test above, restated as
+        // "every composable, not just every route string".
+        for (routeConst in topLevelScreenConsts) {
+            val reachable = routeConst in navDestinations.map { it.routeConst } ||
+                routeConst in deferredToLaterSlice
+            assertTrue(
+                "Routes.$routeConst has a composable() but is reachable from neither the bar, " +
+                    "the sheet, nor deferredToLaterSlice",
+                reachable,
             )
         }
     }

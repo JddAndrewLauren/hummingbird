@@ -123,15 +123,23 @@ class TriageScreenStructuralTest {
     }
 
     @Test
-    fun `the triage route is registered and deliberately unreachable`() {
+    fun `the triage route is registered and reachable from the bottom nav bar`() {
         val main = source("MainActivity.kt")
         assertTrue(
             "MainActivity must register the triage route",
             main.contains("composable(Routes.TRIAGE)"),
         )
-        // #532 owns reachability. Until then nothing navigates here.
+        // #532 gave it a home: `NavDestination.TRIAGE` with `onBar = true`
+        // is the one route list generating the bottom bar, so Triage is
+        // reachable through it — never through a second, ad-hoc
+        // `navigate(Routes.TRIAGE)` call, which would be a hand-rolled
+        // door for a screen the bar already carries.
+        assertTrue(
+            "TRIAGE must be a NavDestination entry with onBar = true",
+            Regex("""TRIAGE\(Routes\.TRIAGE,\s*"[^"]*",\s*onBar\s*=\s*true\)""").containsMatchIn(main),
+        )
         assertFalse(
-            "nothing may navigate to Routes.TRIAGE until #532 gives it a home",
+            "no ad-hoc navigate(Routes.TRIAGE) — the bottom nav's goToTab is the one door",
             main.contains("navigate(Routes.TRIAGE)"),
         )
     }

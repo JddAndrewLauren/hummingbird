@@ -225,6 +225,11 @@ tasks.withType<Test>().configureEach {
     // editing a hex here leaves the gate UP-TO-DATE just the same.
     inputs.file(File(repoRoot, "client/android/app/src/main/res/values/colors.xml"))
         .withPropertyName("launcherColorsXml")
+    // Same freshness fix for BottomNavStructuralTest (#532): nav-bar.ts
+    // sits outside this Gradle project too, and a change to the web's
+    // ON_THE_BAR set would otherwise leave the bar-set pin UP-TO-DATE.
+    inputs.file(File(repoRoot, "client/web/src/shell/nav-bar.ts"))
+        .withPropertyName("navBarTs")
 }
 
 // ---------------------------------------------------------------------------
