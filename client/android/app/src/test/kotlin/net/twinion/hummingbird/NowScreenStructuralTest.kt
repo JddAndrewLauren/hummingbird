@@ -194,4 +194,60 @@ class NowScreenStructuralTest {
             actionsBlock.contains("FlowRow("),
         )
     }
+
+    // ------------------------------------------------------ panes (#537)
+
+    @Test
+    fun `NowViewModel closes over the real pane-lane and do-date-write bindings, not fakes`() {
+        val factory = Regex("""fun create\(context: Context\)[\s\S]*?\n {4}}""")
+            .find(nowViewModelSrc)
+            ?.value
+            ?: error("could not locate NowViewModel.create in the source")
+        for (call in listOf(".paneZoneQueries(", ".rankPanes(", ".setScheduledDate(")) {
+            assertTrue(
+                "NowViewModel.create must reach CoreHolder.get(...)$call",
+                factory.contains(call),
+            )
+        }
+        assertTrue(
+            "the zone bridge's resolve leg must run through ZoneBridge.resolve",
+            nowViewModelSrc.contains("ZoneBridge.resolve("),
+        )
+    }
+
+    @Test
+    fun `nowPaneLabels when over MobileStandingQuestion is exhaustive with no else arm`() {
+        val block = Regex("""nowPaneLabel\(pane: MobileRankedPane\): String = when \(pane\.standingQuestion\) \{([\s\S]*?)\n}""")
+            .find(nowScreenSrc)
+            ?.groupValues
+            ?.get(1)
+            ?: error("could not locate nowPaneLabel's when block in NowScreen.kt")
+        assertFalse("nowPaneLabel must not carry an else arm", block.contains("else ->"))
+        for (variant in listOf("WASTE", "WEEKEND", "VACATION", "RACE", "KIMI", "GITHUB", "UPTIME", "REACHABILITY")) {
+            assertTrue(
+                "nowPaneLabel is missing the $variant arm",
+                block.contains("MobileStandingQuestion.$variant"),
+            )
+        }
+    }
+
+    @Test
+    fun `the pane section renders through the shared shell, never a second implementation`() {
+        assertTrue(
+            "NowScreen.kt must render its panes through the shared RankedPaneList",
+            nowScreenSrc.contains("RankedPaneList(panes"),
+        )
+        assertFalse(
+            "NowScreen.kt must not re-declare its own PaneRow",
+            nowScreenSrc.contains("fun PaneRow("),
+        )
+    }
+
+    @Test
+    fun `the panes section carries no local comparator over the seams own display order`() {
+        assertFalse(
+            "the panes list must not be re-sorted locally",
+            Regex("""panes\.sorted(By|With)?\(""").containsMatchIn(nowScreenSrc),
+        )
+    }
 }

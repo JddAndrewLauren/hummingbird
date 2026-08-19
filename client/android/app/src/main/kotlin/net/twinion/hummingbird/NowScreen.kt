@@ -51,6 +51,8 @@ import net.twinion.hummingbird.ui.theme.Ember500
 import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
 import net.twinion.hummingbird.ui.theme.UrgencySoonDark
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
+import uniffi.hummingbird_ffi_mobile.MobileRankedPane
+import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 import uniffi.hummingbird_ffi_mobile.NowBlockedEntryRecord
 import uniffi.hummingbird_ffi_mobile.NowItemRecord
@@ -196,6 +198,39 @@ private fun blockedReasonLabel(titles: List<String>): String = when (titles.size
  * `FrontierColumns.tsx`, ported verbatim. */
 private const val COLUMN_CAP = 6
 
+/** One Now-surface pane's label, from its [MobileStandingQuestion] —
+ * `StatusScreen.kt`'s own `paneLabel`, this surface's twin: a rendering
+ * choice, never a decision. The Status four's arms cannot reach a
+ * Now-surface list (`rank_panes(Now, ..)` never emits them, `panes::mod`'s
+ * own test); named individually rather than behind a wildcard so a real
+ * ninth question still trips this `when`. */
+private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQuestion) {
+    MobileStandingQuestion.WASTE -> "Bin collection"
+    MobileStandingQuestion.WEEKEND -> "This weekend"
+    MobileStandingQuestion.VACATION -> "Next trip"
+    MobileStandingQuestion.RACE -> "Next race — ${pane.subjectKey}"
+    MobileStandingQuestion.KIMI,
+    MobileStandingQuestion.GITHUB,
+    MobileStandingQuestion.UPTIME,
+    MobileStandingQuestion.REACHABILITY ->
+        error("a Status-surface question reached the Now screen: ${pane.standingQuestion}")
+}
+
+/** Now's own standing-question panes (#537), below the queue — through the
+ * same [RankedPaneList]/[PaneRow] shell `StatusScreen.kt` renders its own
+ * four through (`PaneShell.kt`). Renders nothing while [panes] is empty
+ * (the pre-first-load state, [NowViewModel.panes]'s own doc) rather than an
+ * empty-state card: unlike the queue, "no panes yet" is never a fact worth
+ * reporting on its own, only a moment before the first crossing lands. */
+@Composable
+private fun NowPaneSection(panes: List<MobileRankedPane>) {
+    if (panes.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("This week", style = MaterialTheme.typography.titleMedium)
+        RankedPaneList(panes, paneLabel = ::nowPaneLabel)
+    }
+}
+
 @Composable
 fun NowScreen(
     onShowStatus: () -> Unit,
@@ -213,10 +248,15 @@ fun NowScreen(
     val collapsed by viewModel.collapsed.collectAsState()
     val expanded by viewModel.expanded.collectAsState()
     val loading by viewModel.loading.collectAsState()
+    val panes by viewModel.panes.collectAsState()
     val dark = isSystemInDarkTheme()
 
     suspend fun reload() {
         viewModel.refresh(nowDeadlineShaped())
+        // #537: the Now surface's own panes reload alongside the queue —
+        // one crossing, `MobileSurface.NOW`'s own board sibling — rather
+        // than a second, independently-timed refresh cadence.
+        viewModel.loadPanes(System.currentTimeMillis())
     }
 
     // Foreground refresh on every return to this screen — independent of
@@ -233,7 +273,12 @@ fun NowScreen(
     // own first iteration rather than a rival to it.
     LifecycleResumeEffect(Unit) {
         val resumed = scope.launch {
-            if (viewModel.loadedOnce) reload() else viewModel.load(nowDeadlineShaped())
+            if (viewModel.loadedOnce) {
+                reload()
+            } else {
+                viewModel.load(nowDeadlineShaped())
+                viewModel.loadPanes(System.currentTimeMillis())
+            }
         }
         onPauseOrDispose { resumed.cancel() }
     }
@@ -390,6 +435,15 @@ fun NowScreen(
                     }
                 }
             }
+
+            // #537: the now-surface panes — waste/weekend/vacation/race —
+            // below the queue, the same placement the web's own aside
+            // stacks into at 390px (this issue's own "the parity reference,
+            // not a simplification" line). Rendered whatever the queue's
+            // own state is (loading, empty, populated): the panes are a
+            // separate crossing ([NowViewModel.loadPanes]) with their own
+            // section, never gated on the board's.
+            NowPaneSection(panes)
         }
     }
 }
