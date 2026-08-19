@@ -4,11 +4,9 @@
 # `hb.twinion.net` as its Custom Domain, straight from the checked-in
 # `routes` in client/web/wrangler.toml.
 #
-# `VITE_GOOGLE_CLIENT_ID` is set and the shipped bundle carries the calendar
-# opt-in surface. Note the ordering that mattered: Vite substitutes `VITE_*`
-# at BUILD time, so the secret has to exist before the deploy that is meant
-# to carry it — set it after, and the live bundle keeps the (correct, but
-# unwanted) never-opted-in state until something triggers another deploy.
+# #586: the browser OAuth client (`VITE_GOOGLE_CLIENT_ID`) is retired —
+# nothing in `client/web` reads it any more, since the authority mints the
+# calendar token server-side (ADR-0028). This workflow no longer sets it.
 name: deploy-client
 
 # `workflow_dispatch` is here so a deploy can be re-run on demand without
@@ -95,18 +93,8 @@ jobs:
       - name: web typecheck
         working-directory: client/web
         run: pnpm run typecheck
-      # Vite substitutes `VITE_*` at BUILD time, and App.tsx gates the whole
-      # calendar opt-in surface on `VITE_GOOGLE_CLIENT_ID` — without this the
-      # deployed bundle has no Connect button, picker, or tile at all
-      # (issue #73). The secret holds the Web-application OAuth client id
-      # registered against hb.twinion.net; see client/web/.env.example. It is
-      # not a secret in the cryptographic sense (an OAuth client id ships in
-      # the bundle either way) — it lives in Actions secrets only to keep the
-      # deployment's client id out of the repository.
       - name: web build (wasm core + PWA shell)
         working-directory: client/web
-        env:
-          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
         run: pnpm run build
       - uses: actions/upload-artifact@v4
         with:
