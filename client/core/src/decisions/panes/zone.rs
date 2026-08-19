@@ -183,6 +183,15 @@ impl ZoneFacts {
     pub fn insert(&mut self, query: &ZoneQuery, fact: ZoneFact) {
         self.0.insert(query.key(), fact);
     }
+
+    /// Builds a whole table from pre-keyed facts — the shape a typed seam
+    /// (uniffi, which cannot hand back a [`ZoneQuery`] it never carried a
+    /// full one of, only the [`ZoneQuery::key`] it paired an answer with)
+    /// already has. Equivalent to inserting each pair by hand, but without
+    /// requiring a caller to reconstruct a [`ZoneQuery`] it does not have.
+    pub fn from_keyed(facts: HashMap<String, ZoneFact>) -> ZoneFacts {
+        ZoneFacts(facts)
+    }
 }
 
 #[cfg(test)]
