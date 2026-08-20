@@ -117,9 +117,11 @@ bottom-nav idiom: each tab keeps its own back stack across switches rather
 than stacking a fresh copy of Now underneath every visit.
 
 `routes` (#541) renders its **live empty state only** — "No routes yet" —
-because `client/ffi-mobile/src/lib.rs` exposes no Route query at all yet;
-the web's own populated `RoutesScreen.tsx` branch reads a demo fixture with
-no live counterpart, and parity with a fixture is not parity. The sheet also
+because `client/ffi-mobile/src/lib.rs` exposes no Route query at all yet.
+The web no longer has a Routes screen to reach parity with: #624 replaced
+its demo-fixture mock with a real **Projects** page against live state, and
+#449 puts Android explicitly out of scope for that lane, so this screen
+stays as it is until a mobile-seam Route read exists to feed it. The sheet also
 carries a Recall entry (#541) below the screen list, deliberately outside
 `NavDestination` — a gesture, not a screen, the same distinction the web's
 `onSearch` row holds by sitting outside `NAV_BAR_OVERFLOW`. #541 shipped its

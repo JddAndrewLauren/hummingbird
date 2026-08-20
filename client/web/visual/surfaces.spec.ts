@@ -285,19 +285,27 @@ async function expectNoHorizontalOverflow(page: Page) {
 // `SCREEN_LABELS` already applies to nav names, and the reason this registry
 // imports `SCREENS`/`Screen` from the app rather than restating the list.
 //
-// Routes and Alerts are KIT-ONLY, deliberately asserted as such rather than
-// skipped: neither screen reads `TaskState` at all — since #457 each calls
-// its own dev-gated `demoData()` directly (`RoutesScreen.tsx`,
-// `AlertsScreen.tsx`), taking no `demo` prop from `App.tsx` at all — so
-// under `?demo` (the board world) both always render the same honest empty
-// state an unseeded device would. Asserting that specific text — not merely
-// "the screen renders" — is what would force this registry to change the
-// day either screen is wired to the board seed instead of leaving the gap
-// silently papered over. Their KIT-populated renders (fixture rule cards,
-// fixture checklist rows) are no longer photographed by this gate at all
-// since #455 retired the kit-world capture pass; that half of the gap is now
-// covered by `RoutesScreen.test.tsx` and `AlertsScreen.test.tsx` (#457)
-// instead, per `docs/SURFACES.md`.
+// Alerts is KIT-ONLY, deliberately asserted as such rather than skipped: it
+// does not read `TaskState` at all — since #457 it calls its own dev-gated
+// `demoData()` directly (`AlertsScreen.tsx`), taking no `demo` prop from
+// `App.tsx` — so under `?demo` (the board world) it always renders the same
+// honest empty state an unseeded device would. Asserting that specific text
+// — not merely "the screen renders" — is what would force this registry to
+// change the day the screen is wired to the board seed instead of leaving
+// the gap silently papered over. Its KIT-populated render (fixture rule
+// cards) is no longer photographed by this gate at all since #455 retired
+// the kit-world capture pass; that half of the gap is covered by
+// `AlertsScreen.test.tsx` (#457) instead, per `docs/SURFACES.md`.
+//
+// Routes was the second such screen and is gone (#624): `ProjectsScreen`
+// replaced it, reads `TaskState` on every world and takes no `demo` prop at
+// all. Unlike Done and the Ledger it does NOT photograph a holding state
+// under `?demo`: `useFrontierWiring` requests `projects` app-wide the moment
+// the core is ready, on every world, so an unseeded world captures a real,
+// empty answer ("No projects yet") rather than "not read yet". Under the
+// board world it photographs the real grid off the fixture's seeded projects
+// — which is why `demo-task-state.ts` seeds three (its departure 4) rather
+// than production's measured zero.
 type ScreenAssertion = (page: Page) => Promise<void>;
 
 const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
@@ -339,8 +347,12 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // grilling`, never the old "N unsorted" phrasing.
     await expect(page.getByText("17 captured · 1 grilling")).toBeVisible();
   },
-  routes: async (page) => {
-    await expect(page.getByRole("heading", { level: 2, name: "No routes yet" })).toBeVisible();
+  projects: async (page) => {
+    // A seeded card by NAME, not merely "the grid rendered": the fixture's
+    // departure 4 exists precisely so this cannot pass on an empty screen.
+    await expect(page.getByRole("heading", { level: 3, name: "House repairs" })).toBeVisible();
+    // Archived is hidden until the toggle, so the third seed must NOT be here.
+    await expect(page.getByRole("heading", { level: 3, name: "Sell the old bike" })).toHaveCount(0);
   },
   alerts: async (page) => {
     await expect(page.getByRole("heading", { name: "Live" })).toBeVisible();
@@ -462,6 +474,27 @@ for (const theme of THEMES) {
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/capture-popover-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+    });
+
+    test("projects: the dossier behind the grid", async ({ page }, testInfo) => {
+      // #624. The per-screen board capture above only ever photographs the
+      // GRID — `ProjectsScreen` opens the dossier on local state, so the
+      // second of its two levels is unreachable without a click, and would
+      // otherwise ship unphotographed at every width and in both themes. The
+      // dossier is mostly labelled empty regions this slice deliberately does
+      // not fill (#625–#630 do), so what this proves is that the frame, the
+      // two-column skeleton and the back affordance survive the phone form —
+      // exactly where a `TwoColumn` is most likely to overflow.
+      await openApp(page, theme, "board");
+      await show(page, "Projects", testInfo.project.name);
+      await page.getByRole("heading", { level: 3, name: "House repairs" }).click();
+      await expect(page.getByRole("heading", { level: 2, name: "House repairs" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "All projects" })).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/projects-dossier-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
     });

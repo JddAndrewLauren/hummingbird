@@ -8,8 +8,9 @@
 // so `pnpm dev` still shows the honest empty states by default.
 //
 // The kit world's own accessor, `demoData()`, moved to `fixtures/demo-data.ts`
-// in #457 — colocated with `DEMO_DATA`, and called directly by `RoutesScreen`
-// and `AlertsScreen` rather than threaded through `App.tsx` as a `demo` prop.
+// in #457 — colocated with `DEMO_DATA`, and called directly by `AlertsScreen`
+// (its only caller since #624 deleted `RoutesScreen`) rather than threaded
+// through `App.tsx` as a `demo` prop.
 // This module now holds only the board world's two accessors.
 
 import { buildDemoCalendarState } from "./demo-calendar";
@@ -33,9 +34,9 @@ import type { CalendarState, TaskState } from "../store/store";
  * Deliberately mutually exclusive with `demo-data.ts`'s `demoData()` —
  * `?demo=board` (and every spelling but `?demo=kit`) returns a state here and
  * `null` there, `demoMode()`'s whole mechanism. `App.tsx`'s
- * `task = demoTask ?? liveTask` is what makes every screen but Routes and
- * Alerts (#457, its own dev-gated `demoData()` reader) take its real render
- * path against this seed. */
+ * `task = demoTask ?? liveTask` is what makes every screen but Alerts (#457,
+ * its own dev-gated `demoData()` reader) take its real render path against
+ * this seed. */
 export function demoTaskState(): TaskState | null {
   if (!import.meta.env.DEV) {
     return null;

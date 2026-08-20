@@ -5,7 +5,7 @@
 export type Screen =
   | "now"
   | "triage"
-  | "routes"
+  | "projects"
   | "alerts"
   | "rules"
   | "done"
@@ -22,7 +22,7 @@ export type Screen =
 export const SCREENS: readonly Screen[] = [
   "now",
   "triage",
-  "routes",
+  "projects",
   "alerts",
   "rules",
   "done",
@@ -46,7 +46,7 @@ export const SCREENS: readonly Screen[] = [
 export const SCREEN_LABELS: Record<Screen, string> = {
   now: "Now",
   triage: "Triage",
-  routes: "Routes",
+  projects: "Projects",
   alerts: "Alerts",
   rules: "Rules",
   done: "Done",
@@ -60,7 +60,7 @@ export const SCREEN_LABELS: Record<Screen, string> = {
 export const SCREEN_TITLES: Record<Screen, string> = {
   now: "What's next",
   triage: "Triage",
-  routes: "Routes",
+  projects: "Projects",
   alerts: "Alerts",
   rules: "Rules",
   done: "Done",

@@ -151,6 +151,20 @@ export interface TaskRuleResult {
   error: string | null;
 }
 
+/** The result of the most recent project create request this view issued
+ * (#624), matched back by `seed` — same broadcast-recognition contract as
+ * [`TaskRuleResult`]. `projectId` is `null` for a `"failed"` create that
+ * never reached `Core::create_project` (no id was ever minted). `"ok"` means
+ * *enqueued*, not *saved*: there is no optimistic overlay, so the project
+ * reaches [`TaskState.projects`] only on the next completed cycle, and a
+ * caller holding this id must say it is waiting until it appears there. */
+export interface TaskProjectResult {
+  seed: string;
+  projectId: string | null;
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -170,8 +184,22 @@ export interface TaskState {
    * "only what was asked for" shape `pending` already uses. */
   stepsByItem: Record<string, StepDTO[]>;
   /** Every live project — resolves the frontier's "grouped by project"
-   * display to real names (issue #108, PR #200 review). */
-  projects: ProjectDTO[];
+   * display to real names (issue #108, PR #200 review), and the Projects
+   * grid's own read (#624). `null` until the first `projects` answer
+   * arrives, for the same reason as `ledger`/`rules`: `task-worker.ts` drops
+   * a `"busy"` project read rather than posting an empty one, so without
+   * `null` an unloaded core and a device with genuinely no projects are
+   * indistinguishable — and the grid would claim "no projects yet" before
+   * anything had been read. */
+  projects: ProjectDTO[] | null;
+  /** The archived projects, arriving on the same `projects` answer as the
+   * live ones above and kept in their own list rather than merged into it
+   * (#624). Only the Projects grid's Show-archived toggle reads this: every
+   * project *picker* in the app renders `projects`, and an archived project
+   * offered there as a destination would be a bug. `null` on the same
+   * not-read-yet contract as `projects`, and never non-`null` while
+   * `projects` is `null` — one answer sets both. */
+  archivedProjects: ProjectDTO[] | null;
   /** The complete retained roster — every item the mirror has ever known,
    * archived rows included and labelled (`getLedger`). `null` until the
    * first `ledger` answer arrives, for `bindings`'s own reason: an empty
@@ -204,6 +232,9 @@ export interface TaskState {
   /** The result of the most recent rule create/patch request this view
    * issued (#140) — `null` until the first one resolves. */
   lastRuleWrite: TaskRuleResult | null;
+  /** The result of the most recent project create this view issued (#624) —
+   * `null` until the first one resolves. */
+  lastProjectWrite: TaskProjectResult | null;
   /** Every standing question's pane read (#245, ADR-0015), keyed by source —
    * the `stepsByItem` shape: starts `{}` and only ever grows the sources a
    * view actually asked about via `getPaneRead`, never a full mirror of
@@ -342,7 +373,8 @@ const initialTaskState: TaskState = {
   grillingItems: [],
   blocked: [],
   stepsByItem: {},
-  projects: [],
+  projects: null,
+  archivedProjects: null,
   ledger: null,
   search: null,
   done: null,
@@ -350,6 +382,7 @@ const initialTaskState: TaskState = {
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
+  lastProjectWrite: null,
   paneReads: {},
   pending: {},
   lastCapture: null,

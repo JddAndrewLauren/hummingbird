@@ -1,6 +1,7 @@
 import type { HTMLAttributes } from "react";
 import {
   Activity,
+  ArrowLeft,
   ArrowUpRight,
   Bell,
   BellOff,
@@ -15,6 +16,7 @@ import {
   Download,
   Ellipsis,
   Feather,
+  FolderKanban,
   Flag,
   HelpCircle,
   Inbox,
@@ -59,6 +61,10 @@ import {
 // an icon missing from the map is a type error rather than a blank box.
 export const ICON_MAP = {
   activity: Activity,
+  // #624: the Projects dossier's back affordance. `chevron-down` is the
+  // disclosure glyph and says nothing about going back; this is a
+  // navigation move, so it gets the navigation arrow.
+  "arrow-left": ArrowLeft,
   "arrow-up-right": ArrowUpRight,
   bell: Bell,
   "bell-off": BellOff,
@@ -73,6 +79,9 @@ export const ICON_MAP = {
   download: Download,
   ellipsis: Ellipsis,
   feather: Feather,
+  // #624: the Projects screen's nav glyph, replacing `route`'s. A project
+  // is a board of actions with a Route on it, not the Route itself.
+  "folder-kanban": FolderKanban,
   flag: Flag,
   "help-circle": HelpCircle,
   inbox: Inbox,

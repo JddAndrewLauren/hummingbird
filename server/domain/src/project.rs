@@ -20,7 +20,10 @@ pub struct Project {
 
 /// The Route of a project (glossary: Destination, Fog, Notes, ordered
 /// actions). 1:1 with `projects` — the row is inserted by project create
-/// and only ever patched; `/to-actions` owns its content.
+/// and only ever patched. Its content is **shared-owned** (ADR-0030
+/// decision 1, which withdrew the sole-ownership claim this comment used to
+/// make for `/to-actions`): the skill and any client may both write it, and
+/// the ordinary CAS `expected_version` arbitrates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Route {
     pub project_id: String,

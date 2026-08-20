@@ -440,7 +440,7 @@ function RealFrontier({
           <TriageRow
             key={selectedCapture.id}
             item={selectedCapture}
-            projects={task.projects}
+            projects={task.projects ?? []}
             expanded
             onToggle={onCloseItemDetail}
             nowMs={nowMs}
@@ -458,7 +458,7 @@ function RealFrontier({
             key={selectedItem.id}
             mode="detail"
             item={selectedItem}
-            projects={task.projects}
+            projects={task.projects ?? []}
             steps={task.stepsByItem[selectedItem.id] ?? []}
             onClose={onCloseItemDetail}
             onAct={(action) => {
@@ -528,7 +528,7 @@ function RealFrontier({
           triage={task.triageInbox}
           grilling={task.grillingItems}
           draftItemIds={task.grillDraftItemIds}
-          projects={task.projects}
+          projects={task.projects ?? []}
           nowMs={nowMs}
           selectedItemId={selectedItemId}
           onOpenItem={onOpenItem}

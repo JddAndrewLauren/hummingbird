@@ -471,6 +471,9 @@ mod wasm_bindings {
     // *and* its `total` (#478).
     const BUSY_SEARCH: &str = r#"{"kind":"busy","rows":[],"total":0}"#;
     const BUSY_PROJECT_LIST: &str = r#"{"kind":"busy","projects":[]}"#;
+    // #624: same three-way shape as BUSY_CREATE_RULE — busy is "no answer",
+    // distinct from a create this seam refused.
+    const BUSY_CREATE_PROJECT: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     // #118: an empty binding list would read as "nothing is bound", which
     // is an answer — and the wrong one. Busy says nothing at all.
@@ -636,6 +639,27 @@ mod wasm_bindings {
                 }
                 None => BUSY_PROJECT_LIST.to_string(),
             }
+        }
+
+        /// Creates a project (#624). Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
+        /// The name is trimmed and an empty one refused before `Core` is
+        /// reached ([`TaskHostCore::create_project`]). `"ok"` means
+        /// *enqueued*, not *saved* — no optimistic overlay, so `projects()`
+        /// keeps answering the old list until a cycle completes.
+        #[wasm_bindgen(js_name = createProject)]
+        pub fn create_project(&self, seed: String, name: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CREATE_PROJECT));
+                };
+                let response = host.create_project(&seed, &name, now_ms as i64).await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CreateProjectResponse serializes"),
+                ))
+            })
         }
 
         /// The complete retained roster (the Ledger screen's read), as JSON:

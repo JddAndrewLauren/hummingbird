@@ -50,8 +50,8 @@ already photographs.
 | | |
 | --- | --- |
 | **Code root** | `client/web/src/` |
-| **Screens** | `screens/*.tsx` — Now, Triage, Routes, Alerts, Rules, Done, Ledger, Status, Settings |
-| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), and the landmark is named **"Standing questions"** for it (#401, ADR-0021 decision 6: it read `Context` long after the context tile stopped being there, and the word was needed for the centre column's grouping axis) — plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121, `screens/race-pane/` #119 — the first question emitting one pane *per subject*, so the aside's height varies with the `race-series` binding). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Routes). **On the phone form all three of those properties are undone** (`.hb-aside` in `shell/responsive.css`): sticky + `100dvh` + `overflow-y: auto` on a full-width panel below the column would make a nested scroll region, and the reachability problem they solve does not exist once the panel is stacked in the flow — the page scrolls its whole height. The panel now also *reads* as a region rather than as more of the same column: `.hb-aside` carries the design system's `--surface-quiet` wash (the 4% "where a surface needs to recede" tint, and explicitly **not** a card fill — the panel holds cards of its own, and painting it card-coloured would flatten the two elevations into one), plus `--radius-card` and `--space-5` of padding. **The whole aside collapses, and the control that does it is the shell's, not the panel's**: one `IconButton` in `shell/Header.tsx`, between Refresh and New, showing a rotated `chevron-down` while the panel is open and `help-circle` once it is shut — the same slot in both states, because a toggle that lives inside the thing it hides moves when you press it and then has to be found twice. Shut, the aside **unmounts entirely** rather than shrinking to a strip (an `aside` labelled "Standing questions" holding nothing is a landmark that lies to a screen reader), and the centre column takes the freed width — `.hb-two-column` wraps, so the column simply grows. The panel therefore carries no heading and no control of its own; the landmark's `aria-label` is where the name lives for anyone who cannot see it. The state is `App.tsx`'s `asideCollapsed`, held beside `railCollapsed` and persisted device-locally by `screens/questions/aside-prefs.ts` (open is the default and is stored as key *absence*, the `frontier-prefs.ts` idiom) — **not** `NowScreen`'s, which is controlled here and owns neither the toggle nor the persistence, because the button belongs to the shell and the panel belongs to Now. |
+| **Screens** | `screens/*.tsx` — Now, Triage, Projects, Alerts, Rules, Done, Ledger, Status, Settings |
+| **Now's aside** | `screens/questions/RankedRegion.tsx` — ADR-0015's ranked standing-question region (#245), and the landmark is named **"Standing questions"** for it (#401, ADR-0021 decision 6: it read `Context` long after the context tile stopped being there, and the word was needed for the centre column's grouping axis) — plus each question's own expanded pane (`screens/waste-pane/`, `screens/weekend-pane/` #122, `screens/vacation-pane/` #121, `screens/race-pane/` #119 — the first question emitting one pane *per subject*, so the aside's height varies with the `race-series` binding). It replaced the calendar context tile, so the aside now *grows* with the number of questions: `screens/layout.tsx`'s `Aside` caps at `100dvh` and scrolls itself, which is a change every screen with an aside inherits (Now, Settings, Alerts, Projects). **On the phone form all three of those properties are undone** (`.hb-aside` in `shell/responsive.css`): sticky + `100dvh` + `overflow-y: auto` on a full-width panel below the column would make a nested scroll region, and the reachability problem they solve does not exist once the panel is stacked in the flow — the page scrolls its whole height. The panel now also *reads* as a region rather than as more of the same column: `.hb-aside` carries the design system's `--surface-quiet` wash (the 4% "where a surface needs to recede" tint, and explicitly **not** a card fill — the panel holds cards of its own, and painting it card-coloured would flatten the two elevations into one), plus `--radius-card` and `--space-5` of padding. **The whole aside collapses, and the control that does it is the shell's, not the panel's**: one `IconButton` in `shell/Header.tsx`, between Refresh and New, showing a rotated `chevron-down` while the panel is open and `help-circle` once it is shut — the same slot in both states, because a toggle that lives inside the thing it hides moves when you press it and then has to be found twice. Shut, the aside **unmounts entirely** rather than shrinking to a strip (an `aside` labelled "Standing questions" holding nothing is a landmark that lies to a screen reader), and the centre column takes the freed width — `.hb-two-column` wraps, so the column simply grows. The panel therefore carries no heading and no control of its own; the landmark's `aria-label` is where the name lives for anyone who cannot see it. The state is `App.tsx`'s `asideCollapsed`, held beside `railCollapsed` and persisted device-locally by `screens/questions/aside-prefs.ts` (open is the default and is stored as key *absence*, the `frontier-prefs.ts` idiom) — **not** `NowScreen`'s, which is controlled here and owns neither the toggle nor the persistence, because the button belongs to the shell and the panel belongs to Now. |
 | **Now's centre column** | `screens/NowScreen.tsx`'s `RealFrontier` — the frontier in **columns packed into lanes** (`screens/FrontierColumns.tsx`, grouped by a switchable axis — Context, Project, Size or Energy — over the pure `screens/frontier-columns.ts`; #402, ADR-0021), then Blocked. The **triage process (CONTEXT.md — Triage and Grilling together) is cards in those same columns** rather than a section of their own: `screens/triage-process-order.ts`'s `triageProcessQueue` (#357) combines `TaskState.triageInbox` and `TaskState.grillingItems` — drafts first, then Grilling, then captured Triage — and that ONE ordered read is appended to the ordered frontier before grouping, so each item lands in whichever column the live axis puts it in (the no-value one until something sets that field) and sits **under** that column's startable actions, marked by its own `StageBadge` (`triage` or `grilling`) — the same stage vocabulary the Triage screen's rows use, and not a fourth meaning for colour. This is also Now's own half of the "triage process" queue: the Triage screen renders the identical function over the identical two reads, so the header's exact `captured · grilling` counts and the combined order never drift between the two surfaces. There is now **no independent scroll container in the centre column at all** — the shell's one container scrolls the page — which the columns already assumed: they stack into as many vertical lanes as the measured width affords instead of scrolling sideways, and no column overflows on its own (each caps at six cards with an `n more` toggle). The lane count and the packing are `screens/frontier-lanes.ts` (`laneCountFor`/`packLanes`) — greedy, shortest-lane-first over each column's *rendered row count*, so short columns stack under one another rather than each claiming a full track beside a tall one. It is TS rather than Rust because it consumes a measured pixel width (ADR-0025; that module's header carries the argument, including why CSS multi-column and grid masonry could not deliver it), and an unmeasured board — the first paint, and every jsdom test — falls back to one column per lane, which is the pre-lanes layout. Colour the card itself introduces encodes urgency and nothing else (the stage chip, the priority label and the **size and energy chips** are `ItemRow`'s, and stage is one of the three things the design system lets colour mean; since #446 size and energy are coloured glyphs drawn from their own ramp, which is the cost ADR-0024 decision 2 accepts against ADR-0021 — an amber *mark* on a card can mean due-soon or normal-size, and only the card's own colour still means urgency alone), and the urgency is stated in words too — for the three coloured bands only, since `calm` no longer prints a word any more than it takes a swatch (ADR-0021 decision 2: the default is not a claim) — which made every entry on the card's meta line conditional, so the line itself (`FrontierColumns.tsx`'s `CardMeta`, and `NowScreen.kt`'s guarded meta `Row` on the phone) draws only when it has something on it rather than stranding an empty row's gap under the title — and in text colours, not the swatch's, which is a contrast requirement rather than a taste one. Since #403 each column header collapses **in place** (it keeps its lane's width now rather than shrinking to fit — the packing is what buys the space back, since a collapsed column weighs one row and the lanes rebalance around it) and a Filter button opens a facet panel (context/size/energy/urgency, OR within a facet and AND across) with an `n of m shown` readout; the axis and the collapsed set persist device-locally via `screens/frontier-prefs.ts`, the filter selection deliberately does not, and changing the axis clears the collapsed set. Since #404 **selecting a card is not a takeover**: the item panel expands *above* the columns, which stay mounted and visible under it, with the source card marked (`aria-current` plus an accent fill) and the panel scrolled into view — `RealFrontier` used to return the panel *instead of* the frontier. Selecting a **capture** fills that same slot with `TriageRow` forced open, so S13/#111's "two editors are never open at once" holds by construction — one slot, one editor — and the captures' cards stay on the board whichever kind is open. Both are now the **same component** (`components/domain/ItemPanel.tsx`) in its two modes: `"triage"` stands the fields open and ends in the promotion to Ready plus Grill me (#360: Ready is triage's only destination — an item reaches Grilling exactly one other way, a `fog_remains` Grill verdict), `"detail"` reads as a record until **Edit** reveals the identical fields and saves them through `Core::triage` with `destination: null` (#122's stage-agnostic edit) — before that fold, a minted action's own fields were reachable nowhere in the app. Since #359 `"detail"` also offers **Grill me**/**Resume grill**, gated by `item-actions.ts`'s `canGrill` (now true for Ready and In Progress, not Triage alone) — pressing it replaces this whole centre column with `GrillTakeover`, the identical component Triage's own row opens, while the standing-questions aside beside it (a sibling of this column, not nested inside it) stays mounted throughout; Back closes the takeover and restores focus to the button by DOM id (`NowScreen.tsx`'s `nowGrillMeButtonId`), the same "look it up by id, never a held ref across the unmount" contract `TriageRow.tsx`'s `grillMeButtonId` uses. Clicking the open card again closes it, and Escape closes the panel from anywhere (`shell/capture-hotkey.ts`'s `closesItemDetail`, which yields to the capture popover). Since #418 a **failed write is stated above the columns, naming the item** (`screens/write-failure.ts`), for the case the slot made reachable: the editor that would otherwise wear the failure is unmounted the moment the reader closes the panel. There are **two such lines, not one** — a failed triage and a failed act are separate results in the store (`lastTriage`, `lastAct`), so a shared slot would let one failure hide the other. Each is suppressed while the editor that owns it is what the slot holds — for a triage, either editor, since detail mode says its own failures once it can edit — so no result is ever stated twice; the act line is *not* suppressed for an open capture, whose `TriageRow` renders no act failure though its checkmark issues one. |
 | **Status** | `screens/StatusScreen.tsx` (#311, ADR-0017) — the same `RankedRegion` as Now's aside, instantiated a second time (`surface="status"`) as a single-column screen rather than an aside; three questions read real pollers (`screens/kimi-pane/` #313, `screens/github-pane/` #314, `screens/uptime-pane/` #315), and `screens/reachability-pane/` #316 answers from this device's persisted authority-sync history, with no poller or source of its own. |
 | **Shell** | `shell/Header.tsx` (title, sync pill, Search, Refresh, **the standing-questions toggle** — supplied only on Now, on the same "the affordance appears where it would work" rule as the other two — and New), `shell/NavRail.tsx` (desktop) / `shell/NavBar.tsx` (phone — four screens plus a More sheet, partitioned by `shell/nav-bar.ts`; `App.tsx` mounts exactly one, since two navigation landmarks break the spec's strict-mode `getByRole("navigation")`), `shell/ShellMeta.tsx` (the core-state and build-version lines, in the rail's footer and at the foot of the More sheet — on a phone that sheet and Settings are the only two places the build version is reachable), `shell/CapturePopover.tsx` (the capture box, over any screen), `shell/RecallOverlay.tsx` (**Recall** — #478/#479/#480/#481 — the search overlay, over any screen, reachable from four triggers: the header's Search button, the `/` hotkey, the rail's magnifier and the phone More sheet's entry), `shell/UpdateBanner.tsx` (the "new version — reload" strip, under the header), `screens/layout.tsx`, `shell/responsive.css` |
@@ -62,7 +62,7 @@ already photographs.
 
 ### Matrix
 
-Four widths × two themes × seventeen screen states, per run.
+Four widths × two themes × eighteen screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
@@ -99,13 +99,14 @@ first paint (the app resolves `light | dark | system` onto
 
 Screen states: the nine screens under the default `?demo` — the **board**
 world (#420, #455), a seeded `TaskState` that takes the screens' real render
-path with fictional data in it, deterministic and populated on **seven** of
+path with fictional data in it, deterministic and populated on **eight** of
 the nine, including **Done** and the **Ledger** (#452 grew the seed to cover
 them; before that only the frontier and the triage inbox were seeded, and
-`?demo` meant the design kit besides). **Routes and Alerts are the two
-exceptions**: neither reads `TaskState` at all, so both photograph the same
-honest empty state an unseeded device would — see "Routes and Alerts lost
-their only capture at #455's flip" below. **Status** photographs **ten
+`?demo` meant the design kit besides) and **Projects** (#624's departure 4,
+which is why that screen replacing Routes moved this count). **Alerts is the
+one exception**: it does not read `TaskState` at all, so it photographs the
+same honest empty state an unseeded device would — see "Alerts lost its only
+capture at #455's flip" below. **Status** photographs **ten
 panes** fed by the seed's own `bindings`/`paneReads`
 (`src/fixtures/demo-pane-reads.ts`) — the kit world's own `demo-questions.ts`
 duplicated this before #452 folded its content into the seed, and #455
@@ -316,8 +317,11 @@ it is known to appear in at all.
 alerts ARE photographed** (both of them — the board fixture seeds a failed
 triage and a failed act, and `surfaces.spec.ts` asserts the count rather than
 the first match, which is what caught the second line arriving) — the twelfth
-state, `now-columns-*`. Not by widening the kit world to mount `RealFrontier`,
-which the rejection below still refuses: by a **second demo world**, the
+state, `now-columns-*`, and the reason the count above moved (it has since
+moved again twice: to sixteen for #481's four Recall states below, and to
+eighteen for #637's `rules-list-*` and #624's `projects-dossier-*`). Not by
+widening the kit world to mount `RealFrontier`, which the rejection below
+still refuses: by a **second demo world**, the
 board, which seeds a real `TaskState` (`src/fixtures/demo-task-state.ts`) and
 returns `null` for `DemoData`. `NowScreen` renders `RealFrontier`
 unconditionally since #456 deleted its `demo` prop and the branch it gated;
@@ -331,12 +335,21 @@ is intact — this is the "decided change with its reasoning written down" that
 ADR-0021 decision 8 named as its own condition, and that decision (as amended
 by #420 and again by #455) carries the record. The fixture mirrors
 **production's measured shape and none of its content** (29 cards, its
-context/size/energy/source spread, no projects, no blocked edges), so what
-the gate photographs is the real awkward board rather than a tidy one. Still
-uncovered on this surface and still on the disposition: everything reached
-only by interaction — the axis switch, the facet-filter panel, the collapse
-reflow and the selected-card slot — since the capture is one still frame of
-the default view. The popover is a state rather than a screen — it renders
+context/size/energy/source spread, no blocked edges), so what the gate
+photographs is the real awkward board rather than a tidy one. **Projects is
+the one measured number it deliberately does not mirror** (#624): production
+holds none, and a faithful mirror would hand the Projects grid an empty list
+and photograph an empty screen — so `demo-task-state.ts`'s departure 4 seeds
+three, one archived, and the board assertion names a card rather than
+asserting the grid rendered. Both of that screen's levels are photographed:
+the grid on the per-screen sweep, and the dossier — reachable only by a
+click, since it opens on the screen's own local state — by its own
+`projects-dossier-*` capture, which is what proves the two-column skeleton
+and the back affordance survive the phone form. Still uncovered on this
+surface and still on the disposition: everything reached only by interaction
+— the axis switch, the facet-filter panel, the collapse reflow and the
+selected-card slot — since the capture is one still frame of the default
+view. The popover is a state rather than a screen — it renders
 over whatever is showing (`shell/CapturePopover.tsx`), so no per-screen
 capture ever contains it, and the scrim covering the whole window plus the
 card fitting inside 768 are only decidable with it open. The default `?demo`
@@ -363,21 +376,22 @@ ternaries over `kindRegistry`/`frontier`/`lastRuleWrite`/`onCreateRule`/
 `onPatchRule` — alongside `DemoData` itself), so this board capture is now
 Rules' only render path, `?demo=kit` included.
 
-**Routes and Alerts lost their only capture at #455's flip; #457 closed the
-component-test half of the gap it left.** Neither screen reads `TaskState` at
-all — each now calls its own dev-gated `demoData()` directly
+**Alerts lost its only capture at #455's flip; #457 closed the
+component-test half of the gap it left.** The screen does not read
+`TaskState` at all — it calls its own dev-gated `demoData()` directly
 (`fixtures/demo-data.ts`), never a `demo` prop from `App.tsx` — so under the
-default `?demo` (board) both still always render the honest empty state an
-unseeded device would (`routes renders and asserts the seed`, `alerts renders
-and asserts the seed`), and their only populated render, the kit fixture's
-rule cards and route checklist, stays reachable solely at `?demo=kit`, which
-nothing in `visual/surfaces.spec.ts` opens. `RoutesScreen.test.tsx` and
-`AlertsScreen.test.tsx` (#457) now cover both states — the honest empty
+default `?demo` (board) it still always renders the honest empty state an
+unseeded device would (`alerts renders and asserts the seed`), and its only
+populated render, the kit fixture's rule cards, stays reachable solely at
+`?demo=kit`, which nothing in `visual/surfaces.spec.ts` opens.
+`AlertsScreen.test.tsx` (#457) now covers both states — the honest empty
 render, the kit-populated render, and the kit fixture standing down in a
-production build — so these two screens' populated states are no longer
-reviewed by hand only; a capture pass restored to `visual/surfaces.spec.ts`
-would still be the only way to photograph them, and nothing in this file adds
-one.
+production build — so this screen's populated state is no longer reviewed by
+hand only; a capture pass restored to `visual/surfaces.spec.ts` would still
+be the only way to photograph it, and nothing in this file adds one. Routes
+was the second such screen until #624 deleted it; `ProjectsScreen`, which
+replaced it, reads `TaskState` on every world and is photographed twice
+(above).
 
 **Now, Triage, Settings and Rules carry no kit rendering at all any more**
 (#456, #457): each screen's fixture-only block or branch (Now's hero card and
@@ -386,8 +400,8 @@ Settings' acked-alerts switch and its inert "Mirror" section, Rules' `demo ?`
 ternaries) is deleted along with the screen's own `demo` prop or argument and
 the `App.tsx` guards that only existed to keep writes inert under it — all
 four take their real render path unconditionally now, `?demo=kit` included.
-Unlike Routes and Alerts (still kit-fed above), there is no populated
-kit-only render left on any of the four to review by hand.
+Unlike Alerts (still kit-fed above), there is no populated kit-only render
+left on any of the four to review by hand.
 
 **Recall (#478–#481) is photographed under the BOARD world, not the kit
 one** — the reason is the kit world's `task`, not the trigger: since #456

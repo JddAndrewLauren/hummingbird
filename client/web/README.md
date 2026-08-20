@@ -5,7 +5,7 @@ wasm sync core (`hummingbird-ffi-web`, #67) loaded in a **SharedWorker** —
 one core per origin, N views (ADR-0010, #126) — PWA offline shell, served
 from Cloudflare Workers static assets at `hb.twinion.net` (ADR-0006). The
 shell is built on the Hummingbird Design System (see the repo `CLAUDE.md`):
-a nav over nine surfaces — Now, Triage, Routes, Alerts, Rules, Done, Ledger,
+a nav over nine surfaces — Now, Triage, Projects, Alerts, Rules, Done, Ledger,
 Status, Settings — which is a **fixed rail on a desktop and a bottom bar on a
 phone**. That is the app's one breakpoint, 640px, defined in
 `src/shell/breakpoints.ts` and spelled again in `src/shell/responsive.css`
@@ -107,9 +107,10 @@ path with fictional data in it — this is what the visual gate photographs
 `http://localhost:5173/?demo=kit` renders the **design kit's** fixture data
 instead, so the shell can be compared against
 `.claude/skills/hummingbird-design/ui_kits/web/`. Since #456/#457 that is
-Routes and Alerts only — its other readers were render branches that shipped
-to nobody, and the screens that had them (Now, Triage, Settings, Rules) now
-take their real/empty path under `?demo=kit` like any other world.
+Alerts only (#624 deleted the other reader, Routes) — its other readers were
+render branches that shipped to nobody, and the screens that had them (Now,
+Triage, Settings, Rules) now take their real/empty path under `?demo=kit`
+like any other world.
 
 ## Layout
 
@@ -167,7 +168,11 @@ take their real/empty path under `?demo=kit` like any other world.
   `questions/contract.ts` first, it is what a standing question owes the
   shell — with one pane directory per question (`waste-pane/`,
   `weekend-pane/`, `vacation-pane/`, `race-pane/`, each with its own header);
-  and `rules/` is #140's rule editor over the exported kind registry.
+  `rules/` is #140's rule editor over the exported kind registry; and
+  `projects/` is #624's Projects grid — `roster.ts` holds the whole of what
+  the screen decides (the card order and counts, what the Show-archived
+  toggle leaves on screen, whether a create is still in flight, and what a
+  write that did not go through says).
 - `src/skills/` — #273's skill-runner lane, and **the one place in this app
   that speaks HTTP without going through the Rust core**: `POST
   /api/skills/run` on the authority, which proxies to the cloud runner

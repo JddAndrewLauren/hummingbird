@@ -199,6 +199,22 @@ impl SyncMirror {
         self.projects.values().filter_map(live_slot)
     }
 
+    /// Every stored project regardless of presence, id order, each paired
+    /// with its [`Presence`] — [`SyncMirror::all_items_including_absent`]'s
+    /// project-lane twin, and needed for the same reason the Ledger needed
+    /// that one: **a project's `archived_at` is what demotes it here**
+    /// (`apply_tables` passes it as `removed_since`), so an archived project
+    /// is absent, and a surface that shows archived projects cannot be built
+    /// on [`SyncMirror::all_projects`] at all. Absence has two causes and the
+    /// caller must tell them apart — the record's own `archived_at`
+    /// distinguishes an archived project from one that simply fell out of a
+    /// complete sweep.
+    pub fn all_projects_including_absent(&self) -> impl Iterator<Item = (&Project, &Presence)> {
+        self.projects
+            .values()
+            .map(|slot| (&slot.record, &slot.presence))
+    }
+
     pub fn route(&self, project_id: &str) -> Option<&Route> {
         live(self.routes.get(project_id))
     }

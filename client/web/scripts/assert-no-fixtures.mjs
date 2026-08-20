@@ -35,12 +35,12 @@ const SENTINELS = [
   // fixtures/demo-data.ts — the kit world.
   { fixture: "demo-data.ts", needle: "Order the replacement sensor" },
   { fixture: "demo-data.ts", needle: "ask dad about the trailer hitch" },
-  // fixtures/demo-data.ts again — #457 moved `demoData()`, the kit world's
-  // own dev-gated accessor, here from demo.ts so Routes and Alerts could call
-  // it directly instead of reading a `demo` prop threaded through App.tsx.
-  // The accessor itself carries no fixture text of its own; this needle
-  // guards the route checklist it now gates from the same file.
-  { fixture: "demo-data.ts", needle: "Delete the two dead label cases" },
+  // #457 moved `demoData()`, the kit world's own dev-gated accessor, here
+  // from demo.ts so Alerts could call it directly instead of reading a `demo`
+  // prop threaded through App.tsx. It gets no needle of its own: the accessor
+  // carries no fixture text, and the route checklist that used to be guarded
+  // here left with `RoutesScreen` at #624 — a sentinel whose needle is no
+  // longer in the source fails this script by construction.
   // fixtures/demo-task-state.ts — the board world (#420, grown by #452 to
   // seed the whole of TaskState rather than just the frontier).
   { fixture: "demo-task-state.ts", needle: "Fit the new tap washer" },
@@ -53,9 +53,11 @@ const SENTINELS = [
   // fixtures/demo-calendar.ts — the board world's Settings calendar card
   // (#452).
   { fixture: "demo-calendar.ts", needle: "Fictional (personal)" },
-  // fixtures/demo-data.ts again — the route checklist, which lived in
-  // RoutesScreen.tsx as a module-level literal until it was moved here.
-  { fixture: "demo-data.ts", needle: "Regenerate the Gmail fixture set" },
+  // fixtures/demo-task-state.ts — the seeded projects (#624's departure 4).
+  // Their own sentinel rather than leaning on the item seeds above: they are
+  // a separate literal in that module, and a project name is exactly the kind
+  // of string that would read as real UI copy if it shipped.
+  { fixture: "demo-task-state.ts", needle: "Autumn garden clear-up" },
 ];
 
 const DIST = new URL("../dist/", import.meta.url).pathname;

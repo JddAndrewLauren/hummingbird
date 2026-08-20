@@ -47,6 +47,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getBlocked: true,
   getSteps: true,
   getProjects: true,
+  createProject: true,
   isPending: true,
   runSync: true,
   getQueueDepth: true,

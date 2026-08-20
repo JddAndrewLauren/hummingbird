@@ -63,8 +63,9 @@ pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
-    resulting_stage, Alert, AlertPatch, Condition, CreateGrill, CreateItem, CreateRule, Energy,
-    GrillVerdict, Item, Project, Rule, RulePatch, Setting, Size, Stage, Step, Tier,
+    resulting_stage, Alert, AlertPatch, Condition, CreateGrill, CreateItem, CreateProject,
+    CreateRule, Energy, GrillVerdict, Item, Project, Rule, RulePatch, Setting, Size, Stage, Step,
+    Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1138,6 +1139,66 @@ where
         let mut projects: Vec<Project> = self.cycle.mirror().all_projects().cloned().collect();
         projects.sort_by(|a, b| a.id.cmp(&b.id));
         projects
+    }
+
+    /// Every **archived** project, id order (#624's Show-archived toggle).
+    /// Deliberately a second read rather than a widening of
+    /// [`Core::projects`]: that one resolves ids to names for the frontier's
+    /// grouping and fills every project *picker* on both clients, and an
+    /// archived project offered as a destination there would be a bug. Only
+    /// the Projects grid wants these, and it wants them labelled.
+    ///
+    /// An archived project is [`task::Presence::Absent`] in the mirror — its
+    /// `archived_at` is the soft-delete flag `SyncCycle` demotes on — so this
+    /// reads the including-absent accessor and keeps exactly the rows whose
+    /// own `archived_at` is set. A project absent for the *other* reason
+    /// (missing from a complete sweep, ADR-0007's gap) is not archived and is
+    /// not returned: this device has no standing to label it either way.
+    pub fn archived_projects(&self) -> Vec<Project> {
+        let mut projects: Vec<Project> = self
+            .cycle
+            .mirror()
+            .all_projects_including_absent()
+            .filter(|(project, _)| project.archived_at.is_some())
+            .map(|(project, _)| project.clone())
+            .collect();
+        projects.sort_by(|a, b| a.id.cmp(&b.id));
+        projects
+    }
+
+    /// Creates a project (#624, the project lane's first client mutation —
+    /// ADR-0030 made that lane client-writable): enqueues a
+    /// `POST /api/projects` create, durably, via [`sync::SyncCycle::enqueue`],
+    /// exactly as [`Core::create_rule`] does. `seed` mints the deterministic
+    /// id ([`sync::write::deterministic_id`]), caller-supplied for the same
+    /// no-clock/no-RNG reasoning as [`Core::capture`]. Returns the minted id.
+    ///
+    /// No optimistic overlay — [`Core::rules`]' own doc is the argument, and
+    /// projects adopt it verbatim: the new project becomes visible once the
+    /// next completed cycle pulls it back, and a durability failure or a
+    /// conflict lands in the ordinary dead-letter journal rather than being
+    /// swallowed here. A caller that renders [`Core::projects`] must
+    /// therefore *say it is waiting* between the enqueue and that cycle,
+    /// rather than look like it dropped the input.
+    ///
+    /// Creating the project also creates its empty Route row, server-side —
+    /// the 1:1 invariant is structural ([`hummingbird_domain::CreateProject`]),
+    /// so there is no separate route create to enqueue here.
+    pub async fn create_project(
+        &mut self,
+        seed: &str,
+        name: impl Into<String>,
+        now_ms: i64,
+    ) -> Result<String, SnapshotError<QS::Error>> {
+        let id = sync::write::deterministic_id(seed);
+        let create = CreateProject { id: id.clone(), name: name.into() };
+        let body = serde_json::to_value(&create).expect("CreateProject always serializes");
+        let entry = QueueEntry {
+            id: id.clone(),
+            intent: MutationIntent::Create { path: sync::write::paths::projects(), body },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(id)
     }
 
     /// The complete retained roster — every item this mirror has ever
@@ -5124,6 +5185,87 @@ mod tests {
     async fn a_fresh_core_reports_no_projects() {
         let core = Core::new();
         assert!(core.projects().is_empty());
+        assert!(core.archived_projects().is_empty());
+    }
+
+    /// #624's Show-archived toggle, and the reason it needs a read of its
+    /// own: `archived_at` is the flag the cycle demotes a project on, so an
+    /// archived project is absent and `projects()` cannot see it. The second
+    /// half is the distinction this read exists to make — a project that
+    /// merely fell out of a sweep is absent too, and is *not* archived.
+    #[tokio::test]
+    async fn archived_projects_returns_archived_ones_and_never_a_swept_away_one() {
+        fn fixture_project(
+            id: &str,
+            name: &str,
+            archived_at: Option<i64>,
+        ) -> hummingbird_domain::Project {
+            hummingbird_domain::Project {
+                id: id.to_string(),
+                name: name.to_string(),
+                archived_at,
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }
+        }
+
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            projects: vec![
+                fixture_project("p-2", "Archived", Some(9_000)),
+                fixture_project("p-1", "Live", None),
+                fixture_project("p-3", "Swept away", None),
+            ],
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(
+            core.projects().iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+            vec!["p-1", "p-3"],
+            "the live read must not have grown an archived project"
+        );
+        assert_eq!(
+            core.archived_projects()
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["p-2"],
+            "the archived project is absent in the mirror, and this is the read that sees it"
+        );
+
+        // p-3 goes absent by gap: a complete sweep that no longer mentions it.
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            projects: vec![
+                fixture_project("p-2", "Archived", Some(9_000)),
+                fixture_project("p-1", "Live", None),
+            ],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 2_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(
+            core.archived_projects()
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["p-2"],
+            "absent-by-gap is not archived — p-3 must appear in neither read"
+        );
+        assert_eq!(
+            core.projects().iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+            vec!["p-1"]
+        );
     }
 
     // ------------------------------------------- snapshot_freshness() (ADR-0015)
@@ -5828,6 +5970,35 @@ mod tests {
         assert_eq!(body.get("id").and_then(|v| v.as_str()), Some(id.as_str()));
         assert_eq!(body.get("name").and_then(|v| v.as_str()), Some("trash slide"));
         assert_eq!(body.get("event_kind"), None, "any kind is the absent field, not null");
+    }
+
+    /// #624 acceptance: creating a project enqueues one `POST /api/projects`
+    /// create and overlays *nothing* — the rules stack's no-overlay contract,
+    /// adopted verbatim, so the grid must say it is waiting rather than show
+    /// a card that does not exist yet. The other half of the acceptance —
+    /// that the project does appear once a cycle pulls it back — is already
+    /// covered by `projects_resolves_names_in_id_order_and_excludes_absent_ones`
+    /// and is deliberately not duplicated here.
+    #[tokio::test]
+    async fn create_project_enqueues_one_post_create() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        let id = core.create_project("seed-1", "Rebuild the deck", 2_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Create { path, body } = &entries[0].intent else {
+            panic!("a project create is a POST create, not a patch");
+        };
+        assert_eq!(path, "/api/projects");
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some(id.as_str()));
+        assert_eq!(body.get("name").and_then(|v| v.as_str()), Some("Rebuild the deck"));
+
+        assert!(
+            core.projects().is_empty(),
+            "no optimistic overlay: the project appears only once a cycle pulls it back"
+        );
     }
 
     /// #140 acceptance: "the enable/disable toggle is one CAS field,

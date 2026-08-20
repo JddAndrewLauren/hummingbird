@@ -359,6 +359,28 @@ pub struct StepListResponse {
 pub struct ProjectListResponse {
     pub kind: &'static str,
     pub projects: Vec<Project>,
+    /// The archived half (#624's Show-archived toggle), carried on the same
+    /// answer rather than behind a second request: the projects read already
+    /// has exactly one app-wide requester (`shell/useFrontierWiring.ts`), and
+    /// a second door for the same read would be a second clock for it.
+    /// Always disjoint from `projects` — [`crate::Core::archived_projects`]
+    /// is what an archived project demotes *into*, never a duplicate of the
+    /// live list.
+    pub archived: Vec<Project>,
+}
+
+/// What [`TaskHostCore::create_project`] resolves to (#624). Same three-way
+/// split as [`CreateRuleResponse`]: `"ok"` carries the minted id, `"failed"`
+/// is either a name this seam refused outright or a durability failure
+/// enqueueing the create, and `"busy"` is the core answering nothing at all.
+/// An `"ok"` means *enqueued*, not *saved* — there is no optimistic overlay
+/// ([`Core::create_project`]), so the project appears in
+/// [`TaskHostCore::projects`] only after a completed cycle pulls it back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateProjectResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
 }
 
 /// One Ledger row (`Core::ledger`): the item's fields flat at the top level
@@ -1053,11 +1075,41 @@ impl TaskHostCore {
     }
 
     /// Every live project, per [`Core::projects`] — resolves the frontier's
-    /// grouping to real project names (issue #108, PR #200 review).
+    /// grouping to real project names (issue #108, PR #200 review) — plus the
+    /// archived ones, per [`Core::archived_projects`], which only the
+    /// Projects grid reads and only behind its own toggle (#624).
     pub fn projects(&self) -> ProjectListResponse {
         ProjectListResponse {
             kind: "ok",
             projects: self.core.projects(),
+            archived: self.core.archived_projects(),
+        }
+    }
+
+    /// Creates a project, per [`Core::create_project`] (#624). The name is
+    /// trimmed and an empty one is refused **before `Core` is reached** —
+    /// the authority answers 400 on `name.is_empty()`
+    /// (`server/authority/src/handlers/projects.rs`), and every such rule is
+    /// checked at this seam, the same discipline capture and triage follow.
+    /// Without it a blank name typed into the grid's New-project card would
+    /// queue a mutation that dead-letters later, with nothing on screen to
+    /// say so.
+    pub async fn create_project(&mut self, seed: &str, name: &str, now_ms: i64) -> CreateProjectResponse {
+        let name = name.trim();
+        if name.is_empty() {
+            return CreateProjectResponse {
+                kind: "failed",
+                id: None,
+                error: Some("name must be non-empty".to_string()),
+            };
+        }
+        match self.core.create_project(seed, name, now_ms).await {
+            Ok(id) => CreateProjectResponse { kind: "ok", id: Some(id), error: None },
+            Err(error) => CreateProjectResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
         }
     }
 
@@ -2844,7 +2896,10 @@ mod tests {
 
         assert_eq!(host.blocked(), BlockedListResponse { kind: "ok", entries: Vec::new() });
         assert_eq!(host.steps("some-id"), StepListResponse { kind: "ok", steps: Vec::new() });
-        assert_eq!(host.projects(), ProjectListResponse { kind: "ok", projects: Vec::new() });
+        assert_eq!(
+            host.projects(),
+            ProjectListResponse { kind: "ok", projects: Vec::new(), archived: Vec::new() }
+        );
     }
 
     #[tokio::test]
@@ -3387,10 +3442,18 @@ mod tests {
                 updated_at: 1,
                 version: 1,
             }],
+            archived: vec![Project {
+                id: "p-9".to_string(),
+                name: "Old bike".to_string(),
+                archived_at: Some(9_000),
+                created_at: 1,
+                updated_at: 1,
+                version: 1,
+            }],
         };
         assert_eq!(
             serde_json::to_string(&response).unwrap(),
-            r#"{"kind":"ok","projects":[{"id":"p-1","name":"Ship it","archived_at":null,"created_at":1,"updated_at":1,"version":1}]}"#
+            r#"{"kind":"ok","projects":[{"id":"p-1","name":"Ship it","archived_at":null,"created_at":1,"updated_at":1,"version":1}],"archived":[{"id":"p-9","name":"Old bike","archived_at":9000,"created_at":1,"updated_at":1,"version":1}]}"#
         );
     }
 
@@ -3830,5 +3893,56 @@ mod rule_tests {
 
         assert_eq!(response.kind, "failed");
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
+    }
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    /// #624: the authority 400s on an empty project name, so this seam
+    /// refuses one — blank and whitespace-only alike — before
+    /// `Core::create_project` is reached, and mints no queue entry. Without
+    /// it a blank New-project card would queue a write that dead-letters
+    /// later with nothing on screen to say so.
+    #[tokio::test]
+    async fn creating_a_project_rejects_an_empty_name_before_reaching_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-project-empty");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        for name in ["", "   ", "\t\n"] {
+            let response = host.create_project("seed-1", name, 1_000).await;
+            assert_eq!(response.kind, "failed", "{name:?} is refused");
+            assert!(response.id.is_none());
+            assert_eq!(
+                host.queue_depth(),
+                QueueDepthResponse { kind: "ok", depth: 0 },
+                "{name:?} minted no queue entry"
+            );
+        }
+    }
+
+    /// #624: a good name enqueues exactly one create, and the project is
+    /// still absent from the read, since there is no optimistic overlay.
+    /// (That the name is *trimmed* rather than merely tested trimmed is what
+    /// the whitespace-only case above proves; nothing public here can read
+    /// the queued body back.)
+    #[tokio::test]
+    async fn creating_a_project_enqueues_it_and_overlays_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-project-ok");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host.create_project("seed-1", "  Rebuild the deck  ", 1_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.id.is_some());
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+        assert_eq!(
+            host.projects(),
+            ProjectListResponse { kind: "ok", projects: Vec::new(), archived: Vec::new() },
+            "no overlay: the card appears only once a cycle pulls it back"
+        );
     }
 }

@@ -82,7 +82,7 @@ describe("protocol round-trips", () => {
     { type: "triageInbox", items: [] },
     { type: "blocked", entries: [] },
     { type: "steps", itemId: "item-1", steps: [] },
-    { type: "projects", projects: [] },
+    { type: "projects", projects: [], archivedProjects: [] },
     { type: "isPendingResult", itemId: "item-1", pending: true },
     {
       type: "syncOutcome",

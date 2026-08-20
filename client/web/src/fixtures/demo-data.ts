@@ -60,29 +60,6 @@ export interface DemoAlert {
   time: string;
 }
 
-export interface DemoFog {
-  q: string;
-  note: string;
-}
-
-export interface DemoStep {
-  text: string;
-  done: boolean;
-}
-
-export interface DemoRoute {
-  project: string;
-  destination: string;
-  fog: DemoFog[];
-  actions: string[];
-  /** The aside's checklist. Lives here rather than in `RoutesScreen` because
-   * a module-level fixture literal in a screen is not behind the dead-branch
-   * gate at all — that one shipped to production until `assert-no-fixtures`
-   * grew a sentinel for it. Fixtures reach a screen through `demoData()` or
-   * they reach a real device. */
-  steps: DemoStep[];
-}
-
 export interface DemoRule {
   name: string;
   tier: AlertTier;
@@ -105,7 +82,6 @@ export interface DemoData {
   items: DemoItem[];
   triage: DemoCapture[];
   alerts: DemoAlert[];
-  route: DemoRoute;
   bindings: DemoBinding[];
   rules: DemoRule[];
   calendars: DemoCalendar[];
@@ -154,25 +130,6 @@ export const DEMO_DATA: DemoData = {
     { id: "A2", tier: "normal", source: "Cloudflare · hb.twinion.net", title: "Deploy succeeded", detail: "client/web @ d4105b5 — 412 assets.", time: "1h" },
     { id: "A3", tier: "normal", source: "Gmail · capture", title: "3 new captures swept", detail: "Landed in Triage, acked in the source.", time: "3h" },
   ],
-  route: {
-    project: "Greenhouse",
-    destination:
-      "The greenhouse holds temperature overnight through winter, without me checking it.",
-    fog: [
-      {
-        q: "Do the vents need a controller, or is the manual setup enough?",
-        note: "Can't define an action until the sensor data says.",
-      },
-    ],
-    actions: ["ION-142", "ION-151", "ION-160"],
-    steps: [
-      { text: "Open the fixture generator script", done: true },
-      { text: "Regenerate the Gmail fixture set", done: true },
-      { text: "Run the adapter tests once", done: true },
-      { text: "Delete the two dead label cases", done: false },
-      { text: "Re-read the sweeper doc's invariants", done: false },
-    ],
-  },
   bindings: [
     { key: "race-series", known: true, pending: false, value: { state: "text", text: "hyrox-uk" } },
     { key: "trips-calendar", known: true, pending: true, value: { state: "text", text: "travel@group.calendar.google.com" } },
@@ -364,7 +321,7 @@ export const DEMO_DATA: DemoData = {
   ],
 };
 
-/** The kit world's own dev-gated accessor (#457) — Routes and Alerts call
+/** The kit world's own dev-gated accessor (#457) — `AlertsScreen` calls
  * this directly rather than reading a `demo` prop `App.tsx` threads down,
  * which is what let `DemoData` leave `App.tsx` entirely. Colocated with the
  * data it gates instead of living in `fixtures/demo.ts` (the board world's

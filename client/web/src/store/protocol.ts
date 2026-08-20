@@ -819,6 +819,13 @@ export type TaskWorkerRequest =
   /** Resolves the frontier's "grouped by project" display to real names
    * (issue #108, PR #200 review). */
   | { type: "getProjects" }
+  /** #624's project create: one `POST /api/projects`, enqueued durably like
+   * every other mutation, and the project lane's first client-side write
+   * (ADR-0030). `name` is trimmed and an empty one refused in
+   * `client/ffi-web/src/task_host.rs`'s `create_project` before it can reach
+   * `Core` — the authority 400s on an empty name. Same caller-mints-`seed`
+   * contract as `"capture"`: this seed's hash becomes the project's id. */
+  | { type: "createProject"; seed: string; name: string; nowMs: number }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1025,7 +1032,27 @@ export type TaskWorkerResponse =
   | { type: "done"; items: TaskItemDTO[] }
   | { type: "blocked"; entries: BlockedFrontierEntryDTO[] }
   | { type: "steps"; itemId: string; steps: StepDTO[] }
-  | { type: "projects"; projects: ProjectDTO[] }
+  /** Answers `getProjects`. Two disjoint lists, never one: `projects` is the
+   * live roster every project *picker* offers, and `archivedProjects` is the
+   * archived half only #624's Show-archived toggle reads. They arrive
+   * together because there is one requester for this read app-wide
+   * (`shell/useFrontierWiring.ts`), and a second door would be a second
+   * clock for it. */
+  | { type: "projects"; projects: ProjectDTO[]; archivedProjects: ProjectDTO[] }
+  /** #624's project create result, matched back by `seed` — same
+   * broadcast-not-reply contract as `captureResult`. `"failed"` covers both
+   * a name this seam refused and a durability failure enqueueing the create;
+   * it is never a *save-time* rejection, which is discovered later at drain
+   * time and surfaces through the ordinary dead-letter journal. `"ok"` means
+   * *enqueued*, not *saved*: there is no optimistic overlay, so the project
+   * reaches `projects` only on the next completed cycle. */
+  | {
+      type: "createProjectResult";
+      seed: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
   | { type: "isPendingResult"; itemId: string; pending: boolean }
   /** What one `Core::run` cycle resolved to, broadcast to every connected
    * port. Issue #195: also the last one is cached by `PortRegistry` and

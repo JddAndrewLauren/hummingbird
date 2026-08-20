@@ -4,7 +4,7 @@ import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
 import { NowScreen } from "./screens/NowScreen";
-import { RoutesScreen } from "./screens/RoutesScreen";
+import { ProjectsScreen } from "./screens/ProjectsScreen";
 import { RulesScreen } from "./screens/RulesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
@@ -46,6 +46,7 @@ import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { useAppUpdate } from "./shell/useAppUpdate";
 import { usePaneReadsWiring } from "./shell/usePaneReadsWiring";
+import { useProjectsWiring } from "./shell/useProjectsWiring";
 import { useRulesWiring } from "./shell/useRulesWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
@@ -107,9 +108,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // worker, which knows nothing of these fixture ids.
   //
   // `DemoData` and the kit world it seeds left this component in #457 —
-  // Routes and Alerts, its last two consumers, now read it through their own
-  // dev-gated accessor (`fixtures/demo-data.ts`'s `demoData()`) instead of a
-  // `demo` prop threaded from here, and every guard that used to keep writes
+  // `AlertsScreen`, now its only consumer (#624 deleted the other, Routes),
+  // reads it through its own dev-gated accessor (`fixtures/demo-data.ts`'s
+  // `demoData()`) instead of a `demo` prop threaded from here, and every
+  // guard that used to keep writes
   // inert while the kit world showed went with it: this component no longer
   // has any opinion about the KIT world. The board world below is still its
   // own — `demoTask` and `settingsDemoCalendar` are substituted from here.
@@ -193,6 +195,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     status,
     task.syncOutcomeSeq,
   );
+  // #624: a write door only — the `projects` read is already refreshed
+  // app-wide by `useFrontierWiring`, and a second per-cycle requester would
+  // be a competing clock for one read (see `useProjectsWiring`'s header).
+  const { createProject: handleCreateProject } = useProjectsWiring(worker);
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
@@ -572,7 +578,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               grill={grillTakeover}
             />
           )}
-          {screen === "routes" && <RoutesScreen />}
+          {/* #624: Projects reads `TaskState` on every world, so the board
+              world photographs its honest holding state. The create is NOT
+              gated — since #457 this component has no kit world to be inert
+              for, and a mutation typed over the board world goes to the real
+              worker already (see `demoTask`'s comment above). */}
+          {screen === "projects" && (
+            <ProjectsScreen task={task} onCreateProject={handleCreateProject} />
+          )}
           {screen === "alerts" && <AlertsScreen />}
           {screen === "rules" && (
             <RulesScreen
@@ -654,7 +667,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         focusRequestId={captureFocusRequestId}
         onClose={closeCapture}
         onSubmit={handleCapture}
-        projects={task.projects}
+        // #624 made `TaskState.projects` nullable (`null` = not read yet);
+        // this component's other readers handle it themselves.
+        projects={task.projects ?? []}
         contextSuggestions={captureContexts}
         // #457: this component no longer has a kit world to be inert for —
         // `demo`'s own fixture-queue arm lives on in `CaptureBox`'s own
@@ -683,7 +698,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onClose={() => setSearchOpen(false)}
         rows={task.search?.rows ?? null}
         total={task.search?.total ?? 0}
-        projects={task.projects}
+        // `?? []` for the same reason as `CapturePopover` above: #624 made
+        // `TaskState.projects` nullable and this prop is not.
+        projects={task.projects ?? []}
         onTriage={handleTriage}
         lastTriage={task.lastTriage}
         nowMs={syncNowMs}
