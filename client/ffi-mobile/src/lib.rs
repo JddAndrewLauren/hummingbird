@@ -765,12 +765,21 @@ pub struct NowBlockedEntryRecord {
 /// pruned-then-reappearing column would otherwise come back collapsed for
 /// a reason the reader cannot see — ADR-0021 decision 5's key-accretion
 /// argument).
+///
+/// `shown_count`/`total_count` are the filter disclosure's "N of M shown"
+/// (`FrontierColumns.tsx`'s own meta line): post-facet and pre-facet sizes
+/// of the same ordered list the columns are grouped from — blocked rows
+/// count in neither, since facets never apply to them. Computed here
+/// because Kotlin never holds the pre-facet list at all (ADR-0025: an
+/// applied result crosses the seam, not the inputs to re-derive it).
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct NowBoardRecord {
     pub columns: Vec<NowColumnRecord>,
     pub blocked: Vec<NowBlockedEntryRecord>,
     pub contexts: Vec<String>,
     pub live_column_keys: Vec<String>,
+    pub shown_count: u32,
+    pub total_count: u32,
 }
 
 // -------------------------------------------------------------- M3 (#532)
@@ -934,7 +943,10 @@ fn build_now_board(
         })
         .collect();
 
-    NowBoardRecord { columns, blocked, contexts, live_column_keys }
+    let shown_count = shown_ids.len() as u32;
+    let total_count = ordered_entries.len() as u32;
+
+    NowBoardRecord { columns, blocked, contexts, live_column_keys, shown_count, total_count }
 }
 
 // ------------------------------------------------------------- M4 (#542)
@@ -5097,6 +5109,37 @@ mod tests {
         // still names every context actually on the (unfiltered) board.
         assert_eq!(board_ids(&board), vec!["a"]);
         assert_eq!(board.contexts, vec!["@computer", "@phone", frontier::NO_CONTEXT]);
+    }
+
+    /// `shown_count`/`total_count` are the filter disclosure's "N of M
+    /// shown" meta line (`FrontierColumns.tsx`'s own), over the same
+    /// ordered list the columns group from: post-facet and pre-facet.
+    /// Blocked rows count in neither — facets never apply to them, so a
+    /// total that included them would overstate what filtering can reach.
+    #[test]
+    fn now_board_counts_shown_and_total_over_the_facetable_list_only() {
+        let phone = Item { context: Some("@phone".to_string()), ..item("a", 0, None) };
+        let computer = Item { context: Some("@computer".to_string()), ..item("b", 0, None) };
+        let unjudged = item("c", 0, None);
+        let blocked_item = item("d", 0, None);
+        let blocker = item("e", 0, None);
+        let picked = frontier::toggle_facet(&no_facets(), frontier::Facet::Context, "@phone");
+
+        let board = build_now_board(
+            &[phone, computer, unjudged],
+            &[],
+            &[],
+            &[],
+            &[(blocked_item, vec![blocker])],
+            &[],
+            frontier::FrontierAxis::Context,
+            &picked,
+            "2026-08-15T12:00",
+        );
+
+        assert_eq!(board.shown_count, 1);
+        assert_eq!(board.total_count, 3);
+        assert_eq!(board.blocked.len(), 1);
     }
 
     /// The triage-process queue rides inline, after the ordered frontier —

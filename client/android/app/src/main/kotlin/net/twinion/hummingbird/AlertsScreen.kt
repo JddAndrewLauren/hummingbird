@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -76,7 +77,7 @@ import uniffi.hummingbird_ffi_mobile.AlertRecord
  * record carries.
  *
  * This is a presentation map over a wire vocabulary and nothing more, the
- * same shape as `NowScreen`'s `ACTION_LABEL`: it ranks nothing. Severity
+ * same shape as `ItemDetailPanel`'s `ACTION_LABEL`: it ranks nothing. Severity
  * *ranking* is a core decision with three server-side surfaces
  * (`domain::severity`), none of which has a colour to disagree with. An
  * unknown or absent severity takes the quiet tone rather than the loud one
@@ -163,7 +164,11 @@ fun AlertsScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                else -> LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    // The last row scrolls clear of the Capture FAB.
+                    contentPadding = PaddingValues(bottom = 64.dp),
+                ) {
                     items(alerts, key = { it.id }) { record ->
                         AlertRow(
                             record = record,

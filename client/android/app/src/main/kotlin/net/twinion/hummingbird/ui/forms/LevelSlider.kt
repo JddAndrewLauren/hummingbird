@@ -34,7 +34,7 @@ import uniffi.hummingbird_ffi_mobile.VocabOption
  * this screen renders, not a word it knows.
  *
  * Tapping the already-selected option clears the field (`onSelect(null)`) —
- * the same "tap again to clear" gesture `ItemDetailScreen`'s own
+ * the same "tap again to clear" gesture `ItemDetailPanel`'s own
  * `VocabularyRow` uses (a *separate*, pre-existing control this component
  * does not replace — see that composable's own header), since deciding a
  * level is mint-time work, never forced.

@@ -12,9 +12,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
@@ -29,9 +34,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -225,6 +233,24 @@ private enum class NavDestination(val route: String, val label: String, val onBa
     }
 }
 
+/** Each destination's glyph — the web's `screen-icons.ts` map, ported onto
+ * the vendored Lucide drawables (`res/drawable/ic_*.xml`, each header
+ * naming its source glyph). A `when` with no `else` rather than an enum
+ * parameter: exhaustiveness makes a tenth destination fail to compile until
+ * it names a glyph, and `BottomNavStructuralTest`'s enum parser keeps its
+ * three-argument constructor shape untouched. */
+private fun navIcon(destination: NavDestination): Int = when (destination) {
+    NavDestination.NOW -> R.drawable.ic_zap
+    NavDestination.TRIAGE -> R.drawable.ic_inbox
+    NavDestination.ALERTS -> R.drawable.ic_alert
+    NavDestination.STATUS -> R.drawable.ic_activity
+    NavDestination.DONE -> R.drawable.ic_circle_check
+    NavDestination.LEDGER -> R.drawable.ic_scroll_text
+    NavDestination.RULES -> R.drawable.ic_siren
+    NavDestination.SETTINGS -> R.drawable.ic_settings
+    NavDestination.ROUTES -> R.drawable.ic_route
+}
+
 // The always-composed content root. The #141 sync cadence (one `user` cycle
 // on every foreground resume, plus the 60-second `timer` tick while
 // resumed) lives here rather than inside any one screen — it must run
@@ -382,6 +408,12 @@ private fun AppRoot(
     // second copy, so a destination reached any other way (a notification
     // deep link) still lights up the right tab.
     var moreSheetOpen by remember { mutableStateOf(false) }
+    // `rememberSaveable`, unlike the More sheet's flag: a fold/unfold
+    // mid-capture recreates the Activity, and the sheet must come back
+    // standing over its surviving draft (the draft itself lives in
+    // `CaptureViewModel`'s store) — the More sheet holds nothing, so
+    // losing it to recreation costs one tap and no words.
+    var captureSheetOpen by rememberSaveable { mutableStateOf(false) }
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
 
     // A bar or More-sheet tap: `popUpTo` + `saveState` + `restoreState` is
@@ -416,6 +448,32 @@ private fun AppRoot(
                 )
             }
         },
+        floatingActionButton = {
+            // The bar's own visibility condition: capture is the app's
+            // global primary action on every top-level surface, and a
+            // detail/takeover route is a task mid-flight that a floating
+            // "Capture" would talk over. The extended-FAB shape, wording
+            // and fill are the design kit's own (`ui_kits/android/`, its
+            // `Fab`): feather at 20dp, the word "Capture", 20dp corners —
+            // and the one place brand orange appears as a large fill on
+            // Android (`colorScheme.primary` is the ember accent).
+            if (NavDestination.entries.any { it.route == currentRoute }) {
+                ExtendedFloatingActionButton(
+                    onClick = { captureSheetOpen = true },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    shape = RoundedCornerShape(20.dp),
+                    icon = {
+                        Icon(
+                            painterResource(R.drawable.ic_feather),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    },
+                    text = { Text("Capture") },
+                )
+            }
+        },
     ) { padding ->
         NavHost(
             navController = navController,
@@ -424,15 +482,13 @@ private fun AppRoot(
         ) {
             composable(Routes.NOW) {
                 NowScreen(
-                    // A plain navigate, deliberately not
-                    // `openItemFromNotification`: that helper's `popUpTo`
-                    // exists because a *restored* back stack may already hold
-                    // debris beneath a cold tap (#518). Here Now is the live
-                    // destination being navigated from, so it is already
-                    // directly beneath and popping to it would be a no-op
-                    // dressed as policy.
-                    onOpenItem = { itemId -> navController.navigate(Routes.itemDetail(itemId)) },
                     syncTick = syncTick,
+                    // A tapped card expands in place (NowScreen's own
+                    // ItemDetailPanel item) — Grill is the one gesture that
+                    // still leaves the screen, and Back from the takeover
+                    // lands on Now with the panel still standing, since the
+                    // selection lives in the Activity-scoped NowViewModel.
+                    onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
                 )
             }
             composable(Routes.STATUS) {
@@ -538,16 +594,27 @@ private fun AppRoot(
             onDismiss = { moreSheetOpen = false },
         )
     }
+
+    if (captureSheetOpen) {
+        CaptureSheet(
+            onDismiss = { captureSheetOpen = false },
+            // A user-attributed cycle, not a wait for the 60-second timer
+            // leg: the capture is already durable locally
+            // (`CaptureViewModel.submit`'s local-first contract), so this
+            // only hurries the mirror — `syncTick` bumps when it lands and
+            // Now/Triage re-read.
+            onCaptured = { scope.launch { sync("user") } },
+        )
+    }
 }
 
 /** The four bar destinations plus a fifth "More" control — `nav-bar.ts`'s
- * phone form, ported. `NavigationBarItem` takes no accessible-name
+ * phone form, ported: a 20dp glyph above the label, both always visible
+ * (`NavBar.tsx`'s own layout). `NavigationBarItem` takes no accessible-name
  * parameter beyond its own `label`, which is what Compose announces for it,
  * the same "one visible name is the accessible one" rule the web's own
- * `aria-label` follows. No icon set exists on Android yet (ADR-0026 hand-
- * ports design tokens into the Compose theme, not a glyph library), so each
- * item carries its label only — the same plain-text-button idiom every
- * other screen in this app already uses instead of icons.
+ * `aria-label` follows — so every icon slot passes `contentDescription =
+ * null`: the label is the name, and a described icon would announce twice.
  *
  * "More" reads as selected whenever the open screen is one it hides
  * (`NAV_BAR_OVERFLOW` on the web) — the identical "you are nowhere"
@@ -564,7 +631,13 @@ private fun BottomNavBar(
             NavigationBarItem(
                 selected = destination.route == currentRoute,
                 onClick = { onNavigate(destination.route) },
-                icon = {},
+                icon = {
+                    Icon(
+                        painterResource(navIcon(destination)),
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
                 label = { Text(destination.label) },
                 alwaysShowLabel = true,
             )
@@ -572,7 +645,13 @@ private fun BottomNavBar(
         NavigationBarItem(
             selected = overflowActive,
             onClick = onMore,
-            icon = {},
+            icon = {
+                Icon(
+                    painterResource(R.drawable.ic_ellipsis),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+            },
             label = { Text("More") },
             alwaysShowLabel = true,
         )
@@ -605,29 +684,52 @@ private fun MoreSheet(
                 modifier = Modifier.padding(bottom = 12.dp),
             )
             for (destination in NavDestination.OVERFLOW) {
-                TextButton(onClick = { onNavigate(destination.route) }) {
-                    Text(
-                        destination.label,
-                        modifier = Modifier.fillMaxWidth(),
-                        color = if (destination.route == currentRoute) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                    )
-                }
-            }
-            TextButton(onClick = { onNavigate(Routes.RECALL) }) {
-                Text(
-                    "Search everything",
-                    modifier = Modifier.fillMaxWidth(),
-                    color = if (Routes.RECALL == currentRoute) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
+                MoreSheetRow(
+                    label = destination.label,
+                    iconRes = navIcon(destination),
+                    active = destination.route == currentRoute,
+                    onClick = { onNavigate(destination.route) },
                 )
             }
+            MoreSheetRow(
+                label = "Search everything",
+                iconRes = R.drawable.ic_search,
+                active = Routes.RECALL == currentRoute,
+                onClick = { onNavigate(Routes.RECALL) },
+            )
+        }
+    }
+}
+
+/** One More-sheet row: a 20dp glyph beside the label — `NavBar.tsx`'s own
+ * sheet rows, ported. The icon takes the row's text colour (`tint` defaults
+ * to `LocalContentColor`, set here on both children): icons never carry
+ * colour independently of their label. */
+@Composable
+private fun MoreSheetRow(
+    label: String,
+    iconRes: Int,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    val color = if (active) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    TextButton(onClick = onClick) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painterResource(iconRes),
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = color,
+            )
+            Text(label, color = color)
         }
     }
 }

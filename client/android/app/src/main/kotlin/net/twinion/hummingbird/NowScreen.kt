@@ -1,11 +1,14 @@
 package net.twinion.hummingbird
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -31,7 +35,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,6 +47,8 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -126,23 +135,6 @@ private fun urgencyLabel(band: MobileUrgencyBand): String? = when (band) {
     MobileUrgencyBand.OVERDUE -> "OVERDUE"
 }
 
-/** S11/#109's wire vocabulary, mapped to its button label and nothing more
- * — `ItemPanel.tsx`'s `ACTION_BUTTON` verbatim (`client/web/src/components/
- * domain/ItemPanel.tsx:74`; `Mark blocked` says what `Blocked` means, per
- * the design README's voice rule; "Blocked" means an external wait and
- * nothing else). Which actions a row *offers* is decided
- * entirely core-side ([NowItemRecord.availableActions]) — this map only
- * ever renders whatever that list already contains. Shared with
- * `ItemDetailScreen`, which offers the same vocabulary from the same
- * core-decided list — two spellings of "Mark blocked" would be two
- * spellings of one domain word. */
-internal val ACTION_LABEL: Map<String, String> = mapOf(
-    "start" to "Start",
-    "complete" to "Complete",
-    "block" to "Mark blocked",
-    "cancel" to "Cancel",
-)
-
 /** [MobileFrontierAxis]'s switch label — `AXIS_LABEL` in
  * `FrontierColumns.tsx`, ported. */
 private val AXIS_LABEL: Map<MobileFrontierAxis, String> = mapOf(
@@ -171,12 +163,12 @@ private val NO_VALUE_LABEL: Map<MobileFrontierAxis, String> = mapOf(
     MobileFrontierAxis.ENERGY to "No energy",
 )
 
-/** `hummingbird_domain::Size`'s closed vocabulary — `ItemDetailScreen.kt`'s
+/** `hummingbird_domain::Size`'s closed vocabulary — `ItemDetailPanel.kt`'s
  * own list (`listOf("quick", "normal", "deep")`), mirrored for the facet
  * chips rather than re-declared with different values. */
 private val SIZE_VALUES = listOf("quick", "normal", "deep")
 
-/** `hummingbird_domain::Energy`'s closed vocabulary — `ItemDetailScreen.kt`'s
+/** `hummingbird_domain::Energy`'s closed vocabulary — `ItemDetailPanel.kt`'s
  * own list, mirrored. */
 private val ENERGY_VALUES = listOf("low", "medium", "high")
 
@@ -241,8 +233,8 @@ private fun LazyListScope.nowPaneSection(panes: List<MobileRankedPane>) {
 
 @Composable
 fun NowScreen(
-    onOpenItem: (String) -> Unit,
     syncTick: Int = 0,
+    onGrill: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -251,11 +243,38 @@ fun NowScreen(
     val board by viewModel.board.collectAsState()
     val axis by viewModel.axis.collectAsState()
     val facets by viewModel.facets.collectAsState()
+    val filtersOpen by viewModel.filtersOpen.collectAsState()
     val collapsed by viewModel.collapsed.collectAsState()
     val expanded by viewModel.expanded.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val panes by viewModel.panes.collectAsState()
+    val selectedId by viewModel.selectedItemId.collectAsState()
     val dark = isSystemInDarkTheme()
+    val listState = rememberLazyListState()
+
+    // The panel's own ViewModel, by the panel's own key — the SAME
+    // instance `ItemDetailPanel` resolves, looked up here because the
+    // handler below needs its dirtiness while the panel may not be
+    // composed at all.
+    val panelViewModel: ItemDetailViewModel? = selectedId?.let { id ->
+        viewModel(factory = ItemDetailViewModel.factory(context), key = "item-$id")
+    }
+
+    // Collapse before leaving: with a panel open, Back is "close the item",
+    // not "exit the app". While the panel is on screen its own deeper
+    // BackHandler wins and the discard confirmation comes first — but the
+    // panel is a LazyColumn item, and scrolling it out of the viewport
+    // DISPOSES it, unregistering that handler. So a dirty draft is
+    // re-checked here: Back then scrolls the panel back into view (where
+    // its own handler and dialog take over) rather than silently closing
+    // an edit mid-flight.
+    BackHandler(enabled = selectedId != null) {
+        if (panelViewModel?.draft?.value != null && panelViewModel.isDirty) {
+            scope.launch { listState.animateScrollToItem(0) }
+        } else {
+            viewModel.closeItem()
+        }
+    }
 
     suspend fun reload() {
         viewModel.refresh(nowDeadlineShaped())
@@ -299,19 +318,13 @@ fun NowScreen(
         if (syncTick > 0) reload()
     }
 
-    fun act(itemId: String, action: String) {
-        scope.launch {
-            viewModel.act(itemId, action, System.currentTimeMillis(), nowDeadlineShaped())
-        }
-    }
-
     Scaffold { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // The product name is lowercase everywhere; the screen
             // title is the one exception the design system already
@@ -323,24 +336,53 @@ fun NowScreen(
 
             val currentBoard = board
 
+            // "N of M shown" — the seam's own pre/post-facet counts
+            // ([uniffi.hummingbird_ffi_mobile.NowBoardRecord.shownCount]/
+            // [.totalCount], never re-derived here), spoken only while a
+            // facet actually narrows the board: an unfiltered "12 of 12
+            // shown" is reassurance, not information.
+            val shownLine = currentBoard
+                ?.takeIf { facets.count() > 0 }
+                ?.let { "${it.shownCount} of ${it.totalCount} shown" }
+
             AxisRow(
                 axis = axis,
                 onPick = { next -> scope.launch { viewModel.setAxis(next, nowDeadlineShaped()) } },
+                filtersOpen = filtersOpen,
+                facetCount = facets.count(),
+                // Beside the Filter chip only while the panel is shut —
+                // open, the panel's own footer carries it, and saying it
+                // twice would claim two different facts can disagree.
+                shownLine = shownLine.takeIf { !filtersOpen },
+                onToggleFilters = { viewModel.toggleFiltersOpen() },
             )
 
-            FacetFilterRow(
-                facets = facets,
-                // The live vocabulary the axis's own board carries
-                // (`contexts_of` over the pre-facet list, `board.contexts`
-                // — never a hardcoded suggested list, which would offer a
-                // chip for a context nothing on the board has, or omit one
-                // an item actually carries).
-                contexts = currentBoard?.contexts ?: emptyList(),
-                onToggle = { facet, value ->
-                    scope.launch { viewModel.toggleFacet(facet, value, nowDeadlineShaped()) }
-                },
-                onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
-            )
+            // Behind the disclosure — filtering is the occasional gesture,
+            // so only the axis switch earns permanent space
+            // (`FrontierColumns.tsx`'s own split, ported).
+            if (filtersOpen) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        FacetFilterRow(
+                            facets = facets,
+                            // The live vocabulary the axis's own board carries
+                            // (`contexts_of` over the pre-facet list, `board.contexts`
+                            // — never a hardcoded suggested list, which would offer a
+                            // chip for a context nothing on the board has, or omit one
+                            // an item actually carries).
+                            contexts = currentBoard?.contexts ?: emptyList(),
+                            shownLine = shownLine,
+                            onToggle = { facet, value ->
+                                scope.launch { viewModel.toggleFacet(facet, value, nowDeadlineShaped()) }
+                            },
+                            onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
+                        )
+                    }
+                }
+            }
 
             // One LazyColumn for the whole rest of the screen — the queue
             // (whichever of its three states applies) and, appended after
@@ -351,7 +393,55 @@ fun NowScreen(
             // scroll is the fix, not a `weight` modifier on a still-split
             // layout, since the queue's own three states already need to
             // sit inside *some* `LazyListScope` for `item`/`items` below.
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // The panel is always index 0 when present; opening one (or
+            // switching cards) brings it into view rather than leaving the
+            // reader staring at the still-standing board they tapped in —
+            // `SelectedItemSection`'s own scrollIntoView (`NowScreen.tsx`).
+            // Only on a *change* of selection: `remember` starts equal to
+            // whatever an Activity recreation restored, so a fold/unfold
+            // keeps its scroll position instead of animating back to top.
+            var lastScrolledSelection by remember { mutableStateOf(selectedId) }
+            LaunchedEffect(selectedId) {
+                if (selectedId != null && selectedId != lastScrolledSelection) {
+                    listState.animateScrollToItem(0)
+                }
+                lastScrolledSelection = selectedId
+            }
+            LazyColumn(
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                // The last row scrolls clear of the Capture FAB.
+                contentPadding = PaddingValues(bottom = 64.dp),
+            ) {
+                // The opened item, ABOVE the board, which keeps rendering
+                // below — never an early return of the panel instead of the
+                // frontier (ADR-0021 decision 7 / #404: the board vanishing
+                // on tap was the bug). The panel lives in its own file, so
+                // acting/editing/steps stay one implementation with the
+                // notification door's full-screen route.
+                selectedId?.let { id ->
+                    item(key = "selected-item") {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                            ),
+                        ) {
+                            ItemDetailPanel(
+                                itemId = id,
+                                syncTick = syncTick,
+                                closeLabel = "Close",
+                                onClose = { viewModel.closeItem() },
+                                onGrill = onGrill,
+                                onMutated = { scope.launch { reload() } },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                            )
+                        }
+                    }
+                }
+
                 when {
                     loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
                     currentBoard == null ||
@@ -408,8 +498,8 @@ fun NowScreen(
                                     NowRow(
                                         record = record,
                                         dark = dark,
-                                        onOpen = { onOpenItem(record.id) },
-                                        onAct = { action -> act(record.id, action) },
+                                        selected = record.id == selectedId,
+                                        onOpen = { viewModel.selectItem(record.id) },
                                     )
                                 }
 
@@ -436,8 +526,8 @@ fun NowScreen(
                                 BlockedRow(
                                     entry = entry,
                                     dark = dark,
-                                    onOpen = { onOpenItem(entry.item.id) },
-                                    onAct = { action -> act(entry.item.id, action) },
+                                    selected = entry.item.id == selectedId,
+                                    onOpen = { viewModel.selectItem(entry.item.id) },
                                 )
                             }
                         }
@@ -457,17 +547,55 @@ fun NowScreen(
     }
 }
 
-/** The axis switch — every grouping axis, in [FRONTIER_AXES]'s order. Never
- * decides which axis groups what; picking one only tells [NowViewModel]
- * which already-decided board to ask for next. */
+/** The axis switch — every grouping axis, in [FRONTIER_AXES]'s order —
+ * plus the facet panel's one piece of permanent chrome: the Filter
+ * disclosure chip, carrying the active-facet count in its label and the
+ * "N of M shown" meta line beside it while shut (`FrontierColumns.tsx`'s
+ * own row, ported). A `FlowRow`, not a `Row`: five chips and a meta line
+ * are wider than the Fold's cover display, and clipping the disclosure
+ * would hide the only door to an active filter. Never decides which axis
+ * groups what; picking one only tells [NowViewModel] which
+ * already-decided board to ask for next. */
 @Composable
-private fun AxisRow(axis: MobileFrontierAxis, onPick: (MobileFrontierAxis) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun AxisRow(
+    axis: MobileFrontierAxis,
+    onPick: (MobileFrontierAxis) -> Unit,
+    filtersOpen: Boolean,
+    facetCount: Int,
+    shownLine: String?,
+    onToggleFilters: () -> Unit,
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
         for (candidate in FRONTIER_AXES) {
             FilterChip(
                 selected = axis == candidate,
                 onClick = { onPick(candidate) },
                 label = { Text(AXIS_LABEL[candidate] ?: candidate.name) },
+            )
+        }
+        FilterChip(
+            selected = filtersOpen,
+            onClick = onToggleFilters,
+            leadingIcon = {
+                Icon(
+                    painterResource(R.drawable.ic_search),
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+            },
+            // The middle dot is punctuation, not an icon (design README) —
+            // the count rides in the label so an active filter stays
+            // visible while the panel is shut.
+            label = { Text(if (facetCount > 0) "Filter · $facetCount" else "Filter") },
+        )
+        shownLine?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -485,6 +613,7 @@ private fun AxisRow(axis: MobileFrontierAxis, onPick: (MobileFrontierAxis) -> Un
 private fun FacetFilterRow(
     facets: FrontierFacetSelection,
     contexts: List<String>,
+    shownLine: String?,
     onToggle: (FrontierFacet, String) -> Unit,
     onClear: () -> Unit,
 ) {
@@ -494,7 +623,18 @@ private fun FacetFilterRow(
         FacetChipGroup("Energy", FrontierFacet.ENERGY, ENERGY_VALUES, facets.energy, onToggle)
         FacetChipGroup("Urgency", FrontierFacet.URGENCY, URGENCY_VALUES, facets.urgency, onToggle)
         if (facets.count() > 0) {
-            TextButton(onClick = onClear) { Text("Clear filters") }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    shownLine ?: "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onClear) { Text("Clear filters") }
+            }
         }
     }
 }
@@ -603,19 +743,19 @@ private fun ColumnHeader(
 private fun BlockedRow(
     entry: NowBlockedEntryRecord,
     dark: Boolean,
+    selected: Boolean,
     onOpen: () -> Unit,
-    onAct: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier.alpha(0.6f),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        NowRow(record = entry.item, dark = dark, onOpen = onOpen, onAct = onAct)
+        NowRow(record = entry.item, dark = dark, selected = selected, onOpen = onOpen)
         Text(
             blockedReasonLabel(entry.blockedByTitles),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp),
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp),
         )
     }
 }
@@ -624,33 +764,51 @@ private fun BlockedRow(
 private fun NowRow(
     record: NowItemRecord,
     dark: Boolean,
+    selected: Boolean,
     onOpen: () -> Unit,
-    onAct: (String) -> Unit,
 ) {
-    // The card itself is the door to item detail (#521). Material3's
-    // `onClick` overload rather than a `clickable` modifier: it carries the
-    // ripple, the `role = Button` semantics and the minimum touch target
-    // that a bare modifier leaves to the caller. No chevron and no other
-    // added chrome -- the design system's `interactive` card is the whole
-    // affordance, and its icon vocabulary has no chevron in it.
+    // The card is the door to the item's expanded panel, in place above
+    // the board (#521's tap target, retargeted from the full-screen route
+    // by the inline-expansion slice). Material3's `onClick` overload
+    // rather than a `clickable` modifier: it carries the ripple, the
+    // `role = Button` semantics and the minimum touch target that a bare
+    // modifier leaves to the caller. No chevron and no other added chrome
+    // -- the design system's `interactive` card is the whole affordance,
+    // and its icon vocabulary has no chevron in it.
     //
-    // The action buttons below stay reachable: a nested clickable consumes
-    // its own press, so `Complete` still completes rather than opening.
+    // No action row on the card: acting is what the opened item is for,
+    // and the four-button FlowRow was most of the card's ~130dp height.
+    // The web `ItemCard`'s one inline affordance — the mark-done checkmark
+    // — is deliberately not ported either: on touch it would sit one slip
+    // away from the whole-card tap target. `availableActions` still
+    // arrives decided on the record; the opened item renders it.
     Card(
         onClick = onOpen,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { this.selected = selected },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        // The originating card stays marked while its panel stands — an
+        // ember-tinted BORDER, never a fill (the design README's accent
+        // rule; the web ItemCard's `accent` + `aria-current` treatment).
+        border = if (selected) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            null
+        },
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            // --space-5 / --space-2: the web ItemCard's own density class,
+            // not the 16/8 a full-width content card gets.
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             // Every entry on the meta row is conditional -- the swatch and the
             // word both go for `calm`, the deadline draws only when set, and
             // `ready` says nothing -- so the ordinary minted action reaches
             // this row with nothing to put on it. An empty `Row` is not free:
-            // it measures zero high but the Column's `spacedBy(8.dp)` still
-            // pays for it, stranding 8dp above the title. Read once here and
+            // it measures zero high but the Column's `spacedBy(4.dp)` still
+            // pays for it, stranding 4dp above the title. Read once here and
             // reused below, so the guard cannot disagree with what draws.
             val swatch = urgencyColor(record.urgency, dark)
             val urgencyWord = urgencyLabel(record.urgency)
@@ -672,9 +830,10 @@ private fun NowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     swatch?.let {
+                        // 6dp: the web ItemRow's own dot size.
                         Box(
                             modifier = Modifier
-                                .size(8.dp)
+                                .size(6.dp)
                                 .background(it, CircleShape),
                         )
                     }
@@ -720,27 +879,6 @@ private fun NowRow(
             }
 
             Text(record.title, style = MaterialTheme.typography.bodyLarge)
-
-            if (record.availableActions.isNotEmpty()) {
-                // A `FlowRow`, not a `Row`: a `Ready` item offers all four
-                // actions (`decisions::actions::available_actions`), and
-                // "Start / Complete / Mark blocked / Cancel" is wider than
-                // a phone card — a fixed, non-scrolling Row clipped the
-                // trailing action on the ordinary case, not just on the
-                // Fold's cover display. Wrapping keeps every offered action
-                // reachable at any width without this file deciding which
-                // ones matter.
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    for (action in record.availableActions) {
-                        OutlinedButton(onClick = { onAct(action) }) {
-                            Text(ACTION_LABEL[action] ?: action)
-                        }
-                    }
-                }
-            }
         }
     }
 }

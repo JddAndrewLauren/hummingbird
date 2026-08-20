@@ -21,9 +21,9 @@ class AlertCardTitleTest {
             ?: error("hummingbird.repoRoot not set -- run under Gradle (see app/build.gradle.kts)")
         val file = File(
             root,
-            "client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailScreen.kt",
+            "client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailPanel.kt",
         )
-        check(file.isFile) { "ItemDetailScreen.kt not found under $root" }
+        check(file.isFile) { "ItemDetailPanel.kt not found under $root" }
         file.readText()
             .replace(Regex("""/\*[\s\S]*?\*/"""), "")
             .replace(Regex("""(?m)^\s*//.*$"""), "")
@@ -43,7 +43,7 @@ class AlertCardTitleTest {
         // whose title says something the heading does not must still show
         // it, so the fix is a condition rather than a removal.
         assertTrue(
-            "ItemDetailScreen must still be able to draw alert.title",
+            "ItemDetailPanel must still be able to draw alert.title",
             src.contains("Text(alert.title"),
         )
     }

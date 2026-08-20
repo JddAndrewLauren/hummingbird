@@ -47,6 +47,10 @@ class CaptureFieldSetStructuralTest {
         val named = listOf(
             "CaptureActivity.kt" to
                 "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureActivity.kt",
+            // The FAB's capture sheet — the same surface in its light
+            // form, under the same vocabulary and date-regex bans.
+            "CaptureSheet.kt" to
+                "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureSheet.kt",
             "CaptureViewModel.kt" to
                 "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureViewModel.kt",
         ).associate { (name, path) -> name to repoFile(path) }

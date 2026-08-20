@@ -219,7 +219,7 @@ private fun QuestionCard(
     onAnswer: (String) -> Unit,
 ) {
     // Saveable, not `remember`: a fold/rotation mid-answer must not throw
-    // away what was typed — the same rule `ItemDetailScreen.kt`'s own edit
+    // away what was typed — the same rule `ItemDetailPanel.kt`'s own edit
     // draft follows.
     var freeText by rememberSaveable(prompt) { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -267,7 +267,7 @@ private fun ReviewCard(
     onConfirm: (summary: String, deleteUntickedPlan: Boolean) -> Unit,
 ) {
     // Saveable: the review card's own edits are human-authored content, the
-    // same standard `ItemDetailScreen.kt`'s edit draft and `GrillTakeover
+    // same standard `ItemDetailPanel.kt`'s edit draft and `GrillTakeover
     // .tsx`'s web precedent both hold themselves to.
     var summaryDraft by rememberSaveable(summary) { mutableStateOf(summary) }
     var deleteUntickedPlan by rememberSaveable(summary, proposedEdit) { mutableStateOf(false) }

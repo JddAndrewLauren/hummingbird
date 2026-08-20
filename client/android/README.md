@@ -186,7 +186,7 @@ from the bottom nav bar** (#532, above) — `NavDestination.TRIAGE` with
 resolves to: registered here at #531, wired at #532.
 `TriageScreenStructuralTest` asserts that reachability, gates the header-count and
 Grill rules above, and — the same foreground-resume discipline `AlertsScreen`,
-`NowScreen` and `ItemDetailScreen` all carry — asserts a `LifecycleResumeEffect`
+`NowScreen` and `ItemDetailPanel` all carry — asserts a `LifecycleResumeEffect`
 re-reads the queue on every return to the screen, not only on the app-wide
 `syncTick`: a capture minted from `CaptureActivity` while Triage was
 backgrounded must not wait for the next tick to appear.
@@ -238,6 +238,41 @@ are shown, labelled and dimmed, but not tappable — this slice ships no
 inline edit the way the web's #479 does. The route was registered at #541
 as a gesture entry off the More sheet, deliberately outside `NavDestination`
 (above); #542 replaced its placeholder body with this real surface.
+
+## The UI iteration: icons, compact cards, filter disclosure, inline expansion, the capture FAB
+
+Five slices bringing the surfaces in line with the design kit
+(`.claude/skills/hummingbird-design/ui_kits/android/`) and the PWA:
+
+- **Bar and sheet glyphs.** The web's `screen-icons.ts` map, as vendored
+  Lucide vector drawables (`res/drawable/ic_*.xml`, each header naming its
+  source glyph — `ic_inbox.xml`'s recipe). `navIcon()` beside
+  `NavDestination` is an exhaustive no-`else` `when`, so a tenth
+  destination fails to compile until it names a glyph;
+  `BottomNavStructuralTest` pins the mechanism.
+- **Compact cards.** A collapsed card is title + meta only — the action
+  `FlowRow` left the Now cards for the opened item (the web `ItemCard`'s
+  own shape), and with it `NowViewModel`'s whole act door.
+  `NowScreenStructuralTest` pins the inverse: `NowScreen.kt` never reads
+  `availableActions`.
+- **The filter disclosure.** Only the axis switch keeps permanent space;
+  the facet groups open behind one Filter chip carrying the active count.
+  "N of M shown" comes decided across the seam
+  (`NowBoardRecord.shown_count`/`total_count` — Kotlin never holds the
+  pre-facet list, ADR-0025).
+- **Inline expansion.** Tapping a Now card opens `ItemDetailPanel` — the
+  whole former `ItemDetailScreen` body, extracted so the route (still the
+  notification and Recall door, ADR-0027) and Now render one
+  implementation — as item 0 of Now's one `LazyColumn`, above the board,
+  which keeps rendering below (ADR-0021 decision 7). Selection is
+  `NowViewModel.selectedItemId`, Triage's one-open-at-a-time shape.
+  `NowItemDoorTest` pins the door end to end.
+- **The capture FAB and sheet.** The design kit's extended FAB (the one
+  sanctioned large ember fill) opens `CaptureSheet` — the light form over
+  the same `CaptureViewModel` and `ui/forms/` components, no details
+  disclosure and no mic (`CaptureActivity`, still the launcher icon's and
+  shortcut's door, keeps the full form; `CaptureSheetStructuralTest` pins
+  both the FAB and the no-second-Intent-door rule).
 
 ## Choice rows, and the app's one layout gate (#576)
 

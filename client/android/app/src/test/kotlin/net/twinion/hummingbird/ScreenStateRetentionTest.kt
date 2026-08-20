@@ -29,16 +29,21 @@ class ScreenStateRetentionTest {
 
     private val screens = listOf(
         "CaptureActivity.kt" to "CaptureViewModel",
+        // The FAB's sheet shares the Activity form's ViewModel shape but
+        // resolves it against MainActivity's store — a fold mid-draft is
+        // exactly the transition this gate exists for, and the sheet has
+        // words to lose like the Activity does.
+        "CaptureSheet.kt" to "CaptureViewModel",
         "NowScreen.kt" to "NowViewModel",
         "AlertsScreen.kt" to "AlertsViewModel",
         "AlertDetailScreen.kt" to "AlertDetailViewModel",
         // The item screen has the most to lose of any of them: its edit
         // draft is content a person typed, and a fold mid-edit is exactly
         // the transition this gate exists for.
-        "ItemDetailScreen.kt" to "ItemDetailViewModel",
+        "ItemDetailPanel.kt" to "ItemDetailViewModel",
         // The item screen's own microtask affordance (#539) shares the
         // file but not the ViewModel — a second entry, not a substitute.
-        "ItemDetailScreen.kt" to "MicrotaskViewModel",
+        "ItemDetailPanel.kt" to "MicrotaskViewModel",
         // The rules screen has a draft too (#540/M4) — a rule someone is
         // writing, conditions and all.
         "RulesScreen.kt" to "RulesViewModel",

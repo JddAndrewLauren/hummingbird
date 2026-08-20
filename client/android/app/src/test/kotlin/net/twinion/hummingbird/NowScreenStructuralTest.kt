@@ -35,13 +35,17 @@ class NowScreenStructuralTest {
     }
 
     @Test
-    fun `NowViewModel imports the real uniffi nowBoard and act bindings`() {
+    fun `NowViewModel imports the real uniffi nowBoard binding, and no act door`() {
         assertTrue(
             "expected NowViewModel to close over CoreHolder.get(...).nowBoard",
             nowViewModelSrc.contains(".nowBoard("),
         )
-        assertTrue(
-            "expected NowViewModel to close over CoreHolder.get(...).act",
+        // Acting left this surface with the cards' action buttons: the
+        // opened item acts through ItemDetailViewModel, so an act door
+        // reappearing here would be a second mutation path to keep in
+        // step with that one.
+        assertFalse(
+            "NowViewModel must not carry an act door",
             nowViewModelSrc.contains(".act("),
         )
     }
@@ -277,19 +281,23 @@ class NowScreenStructuralTest {
     }
 
     @Test
-    fun `the action buttons wrap rather than clipping at a narrow width`() {
-        // A Ready item offers all four actions (decisions::actions::
-        // available_actions), and "Start / Complete / Mark blocked /
-        // Cancel" is wider than a phone card — a fixed, non-scrolling Row
-        // clipped the trailing action on the ordinary case. No emulator
-        // here, so this gates the container choice itself.
-        val actionsBlock = Regex("""availableActions\.isNotEmpty\(\)[\s\S]*?\n {12}}""")
-            .find(nowScreenSrc)
-            ?.value
-            ?: error("could not locate the available-actions block in NowScreen.kt")
-        assertTrue(
-            "the action buttons must sit in a FlowRow, not a fixed Row",
-            actionsBlock.contains("FlowRow("),
+    fun `the cards carry no action buttons`() {
+        // A collapsed card is title + meta only; acting is what the opened
+        // item is for. (The web ItemCard keeps exactly one inline
+        // affordance, its mark-done checkmark — Android ports neither it
+        // nor the action row, a deliberate touch-target call recorded on
+        // NowRow itself.) The four-button FlowRow was most of a card's
+        // ~130dp height, so a read of `availableActions` reappearing in
+        // this file is the density regression this pins against — the list
+        // still arrives decided on every record; the opened item renders
+        // it. Comments are stripped so a doc sentence may name what this
+        // forbids.
+        val code = nowScreenSrc
+            .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+            .replace(Regex("""(?m)^\s*//.*$"""), "")
+        assertFalse(
+            "NowScreen.kt must not read availableActions — actions live on the opened item",
+            code.contains("availableActions"),
         )
     }
 

@@ -35,8 +35,8 @@ class CaptureSubmitRefusalTest {
         repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailViewModel.kt")
     }
 
-    private val itemDetailScreenSrc by lazy {
-        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailScreen.kt")
+    private val itemDetailPanelSrc by lazy {
+        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailPanel.kt")
     }
 
     @Test
@@ -120,7 +120,7 @@ class CaptureSubmitRefusalTest {
             // The item edit form asks the same question of the same rule,
             // so the same ban applies to it.
             "ItemDetailViewModel.kt" to itemDetailViewModelSrc,
-            "ItemDetailScreen.kt" to itemDetailScreenSrc,
+            "ItemDetailPanel.kt" to itemDetailPanelSrc,
         )) {
             assertFalse("$name must not call isBlank()", src.contains("isBlank("))
             assertFalse("$name must not call isNotBlank()", src.contains("isNotBlank("))
