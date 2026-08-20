@@ -325,6 +325,25 @@ private fun AppRoot(
         syncTick += 1
     }
 
+    // Pull-to-refresh's in-flight flag: the gesture is only a second door
+    // onto the one `sync("user")` cadence above — never a screen-local
+    // cycle — and the indicator spins for exactly the cycle's duration;
+    // the repaint itself still arrives through `syncTick`. Re-entry is
+    // dropped rather than queued: a second pull mid-cycle has nothing to
+    // add that the in-flight cycle won't already deliver.
+    var refreshing by remember { mutableStateOf(false) }
+    fun refresh() {
+        if (refreshing) return
+        scope.launch {
+            refreshing = true
+            try {
+                sync("user")
+            } finally {
+                refreshing = false
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         val host = CoreHolder.get(context)
         core = host
@@ -509,6 +528,8 @@ private fun AppRoot(
             composable(Routes.NOW) {
                 NowScreen(
                     syncTick = syncTick,
+                    isRefreshing = refreshing,
+                    onRefresh = ::refresh,
                     // A tapped card expands in place (NowScreen's own
                     // ItemDetailPanel item) — Grill is the one gesture that
                     // still leaves the screen, and Back from the takeover
@@ -520,6 +541,8 @@ private fun AppRoot(
             composable(Routes.STATUS) {
                 StatusScreen(
                     syncTick = syncTick,
+                    isRefreshing = refreshing,
+                    onRefresh = ::refresh,
                     // Through `goToTab`, never a plain `navigate` (#574):
                     // Settings is a More destination, so it must land in the
                     // More stack wherever it was entered from. A plain
@@ -550,6 +573,8 @@ private fun AppRoot(
             composable(Routes.ALERTS) {
                 AlertsScreen(
                     syncTick = syncTick,
+                    isRefreshing = refreshing,
+                    onRefresh = ::refresh,
                     onOpenAlert = { alertId ->
                         navController.navigate(Routes.alertDetail(alertId))
                     },
@@ -564,6 +589,8 @@ private fun AppRoot(
             composable(Routes.TRIAGE) {
                 TriageScreen(
                     syncTick = syncTick,
+                    isRefreshing = refreshing,
+                    onRefresh = ::refresh,
                     onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "triage")) },
                 )
             }

@@ -12,12 +12,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -54,9 +56,12 @@ import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 // takeover (`GrillTakeoverScreen.kt`) rather than opening an interview
 // inline — this screen holds no turn/draft state of its own, gated on the
 // row's own `canGrill`/`hasGrillDraft` facts from the seam.
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TriageScreen(
     syncTick: Int = 0,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onGrill: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -96,78 +101,83 @@ fun TriageScreen(
     }
 
     Scaffold { padding ->
-        Column(
+        // The pull gesture is a second door onto AppRoot's one sync cadence
+        // (`sync("user")` via [onRefresh]) — never a screen-local cycle; the
+        // reload itself still arrives through `syncTick` when the cycle lands.
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .contentMaxWidth()
-                .padding(24.dp)
-                .verticalScroll(rememberScrollState())
-                // Scrolled, not a fixed inset: the last row
-                // clears the Capture FAB (24dp outer + this).
-                .padding(bottom = 64.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(padding),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .contentMaxWidth()
+                    // Top 12dp, not the outer 24dp: with the title gone the
+                    // counts sit directly under the app row.
+                    .padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
+                    .verticalScroll(rememberScrollState())
+                    // Scrolled, not a fixed inset: the last row
+                    // clears the Capture FAB (24dp outer + this).
+                    .padding(bottom = 64.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text("Triage", style = MaterialTheme.typography.headlineLarge)
+                // No screen title: the bottom bar already names this tab. The
+                // counts keep the header's place as the queue's first line — the
+                // record's own fields, never a `board.items.size` recomputation
+                // (`capturedCount`/`grillingCount` came decided across the seam).
                 (state as? TriageState.Loaded)?.board?.let { board ->
-                    // The two counts are the record's own fields — never a
-                    // `board.items.size` recomputation, which is exactly
-                    // this AC's point: `capturedCount`/`grillingCount` came
-                    // decided across the seam.
                     Text(
                         "${board.capturedCount} captured · ${board.grillingCount} grilling",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            }
 
-            statusLine?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
+                statusLine?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
 
-            when (val current = state) {
-                TriageState.Loading -> CircularProgressIndicator()
-                is TriageState.Loaded -> {
-                    if (current.board.items.isEmpty()) {
-                        Text(
-                            "Nothing captured is waiting to be sorted.",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        for (item in current.board.items) {
-                            TriageRow(
-                                item = item,
-                                dark = dark,
-                                expanded = selectedId == item.id,
-                                draft = if (selectedId == item.id) draft else null,
-                                formMeta = formMeta,
-                                onToggle = { viewModel.select(item.id) },
-                                onDraftChange = viewModel::updateDraft,
-                                onComplete = {
-                                    scope.launch {
-                                        viewModel.complete(item.id, System.currentTimeMillis())
-                                    }
-                                },
-                                onPromote = {
-                                    scope.launch {
-                                        viewModel.promote(item.id, System.currentTimeMillis())
-                                    }
-                                },
-                                onGrill = { onGrill(item.id) },
-                                canSave = viewModel.canSave,
-                                metaProblems = viewModel.metaProblems,
+                when (val current = state) {
+                    TriageState.Loading -> CircularProgressIndicator()
+                    is TriageState.Loaded -> {
+                        if (current.board.items.isEmpty()) {
+                            Text(
+                                "Nothing captured is waiting to be sorted.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        } else {
+                            for (item in current.board.items) {
+                                TriageRow(
+                                    item = item,
+                                    dark = dark,
+                                    expanded = selectedId == item.id,
+                                    draft = if (selectedId == item.id) draft else null,
+                                    formMeta = formMeta,
+                                    onToggle = { viewModel.select(item.id) },
+                                    onDraftChange = viewModel::updateDraft,
+                                    onComplete = {
+                                        scope.launch {
+                                            viewModel.complete(item.id, System.currentTimeMillis())
+                                        }
+                                    },
+                                    onPromote = {
+                                        scope.launch {
+                                            viewModel.promote(item.id, System.currentTimeMillis())
+                                        }
+                                    },
+                                    onGrill = { onGrill(item.id) },
+                                    canSave = viewModel.canSave,
+                                    metaProblems = viewModel.metaProblems,
+                                )
+                            }
                         }
                     }
                 }
