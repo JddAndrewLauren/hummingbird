@@ -48,8 +48,12 @@ class TopBarStructuralTest {
             src.contains("contentDescription = \"Search everything\""),
         )
         assertTrue(
-            "the trigger must reach Recall through the tab door",
-            src.contains("goToTab(Routes.RECALL)"),
+            // `openRecall()`, not a bare `recallOpen = true`: the open
+            // gesture also resets the overlay's expansion, and
+            // `RecallScreenStructuralTest` holds the reason (A1a — a
+            // `LaunchedEffect(Unit)` is not "on open").
+            "the trigger must open the search overlay, never navigate (the web overlay's contract)",
+            src.contains("onSearch = { openRecall() }"),
         )
     }
 

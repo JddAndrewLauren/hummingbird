@@ -1,7 +1,10 @@
 package net.twinion.hummingbird
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -81,6 +84,106 @@ class RecallViewModelTest {
 
         assertTrue("the cancellation must propagate rather than be swallowed", caught != null)
         assertNull("a cancelled search must never flash a failure line", vm.statusLine.value)
+    }
+
+    @Test
+    fun `tapping a row opens it, tapping it again closes it`() = runBlocking {
+        val vm = RecallViewModel(searchFn = { _, _ -> outcome() })
+
+        vm.select("i-1")
+        assertEquals("i-1", vm.selectedId.value)
+
+        vm.select("i-1")
+        assertNull("the open row's own tap must close it", vm.selectedId.value)
+    }
+
+    @Test
+    fun `tapping a different row moves the expansion rather than adding one`() = runBlocking {
+        val vm = RecallViewModel(searchFn = { _, _ -> outcome() })
+
+        vm.select("i-1")
+        vm.select("i-2")
+
+        assertEquals("i-2", vm.selectedId.value)
+    }
+
+    @Test
+    fun `a keystroke closes the open panel`() = runBlocking {
+        // The panel must not stand open under a query it no longer answers
+        // — this class's own header states the rule, and the web's
+        // `useRecallWiring.ts` clears its whole slot for it.
+        val vm = RecallViewModel(searchFn = { _, _ -> outcome() })
+        vm.select("i-1")
+
+        vm.setQueryText("stamps")
+
+        assertNull(vm.selectedId.value)
+    }
+
+    @Test
+    fun `the open-gesture reset is a method the host calls, not composition state`() {
+        // A1a: `AppRoot.openRecall` calls this at the gesture that opens the
+        // overlay. It lives here — and not in a `LaunchedEffect(Unit)` in
+        // the overlay — precisely so that an Activity recreation (a
+        // fold/unfold on the install target) re-enters the composition
+        // WITHOUT collapsing an open, possibly mid-edit, panel. Nothing in
+        // this process can recreate an Activity, so what a unit test can
+        // hold is the half that makes the fix possible: the selection
+        // survives everything except an explicit clear.
+        val vm = RecallViewModel(searchFn = { _, _ -> outcome() })
+        vm.select("i-1")
+
+        assertEquals(
+            "only an explicit clear may close the panel",
+            "i-1",
+            vm.selectedId.value,
+        )
+
+        vm.clearSelection()
+
+        assertNull(vm.selectedId.value)
+    }
+
+    @Test
+    fun `a superseded search never lowers the flag under the one replacing it`() = runBlocking {
+        // A3b: `LaunchedEffect(query)` cancels the previous search without
+        // joining it, so the cancelled call's `finally` can land AFTER its
+        // replacement has already raised `loading` — leaving a search in
+        // flight with no spinner under it. Staged here with two gates: the
+        // superseded call is held mid-crossing until the replacing one is
+        // also mid-crossing, then released to fail.
+        val supersededGate = CompletableDeferred<Unit>()
+        val replacingGate = CompletableDeferred<Unit>()
+        var calls = 0
+        val vm = RecallViewModel(
+            searchFn = { _, _ ->
+                if (++calls == 1) {
+                    supersededGate.await()
+                    throw CancellationException("keystroke superseded this call")
+                }
+                replacingGate.await()
+                outcome(row("a"))
+            },
+        )
+
+        vm.setQueryText("stamps")
+        val superseded = launch { try { vm.search(1_000) } catch (expected: CancellationException) {} }
+        val replacing = launch { vm.search(2_000) }
+        yield()
+
+        supersededGate.complete(Unit)
+        superseded.join()
+
+        assertTrue(
+            "the replacing search is still crossing — its flag must survive the cancelled one's finally",
+            vm.loading.value,
+        )
+
+        replacingGate.complete(Unit)
+        replacing.join()
+
+        assertTrue("the newest search's answer stands", vm.rows.value.map { it.id } == listOf("a"))
+        assertTrue("and it settles its own flag", !vm.loading.value)
     }
 
     @Test

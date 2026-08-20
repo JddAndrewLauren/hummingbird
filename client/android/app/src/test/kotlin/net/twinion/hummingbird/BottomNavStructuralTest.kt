@@ -73,14 +73,13 @@ class BottomNavStructuralTest {
      * `{…}` placeholder — a detail/takeover route (`ALERT_DETAIL`,
      * `ITEM_DETAIL`, `GRILL`) is parameterised and reached by `navigate(...)`
      * from inside a screen, never from the bar or the sheet, so it is not
-     * part of this nav form's universe at all. `RECALL` is excluded for a
-     * different reason: it is a gesture entry point, not a screen — the same
-     * distinction the web's `nav-bar.ts` draws by keeping its `onSearch` row
-     * outside `NAV_BAR_OVERFLOW` and `SCREENS` entirely, so it carries no
-     * `NavDestination` entry here either and this universe stays "the nine
-     * screens", matching the web's own `SCREENS` count. */
+     * part of this nav form's universe at all. (Recall needs no exclusion
+     * any more: the search-overlay slice removed its route entirely — the
+     * same distinction the web's `nav-bar.ts` draws by keeping its
+     * `onSearch` row outside `NAV_BAR_OVERFLOW` and `SCREENS`, now held
+     * structurally rather than by name.) */
     private val topLevelScreenConsts: Set<String> by lazy {
-        routesConsts.filterValues { !it.contains("{") }.keys - "RECALL"
+        routesConsts.filterValues { !it.contains("{") }.keys
     }
 
     /** The nav form's exception mechanism: a place to name a top-level
@@ -212,23 +211,24 @@ class BottomNavStructuralTest {
     }
 
     @Test
-    fun `the More sheet carries a Recall entry point, reachable but not a top-level screen`() {
-        // #541's other half of the AC: "all nine screens ... plus the
-        // Recall entry." Routes.RECALL is deliberately absent from
-        // `NavDestination` (see `topLevelScreenConsts`'s own doc), so this
-        // is the one place that pins its reachability instead.
-        assertTrue(
-            "MainActivity must register composable(Routes.RECALL)",
-            mainActivitySrc.contains("composable(Routes.RECALL)"),
-        )
+    fun `the More sheet carries a Recall entry point, a gesture with no route at all`() {
+        // #541's other half of the AC ("all nine screens ... plus the
+        // Recall entry"), as reshaped by the search-overlay slice: Recall
+        // is an overlay AppRoot draws, so it has NO route — the sheet's row
+        // fires the overlay's own door instead of navigating, and nothing
+        // may reintroduce a route string for it.
         val sheetBody = mainActivitySrc.substringAfter("private fun MoreSheet(").substringBefore("\n}\n")
         assertTrue(
-            "the More sheet must offer a way to Routes.RECALL",
-            sheetBody.contains("Routes.RECALL"),
+            "the More sheet must offer the search gesture",
+            sheetBody.contains("onClick = onSearch"),
         )
         assertTrue(
-            "RECALL must not be one of NavDestination's entries — it is a gesture, not a screen",
-            navDestinations.none { it.routeConst == "RECALL" },
+            "the sheet's search row must close the sheet as the overlay opens",
+            mainActivitySrc.contains("onSearch = {\n                moreSheetOpen = false\n                openRecall()\n            }"),
+        )
+        assertFalse(
+            "no RECALL route may exist — the overlay is not a destination",
+            mainActivitySrc.contains("RECALL"),
         )
     }
 

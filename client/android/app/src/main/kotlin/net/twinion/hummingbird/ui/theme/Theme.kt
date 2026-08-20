@@ -5,6 +5,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 // The Hummingbird MaterialTheme: the design system's semantic aliases
@@ -82,14 +84,33 @@ private val DarkColors = darkColorScheme(
     scrim = Color.Black,
 )
 
+/** Whether the app is rendering dark right now — the **resolved** answer,
+ * `ThemePreference` already folded into it, not the OS setting.
+ *
+ * Every hand-picked token pair in this app (`urgencyColor`, `StageBadge`,
+ * `bandColor`, `warnColor`, …) needs this boolean, and the tokens live
+ * outside Material's `colorScheme`, so there is nowhere else to read it
+ * from. Reading `isSystemInDarkTheme()` at those call sites is a bug and
+ * not an obvious one: it agrees with this value for `ThemePreference.SYSTEM`
+ * and disagrees only when the operator has forced light or dark in Settings
+ * against the OS — the one case nobody screencaps. [HummingbirdTheme]
+ * provides it beside the `colorScheme` it resolved from the same boolean, so
+ * the two can never disagree.
+ *
+ * The default is the OS setting, for a preview or test that composes a
+ * subtree without the theme around it. */
+val LocalHbDark = staticCompositionLocalOf<Boolean> { false }
+
 @Composable
 fun HummingbirdTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) DarkColors else LightColors,
-        typography = Typography,
-        content = content,
-    )
+    CompositionLocalProvider(LocalHbDark provides darkTheme) {
+        MaterialTheme(
+            colorScheme = if (darkTheme) DarkColors else LightColors,
+            typography = Typography,
+            content = content,
+        )
+    }
 }

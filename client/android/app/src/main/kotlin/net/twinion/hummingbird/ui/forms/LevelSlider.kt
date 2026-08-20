@@ -1,6 +1,5 @@
 package net.twinion.hummingbird.ui.forms
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +14,7 @@ import net.twinion.hummingbird.ui.EnergyGlyph
 import net.twinion.hummingbird.ui.LevelGlyphFamily
 import net.twinion.hummingbird.ui.SizeGlyph
 import net.twinion.hummingbird.ui.levelColor
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.VocabOption
 
 /** #529's first shared form component: a closed-vocabulary field rendered
@@ -67,7 +67,7 @@ fun LevelSlider(
     modifier: Modifier = Modifier,
     glyphFamily: LevelGlyphFamily? = null,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             label,

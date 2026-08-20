@@ -54,6 +54,17 @@
 //! and [`notification_tap_target`] once per notification tap — the latter
 //! could not be a record at all, since the tap holds two payload strings
 //! and no row to hang a decided answer on.
+//!
+//! **Pane facts ride the one `rank_panes` crossing** (the pane-facts
+//! slice): every [`MobileRankedPane`] carries its own question's decided
+//! [`MobilePaneFacts`] — the same per-question fact sets the web reads
+//! through its per-question wasm exports (`waste_facts_json` and kin).
+//! Deliberately not a per-pane door: a surface's collapsed rows need every
+//! pane's facts on every load to compose their headlines, so N doors would
+//! be exactly the JNI-crossing-times-a-list cost this header bans, where
+//! the record they already receive crosses once. Facts arrive as
+//! structured data and gaps as *kinds*, never sentences (ADR-0025's cut);
+//! the headline words stay in Kotlin.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,10 +78,13 @@ use hummingbird_core::decisions::panes::contract::{
     AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface,
 };
 use hummingbird_core::decisions::panes::inputs::{
-    BindingFact, BindingValueFact, PaneInputs, PaneItemFacts, PaneReadFacts, SyncFacts,
+    BindingFact, BindingValueFact, FreshnessFact, PaneInputs, PaneItemFacts, PaneReadFacts,
+    SyncFacts,
 };
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
-use hummingbird_core::decisions::panes::{github, kimi, race, uptime, waste};
+use hummingbird_core::decisions::panes::{
+    github, kimi, race, reachability, uptime, vacation, waste, weekend,
+};
 use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
@@ -1044,6 +1058,11 @@ pub struct TriageItemRecord {
     pub priority: i64,
     pub project_id: Option<String>,
     pub deadline: Option<String>,
+    /// The deadline's decided urgency band against the caller's device-local
+    /// `now` (#617's Triage-parity slice): the Triage rows render through the
+    /// same card the frontier board's rows do, and that card's swatch/word
+    /// read a decided band — never a Kotlin date comparison.
+    pub urgency: MobileUrgencyBand,
     pub scheduled_date: Option<String>,
     pub source: Option<String>,
     pub created_at: i64,
@@ -1058,7 +1077,7 @@ pub struct TriageItemRecord {
     pub has_grill_draft: bool,
 }
 
-fn to_triage_item_record(item: &Item, has_grill_draft: bool) -> TriageItemRecord {
+fn to_triage_item_record(item: &Item, has_grill_draft: bool, now: &str) -> TriageItemRecord {
     TriageItemRecord {
         id: item.id.clone(),
         title: item.title.clone(),
@@ -1070,6 +1089,7 @@ fn to_triage_item_record(item: &Item, has_grill_draft: bool) -> TriageItemRecord
         priority: item.priority,
         project_id: item.project_id.clone(),
         deadline: item.deadline.clone(),
+        urgency: map_urgency_band(urgency::compute_urgency(item.deadline.as_deref(), now)),
         scheduled_date: item.scheduled_date.clone(),
         source: item.source.clone(),
         created_at: item.created_at,
@@ -1098,6 +1118,7 @@ fn build_triage_board(
     triage_items: &[Item],
     grilling_items: &[Item],
     draft_item_ids: &[String],
+    now: &str,
 ) -> TriageBoardRecord {
     let by_id: HashMap<&str, &Item> = triage_items
         .iter()
@@ -1117,7 +1138,7 @@ fn build_triage_board(
         .filter_map(|id| {
             by_id
                 .get(id.as_str())
-                .map(|item| to_triage_item_record(item, draft_ids.contains(id.as_str())))
+                .map(|item| to_triage_item_record(item, draft_ids.contains(id.as_str()), now))
         })
         .collect();
 
@@ -2051,7 +2072,7 @@ fn to_mobile_pane_answer(answer: PaneAnswerCore) -> MobilePaneAnswer {
 /// RankedPaneRecord`] with its `question: String` resolved to
 /// [`MobileStandingQuestion`] (this section's drift gate) rather than
 /// carried across as the open wire string.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileRankedPane {
     pub standing_question: MobileStandingQuestion,
     /// Which subject this pane answers for (a workflow file name, a
@@ -2064,6 +2085,702 @@ pub struct MobileRankedPane {
     /// collapse-state and React-key equivalent on this client.
     pub pane_key: String,
     pub answer: MobilePaneAnswer,
+    /// This pane's own decided fact set (the pane-facts slice) — what the
+    /// collapsed headline and the expanded rendering read. See the module
+    /// header for why facts ride this record rather than per-pane doors.
+    pub facts: MobilePaneFacts,
+}
+
+// ----------------------------------------------------- pane facts (mirrors)
+// Every type below is a `uniffi` mirror of a `hummingbird_core::decisions::
+// panes` fact/gap type — the ADR-0003 second-definition convention
+// [`MobileUrgencyBand`] states: one derive-annotated twin per core type, one
+// exhaustive mapping function with no wildcard arm as the only place the two
+// may drift apart from. Facts are records, gaps are enums whose arms are
+// KINDS carrying data, never sentences — the words stay per-client.
+
+/// [`FreshnessFact`], mirrored as a `uniffi::Enum`.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobilePaneFreshness {
+    Unknown,
+    Age { age_ms: i64, declared_cadence_ms: Option<i64> },
+}
+
+fn map_pane_freshness(freshness: FreshnessFact) -> MobilePaneFreshness {
+    match freshness {
+        FreshnessFact::Unknown => MobilePaneFreshness::Unknown,
+        FreshnessFact::Age { age_ms, declared_cadence_ms } => {
+            MobilePaneFreshness::Age { age_ms, declared_cadence_ms }
+        }
+    }
+}
+
+/// [`waste::Stream`], mirrored — kerb order is the CLIENT's to apply
+/// (`STREAM_ORDER`), so the list crosses in payload order exactly as the
+/// core type carries it.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Enum)]
+pub enum MobileWasteStream {
+    Trash,
+    Recycling,
+    Yard,
+}
+
+fn map_waste_stream(stream: waste::Stream) -> MobileWasteStream {
+    match stream {
+        waste::Stream::Trash => MobileWasteStream::Trash,
+        waste::Stream::Recycling => MobileWasteStream::Recycling,
+        waste::Stream::Yard => MobileWasteStream::Yard,
+    }
+}
+
+/// [`waste::WasteGap`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileWasteGap {
+    NotFetched,
+    Malformed { reason: String },
+    UnknownSchema { schema: String },
+    NotJson,
+    NotAnObject,
+    NoZone,
+    BadDates,
+    UnknownStream,
+    UnresolvableZone { zone: String },
+    PastCollection { collected_on: String, weekday_index: u8 },
+}
+
+fn map_waste_gap(gap: waste::WasteGap) -> MobileWasteGap {
+    match gap {
+        waste::WasteGap::NotFetched => MobileWasteGap::NotFetched,
+        waste::WasteGap::Malformed { reason } => MobileWasteGap::Malformed { reason },
+        waste::WasteGap::UnknownSchema { schema } => MobileWasteGap::UnknownSchema { schema },
+        waste::WasteGap::NotJson => MobileWasteGap::NotJson,
+        waste::WasteGap::NotAnObject => MobileWasteGap::NotAnObject,
+        waste::WasteGap::NoZone => MobileWasteGap::NoZone,
+        waste::WasteGap::BadDates => MobileWasteGap::BadDates,
+        waste::WasteGap::UnknownStream => MobileWasteGap::UnknownStream,
+        waste::WasteGap::UnresolvableZone { zone } => MobileWasteGap::UnresolvableZone { zone },
+        waste::WasteGap::PastCollection { collected_on, weekday_index } => {
+            MobileWasteGap::PastCollection { collected_on, weekday_index }
+        }
+    }
+}
+
+/// [`waste::WasteFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileWasteFacts {
+    pub zone: String,
+    pub scheduled: String,
+    pub collected_on: String,
+    pub streams: Vec<MobileWasteStream>,
+    pub today: String,
+    pub days_away: i64,
+    pub holiday: bool,
+    pub weekday_index: u8,
+    pub stale: bool,
+    pub starts_at_ms: i64,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`waste::WasteSetup`]'s **kind**, mirrored — the payload (`page`) is
+/// deliberately dropped: nothing a client renders needs the address, and a
+/// bound page already reaches the host inside the facts.
+///
+/// This crosses because [`waste::waste_facts`] folds `Unread` and `Unusable`
+/// onto the same [`MobilePaneAnswerState::BoundButUnacquired`], so the answer
+/// state alone cannot tell "this device has not read its bindings yet" from
+/// "the binding holds something unusable" — the first is a wait, the second
+/// is a repair the reader can make in Settings. The web recovers the same
+/// distinction through its own `waste_setup_json` door (`seam.ts`), and
+/// renders "Checking setup" against "Setup needs a look".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileWasteSetup {
+    Bound,
+    Unread,
+    Unusable,
+    Unset,
+}
+
+fn map_waste_setup(setup: waste::WasteSetup) -> MobileWasteSetup {
+    match setup {
+        waste::WasteSetup::Bound { .. } => MobileWasteSetup::Bound,
+        waste::WasteSetup::Unread => MobileWasteSetup::Unread,
+        waste::WasteSetup::Unusable => MobileWasteSetup::Unusable,
+        waste::WasteSetup::Unset => MobileWasteSetup::Unset,
+    }
+}
+
+/// [`waste::WasteResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileWasteResolved {
+    Facts { facts: MobileWasteFacts },
+    Gap { gap: MobileWasteGap },
+}
+
+fn map_waste_resolved(resolved: waste::WasteResolved) -> MobileWasteResolved {
+    match resolved {
+        waste::WasteResolved::Facts(facts) => MobileWasteResolved::Facts {
+            facts: MobileWasteFacts {
+                zone: facts.zone,
+                scheduled: facts.scheduled,
+                collected_on: facts.collected_on,
+                streams: facts.streams.into_iter().map(map_waste_stream).collect(),
+                today: facts.today,
+                days_away: facts.days_away,
+                holiday: facts.holiday,
+                weekday_index: facts.weekday_index,
+                stale: facts.stale,
+                starts_at_ms: facts.starts_at_ms,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
+        waste::WasteResolved::Gap { gap } => MobileWasteResolved::Gap { gap: map_waste_gap(gap) },
+    }
+}
+
+/// [`weekend::WeekendDay`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileWeekendDay {
+    pub date: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+/// [`weekend::WeekendWindow`], mirrored — `days` is always exactly three
+/// (Friday, Saturday, Sunday), a `Vec` only because uniffi has no
+/// fixed-length array.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileWeekendWindow {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub days: Vec<MobileWeekendDay>,
+    pub under_way: bool,
+}
+
+/// [`weekend::WindowCounts`], mirrored — counts, never a per-entry list
+/// (the core module's own call).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileWeekendCounts {
+    pub events: i64,
+    pub due: i64,
+    pub scheduled: i64,
+}
+
+/// [`weekend::WeekendGap`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Enum)]
+pub enum MobileWeekendGap {
+    NotConnected,
+    Unacquired,
+    UnresolvableZone,
+}
+
+fn map_weekend_gap(gap: weekend::WeekendGap) -> MobileWeekendGap {
+    match gap {
+        weekend::WeekendGap::NotConnected => MobileWeekendGap::NotConnected,
+        weekend::WeekendGap::Unacquired => MobileWeekendGap::Unacquired,
+        weekend::WeekendGap::UnresolvableZone => MobileWeekendGap::UnresolvableZone,
+    }
+}
+
+/// [`weekend::WeekendFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileWeekendFacts {
+    pub window: MobileWeekendWindow,
+    pub counts: MobileWeekendCounts,
+}
+
+/// [`weekend::WeekendResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileWeekendResolved {
+    Facts { facts: MobileWeekendFacts },
+    Gap { gap: MobileWeekendGap },
+}
+
+fn map_weekend_resolved(resolved: weekend::WeekendResolved) -> MobileWeekendResolved {
+    match resolved {
+        weekend::WeekendResolved::Facts(facts) => MobileWeekendResolved::Facts {
+            facts: MobileWeekendFacts {
+                window: MobileWeekendWindow {
+                    start_ms: facts.window.start_ms,
+                    end_ms: facts.window.end_ms,
+                    days: facts
+                        .window
+                        .days
+                        .iter()
+                        .map(|day| MobileWeekendDay {
+                            date: day.date.clone(),
+                            start_ms: day.start_ms,
+                            end_ms: day.end_ms,
+                        })
+                        .collect(),
+                    under_way: facts.window.under_way,
+                },
+                counts: MobileWeekendCounts {
+                    events: facts.counts.events,
+                    due: facts.counts.due,
+                    scheduled: facts.counts.scheduled,
+                },
+            },
+        },
+        weekend::WeekendResolved::Gap { gap } => {
+            MobileWeekendResolved::Gap { gap: map_weekend_gap(gap) }
+        }
+    }
+}
+
+/// [`vacation::TripPhase`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Enum)]
+pub enum MobileTripPhase {
+    Upcoming,
+    DepartsToday,
+    UnderWay,
+    ReturnsToday,
+    Past,
+}
+
+fn map_trip_phase(phase: vacation::TripPhase) -> MobileTripPhase {
+    match phase {
+        vacation::TripPhase::Upcoming => MobileTripPhase::Upcoming,
+        vacation::TripPhase::DepartsToday => MobileTripPhase::DepartsToday,
+        vacation::TripPhase::UnderWay => MobileTripPhase::UnderWay,
+        vacation::TripPhase::ReturnsToday => MobileTripPhase::ReturnsToday,
+        vacation::TripPhase::Past => MobileTripPhase::Past,
+    }
+}
+
+/// [`vacation::Trip`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileTrip {
+    pub id: String,
+    pub location: Option<String>,
+    pub start_date: String,
+    pub last_date: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub phase: MobileTripPhase,
+    pub days_until: i64,
+    pub length_days: i64,
+    pub day_of_trip: i64,
+}
+
+fn map_trip(trip: vacation::Trip) -> MobileTrip {
+    MobileTrip {
+        id: trip.id,
+        location: trip.location,
+        start_date: trip.start_date,
+        last_date: trip.last_date,
+        start_ms: trip.start_ms,
+        end_ms: trip.end_ms,
+        phase: map_trip_phase(trip.phase),
+        days_until: trip.days_until,
+        length_days: trip.length_days,
+        day_of_trip: trip.day_of_trip,
+    }
+}
+
+/// [`vacation::VacationGap`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Enum)]
+pub enum MobileVacationGap {
+    UnresolvableZone,
+}
+
+/// [`vacation::VacationFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileVacationFacts {
+    pub next: Option<MobileTrip>,
+    pub later: Vec<MobileTrip>,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`vacation::VacationResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileVacationResolved {
+    Facts { facts: MobileVacationFacts },
+    Gap { gap: MobileVacationGap },
+}
+
+fn map_vacation_resolved(resolved: vacation::VacationResolved) -> MobileVacationResolved {
+    match resolved {
+        vacation::VacationResolved::Facts(facts) => MobileVacationResolved::Facts {
+            facts: MobileVacationFacts {
+                next: facts.next.map(map_trip),
+                later: facts.later.into_iter().map(map_trip).collect(),
+                stale: facts.stale,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
+        vacation::VacationResolved::Gap { gap } => MobileVacationResolved::Gap {
+            gap: match gap {
+                vacation::VacationGap::UnresolvableZone => MobileVacationGap::UnresolvableZone,
+            },
+        },
+    }
+}
+
+/// [`race::RaceSession`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRaceSession {
+    pub kind: String,
+    pub label: String,
+    pub starts_at_ms: i64,
+}
+
+/// [`race::RaceEvent`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRaceEvent {
+    pub name: String,
+    pub locality: String,
+    pub starts_at_ms: i64,
+    pub sessions: Vec<MobileRaceSession>,
+}
+
+/// [`race::RaceFacts::next_start`]'s tuple, mirrored as a record — uniffi
+/// has no tuples.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRaceNextStart {
+    pub label: String,
+    pub starts_at_ms: i64,
+}
+
+/// [`race::RaceGap`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileRaceGap {
+    NotFetched,
+    Malformed { reason: String },
+    UnknownSchema { schema: String },
+    NotJson,
+    NotAnObject,
+    NoSeason,
+    BadEvent,
+}
+
+fn map_race_gap(gap: race::RaceGap) -> MobileRaceGap {
+    match gap {
+        race::RaceGap::NotFetched => MobileRaceGap::NotFetched,
+        race::RaceGap::Malformed { reason } => MobileRaceGap::Malformed { reason },
+        race::RaceGap::UnknownSchema { schema } => MobileRaceGap::UnknownSchema { schema },
+        race::RaceGap::NotJson => MobileRaceGap::NotJson,
+        race::RaceGap::NotAnObject => MobileRaceGap::NotAnObject,
+        race::RaceGap::NoSeason => MobileRaceGap::NoSeason,
+        race::RaceGap::BadEvent => MobileRaceGap::BadEvent,
+    }
+}
+
+/// [`race::RaceFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileRaceFacts {
+    pub series: String,
+    pub event: Option<MobileRaceEvent>,
+    pub next_start: Option<MobileRaceNextStart>,
+    pub has_live_alert: bool,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`race::RaceSetup`]'s **kind**, mirrored — [`MobileWasteSetup`]'s twin,
+/// for its reasons, with the payload (`series`) dropped for its reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileRaceSetup {
+    Bound,
+    Unread,
+    Unusable,
+    Unset,
+}
+
+fn map_race_setup(setup: race::RaceSetup) -> MobileRaceSetup {
+    match setup {
+        race::RaceSetup::Bound { .. } => MobileRaceSetup::Bound,
+        race::RaceSetup::Unread => MobileRaceSetup::Unread,
+        race::RaceSetup::Unusable => MobileRaceSetup::Unusable,
+        race::RaceSetup::Unset => MobileRaceSetup::Unset,
+    }
+}
+
+/// [`race::RaceResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileRaceResolved {
+    Facts { facts: MobileRaceFacts },
+    Gap { gap: MobileRaceGap },
+}
+
+fn map_race_resolved(resolved: race::RaceResolved) -> MobileRaceResolved {
+    match resolved {
+        race::RaceResolved::Facts(facts) => MobileRaceResolved::Facts {
+            facts: MobileRaceFacts {
+                series: facts.series,
+                event: facts.event.map(|event| MobileRaceEvent {
+                    name: event.name,
+                    locality: event.locality,
+                    starts_at_ms: event.starts_at_ms,
+                    sessions: event
+                        .sessions
+                        .into_iter()
+                        .map(|session| MobileRaceSession {
+                            kind: session.kind,
+                            label: session.label,
+                            starts_at_ms: session.starts_at_ms,
+                        })
+                        .collect(),
+                }),
+                next_start: facts.next_start.map(|(label, starts_at_ms)| MobileRaceNextStart {
+                    label,
+                    starts_at_ms,
+                }),
+                has_live_alert: facts.has_live_alert,
+                stale: facts.stale,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
+        race::RaceResolved::Gap { gap } => MobileRaceResolved::Gap { gap: map_race_gap(gap) },
+    }
+}
+
+/// [`kimi::KimiGap`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileKimiGap {
+    NotFetched,
+    Malformed { reason: String },
+    UnknownSchema { schema: String },
+    NotJson,
+    NotAnObject,
+    BadNumbers,
+}
+
+fn map_kimi_gap(gap: kimi::KimiGap) -> MobileKimiGap {
+    match gap {
+        kimi::KimiGap::NotFetched => MobileKimiGap::NotFetched,
+        kimi::KimiGap::Malformed { reason } => MobileKimiGap::Malformed { reason },
+        kimi::KimiGap::UnknownSchema { schema } => MobileKimiGap::UnknownSchema { schema },
+        kimi::KimiGap::NotJson => MobileKimiGap::NotJson,
+        kimi::KimiGap::NotAnObject => MobileKimiGap::NotAnObject,
+        kimi::KimiGap::BadNumbers => MobileKimiGap::BadNumbers,
+    }
+}
+
+/// [`kimi::KimiFacts`], mirrored — the one fact set with `f64` fields,
+/// which is why [`MobileRankedPane`] (and everything holding one) derives
+/// `PartialEq` without `Eq`.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileKimiFacts {
+    pub available_balance: f64,
+    pub voucher_balance: f64,
+    pub cash_balance: f64,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`kimi::KimiResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileKimiResolved {
+    Facts { facts: MobileKimiFacts },
+    Gap { gap: MobileKimiGap },
+}
+
+fn map_kimi_resolved(resolved: kimi::KimiResolved) -> MobileKimiResolved {
+    match resolved {
+        kimi::KimiResolved::Facts(facts) => MobileKimiResolved::Facts {
+            facts: MobileKimiFacts {
+                available_balance: facts.available_balance,
+                voucher_balance: facts.voucher_balance,
+                cash_balance: facts.cash_balance,
+                stale: facts.stale,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
+        kimi::KimiResolved::Gap { gap } => MobileKimiResolved::Gap { gap: map_kimi_gap(gap) },
+    }
+}
+
+/// [`github::WorkflowBody`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileWorkflowBody {
+    pub display_name: String,
+    pub declared_cadence_ms: Option<i64>,
+    pub last_run_conclusion: Option<String>,
+    pub last_run_event: Option<String>,
+    pub last_run_at_ms: Option<i64>,
+    pub last_scheduled_success_at_ms: Option<i64>,
+}
+
+/// [`github::WorkflowGap`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileWorkflowGap {
+    NotFetched,
+    Malformed { reason: String },
+    UnknownSchema { schema: String },
+    NotJson,
+    NotAnObject,
+    UnreadableFields,
+}
+
+fn map_workflow_gap(gap: github::WorkflowGap) -> MobileWorkflowGap {
+    match gap {
+        github::WorkflowGap::NotFetched => MobileWorkflowGap::NotFetched,
+        github::WorkflowGap::Malformed { reason } => MobileWorkflowGap::Malformed { reason },
+        github::WorkflowGap::UnknownSchema { schema } => {
+            MobileWorkflowGap::UnknownSchema { schema }
+        }
+        github::WorkflowGap::NotJson => MobileWorkflowGap::NotJson,
+        github::WorkflowGap::NotAnObject => MobileWorkflowGap::NotAnObject,
+        github::WorkflowGap::UnreadableFields => MobileWorkflowGap::UnreadableFields,
+    }
+}
+
+/// [`github::WorkflowView`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileWorkflowView {
+    pub body: MobileWorkflowBody,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`github::WorkflowResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileWorkflowResolved {
+    View { view: MobileWorkflowView },
+    Gap { gap: MobileWorkflowGap },
+}
+
+fn map_workflow_resolved(resolved: github::WorkflowResolved) -> MobileWorkflowResolved {
+    match resolved {
+        github::WorkflowResolved::View(view) => MobileWorkflowResolved::View {
+            view: MobileWorkflowView {
+                body: MobileWorkflowBody {
+                    display_name: view.body.display_name,
+                    declared_cadence_ms: view.body.declared_cadence_ms,
+                    last_run_conclusion: view.body.last_run_conclusion,
+                    last_run_event: view.body.last_run_event,
+                    last_run_at_ms: view.body.last_run_at_ms,
+                    last_scheduled_success_at_ms: view.body.last_scheduled_success_at_ms,
+                },
+                stale: view.stale,
+                freshness: map_pane_freshness(view.freshness),
+            },
+        },
+        github::WorkflowResolved::Gap { gap } => {
+            MobileWorkflowResolved::Gap { gap: map_workflow_gap(gap) }
+        }
+    }
+}
+
+/// [`uptime::Expected`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Enum)]
+pub enum MobileProbeExpected {
+    On,
+    Off,
+}
+
+/// [`uptime::ProbeBody`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileProbeBody {
+    pub expected: MobileProbeExpected,
+    pub expect_status: i64,
+    pub observed_status: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// [`uptime::ProbeGap`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileProbeGap {
+    NotFetched,
+    Malformed { reason: String },
+    UnknownSchema { schema: String },
+    NotJson,
+    NotAnObject,
+    FieldsUnreadable,
+    ObservationUnreadable,
+}
+
+fn map_probe_gap(gap: uptime::ProbeGap) -> MobileProbeGap {
+    match gap {
+        uptime::ProbeGap::NotFetched => MobileProbeGap::NotFetched,
+        uptime::ProbeGap::Malformed { reason } => MobileProbeGap::Malformed { reason },
+        uptime::ProbeGap::UnknownSchema { schema } => MobileProbeGap::UnknownSchema { schema },
+        uptime::ProbeGap::NotJson => MobileProbeGap::NotJson,
+        uptime::ProbeGap::NotAnObject => MobileProbeGap::NotAnObject,
+        uptime::ProbeGap::FieldsUnreadable => MobileProbeGap::FieldsUnreadable,
+        uptime::ProbeGap::ObservationUnreadable => MobileProbeGap::ObservationUnreadable,
+    }
+}
+
+/// [`uptime::ProbeFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileProbeFacts {
+    pub service_id: String,
+    pub body: MobileProbeBody,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`uptime::ProbeResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileProbeResolved {
+    Facts { facts: MobileProbeFacts },
+    Gap { gap: MobileProbeGap },
+}
+
+fn map_probe_resolved(resolved: uptime::ProbeResolved) -> MobileProbeResolved {
+    match resolved {
+        uptime::ProbeResolved::Facts(facts) => MobileProbeResolved::Facts {
+            facts: MobileProbeFacts {
+                service_id: facts.service_id,
+                body: MobileProbeBody {
+                    expected: match facts.body.expected {
+                        uptime::Expected::On => MobileProbeExpected::On,
+                        uptime::Expected::Off => MobileProbeExpected::Off,
+                    },
+                    expect_status: facts.body.expect_status,
+                    observed_status: facts.body.observed_status,
+                    error: facts.body.error,
+                },
+                stale: facts.stale,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
+        uptime::ProbeResolved::Gap { gap } => MobileProbeResolved::Gap { gap: map_probe_gap(gap) },
+    }
+}
+
+/// [`reachability::ReachabilityFacts`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct MobileReachabilityFacts {
+    pub age_ms: i64,
+    pub stale: bool,
+    pub latest_attempt_landed: bool,
+}
+
+fn map_reachability_facts(facts: reachability::ReachabilityFacts) -> MobileReachabilityFacts {
+    MobileReachabilityFacts {
+        age_ms: facts.age_ms,
+        stale: facts.stale,
+        latest_attempt_landed: facts.latest_attempt_landed,
+    }
+}
+
+/// One pane's decided fact set, keyed by its question — the union
+/// [`MobileRankedPane::facts`] carries. Two arms are `Option`al for the two
+/// questions whose facts genuinely may not exist yet: `Vacation`'s facts
+/// only exist for a bound calendar ([`vacation::vacation_view`] answers
+/// `None` otherwise — the answer state already says which unbound flavour),
+/// and `Reachability`'s only once this device has ever synced. Every other
+/// question always resolves — to facts or to a gap KIND (a sentinel
+/// subject resolves to its own honest `NotFetched`).
+///
+/// `Waste` and `Race` each carry their `setup` kind beside the resolved
+/// facts: their two unacquired flavours ("bindings not read yet" and
+/// "binding unusable") share one answer state, so the kind is the only
+/// thing that can tell a host which of the two it is looking at — see
+/// [`MobileWasteSetup`].
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobilePaneFacts {
+    Waste { setup: MobileWasteSetup, resolved: MobileWasteResolved },
+    Weekend { resolved: MobileWeekendResolved },
+    Vacation { resolved: Option<MobileVacationResolved> },
+    Race { setup: MobileRaceSetup, resolved: MobileRaceResolved },
+    Kimi { resolved: MobileKimiResolved },
+    Github { resolved: MobileWorkflowResolved },
+    Uptime { resolved: MobileProbeResolved },
+    Reachability { facts: Option<MobileReachabilityFacts> },
 }
 
 /// One `(zone, civil-date)` fact the core named — [`ZoneQuery`], mirrored
@@ -2319,6 +3036,52 @@ fn standing_question_of(question: &str) -> StandingQuestion {
         .map(|(question, _)| *question)
         .find(|candidate| candidate.as_str() == question)
         .unwrap_or_else(|| panic!("rank_panes produced an unsunk question {question:?}"))
+}
+
+/// One ranked pane's own fact set — the per-question `*_facts` call the web
+/// makes through its per-question wasm exports, made here once per record
+/// while [`MobileTaskHost::rank_panes`] already holds the inputs and the
+/// resolved zone facts. Exhaustive over [`StandingQuestion`] with no
+/// wildcard arm, the section's own drift gate: a ninth question is a
+/// compile error here, never a pane whose facts silently never cross.
+fn mobile_pane_facts_of(
+    question: StandingQuestion,
+    subject_key: &str,
+    inputs: &PaneInputs,
+    zone: &ZoneFacts,
+) -> MobilePaneFacts {
+    match question {
+        StandingQuestion::Waste => MobilePaneFacts::Waste {
+            setup: map_waste_setup(waste::waste_setup(inputs)),
+            resolved: map_waste_resolved(waste::waste_facts(inputs, zone)),
+        },
+        StandingQuestion::Weekend => MobilePaneFacts::Weekend {
+            resolved: map_weekend_resolved(weekend::weekend_facts(inputs, zone)),
+        },
+        StandingQuestion::Vacation => MobilePaneFacts::Vacation {
+            resolved: vacation::vacation_view(inputs, zone).map(map_vacation_resolved),
+        },
+        StandingQuestion::Race => MobilePaneFacts::Race {
+            setup: map_race_setup(race::race_setup(inputs)),
+            // The setup sentinel has no snapshot row, so this resolves to
+            // its own honest `NotFetched` — the answer state (unbound/
+            // unacquired) plus the setup kind above are what route the
+            // rendering.
+            resolved: map_race_resolved(race::race_facts(subject_key, inputs)),
+        },
+        StandingQuestion::Kimi => {
+            MobilePaneFacts::Kimi { resolved: map_kimi_resolved(kimi::kimi_facts(inputs)) }
+        }
+        StandingQuestion::Github => MobilePaneFacts::Github {
+            resolved: map_workflow_resolved(github::github_facts(subject_key, inputs)),
+        },
+        StandingQuestion::Uptime => MobilePaneFacts::Uptime {
+            resolved: map_probe_resolved(uptime::uptime_facts(subject_key, inputs)),
+        },
+        StandingQuestion::Reachability => MobilePaneFacts::Reachability {
+            facts: reachability::reachability_facts(inputs).map(map_reachability_facts),
+        },
+    }
 }
 
 struct Inner {
@@ -2957,12 +3720,12 @@ impl MobileTaskHost {
     /// frontier board's inline triage rows — this door decides the same
     /// queue on its own, for the screen whose whole reason to exist is that
     /// queue.
-    pub async fn triage_board(&self) -> TriageBoardRecord {
+    pub async fn triage_board(&self, now: String) -> TriageBoardRecord {
         let inner = self.inner.lock().await;
         let triage_items = inner.core.triage_inbox();
         let grilling_items = inner.core.grilling_items();
         let draft_item_ids = inner.core.grill_draft_item_ids();
-        build_triage_board(&triage_items, &grilling_items, &draft_item_ids)
+        build_triage_board(&triage_items, &grilling_items, &draft_item_ids, &now)
     }
 
     /// The Triage screen's mutation (M3/#531) —
@@ -3386,7 +4149,9 @@ impl MobileTaskHost {
     /// and its own persisted sync history ([`MobileSyncFacts`], since
     /// `hummingbird-core` keeps none — see that type's own doc) folded in.
     /// Already in display order; `StatusScreen.kt` renders the list
-    /// directly.
+    /// directly. Each record also carries its question's decided
+    /// [`MobilePaneFacts`] (the pane-facts slice) — see the module header
+    /// for why facts ride this one crossing rather than per-pane doors.
     pub async fn rank_panes(
         &self,
         surface: MobileSurface,
@@ -3396,14 +4161,19 @@ impl MobileTaskHost {
     ) -> Vec<MobileRankedPane> {
         let inner = self.inner.lock().await;
         let inputs = mobile_pane_inputs(&inner.core, now_ms, sync);
-        let facts = to_zone_facts(zone_facts);
-        panes::rank_panes(map_surface(surface), &inputs, &facts)
+        let zone = to_zone_facts(zone_facts);
+        panes::rank_panes(map_surface(surface), &inputs, &zone)
             .into_iter()
-            .map(|record| MobileRankedPane {
-                standing_question: map_standing_question(standing_question_of(&record.question)),
-                subject_key: record.subject_key,
-                pane_key: record.pane_key,
-                answer: to_mobile_pane_answer(record.answer),
+            .map(|record| {
+                let question = standing_question_of(&record.question);
+                let facts = mobile_pane_facts_of(question, &record.subject_key, &inputs, &zone);
+                MobileRankedPane {
+                    standing_question: map_standing_question(question),
+                    subject_key: record.subject_key,
+                    pane_key: record.pane_key,
+                    answer: to_mobile_pane_answer(record.answer),
+                    facts,
+                }
             })
             .collect()
     }
@@ -5533,7 +6303,7 @@ mod tests {
             ..item("grilling-1", 0, None)
         };
 
-        let board = build_triage_board(&[captured], &[grilling], &[]);
+        let board = build_triage_board(&[captured], &[grilling], &[], "2026-08-15T12:00");
 
         assert_eq!(
             board.items.iter().map(|record| record.id.clone()).collect::<Vec<_>>(),
@@ -5551,7 +6321,7 @@ mod tests {
         ];
         let grilling = vec![Item { stage: Stage::Grilling, ..item("g-1", 0, None) }];
 
-        let board = build_triage_board(&captured, &grilling, &[]);
+        let board = build_triage_board(&captured, &grilling, &[], "2026-08-15T12:00");
 
         assert_eq!(board.captured_count, 2);
         assert_eq!(board.grilling_count, 1);
@@ -5570,7 +6340,7 @@ mod tests {
             ..item("g-1", 2, Some("2026-08-20"))
         };
 
-        let board = build_triage_board(&[], &[grilling], &[]);
+        let board = build_triage_board(&[], &[grilling], &[], "2026-08-15T12:00");
 
         let record = &board.items[0];
         assert_eq!(record.stage, "grilling");
@@ -5592,7 +6362,7 @@ mod tests {
             ..item("t-2", 0, None)
         };
 
-        let board = build_triage_board(&[triage, archived], &[], &[]);
+        let board = build_triage_board(&[triage, archived], &[], &[], "2026-08-15T12:00");
 
         let live = board.items.iter().find(|record| record.id == "t-1").unwrap();
         let done = board.items.iter().find(|record| record.id == "t-2").unwrap();
@@ -5607,7 +6377,7 @@ mod tests {
         let triage = Item { stage: Stage::Triage, ..item("t-1", 0, None) };
         let drafted = Item { stage: Stage::Triage, ..item("t-2", 0, None) };
 
-        let board = build_triage_board(&[triage, drafted], &[], &["t-2".to_string()]);
+        let board = build_triage_board(&[triage, drafted], &[], &["t-2".to_string()], "2026-08-15T12:00");
 
         let no_draft = board.items.iter().find(|record| record.id == "t-1").unwrap();
         let has_draft = board.items.iter().find(|record| record.id == "t-2").unwrap();
@@ -5615,6 +6385,23 @@ mod tests {
         assert!(!no_draft.has_grill_draft);
         assert!(has_draft.can_grill);
         assert!(has_draft.has_grill_draft);
+    }
+
+    /// The Triage-parity slice: a row's urgency band is `compute_urgency`
+    /// over its deadline and the caller's device-local now — the same
+    /// decided band the frontier board's rows carry, so the shared card's
+    /// swatch/word never re-derive it Kotlin-side.
+    #[test]
+    fn triage_item_records_carry_the_decided_urgency_band() {
+        let overdue = Item { stage: Stage::Triage, ..item("t-overdue", 0, Some("2026-08-10")) };
+        let calm = Item { stage: Stage::Triage, ..item("t-calm", 0, None) };
+
+        let board = build_triage_board(&[overdue, calm], &[], &[], "2026-08-15T12:00");
+
+        let hot = board.items.iter().find(|record| record.id == "t-overdue").unwrap();
+        let cool = board.items.iter().find(|record| record.id == "t-calm").unwrap();
+        assert_eq!(hot.urgency, MobileUrgencyBand::Overdue);
+        assert_eq!(cool.urgency, MobileUrgencyBand::Calm);
     }
 
     fn untouched_triage_edit() -> ItemEdit {
@@ -5645,14 +6432,14 @@ mod tests {
         .unwrap();
         let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
 
-        let board = host.triage_board().await;
+        let board = host.triage_board("2026-08-15T12:00".to_string()).await;
         assert_eq!(board.captured_count, 1);
         assert_eq!(board.grilling_count, 0);
         assert_eq!(board.items[0].id, id);
 
         host.triage_item(id, true, untouched_triage_edit(), 2_000).await.unwrap();
 
-        let board = host.triage_board().await;
+        let board = host.triage_board("2026-08-15T12:00".to_string()).await;
         assert_eq!(board.captured_count, 0);
         assert!(board.items.is_empty());
     }
@@ -7329,6 +8116,454 @@ mod settings_tests {
         assert!(matches!(
             host.set_scheduled_date("nope".to_string(), Some("2026-08-15".to_string()), 1_000).await,
             Err(MobileEditError::ItemNotFound)
+        ));
+    }
+
+    // ---------------------------------------------- pane facts (mirrors)
+    // One facts-arm and one gap-arm round-trip per question, driven through
+    // `mobile_pane_facts_of` with serde-built `PaneInputs` — the same
+    // fixture idiom `panes::mod`'s own tests use — plus host-level checks
+    // that every ranked record carries its own question's arm.
+
+    use hummingbird_core::decisions::panes::zone::{add_civil_days, civil_days_between};
+
+    /// A host resolver stood up from the queries the core itself asked —
+    /// `weekend.rs`'s own test fixture, generic over the query's zone: a
+    /// fixed UTC-7 offset, consistency being what the arithmetic relies on.
+    fn resolve_zone(queries: &[ZoneQuery]) -> ZoneFacts {
+        const OFFSET_MS: i64 = 7 * 3_600_000;
+        const DAY_MS: i64 = 24 * 3_600_000;
+        let mut facts = ZoneFacts::default();
+        for query in queries {
+            match query {
+                ZoneQuery::CivilDate { at_ms, .. } => {
+                    let days = (at_ms - OFFSET_MS).div_euclid(DAY_MS);
+                    facts.insert(query, ZoneFact::Date(add_civil_days("1970-01-01", days).unwrap()));
+                }
+                ZoneQuery::Midnight { date, .. } => {
+                    let days = civil_days_between("1970-01-01", date).unwrap();
+                    facts.insert(query, ZoneFact::Instant(days * DAY_MS + OFFSET_MS));
+                }
+            }
+        }
+        facts
+    }
+
+    /// `panes::mod`'s own fixture instant — 2026-08-09-ish, a week before
+    /// the payload dates below.
+    const PANE_NOW_MS: i64 = 1_786_377_600_000;
+
+    fn pane_inputs(value: serde_json::Value) -> PaneInputs {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn empty_pane_inputs() -> PaneInputs {
+        pane_inputs(serde_json::json!({ "nowMs": PANE_NOW_MS, "bindings": [] }))
+    }
+
+    #[test]
+    fn waste_facts_round_trip_facts_and_gap() {
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [
+                {"key": waste::BINDING_KEY, "value": {"state":"text","text":"https://example.gov"}}
+            ],
+            "paneReads": {
+                waste::SOURCE: {"snapshots": [{
+                    "key": waste::SNAPSHOT_KEY,
+                    "envelope": {"kind":"ok","schema":waste::SOURCE,
+                                 "body":"{\"zone\":\"America/Los_Angeles\",\"scheduled\":\"2026-08-17\",\"collected_on\":\"2026-08-17\",\"streams\":[\"trash\",\"yard\"]}"},
+                    "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":86400000},
+                }]},
+            },
+        }));
+        let zone = resolve_zone(&waste::waste_zone_queries(&inputs));
+
+        let arm = mobile_pane_facts_of(StandingQuestion::Waste, waste::SNAPSHOT_KEY, &inputs, &zone);
+        let MobilePaneFacts::Waste { setup, resolved: MobileWasteResolved::Facts { facts } } = arm
+        else {
+            panic!("expected the waste facts arm, got {arm:?}");
+        };
+        assert_eq!(setup, MobileWasteSetup::Bound);
+        assert_eq!(facts.collected_on, "2026-08-17");
+        assert!(!facts.holiday);
+        assert!(facts.days_away >= 0);
+        assert_eq!(facts.streams, vec![MobileWasteStream::Trash, MobileWasteStream::Yard]);
+
+        let gap = mobile_pane_facts_of(
+            StandingQuestion::Waste,
+            waste::SNAPSHOT_KEY,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        // The setup kind is what separates this device's two unacquired
+        // flavours; the gap alone cannot.
+        assert!(matches!(
+            gap,
+            MobilePaneFacts::Waste {
+                setup: MobileWasteSetup::Unset,
+                resolved: MobileWasteResolved::Gap { gap: MobileWasteGap::NotFetched },
+            }
+        ));
+    }
+
+    /// The reason the setup kind crosses at all: `Unread` and `Unusable`
+    /// both answer `BoundButUnacquired`, so the answer state cannot separate
+    /// "this device has not read its bindings yet" from "the binding holds
+    /// something unusable" — one is a wait, the other a repair.
+    #[test]
+    fn the_setup_kind_separates_the_two_unacquired_flavours() {
+        let facts_for = |bindings: serde_json::Value| {
+            mobile_pane_facts_of(
+                StandingQuestion::Waste,
+                waste::SNAPSHOT_KEY,
+                &pane_inputs(serde_json::json!({ "nowMs": PANE_NOW_MS, "bindings": bindings })),
+                &ZoneFacts::default(),
+            )
+        };
+        let setup_of = |facts: MobilePaneFacts| match facts {
+            MobilePaneFacts::Waste { setup, .. } => setup,
+            other => panic!("expected the waste arm, got {other:?}"),
+        };
+
+        // Bindings never read on this device.
+        assert_eq!(setup_of(facts_for(serde_json::Value::Null)), MobileWasteSetup::Unread);
+        // A row holding something that is not text.
+        assert_eq!(
+            setup_of(facts_for(serde_json::json!([
+                {"key": waste::BINDING_KEY, "value": {"state":"other"}}
+            ]))),
+            MobileWasteSetup::Unusable,
+        );
+        // No row at all — the one genuinely unbound arm.
+        assert_eq!(setup_of(facts_for(serde_json::json!([]))), MobileWasteSetup::Unset);
+    }
+
+    #[test]
+    fn weekend_facts_round_trip_facts_and_gap() {
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [],
+            "calendarConnected": true,
+            "calendarReads": {
+                weekend::CALENDAR_REQUEST_KEY: {
+                    "state": "read",
+                    "events": [],
+                    "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":null},
+                },
+            },
+        }));
+        let zone = resolve_zone(&weekend::weekend_zone_queries(inputs.now_ms));
+
+        let arm = mobile_pane_facts_of(StandingQuestion::Weekend, weekend::SUBJECT_KEY, &inputs, &zone);
+        let MobilePaneFacts::Weekend { resolved: MobileWeekendResolved::Facts { facts } } = arm else {
+            panic!("expected the weekend facts arm, got {arm:?}");
+        };
+        assert_eq!(facts.window.days.len(), 3);
+        assert_eq!(facts.counts, MobileWeekendCounts { events: 0, due: 0, scheduled: 0 });
+
+        // `calendar_connected` is hardcoded `false` in `mobile_pane_inputs`
+        // today, so THIS is the arm every real Android device sees.
+        let gap = mobile_pane_facts_of(
+            StandingQuestion::Weekend,
+            weekend::SUBJECT_KEY,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        assert!(matches!(
+            gap,
+            MobilePaneFacts::Weekend {
+                resolved: MobileWeekendResolved::Gap { gap: MobileWeekendGap::NotConnected }
+            }
+        ));
+    }
+
+    #[test]
+    fn vacation_facts_round_trip_bound_and_unbound() {
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [
+                {"key": vacation::TRIPS_CALENDAR_BINDING_KEY, "value": {"state":"text","text":"cal-1"}}
+            ],
+            "calendarConnected": true,
+            "calendarReads": {
+                vacation::CALENDAR_REQUEST_KEY: {
+                    "state": "read",
+                    "events": [],
+                    "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":null},
+                },
+            },
+        }));
+        let zone = resolve_zone(&vacation::vacation_zone_queries(&inputs));
+
+        let arm = mobile_pane_facts_of(StandingQuestion::Vacation, vacation::SUBJECT_KEY, &inputs, &zone);
+        let MobilePaneFacts::Vacation { resolved: Some(MobileVacationResolved::Facts { facts }) } = arm
+        else {
+            panic!("expected the bound vacation facts arm, got {arm:?}");
+        };
+        assert_eq!(facts.next, None);
+        assert!(facts.later.is_empty());
+
+        // Unbound (no calendar): no resolved facts at all — the `None` arm,
+        // never a fabricated gap.
+        let unbound = mobile_pane_facts_of(
+            StandingQuestion::Vacation,
+            vacation::SUBJECT_KEY,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        assert!(matches!(unbound, MobilePaneFacts::Vacation { resolved: None }));
+    }
+
+    #[test]
+    fn race_facts_round_trip_facts_and_sentinel_gap() {
+        let race_start = PANE_NOW_MS + 6 * 24 * 3_600_000;
+        let body = serde_json::json!({
+            "events": [{
+                "name": "Belgian Grand Prix",
+                "locality": "Spa",
+                "starts_at_ms": race_start,
+                "sessions": [
+                    {"kind": "practice", "label": "FP1", "starts_at_ms": race_start - 2 * 24 * 3_600_000}
+                ],
+            }],
+        });
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [
+                {"key": race::BINDING_KEY, "value": {"state":"text","text":"f1"}}
+            ],
+            "paneReads": {
+                race::SOURCE: {"snapshots": [{
+                    "key": "f1",
+                    "envelope": {"kind":"ok","schema":race::SOURCE, "body": body.to_string()},
+                    "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":86400000},
+                }]},
+            },
+        }));
+
+        let arm = mobile_pane_facts_of(StandingQuestion::Race, "f1", &inputs, &ZoneFacts::default());
+        let MobilePaneFacts::Race { setup, resolved: MobileRaceResolved::Facts { facts } } = arm
+        else {
+            panic!("expected the race facts arm, got {arm:?}");
+        };
+        assert_eq!(setup, MobileRaceSetup::Bound);
+        assert_eq!(facts.series, "f1");
+        assert_eq!(facts.event.as_ref().map(|event| event.name.as_str()), Some("Belgian Grand Prix"));
+        // Friday practice is the next thing on track, not Sunday's race.
+        assert_eq!(facts.next_start.as_ref().map(|next| next.label.as_str()), Some("FP1"));
+
+        // The setup sentinel has no snapshot row: its own honest NotFetched.
+        let sentinel = mobile_pane_facts_of(
+            StandingQuestion::Race,
+            race::SETUP_SUBJECT,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        assert!(matches!(
+            sentinel,
+            MobilePaneFacts::Race {
+                setup: MobileRaceSetup::Unset,
+                resolved: MobileRaceResolved::Gap { gap: MobileRaceGap::NotFetched },
+            }
+        ));
+    }
+
+    #[test]
+    fn kimi_facts_round_trip_facts_and_gap() {
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [],
+            "paneReads": {
+                kimi::SOURCE: {"snapshots": [{
+                    "key": kimi::SNAPSHOT_KEY,
+                    "envelope": {"kind":"ok","schema":kimi::SOURCE,
+                                 "body":"{\"available_balance\":12.5,\"voucher_balance\":10.0,\"cash_balance\":2.5}"},
+                    "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":86400000},
+                }]},
+            },
+        }));
+
+        let arm = mobile_pane_facts_of(StandingQuestion::Kimi, kimi::SNAPSHOT_KEY, &inputs, &ZoneFacts::default());
+        let MobilePaneFacts::Kimi { resolved: MobileKimiResolved::Facts { facts } } = arm else {
+            panic!("expected the kimi facts arm, got {arm:?}");
+        };
+        assert_eq!(facts.available_balance, 12.5);
+        assert!(!facts.stale);
+
+        let gap = mobile_pane_facts_of(
+            StandingQuestion::Kimi,
+            kimi::SNAPSHOT_KEY,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        assert!(matches!(
+            gap,
+            MobilePaneFacts::Kimi { resolved: MobileKimiResolved::Gap { gap: MobileKimiGap::NotFetched } }
+        ));
+    }
+
+    #[test]
+    fn github_facts_round_trip_view_and_sentinel_gap() {
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [],
+            "paneReads": {
+                github::SOURCE: {"snapshots": [{
+                    "key": "deploy.yml",
+                    "envelope": {"kind":"ok","schema":github::SOURCE,
+                                 "body":"{\"display_name\":\"Deploy\",\"declared_cadence_ms\":null,\"last_run_conclusion\":\"success\",\"last_run_event\":\"push\",\"last_run_at_ms\":1786000000000,\"last_scheduled_success_at_ms\":null}"},
+                    "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":null},
+                }]},
+            },
+        }));
+
+        let arm = mobile_pane_facts_of(StandingQuestion::Github, "deploy.yml", &inputs, &ZoneFacts::default());
+        let MobilePaneFacts::Github { resolved: MobileWorkflowResolved::View { view } } = arm else {
+            panic!("expected the github view arm, got {arm:?}");
+        };
+        assert_eq!(view.body.display_name, "Deploy");
+        assert_eq!(view.body.last_run_conclusion.as_deref(), Some("success"));
+
+        let sentinel = mobile_pane_facts_of(
+            StandingQuestion::Github,
+            github::NEVER_POLLED_SUBJECT,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        assert!(matches!(
+            sentinel,
+            MobilePaneFacts::Github {
+                resolved: MobileWorkflowResolved::Gap { gap: MobileWorkflowGap::NotFetched }
+            }
+        ));
+    }
+
+    #[test]
+    fn uptime_facts_are_the_subjects_own_never_the_first_snapshots() {
+        let snapshot = |key: &str, expected: &str| {
+            serde_json::json!({
+                "key": key,
+                "envelope": {"kind":"ok","schema":uptime::SOURCE,
+                             "body": format!("{{\"expected\":\"{expected}\",\"expect_status\":200,\"observed_status\":200,\"error\":null}}")},
+                "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":300000},
+            })
+        };
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [],
+            "paneReads": {
+                uptime::SOURCE: {"snapshots": [snapshot("svc-a", "on"), snapshot("svc-b", "off")]},
+            },
+        }));
+
+        for (subject, expected) in [("svc-a", MobileProbeExpected::On), ("svc-b", MobileProbeExpected::Off)] {
+            let arm = mobile_pane_facts_of(StandingQuestion::Uptime, subject, &inputs, &ZoneFacts::default());
+            let MobilePaneFacts::Uptime { resolved: MobileProbeResolved::Facts { facts } } = arm else {
+                panic!("expected the uptime facts arm for {subject}, got {arm:?}");
+            };
+            assert_eq!(facts.service_id, subject);
+            assert_eq!(facts.body.expected, expected);
+        }
+
+        let sentinel = mobile_pane_facts_of(
+            StandingQuestion::Uptime,
+            uptime::NEVER_POLLED_SUBJECT,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        assert!(matches!(
+            sentinel,
+            MobilePaneFacts::Uptime {
+                resolved: MobileProbeResolved::Gap { gap: MobileProbeGap::NotFetched }
+            }
+        ));
+    }
+
+    #[test]
+    fn reachability_facts_round_trip_synced_and_never_synced() {
+        let inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS,
+            "bindings": [],
+            "sync": {
+                "latestOutcomeKind": "completed",
+                "latestInformativeAtMs": PANE_NOW_MS - 60_000,
+                "lastSuccessfulAtMs": PANE_NOW_MS - 60_000,
+            },
+        }));
+        let arm = mobile_pane_facts_of(
+            StandingQuestion::Reachability,
+            reachability::SUBJECT_KEY,
+            &inputs,
+            &ZoneFacts::default(),
+        );
+        let MobilePaneFacts::Reachability { facts: Some(facts) } = arm else {
+            panic!("expected reachability facts, got {arm:?}");
+        };
+        assert_eq!(facts.age_ms, 60_000);
+        assert!(!facts.stale);
+        assert!(facts.latest_attempt_landed);
+
+        let never = mobile_pane_facts_of(
+            StandingQuestion::Reachability,
+            reachability::SUBJECT_KEY,
+            &empty_pane_inputs(),
+            &ZoneFacts::default(),
+        );
+        assert!(matches!(never, MobilePaneFacts::Reachability { facts: None }));
+    }
+
+    /// Host-level: every ranked record carries its OWN question's facts arm
+    /// — on a fresh device, whose gaps double as the honest fresh-state
+    /// answers (waste NotFetched, weekend NotConnected since
+    /// `mobile_pane_inputs` hardcodes no calendar, vacation unbound → None).
+    #[tokio::test]
+    async fn every_ranked_pane_carries_its_own_questions_facts_arm() {
+        let host = pane_host("panes-facts-arms").await;
+        for surface in [MobileSurface::Now, MobileSurface::Status] {
+            let ranked = host.rank_panes(surface, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+            assert!(!ranked.is_empty());
+            for pane in ranked {
+                let matches = match pane.standing_question {
+                    MobileStandingQuestion::Waste => matches!(pane.facts, MobilePaneFacts::Waste { .. }),
+                    MobileStandingQuestion::Weekend => matches!(pane.facts, MobilePaneFacts::Weekend { .. }),
+                    MobileStandingQuestion::Vacation => matches!(pane.facts, MobilePaneFacts::Vacation { .. }),
+                    MobileStandingQuestion::Race => matches!(pane.facts, MobilePaneFacts::Race { .. }),
+                    MobileStandingQuestion::Kimi => matches!(pane.facts, MobilePaneFacts::Kimi { .. }),
+                    MobileStandingQuestion::Github => matches!(pane.facts, MobilePaneFacts::Github { .. }),
+                    MobileStandingQuestion::Uptime => matches!(pane.facts, MobilePaneFacts::Uptime { .. }),
+                    MobileStandingQuestion::Reachability => {
+                        matches!(pane.facts, MobilePaneFacts::Reachability { .. })
+                    }
+                };
+                assert!(matches, "{:?} carried a foreign facts arm: {:?}", pane.standing_question, pane.facts);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_devices_now_facts_are_the_honest_gaps() {
+        let host = pane_host("panes-facts-fresh-now").await;
+        let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
+        let facts_of = |question: MobileStandingQuestion| {
+            ranked.iter().find(|pane| pane.standing_question == question).unwrap().facts.clone()
+        };
+        assert!(matches!(
+            facts_of(MobileStandingQuestion::Waste),
+            MobilePaneFacts::Waste {
+                setup: MobileWasteSetup::Unset,
+                resolved: MobileWasteResolved::Gap { gap: MobileWasteGap::NotFetched },
+            }
+        ));
+        assert!(matches!(
+            facts_of(MobileStandingQuestion::Weekend),
+            MobilePaneFacts::Weekend {
+                resolved: MobileWeekendResolved::Gap { gap: MobileWeekendGap::NotConnected }
+            }
+        ));
+        assert!(matches!(
+            facts_of(MobileStandingQuestion::Vacation),
+            MobilePaneFacts::Vacation { resolved: None }
         ));
     }
 }

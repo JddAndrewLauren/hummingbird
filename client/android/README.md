@@ -170,11 +170,20 @@ captured and Grilling items together, in the core's order — headed by the
 "N captured · M grilling" counts read straight off the record
 (`TriageBoardRecord.capturedCount`/`grillingCount`; `TriageScreenStructuralTest`
 gates that neither figure is ever recomputed from `items.size`/`items.count`).
-One row opens at a time into the seeded editor built from #529's shared
-`ui/forms/` components (`LevelSlider`/`ContextField`/`CaptureDateField`);
-Promote-to-Ready is the only save destination this screen offers — there is
-no "save without promoting" method on `TriageViewModel` at all, unlike item
-detail's own edit mode. The row checkmark goes through the existing
+The queue's collapsed rows are the SAME compact card the Now screen's
+frontier renders (`NowRow.kt`, extracted for exactly this — the
+Triage-parity slice, operator request 2026-08-20), fed by a verbatim-copy
+adapter over `TriageItemRecord` (whose `urgency` band arrives decided from
+the seam, like every other pill). One item opens at a time, expanding at
+index 0 of the queue's one `LazyColumn` — `NowScreen`'s inline-expansion
+pattern — into the seeded editor built from #529's shared `ui/forms/`
+components (`LevelSlider`/`ContextField`/`CaptureDateField`) under the Now
+panel's chrome (stage chip, `titleMedium` title, X close). The expanded
+pane is deliberately NOT `ItemDetailPanel`: `available_actions` answers
+nothing for Triage/Grilling stages, and the panel's plain save is the
+non-promoting write this surface bans. Promote-to-Ready is the only save
+destination this screen offers — there is no "save without promoting"
+method on `TriageViewModel` at all, unlike item detail's own edit mode. The row checkmark goes through the existing
 `act("complete")` path, never a triage. The Grill button is live (#539):
 gated on the row's own `canGrill` fact from the seam, it navigates to the
 standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
@@ -191,7 +200,7 @@ re-reads the queue on every return to the screen, not only on the app-wide
 `syncTick`: a capture minted from `CaptureActivity` while Triage was
 backgrounded must not wait for the next tick to appear.
 
-The seam doors are `MobileTaskHost::triage_board()` (decided from the
+The seam doors are `MobileTaskHost::triage_board(now)` (decided from the
 already-sunk `hummingbird_core::decisions::queue::triage_process_queue`) and
 `::triage_item()` (`Core::triage` with a real `promote_to_ready`, sharing
 `to_triage_patch`'s `ItemEdit`→`TriagePatch` conversion with `edit_item`).
@@ -219,25 +228,78 @@ real caller; `skills/BackendPreference.kt` is #274's picker, read into every
 run and into the one-tap "switch tiers" offer a declined, unreachable pin
 gets (`hummingbird_core::decisions::skills::backend::declined_backend_fallback`).
 
-## The Recall screen (M4, #542)
+## The Recall overlay (M4, #542; reshaped by the search-overlay slice)
 
-`RecallScreen.kt`/`RecallViewModel.kt` are the milestone's closer: re-find
+`RecallOverlay.kt`/`RecallViewModel.kt` are the milestone's closer: re-find
 one known item across everything the mirror has ever known, live or
-archived. `MobileTaskHost::search(query, nowMs)` hands back a
+archived. Since the search-overlay slice (operator request 2026-08-20) it
+is the web `RecallOverlay.tsx`'s shape as well as its counterpart: **an
+overlay `AppRoot` draws over whatever route is showing, not a navigated
+screen.** `Routes.RECALL` is gone entirely; the top bar's magnifier and the
+More sheet's "Search everything" row both flip `AppRoot`'s `recallOpen`
+flag, Back (or the X) closes the overlay in place, and the query field
+auto-focuses on open. `MobileTaskHost::search(query, nowMs)` hands back a
 `MobileRecallOutcome` — rows already matched, grouped
 (`MobileRecallGroup::{Live, Done, Archived}`) and ordered, plus the core's
-own un-capped `total` — over `hummingbird_core::search` (#478, predating
-this slice; no web change was needed here since the web seam already sank
-it). Neither file re-derives any of that: no sort, filter, group-by or
+own un-capped `total` — over `hummingbird_core::search` (#478). Neither
+file re-derives any of that: no sort, filter, group-by or
 title/description scan of its own, gated by `RecallScreenStructuralTest`
 the same way `RulesScreenStructuralTest` gates its own surface. Search is
 as-you-type with no debounce — a mirror read, not a network request, the
 same reasoning `useRecallWiring.ts` states on the web. Tapping a **live**
-row opens `ItemDetailScreen` via `Routes.itemDetail`; Done and archived rows
-are shown, labelled and dimmed, but not tappable — this slice ships no
-inline edit the way the web's #479 does. The route was registered at #541
-as a gesture entry off the More sheet, deliberately outside `NavDestination`
-(above); #542 replaced its placeholder body with this real surface.
+row expands it in place into the shared `ItemDetailPanel` below the row
+(the web's own expansion; edit/act/steps in one implementation with the
+notification door) — never a navigation. Done and archived rows are shown,
+labelled and dimmed, but not tappable (#597). The expanded selection lives
+in `RecallViewModel` (never a `remember {}`), closes on any keystroke, and
+resets on a fresh open — the query itself survives, matching the web's
+App-owned query.
+
+## The standing-question panes (the pane-parity slice, over #536/#537)
+
+`PaneShell.kt` renders the web `RankedRegion.tsx`'s own two-form contract.
+Collapsed, a pane is one row: the band dot, the question's per-surface
+label, up to `MAX_GLYPHS` of the pane's own marks, and its one-line
+headline. Expanded (tap toggles), the same header collapses it again over
+the headline, an unbound pane's "Open Settings" door, and the question's own
+expanded content. The Status four's cards live in
+`ui/panes/StatusPanesExpanded.kt` (the pane-content slice) — each web
+`*PaneExpanded.tsx` ported: kimi's balance headline with the voucher/cash
+split and the "cash owed" caveat, github's last-run/last-scheduled-success
+lines with the "cron stalled"/"cadence unreadable" words, uptime's
+expected-vs-observed observation line, reachability's synced-age headline —
+dispatched from `StatusScreen`'s `expandedContent` and nowhere else
+(`PaneContentStructuralTest`). The Now surface's pair lives in
+`ui/panes/NowPanesExpanded.kt`: waste (the web's kerb-colour bin figures,
+the wordier expanded headline, the holiday word) and race (series line,
+countdown headline, next-session day/clock in the device's own zone, the
+circuit). **Weekend and Vacation render no card of their own**: the mobile
+seam hardcodes `calendar_connected = false`, so both are permanently
+unbound on Android and the shell's setup rendering is the honest whole
+story — the calendar-lane follow-up issue owns turning them on. One
+recorded seam gap: the race card says "starting soon" without the live
+alert's title, because only the `hasLiveAlert` fact crosses the mobile
+seam. The web's Badge chips render as coloured meta words (no Badge
+composable exists in the Android port), and the freshness caveat is the
+shared `staleWords` line. The words and marks live in `ui/panes/PaneAnswers.kt` —
+each question's `collapsedHeadline`/glyph decisions ported from its web
+renderer (`client/web/src/screens/<q>-pane/`), composed from the decided
+facts every `MobileRankedPane` carries since the pane-facts seam slice.
+Nothing Kotlin-side re-derives a band or an answer state
+(`PaneShellStructuralTest`); the one recorded deviation from the web is
+the github/uptime stale-escalation wording, which prefers the staleness
+caveat over recomputing a raw band (`PaneAnswers.kt`'s header).
+
+Whether a pane STARTS collapsed is `ui/panes/PaneCollapse.kt`'s
+band-stamped rule — the web `collapse.ts`'s semantics verbatim (default
+collapsed when dormant or unanswered; an override applies only while the
+pane is still in the band it was made in; a mismatch is a read-time
+non-match, never a delete, so dormant → imminent → dormant resurrects it;
+writes prune unranked keys). Overrides persist per surface in `PanePrefs`
+(a Preferences DataStore, `FrontierPrefs`' reasons), owned by
+`NowViewModel`/`StatusViewModel` — never a `remember {}` (the recorded
+fold/unfold defect). `PaneCollapseTest` is `collapse.test.ts` ported case
+for case.
 
 ## The UI iteration: icons, compact cards, filter disclosure, inline expansion, the capture FAB
 
@@ -385,9 +447,10 @@ needs rules on `alert_raised` keyed on `source` and `severity`.
    needed` before the paste and carries a `Sync now` button, and the DEVICE
    TOKEN card above it flips to `This device has a token`. Status shows no
    sync line at all since #536 replaced ProofScreen — read the panes
-   instead: an uncredentialed phone renders every one of them `Not read
-   yet` / `Not set up yet`, which is the fastest tell that the token is
-   missing.
+   instead: an uncredentialed phone renders every one of them with a
+   no-answer headline (`No answer yet` / `Not set up` / `Never synced on
+   this device.` since the pane-parity slice), which is the fastest tell
+   that the token is missing.
 3. Confirm `fcm_token` exists: `adb shell run-as net.twinion.hummingbird cat
    shared_prefs/hummingbird-push.xml`. Its absence means Firebase never
    initialised.
