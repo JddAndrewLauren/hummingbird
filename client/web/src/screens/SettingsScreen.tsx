@@ -6,7 +6,6 @@ import { Card } from "../components/core/Card";
 import { CalendarPicker } from "../components/domain/CalendarPicker";
 import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
-import { Switch } from "../components/forms/Switch";
 import { connectErrorCopy } from "../calendar/connect-error";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import { AUTO_SELECTION, BACKEND_REGISTRY } from "../skills/backend-registry";
@@ -19,7 +18,6 @@ import {
   canSubmitBinding,
   sameBindingValue,
 } from "./bindings";
-import type { DemoData } from "../fixtures/demo";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
 import { effectiveCalendarIds, tripsCalendarId } from "../calendar/selection";
@@ -339,7 +337,6 @@ function DeadLetterRow({
 }
 
 export interface SettingsScreenProps {
-  demo: DemoData | null;
   status: CoreStatus;
   apiVersion: number | null;
   /** #172's ADR-0010 diagnostic — see `coreInstanceLabel`. Both `null`
@@ -349,14 +346,13 @@ export interface SettingsScreenProps {
   error: string | null;
   calendar: CalendarState;
   /** True only when `calendar` is the board world's fixture (#452, piece 4),
-   * never for a live `CalendarState` — `demo` (above) stays `null` in that
-   * world (the two worlds are mutually exclusive, `demo.test.ts`), so the
-   * calendar card needs its own signal to bypass the device-token/`status`
-   * gates below, which describe the live wiring's preconditions and mean
-   * nothing for a fixture that was never fetched through it. It also
-   * routes the card's toggles to the local demo copy — through
-   * `onSelectionChange` they would persist fixture ids to the real device
-   * selection and poll Google for calendars that do not exist. */
+   * never for a live `CalendarState` — the calendar card needs its own
+   * signal to bypass the device-token/`status` gates below, which describe
+   * the live wiring's preconditions and mean nothing for a fixture that was
+   * never fetched through it. It also routes the card's toggles to the
+   * local demo copy — through `onSelectionChange` they would persist
+   * fixture ids to the real device selection and poll Google for calendars
+   * that do not exist. */
   calendarIsDemo: boolean;
   themePreference: ThemePreference;
   onThemePreference: (preference: ThemePreference) => void;
@@ -376,9 +372,9 @@ export interface SettingsScreenProps {
    * journal, and the mirror download — and #118's bindings, read from
    * `task.bindings`. */
   task: TaskState;
-  /** #118's binding write. Absent (a demo render, a core that never came
-   * up) renders every binding read-only rather than a Save button that
-   * silently does nothing. */
+  /** #118's binding write. Absent (a core that never came up) renders every
+   * binding read-only rather than a Save button that silently does
+   * nothing. */
   onSetBinding?: (key: string, value: string) => void;
   online: boolean;
   syncNowMs: number;
@@ -386,7 +382,6 @@ export interface SettingsScreenProps {
 }
 
 export function SettingsScreen({
-  demo,
   status,
   apiVersion,
   coreId,
@@ -416,25 +411,22 @@ export function SettingsScreen({
     calendar.selectedCalendarIds,
     calendar.availableCalendars,
   );
-  // Demo mode toggles a local copy and nothing else: the fixture ids are not
-  // real calendars, and routing them through `onSelectionChange` would persist
-  // them to localStorage and poll the worker for calendars that do not exist.
-  // BOTH fixture worlds take this path — the kit world (`demo`) and the board
-  // world (`calendarIsDemo`, where `demo` stays null), so every fixture branch
-  // below tests `fixtureCalendars`, never `demo` alone.
-  const fixtureCalendars = demo !== null || calendarIsDemo;
+  // The board world's fixture calendar toggles a local copy and nothing
+  // else: the fixture ids are not real calendars, and routing them through
+  // `onSelectionChange` would persist them to localStorage and poll the
+  // worker for calendars that do not exist.
   const [demoSelectedIds, setDemoSelectedIds] = useState<string[]>(() => {
-    const first = demo?.calendars[0]?.id ?? (calendarIsDemo ? calendar.availableCalendars[0]?.id : undefined);
+    const first = calendarIsDemo ? calendar.availableCalendars[0]?.id : undefined;
     return first === undefined ? [] : [first];
   });
 
   // #121: designating a Trips calendar opts this device into polling it, so
   // its row renders checked and locked with the reason said out loud —
-  // never a calendar fetched with nothing on screen to explain it. Neither
-  // fixture world has a bindings table to read or real calendars to poll,
-  // so they lock nothing.
-  const tripsId = fixtureCalendars ? null : tripsCalendarId(task.bindings);
-  const polledIds = fixtureCalendars
+  // never a calendar fetched with nothing on screen to explain it. The
+  // fixture world has no bindings table to read or real calendars to poll,
+  // so it locks nothing.
+  const tripsId = calendarIsDemo ? null : tripsCalendarId(task.bindings);
+  const polledIds = calendarIsDemo
     ? demoSelectedIds
     : effectiveCalendarIds(calendar.selectedCalendarIds, tripsId);
 
@@ -453,12 +445,12 @@ export function SettingsScreen({
             </Note>
           ) : !calendarIsDemo && status !== "ready" ? (
             <Note>Calendar context is unavailable until the local core loads.</Note>
-          ) : demo || hasCalendars ? (
+          ) : calendarIsDemo || hasCalendars ? (
             <>
               <CalendarPicker
-                calendars={demo ? demo.calendars : calendar.availableCalendars}
+                calendars={calendar.availableCalendars}
                 selectedIds={polledIds}
-                unavailableIds={fixtureCalendars ? [] : unavailableIds}
+                unavailableIds={calendarIsDemo ? [] : unavailableIds}
                 lockedIds={tripsId === null ? [] : [tripsId]}
                 lockedHint={
                   <>
@@ -467,7 +459,7 @@ export function SettingsScreen({
                   </>
                 }
                 onToggle={(id) =>
-                  fixtureCalendars
+                  calendarIsDemo
                     ? setDemoSelectedIds((current) => toggleCalendarId(current, id))
                     : onSelectionChange(toggleCalendarId(polledIds, id))
                 }
@@ -482,9 +474,9 @@ export function SettingsScreen({
         </Section>
 
         <Section title="Standing questions" id="standing-questions">
-          {demo === null && status !== "ready" ? (
+          {status !== "ready" ? (
             <Note>Bindings are unavailable until the local core loads.</Note>
-          ) : demo === null && task.bindings === null ? (
+          ) : task.bindings === null ? (
             <Note>Reading the bindings.</Note>
           ) : (
             <Card
@@ -495,18 +487,12 @@ export function SettingsScreen({
                 What each standing question is about. These are workspace facts — a change here
                 reaches every device on its next sync.
               </p>
-              {(demo === null ? (task.bindings ?? []) : demo.bindings).map((binding) => (
+              {task.bindings.map((binding) => (
                 <BindingRow
                   key={binding.key}
                   binding={binding}
-                  // A demo row can never have been written, so it can never
-                  // have failed to write.
-                  writeError={
-                    demo === null ? bindingWriteError(task.lastBindingWrite, binding.key) : null
-                  }
-                  // Demo rows are fixtures, not real `settings` rows: a Save
-                  // here would enqueue a CAS write for a key nobody bound.
-                  onSetBinding={demo === null ? onSetBinding : undefined}
+                  writeError={bindingWriteError(task.lastBindingWrite, binding.key)}
+                  onSetBinding={onSetBinding}
                 />
               ))}
             </Card>
@@ -537,25 +523,8 @@ export function SettingsScreen({
               options={BACKEND_OPTIONS}
               onChange={(event) => onBackendSelection(event.target.value)}
             />
-            {demo ? <Switch label="Show acked alerts" /> : null}
           </Card>
         </Section>
-
-        {demo ? (
-          <Section title="Mirror">
-            <Card
-              padding="var(--space-6)"
-              style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}
-            >
-              <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-                Derived and disposable. Deleting it loses nothing.
-              </p>
-              <Button variant="secondary" iconLeft="rotate-ccw" style={{ alignSelf: "flex-start" }}>
-                Rebuild
-              </Button>
-            </Card>
-          </Section>
-        ) : null}
       </Column>
 
       <Aside label="Core and calendar status">
