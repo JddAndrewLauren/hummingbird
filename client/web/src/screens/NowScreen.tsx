@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Badge } from "../components/core/Badge";
-import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { ItemPanel } from "../components/domain/ItemPanel";
 import { ItemRow } from "../components/domain/ItemRow";
-import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
-import type { DemoData } from "../fixtures/demo";
 import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
 import type { Screen } from "../shell/screens";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
@@ -23,7 +19,6 @@ import { FrontierColumns } from "./FrontierColumns";
 import { GrillTakeover } from "./GrillTakeover";
 import { applyItemAction, canMarkDone, resolveFallbackPending } from "./item-actions";
 import { Aside, Column, Section, TwoColumn } from "./layout";
-import { energyIcon, energyTitle, levelColor, sizeIcon, sizeTitle } from "./size-energy";
 import type { QuestionInputs } from "./questions/contract";
 import { RankedRegion } from "./questions/RankedRegion";
 import type { StorageLike } from "./storage";
@@ -46,10 +41,8 @@ export function nowGrillMeButtonId(itemId: string): string {
 }
 
 export interface NowScreenProps {
-  demo: DemoData | null;
   onScreen: (screen: Screen) => void;
-  /** S10's real frontier data (issue #108) — rendered whenever `demo` is
-   * null, i.e. always outside dev's `?demo` mode. */
+  /** S10's real frontier data (issue #108). */
   task: TaskState;
   /** `useSyncWiring.ts`'s unconditional 30s tick — coarse enough for
    * urgency's own bucket sizes (`urgency.ts`) and for the ranked region's
@@ -73,17 +66,15 @@ export interface NowScreenProps {
    * straight through — the fact that separates "never set up" from "no
    * snapshot yet" for every calendar-lane question's `QuestionInputs`. */
   calendarConnected: boolean;
-  /** #122's do-date write affordance — forwarded straight to `RankedRegion`,
-   * `undefined` in demo mode like every other real-write callback here. */
+  /** #122's do-date write affordance — forwarded straight to `RankedRegion`. */
   onSetScheduledDate?: (itemId: string, date: string | null) => void;
   /** #273's microtask affordance for the open item, forwarded straight to
-   * `ItemDetailPanel`. `undefined` in demo mode like every other real-write
-   * callback here. */
+   * `ItemDetailPanel`. */
   microtask?: MicrotaskWiring;
   /** S13/#111's triage mutation, for the captures now sitting in the frontier's
    * own columns — `shell/useTriageWiring.ts`'s `triage`, the SAME callback the
    * Triage screen gets. Now is a second view of one inbox, never a second entry
-   * point into it. `undefined` in demo mode. */
+   * point into it. */
   onTriage?: (
     itemId: string,
     destination: "ready" | null,
@@ -102,8 +93,7 @@ export interface NowScreenProps {
   /** "Grill me" reaches Now (#359, ADR-0023): the same whole-composite
    * `GrillTakeoverWiring` `TriageScreen` gets, from the same one instance
    * `App.tsx` owns — there is exactly one interview session for the whole
-   * app, never a second one per screen. Optional for the same demo-only
-   * reason as `onTriage`: demo mode has no real `TaskItemDTO` to grill. */
+   * app, never a second one per screen. */
   grill?: GrillTakeoverWiring;
 }
 
@@ -154,11 +144,11 @@ function SelectedItemSection({ children }: { children: ReactNode }) {
   return <div ref={slot}>{children}</div>;
 }
 
-/** Real-data frontier/blocked rendering (issue #108) — kept out of the
- * `demo`-fixture render path above so the two never entangle: the fixture
- * carries its own (deliberately hand-authored) `urgency`/`blockedBy`
- * strings, while this branch derives everything at read time from the
- * `TaskItemDTO`s the store actually holds. */
+/** Real-data frontier/blocked rendering (issue #108) — derives everything at
+ * read time from the `TaskItemDTO`s the store actually holds. The kit
+ * world's hand-authored fixture render (`?demo=kit`'s hero card and "Also
+ * startable" list) was retired at #456: this is the screen's only render
+ * path now. */
 function RealFrontier({
   task,
   nowMs,
@@ -595,7 +585,6 @@ function RealFrontier({
 }
 
 export function NowScreen({
-  demo,
   onScreen,
   task,
   nowMs,
@@ -617,118 +606,22 @@ export function NowScreen({
   // screen without the prop) on exactly the storage it had before.
   const resolvedStorage =
     storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
-  // Ranking is not implemented, so the hero picks by the one property that
-  // makes an item obviously the current one — not by fixture position, which
-  // would let a reordered fixture describe the wrong action.
-  const top = demo
-    ? (demo.items.find((item) => item.stage === "in_progress") ?? demo.items[0])
-    : undefined;
-  const rest = demo ? demo.items.filter((item) => item.id !== top?.id && item.stage !== "done") : [];
 
   return (
     <TwoColumn>
       <Column>
-        {demo && top ? (
-          <>
-            <div>
-              <span className="hb-meta">top pick</span>
-              <Card
-                accent
-                elevation={2}
-                padding="var(--space-7)"
-                style={{
-                  marginTop: "var(--space-4)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--space-5)",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
-                  <StageBadge stage={top.stage} />
-                  {top.size ? (
-                    <Badge
-                      mono
-                      icon={sizeIcon(top.size)}
-                      role="img"
-                      aria-label={sizeTitle(top.size)}
-                      title={sizeTitle(top.size)}
-                      style={{ color: levelColor(top.size) }}
-                    />
-                  ) : null}
-                  {top.energy ? (
-                    <Badge
-                      mono
-                      icon={energyIcon(top.energy)}
-                      role="img"
-                      aria-label={energyTitle(top.energy)}
-                      title={energyTitle(top.energy)}
-                      style={{ color: levelColor(top.energy) }}
-                    />
-                  ) : null}
-                  <Badge mono tone="brand">
-                    {top.id}
-                  </Badge>
-                </div>
-                <h2 style={{ font: "var(--type-h1)", letterSpacing: "var(--tracking-heading)" }}>
-                  {top.title}
-                </h2>
-                {top.note ? (
-                  <p style={{ font: "var(--type-body)", color: "var(--text-secondary)" }}>
-                    {top.note}
-                  </p>
-                ) : null}
-                <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-                  <Button iconLeft="play">Resume</Button>
-                  <Button variant="secondary" iconLeft="list-checks" onClick={() => onScreen("routes")}>
-                    Steps ({top.steps})
-                  </Button>
-                  <Button variant="ghost" iconLeft="clock">
-                    Later today
-                  </Button>
-                </div>
-              </Card>
-            </div>
-            <Section
-              title="Also startable"
-              meta={`${rest.length} ${rest.length === 1 ? "action" : "actions"}`}
-            >
-              <Card padding="var(--space-3)">
-                {rest.map((item) => (
-                  <ItemRow
-                    key={item.id}
-                    title={item.title}
-                    stage={item.stage}
-                    urgency={item.urgency}
-                    deadline={item.deadline}
-                    scheduled={item.scheduled}
-                    size={item.size}
-                    energy={item.energy}
-                    steps={item.steps}
-                    blockedBy={item.blockedBy}
-                    onClick={() => onScreen("routes")}
-                    // Inert in demo mode, like Resume and Later today above —
-                    // present so `?demo` photographs the real shell's
-                    // mark-done affordance.
-                    onComplete={() => {}}
-                  />
-                ))}
-              </Card>
-            </Section>
-          </>
-        ) : (
-          <RealFrontier
-            task={task}
-            nowMs={nowMs}
-            selectedItemId={selectedItemId}
-            onOpenItem={onOpenItem}
-            onCloseItemDetail={onCloseItemDetail}
-            onAct={onAct}
-            microtask={microtask}
-            onTriage={onTriage}
-            storage={resolvedStorage}
-            grill={grill}
-          />
-        )}
+        <RealFrontier
+          task={task}
+          nowMs={nowMs}
+          selectedItemId={selectedItemId}
+          onOpenItem={onOpenItem}
+          onCloseItemDetail={onCloseItemDetail}
+          onAct={onAct}
+          microtask={microtask}
+          onTriage={onTriage}
+          storage={resolvedStorage}
+          grill={grill}
+        />
       </Column>
 
       {/* Shut, the panel is gone from the screen entirely rather than shrunk
@@ -749,8 +642,7 @@ export function NowScreen({
 
           {/* ADR-0015's ranked region replaces everything that used to be in
               here — the context tile, the demo standing-question card and the
-              snapshot tiles — and it is the same component in both modes: only
-              the inputs differ, so `?demo` photographs the real shell.
+              snapshot tiles.
 
               The landmark was still called `Context` long after that swap,
               which is what ADR-0021 renamed (#401): the panel holds standing
@@ -766,7 +658,7 @@ export function NowScreen({
             syncOutcomeSeq={task.syncOutcomeSeq}
             storage={resolvedStorage}
             onScreen={onScreen}
-            onSetScheduledDate={demo ? undefined : onSetScheduledDate}
+            onSetScheduledDate={onSetScheduledDate}
           />
         </Aside>
       )}
