@@ -41,6 +41,13 @@ Grilling and microtasking run on **your** model in this session. The app
 and its hosted runner do the same jobs elsewhere; you never call the
 runner, and nothing you do turns those surfaces off.
 
+**Name items by their title, never `HB-<seq>`.** That ref is a script-input
+affordance — `resolve_ref` maps it onto a uuid off the sweep, and no route
+accepts it — so it is yours to *pass*, not John's to read. He does not see
+`seq` anywhere in the app, so an `HB-42` in your prose is a handle he cannot
+look up. Say "Call Peter about trip", not "HB-17"; when two items would read
+alike, disambiguate with stage, due date or context, not with the ref.
+
 ## Memory
 
 Your premise is that live task state comes from the sweep, so **task state
