@@ -210,8 +210,10 @@ internal fun PaneRow(
  * no comparator of its own. `paneLabel` is the one thing a caller names
  * per surface; `collapsed`/`onToggle` are the ViewModel-resolved
  * band-stamped collapse (`PaneCollapse`), `onGoToSettings` the unbound
- * setup door, and `expandedContent` the per-question expanded rendering
- * (null until the pane-content slices fill it).
+ * setup door, and `expandedContent` the per-question expanded rendering —
+ * dispatched per surface, so Now and Status each pass their own; the
+ * default stays nullable for a caller that has no expansion to draw, but
+ * both production callers pass one.
  *
  * Both callers append these into a `LazyColumn` they already own rather
  * than a `Column` of their own (#537 review — a plain `Column` placed

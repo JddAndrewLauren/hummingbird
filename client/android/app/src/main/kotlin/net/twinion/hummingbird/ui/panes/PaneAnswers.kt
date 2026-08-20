@@ -244,9 +244,19 @@ private fun vacationHeadline(pane: MobileRankedPane, resolved: MobileVacationRes
 }
 
 /** `vacationHeadline` in `vacation.ts`, ported — `HORIZON_LABEL` is that
- * file's own "6 months". The trip's NAME is the web's own enrichment from
- * calendar events; the seam carries `location`, which is the same field
- * when present. */
+ * file's own "6 months".
+ *
+ * **The name here is NOT the web's trip name, and the divergence is
+ * deliberate.** The web enriches each core trip with a `name` derived from
+ * the calendar EVENT TITLE (`vacation.ts`'s `withName`/`tripName`: "Trip:
+ * India" reads as "India", falling back to the event id). `MobileTrip`
+ * carries no title — the seam's `location` is the event's separate location
+ * field (`decisions/panes/vacation.rs`) — so this reads the location and
+ * says "a trip" when there is none. Unreachable today
+ * (`calendar_connected` is hardcoded false), but it becomes wrong-looking
+ * output the day #621 lands the calendar lane: either the seam grows the
+ * name the web derives, or this reads the two apart on purpose and says so
+ * to the reader. */
 internal fun vacationTripHeadline(next: MobileTrip?): String {
     if (next == null) return "Nothing booked in the next 6 months"
     val name = next.location ?: "a trip"

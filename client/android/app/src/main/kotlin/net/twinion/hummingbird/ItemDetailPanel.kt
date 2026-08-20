@@ -787,9 +787,11 @@ private fun VocabularyRow(
 }
 
 /** The discard confirmation — the app's first dialog, and deliberately its
- * only one. See this file's header for why a draft earns it. */
+ * only one: `TriageScreen`'s editor guards its own draft with THIS
+ * composable rather than a second dialog of its own. See this file's header
+ * for why a draft earns it. */
 @Composable
-private fun DiscardConfirmation(onKeep: () -> Unit, onDiscard: () -> Unit) {
+internal fun DiscardConfirmation(onKeep: () -> Unit, onDiscard: () -> Unit) {
     AlertDialog(
         onDismissRequest = onKeep,
         title = { Text("Discard changes?") },

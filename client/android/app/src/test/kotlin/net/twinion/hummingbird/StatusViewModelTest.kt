@@ -1,8 +1,11 @@
 package net.twinion.hummingbird
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
 import uniffi.hummingbird_ffi_mobile.MobileKimiGap
@@ -94,5 +97,70 @@ class StatusViewModelTest {
         val loaded = vm.state.value as StatusState.Loaded
         assertEquals(1, loaded.panes.size)
         assertTrue(loaded.panes.single().answer.band == MobilePaneBand.LIVE)
+    }
+
+    @Test
+    fun `a failed rank is worded rather than thrown out of the screen`() = runBlocking {
+        // A3c: the rank is a JNI crossing that can throw
+        // `InternalException`, and this load runs inside a resume effect —
+        // unhandled, it takes the Activity down. `TriageViewModel.load`'s
+        // shape, applied here.
+        val vm = StatusViewModel(rankPanesFn = { throw RuntimeException("mirror unreadable") })
+
+        vm.load(1_000L)
+
+        assertTrue(
+            "a failed rank must say so",
+            vm.statusLine.value?.contains("Couldn't read Status") == true,
+        )
+    }
+
+    @Test
+    fun `a failed rank leaves whatever the last good one rendered`() = runBlocking {
+        var fail = false
+        val vm = StatusViewModel(
+            rankPanesFn = {
+                if (fail) throw RuntimeException("mirror unreadable")
+                listOf(pane(MobileStandingQuestion.KIMI, MobilePaneBand.LIVE))
+            },
+        )
+        vm.load(1_000L)
+
+        fail = true
+        vm.load(2_000L)
+
+        val loaded = vm.state.value as StatusState.Loaded
+        assertEquals("the panes on screen must not blank on a failed reload", 1, loaded.panes.size)
+        assertEquals(1_000L, loaded.rankedAtMs)
+    }
+
+    @Test
+    fun `a successful rank clears a previous failure line`() = runBlocking {
+        var fail = true
+        val vm = StatusViewModel(
+            rankPanesFn = {
+                if (fail) throw RuntimeException("boom")
+                emptyList()
+            },
+        )
+        vm.load(1_000L)
+
+        fail = false
+        vm.load(2_000L)
+
+        assertNull(vm.statusLine.value)
+    }
+
+    @Test
+    fun `a load cancelled by a fold is never worded as a failure`() = runBlocking {
+        val vm = StatusViewModel(rankPanesFn = { throw CancellationException("resume cancelled") })
+
+        try {
+            vm.load(1_000L)
+            fail("cancellation must propagate")
+        } catch (expected: CancellationException) {
+        }
+
+        assertNull(vm.statusLine.value)
     }
 }

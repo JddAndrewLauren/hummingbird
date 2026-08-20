@@ -1,5 +1,6 @@
 package net.twinion.hummingbird
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -115,6 +117,38 @@ fun TriageScreen(
     // one rather than showing a stale queue until its own next resume.
     LaunchedEffect(syncTick) {
         if (syncTick > 0) reload()
+    }
+
+    // Saveable: an Activity recreation mid-question must not silently
+    // answer it (`ItemDetailPanel`'s own flag, same reason).
+    var confirmingDiscard by rememberSaveable { mutableStateOf(false) }
+
+    // System Back with typed edits open: the words a person wrote are never
+    // thrown away silently — the house rule `ItemDetailPanel`'s header
+    // states, and this editor had no guard at all. Leaving really is the end
+    // of the draft here: a bar-tab pop carries no `saveState` for this
+    // entry, so the ViewModel holding it retires with the entry.
+    //
+    // Registered at the screen, not inside the editor's LazyColumn item: an
+    // item scrolled out of the viewport is DISPOSED, taking any handler it
+    // registered with it (`NowScreen`'s own guard exists for exactly that).
+    // Only while there is something to lose — an idle Back is never fought,
+    // and still pops the entry the way it always did.
+    BackHandler(enabled = draft != null && viewModel.isDirty) {
+        confirmingDiscard = true
+    }
+
+    if (confirmingDiscard) {
+        DiscardConfirmation(
+            onKeep = { confirmingDiscard = false },
+            // Discarding closes the editor and stays on Triage — the Back
+            // that asked the question is spent on the answer, exactly what
+            // the panel's own discard does.
+            onDiscard = {
+                confirmingDiscard = false
+                viewModel.discardDraft()
+            },
+        )
     }
 
     Scaffold { padding ->

@@ -180,11 +180,67 @@ class RecallScreenStructuralTest {
         )
         assertTrue(
             "the overlay must own a BackHandler that closes it",
-            screenSrc.contains("BackHandler { onClose() }"),
+            Regex("""BackHandler\s*\{[\s\S]*?onClose\(\)""").containsMatchIn(screenSrc),
         )
         assertTrue(
             "the overlay's selection lives in the ViewModel, never a remember {}",
             screenSrc.contains("viewModel.selectedId") || screenSrc.contains("viewModel.clearSelection()"),
+        )
+    }
+
+    @Test
+    fun `a fresh open clears the expansion at the gesture, never in the composition`() {
+        // A1a. `LaunchedEffect(Unit)` reads as "on open" and is not: it
+        // re-fires on every Activity recreation, which on the install
+        // target is every fold/unfold — collapsing a panel that was open,
+        // and possibly mid-edit, a moment before. The reset belongs at the
+        // state write that opens the surface.
+        val main = source("MainActivity.kt")
+        assertTrue(
+            "AppRoot must open the overlay through one door that resets the selection",
+            Regex("""fun openRecall\(\)\s*\{\s*recallViewModel\.clearSelection\(\)\s*recallOpen = true""")
+                .containsMatchIn(main),
+        )
+        assertFalse(
+            "no open gesture may raise the flag without going through that door",
+            Regex("""recallOpen = true""").findAll(main).count() > 1,
+        )
+        assertFalse(
+            "the overlay must not clear the selection from its own composition",
+            Regex("""LaunchedEffect\(Unit\)\s*\{\s*viewModel\.clearSelection\(\)""")
+                .containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "the overlay must read AppRoot's own instance, not resolve a second one",
+            main.contains("RecallOverlay(") &&
+                Regex("""viewModel\s*=\s*recallViewModel""").containsMatchIn(main) &&
+                Regex("""viewModel:\s*RecallViewModel,""").containsMatchIn(screenSrc),
+        )
+    }
+
+    @Test
+    fun `Back with a dirty draft scrolled out of view scrolls it back rather than dismissing`() {
+        // A1b. The panel's own BackHandler is registered inside a
+        // LazyColumn item; scrolling that item out of the viewport disposes
+        // it, and the overlay's own Back then dismisses straight past the
+        // discard confirmation, taking the words with it. `NowScreen`'s
+        // guard, ported: the same keyed ViewModel lookup, the same
+        // re-check, the same scroll-back-into-view answer.
+        assertTrue(
+            "the overlay must look the panel's ViewModel up by the panel's own key",
+            screenSrc.contains("key = \"item-\$id\""),
+        )
+        assertTrue(
+            "Back must re-check the draft's dirtiness for itself",
+            screenSrc.contains("panelViewModel.isDirty"),
+        )
+        assertTrue(
+            "and answer a dirty draft by scrolling it back into view",
+            screenSrc.contains("listState.animateScrollToItem("),
+        )
+        assertTrue(
+            "which needs the overlay's LazyColumn to own that state",
+            screenSrc.contains("rememberLazyListState()") && screenSrc.contains("state = listState"),
         )
     }
 }

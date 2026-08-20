@@ -212,6 +212,45 @@ class TriageScreenStructuralTest {
     }
 
     @Test
+    fun `Back with a dirty draft is guarded, by the app's one discard dialog, from the screen`() {
+        // A4: human-authored content is never silently thrown away
+        // (`ItemDetailPanel`'s header states the house rule) and this
+        // editor had no guard at all — a bar-tab pop keeps no `saveState`,
+        // so leaving really was the end of the words.
+        //
+        // Two placements are load-bearing. The handler is registered at the
+        // SCREEN, not inside the editor's LazyColumn item: an item scrolled
+        // out of the viewport is disposed, taking its handler with it (the
+        // defect `NowScreen`'s own guard exists for). And the dialog is
+        // `ItemDetailPanel`'s, not a second one — the house is dialog-wary
+        // and that file's header claims to hold the only one.
+        assertTrue(
+            "the screen must guard Back while the open draft differs from its record",
+            Regex("""BackHandler\(enabled = draft != null && viewModel\.isDirty\)""")
+                .containsMatchIn(screenSrc),
+        )
+        val handler = screenSrc.indexOf("BackHandler(")
+        val lazyColumn = screenSrc.indexOf("LazyColumn(")
+        assertTrue("the guard must be registered above the LazyColumn, never inside an item", handler in 0 until lazyColumn)
+        assertTrue(
+            "the confirmation must be the shared DiscardConfirmation",
+            screenSrc.contains("DiscardConfirmation("),
+        )
+        assertFalse(
+            "no second dialog on this screen",
+            screenSrc.contains("AlertDialog("),
+        )
+        assertTrue(
+            "discarding must go through the ViewModel, never a local state reset",
+            screenSrc.contains("viewModel.discardDraft()"),
+        )
+        assertTrue(
+            "the question survives an Activity recreation rather than being silently answered",
+            Regex("""confirmingDiscard by rememberSaveable""").containsMatchIn(screenSrc),
+        )
+    }
+
+    @Test
     fun `no triage surface writes its own blank check`() {
         for ((name, src) in both) {
             assertFalse(

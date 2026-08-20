@@ -200,7 +200,7 @@ fun NowScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // Activity-scoped, not composition-scoped: see NowViewModel.factory.
+    // In a ViewModelStore, not a composition: see NowViewModel.factory.
     val viewModel: NowViewModel = viewModel(factory = NowViewModel.factory(context))
     val board by viewModel.board.collectAsState()
     val axis by viewModel.axis.collectAsState()

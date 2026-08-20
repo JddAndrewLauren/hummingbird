@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -289,8 +290,8 @@ private const val MIN_REFRESH_VISIBLE_MS = 600L
 
 /** How far a scroll runs one way before the chrome hides (48px) or
  * re-shows (16px) — hide reluctantly, reveal eagerly, Gmail's own feel. */
-private const val CHROME_HIDE_THRESHOLD_PX = 48f
-private const val CHROME_SHOW_THRESHOLD_PX = 16f
+internal const val CHROME_HIDE_THRESHOLD_PX = 48f
+internal const val CHROME_SHOW_THRESHOLD_PX = 16f
 
 /** Gmail-style chrome hiding: scrolling down hides the top bar and the
  * bottom bar and collapses the Capture FAB to its round form; scrolling up
@@ -301,14 +302,18 @@ private const val CHROME_SHOW_THRESHOLD_PX = 16f
  *
  * The connection reads `consumed.y`, never `available.y` — the whole
  * pull-to-refresh interplay: overscrolling down at the top of a list
- * consumes nothing, and what `PullToRefreshBox` itself consumes during a
- * pull is downward, so a pull can only ever move the accumulator toward
- * "show". The two nested-scroll owners compose without knowing about each
- * other. A direction flip resets the run so small reversals never jitter
- * the bars; fling frames arrive through `onPostScroll` too, so momentum
- * behaves without an `onPostFling` arm. */
+ * consumes nothing, so a pull that only ever pulls cannot hide the chrome.
+ * (Not a total guarantee: material3's pull-to-refresh consumes the *upward*
+ * drag in `onPreScroll` while the indicator is out, so a pull taken back up
+ * far enough — a cancelled pull — can still cross the hide threshold. The
+ * chrome reappearing on the next downward-consuming scroll is the whole
+ * cost, and it is cheaper than a second accumulator that knows about the
+ * indicator.) The two nested-scroll owners compose without knowing about
+ * each other. A direction flip resets the run so small reversals never
+ * jitter the bars; fling frames arrive through `onPostScroll` too, so
+ * momentum behaves without an `onPostFling` arm. */
 @Stable
-private class ChromeScrollState {
+internal class ChromeScrollState {
     var chromeVisible by mutableStateOf(true)
         private set
     private var accumulated = 0f
@@ -516,6 +521,23 @@ private fun AppRoot(
     // screen and Back closes it without navigating. Saveable: an Activity
     // recreation mid-search brings the overlay back.
     var recallOpen by rememberSaveable { mutableStateOf(false) }
+    // The overlay's ViewModel, resolved here and handed down rather than
+    // resolved again inside `RecallOverlay`: the open gesture below has to
+    // write to the SAME instance the overlay reads, and passing it is what
+    // makes that a fact rather than a coincidence of which store owner
+    // happens to be current at each call site.
+    val recallViewModel: RecallViewModel = viewModel(factory = RecallViewModel.factory(context))
+    /** The one door onto the overlay. A fresh open starts with no row
+     * expanded (the web resets its `selectedId` on every open; the QUERY
+     * survives) — and this is where that reset belongs, at the state write
+     * that opens the surface. A `LaunchedEffect(Unit)` inside the overlay
+     * looks like "on open" and is not: it re-fires on Activity recreation,
+     * which on the install target is every fold/unfold, collapsing a panel
+     * that was open — and mid-edit — a moment before. */
+    fun openRecall() {
+        recallViewModel.clearSelection()
+        recallOpen = true
+    }
     var moreSheetOpen by remember { mutableStateOf(false) }
     // `rememberSaveable`, unlike the More sheet's flag: a fold/unfold
     // mid-capture recreates the Activity, and the sheet must come back
@@ -570,7 +592,7 @@ private fun AppRoot(
                     ) {
                         AppTopBar(
                             dark = resolveDarkTheme(themePreference, isSystemInDarkTheme()),
-                            onSearch = { recallOpen = true },
+                            onSearch = { openRecall() },
                         )
                     }
                 }
@@ -646,7 +668,11 @@ private fun AppRoot(
                         // ItemDetailPanel item) — Grill is the one gesture that
                         // still leaves the screen, and Back from the takeover
                         // lands on Now with the panel still standing, since the
-                        // selection lives in the Activity-scoped NowViewModel.
+                        // selection lives in `NowViewModel` rather than a
+                        // `remember {}`: this destination's own
+                        // NavBackStackEntry survives having the takeover pushed
+                        // on top of it, so its ViewModel — and the selection —
+                        // is still there when the takeover pops.
                         onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
                         // The unbound panes' setup door — through `goToTab`,
                         // never a plain `navigate` (#574's own reasoning on
@@ -752,6 +778,7 @@ private fun AppRoot(
 
         if (recallOpen) {
             RecallOverlay(
+                viewModel = recallViewModel,
                 syncTick = syncTick,
                 onClose = { recallOpen = false },
                 // Grill is the one gesture that leaves the overlay: close it
@@ -770,7 +797,7 @@ private fun AppRoot(
             onNavigate = ::goToTab,
             onSearch = {
                 moreSheetOpen = false
-                recallOpen = true
+                openRecall()
             },
             onDismiss = { moreSheetOpen = false },
         )

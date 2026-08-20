@@ -12,7 +12,11 @@ import org.junit.Test
 //
 // - The connection accumulates `consumed.y`, never `available.y` — the
 //   pull-to-refresh interplay: top-of-list overscroll consumes nothing, so
-//   a pull can never hide the chrome.
+//   a pull that only ever pulls cannot hide the chrome. (Not a total
+//   guarantee — see `ChromeScrollState`'s own doc on the cancelled pull.)
+//
+// The accumulator's arithmetic — thresholds, the direction-flip reset,
+// `reveal()` — is `ChromeScrollStateTest`'s, not this file's.
 // - Height-collapse via AnimatedVisibility, not an offset — a 0-height
 //   slot shrinks the Scaffold's padding so content reclaims the space, and
 //   the status-bar inset falls through to each screen's inner Scaffold.

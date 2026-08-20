@@ -92,9 +92,23 @@ class RecallViewModel(
         _selectedId.value = if (_selectedId.value == itemId) null else itemId
     }
 
+    /** Closes whatever row is expanded — the panel's own Close button, and
+     * `AppRoot.openRecall`, which resets the selection at the gesture that
+     * opens the overlay so a fresh open shows no expansion. Deliberately
+     * NOT called from a `LaunchedEffect(Unit)` in the overlay: that
+     * re-enters on every Activity recreation (a fold/unfold), which is not
+     * an open. */
     fun clearSelection() {
         _selectedId.value = null
     }
+
+    /** Which [search] call is the current one. `LaunchedEffect(query)`
+     * cancels the previous call without joining it, so a cancelled call's
+     * `finally` can run *after* its replacement has already raised
+     * [loading] — clobbering it to false and leaving a spinner that never
+     * appears under a search still in flight. Only the newest call is
+     * allowed to lower the flag. */
+    private var requestSeq = 0L
 
     suspend fun search(nowMs: Long) {
         val trimmed = _query.value.trim()
@@ -104,6 +118,7 @@ class RecallViewModel(
             _statusLine.value = null
             return
         }
+        val request = ++requestSeq
         _loading.value = true
         try {
             val outcome = searchFn(_query.value, nowMs)
@@ -123,7 +138,7 @@ class RecallViewModel(
         } catch (error: Exception) {
             _statusLine.value = "Couldn't search — ${error.message}"
         } finally {
-            _loading.value = false
+            if (request == requestSeq) _loading.value = false
         }
     }
 

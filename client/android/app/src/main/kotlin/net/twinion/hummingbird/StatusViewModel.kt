@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,11 +57,29 @@ class StatusViewModel(
     val paneOverrides: StateFlow<Map<String, CollapseOverride>> = _paneOverrides.asStateFlow()
     private var paneOverridesLoaded = false
 
+    /** The one failure line this screen owns — `TriageViewModel`'s
+     * `statusLine` shape, cleared by the next load that lands. */
+    private val _statusLine = MutableStateFlow<String?>(null)
+    val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
+
     suspend fun load(nowMs: Long) {
-        _state.value = StatusState.Loaded(rankPanesFn(nowMs), nowMs)
-        if (!paneOverridesLoaded) {
-            _paneOverrides.value = readPaneCollapseFn()
-            paneOverridesLoaded = true
+        try {
+            _state.value = StatusState.Loaded(rankPanesFn(nowMs), nowMs)
+            _statusLine.value = null
+            if (!paneOverridesLoaded) {
+                _paneOverrides.value = readPaneCollapseFn()
+                paneOverridesLoaded = true
+            }
+        } catch (error: CancellationException) {
+            // A resume cancelled by a fold or a fast Back is not a failure
+            // to report (`NowViewModel.refresh`'s own rule).
+            throw error
+        } catch (error: Exception) {
+            // The rank is a JNI crossing that can throw `InternalException`;
+            // unhandled inside a resume effect it takes the Activity down.
+            // Worded instead — and [state] stays as it was, so a screen that
+            // had panes keeps showing them under the line.
+            _statusLine.value = "Couldn't read Status — ${error.message}"
         }
     }
 

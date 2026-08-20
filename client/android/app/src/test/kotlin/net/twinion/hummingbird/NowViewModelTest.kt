@@ -541,6 +541,89 @@ class NowViewModelTest {
     }
 
     @Test
+    fun `a failed board read is worded rather than thrown out of the screen`() = runBlocking {
+        // A3c: `fetchBoardFn` is a JNI crossing that can throw
+        // `InternalException`, and `refresh` runs inside a resume effect —
+        // unhandled, it takes the Activity down. `TriageViewModel.load`'s
+        // shape, applied here.
+        val vm = viewModel(fetchBoardFn = { _, _, _ -> throw RuntimeException("mirror unreadable") })
+
+        vm.refresh("2026-08-15T12:00")
+
+        assertTrue(
+            "a failed read must say so",
+            vm.statusLine.value?.contains("Couldn't read the board") == true,
+        )
+        assertFalse("and must not strand the spinner", vm.loading.value)
+    }
+
+    @Test
+    fun `a board read cancelled by a fold is never worded as a failure`() = runBlocking {
+        val vm = viewModel(fetchBoardFn = { _, _, _ -> throw CancellationException("resume cancelled") })
+
+        try {
+            vm.refresh("2026-08-15T12:00")
+            fail("cancellation must propagate")
+        } catch (expected: CancellationException) {
+        }
+
+        assertNull(vm.statusLine.value)
+    }
+
+    @Test
+    fun `a successful board read clears a previous failure line`() = runBlocking {
+        var fail = true
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ ->
+                if (fail) throw RuntimeException("boom") else board("i-1")
+            },
+        )
+        vm.refresh("2026-08-15T12:00")
+
+        fail = false
+        vm.refresh("2026-08-15T12:00")
+
+        assertNull(vm.statusLine.value)
+    }
+
+    @Test
+    fun `a failed pane rank is worded and leaves the board it was loaded beside standing`() = runBlocking {
+        // The panes are the second half of one reload: a throw here would
+        // take down an Activity that had already rendered a good board.
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> board("i-1") },
+            rankPanesFn = { _, _ -> throw RuntimeException("rank unreadable") },
+        )
+
+        vm.refresh("2026-08-15T12:00")
+        vm.loadPanes(1_000L)
+
+        assertEquals(listOf("i-1"), columnIds(vm.board.value!!))
+        assertTrue(
+            "a failed rank must say so",
+            vm.statusLine.value?.contains("Couldn't read this week") == true,
+        )
+    }
+
+    @Test
+    fun `a failed pane rank leaves the panes that were already showing`() = runBlocking {
+        var fail = false
+        val vm = viewModel(
+            rankPanesFn = { _, _ ->
+                if (fail) throw RuntimeException("rank unreadable")
+                listOf(pane(MobileStandingQuestion.WEEKEND, MobilePaneBand.LIVE))
+            },
+        )
+        vm.loadPanes(1_000L)
+
+        fail = true
+        vm.loadPanes(2_000L)
+
+        assertEquals(1, vm.panes.value.size)
+        assertEquals("the rank's own clock must not advance past its panes", 1_000L, vm.panesNowMs.value)
+    }
+
+    @Test
     fun `toggleFacet is a pure add-remove -- toggling twice restores the original selection`() {
         val base = FrontierFacetSelection()
         val once = base.toggled(FrontierFacet.SIZE, "deep")

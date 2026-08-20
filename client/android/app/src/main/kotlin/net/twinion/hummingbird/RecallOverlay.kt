@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -75,13 +76,16 @@ private const val INERT_ALPHA = 0.72f
 
 @Composable
 internal fun RecallOverlay(
+    /** `AppRoot`'s own instance, passed rather than resolved here: the open
+     * gesture there resets the selection on it (`openRecall`), and that is
+     * only the right reset if it reaches the instance this overlay reads. */
+    viewModel: RecallViewModel,
     syncTick: Int,
     onClose: () -> Unit,
     onGrill: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val viewModel: RecallViewModel = viewModel(factory = RecallViewModel.factory(context))
     val query by viewModel.query.collectAsState()
     val rows by viewModel.rows.collectAsState()
     val total by viewModel.total.collectAsState()
@@ -94,15 +98,42 @@ internal fun RecallOverlay(
     }
 
     // A fresh open starts with no row expanded — the web resets its
-    // `selectedId` whenever the overlay is freshly opened. The QUERY
-    // survives (the Activity-scoped ViewModel holds it), matching the
+    // `selectedId` whenever the overlay is freshly opened. That reset is
+    // `AppRoot.openRecall`'s, at the gesture, NOT a `LaunchedEffect(Unit)`
+    // here: this composition re-enters on every Activity recreation (a
+    // fold/unfold on the install target), and clearing there would collapse
+    // an open, possibly mid-edit, panel that nobody asked to close. The
+    // QUERY survives either way (the ViewModel holds it), matching the
     // web's App-owned query state.
-    LaunchedEffect(Unit) { viewModel.clearSelection() }
+
+    val listState = rememberLazyListState()
+
+    // The panel's own ViewModel, by the panel's own key — the SAME instance
+    // `ItemDetailPanel` resolves, looked up here because the handler below
+    // needs its dirtiness while the panel may not be composed at all.
+    // `NowScreen`'s guard, ported for the identical trap: while the panel is
+    // on screen its own deeper BackHandler wins and the discard
+    // confirmation comes first, but the panel is a LazyColumn item, and
+    // scrolling it out of the viewport DISPOSES it, unregistering that
+    // handler — leaving the overlay's own Back to dismiss straight past the
+    // confirm gate, taking the words with it. So a dirty draft is
+    // re-checked here and Back scrolls the panel back into view instead.
+    val panelViewModel: ItemDetailViewModel? = selectedId?.let { id ->
+        viewModel(factory = ItemDetailViewModel.factory(context), key = "item-$id")
+    }
 
     // Back closes the overlay, never navigates the screen underneath.
-    // The panel's own deeper handlers (a dirty edit's discard
-    // confirmation) compose later and win while the panel stands.
-    BackHandler { onClose() }
+    BackHandler {
+        val panelIndex = selectedId
+            ?.let { id -> rows.indexOfFirst { it.id == id } }
+            ?.takeIf { it >= 0 }
+            ?.let { it + 1 } // the detail item sits directly below its row
+        if (panelIndex != null && panelViewModel?.draft?.value != null && panelViewModel.isDirty) {
+            scope.launch { listState.animateScrollToItem(panelIndex) }
+        } else {
+            onClose()
+        }
+    }
 
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
@@ -166,7 +197,10 @@ internal fun RecallOverlay(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                else -> LazyColumn(
+                    state = listState,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     for (row in rows) {
                         item(key = row.id) {
                             RecallRow(

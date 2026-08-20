@@ -153,6 +153,27 @@ class TriageViewModel(
             return problems.deadline == null && problems.scheduledDate == null
         }
 
+    /** Whether the open row's draft still matches the record it was seeded
+     * from — [ItemDetailViewModel.isDirty]'s own shape and its own purpose:
+     * it is the whole condition of `TriageScreen`'s Back guard, so that an
+     * *unchanged* draft is never fought over and a changed one is never
+     * thrown away without asking. */
+    val isDirty: Boolean
+        get() {
+            val draft = _draft.value ?: return false
+            val id = _selectedId.value ?: return false
+            val item = currentItems().find { it.id == id } ?: return false
+            return draft != TriageDraft.of(item)
+        }
+
+    /** Throws the open draft away and closes the editor — the discard
+     * confirmation's own arm, and the only path that ends a draft without
+     * either promoting it or the human closing the row themselves. */
+    fun discardDraft() {
+        _selectedId.value = null
+        _draft.value = null
+    }
+
     private fun currentItems(): List<TriageItemRecord> =
         (_state.value as? TriageState.Loaded)?.board?.items.orEmpty()
 

@@ -91,6 +91,7 @@ fun StatusScreen(
     val viewModel: StatusViewModel = viewModel(factory = StatusViewModel.factory(context))
     val state by viewModel.state.collectAsState()
     val paneOverrides by viewModel.paneOverrides.collectAsState()
+    val statusLine by viewModel.statusLine.collectAsState()
 
     suspend fun reload() = viewModel.load(System.currentTimeMillis())
 
@@ -130,6 +131,16 @@ fun StatusScreen(
                     .padding(bottom = 64.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
+                // A failed rank, worded — the same line every other screen
+                // carries, above whatever the last good read left standing.
+                statusLine?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
                 when (val current = state) {
                     // A scrollable around the spinner so the pull gesture works
                     // before the first load lands too.

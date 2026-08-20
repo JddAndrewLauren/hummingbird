@@ -148,9 +148,9 @@ class NowViewModel(
     /** The facet panel's disclosure — shut by default, filtering is the
      * occasional gesture (`FrontierColumns.tsx`'s own reasoning: only the
      * axis switch earns permanent space). Ephemeral like [facets] itself
-     * and never persisted, but Activity-scoped here rather than a
-     * Composable `remember`, the same fold/unfold reasoning [factory]
-     * states for the whole class. */
+     * and never persisted, but held here rather than in a Composable
+     * `remember`, the same fold/unfold reasoning [factory] states for the
+     * whole class. */
     private val _filtersOpen = MutableStateFlow(false)
     val filtersOpen: StateFlow<Boolean> = _filtersOpen.asStateFlow()
 
@@ -164,8 +164,8 @@ class NowViewModel(
     /** The six-card cap's "N more" toggle, per column — ephemeral like
      * [facets] (never written to [readCollapsedFn]/[writeCollapsedFn]):
      * showing more of a column is not a preference about the column, it is
-     * "just this once, show me the rest". Kept in this Activity-scoped
-     * ViewModel rather than a Composable's `remember` anyway, the same
+     * "just this once, show me the rest". Kept in this ViewModel rather
+     * than a Composable's `remember` anyway, the same
      * fold/unfold-survives reasoning [NowViewModel.factory] states for the
      * whole class. */
     private val _expanded = MutableStateFlow<Set<String>>(emptySet())
@@ -173,7 +173,7 @@ class NowViewModel(
 
     /** Now's inline expansion: which item's panel stands above the board —
      * `TriageViewModel`'s one-open-at-a-time shape, tap-again-to-collapse.
-     * Ephemeral view state like [expanded], Activity-scoped for the same
+     * Ephemeral view state like [expanded], held here for the same
      * fold/unfold reason, and never persisted: reopening the app onto a
      * days-old expansion would claim a currency the selection no longer
      * has. */
@@ -188,9 +188,10 @@ class NowViewModel(
         _selectedItemId.value = null
     }
 
-    /** The one failure line this screen owns — set only by [complete],
-     * cleared on its next attempt; `TriageViewModel`'s `statusLine`
-     * shape. */
+    /** The one failure line this screen owns — whichever of [complete],
+     * [refresh] or [loadPanes] failed last, cleared by the next read that
+     * lands; `TriageViewModel`'s `statusLine` shape. A failed act is worded
+     * after its board re-read, so it survives that read's own clear. */
     private val _statusLine = MutableStateFlow<String?>(null)
     val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
 
@@ -217,8 +218,7 @@ class NowViewModel(
         failure?.let { _statusLine.value = it }
     }
 
-    /** Whether [load] has completed at least once on this (Activity-scoped)
-     * instance — `NowScreen`'s resume effect reads it to tell its first
+    /** Whether [load] has completed at least once on this instance — `NowScreen`'s resume effect reads it to tell its first
      * resume, which must restore the persisted axis/collapse set, from
      * every later one, which must not re-read preferences already held
      * here. Set only after [load] returns, so a resume cancelled mid-load
@@ -242,8 +242,22 @@ class NowViewModel(
      * an instant itself. */
     suspend fun refresh(now: String) {
         _loading.value = true
-        _board.value = fetchBoardFn(_axis.value, _facets.value.toRecord(), now)
-        _loading.value = false
+        try {
+            _board.value = fetchBoardFn(_axis.value, _facets.value.toRecord(), now)
+            _statusLine.value = null
+        } catch (error: CancellationException) {
+            // A resume cancelled by a fold or a fast Back — never a failure
+            // to report (`complete`'s own rule, and `RecallViewModel`'s).
+            throw error
+        } catch (error: Exception) {
+            // A seam call is a JNI crossing that can throw
+            // `InternalException`; unhandled, it takes the Activity down
+            // from inside a resume effect. Worded instead, in the one line
+            // this screen already owns — `TriageViewModel.load`'s shape.
+            _statusLine.value = "Couldn't read the board — ${error.message}"
+        } finally {
+            _loading.value = false
+        }
     }
 
     /** Picks a new grouping axis, persists it, and reloads under it.
@@ -320,13 +334,23 @@ class NowViewModel(
      * and never merged with the previous list — a reload replaces it whole,
      * [StatusViewModel.load]'s own shape. */
     suspend fun loadPanes(nowMs: Long) {
-        val queries = paneZoneQueriesFn(nowMs)
-        val facts = ZoneBridge.resolve(queries)
-        _panes.value = rankPanesFn(nowMs, facts)
-        _panesNowMs.value = nowMs
-        if (!paneOverridesLoaded) {
-            _paneOverrides.value = readPaneCollapseFn()
-            paneOverridesLoaded = true
+        try {
+            val queries = paneZoneQueriesFn(nowMs)
+            val facts = ZoneBridge.resolve(queries)
+            _panes.value = rankPanesFn(nowMs, facts)
+            _panesNowMs.value = nowMs
+            if (!paneOverridesLoaded) {
+                _paneOverrides.value = readPaneCollapseFn()
+                paneOverridesLoaded = true
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            // The panes are the second half of one reload: a throw here
+            // would otherwise take down an Activity that had already
+            // rendered a perfectly good board. Reported, and the previous
+            // pane list stands rather than blanking.
+            _statusLine.value = "Couldn't read this week — ${error.message}"
         }
     }
 
@@ -402,12 +426,17 @@ class NowViewModel(
             )
 
         /** The factory `NowScreen` hands to `viewModel()`, so the loaded
-         * board is scoped to the Activity's `ViewModelStore` rather than to
-         * a composition — the same correction [CaptureViewModel.factory]
-         * documents (`remember` does not survive Activity recreation, and a
-         * fold/unfold recreates). Cheaper here than there, since a lost
-         * board only means a re-read rather than lost typing, but the two
-         * screens holding their state the same way is the point. */
+         * board lives in a `ViewModelStore` rather than in a composition —
+         * the same correction [CaptureViewModel.factory] documents
+         * (`remember` does not survive Activity recreation, and a
+         * fold/unfold recreates). The store is the Now destination's own
+         * `NavBackStackEntry`, not the Activity's — a `viewModel()` call
+         * inside a `NavHost` destination always scopes to the entry — which
+         * survives both an Activity recreation and having a takeover pushed
+         * on top; only popping Now itself retires it. Cheaper here than in
+         * capture, since a lost board only means a re-read rather than lost
+         * typing, but the two screens holding their state the same way is
+         * the point. */
         fun factory(context: Context): ViewModelProvider.Factory = viewModelFactory {
             initializer { create(context) }
         }

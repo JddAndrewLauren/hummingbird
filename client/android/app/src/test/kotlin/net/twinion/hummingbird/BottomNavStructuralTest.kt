@@ -224,7 +224,7 @@ class BottomNavStructuralTest {
         )
         assertTrue(
             "the sheet's search row must close the sheet as the overlay opens",
-            mainActivitySrc.contains("onSearch = {\n                moreSheetOpen = false\n                recallOpen = true\n            }"),
+            mainActivitySrc.contains("onSearch = {\n                moreSheetOpen = false\n                openRecall()\n            }"),
         )
         assertFalse(
             "no RECALL route may exist — the overlay is not a destination",
