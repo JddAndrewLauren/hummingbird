@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import java.io.File
+import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -85,6 +86,7 @@ class AxisRowWrappingTest {
         // i.e. crushed to nothing. Measuring what the strip *wants* is the
         // only form of this assertion that can fail.
         composeTestRule.setContent {
+            HummingbirdTheme {
             Box(modifier = Modifier.width(unconstrained)) {
                 AxisRow(
                     axis = MobileFrontierAxis.CONTEXT,
@@ -94,12 +96,14 @@ class AxisRowWrappingTest {
                     onToggleFilters = {},
                 )
             }
+            }
         }
 
         val bounds = labels.associateWith {
             composeTestRule.onNodeWithText(it).getUnclippedBoundsInRoot()
         }
         val trailing = bounds.values.maxOf { it.right }
+        println("MEASURED compact trailing=$trailing widths=" + bounds.entries.joinToString { "${it.key}=${it.value.width}" })
         assertTrue(
             "the strip wants ${trailing} and only has $contentWidth — a fixed Row clips " +
                 "whatever does not fit, and the chip at the trailing edge is the Filter " +
@@ -123,14 +127,17 @@ class AxisRowWrappingTest {
         // above has stopped proving anything and the compact treatment can
         // go back to being a plain `FilterChip`.
         composeTestRule.setContent {
-            Box(modifier = Modifier.width(unconstrained)) {
-                DefaultSizedAxisRow()
+            HummingbirdTheme {
+                Box(modifier = Modifier.width(unconstrained)) {
+                    DefaultSizedAxisRow()
+                }
             }
         }
 
         val trailing = labels.maxOf {
             composeTestRule.onNodeWithText(it).getUnclippedBoundsInRoot().right
         }
+        println("MEASURED default trailing=$trailing")
         assertTrue(
             "five default-sized FilterChips must overflow $contentWidth — otherwise " +
                 "`the whole axis strip fits` would pass with or without the compact " +

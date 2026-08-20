@@ -232,11 +232,27 @@ class CaptureFieldSetStructuralTest {
                 "$name must not gate on canSubmit(draft.title) — a malformed date would pass",
                 src.contains("canSubmit(draft.title)"),
             )
-            assertTrue(
-                "$name must ride the keyboard rather than letting it push the buttons offscreen",
-                src.contains("imePadding()"),
-            )
         }
+        // The submit row must ride the keyboard rather than being pushed
+        // under it, and the two surfaces get there by opposite means —
+        // asserted per surface, because asserting `imePadding()` on both
+        // was itself the bug. A bare `Scaffold` pays no IME inset, so the
+        // Activity applies one; `ModalBottomSheet`'s own
+        // `contentWindowInsets` defaults to `safeDrawing`, which already
+        // includes the IME, so an `imePadding()` there pays it twice and
+        // pushes the buttons off-screen (sighted on hardware 2026-08-20).
+        assertTrue(
+            "CaptureActivity must apply the IME inset itself — a bare Scaffold pays none",
+            withoutComments(captureFieldSrcByName.getValue("CaptureActivity.kt"))
+                .contains("imePadding()"),
+        )
+        assertFalse(
+            "CaptureSheet must NOT apply imePadding() — ModalBottomSheet's own " +
+                "contentWindowInsets already includes the IME, and paying it twice puts " +
+                "the submit row under the keyboard",
+            withoutComments(captureFieldSrcByName.getValue("CaptureSheet.kt"))
+                .contains("imePadding()"),
+        )
         // The destination is gone from the form state itself: a field no
         // control writes is state the reader can never see or correct.
         assertFalse(

@@ -683,7 +683,7 @@ private fun AxisChip(
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,
             color = if (selected) {
                 MaterialTheme.colorScheme.onSecondaryContainer

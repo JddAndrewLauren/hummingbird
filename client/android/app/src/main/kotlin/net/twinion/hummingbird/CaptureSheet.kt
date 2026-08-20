@@ -7,8 +7,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -154,126 +152,132 @@ fun CaptureSheet(
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        // Two children, and the split is the point (`CaptureActivity`'s
-        // own): the fields scroll, the submit row does not. With the
-        // details disclosure open the form is taller than a sheet at a
-        // raised keyboard, and before the split the buttons were the last
-        // thing in the column — the only way out, scrolled off the bottom.
-        // `weight(1f, fill = false)` so a one-line draft still leaves the
-        // sheet at its natural height rather than stretching it full.
+        // **One scrolling column, submit row last — not the Activity's
+        // pinned-footer split, and measured on hardware 2026-08-20 rather
+        // than assumed.** Two attempts at pinning the row above the
+        // keyboard failed for one underlying reason: the IME inset does not
+        // reach this sheet's window. `imePadding()` was a no-op here, and
+        // so was leaning on `ModalBottomSheet`'s own `contentWindowInsets`
+        // (`safeDrawing`, which nominally includes the IME) — with the
+        // keyboard up the content ran underneath it either way. A
+        // `weight(1f, fill = false)` field column broke it a second way:
+        // a `verticalScroll` child's desired height is its whole content,
+        // so with `fill = false` it claimed every available pixel and left
+        // the row none.
+        //
+        // So this sheet does what a bottom sheet does — it scrolls, the
+        // focused field is brought into view by the text field itself, and
+        // the submit row is the last thing in that scroll, reached by the
+        // same gesture as the last field. `CaptureActivity` keeps the
+        // pinned footer: it is a real window with `adjustResize`, where the
+        // inset is real and pinning works.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .imePadding()
-                .navigationBarsPadding(),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+            // The screen title is the design system's one non-lowercase
+            // exception (a verb, not the brand).
+            Text("Capture", style = MaterialTheme.typography.headlineSmall)
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // The screen title is the design system's one non-lowercase
-                // exception (a verb, not the brand).
-                Text("Capture", style = MaterialTheme.typography.headlineSmall)
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                OutlinedTextField(
+                    value = draft.title,
+                    onValueChange = { viewModel.updateDraft(draft.copy(title = it)) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester),
+                    placeholder = { Text("What's on your mind?") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    // Enter captures to Triage, the funnel's own default —
+                    // `CaptureActivity`'s identical choice.
+                    keyboardActions = KeyboardActions(onDone = { submit(CaptureDestination.TRIAGE) }),
+                )
+                IconButton(
+                    onClick = {
+                        viewModel.onDictationStarted()
+                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    },
                 ) {
+                    Icon(painterResource(R.drawable.ic_mic), contentDescription = "Dictate")
+                }
+            }
+
+            // ADR-0022: a dictation pass that ends without text says so.
+            dictationFailure?.let {
+                Text(
+                    it.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            // Optional at capture time — unset is a legitimate resting
+            // state, because deciding is mint-time work (the design kit's
+            // own words on this form).
+            LevelSlider(
+                label = "Energy",
+                glyphFamily = LevelGlyphFamily.ENERGY,
+                options = viewModel.formMeta.energies,
+                selected = draft.energy.ifEmpty { null },
+                onSelect = { viewModel.updateDraft(draft.copy(energy = it.orEmpty())) },
+            )
+            LevelSlider(
+                label = "Size",
+                glyphFamily = LevelGlyphFamily.SIZE,
+                options = viewModel.formMeta.sizes,
+                selected = draft.size.ifEmpty { null },
+                onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },
+            )
+            ContextField(
+                value = draft.context,
+                onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
+                suggestions = viewModel.formMeta.suggestedContexts,
+            )
+
+            // Everything a mint would ask, behind one disclosure — the web
+            // capture box's own "More details", and `CaptureActivity`'s
+            // same field set in the same order.
+            TextButton(onClick = { detailsOpen = !detailsOpen }) {
+                Text(if (detailsOpen) "Fewer details" else "More details")
+            }
+            if (detailsOpen) {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     OutlinedTextField(
-                        value = draft.title,
-                        onValueChange = { viewModel.updateDraft(draft.copy(title = it)) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .focusRequester(focusRequester),
-                        placeholder = { Text("What's on your mind?") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        // Enter captures to Triage, the funnel's own default —
-                        // `CaptureActivity`'s identical choice.
-                        keyboardActions = KeyboardActions(onDone = { submit(CaptureDestination.TRIAGE) }),
+                        value = draft.description,
+                        onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
+                        label = { Text("Description") },
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                    IconButton(
-                        onClick = {
-                            viewModel.onDictationStarted()
-                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                        },
-                    ) {
-                        Icon(painterResource(R.drawable.ic_mic), contentDescription = "Dictate")
-                    }
-                }
-
-                // ADR-0022: a dictation pass that ends without text says so.
-                dictationFailure?.let {
-                    Text(
-                        it.message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
+                    ProjectField(
+                        projects = projects,
+                        selectedId = draft.projectId,
+                        onSelect = { viewModel.updateDraft(draft.copy(projectId = it)) },
                     )
-                }
-
-                // Optional at capture time — unset is a legitimate resting
-                // state, because deciding is mint-time work (the design kit's
-                // own words on this form).
-                LevelSlider(
-                    label = "Energy",
-                    glyphFamily = LevelGlyphFamily.ENERGY,
-                    options = viewModel.formMeta.energies,
-                    selected = draft.energy.ifEmpty { null },
-                    onSelect = { viewModel.updateDraft(draft.copy(energy = it.orEmpty())) },
-                )
-                LevelSlider(
-                    label = "Size",
-                    glyphFamily = LevelGlyphFamily.SIZE,
-                    options = viewModel.formMeta.sizes,
-                    selected = draft.size.ifEmpty { null },
-                    onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },
-                )
-                ContextField(
-                    value = draft.context,
-                    onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
-                    suggestions = viewModel.formMeta.suggestedContexts,
-                )
-
-                // Everything a mint would ask, behind one disclosure — the web
-                // capture box's own "More details", and `CaptureActivity`'s
-                // same field set in the same order.
-                TextButton(onClick = { detailsOpen = !detailsOpen }) {
-                    Text(if (detailsOpen) "Fewer details" else "More details")
-                }
-                if (detailsOpen) {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        OutlinedTextField(
-                            value = draft.description,
-                            onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
-                            label = { Text("Description") },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        ProjectField(
-                            projects = projects,
-                            selectedId = draft.projectId,
-                            onSelect = { viewModel.updateDraft(draft.copy(projectId = it)) },
-                        )
-                        PriorityRow(
-                            selected = draft.priority,
-                            onSelect = { viewModel.updateDraft(draft.copy(priority = it)) },
-                        )
-                        CaptureDateField(
-                            label = "Deadline",
-                            value = draft.deadline,
-                            error = metaProblems.deadline,
-                            onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
-                        )
-                        CaptureDateField(
-                            label = "Scheduled date",
-                            value = draft.scheduledDate,
-                            error = metaProblems.scheduledDate,
-                            onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
-                        )
-                    }
+                    PriorityRow(
+                        selected = draft.priority,
+                        onSelect = { viewModel.updateDraft(draft.copy(priority = it)) },
+                    )
+                    CaptureDateField(
+                        label = "Deadline",
+                        value = draft.deadline,
+                        error = metaProblems.deadline,
+                        onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
+                    )
+                    CaptureDateField(
+                        label = "Scheduled date",
+                        value = draft.scheduledDate,
+                        error = metaProblems.scheduledDate,
+                        onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
+                    )
                 }
             }
 
@@ -286,10 +290,7 @@ fun CaptureSheet(
             // is two ways to mint the same words twice.
             val canSubmit = viewModel.canSubmitDraft() && !submitting
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(top = 12.dp, bottom = 24.dp),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 OutlinedButton(
