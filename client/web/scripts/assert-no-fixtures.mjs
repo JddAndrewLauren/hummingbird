@@ -35,6 +35,12 @@ const SENTINELS = [
   // fixtures/demo-data.ts — the kit world.
   { fixture: "demo-data.ts", needle: "Order the replacement sensor" },
   { fixture: "demo-data.ts", needle: "ask dad about the trailer hitch" },
+  // fixtures/demo-data.ts again — #457 moved `demoData()`, the kit world's
+  // own dev-gated accessor, here from demo.ts so Routes and Alerts could call
+  // it directly instead of reading a `demo` prop threaded through App.tsx.
+  // The accessor itself carries no fixture text of its own; this needle
+  // guards the route checklist it now gates from the same file.
+  { fixture: "demo-data.ts", needle: "Delete the two dead label cases" },
   // fixtures/demo-task-state.ts — the board world (#420, grown by #452 to
   // seed the whole of TaskState rather than just the frontier).
   { fixture: "demo-task-state.ts", needle: "Fit the new tap washer" },

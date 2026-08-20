@@ -176,3 +176,26 @@ export function strandedActFailure(
 ): string | null {
   return strandedFailure(result, openItemId, items, "That action", ACT_FALLBACK);
 }
+
+/** How many write failures are currently live — the nav rail/bar's "alerts"
+ * badge count (#455). Deliberately not `strandedTriageFailure` /
+ * `strandedActFailure`: those also fall silent while the editor that owns
+ * the failure is open, which is Now's own question of which surface speaks
+ * for it, not whether a failure exists at all. A badge counts existence —
+ * `TaskState` holds only its most recent triage and act result, so there are
+ * at most two live failures at a time, matching the two lines Now can show
+ * (`write-failure.ts`'s own header).
+ *
+ * This is the one honest sense in which the "alerts" nav item has anything
+ * store-backed to count at all: `AlertsScreen` itself stays demo-fixture-only
+ * (ADR-0016), so a real device's badge is 0 unless a write has actually
+ * failed — which is also what the board fixture's two seeded failures
+ * (`demo-task-state.ts`) are for. */
+export function liveWriteFailureCount(
+  lastTriage: TaskTriageResult | null | undefined,
+  lastAct: TaskActResult | null | undefined,
+): number {
+  return (
+    (lastTriage && lastTriage.kind !== "ok" ? 1 : 0) + (lastAct && lastAct.kind !== "ok" ? 1 : 0)
+  );
+}

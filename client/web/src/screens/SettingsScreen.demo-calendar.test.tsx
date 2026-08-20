@@ -16,7 +16,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { SettingsScreen } from "./SettingsScreen";
-import { DEMO_DATA } from "../fixtures/demo-data";
 import { fireEvent, render, screen, taskState } from "../test/component";
 import type { CalendarState } from "../store/store";
 import type { TaskTokenUiState } from "../task/token-ui";
@@ -43,7 +42,6 @@ function renderBoardSettings(
   const onSelectionChange = vi.fn();
   render(
     <SettingsScreen
-      demo={null}
       status={status}
       apiVersion={null}
       coreId={null}
@@ -90,8 +88,8 @@ describe("SettingsScreen — the board world's calendar card", () => {
   // The round-2 hazard (#452's own words): the fixture card's toggle must
   // never reach `onSelectionChange`, whose live handler persists the ids to
   // the shared localStorage key and polls Google for calendars that do not
-  // exist. `demo` is null in this world, so the toggle must branch on
-  // `calendarIsDemo`, not `demo`.
+  // exist. `SettingsScreen` has no `demo` prop (#456), so the toggle must
+  // branch on `calendarIsDemo`.
   it("toggles locally and never calls onSelectionChange", () => {
     const { onSelectionChange } = renderBoardSettings("loading", "unset");
     const family = screen.getByRole("checkbox", { name: /Fictional \(family\)/ });
@@ -110,47 +108,9 @@ describe("SettingsScreen — the board world's calendar card", () => {
     }
   });
 
-  // Round-2's kit-world pin: bare `?demo` on a device with no device token
-  // (this repo ships only `.env.example`, and the visual gate's dev server
-  // never carries a stored token) shows the "no device token" Note, exactly
-  // as the pre-#585 "no client id" Note did — `SettingsScreen.test.tsx`
-  // cannot see this because it defaults `taskTokenState` to `"resting"`.
-  it("keeps the kit world's no-device-token Note unchanged", () => {
-    render(
-      <SettingsScreen
-        demo={DEMO_DATA}
-        status="loading"
-        apiVersion={null}
-        coreId={null}
-        viewOrdinal={null}
-        error={null}
-        calendar={{ ...demoCalendar, availableCalendars: [] }}
-        calendarIsDemo={false}
-        themePreference="system"
-        onThemePreference={vi.fn()}
-        backendSelection="auto"
-        onBackendSelection={vi.fn()}
-        onConnect={vi.fn()}
-        onSelectionChange={vi.fn()}
-        onRefresh={vi.fn()}
-        taskTokenState="unset"
-        taskTokenEnteredAtMs={null}
-        onSubmitTaskToken={vi.fn()}
-        onForgetTaskToken={vi.fn()}
-        task={taskState()}
-        online
-        syncNowMs={10_000}
-        onDownloadMirror={vi.fn()}
-      />,
-    );
-    expect(screen.getByText(/no device token/i)).toBeDefined();
-    expect(screen.queryByText("Andrew (personal)")).toBeNull();
-  });
-
   it("still gates a live (non-demo) render on the device token, unchanged", () => {
     render(
       <SettingsScreen
-        demo={null}
         status="ready"
         apiVersion={1}
         coreId={null}

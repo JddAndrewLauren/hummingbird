@@ -31,10 +31,10 @@ export interface NavRailProps {
   /** The mark is the way home: it selects Now and refreshes, the same two
    * things the user would otherwise do by hand. */
   onHome: () => void;
-  /** Opens the shell's Recall overlay (#480). Absent in demo mode, the same
-   * `undefined`-means-inert rule `Header`'s own `onSearch` follows — omit it
-   * and the magnifier renders nowhere rather than opening a search with
-   * nothing behind it. */
+  /** Opens the shell's Recall overlay (#480). `App.tsx` passes this
+   * unconditionally since #456; optional only so a caller with nothing to
+   * send it can omit it — the `undefined`-means-inert rule then keeps the
+   * magnifier from rendering with nothing behind it. */
   onSearch?: () => void;
 }
 

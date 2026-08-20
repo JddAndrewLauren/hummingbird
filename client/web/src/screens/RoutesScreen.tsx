@@ -5,19 +5,22 @@ import { Icon } from "../components/core/Icon";
 import { ItemRow } from "../components/domain/ItemRow";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { Checkbox } from "../components/forms/Checkbox";
-import type { DemoData } from "../fixtures/demo";
+import { demoData } from "../fixtures/demo-data";
 import { Aside, Column, TwoColumn } from "./layout";
 
-export interface RoutesScreenProps {
-  demo: DemoData | null;
-}
-
-export function RoutesScreen({ demo }: RoutesScreenProps) {
-  // Lazy initializer, and read before the `!demo` return because hooks cannot
-  // sit behind it. The checklist comes from `demo.route` rather than a literal
-  // in this file: a module-level fixture in a screen is outside the
-  // dead-branch gate, and this one shipped to production until
-  // `assert-no-fixtures` learned to look for it.
+// #457: this screen's own dev-gated fixture accessor, read directly rather
+// than threaded through `App.tsx` as a `demo` prop. Routes reads nothing
+// from the store (`docs/SURFACES.md`'s own note on why), so its only
+// populated render stays the kit world's, reachable at `?demo=kit`.
+export function RoutesScreen() {
+  // Lazy initializer, not a plain call: `demoData()` reads
+  // `window.location.search`, and this is the same once-per-mount treatment
+  // `App.tsx`'s own fixture reads get, not once-per-render. Read before the
+  // `!demo` return because hooks cannot sit behind it. The checklist comes
+  // from `demo.route` rather than a literal in this file: a module-level
+  // fixture in a screen is outside the dead-branch gate, and this one
+  // shipped to production until `assert-no-fixtures` learned to look for it.
+  const [demo] = useState(demoData);
   const [steps, setSteps] = useState(() => demo?.route.steps ?? []);
 
   if (!demo) {

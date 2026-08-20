@@ -73,7 +73,6 @@ function renderSettings(options: SettingsOptions = {}) {
   const onBackendSelection = vi.fn();
   const tree = (current: SettingsOptions) => (
     <SettingsScreen
-      demo={null}
       status={current.status ?? "ready"}
       apiVersion={1}
       coreId={current.coreId ?? null}

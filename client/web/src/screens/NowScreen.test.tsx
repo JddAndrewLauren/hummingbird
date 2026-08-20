@@ -35,7 +35,6 @@ import {
   taskState,
   wasteBody,
 } from "../test/component";
-import { DEMO_DATA } from "../fixtures/demo-data";
 import { BINDING_KEY, SOURCE } from "./waste-pane/waste";
 import type { CalendarReadDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -88,7 +87,6 @@ function renderNow(
   const storage = memoryStorage();
   const view = render(
     <NowScreen
-      demo={null}
       onScreen={() => {}}
       task={task}
       nowMs={NOW_MS}
@@ -109,7 +107,6 @@ function renderNow(
   ) =>
     view.rerender(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={next}
         nowMs={NOW_MS}
@@ -297,8 +294,7 @@ describe("NowScreen — the frontier list", () => {
   // #446: the card's size and energy chips are glyph-only, like the row's.
   // Nothing asserted this when the words came off — the whole suite passed on
   // the change — so a card could regress to words, or lose its accessible
-  // name, silently. (The top-pick card takes the same treatment but renders
-  // only under `?demo`, so the visual capture is its only gate.)
+  // name, silently.
   it("draws a card's size and energy as named glyphs, with no word", () => {
     renderNow(
       taskState({
@@ -601,37 +597,12 @@ describe("NowScreen — the aside (#245, ADR-0015)", () => {
     expect(screen.queryByText("No calendar connected")).toBeNull();
   });
 
-  it("renders the same region in demo mode, from the demo fixture", () => {
-    // `?demo` photographs the REAL shell: same component, different inputs.
-    //
-    // The URL is set, not just the prop, because the region's fixture inputs
-    // come through `demoQuestions()` — the same `import.meta.env.DEV` gate
-    // `demoData()` uses, and the reason `demo-questions.ts` no longer ships in
-    // the production bundle. Reading the prop instead would be testing a
-    // stand-in for the gate rather than the gate.
-    const original = window.location.search;
-    window.history.replaceState(null, "", "/?demo");
-    try {
-      render(
-        <NowScreen
-          demo={DEMO_DATA}
-          onScreen={() => {}}
-          task={taskState()}
-          nowMs={NOW_MS}
-          selectedItemId={null}
-          onOpenItem={() => {}}
-          onCloseItemDetail={() => {}}
-          onAct={() => {}}
-          calendarReads={{}}
-          calendarConnected={false}
-        />,
-      );
-
-      expect(screen.getByText("Trash Tonight")).toBeTruthy();
-    } finally {
-      window.history.replaceState(null, "", `/${original}`);
-    }
-  });
+  // #455: the aside's ranked region reads `realQuestionInputs(task, …)`
+  // unconditionally now — `demoQuestions()` and `demo-questions.ts` are gone,
+  // their content already folded into the board seed by #452. The kit
+  // world's `demo` prop no longer feeds this region at all, so there is
+  // nothing left here to test that the region's own suite above (built over
+  // `task`, not `demo`) does not already cover.
 
   // #401 / ADR-0021 decision 6. The landmark was called `Context` long after
   // ADR-0015 swapped the calendar context tile out for the ranked region, and
@@ -689,7 +660,6 @@ describe("NowScreen — the calendar-reads arm (#267/#122)", () => {
 
     render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={testNowMs}
@@ -796,7 +766,6 @@ describe("NowScreen — the captures in the columns", () => {
     const storage = options.storage ?? fakeStorage();
     render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={NOW_MS}
@@ -819,7 +788,6 @@ describe("NowScreen — the captures in the columns", () => {
     const storage = fakeStorage();
     const screenFor = (selected: string | null) => (
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={NOW_MS}
@@ -1256,7 +1224,6 @@ describe("NowScreen — the frontier's controls (#403)", () => {
   function renderWithStorage(task: TaskState, storage = fakeStorage()) {
     const view = render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={NOW_MS}
@@ -1421,7 +1388,6 @@ describe("NowScreen — the frontier's controls (#403)", () => {
   it("drops the landmark entirely when the aside is shut, rather than leaving an empty one", () => {
     render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={spread()}
         nowMs={NOW_MS}
@@ -1631,7 +1597,6 @@ describe("NowScreen — selection above the columns (#404)", () => {
     const storage = fakeStorage();
     const view = render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={spread()}
         nowMs={NOW_MS}
@@ -1661,7 +1626,6 @@ describe("NowScreen — selection above the columns (#404)", () => {
 
     const withSelection = (selected: string | null) => (
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={spread()}
         nowMs={NOW_MS}
@@ -1775,7 +1739,7 @@ describe("NowScreen — the Grill takeover (#359)", () => {
       ],
     });
 
-  it("offers no Grill me button without a grill prop (demo mode's own reason)", () => {
+  it("offers no Grill me button without a grill prop", () => {
     renderNow(spread(), "i1");
     expect(screen.queryByRole("button", { name: /grill me/i })).toBeNull();
   });
