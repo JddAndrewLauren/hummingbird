@@ -209,6 +209,10 @@ both the pre- and post-install calls were issued from the same non-gesture
 evaluation context, and only the pre-install one threw. The difference is the
 availability state, not the harness.*
 
+*Amended 2026-08-14 (#441): a third outcome is reachable from a real
+gesture — `install()` resolving `false` rather than rejecting or resolving
+`true`. See the amendment block below.*
+
 **This promotes one of #377's design choices from preference to requirement.**
 That plan chose "setup is two deliberate steps — the first mic tap in
 `setup-required` explains only, and a separate control inside that hint is the
@@ -410,8 +414,12 @@ the page can defend against it; a `try`/`catch` around the probe catches
 nothing. **Standing mitigation, landed in #442, in the harness rather than
 product code:** `client/web/visual/surfaces.spec.ts`'s `openApp` deletes both
 `SpeechRecognition` and `webkitSpeechRecognition` in an init script before the
-app loads, which pins the capability at `unsupported` (Decision 2 renders
-nothing for `unsupported`, same as `setup-required`) for the run. A
+app loads. This is **not** pixel-neutral: a real headed browser would resolve
+`"downloadable"` to `setup-required` and render #381's setup mic there
+(Decision 2: "`setup-required` is actionable and must say so"), but the
+deletion pins the capability at `unsupported` instead, which renders nothing.
+The gate accepts that gap because nothing past "nothing renders" is
+photographable there anyway — no live mic, no on-device model download. A
 `navigator.webdriver` check in `CaptureBox` was rejected for the same reason
 Decision 2 exists: it would let a browser bug shape the app, and it would
 silently disable the real render path if the gate ever ran headed. **Any
@@ -419,11 +427,9 @@ headless Chromium is a crash risk for the capture popover, not merely a
 browser without dictation** — any future headless smoke test that opens the
 popover needs the same stub.
 
-**The directive-name caveat is retired.** Decision 5's "obstacle" note below
-flagged `on-device-speech-recognition` as an MDN-sourced, unverified
-Permissions-Policy directive name. It is now verified from the browser:
-`document.featurePolicy.features()` on Chrome 151 lists
-`on-device-speech-recognition` directly.
+**The directive-name caveat is retired** at its own site — see Decision 6's
+"The obstacle, for whoever probes next" (above), which now carries the
+verification inline.
 
 ## Rejected alternatives
 
