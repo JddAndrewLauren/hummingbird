@@ -58,6 +58,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.EnergyGlyph
 import net.twinion.hummingbird.ui.SizeGlyph
 import net.twinion.hummingbird.ui.StageBadge
@@ -329,6 +330,7 @@ fun NowScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .contentMaxWidth()
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {

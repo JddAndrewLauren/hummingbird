@@ -39,6 +39,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.theme.Crimson100
 import net.twinion.hummingbird.ui.theme.Crimson600
 import net.twinion.hummingbird.ui.theme.CrimsonDark
@@ -139,6 +140,7 @@ fun AlertsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .contentMaxWidth()
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
