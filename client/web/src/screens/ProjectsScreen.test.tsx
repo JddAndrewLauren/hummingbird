@@ -166,7 +166,8 @@ describe("ProjectsScreen", () => {
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
-    expect(screen.getByText("https://github.com/JddAndrewLauren/hummingbird")).toBeTruthy();
+    const link = screen.getByRole("link", { name: "https://github.com/JddAndrewLauren/hummingbird" });
+    expect(link.getAttribute("href")).toBe("https://github.com/JddAndrewLauren/hummingbird");
     expect((screen.getByLabelText("GitHub repo") as HTMLInputElement).value).toBe(
       "JddAndrewLauren/hummingbird",
     );
@@ -198,6 +199,22 @@ describe("ProjectsScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onPatchProject).toHaveBeenCalledWith(project, { defaultContext: null });
+  });
+
+  it("does not paint another project's failed write into this dossier", () => {
+    const task = taskState({
+      projects: [
+        projectDTO({ id: "p-1", name: "House repairs" }),
+        projectDTO({ id: "p-2", name: "Garden" }),
+      ],
+      ledger: [],
+      lastProjectWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
+    });
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
+
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    expect(screen.queryByText("no can do")).toBeNull();
   });
 
   it("disables Save until a field actually changes", () => {

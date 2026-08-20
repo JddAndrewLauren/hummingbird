@@ -337,7 +337,13 @@ function PropertiesCard({
   const contextChanged = trimmedContext !== (project.defaultContext ?? "");
   const dirty = repoChanged || contextChanged;
   const link = githubRepoUrl(project.githubRepo);
-  const failure = writeFailureMessage(lastProjectWrite);
+  // Gated on `projectId` — `lastProjectWrite` is one global slot shared with
+  // `createProject` and every other dossier's own patch, so an unguarded
+  // read would paint a stranger's failure into this card.
+  const failure =
+    lastProjectWrite !== null && lastProjectWrite.projectId === project.id
+      ? writeFailureMessage(lastProjectWrite)
+      : null;
 
   function save() {
     const patch: { githubRepo?: string | null; defaultContext?: string | null } = {};
@@ -367,8 +373,17 @@ function PropertiesCard({
           placeholder="owner/repo"
           value={repoInput}
           onChange={(event) => setRepoInput(event.target.value)}
-          hint={link ?? undefined}
         />
+        {link !== null ? (
+          <a
+            href={link}
+            target="_blank"
+            rel="noreferrer"
+            style={{ font: "var(--type-body-sm)", color: "var(--accent)" }}
+          >
+            {link}
+          </a>
+        ) : null}
         <Input
           label="Default context"
           placeholder="@computer"
