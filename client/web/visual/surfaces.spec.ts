@@ -469,13 +469,14 @@ for (const theme of THEMES) {
     test("now's columns capture, at production's density", async ({ page }, testInfo) => {
       // #420, and the reason the board world exists. Until #456, `NowScreen`
       // branched to `RealFrontier` only when `demo` was null, so everything
-      // ADR-0021 decided — the wrapping columns, the switchable axis, the
-      // Filter panel, the unsorted captures as cards among the startable
-      // actions, and #418's stranded-triage alert — was invisible to this
-      // gate from the day it landed. Decision 8 recorded that; this closes
-      // it. (#456 later deleted that branch entirely — `NowScreen` renders
-      // `RealFrontier` unconditionally now — but the board world's populated
-      // render below is still the only one this gate photographs.)
+      // ADR-0021 decided — the columns (packed into lanes since the width
+      // became a measured fact, `screens/frontier-lanes.ts`), the switchable
+      // axis, the Filter panel, the unsorted captures as cards among the
+      // startable actions, and #418's stranded-triage alert — was invisible
+      // to this gate from the day it landed. Decision 8 recorded that; this
+      // closes it. (#456 later deleted that branch entirely — `NowScreen`
+      // renders `RealFrontier` unconditionally now — but the board world's
+      // populated render below is still the only one this gate photographs.)
       //
       // The fixture mirrors production's measured spread
       // (`fixtures/demo-task-state.ts`), so what gets photographed is the

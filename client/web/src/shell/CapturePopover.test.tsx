@@ -16,6 +16,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { CapturePopover } from "./CapturePopover";
+import { CONTEXTS } from "../screens/field-vocabulary";
 import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import { fireEvent, render, screen } from "../test/component";
@@ -26,6 +27,7 @@ function renderPopover(
     demo?: boolean;
     lastCapture?: TaskCaptureResult | null;
     projects?: ProjectDTO[];
+    contextSuggestions?: readonly string[];
   } = {},
 ) {
   const onSubmit = vi.fn();
@@ -36,6 +38,7 @@ function renderPopover(
     onClose,
     onSubmit,
     projects: options.projects ?? [],
+    contextSuggestions: options.contextSuggestions ?? CONTEXTS,
     demo: options.demo ?? false,
     lastCapture,
   });
@@ -90,6 +93,7 @@ describe("CapturePopover — the overlay", () => {
         onClose={vi.fn()}
         onSubmit={vi.fn()}
         projects={[]}
+        contextSuggestions={CONTEXTS}
         demo={false}
         lastCapture={null}
         cancelDictationRequestId={0}
@@ -341,7 +345,13 @@ describe("CapturePopover — the capture meta (#208)", () => {
     });
   });
 
-  it("clears the Energy/Size/Context controls back to rest on an ok result", () => {
+  // The clear-on-ok rule, and its one carve-out. Energy and Size are
+  // per-item judgements and go back to rest; the context does not, because
+  // adding three things for the same place is what the popover staying open
+  // is FOR, and re-picking `@garden` each time taxes every capture after the
+  // first for a decision already made. Both halves in one test on purpose —
+  // "context survived" only means anything beside a control that cleared.
+  it("clears Energy and Size on an ok result but keeps the context", () => {
     const { rerender } = renderPopover();
     fireEvent.change(field(), { target: { value: "Buy soil" } });
     fireEvent.keyDown(screen.getByRole("slider", { name: "Energy" }), { key: "End" });
@@ -351,7 +361,41 @@ describe("CapturePopover — the capture meta (#208)", () => {
     rerender({ seed: "s1", kind: "ok", id: "item-9", error: null });
 
     expect(screen.getByRole("slider", { name: "Energy" }).getAttribute("aria-valuenow")).toBe("-1");
-    expect((screen.getByLabelText("Context") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Context") as HTMLInputElement).value).toBe("@garden");
+    expect((field() as HTMLInputElement).value).toBe("");
+  });
+
+  // And the sticky context is genuinely carried INTO the next capture, not
+  // merely left painted on a control nobody reads: the second submit sends
+  // it without the reader touching the combobox again.
+  it("sends the kept context with the next capture, untouched", () => {
+    const { onSubmit, rerender } = renderPopover();
+    fireEvent.change(field(), { target: { value: "Buy soil" } });
+    fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@garden" } });
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+    rerender({ seed: "s1", kind: "ok", id: "item-9", error: null });
+
+    fireEvent.change(field(), { target: { value: "Buy compost" } });
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+
+    expect(onSubmit).toHaveBeenLastCalledWith("Buy compost", "triage", {
+      ...NO_FIELDS,
+      context: "@garden",
+    });
+  });
+
+  // The suggestions are the caller's, not a list this component holds: a
+  // context minted since the app loaded reaches the datalist by being passed
+  // in, which is the whole of what `App.tsx` wires `contextSuggestions` for.
+  it("offers exactly the contexts it was handed", () => {
+    renderPopover({ contextSuggestions: [...CONTEXTS, "@calls"] });
+    const list = document.getElementById(
+      (screen.getByLabelText("Context") as HTMLInputElement).getAttribute("list") ?? "",
+    );
+    expect(Array.from(list?.querySelectorAll("option") ?? []).map((o) => o.getAttribute("value"))).toEqual([
+      ...CONTEXTS,
+      "@calls",
+    ]);
   });
 
   // The caption that used to sit under these controls said stage and dates

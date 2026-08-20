@@ -65,6 +65,7 @@
 // second, deliberately TS-only array rather than routing through the seam
 // — see that module's own header for the full argument.
 
+import { contextsOf, NO_CONTEXT } from "../decisions/seam";
 import type { TaskItemDTO } from "../store/protocol";
 
 /** The contexts the forms *suggest* and the frontier's chips order by — the
@@ -77,6 +78,40 @@ export const CONTEXTS = [
   "@errands",
   "@garden",
 ] as const;
+
+/** What a capture form should *offer* for context: the suggested `CONTEXTS`
+ * first, then every other context the given live items actually carry.
+ *
+ * The whole point is that a context typed once is a place this person works,
+ * and the next capture should offer it rather than making them retype it —
+ * `CONTEXTS` alone can never grow, so a `@calls` minted yesterday was invisible
+ * to the form that could have reused it. The ordering rule is not decided
+ * here: `contextsOf` is `hummingbird_core::decisions::frontier::contexts_of`
+ * through the seam (suggested first, extras alphabetically), and this is a
+ * composition of two canonical values — pure TS under ADR-0025.
+ *
+ * `NO_CONTEXT` is dropped: it is `contexts_of`'s label for the *absence* of a
+ * context, a facet chip's value and never a string `items.context` may hold.
+ *
+ * **A function, not a `const`** — deliberately, and the header above is the
+ * argument: a `const` computed by calling the seam runs at module evaluation,
+ * before `initDecisions()` is awaited, and would throw the "used before ready"
+ * guard on every page load. Called from a render body it is safe.
+ *
+ * Freshness follows sync: a context typed on another device is offered here
+ * once the next sync cycle has landed the item, not before. */
+export function contextSuggestions(items: readonly TaskItemDTO[]): string[] {
+  const seen = new Set<string>(CONTEXTS);
+  const out: string[] = [...CONTEXTS];
+  for (const context of contextsOf(items)) {
+    if (context === NO_CONTEXT || seen.has(context)) {
+      continue;
+    }
+    seen.add(context);
+    out.push(context);
+  }
+  return out;
+}
 
 /** A `Select` option whose value is a level of `T`, or `""` for "not set".
  *

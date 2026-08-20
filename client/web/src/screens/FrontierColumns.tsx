@@ -15,7 +15,7 @@
 // Blocked section. Two components because they have genuinely different
 // densities and affordances, not a variant flag on one.
 
-import { Children, useState, type ReactNode } from "react";
+import { Children, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
@@ -36,6 +36,7 @@ import {
   type Facet,
   type FacetSelection,
 } from "./frontier-facets";
+import { laneCountFor, packLanes } from "./frontier-lanes";
 import { orderFrontier } from "./frontier-order";
 import { triageProcessQueue } from "./triage-process-order";
 import {
@@ -504,6 +505,40 @@ export function FrontierColumns({
     writeCollapsedColumns(storage, next);
   };
 
+  // The board's own width, the one fact `frontier-lanes.ts` cannot derive.
+  // `null` until something measures it, which is the honest resting value and
+  // not a placeholder: the first paint has not laid out yet, and jsdom never
+  // will. `useIsPhone.ts`'s doctrine applies verbatim — a runtime with no
+  // `ResizeObserver` is not a narrow screen, it is a runtime that cannot
+  // answer, and `laneCountFor(null, …)` answers it with the pre-lanes layout
+  // rather than guessing a width. A component test therefore keeps seeing one
+  // column per lane; a test of the *packing* asserts `packLanes` directly,
+  // where no stub can be forgotten.
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [boardWidth, setBoardWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const node = boardRef.current;
+    if (!node) {
+      return;
+    }
+    // The initial read happens whether or not an observer can be built: a
+    // browser mid-resize is the observer's job, but the first measurement is
+    // this line's, and a layout effect is what makes it land before paint.
+    // Zero is folded back into `null` rather than taken at face value — jsdom
+    // reports every box as 0x0, and a board that is genuinely zero wide (an
+    // ancestor still hidden) has not been laid out either. Both are "no
+    // answer", and answering "one lane" to them would stack the whole board.
+    setBoardWidth(node.offsetWidth || null);
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      setBoardWidth(entry.target.clientWidth || null);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
   const toggleExpanded = (key: string) => {
     setExpanded((current) => {
       const next = new Set(current);
@@ -515,6 +550,26 @@ export function FrontierColumns({
       return next;
     });
   };
+
+  // What each column will actually cost in rows, which is what the packing
+  // balances: a header, then whatever is drawn under it. Rendered rows and
+  // NOT `column.items.length` — a collapsed column is one line however much
+  // it holds, and a capped one costs the cap plus its "n more" control. The
+  // unit is a row rather than a pixel because cards are close enough to
+  // uniform that measuring each would buy precision the eye cannot see; the
+  // consequence is that a column of long titles can run a little past its
+  // lane-mates, which is the same slack the wrapping row already had.
+  const laneWeights = columns.map((column) => {
+    const key = column.value ?? "";
+    if (collapsed.has(key)) {
+      return 1;
+    }
+    const isOpen = expanded.has(key);
+    const visible = isOpen ? column.items.length : Math.min(column.items.length, COLUMN_CAP);
+    const hasMoreRow = column.items.length > COLUMN_CAP;
+    return 1 + visible + (hasMoreRow ? 1 : 0);
+  });
+  const lanes = packLanes(laneWeights, laneCountFor(boardWidth, columns.length));
 
   return (
     <>
@@ -652,151 +707,175 @@ export function FrontierColumns({
         </Card>
       ) : null}
 
-      {/* Wrapping columns, never a sideways-scrolling strip: they flow onto as
-          many lines as the width needs, in reading order, and this container
-          adds no scroll of its own — `docs/SURFACES.md` records the triage
-          cap as the only independent scroll container in the centre column,
-          and that stays true (ADR-0021 decision 3). */}
+      {/* Columns packed into vertical lanes, never a sideways-scrolling strip:
+          as many lanes as the measured width affords, each a stack of whole
+          columns, and this container adds no scroll of its own —
+          `docs/SURFACES.md` records the triage cap as the only independent
+          scroll container in the centre column, and that stays true (ADR-0021
+          decision 3).
+
+          It was one `flex-wrap` row, and a wrapping line takes its height from
+          the tallest column in it: `@home` and `@errands` holding one item
+          each sat beside a nine-item `@phone`, claiming a full track apiece
+          and leaving most of it blank. Stacking them under the shortest lane
+          is what `frontier-lanes.ts` decides; that module's header carries
+          why the packing is TS and why it is not CSS.
+
+          Two consequences worth naming. DOM order is now lane-major, so
+          keyboard order follows the visual stacks rather than reading across
+          the board — which is what someone tabbing down a lane would expect,
+          and what the wrapping row already did within a line. And collapsing a
+          column, or revealing the rest of one, re-packs: a column can hop to
+          another lane, because its weight is exactly what the toggle changed.
+          Accepted — the alternative is a board that keeps a lane's worth of
+          blank space to hold a position nobody asked it to hold. */}
       <div
+        ref={boardRef}
         style={{
           display: "flex",
-          flexWrap: "wrap",
           gap: "var(--space-6)",
           alignItems: "flex-start",
         }}
       >
-        {columns.map((column) => {
-          const key = column.value ?? "";
-          const heading =
-            column.value === null
-              ? NO_VALUE_LABEL[axis]
-              : (column.label ?? `Project ${column.value}`);
-          const isOpen = expanded.has(key);
-          const isCollapsed = collapsed.has(key);
-          const visible = isOpen ? column.items : column.items.slice(0, COLUMN_CAP);
-          const hidden = column.items.length - visible.length;
-          return (
-            <div
-              key={key}
-              style={
-                isCollapsed
-                  ? {
-                      // A collapsed column keeps exactly its place in the board
-                      // — but it stops claiming a full column's width, so its
-                      // neighbours reflow around it instead of a wrapping line
-                      // holding a slot that is only a header tall. Shrink-to-fit
-                      // is what makes collapsing *in place* actually buy space,
-                      // and it is the same wrinkle as the no-sideways-scroll
-                      // fix: a wrapping row takes its height from the tallest
-                      // column in its line.
-                      flex: "0 0 auto",
-                      display: "flex",
-                      flexDirection: "column",
-                    }
-                  : {
-                      flex: "1 1 240px",
-                      // See `layout.tsx`'s `Column`: a fixed minimum is an
-                      // overflow below its own value, not a floor.
-                      minWidth: "min(240px, 100%)",
-                      // Wide enough that a narrow window — where only one column
-                      // fits beside the aside — fills its width instead of
-                      // stranding a strip of empty page.
-                      maxWidth: 380,
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "var(--space-3)",
-                    }
-              }
-            >
-              {/* The header is the collapse control. A column you have ruled out
-                  (wrong context, wrong energy) should cost one line, not a
-                  screenful — and unlike the filter this is per-column and
-                  additive, so you can shut three and leave the rest alone.
-                  The count sits *beside* the heading rather than inside it, so
-                  neither the heading's nor the button's accessible name reads
-                  "@computer 4" — the number is meta about the column, not part
-                  of what the column is called. */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--space-3)",
-                  borderBottom: `1px solid ${isCollapsed ? "var(--border-subtle)" : "transparent"}`,
-                }}
-              >
-                <h2 style={{ margin: 0, flex: 1, minWidth: 0, font: "inherit" }}>
-                  <ControlButton
-                    aria-expanded={!isCollapsed}
-                    onClick={() => toggleCollapsed(key)}
-                    baseStyle={sectionToggleStyle(isCollapsed)}
-                    hoverStyle={SECTION_TOGGLE_HOVER}
-                  >
-                    <Icon
-                      name="chevron-down"
-                      size={14}
-                      style={{
-                        color: "var(--text-muted)",
-                        transform: isCollapsed ? "rotate(-90deg)" : "none",
-                        transition: "transform var(--dur-fast) var(--ease-flit)",
-                      }}
-                    />
-                    <span style={{ flex: 1, minWidth: 0 }}>{heading}</span>
-                  </ControlButton>
-                </h2>
-                {/* The count stays readable while shut: a closed column must
-                    still say how much is inside it. */}
-                <span className="hb-meta" style={{ paddingRight: "var(--space-2)" }}>
-                  {column.items.length}
-                </span>
-              </div>
-              {isCollapsed
-                ? null
-                : visible.map((item) => (
-                    <ItemCard
-                      key={item.id}
-                      item={item}
-                      nowMs={nowMs}
-                      selected={item.id === selectedItemId}
-                      onOpen={() => onOpenItem(item.id)}
-                      onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
-                    />
-                  ))}
-              {/* The count never lies about what is hidden. Offered only when
-                  there is genuinely something to reveal or re-hide: an expanded
-                  column that has since dropped to the cap (a filter picked, an
-                  item completed) has `hidden === 0` and would otherwise keep a
-                  "Show fewer" that changes nothing when clicked. */}
-              {!isCollapsed && (hidden > 0 || (isOpen && column.items.length > COLUMN_CAP)) ? (
-                <ControlButton
-                  aria-expanded={isOpen}
-                  // The visible text is deliberately terse, which leaves two
-                  // columns hiding the same number of cards with two
-                  // identically-named buttons and nothing tying either to its
-                  // column. The accessible name carries the column, the same fix
-                  // the facet chips needed.
-                  aria-label={
-                    isOpen ? `Show fewer in ${heading}` : `Show ${hidden} more in ${heading}`
-                  }
-                  onClick={() => toggleExpanded(key)}
-                  baseStyle={{
-                    font: "var(--type-body-sm)",
-                    minHeight: "var(--row-height)",
-                    background: "none",
-                    border: "none",
-                    borderRadius: "var(--radius-control)",
-                    color: "var(--text-link)",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    padding: "0 var(--space-2)",
+        {lanes.map((lane, laneIndex) => (
+          <div
+            // The lane index is a legitimate key: lanes are positions on the
+            // board, not identities, and the columns inside carry their own.
+            key={laneIndex}
+            style={{
+              flex: "1 1 240px",
+              // See `layout.tsx`'s `Column`: a fixed minimum is an overflow
+              // below its own value, not a floor.
+              minWidth: "min(240px, 100%)",
+              // Wide enough that a narrow window — where only one lane fits
+              // beside the aside — fills its width instead of stranding a
+              // strip of empty page.
+              maxWidth: 380,
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--space-6)",
+            }}
+          >
+            {lane.map((columnIndex) => {
+              const column = columns[columnIndex];
+              const key = column.value ?? "";
+              const heading =
+                column.value === null
+                  ? NO_VALUE_LABEL[axis]
+                  : (column.label ?? `Project ${column.value}`);
+              const isOpen = expanded.has(key);
+              const isCollapsed = collapsed.has(key);
+              const visible = isOpen ? column.items : column.items.slice(0, COLUMN_CAP);
+              const hidden = column.items.length - visible.length;
+              return (
+                <div
+                  key={key}
+                  style={{
+                    // The lane owns the width now, and every column in it fills
+                    // that width — including a collapsed one, which used to
+                    // shrink to fit so its neighbours could reflow around the
+                    // slot it stopped needing. Packing is what buys that space
+                    // back instead: a collapsed column weighs one row, so the
+                    // lanes rebalance around it, and a header that keeps its
+                    // lane's width stays a line you can find and reopen rather
+                    // than a stub floating beside a full column.
+                    width: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "var(--space-3)",
                   }}
-                  hoverStyle={{ background: "var(--surface-quiet)" }}
                 >
-                  {isOpen ? "Show fewer" : `${hidden} more`}
-                </ControlButton>
-              ) : null}
-            </div>
-          );
-        })}
+                  {/* The header is the collapse control. A column you have ruled out
+                      (wrong context, wrong energy) should cost one line, not a
+                      screenful — and unlike the filter this is per-column and
+                      additive, so you can shut three and leave the rest alone.
+                      The count sits *beside* the heading rather than inside it, so
+                      neither the heading's nor the button's accessible name reads
+                      "@computer 4" — the number is meta about the column, not part
+                      of what the column is called. */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-3)",
+                      borderBottom: `1px solid ${isCollapsed ? "var(--border-subtle)" : "transparent"}`,
+                    }}
+                  >
+                    <h2 style={{ margin: 0, flex: 1, minWidth: 0, font: "inherit" }}>
+                      <ControlButton
+                        aria-expanded={!isCollapsed}
+                        onClick={() => toggleCollapsed(key)}
+                        baseStyle={sectionToggleStyle(isCollapsed)}
+                        hoverStyle={SECTION_TOGGLE_HOVER}
+                      >
+                        <Icon
+                          name="chevron-down"
+                          size={14}
+                          style={{
+                            color: "var(--text-muted)",
+                            transform: isCollapsed ? "rotate(-90deg)" : "none",
+                            transition: "transform var(--dur-fast) var(--ease-flit)",
+                          }}
+                        />
+                        <span style={{ flex: 1, minWidth: 0 }}>{heading}</span>
+                      </ControlButton>
+                    </h2>
+                    {/* The count stays readable while shut: a closed column must
+                        still say how much is inside it. */}
+                    <span className="hb-meta" style={{ paddingRight: "var(--space-2)" }}>
+                      {column.items.length}
+                    </span>
+                  </div>
+                  {isCollapsed
+                    ? null
+                    : visible.map((item) => (
+                        <ItemCard
+                          key={item.id}
+                          item={item}
+                          nowMs={nowMs}
+                          selected={item.id === selectedItemId}
+                          onOpen={() => onOpenItem(item.id)}
+                          onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
+                        />
+                      ))}
+                  {/* The count never lies about what is hidden. Offered only when
+                      there is genuinely something to reveal or re-hide: an expanded
+                      column that has since dropped to the cap (a filter picked, an
+                      item completed) has `hidden === 0` and would otherwise keep a
+                      "Show fewer" that changes nothing when clicked. */}
+                  {!isCollapsed && (hidden > 0 || (isOpen && column.items.length > COLUMN_CAP)) ? (
+                    <ControlButton
+                      aria-expanded={isOpen}
+                      // The visible text is deliberately terse, which leaves two
+                      // columns hiding the same number of cards with two
+                      // identically-named buttons and nothing tying either to its
+                      // column. The accessible name carries the column, the same fix
+                      // the facet chips needed.
+                      aria-label={
+                        isOpen ? `Show fewer in ${heading}` : `Show ${hidden} more in ${heading}`
+                      }
+                      onClick={() => toggleExpanded(key)}
+                      baseStyle={{
+                        font: "var(--type-body-sm)",
+                        minHeight: "var(--row-height)",
+                        background: "none",
+                        border: "none",
+                        borderRadius: "var(--radius-control)",
+                        color: "var(--text-link)",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        padding: "0 var(--space-2)",
+                      }}
+                      hoverStyle={{ background: "var(--surface-quiet)" }}
+                    >
+                      {isOpen ? "Show fewer" : `${hidden} more`}
+                    </ControlButton>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </>
   );

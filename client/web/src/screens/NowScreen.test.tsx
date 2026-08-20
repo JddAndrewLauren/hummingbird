@@ -487,13 +487,19 @@ describe("NowScreen — the frontier list", () => {
 
   // `docs/SURFACES.md` records the triage section's `60dvh` cap as the ONLY
   // independent scroll container in the centre column, and ADR-0021 decision 3
-  // makes that a live constraint rather than a description: the columns wrap
-  // onto more lines instead of scrolling, and no column overflows on its own.
+  // makes that a live constraint rather than a description: the columns pack
+  // into lanes instead of scrolling, and no column overflows on its own.
   // jsdom cannot lay out, so this asserts the *declarations* that would make a
   // scroller — which is the half of the criterion a test can hold. The widths
   // themselves are hand-reviewed on a device with real items (#273's
   // disposition, recorded in `docs/SURFACES.md`).
-  it("adds no scroll container of its own — the columns wrap instead", () => {
+  //
+  // The board here is the unmeasured one: jsdom has no `ResizeObserver` and
+  // reports every box as 0x0, so `laneCountFor(null, …)` gives each column a
+  // lane of its own — the pre-lanes shape, which is exactly what this test
+  // was written against. The packing itself is `frontier-lanes.test.ts`'s,
+  // where no measurement is involved and nothing can pass vacuously.
+  it("adds no scroll container of its own — the columns pack into lanes instead", () => {
     renderNow(
       taskState({
         frontier: Array.from({ length: 20 }, (_, index) =>
@@ -503,17 +509,20 @@ describe("NowScreen — the frontier list", () => {
     );
 
     // Anchored on the columns themselves rather than on a spacing token: the
-    // wrap container is the one whose children are the column headings, so an
-    // unrelated `gap` change cannot silently make this test vacuous.
+    // board is the container whose grandchildren are the column headings, so
+    // an unrelated `gap` change cannot silently make this test vacuous.
     const heading = screen.getByRole("heading", { name: "@c0" });
     const column = heading.closest("div")?.parentElement;
-    const wrapper = column?.parentElement;
-    expect(wrapper?.style.flexWrap).toBe("wrap");
-    // Five columns, all siblings in the one wrap container — no nesting, no
-    // per-line sub-container that could scroll on its own.
+    const lane = column?.parentElement;
+    const wrapper = lane?.parentElement;
+    // Five lanes holding one column each — the unmeasured board. Two levels,
+    // and no third: nothing between a lane and its columns that could scroll.
     expect(wrapper?.childElementCount).toBe(5);
+    for (const child of Array.from(wrapper?.children ?? [])) {
+      expect(child.childElementCount).toBe(1);
+    }
 
-    // And nothing from the wrap container up to the page declares a scroller,
+    // And nothing from the board up to the page declares a scroller,
     // which is the assertion that keeps `docs/SURFACES.md`'s "only independent
     // scroll container" clause true. Walking ancestors rather than every div
     // means an element that never sets `overflow` cannot pad the pass count.

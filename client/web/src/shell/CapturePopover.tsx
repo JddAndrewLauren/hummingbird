@@ -35,6 +35,10 @@ export interface CapturePopoverProps {
    * `CaptureBox`'s Project select. `App.tsx` passes `task.projects`
    * unconditionally. */
   projects: ProjectDTO[];
+  /** What `CaptureBox`'s Context combobox offers, forwarded straight through:
+   * `field-vocabulary.ts`'s `contextSuggestions` over the live items, built by
+   * `App.tsx` because that is where the store's slices are. */
+  contextSuggestions: readonly string[];
   demo: boolean;
   /** `TaskState.lastCapture`, threaded through to `CaptureBox` — the box
    * clears only once a result actually reports `"ok"` (#222), and a failed
@@ -74,6 +78,7 @@ export function CapturePopover({
   onClose,
   onSubmit,
   projects,
+  contextSuggestions,
   demo,
   lastCapture,
   cancelDictationRequestId,
@@ -233,6 +238,7 @@ export function CapturePopover({
           <CaptureBox
             onSubmit={onSubmit}
             projects={projects}
+            contextSuggestions={contextSuggestions}
             demo={demo}
             focusRequestId={focusRequestId}
             lastCapture={lastCapture}
