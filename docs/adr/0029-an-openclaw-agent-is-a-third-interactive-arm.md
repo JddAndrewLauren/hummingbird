@@ -24,6 +24,12 @@ has no conversational home outside the app.
    are untouched; the two agents' charters are deliberately disjoint
    (narrative vs. status).
 
+   *Amended 2026-08-20 (#642): provisioning created the agent as
+   **`hummingbird-agent`**, persona **Allen**; the chief-of-staff, which
+   held the name Allen, is now **Rufous**. The three skills keep their own
+   names — `hummingbird-tasks` is a skill here, not the agent. Nothing
+   else in this decision changes.*
+
 2. **Startup context is a fresh read, owned by the charter**: the agent
    runs `hb-tasks.sh sweep` first thing each session. No gateway
    session-start hook, no cron-refreshed file — the no-competing-clocks
@@ -62,6 +68,13 @@ has no conversational home outside the app.
    the agent, prefers it, or degrades without it. Promoting the OpenClaw
    arm to a documented "preferred path" would be a later decision with
    evidence behind it, not this one.
+
+   *Amended 2026-08-20 (#642): the operator's gateway front desk now does
+   redirect task asks to the agent (and project questions to the chief of
+   staff). That charter lives in the operator's Skills repo, so this
+   decision's letter holds — no **repo** surface routes through the agent,
+   and nothing here degrades without it — but the "no documented preferred
+   path anywhere" reading no longer describes the gateway.*
 
 ## Rejected alternatives
 
