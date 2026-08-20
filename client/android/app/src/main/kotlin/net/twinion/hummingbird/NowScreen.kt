@@ -869,7 +869,7 @@ private fun NowRow(
                 // `ready` says nothing -- so the ordinary minted action reaches
                 // this row with nothing to put on it. An empty `Row` is not free:
                 // it measures zero high but the Column's `spacedBy(4.dp)` still
-                // pays for it, stranding 4dp above the title. Read once here and
+                // pays for it, stranding 4dp below the title. Read once here and
                 // reused below, so the guard cannot disagree with what draws.
                 val swatch = urgencyColor(record.urgency, dark)
                 val urgencyWord = urgencyLabel(record.urgency)
@@ -946,11 +946,10 @@ private fun NowRow(
                         painterResource(R.drawable.ic_check),
                         contentDescription = "Mark \"${record.title}\" done",
                         modifier = Modifier.size(18.dp),
-                        // The mark-done green — the same token the Done
-                        // stage pill carries, because this button IS that
-                        // status as a verb (`MarkDoneButton.tsx`'s own
-                        // documented exception to "icons never carry colour
-                        // independently of their label").
+                        // The mark-done green — the web MarkDoneButton's
+                        // own token, `--status-done-fg` (the status green),
+                        // and its documented exception to "icons never
+                        // carry colour independently of their label".
                         tint = if (dark) StatusDoneFgDark else Moss600,
                     )
                 }

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,9 +74,11 @@ private fun Set<String>.toggled(value: String): Set<String> =
 // affordance list on this side of the seam (the module doc on
 // `hummingbird-ffi-mobile`'s `lib.rs` states why: Android calls no per-item
 // decision function, only reads the already-decided [NowBoardRecord] this
-// class holds). Acting left with the cards' action buttons: the opened
-// item acts through `ItemDetailViewModel`, and this class only re-reads
-// the board afterwards. [readAxisFn]/[writeAxisFn]/[readCollapsedFn]/
+// class holds). This class carries exactly one act door — [complete], the
+// row checkmark's verb, brought back on operator feedback 2026-08-19 —
+// while the wider act vocabulary stays with `ItemDetailViewModel` behind
+// the opened item; `NowScreenStructuralTest` pins the door to that one
+// verb. [readAxisFn]/[writeAxisFn]/[readCollapsedFn]/
 // [writeCollapsedFn] are `FrontierPrefs`'s DataStore doors, injected the
 // same way for the same reason: a plain JVM test can drive every method
 // here without a host-architecture `.so` or a real `Context`.
@@ -175,16 +178,21 @@ class NowViewModel(
      * `Core::act`'s `complete`, then a board re-read so the row leaves the
      * frontier in the same gesture — `TriageViewModel.complete`'s idiom,
      * selection included: a completed row's expanded panel must not stay
-     * standing over a board that no longer holds it. */
+     * standing over a board that no longer holds it, so it closes on
+     * success — and only on success: a failed act leaves the row on the
+     * board, panel standing, with [statusLine] read against it.
+     * Cancellation rethrows rather than being worded as a failure. */
     suspend fun complete(itemId: String, now: String, nowMs: Long) {
         _statusLine.value = null
         val failure = try {
             completeFn(itemId, nowMs)
             null
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             "Couldn't complete — ${error.message}"
         }
-        if (_selectedItemId.value == itemId) _selectedItemId.value = null
+        if (failure == null && _selectedItemId.value == itemId) _selectedItemId.value = null
         refresh(now)
         failure?.let { _statusLine.value = it }
     }

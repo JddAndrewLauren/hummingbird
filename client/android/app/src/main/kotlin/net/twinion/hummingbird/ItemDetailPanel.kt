@@ -111,8 +111,9 @@ private val ENERGY_VOCABULARY = listOf("low", "medium", "high")
  * nothing else). Which actions an item *offers* is decided entirely
  * core-side ([ItemDetailRecord.availableActions]) — this map only ever
  * renders whatever that list already contains. It lives here because the
- * opened item is now the one surface that acts: the Now cards carry no
- * action buttons (the web `ItemCard`'s own shape). */
+ * opened item is where acting happens — the Now cards carry exactly one
+ * inline act, the mark-done checkmark gated on the seam's `canMarkDone`
+ * (`NowScreen.kt`'s `NowRow`), and everything else still acts here. */
 internal val ACTION_LABEL: Map<String, String> = mapOf(
     "start" to "Start",
     "complete" to "Complete",

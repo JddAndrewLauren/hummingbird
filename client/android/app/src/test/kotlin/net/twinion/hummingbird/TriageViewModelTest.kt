@@ -1,10 +1,12 @@
 package net.twinion.hummingbird
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.FieldPatch
@@ -196,6 +198,44 @@ class TriageViewModelTest {
         assertEquals("i-1", completed)
         assertNull(model.selectedId.value)
         assertNull(model.draft.value)
+    }
+
+    /** The failure half of that contract: a failed act leaves the row on
+     * the board, so its editor (and draft) stays open where the status line
+     * can be read against it and the act retried. */
+    @Test
+    fun `a failed complete keeps the open row and its draft, and says so`() = runBlocking {
+        val model = vm(
+            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
+            complete = { _, _ -> throw RuntimeException("offline") },
+        )
+        model.load()
+        model.select("i-1")
+
+        model.complete("i-1", 2_000)
+
+        assertEquals("i-1", model.selectedId.value)
+        assertEquals("item i-1", model.draft.value?.title)
+        assertTrue(model.statusLine.value?.contains("Couldn't complete") == true)
+    }
+
+    /** Cancellation is not a failure: it rethrows, and no "Couldn't
+     * complete" is worded for a coroutine that was simply cancelled. */
+    @Test
+    fun `a cancelled complete rethrows rather than reading as a failure`() = runBlocking {
+        val model = vm(
+            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
+            complete = { _, _ -> throw CancellationException("scope left") },
+        )
+        model.load()
+
+        try {
+            model.complete("i-1", 2_000)
+            fail("complete must rethrow cancellation")
+        } catch (expected: CancellationException) {
+        }
+
+        assertNull("cancellation must never be worded as a failure", model.statusLine.value)
     }
 
     @Test

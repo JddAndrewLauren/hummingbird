@@ -1,10 +1,12 @@
 package net.twinion.hummingbird
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
@@ -136,7 +138,9 @@ class NowViewModelTest {
      * rather than swallowed. */
     @Test
     fun `a failed complete re-reads anyway, keeps another row's panel, and says so`() = runBlocking {
+        var fetches = 0
         val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> fetches += 1; board("a", "other") },
             completeFn = { _, _ -> throw RuntimeException("boom") },
         )
         vm.load("2026-08-19T12:00")
@@ -146,6 +150,43 @@ class NowViewModelTest {
 
         assertEquals("other", vm.selectedItemId.value)
         assertEquals("Couldn't complete — boom", vm.statusLine.value)
+        assertEquals("load once, then the post-failure re-read", 2, fetches)
+    }
+
+    /** The failure half of the selection contract: the row the failed act
+     * targeted is still on the board, so its own panel stays standing where
+     * the status line can be read against it. */
+    @Test
+    fun `a failed complete leaves the acted row's own panel standing`() = runBlocking {
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> board("a") },
+            completeFn = { _, _ -> throw RuntimeException("boom") },
+        )
+        vm.load("2026-08-19T12:00")
+        vm.selectItem("a")
+
+        vm.complete("a", "2026-08-19T12:01", 42L)
+
+        assertEquals("a", vm.selectedItemId.value)
+        assertEquals("Couldn't complete — boom", vm.statusLine.value)
+    }
+
+    /** Cancellation is not a failure: it rethrows, and no "Couldn't
+     * complete" is worded for a coroutine that was simply cancelled. */
+    @Test
+    fun `a cancelled complete rethrows rather than reading as a failure`() = runBlocking {
+        val vm = viewModel(
+            completeFn = { _, _ -> throw CancellationException("scope left") },
+        )
+        vm.load("2026-08-19T12:00")
+
+        try {
+            vm.complete("a", "2026-08-19T12:01", 42L)
+            fail("complete must rethrow cancellation")
+        } catch (expected: CancellationException) {
+        }
+
+        assertNull("cancellation must never be worded as a failure", vm.statusLine.value)
     }
 
     /** #530's "rendering it makes a single crossing": entry reads the board
@@ -306,6 +347,34 @@ class NowViewModelTest {
         vm.toggleCollapsed("@phone")
 
         assertEquals(setOf("@computer", "@phone"), vm.collapsed.value)
+    }
+
+    /** The inline expansion's one-open-at-a-time contract: tapping the open
+     * row again closes it, tapping a different row moves the panel there. */
+    @Test
+    fun `selectItem toggles the same row shut and switches to a different one`() {
+        val vm = viewModel()
+
+        vm.selectItem("a")
+        assertEquals("a", vm.selectedItemId.value)
+
+        vm.selectItem("b")
+        assertEquals("b", vm.selectedItemId.value)
+
+        vm.selectItem("b")
+        assertNull(vm.selectedItemId.value)
+    }
+
+    @Test
+    fun `toggleFiltersOpen flips the disclosure each call`() {
+        val vm = viewModel()
+        assertFalse("the facet panel opens shut by default", vm.filtersOpen.value)
+
+        vm.toggleFiltersOpen()
+        assertTrue(vm.filtersOpen.value)
+
+        vm.toggleFiltersOpen()
+        assertFalse(vm.filtersOpen.value)
     }
 
     @Test
