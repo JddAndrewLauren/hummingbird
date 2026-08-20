@@ -428,6 +428,16 @@ still worked off it until the flip — this is that flip, so the module and the
 `realQuestionInputs(task, …)` unconditionally, `task` being whichever of the
 live store or the board seed `App.tsx` resolved.*
 
+*Amended 2026-08-20 (#457): the amendment above's forecast — Routes and
+Alerts gaining "their own board-gated fixtures" and a `DemoData | null` prop
+— is not what landed. Both screens stayed kit-fed: each now calls its own
+dev-gated `demoData()` accessor directly (`fixtures/demo-data.ts`), taking no
+`demo` prop from `App.tsx` at all, so their populated render is still
+reachable only at `?demo=kit`, unchanged from the amendment above. What #457
+actually added was `RoutesScreen.test.tsx` and `AlertsScreen.test.tsx`,
+closing the component-test gap the board-world flip left open
+(`docs/SURFACES.md`).*
+
 ## Consequences
 
 - `screens/frontier-groups.ts` and its test are deleted with the project
