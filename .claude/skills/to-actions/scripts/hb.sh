@@ -356,6 +356,20 @@ case "$cmd" in
       title=$(jq -r '.title' <<<"$normalized")
       project=$(jq -r '.project_id // ""' <<<"$normalized")
       existing=$(jq -r '.id // ""' <<<"$normalized")
+
+      # ADR-0030 decision 3, copy-at-mint: an action naming no context of
+      # its own is filled with its project's default_context, becoming the
+      # item's own value rather than a standing read-time join. An action
+      # that already names a context (even one that later turns out to
+      # match the default) is left alone. This only ever fills a field —
+      # it never changes `project`/`title`, so the id derived below is
+      # unaffected and a re-run still addresses the same row.
+      if [[ -n "$project" ]] && ! jq -e 'has("context") and .context != null' <<<"$normalized" >/dev/null; then
+        default_ctx=$(sweep | jq -r --arg p "$project" \
+          'first(.projects[] | select(.id == $p) | .default_context) // empty')
+        [[ -z "$default_ctx" ]] || normalized=$(jq -c --arg c "$default_ctx" '. + {context: $c}' <<<"$normalized")
+      fi
+
       if [[ -z "$existing" ]]; then
         normalized=$(jq -c --arg id "$(deterministic_id "item/$project/$title")" '. + {id: $id}' <<<"$normalized")
       fi
