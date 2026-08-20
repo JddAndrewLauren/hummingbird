@@ -7,9 +7,11 @@ description: The item-scoped interview for a foggy capture -- one typed question
 
 Interview **one already-identified item** that carries fog, one typed turn at a time, until
 the fog is resolved or the interview says it remains. This is the runner's fourth op
-(#350) and, for this slice, its **only** arm -- there is no interactive script here yet, no
-`grills` table, and no client. Everything below is the hosted runner arm; a future slice
-(#355, the tracer) adds a person-facing surface once #351's live-run gate passes.
+(#350), and everything below is the hosted runner arm -- there is no interactive script in
+*this* directory and no client here. Since ADR-0029 an OpenClaw arm of the same interview
+exists at `openclaw/grill-me/`, running on that agent's own model with its own SKILL.md;
+a future slice (#355, the tracer) adds a person-facing client surface once #351's
+live-run gate passes.
 
 Vocabulary (**Item**, **Stage**, **Fog**) is in the root `CONTEXT.md`. An item in the
 `Grilling` stage is exactly the kind of thing this interviews.
