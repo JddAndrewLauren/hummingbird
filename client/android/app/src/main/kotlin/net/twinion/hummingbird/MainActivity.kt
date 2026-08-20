@@ -283,6 +283,10 @@ private fun navIcon(destination: NavDestination): Int = when (destination) {
 // `syncTick` is this root's only hand-off to the screens: it increments
 // once per completed sync cycle so they re-read the mirror after each one,
 // not only on their own resume.
+/** The least time the pull-to-refresh flag stays up — see `refresh()`'s
+ * own comment for the two reasons (an M3 indicator race, and legibility). */
+private const val MIN_REFRESH_VISIBLE_MS = 600L
+
 /** How far a scroll runs one way before the chrome hides (48px) or
  * re-shows (16px) — hide reluctantly, reveal eagerly, Gmail's own feel. */
 private const val CHROME_HIDE_THRESHOLD_PX = 48f
@@ -397,7 +401,19 @@ private fun AppRoot(
         scope.launch {
             refreshing = true
             try {
+                // Hold the flag for a visible beat even when the cycle
+                // answers instantly (a tokenless device's "held" comes back
+                // in ~0ms): material3's PullToRefreshBox strands its
+                // indicator at the threshold when isRefreshing flips
+                // true->false inside its own settle animation (sighted on
+                // the Fold AVD, 2026-08-20 device pass), and a sub-frame
+                // flash would also read as "nothing happened" to a human.
+                val startedMs = System.currentTimeMillis()
                 sync("user")
+                val elapsedMs = System.currentTimeMillis() - startedMs
+                if (elapsedMs < MIN_REFRESH_VISIBLE_MS) {
+                    delay(MIN_REFRESH_VISIBLE_MS - elapsedMs)
+                }
             } finally {
                 refreshing = false
             }
