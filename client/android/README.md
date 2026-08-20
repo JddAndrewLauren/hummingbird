@@ -269,9 +269,19 @@ split and the "cash owed" caveat, github's last-run/last-scheduled-success
 lines with the "cron stalled"/"cadence unreadable" words, uptime's
 expected-vs-observed observation line, reachability's synced-age headline —
 dispatched from `StatusScreen`'s `expandedContent` and nowhere else
-(`PaneContentStructuralTest`). The web's Badge chips render as coloured
-meta words (no Badge composable exists in the Android port), and the
-freshness caveat is the shared `staleWords` line. The words and marks live in `ui/panes/PaneAnswers.kt` —
+(`PaneContentStructuralTest`). The Now surface's pair lives in
+`ui/panes/NowPanesExpanded.kt`: waste (the web's kerb-colour bin figures,
+the wordier expanded headline, the holiday word) and race (series line,
+countdown headline, next-session day/clock in the device's own zone, the
+circuit). **Weekend and Vacation render no card of their own**: the mobile
+seam hardcodes `calendar_connected = false`, so both are permanently
+unbound on Android and the shell's setup rendering is the honest whole
+story — the calendar-lane follow-up issue owns turning them on. One
+recorded seam gap: the race card says "starting soon" without the live
+alert's title, because only the `hasLiveAlert` fact crosses the mobile
+seam. The web's Badge chips render as coloured meta words (no Badge
+composable exists in the Android port), and the freshness caveat is the
+shared `staleWords` line. The words and marks live in `ui/panes/PaneAnswers.kt` —
 each question's `collapsedHeadline`/glyph decisions ported from its web
 renderer (`client/web/src/screens/<q>-pane/`), composed from the decided
 facts every `MobileRankedPane` carries since the pane-facts seam slice.

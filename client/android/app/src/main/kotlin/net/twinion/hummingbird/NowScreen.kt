@@ -50,6 +50,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
+import net.twinion.hummingbird.ui.panes.NowPaneExpanded
 import net.twinion.hummingbird.ui.panes.PaneCollapse
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
@@ -180,6 +181,9 @@ private fun LazyListScope.nowPaneSection(
         collapsed = collapsed,
         onToggle = onToggle,
         onGoToSettings = onGoToSettings,
+        // The Now surface's expanded renderings (the pane-content slice) —
+        // dispatched here and nowhere else.
+        expandedContent = { pane -> NowPaneExpanded(pane, nowMs) },
     )
 }
 

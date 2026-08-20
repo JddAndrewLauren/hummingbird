@@ -22,32 +22,87 @@ class PaneContentStructuralTest {
     }
 
     private val statusSrc by lazy { source("ui/panes/StatusPanesExpanded.kt") }
+    private val nowSrc by lazy { source("ui/panes/NowPanesExpanded.kt") }
+
+    private val bothSurfaces by lazy {
+        listOf("StatusPanesExpanded.kt" to statusSrc, "NowPanesExpanded.kt" to nowSrc)
+    }
 
     @Test
-    fun `the expanded cards read the decided band and return none of their own`() {
-        assertFalse(
-            "no function may RETURN a MobilePaneBand — banding is the seam's",
-            Regex(""":\s*MobilePaneBand\s*[={]""").containsMatchIn(statusSrc),
+    fun `the expanded cards read decided answers and return no band of their own`() {
+        for ((name, src) in bothSurfaces) {
+            assertFalse(
+                "$name: no function may RETURN a MobilePaneBand — banding is the seam's",
+                Regex(""":\s*MobilePaneBand\s*[={]""").containsMatchIn(src),
+            )
+        }
+        assertTrue(
+            "the Status cards colour by the pane's decided band",
+            statusSrc.contains("pane.answer.band"),
         )
         assertTrue(
-            "the cards colour by the pane's decided band",
-            statusSrc.contains("pane.answer.band"),
+            "the Now cards branch on the pane's decided answer state",
+            nowSrc.contains("pane.answer.answerState"),
         )
     }
 
     @Test
     fun `no expanded card reads its own clock`() {
-        assertFalse(
-            "nowMs is the shell's — a card reading the wall clock would drift from the rank",
-            statusSrc.contains("System.currentTimeMillis()") || statusSrc.contains("Date("),
-        )
+        for ((name, src) in bothSurfaces) {
+            assertFalse(
+                "$name: nowMs is the shell's — a card reading the wall clock would drift from the rank",
+                src.contains("System.currentTimeMillis()") ||
+                    Regex("""\bDate\(\)""").containsMatchIn(src),
+            )
+        }
     }
 
     @Test
     fun `no wildcard when-arm anywhere in the expanded cards`() {
-        assertFalse(
-            "the exhaustive when is the drift gate — a new gap kind or band must fail this build",
-            Regex("""(?m)^\s*else\s*->""").containsMatchIn(statusSrc),
+        for ((name, src) in bothSurfaces) {
+            assertFalse(
+                "$name: the exhaustive when is the drift gate — a new gap kind or band must fail this build",
+                Regex("""(?m)^\s*else\s*->""").containsMatchIn(src),
+            )
+        }
+    }
+
+    @Test
+    fun `the Now dispatcher answers every facts arm, renders nothing for the calendar pair, errors on the Status four`() {
+        for (arm in listOf("Waste", "Race", "Weekend", "Vacation")) {
+            assertTrue(
+                "NowPaneExpanded must answer the $arm arm",
+                nowSrc.contains("is MobilePaneFacts.$arm ->"),
+            )
+        }
+        assertTrue(
+            "a Status-surface question reaching the Now slot must be a loud error",
+            nowSrc.contains("error(\"a Status-surface question reached the Now expanded slot"),
+        )
+        assertTrue(
+            "Weekend renders nothing beyond the shell — permanently unbound until a mobile calendar lane",
+            Regex("""is MobilePaneFacts\.Weekend\s*->\s*Unit""").containsMatchIn(nowSrc),
+        )
+        assertTrue(
+            "Vacation renders nothing beyond the shell — the same calendar-lane deferral",
+            Regex("""is MobilePaneFacts\.Vacation\s*->\s*Unit""").containsMatchIn(nowSrc),
+        )
+    }
+
+    @Test
+    fun `the Now pair dispatch from NowScreen's expandedContent and nowhere else`() {
+        val nowScreen = source("NowScreen.kt")
+        assertTrue(
+            "NowScreen must fill the shell's expandedContent slot with the one dispatcher",
+            nowScreen.contains("NowPaneExpanded(pane, nowMs)"),
+        )
+        val hits = listOf("StatusScreen.kt", "NowScreen.kt", "PaneShell.kt")
+            .map { it to source(it) }
+            .filter { (_, src) -> src.contains("NowPaneExpanded(") }
+            .map { it.first }
+        assertTrue(
+            "NowPaneExpanded must have exactly one caller (found: $hits)",
+            hits == listOf("NowScreen.kt"),
         )
     }
 

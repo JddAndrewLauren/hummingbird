@@ -104,9 +104,9 @@ private fun heardAgo(freshness: MobilePaneFreshness): String = when (freshness) 
  * ported (its doc records why these are literal hex, not brand tokens:
  * they encode OBJECT identity, the one thing the reader matches against
  * the real world before walking outside). */
-private data class Bin(val fill: Color, val edge: Color, val label: String)
+internal data class Bin(val fill: Color, val edge: Color, val label: String)
 
-private fun bin(stream: MobileWasteStream): Bin = when (stream) {
+internal fun bin(stream: MobileWasteStream): Bin = when (stream) {
     MobileWasteStream.TRASH -> Bin(Color(0x739AA3AB), Color(0xFF79838B), "trash")
     MobileWasteStream.RECYCLING -> Bin(Color(0x737FC4E8), Color(0xFF3F93C4), "recycling")
     MobileWasteStream.YARD -> Bin(Color(0x736AA84F), Color(0xFF4D8A3A), "yard")
@@ -115,7 +115,7 @@ private fun bin(stream: MobileWasteStream): Bin = when (stream) {
 /** Kerb order, never the order the payload happened to list —
  * `STREAM_ORDER`/`orderedStreams` in `waste.ts`, ported (the core carries
  * the list in payload order on purpose; kerb order is the client's). */
-private val KERB_ORDER = listOf(
+internal val KERB_ORDER = listOf(
     MobileWasteStream.TRASH,
     MobileWasteStream.RECYCLING,
     MobileWasteStream.YARD,
@@ -123,7 +123,7 @@ private val KERB_ORDER = listOf(
 
 /** `WEEKDAYS` in `waste.ts` — the word is per-client, the day is the
  * core's `weekdayIndex` (0 = Sunday). */
-private val WEEKDAYS = listOf(
+internal val WEEKDAYS = listOf(
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 )
 
