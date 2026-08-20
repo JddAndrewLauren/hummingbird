@@ -122,8 +122,11 @@ event-id recipe** (`sha256("hummingbird-openclaw/gcal/v1" + calendarId + "/"
 + title + "/" + start)`, prefixed `hb`, truncated — so a retried insert
 after a timeout 409s instead of double-booking, the same double-mint
 discipline as `hb.sh`'s step ids); an **explicit `timeZone` on every
-`dateTime`**, read from the calendar itself, because a bare local datetime
-is how an event lands an hour off; and **cancel as a status patch, never
+`dateTime`**, read off the calendar's own `events.list` response — not
+`calendars.get`, which `calendar.events` is not authorised for — and used as
+`TZ` for every datetime sum too, because a bare local datetime is how an
+event lands an hour off and wall-clock arithmetic in the gateway's zone is
+the other way; and **cancel as a status patch, never
 `events.delete`**, the closest thing to
 [ADR-0020](0020-no-delete-rows-are-flagged-not-erased.md)'s posture that
 Google offers.

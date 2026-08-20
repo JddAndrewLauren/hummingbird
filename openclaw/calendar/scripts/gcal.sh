@@ -19,27 +19,30 @@
 # Google bearer from the authority — `POST /api/google/calendar_write_token`,
 # which answers 403 for every other device token (ADR-0031) — and that bearer
 # lives in a shell variable for the rest of the run: never a file, never an
-# argument, never printed. One run is far shorter than one token's life, so
-# there is no rotation logic here at all.
+# argument, never printed. It reaches curl on stdin (`-H @-`), which is the
+# only way to keep it off both. One run is far shorter than one token's life,
+# so there is no rotation logic here at all.
 #
 # # Scope guard, enforced here and not only in prose
 #
 # The only URLs this script can build are
-# `…/calendars/<id>/events[/<event-id>]` and one `…/calendars/<id>` GET for
-# the default timezone — `gapi` refuses anything else. So there is no
-# calendar-list call, no ACL call and no freebusy call reachable from here,
-# and a slip in SKILL.md cannot become a request the skill was never allowed
-# to make. The credential behind the bearer carries `calendar.events` alone,
-# which independently forbids creating calendars or changing who they are
-# shared with.
+# `…/calendars/<id>/events[/<event-id>]` — `gapi` refuses anything else,
+# including `…/calendars/<id>` itself. So there is no calendar-list call, no
+# ACL call and no freebusy call reachable from here, and a slip in SKILL.md
+# cannot become a request the skill was never allowed to make. The credential
+# behind the bearer carries `calendar.events` alone, which independently
+# forbids creating calendars or changing who they are shared with — and which
+# is also why the calendar's timezone is read off `events.list` rather than
+# `calendars.get`, a call that scope cannot make.
 #
 # `cancel` is a patch to `status: "cancelled"`, never `events.delete` — the
 # closest thing to this repo's no-delete posture (ADR-0020) that Google
 # offers, and the event stays readable in the API afterwards.
 #
 # Timezone: every `dateTime` is sent with an explicit `timeZone`, read once
-# per run from the calendar itself (or $HB_GCAL_TZ). A bare local datetime
-# with no zone is how an event lands an hour off.
+# per run from the calendar (or $HB_GCAL_TZ), and every datetime sum is done
+# in that zone too. A bare local datetime with no zone is how an event lands
+# an hour off; wall-clock arithmetic in the wrong zone is the other way.
 set -euo pipefail
 
 command -v jq >/dev/null || { echo "gcal.sh: jq is required" >&2; exit 1; }
@@ -65,23 +68,22 @@ token() {
 # One request to the authority. Leaves the body in $BODY and the status in
 # $STATUS, and does NOT assert either.
 request() { # method path [json-body]
-  local method=$1 path=$2 data=${3:-} raw auth_token auth_file curl_status
+  local method=$1 path=$2 data=${3:-} raw auth_token curl_status
   auth_token=$(token)
   [[ -n "$auth_token" ]] || die "empty authority token at $TOKEN_PATH — mint a device-scope token against $API_BASE (POST /api/admin/tokens, ADMIN_SECRET) and save it to that path"
-  auth_file=$(mktemp)
-  chmod 600 "$auth_file"
-  printf 'Authorization: Bearer %s\n' "$auth_token" >"$auth_file"
+  # `-H @-` reads the header off stdin, through a pipe: the token reaches curl
+  # without a path anyone can open and without an argv `ps` can read. A
+  # tempfile would satisfy the second and not the first — a signal between
+  # writing it and unlinking it strands a live credential in /tmp.
   local args=(-sS -w '\n%{http_code}' --connect-timeout 10 --max-time 30
-              -X "$method" -H "@$auth_file" "$API_BASE$path")
+              -X "$method" -H @- "$API_BASE$path")
   [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-  if raw=$(curl "${args[@]}"); then
+  if raw=$(printf 'Authorization: Bearer %s\n' "$auth_token" | curl "${args[@]}"); then
     :
   else
     curl_status=$?
-    rm -f "$auth_file"
     return "$curl_status"
   fi
-  rm -f "$auth_file"
   # Split on the last newline (BSD head rejects `head -n -1`).
   BODY=${raw%$'\n'*}
   STATUS=${raw##*$'\n'}
@@ -113,30 +115,26 @@ ensure_gtoken() {
 
 # One request to Google, leaving the body in $BODY and the status in
 # $STATUS. `suffix` is everything after `/calendars/<id>` and is checked
-# against the scope guard in the header: the empty string (the calendar
-# itself), `/events`, `/events/<id>`, each optionally with a query string.
-# Nothing else is constructible from here.
+# against the scope guard in the header: `/events` or `/events/<id>`, either
+# optionally with a query string. Nothing else is constructible from here —
+# the events collection is the whole reachable surface.
 gapi() { # method suffix [json-body]
-  local method=$1 suffix=$2 data=${3:-} raw auth_file curl_status
+  local method=$1 suffix=$2 data=${3:-} raw curl_status
   # The event-id segment carries no `.` and no `/`, so no suffix can walk
   # up the path into another collection once curl normalises it.
-  [[ "$suffix" =~ ^(/events(/[A-Za-z0-9_-]+)?)?(\?[A-Za-z0-9_.~%@=\&:+-]*)?$ ]] \
+  [[ "$suffix" =~ ^/events(/[A-Za-z0-9_-]+)?(\?[A-Za-z0-9_.~%@=\&:+-]*)?$ ]] \
     || die "refusing to build a URL outside calendars/<id>/events: $suffix"
   ensure_gtoken
-  auth_file=$(mktemp)
-  chmod 600 "$auth_file"
-  printf 'Authorization: Bearer %s\n' "$GTOKEN" >"$auth_file"
+  # Off disk and off argv — see the note in `request`.
   local args=(-sS -w '\n%{http_code}' --connect-timeout 10 --max-time 30
-              -X "$method" -H "@$auth_file" "$GOOGLE_API/calendars/$CALENDAR_ID$suffix")
+              -X "$method" -H @- "$GOOGLE_API/calendars/$CALENDAR_ID$suffix")
   [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-  if raw=$(curl "${args[@]}"); then
+  if raw=$(printf 'Authorization: Bearer %s\n' "$GTOKEN" | curl "${args[@]}"); then
     :
   else
     curl_status=$?
-    rm -f "$auth_file"
     return "$curl_status"
   fi
-  rm -f "$auth_file"
   BODY=${raw%$'\n'*}
   STATUS=${raw##*$'\n'}
 }
@@ -181,9 +179,18 @@ utc_stamp() { # days-from-now -> RFC3339 Z
   else date -u -v"+$1d" +%Y-%m-%dT%H:%M:%SZ; fi
 }
 
+# In $TZID, never the gateway's zone: the argument is a wall clock reading on
+# the calendar, and adding minutes to a wall clock is a different sum in a
+# zone with a different DST calendar. Gateway in New York, calendar in UTC,
+# `--start 2026-11-01T01:30 --duration 60`: the gateway's `date` lands back
+# on 01:30 inside its repeated hour and books a zero-length event.
+#
+# So `resolve_timezone` has to have run — every caller pairs the two, and an
+# empty $TZID would mean UTC to `date` without saying so.
 shift_datetime() { # YYYY-MM-DDTHH:MM minutes -> YYYY-MM-DDTHH:MM
-  if date -d "${1/T/ } $2 minutes" +%Y-%m-%dT%H:%M 2>/dev/null; then :
-  else date -j -v"+$2M" -f '%Y-%m-%dT%H:%M' "$1" +%Y-%m-%dT%H:%M; fi
+  [[ -n "$TZID" ]] || die "internal: shift_datetime before resolve_timezone"
+  if TZ="$TZID" date -d "${1/T/ } $2 minutes" +%Y-%m-%dT%H:%M 2>/dev/null; then :
+  else TZ="$TZID" date -j -v"+$2M" -f '%Y-%m-%dT%H:%M' "$1" +%Y-%m-%dT%H:%M; fi
 }
 
 next_day() { # YYYY-MM-DD -> YYYY-MM-DD
@@ -206,8 +213,16 @@ epoch_of() { # RFC3339 -> seconds, or nothing
 valid_datetime() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$ ]]; }
 valid_date() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; }
 
-# The calendar's own timezone, read once per run — the one non-events call
-# this script can make. $HB_GCAL_TZ short-circuits it.
+# The calendar's own timezone, read once per run. $HB_GCAL_TZ short-circuits
+# it.
+#
+# Read off an events.list response, NOT `calendars.get`: the bearer carries
+# `calendar.events` alone, and Google authorises `calendars.get` for
+# `calendar`/`calendar.readonly`/`calendar.calendars[.readonly]`/
+# `calendar.app.created` only — so that call is a 403 on this credential, and
+# every timed write depends on this. `events.list` answers with the same
+# read-only `timeZone` field and is authorised by `calendar.events`. One
+# event is enough; the items are discarded.
 TZID=""
 
 resolve_timezone() {
@@ -216,10 +231,10 @@ resolve_timezone() {
     TZID="$HB_GCAL_TZ"
     return 0
   fi
-  gapi GET ''
-  [[ "$STATUS" == "200" ]] || die "GET calendars/$CALENDAR_ID answered $STATUS: $BODY"
+  gapi GET '/events?maxResults=1'
+  [[ "$STATUS" == "200" ]] || die "events.list (for the calendar timezone) answered $STATUS: $BODY"
   TZID=$(jq -er '.timeZone' <<<"$BODY") \
-    || die "calendars/$CALENDAR_ID carried no timeZone — set HB_GCAL_TZ"
+    || die "the events.list response carried no timeZone — set HB_GCAL_TZ"
 }
 
 # `{dateTime, timeZone}` or `{date}` — never a bare local datetime.
@@ -284,14 +299,15 @@ case "$cmd" in
       fi
     else
       valid_datetime "$start" || die "--start takes YYYY-MM-DDTHH:MM (or YYYY-MM-DD with --all-day)"
+      # Before the `end` arithmetic, which is done in the calendar's zone.
+      ensure_gtoken
+      resolve_timezone
       if [[ -n "$end" ]]; then
         valid_datetime "$end" || die "--end takes YYYY-MM-DDTHH:MM"
       else
         # An hour is the default a bare "put it on Thursday at 3" means.
         end=$(shift_datetime "$start" "${duration:-60}")
       fi
-      ensure_gtoken
-      resolve_timezone
     fi
 
     payload=$(jq -nc \

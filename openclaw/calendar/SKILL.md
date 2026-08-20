@@ -65,8 +65,8 @@ wants a second event at that time, give it a different title.
 
 - Every calendar call goes through this script. Never call the Google API
   directly and never ask John for a Google credential — the script is
-  scope-guarded (only `calendars/<id>/events`, plus one read of the
-  calendar's timezone) and the guard is the point.
+  scope-guarded (only `calendars/<id>/events`, nothing else, not even the
+  calendar record itself) and the guard is the point.
 - The bearer this script mints can create, edit and cancel **events** and
   nothing else. It cannot create calendars, change sharing, or read Gmail.
 - **There is no delete.** `cancel` marks an event cancelled and leaves it
