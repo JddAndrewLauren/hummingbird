@@ -138,8 +138,7 @@ export interface ItemPanelProps {
   onGrillMe?: (itemId: string) => void;
   /** Whether this item already carries a Grill draft (#356) — the button's
    * label is `item-actions.ts`'s `grillButtonLabel(hasGrillDraft)`, never a
-   * branch drawn here. `false` in demo mode (`onGrillMe` absent there too),
-   * where there is no real draft to have read. */
+   * branch drawn here. `false` when there is no real draft to have read. */
   hasGrillDraft?: boolean;
   /** The DOM id the triage row's header points `aria-controls` at. */
   id?: string;
@@ -147,8 +146,9 @@ export interface ItemPanelProps {
    * re-focus it after the takeover unmounts and remounts the row (Triage) or
    * the columns (Now, #359). */
   grillMeId?: string;
-  /** #273's microtask affordance. `undefined` in demo mode, which is what
-   * guarantees a demo detail view cannot issue a real request. */
+  /** #273's microtask affordance. `App.tsx` passes `microtaskWiring`
+   * unconditionally since #456; optional only so a caller with nothing to
+   * send it — a test, a render with no worker behind it — can omit it. */
   microtask?: {
     run: SkillRunState;
     onRun: (request: MicrotaskRunRequest) => void;

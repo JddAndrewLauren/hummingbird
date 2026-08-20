@@ -80,7 +80,8 @@ describe("NavRail — collapsed", () => {
   });
 
   // #480: the magnifier is `onSearch`'s own affordance — absent when the
-  // caller has no search to open (demo mode), same rule as `Header`'s.
+  // caller has no search to open, same rule as `Header`'s. `App.tsx` always
+  // has one to pass; this exercises the prop's own contract, not a real path.
   it("opens Recall from the magnifier when onSearch is supplied", () => {
     const onSearch = vi.fn();
     renderRail(false, onSearch);

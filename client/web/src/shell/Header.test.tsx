@@ -28,7 +28,7 @@ describe("Header — the Recall trigger", () => {
     expect(onSearch).toHaveBeenCalledTimes(1);
   });
 
-  it("renders no trigger when onSearch is absent — demo mode", () => {
+  it("renders no trigger when onSearch is absent", () => {
     render(<Header title="What's next" onCapture={() => {}} />);
 
     expect(screen.queryByRole("button", { name: "Search everything" })).toBeNull();

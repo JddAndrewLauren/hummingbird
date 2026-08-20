@@ -364,11 +364,10 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     await expect(page.getByRole("switch", { name: "Show acked alerts" })).toHaveCount(0);
     // `boundTripsBinding`'s key — the one binding row #452 added that
     // neither world had before. Bindings render only once the real core
-    // reports `status === "ready"` (board mode reads `task.bindings`
-    // because `demo` is null, and `SettingsScreen` gates that branch on the
-    // live core status, not on anything the fixture controls), which is a
-    // real async worker boot rather than fixture latency — hence the longer
-    // timeout than the rest of this file needs.
+    // reports `status === "ready"` (`SettingsScreen` gates that branch on
+    // the live core status, not on anything the fixture controls), which is
+    // a real async worker boot rather than fixture latency — hence the
+    // longer timeout than the rest of this file needs.
     await expect(page.getByText("trips-calendar")).toBeVisible({ timeout: 15_000 });
   },
 };
@@ -439,12 +438,15 @@ for (const theme of THEMES) {
     });
 
     test("now's columns capture, at production's density", async ({ page }, testInfo) => {
-      // #420, and the reason the board world exists. `NowScreen` branches to
-      // `RealFrontier` only when `demo` is null, so everything ADR-0021
-      // decided — the wrapping columns, the switchable axis, the Filter
-      // panel, the unsorted captures as cards among the startable actions,
-      // and #418's stranded-triage alert — was invisible to this gate from
-      // the day it landed. Decision 8 recorded that; this closes it.
+      // #420, and the reason the board world exists. Until #456, `NowScreen`
+      // branched to `RealFrontier` only when `demo` was null, so everything
+      // ADR-0021 decided — the wrapping columns, the switchable axis, the
+      // Filter panel, the unsorted captures as cards among the startable
+      // actions, and #418's stranded-triage alert — was invisible to this
+      // gate from the day it landed. Decision 8 recorded that; this closes
+      // it. (#456 later deleted that branch entirely — `NowScreen` renders
+      // `RealFrontier` unconditionally now — but the board world's populated
+      // render below is still the only one this gate photographs.)
       //
       // The fixture mirrors production's measured spread
       // (`fixtures/demo-task-state.ts`), so what gets photographed is the
@@ -479,11 +481,16 @@ for (const theme of THEMES) {
 
     // #481: the search overlay joins the registry as a photographed surface,
     // closing #331's "the busiest new surface shipping unphotographed"
-    // finding. Board world only — the header's Search button (and every
-    // other trigger #480 wired) is inert under `?demo` (`App.tsx`'s
-    // `onSearch={demo ? undefined : requestSearchOpen}`), because the kit
-    // world's `task` is a static fixture with no real `Core::search` to
-    // answer against. `task.search` is itself a fixed seed even in board
+    // finding. Board world only — until #456, the header's Search button
+    // (and every other trigger #480 wired) was inert under `?demo=kit`
+    // (`App.tsx`'s `onSearch={demo ? undefined : requestSearchOpen}`); #456
+    // deleted that ternary, so the trigger is unconditional now. What still
+    // confines this to the board world is `task` itself: `demoTaskState()`
+    // (`fixtures/demo.ts`) returns a seed only for the board spelling, so
+    // under `?demo=kit` `task` is `liveTask`, the real store slice, with no
+    // seeded `search` answer — opening Recall there sends a real request to
+    // whatever `Core::search` the live worker resolves, not a fixed result.
+    // `task.search` is itself a fixed seed even in board
     // mode (`fixtures/demo-task-state.ts`'s `recallRow` doc) — board's
     // `TaskState` is the lazy-initializer fixture `App.tsx`'s `task` always
     // resolves to, never the live store slice a real answer would land in —
@@ -520,8 +527,8 @@ for (const theme of THEMES) {
       const dialog = page.getByRole("dialog", { name: "Recall" });
       await dialog.getByRole("textbox").fill("the");
       await dialog.getByRole("button", { name: /rewrite the backup script/i }).click();
-      // The live group is the one that gets `onTriage` (board mode's `demo`
-      // is null, so `App.tsx` passes `handleTriage` through) — its expansion
+      // The live group is the one that gets `onTriage` (`App.tsx` passes
+      // `handleTriage` through unconditionally since #456) — its expansion
       // is the only one of the three that offers Edit. `ItemPanel` gates its
       // fields behind `editing` (`components/domain/ItemPanel.tsx`'s
       // `showFields`), which only the Edit click flips — asserting Edit is

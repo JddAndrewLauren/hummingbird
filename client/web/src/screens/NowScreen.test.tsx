@@ -1739,7 +1739,7 @@ describe("NowScreen — the Grill takeover (#359)", () => {
       ],
     });
 
-  it("offers no Grill me button without a grill prop (demo mode's own reason)", () => {
+  it("offers no Grill me button without a grill prop", () => {
     renderNow(spread(), "i1");
     expect(screen.queryByRole("button", { name: /grill me/i })).toBeNull();
   });

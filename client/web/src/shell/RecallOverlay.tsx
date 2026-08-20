@@ -56,11 +56,10 @@ export interface RecallOverlayProps {
    * legitimate value, same as there. */
   projects: ProjectDTO[];
   /** #122's stage-agnostic edit, the exact mutation `ItemPanel`'s detail-mode
-   * Save already calls — this overlay mints no second write path. Absent in
-   * demo mode (`App.tsx`'s `demo ? undefined : …`), which is what keeps a
-   * demo result from offering an editor that could not send anything; a
-   * result row simply renders with no Edit affordance in that case, same as
-   * a Done or archived one. */
+   * Save already calls — this overlay mints no second write path. `App.tsx`
+   * passes `handleTriage` through unconditionally (since #456); a result row
+   * with no `stage: "live"` group still renders with no Edit affordance,
+   * same as a Done or archived one. */
   onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
   /** The most recent triage result any editor got back (`TaskState.lastTriage`)
    * — what clears a live result's typing on an `"ok"` naming it (#222) and

@@ -377,6 +377,14 @@ what makes `NowScreen` take its `RealFrontier` branch, so the two paths stay as
 separate as this decision wanted them: nothing is widened, and no production
 component learns that a fixture exists.*
 
+*Amended 2026-08-20 (#456): `NowScreen` deleted its `demo` prop and the
+branch above with it — it renders `RealFrontier` unconditionally now, on
+every world. The separation the amendment above wanted is preserved by a
+different mechanism: `App.tsx`'s `task = demoTask ?? liveTask` (`demoTask`
+from `demoTaskState()`, seeded only under the board world) is what still
+keeps a fixture out of `RealFrontier` on every other world, not a prop
+`NowScreen` branches on.*
+
 *Why a seeded state rather than richer kit fixtures: `DemoItem` carries no
 `context` and no `energy`, having been written before either was an axis, so
 the kit world could not express this decision's own grouping in principle.*

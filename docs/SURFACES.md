@@ -310,8 +310,10 @@ the first match, which is what caught the second line arriving) — the twelfth
 state, `now-columns-*`. Not by widening the kit world to mount `RealFrontier`,
 which the rejection below still refuses: by a **second demo world**, the
 board, which seeds a real `TaskState` (`src/fixtures/demo-task-state.ts`) and
-returns `null` for `DemoData`, and a null `demo` prop is what selects the
-`RealFrontier` branch. #420 shipped the board world at the explicit spelling
+returns `null` for `DemoData`. `NowScreen` renders `RealFrontier`
+unconditionally since #456 deleted its `demo` prop and the branch it gated;
+the board world is now selected by `demoTaskState()` seeding `task` in
+`App.tsx:114-115`. #420 shipped the board world at the explicit spelling
 `?demo=board`, alongside the kit world's existing bare `?demo`; **#455
 flipped which spelling is the default** — the board is now what bare `?demo`
 (and every spelling but `?demo=kit`) means, and it is the primary nine-screen
@@ -379,13 +381,19 @@ Unlike Routes and Alerts (still kit-fed above), there is no populated
 kit-only render left on any of the four to review by hand.
 
 **Recall (#478–#481) is photographed under the BOARD world, not the kit
-one** — every trigger #480 wired (the header's Search button, the `/`
-hotkey, the rail's magnifier, the phone More sheet's entry) is inert under
-`?demo=kit` (`App.tsx`'s `onSearch={demo ? undefined : requestSearchOpen}`),
-because the kit world's `task` is the static fixture with no real
-`Core::search` to answer against — opening it there would spin on
-"Searching…" forever for any typed query, the same reason `onTriage` is
-absent in kit mode everywhere else. The board world seeds an answer of its
+one** — the reason is the kit world's `task`, not the trigger: since #456
+every trigger #480 wired (the header's Search button, the `/` hotkey, the
+rail's magnifier, the phone More sheet's entry) fires unconditionally on
+every world (`App.tsx`'s `onSearch={requestSearchOpen}`). What still confines
+this to the board world is `task` itself: `demoTaskState()` (`fixtures/demo.ts`)
+seeds a `TaskState` only for the board spelling, so under `?demo=kit` `task`
+is `liveTask`, the real store slice, with no seeded `search` answer to
+photograph — a deterministic capture needs the board world's fixed seed, not
+a live round trip. (Before #456 the trigger itself was also inert under
+`?demo=kit`, and `onTriage` was absent in kit mode everywhere else; #456
+deleted both ternaries, so only `task`'s own difference between the two
+worlds still confines Recall's populated render to board.) The board
+world seeds an answer of its
 own for the identical structural reason `now-columns`'s alerts and
 `triageInbox` are seeded rather than requested: `App.tsx`'s
 `task = demoTask ?? liveTask` means `task.search` never falls through to
@@ -396,8 +404,8 @@ only answer the overlay will ever render under `?demo=board`, whatever query
 is actually typed. Four captures per width and theme: the results listed
 (all three seeded rows, so one capture proves live/done/archived render
 together), the live row expanded with its edit form (`onTriage` reaches the
-live group only, wired to the real `handleTriage` since board mode's `demo`
-is null), the archived row expanded read-only (no Edit affordance — the same
+live group only, wired to the real `handleTriage` unconditionally since
+#456), the archived row expanded read-only (no Edit affordance — the same
 absence a `"done"` result gets, `RecallRow`'s own rule, so photographing one
 of the two stands for both), and the overlay open on an empty query ("Type
 to search", the one state that needs no seed at all). `visual/surfaces.spec.ts`'s
