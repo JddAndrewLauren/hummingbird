@@ -77,8 +77,9 @@ export interface RankedRegionProps {
   onScreen: (screen: Screen) => void;
   /** #122's do-date write affordance, forwarded verbatim to whichever
    * pane's `Expanded` component asks for it — see `contract.ts`'s
-   * `QuestionDef.Expanded` doc. `undefined` in demo mode, same as every
-   * other real-write callback this screen threads. */
+   * `QuestionDef.Expanded` doc. `App.tsx` passes `handleSetScheduledDate`
+   * unconditionally since #456; optional only so a caller with nothing to
+   * send it can omit it. */
   onSetScheduledDate?: (itemId: string, date: string | null) => void;
 }
 

@@ -377,6 +377,14 @@ what makes `NowScreen` take its `RealFrontier` branch, so the two paths stay as
 separate as this decision wanted them: nothing is widened, and no production
 component learns that a fixture exists.*
 
+*Amended 2026-08-20 (#456): `NowScreen` deleted its `demo` prop and the
+branch above with it — it renders `RealFrontier` unconditionally now, on
+every world. The separation the amendment above wanted is preserved by a
+different mechanism: `App.tsx`'s `task = demoTask ?? liveTask` (`demoTask`
+from `demoTaskState()`, seeded only under the board world) is what still
+keeps a fixture out of `RealFrontier` on every other world, not a prop
+`NowScreen` branches on.*
+
 *Why a seeded state rather than richer kit fixtures: `DemoItem` carries no
 `context` and no `energy`, having been written before either was an axis, so
 the kit world could not express this decision's own grouping in principle.*
@@ -400,6 +408,43 @@ failure so #418's alert is too.*
 *What this does not change: the disposition above still holds for everything a
 photograph cannot decide. The board world is read-only — no mutation is rewired
 to it — so it is a camera, not a second writable app.*
+
+*Amended 2026-08-20 (#455): bare `?demo` now means the board world, and the
+kit world moves to the one exact spelling `?demo=kit` — `demo-mode.ts`'s
+fallback for every unrecognised spelling flips from the kit to the board, and
+the nine-screen loop, the capture popover and the brand-token pass all move
+with it, so the board pass #420 added above is now the primary one rather
+than a second pass alongside a kit one. **The mutual exclusion between the two
+worlds is preserved, not relaxed** — that is what keeps the rejection above
+intact: this is still the "decided change with its reasoning written down",
+now applied to which spelling is the default, not to widening `?demo` itself.
+It holds because Routes and Alerts — the two screens the board world's own
+`TaskState` still cannot reach, since neither ever reads `task` — take a
+`DemoData | null` prop that is `null` under the default `?demo` now exactly as
+it was `null` under `?demo=board` before: nothing changed at either screen,
+only which query string reaches them with `null`. No `DemoData` is served
+inside the board world by this amendment; #457 is where Routes and Alerts are
+expected to gain their own board-gated fixtures, and until then their
+populated render is reachable only at `?demo=kit` and reviewed by hand
+(`docs/SURFACES.md`). The standing-question fixture world this decision's own
+`?demo` reference depended on, `demo-questions.ts`, is deleted with the flip:
+#452 had already folded its content into the board seed's `bindings` /
+`paneReads`, on the explicit condition that the kit world's own Status capture
+still worked off it until the flip — this is that flip, so the module and the
+`demo ? demoQuestionInputs(...) : …` branches it fed (`NowScreen.tsx`,
+`StatusScreen.tsx`) are gone; both screens now read
+`realQuestionInputs(task, …)` unconditionally, `task` being whichever of the
+live store or the board seed `App.tsx` resolved.*
+
+*Amended 2026-08-20 (#457): the amendment above's forecast — Routes and
+Alerts gaining "their own board-gated fixtures" and a `DemoData | null` prop
+— is not what landed. Both screens stayed kit-fed: each now calls its own
+dev-gated `demoData()` accessor directly (`fixtures/demo-data.ts`), taking no
+`demo` prop from `App.tsx` at all, so their populated render is still
+reachable only at `?demo=kit`, unchanged from the amendment above. What #457
+actually added was `RoutesScreen.test.tsx` and `AlertsScreen.test.tsx`,
+closing the component-test gap the board-world flip left open
+(`docs/SURFACES.md`).*
 
 ## Consequences
 

@@ -98,6 +98,15 @@ population of `device` tokens is: one per operator device, the runner's
 machine — ADR-0029, minted and rotated per `docs/openclaw.md`). See
 ADR-0011 for the per-source table.
 
+**An item is named to the operator by its title, never `HB-<seq>`.** That ref
+is a client-side affordance: no route accepts it, `resolve_ref` maps it onto a
+uuid off a fetched sweep, and **no client surface displays `seq`** — so an
+`HB-42` in prose, a report or a commit message is a handle the operator cannot
+look up in the app. It stays legitimate as script input and inside a skill's
+own plumbing; it is not how any agent, skill or doc refers to an item when a
+human is reading. Disambiguate same-titled items by stage, due date or
+context.
+
 **No competing clocks.** Exactly one thing owns each cadence: supercronic owns
 the sweeper's, the Durable Object's `alarm()` owns the sweep tick's. A second
 cron for either is banned (issue #8). Actions `schedule:` is otherwise a

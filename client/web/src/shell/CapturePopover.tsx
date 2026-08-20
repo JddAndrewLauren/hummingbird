@@ -32,7 +32,8 @@ export interface CapturePopoverProps {
   onClose: () => void;
   onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
   /** The Routes a capture can be filed under, forwarded straight to
-   * `CaptureBox`'s Project select. `[]` in demo mode. */
+   * `CaptureBox`'s Project select. `App.tsx` passes `task.projects`
+   * unconditionally. */
   projects: ProjectDTO[];
   /** What `CaptureBox`'s Context combobox offers, forwarded straight through:
    * `field-vocabulary.ts`'s `contextSuggestions` over the live items, built by

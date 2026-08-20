@@ -23,7 +23,10 @@ export interface NavBarProps {
   sheetOpen: boolean;
   onSheetOpen: (open: boolean) => void;
   /** Opens the shell's Recall overlay (#480), from the More sheet's own
-   * entry. Absent in demo mode — `NavRail`'s identical `onSearch` doc. */
+   * entry. `App.tsx` passes this unconditionally since #456 (it used to be
+   * absent in demo mode); optional only so a caller that has nowhere to
+   * send it — a test, say — can omit it. `NavRail`'s identical `onSearch`
+   * doc. */
   onSearch?: () => void;
 }
 
@@ -80,8 +83,7 @@ export function NavBar({
   }
 
   // Search is a gesture, not a destination — closes the sheet the same way
-  // `go` does, but never touches `screen` (`onSearch` is undefined in demo
-  // mode, the same rule `NavRail`'s follows).
+  // `go` does, but never touches `screen`.
   function search() {
     onSheetOpen(false);
     onSearch?.();
@@ -341,7 +343,7 @@ function MoreSheet({
               `NAV_BAR_OVERFLOW` list below — Search is not one of `SCREENS`,
               so it takes no `aria-current` and `nav-bar.ts`'s "both halves
               derive from `SCREENS`" invariant stays about screens only.
-              Absent in demo mode, `onSearch`'s own doc. */}
+              `onSearch`'s own doc. */}
           {onSearch ? (
             <button
               type="button"

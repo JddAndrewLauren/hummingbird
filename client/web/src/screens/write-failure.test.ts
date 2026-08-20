@@ -3,6 +3,7 @@ import { itemDTO } from "../test/component";
 import {
   actFailureFor,
   grillCompletionFailureFor,
+  liveWriteFailureCount,
   strandedActFailure,
   strandedTriageFailure,
   triageFailureFor,
@@ -204,5 +205,38 @@ describe("strandedActFailure", () => {
   it("is silent for a success and for no result at all", () => {
     expect(strandedActFailure(actResult({ kind: "ok", error: null }), null, board)).toBeNull();
     expect(strandedActFailure(null, null, board)).toBeNull();
+  });
+});
+
+describe("liveWriteFailureCount", () => {
+  it("is 0 with no results at all", () => {
+    expect(liveWriteFailureCount(null, null)).toBe(0);
+    expect(liveWriteFailureCount(undefined, undefined)).toBe(0);
+  });
+
+  it("is 0 when both results are ok", () => {
+    expect(
+      liveWriteFailureCount(result({ kind: "ok", error: null }), actResult({ kind: "ok", error: null })),
+    ).toBe(0);
+  });
+
+  it("counts one failure, whichever kind it is", () => {
+    expect(liveWriteFailureCount(result(), null)).toBe(1);
+    expect(liveWriteFailureCount(null, actResult())).toBe(1);
+  });
+
+  it("counts both at once — the board fixture's own two stranded-write alerts", () => {
+    expect(liveWriteFailureCount(result(), actResult())).toBe(2);
+  });
+
+  // "Owned by an open editor" is Now's own concern (`strandedTriageFailure`/
+  // `strandedActFailure`); the badge counts existence regardless of whether
+  // anything on screen is currently wearing the failure.
+  it("does not care whether an editor is open — that is Now's question, not this one", () => {
+    expect(liveWriteFailureCount(result({ itemId: "c1" }), null)).toBe(1);
+  });
+
+  it("reports every non-ok kind, not only 'failed'", () => {
+    expect(liveWriteFailureCount(result({ kind: "not_found", error: null }), null)).toBe(1);
   });
 });

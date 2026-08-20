@@ -24,7 +24,7 @@ import { SCREEN_LABELS, SCREENS as SCREEN_ORDER, type Screen } from "../src/shel
 //    that the theme switch reaches the page, and (#453) that the page
 //    actually loaded the world `openApp` asked for. These fail the run.
 //
-// Everything renders in `?demo` mode: the fixtures are deterministic and
+// Bare `?demo` renders the BOARD world: the fixtures are deterministic and
 // populated, where real data on a dev machine is an empty mirror — the shell
 // takes the authority's origin from its own (`src/worker/core.worker.ts`),
 // and `vite dev` proxies `/api` to a local `wrangler dev` this run does not
@@ -32,65 +32,59 @@ import { SCREEN_LABELS, SCREENS as SCREEN_ORDER, type Screen } from "../src/shel
 // honest empty states are captured too, from the same screens without the
 // flag.
 //
-// Since #420 there are two populated worlds, not one, because `?demo` cannot
-// reach every surface. `?demo` is the KIT world (the design system's
-// display-shaped fixtures) and drives the nine screens below. `?demo=board`
-// is the BOARD world: a seeded `TaskState` that makes the screens take their
-// real render path, which is the only way this gate can photograph Now's
-// centre column at all — see the `now's columns` test.
-
-const SCREENS = [
-  { name: "now", nav: "Now" },
-  { name: "triage", nav: "Triage" },
-  { name: "routes", nav: "Routes" },
-  { name: "alerts", nav: "Alerts" },
-  { name: "rules", nav: "Rules" },
-  // Done and the Ledger have no demo fixtures, so under `?demo` these two
-  // photograph their "not read yet" holding state — a real state (the
-  // round-trip between mount and the first answer) rather than a fixture
-  // gap, and the populated rows are covered by their component tests.
-  { name: "done", nav: "Done" },
-  { name: "ledger", nav: "Ledger" },
-  // #311/ADR-0017: the same `?demo` world drives the real Status region.
-  // #313 landed the first poller-backed, non-gap pane (`kimi-balance/v1`,
-  // banded "near" with a negative cash split); #314 landed the second
-  // (`github-hummingbird/v1`, five workflow rows — one per band the pane can
-  // produce — which is what makes the collapsed stack long enough to be
-  // worth capturing at 768px); #315 landed the third (`uptime/v1`, three
-  // service rows, all in quiet agreement). This capture therefore shows nine
-  // poller-backed panes plus one quiet, device-local reachability answer.
-  { name: "status", nav: "Status" },
-  { name: "settings", nav: "Settings" },
-] as const;
+// Since #420 there are two populated worlds, not one, because the kit world
+// cannot reach every surface — #455 flipped which one is the default.
+// Bare `?demo` (and every spelling but the kit's own) is the BOARD world: a
+// seeded `TaskState` that makes the screens take their real render path,
+// which is the only way this gate can photograph Now's centre column at all
+// — see the `now's columns` test — and it is what the nine screens below
+// photograph, being the primary pass since #454 proved it complete. `?demo=kit`
+// is the KIT world (the design system's display-shaped fixtures); nothing in
+// this file photographs it any more, `demo-data.ts`'s own header and the
+// design system's own kit review are its cover now.
 
 const THEMES = ["light", "dark"] as const;
 
-/** `"kit"` is `?demo` — the design system's fixtures, what nine screens
- * photograph. `"board"` is `?demo=board` (#420), a seeded `TaskState` that
- * makes the screens take their REAL render path. `null` is no flag at all: the
- * honest empty states. */
+/** `"kit"` is `?demo=kit` — the design system's fixtures. No test in this file
+ * opens it any more (#455): the nine-screen loop, the capture popover and the
+ * brand-token pass all moved to `"board"`, which is bare `?demo` (and every
+ * spelling but the kit's own) — a seeded `TaskState` (#420) that makes the
+ * screens take their REAL render path. `null` is no flag at all: the honest
+ * empty states. `"kit"` stays in this union for a caller that adds one back,
+ * but `loadedWorld` can no longer actually detect it (see `KIT_ONLY_TEXT`'s
+ * own note below) — a `"kit"` open today fails `assertWorldLoaded` by
+ * reporting the got-world as `"none"`, not as a diagnosed kit/board
+ * mismatch. */
 type World = "kit" | "board" | null;
 
 // World-identity markers (#453). `demoMode()` (`src/fixtures/demo-mode.ts`)
-// maps every unrecognised `?demo=` spelling onto the kit world, so a typo in
-// a URL here — or a stale arm in this file's own world dispatch — used to
-// silently fall back to a world the caller never asked for, and every
-// assertion downstream still held because it never checked WHICH world
-// loaded. These two strings exist only in their own world's fixture: the kit
-// world's hero item (`demo-data.ts`'s `ION-118`, always the "top pick" since
-// its stage is `in_progress`) and the board world's `@computer` column
-// heading (`demo-task-state.ts` — the kit world's `DemoItem` has no
-// `context` at all, so this string cannot appear there by construction).
-// Checked in both directions, on purpose — a one-directional check (kit
-// string present) passes for a page that loaded neither world, e.g. a
-// silent 404 or a blank shell.
+// maps every unrecognised `?demo=` spelling onto the board world (#455 —
+// onto the kit before it), so a typo in a URL here — or a stale arm in this
+// file's own world dispatch — could silently fall back to a world the caller
+// never asked for, and every assertion downstream still held because it
+// never checked WHICH world loaded. These two strings were meant to exist
+// only in their own world's fixture: the kit world's hero item (`demo-data.
+// ts`'s `ION-118`, always the "top pick" since its stage is `in_progress`)
+// and the board world's `@computer` column heading (`demo-task-state.ts` —
+// the kit world's `DemoItem` has no `context` at all, so this string cannot
+// appear there by construction). That symmetry broke one-sided at #456:
+// `NowScreen` — the landing screen this check reads — deleted its kit-only
+// hero card and "Also startable" list, so `KIT_ONLY_TEXT` no longer renders
+// on any screen this file's `openApp` can reach; `hasKit` below is
+// permanently `false` in practice, dead instrumentation rather than a live
+// marker. `BOARD_ONLY_TEXT` is unaffected — Now's real frontier still
+// renders `@computer` off the board seed. Checked in both directions on
+// purpose regardless — a one-directional check (kit string present) passes
+// for a page that loaded neither world, e.g. a silent 404 or a blank shell.
 const KIT_ONLY_TEXT = "Rewrite the sweeper's Gmail adapter";
 const BOARD_ONLY_TEXT = "@computer";
 
 /** Which world's marker(s) the page currently shows — `"both"` and `null`
  * (no marker, i.e. "none") are both failures of the instrument itself, named
  * rather than collapsed into a boolean, so a broken dispatch reads as what
- * it is. */
+ * it is. `"kit"`/`"both"` are unreachable in practice today (`KIT_ONLY_TEXT`'s
+ * own note above) — kept rather than deleted so this function still reports
+ * correctly the day a kit render path exists again. */
 async function loadedWorld(page: Page): Promise<World | "both"> {
   const hasKit = (await page.getByText(KIT_ONLY_TEXT).count()) > 0;
   const hasBoard = (await page.getByRole("heading", { name: BOARD_ONLY_TEXT }).count()) > 0;
@@ -102,7 +96,7 @@ async function loadedWorld(page: Page): Promise<World | "both"> {
 
 /** Fails the run, naming both worlds, when the page did not load the world
  * `openApp` asked for. This is the instrument #453 exists to add: without
- * it, `demoMode()`'s fallback-to-kit behaviour (or a stale arm in the
+ * it, `demoMode()`'s unrecognised-spelling fallback (or a stale arm in the
  * `page.goto` dispatch below) leaves every later assertion in this file
  * photographing whichever world it silently got, still green. */
 async function assertWorldLoaded(page: Page, asked: World) {
@@ -147,7 +141,10 @@ async function openApp(page: Page, theme: (typeof THEMES)[number], world: World)
     delete (globalThis as { SpeechRecognition?: unknown }).SpeechRecognition;
     delete (globalThis as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
   });
-  await page.goto(world === "kit" ? "/?demo" : world === "board" ? "/?demo=board" : "/");
+  // "board" goes through bare `/?demo` — the default spelling since #455 —
+  // rather than the explicit `/?demo=board`, so the gate actually exercises
+  // `demoMode()`'s fallback, not just the one spelling that always worked.
+  await page.goto(world === "kit" ? "/?demo=kit" : world === "board" ? "/?demo" : "/");
   // The shell paints before the wasm core is ready (the core's status is a
   // label, not a gate), so waiting on the nav rail is enough — and waiting
   // on the core would hang on a machine with no authority to reach.
@@ -227,6 +224,30 @@ async function openFirstRuleEditor(page: Page) {
   await page.getByRole("button", { name: "Backtest" }).first().click();
 }
 
+/** The rules LIST state, captured separately from the editor-open one above.
+ * Not a nicety: `demo-data.ts`'s `rule-unranked-severity` is last in the seed
+ * specifically to photograph its wrapping badge row, and the editor this file
+ * opens on rule 1 — condition rows plus an expanded backtest — pushes that
+ * fourth card off the bottom of every viewport (at 1440 only the badge's top
+ * edge survived; at 1024 and below the whole card did not). So the badge is
+ * scrolled into view and shot before the editor opens. The screen's own
+ * per-project capture below stays the editor-open state, unchanged.
+ *
+ * The badge is addressed by the same `/^Unranked severity —/` prefix
+ * `RulesScreen.test.tsx`'s #374 test uses, not by the full sentence: the copy
+ * is one `UNRANKED_SEVERITY_COPY` constant in `RulesScreen.tsx`, and pinning
+ * its whole text from out here would be a second copy to keep in step. */
+async function captureRulesList(page: Page, projectName: string, theme: string) {
+  const badge = page.getByText(/^Unranked severity —/);
+  await expect(badge).toHaveCount(1);
+  await badge.scrollIntoViewIfNeeded();
+  await expect(badge).toBeInViewport();
+  await page.screenshot({
+    path: `visual/.captures/rules-list-${projectName}-${theme}.png`,
+    fullPage: false,
+  });
+}
+
 /** No horizontal overflow at any width — and be clear about how little that
  * proves. `App.tsx`'s root is `overflow: hidden`, so content wider than the
  * shell is CLIPPED rather than extending `documentElement.scrollWidth`: this
@@ -250,11 +271,12 @@ async function expectNoHorizontalOverflow(page: Page) {
   expect(overflow).toBeLessThanOrEqual(1);
 }
 
-// #454: the BOARD world's own nine-screen capture pass, alongside the KIT
-// pass above. Unlike the kit pass — which only proves the nav rendered and
-// nothing overflowed — this one asserts something SPECIFIC about the seeded
-// content, one assertion per screen, so a world change that produces eight
-// blank screens cannot pass green.
+// #454's BOARD world nine-screen capture pass — since #455 the only one, and
+// the primary gate for the nine screens below. It asserts something SPECIFIC
+// about the seeded content, one assertion per screen, so a world change that
+// produces eight blank screens cannot pass green — a bar the kit-world pass
+// this replaced never cleared, since that one only proved the nav rendered
+// and nothing overflowed.
 //
 // The per-screen assertions live here, keyed by the app's own `Screen` type
 // (`Record<Screen, …>` rather than an array), so a screen added to
@@ -264,26 +286,57 @@ async function expectNoHorizontalOverflow(page: Page) {
 // imports `SCREENS`/`Screen` from the app rather than restating the list.
 //
 // Routes and Alerts are KIT-ONLY, deliberately asserted as such rather than
-// skipped: neither screen reads `TaskState` at all (`RoutesScreen` and
-// `AlertsScreen` each take only `demo: DemoData | null`, never `task`), so
-// under `?demo=board` both always render the same honest empty state an
-// unseeded device would. Asserting that specific text — not merely "the
-// screen renders" — is what would force this registry to change the day
-// either screen is wired to the board seed instead of leaving the gap
-// silently papered over.
+// skipped: neither screen reads `TaskState` at all — since #457 each calls
+// its own dev-gated `demoData()` directly (`RoutesScreen.tsx`,
+// `AlertsScreen.tsx`), taking no `demo` prop from `App.tsx` at all — so
+// under `?demo` (the board world) both always render the same honest empty
+// state an unseeded device would. Asserting that specific text — not merely
+// "the screen renders" — is what would force this registry to change the
+// day either screen is wired to the board seed instead of leaving the gap
+// silently papered over. Their KIT-populated renders (fixture rule cards,
+// fixture checklist rows) are no longer photographed by this gate at all
+// since #455 retired the kit-world capture pass; that half of the gap is now
+// covered by `RoutesScreen.test.tsx` and `AlertsScreen.test.tsx` (#457)
+// instead, per `docs/SURFACES.md`.
 type ScreenAssertion = (page: Page) => Promise<void>;
 
 const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
   now: async (page) => {
+    // #456: the kit world's hero card and "Also startable" list are gone —
+    // `NowScreen` no longer takes a `demo` prop at all, so there is no
+    // branch left that could render either, on any world. A positive
+    // absence check rather than an inferred one: the block really went,
+    // not merely moved off this gate's board-only capture pass.
+    await expect(page.getByText("Also startable")).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(2);
+    // #455: the nav's triage/alerts badges derive from the store now
+    // (`App.tsx`'s `navCounts`), not from `DemoData` — asserted once here
+    // rather than on every screen, since the nav is identical chrome
+    // wherever it renders. 17 is `triageInbox.length` (`demo-task-state.
+    // test.ts` pins it, and the `triage` assertion below reads the same
+    // number off the screen itself); 2 is `liveWriteFailureCount`'s count of
+    // the seed's two stranded write failures, the same two the `alert` role
+    // count above already proves are live. Both Triage and Alerts sit on the
+    // phone bar's primary four (`nav-bar.ts`), so this locator resolves
+    // identically on every project, not only desktop.
+    await expect(
+      page.getByRole("navigation").getByRole("button", { name: "Triage", exact: true }),
+    ).toContainText("17");
+    await expect(
+      page.getByRole("navigation").getByRole("button", { name: "Alerts", exact: true }),
+    ).toContainText("2");
   },
   triage: async (page) => {
+    // #456: `TriageScreen` no longer takes a `demo` prop, so the kit
+    // world's fixture card list and its "swept every 15m" meta cannot
+    // render on any world — a positive absence check for the deleted meta
+    // wording, not an inference from the presence check below.
+    await expect(page.getByText(/swept every 15m/)).toHaveCount(0);
     // `demo-task-state.test.ts` pins `triageInbox` at 17 and `grillingItems`
-    // at 1 — `TriageScreen`'s real branch (taken because `demo` is null
-    // under `?demo=board`) renders `triageProcessQueue`'s combined header,
-    // `${capturedCount} captured · ${grillingCount} grilling`, never the kit
-    // branch's "swept every 15m" wording nor the old "N unsorted" phrasing.
+    // at 1 — `TriageScreen`'s one render path renders `triageProcessQueue`'s
+    // combined header, `${capturedCount} captured · ${grillingCount}
+    // grilling`, never the old "N unsorted" phrasing.
     await expect(page.getByText("17 captured · 1 grilling")).toBeVisible();
   },
   routes: async (page) => {
@@ -300,7 +353,11 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // (the board world's `task` is a `useState` lazy initializer, never
     // fetched) never shows it.
     await expect(page.getByText("Loading rules…")).toHaveCount(0);
-    await expect(page.getByText("3 rules · default-deny")).toBeVisible();
+    // 4 since #374 added a rule at an out-of-vocabulary severity so this
+    // gate photographs its wrapping badge row — which is the `rules-list-*`
+    // capture, not the `rules-*` one: the open editor pushes that fourth
+    // card past the bottom of every viewport.
+    await expect(page.getByText("4 rules · default-deny")).toBeVisible();
   },
   done: async (page) => {
     // `DONE_SEEDS` is 6 long; `DoneScreen`'s "not read yet" only shows while
@@ -325,53 +382,63 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(10);
   },
   settings: async (page) => {
+    // #456: `SettingsScreen` no longer takes a `demo` prop, so the kit
+    // world's "Show acked alerts" switch and its inert "Mirror" section
+    // cannot render on any world — a positive absence check, not an
+    // inference from the presence check below.
+    await expect(page.getByRole("heading", { name: "Mirror", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("switch", { name: "Show acked alerts" })).toHaveCount(0);
     // `boundTripsBinding`'s key — the one binding row #452 added that
     // neither world had before. Bindings render only once the real core
-    // reports `status === "ready"` (board mode reads `task.bindings`
-    // because `demo` is null, and `SettingsScreen` gates that branch on the
-    // live core status, not on anything the fixture controls), which is a
-    // real async worker boot rather than fixture latency — hence the longer
-    // timeout than the rest of this file needs.
+    // reports `status === "ready"` (`SettingsScreen` gates that branch on
+    // the live core status, not on anything the fixture controls), which is
+    // a real async worker boot rather than fixture latency — hence the
+    // longer timeout than the rest of this file needs.
     await expect(page.getByText("trips-calendar")).toBeVisible({ timeout: 15_000 });
   },
 };
 
 for (const theme of THEMES) {
   test.describe(`${theme} theme`, () => {
-    for (const screen of SCREENS) {
-      test(`${screen.name} renders and captures`, async ({ page }, testInfo) => {
-        await openApp(page, theme, "kit");
-        await show(page, screen.nav, testInfo.project.name);
-        if (screen.name === "rules") {
-          await openFirstRuleEditor(page);
-        }
-        // The rule editor is the ONE surface knowingly left overflowing at
-        // 390 (137px over when the phone project was added) — its condition
-        // rows are a dense grid of selects that needs its own design pass,
-        // deferred out of this work rather than half-done inside it. Named
-        // here as a single screen rather than skipped as a whole test, so the
-        // capture is still taken and the exemption stays visible and narrow;
-        // every other screen at 390 is held to the same bar as desktop.
-        // Delete this branch, not the assertion, when that pass lands.
-        const rulesExempt = screen.name === "rules" && testInfo.project.name === "phone";
-        if (!rulesExempt) {
-          await expectNoHorizontalOverflow(page);
-        }
-        await page.screenshot({
-          path: `visual/.captures/${screen.name}-${testInfo.project.name}-${theme}.png`,
-          fullPage: false,
-        });
-      });
-    }
-
+    // #455: this was two loops — a kit-world pass that only proved the nav
+    // rendered and nothing overflowed, and the board-world pass added by
+    // #454 that actually asserts the seeded content. The flip made the board
+    // pass primary, so the kit loop is gone rather than kept as a second,
+    // weaker capture of the same nine screens; `openFirstRuleEditor` and the
+    // 390px rule-editor exemption move here from it unchanged.
     for (const screenId of SCREEN_ORDER) {
-      test(`board: ${screenId} renders and asserts the seed`, async ({ page }, testInfo) => {
+      test(`${screenId} renders and asserts the seed`, async ({ page }, testInfo) => {
         await openApp(page, theme, "board");
         await show(page, SCREEN_LABELS[screenId], testInfo.project.name);
         await BOARD_ASSERTIONS[screenId](page);
+        // Checked on the LIST state, before the rule editor (if any) opens
+        // below — every screen, rules included, is held to the same bar
+        // here. Splitting this from the editor-open check below is what
+        // keeps the rules list itself covered at 390 even though the editor
+        // that opens over it is exempt (#374 was a rule-CARD overflow at
+        // 1024/768, a different state than either of these, still caught by
+        // this same call at those widths).
         await expectNoHorizontalOverflow(page);
+        if (screenId === "rules") {
+          // Before the editor opens, and its own PNG — see `captureRulesList`
+          // for why the editor-open capture below cannot stand in for it.
+          await captureRulesList(page, testInfo.project.name, theme);
+          await openFirstRuleEditor(page);
+          // The rule editor is the ONE surface knowingly left overflowing at
+          // 390 (137px over when the phone project was added) — its
+          // condition rows are a dense grid of selects that needs its own
+          // design pass, deferred out of this work rather than half-done
+          // inside it. Only the editor-OPEN state is exempt, and only at
+          // 390: the list-state check above already ran, unconditionally,
+          // for every project including phone. Delete this branch, not the
+          // assertion above, when that pass lands.
+          const rulesEditorExempt = testInfo.project.name === "phone";
+          if (!rulesEditorExempt) {
+            await expectNoHorizontalOverflow(page);
+          }
+        }
         await page.screenshot({
-          path: `visual/.captures/board-${screenId}-${testInfo.project.name}-${theme}.png`,
+          path: `visual/.captures/${screenId}-${testInfo.project.name}-${theme}.png`,
           fullPage: false,
         });
       });
@@ -382,9 +449,15 @@ for (const theme of THEMES) {
       // whatever is showing, so no per-screen capture ever contains it. Opened
       // over Now, the widest thing behind it — a scrim that fails to cover, or
       // a card that overflows the 768 width, shows up here and nowhere else.
-      await openApp(page, theme, "kit");
+      await openApp(page, theme, "board");
       await show(page, "Now", testInfo.project.name);
-      await page.getByRole("button", { name: "New" }).click();
+      // #455: a name query for "New" was unambiguous under the kit fixture,
+      // but the board seed's real item titles ("Renew the car insurance",
+      // "Fit the new tap washer") both contain that substring — the same
+      // reason `openRecall` below addresses its trigger by id rather than by
+      // name. `CAPTURE_TRIGGER_ID` is that same unambiguous handle, already
+      // imported for the exclusivity test further down.
+      await page.locator(`#${CAPTURE_TRIGGER_ID}`).click();
       await expect(page.getByRole("dialog")).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
@@ -394,13 +467,16 @@ for (const theme of THEMES) {
     });
 
     test("now's columns capture, at production's density", async ({ page }, testInfo) => {
-      // #420, and the reason the board world exists. `NowScreen` branches to
-      // `RealFrontier` only when `demo` is null, so everything ADR-0021
-      // decided — the columns (packed into lanes since the width became a
-      // measured fact, `screens/frontier-lanes.ts`), the switchable axis, the Filter
-      // panel, the unsorted captures as cards among the startable actions,
-      // and #418's stranded-triage alert — was invisible to this gate from
-      // the day it landed. Decision 8 recorded that; this closes it.
+      // #420, and the reason the board world exists. Until #456, `NowScreen`
+      // branched to `RealFrontier` only when `demo` was null, so everything
+      // ADR-0021 decided — the columns (packed into lanes since the width
+      // became a measured fact, `screens/frontier-lanes.ts`), the switchable
+      // axis, the Filter panel, the unsorted captures as cards among the
+      // startable actions, and #418's stranded-triage alert — was invisible
+      // to this gate from the day it landed. Decision 8 recorded that; this
+      // closes it. (#456 later deleted that branch entirely — `NowScreen`
+      // renders `RealFrontier` unconditionally now — but the board world's
+      // populated render below is still the only one this gate photographs.)
       //
       // The fixture mirrors production's measured spread
       // (`fixtures/demo-task-state.ts`), so what gets photographed is the
@@ -435,11 +511,16 @@ for (const theme of THEMES) {
 
     // #481: the search overlay joins the registry as a photographed surface,
     // closing #331's "the busiest new surface shipping unphotographed"
-    // finding. Board world only — the header's Search button (and every
-    // other trigger #480 wired) is inert under `?demo` (`App.tsx`'s
-    // `onSearch={demo ? undefined : requestSearchOpen}`), because the kit
-    // world's `task` is a static fixture with no real `Core::search` to
-    // answer against. `task.search` is itself a fixed seed even in board
+    // finding. Board world only — until #456, the header's Search button
+    // (and every other trigger #480 wired) was inert under `?demo=kit`
+    // (`App.tsx`'s `onSearch={demo ? undefined : requestSearchOpen}`); #456
+    // deleted that ternary, so the trigger is unconditional now. What still
+    // confines this to the board world is `task` itself: `demoTaskState()`
+    // (`fixtures/demo.ts`) returns a seed only for the board spelling, so
+    // under `?demo=kit` `task` is `liveTask`, the real store slice, with no
+    // seeded `search` answer — opening Recall there sends a real request to
+    // whatever `Core::search` the live worker resolves, not a fixed result.
+    // `task.search` is itself a fixed seed even in board
     // mode (`fixtures/demo-task-state.ts`'s `recallRow` doc) — board's
     // `TaskState` is the lazy-initializer fixture `App.tsx`'s `task` always
     // resolves to, never the live store slice a real answer would land in —
@@ -476,8 +557,8 @@ for (const theme of THEMES) {
       const dialog = page.getByRole("dialog", { name: "Recall" });
       await dialog.getByRole("textbox").fill("the");
       await dialog.getByRole("button", { name: /rewrite the backup script/i }).click();
-      // The live group is the one that gets `onTriage` (board mode's `demo`
-      // is null, so `App.tsx` passes `handleTriage` through) — its expansion
+      // The live group is the one that gets `onTriage` (`App.tsx` passes
+      // `handleTriage` through unconditionally since #456) — its expansion
       // is the only one of the three that offers Edit. `ItemPanel` gates its
       // fields behind `editing` (`components/domain/ItemPanel.tsx`'s
       // `showFields`), which only the Edit click flips — asserting Edit is
@@ -586,7 +667,7 @@ test.describe("brand token bindings", () => {
   test("the layout constants and accent resolve, and dark mode reaches the page", async ({
     page,
   }) => {
-    await openApp(page, "light", "kit");
+    await openApp(page, "light", "board");
 
     const tokens = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement);
@@ -610,7 +691,7 @@ test.describe("brand token bindings", () => {
       () => getComputedStyle(document.body).backgroundColor,
     );
 
-    await openApp(page, "dark", "kit");
+    await openApp(page, "dark", "board");
     expect(await page.getAttribute("html", "data-theme")).toBe("dark");
     const darkPage = await page.evaluate(
       () => getComputedStyle(document.body).backgroundColor,

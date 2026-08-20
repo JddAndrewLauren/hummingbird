@@ -69,9 +69,9 @@ export interface CaptureBoxProps {
    * raw empty-string resting value. */
   onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
   /** The Routes a capture can be filed under, for the Project select behind
-   * "More details". `[]` in demo mode and on a device that has never synced —
-   * the select still renders, offering "No project" alone, because an empty
-   * list is a fact about the projects and not a reason to hide the control. */
+   * "More details". `[]` on a device that has never synced — the select
+   * still renders, offering "No project" alone, because an empty list is a
+   * fact about the projects and not a reason to hide the control. */
   projects: ProjectDTO[];
   /** What the Context `Combobox` offers — `field-vocabulary.ts`'s
    * `contextSuggestions`, the suggested list unioned with the contexts live
