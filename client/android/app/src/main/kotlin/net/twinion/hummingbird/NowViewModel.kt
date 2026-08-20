@@ -99,6 +99,7 @@ class NowViewModel(
     private val paneZoneQueriesFn: suspend (nowMs: Long) -> List<MobileZoneQuery>,
     private val rankPanesFn: suspend (nowMs: Long, zoneFacts: List<MobileZoneFact>) -> List<MobileRankedPane>,
     private val setScheduledDateFn: suspend (itemId: String, date: String?, nowMs: Long) -> Unit,
+    private val completeFn: suspend (itemId: String, nowMs: Long) -> Unit,
 ) : ViewModel() {
 
     private val _board = MutableStateFlow<NowBoardRecord?>(null)
@@ -162,6 +163,30 @@ class NowViewModel(
 
     fun closeItem() {
         _selectedItemId.value = null
+    }
+
+    /** The one failure line this screen owns — set only by [complete],
+     * cleared on its next attempt; `TriageViewModel`'s `statusLine`
+     * shape. */
+    private val _statusLine = MutableStateFlow<String?>(null)
+    val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
+
+    /** The row checkmark (the web `ItemRow`'s `MarkDoneButton`):
+     * `Core::act`'s `complete`, then a board re-read so the row leaves the
+     * frontier in the same gesture — `TriageViewModel.complete`'s idiom,
+     * selection included: a completed row's expanded panel must not stay
+     * standing over a board that no longer holds it. */
+    suspend fun complete(itemId: String, now: String, nowMs: Long) {
+        _statusLine.value = null
+        val failure = try {
+            completeFn(itemId, nowMs)
+            null
+        } catch (error: Exception) {
+            "Couldn't complete — ${error.message}"
+        }
+        if (_selectedItemId.value == itemId) _selectedItemId.value = null
+        refresh(now)
+        failure?.let { _statusLine.value = it }
     }
 
     /** Whether [load] has completed at least once on this (Activity-scoped)
@@ -316,6 +341,9 @@ class NowViewModel(
                 },
                 setScheduledDateFn = { itemId, date, nowMs ->
                     CoreHolder.get(context.applicationContext).setScheduledDate(itemId, date, nowMs)
+                },
+                completeFn = { itemId, nowMs ->
+                    CoreHolder.get(context.applicationContext).act(itemId, "complete", nowMs)
                 },
             )
 
