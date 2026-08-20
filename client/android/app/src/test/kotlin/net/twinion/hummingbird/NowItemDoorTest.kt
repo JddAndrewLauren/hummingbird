@@ -40,7 +40,7 @@ class NowItemDoorTest {
         assertTrue(
             "the row's Card must take onClick -- a clickable modifier would drop the " +
                 "ripple, the Button role and the minimum touch target",
-            Regex("""Card\(\s*onClick = onOpen""").containsMatchIn(src),
+            Regex("""Card\(\s*onClick = onOpen""").containsMatchIn(source("NowRow.kt")),
         )
         assertTrue(
             "tapping a card must drive the ViewModel's selection, not a navigation",

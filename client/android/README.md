@@ -170,11 +170,20 @@ captured and Grilling items together, in the core's order — headed by the
 "N captured · M grilling" counts read straight off the record
 (`TriageBoardRecord.capturedCount`/`grillingCount`; `TriageScreenStructuralTest`
 gates that neither figure is ever recomputed from `items.size`/`items.count`).
-One row opens at a time into the seeded editor built from #529's shared
-`ui/forms/` components (`LevelSlider`/`ContextField`/`CaptureDateField`);
-Promote-to-Ready is the only save destination this screen offers — there is
-no "save without promoting" method on `TriageViewModel` at all, unlike item
-detail's own edit mode. The row checkmark goes through the existing
+The queue's collapsed rows are the SAME compact card the Now screen's
+frontier renders (`NowRow.kt`, extracted for exactly this — the
+Triage-parity slice, operator request 2026-08-20), fed by a verbatim-copy
+adapter over `TriageItemRecord` (whose `urgency` band arrives decided from
+the seam, like every other pill). One item opens at a time, expanding at
+index 0 of the queue's one `LazyColumn` — `NowScreen`'s inline-expansion
+pattern — into the seeded editor built from #529's shared `ui/forms/`
+components (`LevelSlider`/`ContextField`/`CaptureDateField`) under the Now
+panel's chrome (stage chip, `titleMedium` title, X close). The expanded
+pane is deliberately NOT `ItemDetailPanel`: `available_actions` answers
+nothing for Triage/Grilling stages, and the panel's plain save is the
+non-promoting write this surface bans. Promote-to-Ready is the only save
+destination this screen offers — there is no "save without promoting"
+method on `TriageViewModel` at all, unlike item detail's own edit mode. The row checkmark goes through the existing
 `act("complete")` path, never a triage. The Grill button is live (#539):
 gated on the row's own `canGrill` fact from the seam, it navigates to the
 standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
@@ -191,7 +200,7 @@ re-reads the queue on every return to the screen, not only on the app-wide
 `syncTick`: a capture minted from `CaptureActivity` while Triage was
 backgrounded must not wait for the next tick to appear.
 
-The seam doors are `MobileTaskHost::triage_board()` (decided from the
+The seam doors are `MobileTaskHost::triage_board(now)` (decided from the
 already-sunk `hummingbird_core::decisions::queue::triage_process_queue`) and
 `::triage_item()` (`Core::triage` with a real `promote_to_ready`, sharing
 `to_triage_patch`'s `ItemEdit`→`TriagePatch` conversion with `edit_item`).
