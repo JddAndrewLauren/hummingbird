@@ -1,6 +1,9 @@
 package net.twinion.hummingbird
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import net.twinion.hummingbird.speech.DictationFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,7 +58,7 @@ class CaptureViewModelTest {
         )
         vm.updateDraft(draftWithTitle("buy milk"))
 
-        val didCapture = vm.submit(1_000L)
+        val didCapture = vm.submit(CaptureDestination.TRIAGE, 1_000L)
 
         assertFalse(didCapture)
         assertFalse("captureFn must not run for a refused draft", captureCalled)
@@ -74,7 +77,7 @@ class CaptureViewModelTest {
         )
         vm.updateDraft(draftWithTitle("buy milk").copy(deadline = "not-a-date"))
 
-        val didCapture = vm.submit(1_000L)
+        val didCapture = vm.submit(CaptureDestination.TRIAGE, 1_000L)
 
         assertFalse(didCapture)
         assertFalse("captureFn must not run for a malformed date", captureCalled)
@@ -91,14 +94,13 @@ class CaptureViewModelTest {
         vm.updateDraft(
             CaptureFormState(
                 title = "buy milk",
-                destination = CaptureDestination.READY,
                 size = "quick",
                 energy = "low",
                 context = "@errands",
             ),
         )
 
-        val didCapture = vm.submit(42_000L)
+        val didCapture = vm.submit(CaptureDestination.READY, 42_000L)
 
         assertTrue(didCapture)
         assertEquals("buy milk", seenDraft?.title)
@@ -107,6 +109,81 @@ class CaptureViewModelTest {
         assertEquals("low", seenDraft?.energy)
         assertEquals("@errands", seenDraft?.context)
         assertEquals(42_000L, seenNowMs)
+    }
+
+    /** The destination is the gesture's, not the form's (round 4's two
+     * submit buttons): the same draft submitted through either button must
+     * reach the seam carrying that button's destination and nothing else. */
+    @Test
+    fun `each submit carries its own destination, and the draft holds none`() = runBlocking {
+        val seen = mutableListOf<CaptureDestination>()
+        val vm = viewModel(
+            canSubmitFn = { true },
+            captureFn = { draft, _ -> seen.add(draft.destination); "minted-id" },
+        )
+        vm.updateDraft(draftWithTitle("buy milk"))
+
+        assertTrue(vm.submit(CaptureDestination.TRIAGE, 1_000L))
+        assertTrue(vm.submit(CaptureDestination.READY, 2_000L))
+
+        assertEquals(listOf(CaptureDestination.TRIAGE, CaptureDestination.READY), seen)
+    }
+
+    /** Two submit buttons plus the title field's IME action are three doors
+     * onto one `captureFn`, so a second tap inside the first's suspension
+     * would mint the same words twice — and the duplicate is
+     * indistinguishable from a deliberate one (`submitting`'s own doc).
+     * `captureFn` is parked on a `CompletableDeferred` here, which is what
+     * a real local-first enqueue plus its sync leg looks like from the
+     * caller's side. */
+    @Test
+    fun `a second submit while the first is in flight refuses, and captures once`() = runBlocking {
+        val parked = CompletableDeferred<Unit>()
+        var captureCalls = 0
+        val vm = viewModel(
+            canSubmitFn = { true },
+            captureFn = { _, _ -> captureCalls++; parked.await(); "minted-id" },
+        )
+        vm.updateDraft(draftWithTitle("buy milk"))
+
+        var firstResult: Boolean? = null
+        val first = launch { firstResult = vm.submit(CaptureDestination.READY, 1_000L) }
+        // Let the first reach `captureFn` and park there.
+        while (captureCalls == 0) {
+            yield()
+        }
+        assertTrue("the flag must be up while captureFn is in flight", vm.submitting.value)
+
+        assertFalse(
+            "a second submit while one is in flight must refuse",
+            vm.submit(CaptureDestination.TRIAGE, 2_000L),
+        )
+        assertEquals("captureFn must have run exactly once", 1, captureCalls)
+
+        parked.complete(Unit)
+        first.join()
+        assertEquals(true, firstResult)
+        assertFalse("the flag must come back down once the capture lands", vm.submitting.value)
+
+        // And a fresh submit is allowed again.
+        assertTrue(vm.submit(CaptureDestination.TRIAGE, 3_000L))
+        assertEquals(2, captureCalls)
+    }
+
+    /** The flag comes down even when the enqueue throws — a `finally`, not
+     * a happy-path reset: a `captureFn` that failed once must not leave
+     * both buttons dead for the rest of the screen's life. */
+    @Test
+    fun `a failed capture releases the in-flight flag`() = runBlocking {
+        val vm = viewModel(
+            canSubmitFn = { true },
+            captureFn = { _, _ -> error("enqueue failed") },
+        )
+        vm.updateDraft(draftWithTitle("buy milk"))
+
+        runCatching { vm.submit(CaptureDestination.READY, 1_000L) }
+
+        assertFalse(vm.submitting.value)
     }
 
     @Test

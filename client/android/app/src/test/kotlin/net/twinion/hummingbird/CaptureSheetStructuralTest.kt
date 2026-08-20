@@ -62,13 +62,19 @@ class CaptureSheetStructuralTest {
     }
 
     @Test
-    fun `the sheet is the light form with the shared-helper mic — no details disclosure`() {
-        // The full form lives in CaptureActivity. The mic arrived with
-        // #611, wired through the extracted `speech/Dictation.kt` — never
-        // a second copy of the recognizer plumbing (DictationLocalityTest
-        // bans the default-service pair in this file for that reason), and
-        // never a mic without plumbing, the dead control ADR-0022 calls a
-        // defect.
+    fun `the sheet carries the full form and the shared-helper mic`() {
+        // The mic arrived with #611, wired through the extracted
+        // `speech/Dictation.kt` — never a second copy of the recognizer
+        // plumbing (DictationLocalityTest bans the default-service pair in
+        // this file for that reason), and never a mic without plumbing, the
+        // dead control ADR-0022 calls a defect.
+        //
+        // The details disclosure was banned here until 2026-08-20, when the
+        // operator ruled the two capture surfaces differ only in which door
+        // they are, never in what a person can record through them. This
+        // assertion is that decision, inverted from the one it replaces:
+        // the sheet must carry the disclosure, or a reader who reaches for
+        // a deadline here has to leave for the other surface to record it.
         val src = source("CaptureSheet.kt")
         assertTrue(
             "CaptureSheet must render the dictation mic (#611)",
@@ -82,10 +88,20 @@ class CaptureSheetStructuralTest {
             "a denied permission reports through the failure lane, never silently",
             src.contains("viewModel.onDictationFailed(DictationFailure.NO_PERMISSION)"),
         )
-        assertFalse(
-            "CaptureSheet must not grow the details disclosure — CaptureActivity is the full form",
+        assertTrue(
+            "CaptureSheet must carry the details disclosure — field parity with CaptureActivity",
             src.contains("detailsOpen"),
         )
+        // Field parity is the claim, so it is checked field by field rather
+        // than by the disclosure's flag alone: a `detailsOpen` that reveals
+        // three of the five would satisfy the line above and still send the
+        // reader to the other surface.
+        for (field in listOf("ProjectField(", "PriorityRow(", "CaptureDateField(")) {
+            assertTrue(
+                "the disclosure must render the shared $field",
+                src.contains(field),
+            )
+        }
         assertTrue(
             "submission must clear the draft — the host store outlives the sheet",
             src.contains("viewModel.clearDraft()"),

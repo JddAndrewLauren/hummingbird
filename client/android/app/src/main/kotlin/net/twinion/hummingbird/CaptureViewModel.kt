@@ -29,7 +29,6 @@ import uniffi.hummingbird_ffi_mobile.captureMetaProblems
  */
 data class CaptureFormState(
     val title: String = "",
-    val destination: CaptureDestination = CaptureDestination.TRIAGE,
     val size: String = "",
     val energy: String = "",
     val context: String = "",
@@ -39,7 +38,12 @@ data class CaptureFormState(
     val deadline: String = "",
     val scheduledDate: String = "",
 ) {
-    fun toDraft(): CaptureDraft = CaptureDraft(
+    /** The draft as the seam wants it, for [destination]. The destination
+     * is not held here: both capture surfaces offer it as a pair of submit
+     * buttons, so it is a property of the gesture, not of the form — a
+     * `destination` field would be state the reader can never see, and two
+     * places for one fact. */
+    fun toDraft(destination: CaptureDestination): CaptureDraft = CaptureDraft(
         title = title,
         destination = destination,
         size = size,
@@ -54,8 +58,10 @@ data class CaptureFormState(
 }
 
 // M1-5's whole surface (#128/#503), widened at M3/#529 to the capture box's
-// full field set: destination, energy/size, context, and the details
-// disclosure (description, project, priority, deadline, scheduled date).
+// full field set: energy/size, context, and the details disclosure
+// (description, project, priority, deadline, scheduled date). The
+// destination is [submit]'s argument rather than a field — see
+// [CaptureFormState.toDraft].
 // `canSubmitFn`/`metaProblemsFn` default, in [create], to the uniffi doors
 // onto `hummingbird_core::decisions::capture` (ADR-0025) — never a
 // hand-rolled blank-string check or a hand-rolled date regex, either of
@@ -189,18 +195,33 @@ class CaptureViewModel(
         _dictationFailure.value = null
     }
 
-    /** Captures the current draft if [canSubmitDraft] says it is worth it;
-     * returns whether it did. Local-first per #128's own criterion:
-     * [captureFn] (`MobileTaskHost.capture`, in production) enqueues
-     * durably before any network call, so a caller awaiting this can finish
-     * the activity immediately after — the item is already in the local
-     * mirror. */
-    suspend fun submit(nowMs: Long): Boolean {
+    /** Whether a capture is in flight — the two submit buttons' second
+     * `enabled` term. Every capture surface now offers two doors to the
+     * same draft (Triage and Add), and both of them, plus the title
+     * field's IME action, reach [submit]: without this a person who taps
+     * twice inside `captureFn`'s suspension mints the same words twice,
+     * and the second item is indistinguishable from a deliberate
+     * duplicate. */
+    private val _submitting = MutableStateFlow(false)
+    val submitting: StateFlow<Boolean> = _submitting.asStateFlow()
+
+    /** Captures the current draft to [destination] if [canSubmitDraft] says
+     * it is worth it and no capture is already in flight; returns whether
+     * it did. Local-first per #128's own criterion: [captureFn]
+     * (`MobileTaskHost.capture`, in production) enqueues durably before any
+     * network call, so a caller awaiting this can finish the activity
+     * immediately after — the item is already in the local mirror. */
+    suspend fun submit(destination: CaptureDestination, nowMs: Long): Boolean {
         val current = _draft.value
-        if (!canSubmitDraft()) {
+        if (_submitting.value || !canSubmitDraft()) {
             return false
         }
-        captureFn(current.toDraft(), nowMs)
+        _submitting.value = true
+        try {
+            captureFn(current.toDraft(destination), nowMs)
+        } finally {
+            _submitting.value = false
+        }
         return true
     }
 

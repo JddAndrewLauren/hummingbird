@@ -9,23 +9,21 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -57,9 +55,9 @@ import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.forms.PriorityRow
+import net.twinion.hummingbird.ui.forms.ProjectField
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
-import uniffi.hummingbird_ffi_mobile.MobileProject
 
 // M1-5's capture surface (#128/#503), the second launcher icon's
 // destination: field focused with the IME up on launch with zero taps,
@@ -69,13 +67,16 @@ import uniffi.hummingbird_ffi_mobile.MobileProject
 // network call.
 //
 // M3/#529 widened this from title-only to the web capture box's whole
-// field set: a destination choice (Triage/Ready), the energy/size sliders,
-// the open-vocabulary context field, and a details disclosure holding
-// description, project, priority, deadline and scheduled date. Dictation
-// stays title-field-only (`CaptureViewModel.onTranscript`'s own doc) — say
-// so here too, not just there. `LevelSlider`/`ContextField`/
-// `CaptureDateField` (`ui/forms/`) are the shared components this screen
-// builds and the Triage screen (#531) reuses; every vocabulary word they
+// field set: the energy/size sliders, the open-vocabulary context field,
+// and a details disclosure holding description, project, priority,
+// deadline and scheduled date. The destination rides on the submit gesture
+// — Triage and Add are two buttons, not a switch above one — and the
+// button row is pinned below the scrolling fields so the keyboard can
+// never push it out of reach. Dictation stays title-field-only
+// (`CaptureViewModel.onTranscript`'s own doc) — say so here too, not just
+// there. `LevelSlider`/`ContextField`/`CaptureDateField`/`ProjectField`
+// (`ui/forms/`) are the shared components this screen builds and both the
+// Triage screen (#531) and the capture sheet reuse; every vocabulary word they
 // render comes from `viewModel.formMeta`
 // (`uniffi.hummingbird_ffi_mobile.captureFormMeta`), never a literal typed
 // into this file (ADR-0025's ban on a hand-copied vocabulary).
@@ -119,6 +120,7 @@ private fun CaptureScreen(
     val draft by viewModel.draft.collectAsState()
     val projects by viewModel.projects.collectAsState()
     val dictationFailure by viewModel.dictationFailure.collectAsState()
+    val submitting by viewModel.submitting.collectAsState()
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     // Shut on arrival, matching the web capture box's own resting state
@@ -153,206 +155,182 @@ private fun CaptureScreen(
         viewModel.loadProjects()
     }
 
-    fun submit() {
+    fun submit(destination: CaptureDestination) {
         scope.launch {
-            if (viewModel.submit(System.currentTimeMillis())) {
+            if (viewModel.submit(destination, System.currentTimeMillis())) {
                 onFinished()
             }
         }
     }
 
     Scaffold { padding ->
+        // Two children, and the split is the point: the fields scroll, the
+        // submit row does not. Before it, the lone button was the last
+        // child of the scrolling column, so a raised keyboard could push
+        // the only way out of this screen off the bottom of it.
+        // `imePadding()` on the outer column is what lifts the row onto the
+        // keyboard's top edge — the Activity is already edge-to-edge with
+        // `adjustResize` (AndroidManifest.xml), the same conditions
+        // `RecallOverlay` relies on. `consumeWindowInsets(padding)` is not
+        // decoration either: `padding()` applies the Scaffold's insets
+        // without consuming them, so `imePadding()` below it would add the
+        // whole IME inset on top of an already-paid navigation bar — the
+        // dead band #614 shipped, in the other direction
+        // (`MainActivity`'s NavHost carries the same pair for the same
+        // reason).
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .consumeWindowInsets(padding)
+                .imePadding(),
         ) {
-            // The product name is lowercase everywhere; the screen title is
-            // the one exception the design system already carries (a verb,
-            // not the brand).
-            Text("Capture", style = MaterialTheme.typography.headlineLarge)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(24.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                // The product name is lowercase everywhere; the screen title is
+                // the one exception the design system already carries (a verb,
+                // not the brand).
+                Text("Capture", style = MaterialTheme.typography.headlineLarge)
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = draft.title,
+                        onValueChange = { viewModel.updateDraft(draft.copy(title = it)) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester),
+                        placeholder = { Text("What's on your mind?") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        // Enter captures to Triage: the funnel's own default
+                        // ([CaptureFormState]'s destination was TRIAGE before
+                        // #634's round-4 rework moved it onto the gesture), so
+                        // the one-line-and-Enter case is unchanged.
+                        keyboardActions = KeyboardActions(onDone = { submit(CaptureDestination.TRIAGE) }),
+                    )
+                    IconButton(
+                        onClick = {
+                            viewModel.onDictationStarted()
+                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        },
+                    ) {
+                        Icon(painterResource(R.drawable.ic_mic), contentDescription = "Dictate")
+                    }
+                }
+
+                // Energy/Size (the frontier's axes) and Context (the open
+                // vocabulary) — every word rendered here comes from
+                // `viewModel.formMeta`, never a literal in this file.
+                LevelSlider(
+                    label = "Energy",
+                    glyphFamily = LevelGlyphFamily.ENERGY,
+                    options = viewModel.formMeta.energies,
+                    selected = draft.energy.ifEmpty { null },
+                    onSelect = { viewModel.updateDraft(draft.copy(energy = it.orEmpty())) },
+                )
+                LevelSlider(
+                    label = "Size",
+                    glyphFamily = LevelGlyphFamily.SIZE,
+                    options = viewModel.formMeta.sizes,
+                    selected = draft.size.ifEmpty { null },
+                    onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },
+                )
+                ContextField(
+                    value = draft.context,
+                    onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
+                    suggestions = viewModel.formMeta.suggestedContexts,
+                )
+
+                // ADR-0022: a dictation pass that ends without text says so.
+                // A mic that renders and then does nothing is the failure mode
+                // that ADR calls a defect rather than a nit.
+                dictationFailure?.let {
+                    Text(
+                        it.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                // Everything a mint would ask, behind one disclosure — the web
+                // capture box's own "More details" (`CaptureBox.tsx`).
+                TextButton(onClick = { detailsOpen = !detailsOpen }) {
+                    Text(if (detailsOpen) "Fewer details" else "More details")
+                }
+                if (detailsOpen) {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        OutlinedTextField(
+                            value = draft.description,
+                            onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
+                            label = { Text("Description") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        ProjectField(
+                            projects = projects,
+                            selectedId = draft.projectId,
+                            onSelect = { viewModel.updateDraft(draft.copy(projectId = it)) },
+                        )
+                        PriorityRow(
+                            selected = draft.priority,
+                            onSelect = { viewModel.updateDraft(draft.copy(priority = it)) },
+                        )
+                        CaptureDateField(
+                            label = "Deadline",
+                            value = draft.deadline,
+                            error = metaProblems.deadline,
+                            onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
+                        )
+                        CaptureDateField(
+                            label = "Scheduled date",
+                            value = draft.scheduledDate,
+                            error = metaProblems.scheduledDate,
+                            onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
+                        )
+                    }
+                }
+            }
+
+            // The two destinations the web capture box offers as
+            // Triage/Mint (`CaptureBox.tsx`), as two submit buttons rather
+            // than a switch above one (operator decision 2026-08-20): the
+            // destination is a property of the gesture, so there is no
+            // selected-state to read back or get wrong. "Add" is the filled
+            // button because Ready is the committing choice, mirroring the
+            // web's own Triage/Mint hierarchy. Both are gated on the
+            // in-flight flag as well as the draft: two doors to one
+            // `captureFn` is two ways to mint the same words twice
+            // ([CaptureViewModel.submitting]).
+            val canSubmit = viewModel.canSubmitDraft() && !submitting
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedTextField(
-                    value = draft.title,
-                    onValueChange = { viewModel.updateDraft(draft.copy(title = it)) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(focusRequester),
-                    placeholder = { Text("What's on your mind?") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { submit() }),
-                )
-                IconButton(
-                    onClick = {
-                        viewModel.onDictationStarted()
-                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                    },
+                OutlinedButton(
+                    onClick = { submit(CaptureDestination.TRIAGE) },
+                    enabled = canSubmit,
+                    modifier = Modifier.weight(1f),
                 ) {
-                    Icon(painterResource(R.drawable.ic_mic), contentDescription = "Dictate")
+                    Text("Triage")
                 }
-            }
-
-            // The two destinations the web capture box offers as Triage/Mint
-            // (`CaptureBox.tsx`) — here as a two-way choice rather than two
-            // submit buttons, since one "Capture" action already ends the
-            // Activity. `FilterChip`'s own selected/unselected pair is the
-            // native control closest to a segmented toggle.
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = draft.destination == CaptureDestination.TRIAGE,
-                    onClick = { viewModel.updateDraft(draft.copy(destination = CaptureDestination.TRIAGE)) },
-                    label = { Text("Triage") },
-                )
-                FilterChip(
-                    selected = draft.destination == CaptureDestination.READY,
-                    onClick = { viewModel.updateDraft(draft.copy(destination = CaptureDestination.READY)) },
-                    label = { Text("Ready") },
-                )
-            }
-
-            // Energy/Size (the frontier's axes) and Context (the open
-            // vocabulary) — every word rendered here comes from
-            // `viewModel.formMeta`, never a literal in this file.
-            LevelSlider(
-                label = "Energy",
-                glyphFamily = LevelGlyphFamily.ENERGY,
-                options = viewModel.formMeta.energies,
-                selected = draft.energy.ifEmpty { null },
-                onSelect = { viewModel.updateDraft(draft.copy(energy = it.orEmpty())) },
-            )
-            LevelSlider(
-                label = "Size",
-                glyphFamily = LevelGlyphFamily.SIZE,
-                options = viewModel.formMeta.sizes,
-                selected = draft.size.ifEmpty { null },
-                onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },
-            )
-            ContextField(
-                value = draft.context,
-                onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
-                suggestions = viewModel.formMeta.suggestedContexts,
-            )
-
-            // ADR-0022: a dictation pass that ends without text says so.
-            // A mic that renders and then does nothing is the failure mode
-            // that ADR calls a defect rather than a nit.
-            dictationFailure?.let {
-                Text(
-                    it.message,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            // Everything a mint would ask, behind one disclosure — the web
-            // capture box's own "More details" (`CaptureBox.tsx`).
-            TextButton(onClick = { detailsOpen = !detailsOpen }) {
-                Text(if (detailsOpen) "Fewer details" else "More details")
-            }
-            if (detailsOpen) {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    OutlinedTextField(
-                        value = draft.description,
-                        onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
-                        label = { Text("Description") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    ProjectField(
-                        projects = projects,
-                        selectedId = draft.projectId,
-                        onSelect = { viewModel.updateDraft(draft.copy(projectId = it)) },
-                    )
-                    PriorityRow(
-                        selected = draft.priority,
-                        onSelect = { viewModel.updateDraft(draft.copy(priority = it)) },
-                    )
-                    CaptureDateField(
-                        label = "Deadline",
-                        value = draft.deadline,
-                        error = metaProblems.deadline,
-                        onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
-                    )
-                    CaptureDateField(
-                        label = "Scheduled date",
-                        value = draft.scheduledDate,
-                        error = metaProblems.scheduledDate,
-                        onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
-                    )
+                Button(
+                    onClick = { submit(CaptureDestination.READY) },
+                    enabled = canSubmit,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Add")
                 }
-            }
-
-            Button(onClick = { submit() }, enabled = viewModel.canSubmitDraft()) {
-                Text("Capture")
             }
         }
     }
 }
-
-/** The details disclosure's Project picker (review finding on #529's own
- * PR): a read-only `ExposedDropdownMenuBox` over the real live
- * [projects][MobileProject] list plus a leading "No project" entry — the
- * same shape `CaptureBox.tsx:830-839`'s `Select` offers on the web side.
- * An opaque, hand-typed project id would mint locally and be refused at
- * the authority the first time it did not match a real row
- * (`items.project_id` is `TEXT REFERENCES projects(id)`,
- * `server/authority/src/schema.rs:135`) — exactly the dead-letter failure
- * `CaptureViewModel.canSubmitDraft`'s own doc says the two-predicate gate
- * exists to prevent, so this field must offer only ids that already exist.
- * `readOnly = true` on the anchor field is what makes that true: nothing
- * here lets a reader type a project id at all. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ProjectField(
-    projects: List<MobileProject>,
-    selectedId: String,
-    onSelect: (String) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val selectedName = projects.find { it.id == selectedId }?.name ?: "No project"
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-    ) {
-        OutlinedTextField(
-            value = selectedName,
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("Project") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            DropdownMenuItem(
-                text = { Text("No project") },
-                onClick = {
-                    onSelect("")
-                    expanded = false
-                },
-            )
-            for (project in projects) {
-                DropdownMenuItem(
-                    text = { Text(project.name) },
-                    onClick = {
-                        onSelect(project.id)
-                        expanded = false
-                    },
-                )
-            }
-        }
-    }
-}
-
