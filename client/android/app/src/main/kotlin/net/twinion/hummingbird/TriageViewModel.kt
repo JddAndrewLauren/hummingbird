@@ -107,7 +107,7 @@ data class TriageDraft(
 // applies verbatim: a composition-scoped draft is lost on Activity
 // recreation, and a draft is human-authored content.
 class TriageViewModel(
-    private val fetchFn: suspend () -> TriageBoardRecord,
+    private val fetchFn: suspend (now: String) -> TriageBoardRecord,
     private val triageFn: suspend (itemId: String, promoteToReady: Boolean, edit: ItemEdit, nowMs: Long) -> Unit,
     private val completeFn: suspend (itemId: String, nowMs: Long) -> Unit,
     /** The core's blank rule, injected the same way [ItemDetailViewModel]'s
@@ -163,9 +163,9 @@ class TriageViewModel(
      * cycle. A reload never disturbs an open draft — the same "the
      * 60-second cadence must not erase what the human is typing" rule
      * [ItemDetailViewModel.load]'s own doc states. */
-    suspend fun load() {
+    suspend fun load(now: String) {
         try {
-            _state.value = TriageState.Loaded(fetchFn())
+            _state.value = TriageState.Loaded(fetchFn(now))
             _statusLine.value = null
         } catch (error: Exception) {
             _statusLine.value = "Couldn't read Triage — ${error.message}"
@@ -197,7 +197,7 @@ class TriageViewModel(
      * the only destination this screen offers (the AC this method exists
      * to satisfy): there is no "save without promoting" affordance here,
      * unlike item detail's own edit mode. */
-    suspend fun promote(itemId: String, nowMs: Long) {
+    suspend fun promote(itemId: String, now: String, nowMs: Long) {
         val item = currentItems().find { it.id == itemId } ?: return
         val draft = _draft.value ?: return
         if (!canSave) {
@@ -213,7 +213,7 @@ class TriageViewModel(
             _statusLine.value = "Couldn't promote — ${error.message}"
             return
         }
-        load()
+        load(now)
     }
 
     /** The row checkmark: `Core::act`'s `complete`, never a triage — a
@@ -223,7 +223,7 @@ class TriageViewModel(
      * leaves the row on the board, so its editor stays where [statusLine]
      * can be read against it and the act retried. Cancellation rethrows
      * rather than being worded as a failure. */
-    suspend fun complete(itemId: String, nowMs: Long) {
+    suspend fun complete(itemId: String, now: String, nowMs: Long) {
         val failure = try {
             completeFn(itemId, nowMs)
             null
@@ -236,14 +236,14 @@ class TriageViewModel(
             _selectedId.value = null
             _draft.value = null
         }
-        load()
+        load(now)
         failure?.let { _statusLine.value = it }
     }
 
     companion object {
         fun create(context: Context): TriageViewModel =
             TriageViewModel(
-                fetchFn = { CoreHolder.get(context.applicationContext).triageBoard() },
+                fetchFn = { now -> CoreHolder.get(context.applicationContext).triageBoard(now) },
                 triageFn = { itemId, promoteToReady, edit, nowMs ->
                     CoreHolder.get(context.applicationContext)
                         .triageItem(itemId, promoteToReady, edit, nowMs)

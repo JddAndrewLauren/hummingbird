@@ -1044,6 +1044,11 @@ pub struct TriageItemRecord {
     pub priority: i64,
     pub project_id: Option<String>,
     pub deadline: Option<String>,
+    /// The deadline's decided urgency band against the caller's device-local
+    /// `now` (#617's Triage-parity slice): the Triage rows render through the
+    /// same card the frontier board's rows do, and that card's swatch/word
+    /// read a decided band — never a Kotlin date comparison.
+    pub urgency: MobileUrgencyBand,
     pub scheduled_date: Option<String>,
     pub source: Option<String>,
     pub created_at: i64,
@@ -1058,7 +1063,7 @@ pub struct TriageItemRecord {
     pub has_grill_draft: bool,
 }
 
-fn to_triage_item_record(item: &Item, has_grill_draft: bool) -> TriageItemRecord {
+fn to_triage_item_record(item: &Item, has_grill_draft: bool, now: &str) -> TriageItemRecord {
     TriageItemRecord {
         id: item.id.clone(),
         title: item.title.clone(),
@@ -1070,6 +1075,7 @@ fn to_triage_item_record(item: &Item, has_grill_draft: bool) -> TriageItemRecord
         priority: item.priority,
         project_id: item.project_id.clone(),
         deadline: item.deadline.clone(),
+        urgency: map_urgency_band(urgency::compute_urgency(item.deadline.as_deref(), now)),
         scheduled_date: item.scheduled_date.clone(),
         source: item.source.clone(),
         created_at: item.created_at,
@@ -1098,6 +1104,7 @@ fn build_triage_board(
     triage_items: &[Item],
     grilling_items: &[Item],
     draft_item_ids: &[String],
+    now: &str,
 ) -> TriageBoardRecord {
     let by_id: HashMap<&str, &Item> = triage_items
         .iter()
@@ -1117,7 +1124,7 @@ fn build_triage_board(
         .filter_map(|id| {
             by_id
                 .get(id.as_str())
-                .map(|item| to_triage_item_record(item, draft_ids.contains(id.as_str())))
+                .map(|item| to_triage_item_record(item, draft_ids.contains(id.as_str()), now))
         })
         .collect();
 
@@ -2957,12 +2964,12 @@ impl MobileTaskHost {
     /// frontier board's inline triage rows — this door decides the same
     /// queue on its own, for the screen whose whole reason to exist is that
     /// queue.
-    pub async fn triage_board(&self) -> TriageBoardRecord {
+    pub async fn triage_board(&self, now: String) -> TriageBoardRecord {
         let inner = self.inner.lock().await;
         let triage_items = inner.core.triage_inbox();
         let grilling_items = inner.core.grilling_items();
         let draft_item_ids = inner.core.grill_draft_item_ids();
-        build_triage_board(&triage_items, &grilling_items, &draft_item_ids)
+        build_triage_board(&triage_items, &grilling_items, &draft_item_ids, &now)
     }
 
     /// The Triage screen's mutation (M3/#531) —
@@ -5533,7 +5540,7 @@ mod tests {
             ..item("grilling-1", 0, None)
         };
 
-        let board = build_triage_board(&[captured], &[grilling], &[]);
+        let board = build_triage_board(&[captured], &[grilling], &[], "2026-08-15T12:00");
 
         assert_eq!(
             board.items.iter().map(|record| record.id.clone()).collect::<Vec<_>>(),
@@ -5551,7 +5558,7 @@ mod tests {
         ];
         let grilling = vec![Item { stage: Stage::Grilling, ..item("g-1", 0, None) }];
 
-        let board = build_triage_board(&captured, &grilling, &[]);
+        let board = build_triage_board(&captured, &grilling, &[], "2026-08-15T12:00");
 
         assert_eq!(board.captured_count, 2);
         assert_eq!(board.grilling_count, 1);
@@ -5570,7 +5577,7 @@ mod tests {
             ..item("g-1", 2, Some("2026-08-20"))
         };
 
-        let board = build_triage_board(&[], &[grilling], &[]);
+        let board = build_triage_board(&[], &[grilling], &[], "2026-08-15T12:00");
 
         let record = &board.items[0];
         assert_eq!(record.stage, "grilling");
@@ -5592,7 +5599,7 @@ mod tests {
             ..item("t-2", 0, None)
         };
 
-        let board = build_triage_board(&[triage, archived], &[], &[]);
+        let board = build_triage_board(&[triage, archived], &[], &[], "2026-08-15T12:00");
 
         let live = board.items.iter().find(|record| record.id == "t-1").unwrap();
         let done = board.items.iter().find(|record| record.id == "t-2").unwrap();
@@ -5607,7 +5614,7 @@ mod tests {
         let triage = Item { stage: Stage::Triage, ..item("t-1", 0, None) };
         let drafted = Item { stage: Stage::Triage, ..item("t-2", 0, None) };
 
-        let board = build_triage_board(&[triage, drafted], &[], &["t-2".to_string()]);
+        let board = build_triage_board(&[triage, drafted], &[], &["t-2".to_string()], "2026-08-15T12:00");
 
         let no_draft = board.items.iter().find(|record| record.id == "t-1").unwrap();
         let has_draft = board.items.iter().find(|record| record.id == "t-2").unwrap();
@@ -5615,6 +5622,23 @@ mod tests {
         assert!(!no_draft.has_grill_draft);
         assert!(has_draft.can_grill);
         assert!(has_draft.has_grill_draft);
+    }
+
+    /// The Triage-parity slice: a row's urgency band is `compute_urgency`
+    /// over its deadline and the caller's device-local now — the same
+    /// decided band the frontier board's rows carry, so the shared card's
+    /// swatch/word never re-derive it Kotlin-side.
+    #[test]
+    fn triage_item_records_carry_the_decided_urgency_band() {
+        let overdue = Item { stage: Stage::Triage, ..item("t-overdue", 0, Some("2026-08-10")) };
+        let calm = Item { stage: Stage::Triage, ..item("t-calm", 0, None) };
+
+        let board = build_triage_board(&[overdue, calm], &[], &[], "2026-08-15T12:00");
+
+        let hot = board.items.iter().find(|record| record.id == "t-overdue").unwrap();
+        let cool = board.items.iter().find(|record| record.id == "t-calm").unwrap();
+        assert_eq!(hot.urgency, MobileUrgencyBand::Overdue);
+        assert_eq!(cool.urgency, MobileUrgencyBand::Calm);
     }
 
     fn untouched_triage_edit() -> ItemEdit {
@@ -5645,14 +5669,14 @@ mod tests {
         .unwrap();
         let id = host.capture(title_only_draft("buy milk"), 1_000).await.unwrap();
 
-        let board = host.triage_board().await;
+        let board = host.triage_board("2026-08-15T12:00".to_string()).await;
         assert_eq!(board.captured_count, 1);
         assert_eq!(board.grilling_count, 0);
         assert_eq!(board.items[0].id, id);
 
         host.triage_item(id, true, untouched_triage_edit(), 2_000).await.unwrap();
 
-        let board = host.triage_board().await;
+        let board = host.triage_board("2026-08-15T12:00".to_string()).await;
         assert_eq!(board.captured_count, 0);
         assert!(board.items.is_empty());
     }

@@ -74,7 +74,7 @@ fun TriageScreen(
     val dark = isSystemInDarkTheme()
 
     suspend fun reload() {
-        viewModel.load()
+        viewModel.load(nowDeadlineShaped())
     }
 
     LaunchedEffect(Unit) { reload() }
@@ -156,12 +156,12 @@ fun TriageScreen(
                                 onDraftChange = viewModel::updateDraft,
                                 onComplete = {
                                     scope.launch {
-                                        viewModel.complete(item.id, System.currentTimeMillis())
+                                        viewModel.complete(item.id, nowDeadlineShaped(), System.currentTimeMillis())
                                     }
                                 },
                                 onPromote = {
                                     scope.launch {
-                                        viewModel.promote(item.id, System.currentTimeMillis())
+                                        viewModel.promote(item.id, nowDeadlineShaped(), System.currentTimeMillis())
                                     }
                                 },
                                 onGrill = { onGrill(item.id) },
