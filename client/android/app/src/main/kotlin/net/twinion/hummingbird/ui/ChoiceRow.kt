@@ -23,9 +23,12 @@ import androidx.compose.ui.unit.dp
  * `NowScreen.kt`, `RulesScreen.kt` and `PriorityRow.kt` each answered this
  * with their own inline `FlowRow` before this file existed; the answer was
  * the right one and is simply named here, so the fifth site inherits it
- * rather than rediscovering it. Those three are deliberately left as they
- * are — they are not broken, and rewriting working screens is not what
- * #576 asked for.
+ * rather than rediscovering it. Those three were deliberately left as they
+ * were — they are not broken, and rewriting working screens is not what
+ * #576 asked for. `PriorityRow` has since left the group: it dropped its
+ * fifth chip on operator decision 2026-08-20, and four fit one line at the
+ * narrowest width the app ships to, so it is a fixed `Row` now with
+ * `PriorityRowWrappingTest` measuring that it stays one.
  *
  * The 8.dp on both axes is the spacing every one of those precedents
  * already uses (`Arrangement.spacedBy(8.dp)`), and it is on the design

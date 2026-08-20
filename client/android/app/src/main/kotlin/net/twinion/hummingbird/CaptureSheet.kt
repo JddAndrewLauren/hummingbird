@@ -6,8 +6,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -21,7 +24,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -33,6 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
@@ -53,8 +57,10 @@ import uniffi.hummingbird_ffi_mobile.CaptureDestination
 
 // The FAB's capture sheet — the design kit's own Android capture form
 // (`ui_kits/android/AndroidScreens.jsx`, `AndroidTriage`): title field with
-// the dictation mic, the energy/size sliders, the context field, the "More
-// details" disclosure, and the Triage/Add submit pair.
+// the dictation mic, the energy/size sliders, the context field, the
+// details disclosure (a chevron since 2026-08-20), and the Triage/Add
+// submit pair. It opens at full height, titleless — both operator
+// decisions of the same date, each argued at its own site below.
 //
 // **Full field parity with `CaptureActivity`, since operator decision
 // 2026-08-20.** The two surfaces differ only in which door they are — this
@@ -151,7 +157,33 @@ fun CaptureSheet(
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // **Open cold at full height** (operator decision 2026-08-20): the
+    // sheet is pinned to the top of the window rather than resting at the
+    // half-height a `ModalBottomSheet` reaches for. Both halves are needed
+    // and neither is enough alone — `skipPartiallyExpanded` removes the
+    // half-height resting state, and `fillMaxHeight()` is what makes the
+    // sheet itself tall, since an expanded sheet is only as tall as its
+    // content and this form's content is shorter than the window with the
+    // details disclosure shut. The reader who opens this is already
+    // typing; a form that starts half-height and grows under the keyboard
+    // moves its own fields while they do.
+    //
+    // Reaching the top is what makes `contentWindowInsets` load-bearing
+    // here, and it was sighted on hardware rather than reasoned about: a
+    // half-height sheet never met the status bar, so this sheet paid no
+    // inset and did not need to. Full height, the default
+    // (`safeDrawing` less the bottom edge) still left the title field's
+    // outline touching the clock — the same class of dead band #614 shipped
+    // in the other direction. `statusBars` is asked for by name, and only
+    // that: `safeDrawing`'s IME component does not reach this sheet's
+    // window at all (the scrolling column below has the measurements), so
+    // naming the one inset that does is the honest form of the request.
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.fillMaxHeight(),
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        contentWindowInsets = { WindowInsets.statusBars },
+    ) {
         // **One scrolling column, submit row last — not the Activity's
         // pinned-footer split, and measured on hardware 2026-08-20 rather
         // than assumed.** Two attempts at pinning the row above the
@@ -179,10 +211,13 @@ fun CaptureSheet(
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // The screen title is the design system's one non-lowercase
-            // exception (a verb, not the brand).
-            Text("Capture", style = MaterialTheme.typography.headlineSmall)
-
+            // No screen title (operator decision 2026-08-20). The
+            // `CaptureActivity` keeps its headline because it is a launcher
+            // destination arriving over whatever was on screen before; this
+            // sheet is a panel the reader just opened with a FAB labelled
+            // "Capture", and the focused field's own placeholder asks the
+            // question. A heading here spends the top of a full-height
+            // sheet restating the gesture that opened it.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -246,8 +281,21 @@ fun CaptureSheet(
             // Everything a mint would ask, behind one disclosure — the web
             // capture box's own "More details", and `CaptureActivity`'s
             // same field set in the same order.
-            TextButton(onClick = { detailsOpen = !detailsOpen }) {
-                Text(if (detailsOpen) "Fewer details" else "More details")
+            // A chevron, not the words (operator decision 2026-08-20) —
+            // `ic_chevron_down`, rotated a half-turn when the fields are
+            // out, which is `NowScreen`'s `ColumnHeader` idiom and the
+            // design system's "Unicode as icons: never" rule. The words it
+            // replaces survive as the icon's `contentDescription`, so the
+            // control still names itself to a screen reader.
+            IconButton(
+                onClick = { detailsOpen = !detailsOpen },
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_chevron_down),
+                    contentDescription = if (detailsOpen) "Fewer details" else "More details",
+                    modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
+                )
             }
             if (detailsOpen) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -266,18 +314,32 @@ fun CaptureSheet(
                         selected = draft.priority,
                         onSelect = { viewModel.updateDraft(draft.copy(priority = it)) },
                     )
-                    CaptureDateField(
-                        label = "Deadline",
-                        value = draft.deadline,
-                        error = metaProblems.deadline,
-                        onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
-                    )
-                    CaptureDateField(
-                        label = "Scheduled date",
-                        value = draft.scheduledDate,
-                        error = metaProblems.scheduledDate,
-                        onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
-                    )
+                    // The two dates share a line (operator decision
+                    // 2026-08-20): they are read as a pair — when it is due
+                    // against when it is planned — and stacking them spent
+                    // two rows of a disclosure that already holds five
+                    // fields. `weight(1f)` each, `Top`-aligned so a refusal
+                    // under one does not shift the other.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        CaptureDateField(
+                            label = "Deadline",
+                            value = draft.deadline,
+                            error = metaProblems.deadline,
+                            onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        CaptureDateField(
+                            label = "Scheduled date",
+                            value = draft.scheduledDate,
+                            error = metaProblems.scheduledDate,
+                            onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
 

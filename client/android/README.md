@@ -391,10 +391,13 @@ two buttons) before it was sighted on hardware; on the discard prompt the
 squeezed child was `Keep`, the escape from a destructive question, so the
 failure was not always cosmetic. `NowScreen.kt`, `RulesScreen.kt` and
 `ui/forms/PriorityRow.kt` had each already answered it with their own inline
-`FlowRow`, and are left as they are.
+`FlowRow`, and were left as they were. `PriorityRow` has since left that
+group — round 5 dropped its fifth chip and the four that remain fit one
+line, so it is a fixed `Row` with a measuring test of its own.
 
-`ChoiceRowWrappingTest` is **the only test in this module that measures a
-layout**, and the reason the defect got this far is that no other one does —
+`ChoiceRowWrappingTest` is **the first test in this module that measured a
+layout** — there are three now, and the two after it are built from its rig
+— and the reason the defect got this far is that at the time no test did:
 `*StructuralTest.kt` assert presence and wiring, and the squeezed buttons
 were all present and all wired. It runs `createComposeRule()` under
 Robolectric at a 320dp qualifier and asserts each choice stays at least 48dp
@@ -520,6 +523,69 @@ Material's default — Roboto 11sp, no tracking — instead of the app's Space
 Mono at +0.08em. It measured 268dp and passed while the device clipped the
 Filter chip to "Fi". Wrapping the content in `HummingbirdTheme` is what made
 the numbers real, and it is not optional in any test that measures text.
+
+## Round 5: the capture panel's own shape
+
+Operator batch 2026-08-20, four requests, all on the capture surfaces. The
+sheet is what the operator was looking at; where a change is layout the two
+surfaces share, `CaptureActivity` took it too, because two doors onto one
+field set must not disclose it with two different controls.
+
+- **The sheet opens cold at the top of the window.** `skipPartiallyExpanded`
+  plus `Modifier.fillMaxHeight()`, and both are needed: the flag removes the
+  half-height resting stop, and the modifier is what makes the sheet tall at
+  all, since an expanded `ModalBottomSheet` is otherwise only as tall as its
+  content and this form is shorter than the window with the disclosure shut.
+  A sheet that starts half-height and grows moves its own fields under a
+  reader who is already typing into them.
+- **No heading on the sheet.** The FAB that opens it is labelled Capture and
+  the focused field's placeholder asks the question, so a headline spent the
+  top of a full-height panel restating the gesture. `CaptureActivity` keeps
+  its own — it is a launcher destination that arrives over whatever was on
+  screen before, and has no FAB behind it to have said so.
+- **The details disclosure is a chevron.** `ic_chevron_down`, rotated a
+  half-turn when the fields are out — `NowScreen`'s `ColumnHeader` idiom,
+  and the design system's "Unicode as icons: never" rule. The words it
+  replaces survive as the `contentDescription`, so the control still names
+  itself to a screen reader; a bare glyph with no accessible name would have
+  been a downgrade, not a simplification.
+- **Priority is one line of four chips.** "No priority" is gone — not
+  picking one already says it, and a chip for the absence of a choice is a
+  fifth target meaning what the resting state means. Clearing is what it
+  always was: re-tap the selected chip (the `""` sentinel `PriorityRow`
+  clears to, and the reason it differs from `LevelSlider`'s `null`). Losing
+  the fifth chip is what let the `FlowRow` become a fixed `Row` — measured,
+  four default `FilterChip`s want 303dp against the 395dp of content the
+  Fold's cover display leaves after 24dp gutters, and the five-chip row did
+  not fit. It is a `Row` rather than the compact `AxisChip` treatment
+  because `LevelSlider` sits one field above it in the same form: two
+  adjacent chip rows with different chrome read as two different controls.
+- **Deadline and scheduled date share a line.** They are read as a pair —
+  when it is due against when it is planned — and stacking them spent two
+  rows of a disclosure holding five fields. `weight(1f)` each, `Alignment.Top`
+  so a refusal under one does not shift the other. `CaptureDateField` grew a
+  `modifier` parameter for it, defaulting to the full-width field the Triage
+  editor still stacks inside its narrower card.
+
+`PriorityRowWrappingTest` is the module's **third** layout-measuring test,
+`AxisRowWrappingTest`'s rig unchanged — including the two things that rig
+exists to carry: measure unconstrained (a `Row` rendered at its budget
+squeezes the overflow into bounds that look like a pass), and wrap the
+content in `HummingbirdTheme` (a bare render measures Material's default
+faces, not the app's). Its control renders the five-chip row this replaced
+and asserts it overflows, which is what makes dropping the fifth chip a
+recorded consequence rather than a taste.
+
+One structural test in this round was green and vacuous before it was
+right, and it is worth naming because the shape recurs. The date-pair pin
+counted `modifier = Modifier.weight(1f)` occurrences with an unbounded
+regex; the submit buttons a few lines below carry the same string, so
+deleting a date field's weight left the count at two and the file green. It
+was only caught by deliberately mutating the source and watching the test
+*not* fail. A structural pin over source text needs its search bounded to
+the block it is claiming something about — and needs the mutation run, since
+nothing else distinguishes a pin that holds from a pin that matches
+elsewhere.
 
 ## Proving the lane on hardware
 

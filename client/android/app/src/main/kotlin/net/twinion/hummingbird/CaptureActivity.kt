@@ -27,7 +27,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -39,6 +38,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
@@ -262,9 +262,22 @@ private fun CaptureScreen(
                 }
 
                 // Everything a mint would ask, behind one disclosure — the web
-                // capture box's own "More details" (`CaptureBox.tsx`).
-                TextButton(onClick = { detailsOpen = !detailsOpen }) {
-                    Text(if (detailsOpen) "Fewer details" else "More details")
+                // capture box's own "More details" (`CaptureBox.tsx`), drawn
+                // as a chevron since 2026-08-20 (operator decision, taken on
+                // the capture sheet and carried here so the two surfaces do
+                // not disclose the same field set with two different
+                // controls). `ic_chevron_down` rotated a half-turn when open,
+                // `NowScreen`'s `ColumnHeader` idiom; the words survive as the
+                // `contentDescription`.
+                IconButton(
+                    onClick = { detailsOpen = !detailsOpen },
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    Icon(
+                        painterResource(R.drawable.ic_chevron_down),
+                        contentDescription = if (detailsOpen) "Fewer details" else "More details",
+                        modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
+                    )
                 }
                 if (detailsOpen) {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -283,18 +296,28 @@ private fun CaptureScreen(
                             selected = draft.priority,
                             onSelect = { viewModel.updateDraft(draft.copy(priority = it)) },
                         )
-                        CaptureDateField(
-                            label = "Deadline",
-                            value = draft.deadline,
-                            error = metaProblems.deadline,
-                            onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
-                        )
-                        CaptureDateField(
-                            label = "Scheduled date",
-                            value = draft.scheduledDate,
-                            error = metaProblems.scheduledDate,
-                            onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
-                        )
+                        // One line for the pair, the capture sheet's own
+                        // arrangement (operator decision 2026-08-20).
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            CaptureDateField(
+                                label = "Deadline",
+                                value = draft.deadline,
+                                error = metaProblems.deadline,
+                                onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },
+                                modifier = Modifier.weight(1f),
+                            )
+                            CaptureDateField(
+                                label = "Scheduled date",
+                                value = draft.scheduledDate,
+                                error = metaProblems.scheduledDate,
+                                onValueChange = { viewModel.updateDraft(draft.copy(scheduledDate = it)) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
                     }
                 }
             }

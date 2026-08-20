@@ -266,24 +266,14 @@ class CaptureFieldSetStructuralTest {
         .replace(Regex("""/\*[\s\S]*?\*/"""), "")
         .replace(Regex("""(?m)^\s*//.*$"""), "")
 
-    /** The five priority chips wrap rather than clipping at a phone width
-     * — "Urgent / High / Medium / Low / No priority" does not fit one
-     * 360dp row at the default font scale, let alone a scaled-up one, and
-     * a fixed `Row` put the trailing priorities out of reach. No emulator
-     * here, so this gates the container choice itself, exactly as
-     * `NowScreenStructuralTest` does for the action buttons. */
-    @Test
-    fun `the priority chips wrap rather than clipping at a phone width`() {
-        val priorityRowSrc = captureFieldSrcByName.getValue("ui/forms/PriorityRow.kt")
-        val row = Regex("""fun PriorityRow\([\s\S]*?\n}""")
-            .find(priorityRowSrc)
-            ?.value
-            ?: error("could not locate PriorityRow in ui/forms/PriorityRow.kt")
-        assertTrue(
-            "PriorityRow's chips must sit in a FlowRow, not a fixed Row",
-            row.contains("FlowRow("),
-        )
-    }
+    /** The priority chips lost their fifth option and their wrap on
+     * 2026-08-20 (operator decision), and both halves of that — the
+     * measurement at the narrowest shipped width, and the source pin
+     * against a `FlowRow` coming back — live in `PriorityRowWrappingTest`,
+     * which can measure a real render. This file keeps only the claim it
+     * can make: the row is still one of the shared components both capture
+     * surfaces render (the loop above).
+     */
 
     /** Dictation stays title-field-only (#529's own boundary, carried from
      * M1-5): the transcript callback must never touch any field but the
