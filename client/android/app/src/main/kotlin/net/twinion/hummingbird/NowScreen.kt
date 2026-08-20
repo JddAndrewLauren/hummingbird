@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -585,11 +587,13 @@ fun NowScreen(
  * plus the facet panel's one piece of permanent chrome: the Filter
  * disclosure chip, carrying the active-facet count in its label and the
  * "N of M shown" meta line beside it while shut (`FrontierColumns.tsx`'s
- * own row, ported). A `FlowRow`, not a `Row`: five chips and a meta line
- * are wider than the Fold's cover display, and clipping the disclosure
- * would hide the only door to an active filter. Never decides which axis
- * groups what; picking one only tells [NowViewModel] which
- * already-decided board to ask for next. */
+ * own row, ported). One `Row` on a horizontal scroll, never a wrap
+ * (operator feedback 2026-08-19, replacing the earlier `FlowRow`): five
+ * chips and a meta line are wider than the Fold's cover display, and the
+ * strip holds its single line by scrolling the overflow into reach —
+ * clipping without the scroll would hide the only door to an active
+ * filter. Never decides which axis groups what; picking one only tells
+ * [NowViewModel] which already-decided board to ask for next. */
 @Composable
 private fun AxisRow(
     axis: MobileFrontierAxis,
@@ -599,9 +603,10 @@ private fun AxisRow(
     shownLine: String?,
     onToggleFilters: () -> Unit,
 ) {
-    FlowRow(
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        itemVerticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         for (candidate in FRONTIER_AXES) {
             FilterChip(
