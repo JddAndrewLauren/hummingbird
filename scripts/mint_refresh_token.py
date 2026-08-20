@@ -10,17 +10,16 @@ narrower dedicated one -- one consent, one secret to rotate. Adding a scope
 later means re-running this and re-setting the secret in all of its places
 (Fly, and the GitHub Actions secrets both pollers read).
 
-**Why `--scope` exists (#581).** A refresh_token grant returns an access token
-bearing the *whole* grant: Google ignores a `scope` parameter on that exchange,
-so a caller cannot down-scope at mint time. That is fine while every consumer
-is server-side, and it stops being fine the moment a token is handed to a
-browser -- ADR-0028's `POST /api/google/calendar_token` does exactly that, so
-reusing the shared credential there would mean a stolen `device` token also
-yields a bearer that can modify the operator's Gmail. The remedy is a second,
-dedicated credential minted against its own OAuth client with one scope, which
-is what `--scope` is for. Prefer the default; reach for the override only when
-the consumer is a different blast radius, and say which one in the item's
-1Password notes.
+**Why `--scope` exists (#581).** ADR-0028's `POST /api/google/calendar_token`
+hands a Google bearer to a browser, so its credential must not be able to reach
+Gmail. Google does honour `scope` on a refresh_token grant -- measured in #581,
+and `authority/src/google_calendar.rs` relies on it -- but narrowing at
+*exchange* time only helps if every exchange remembers to ask. A credential
+whose grant carries one scope cannot be widened by a forgetful caller at all,
+so the authority gets its own, minted here with `--scope`, and its secret store
+never holds a Gmail-capable token to begin with. Prefer the default; reach for
+the override when the consumer is a different blast radius, and say which one
+in the item's 1Password notes.
 
 Run once, on your own machine, against the Internal desktop-app OAuth client
 in the twinion.net Workspace. The token it prints goes into

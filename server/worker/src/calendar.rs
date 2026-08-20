@@ -22,10 +22,15 @@
 //! `GOOGLE_CALENDAR_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` — three
 //! Worker secrets (#577's credential decision: a *second*, dedicated
 //! `calendar.readonly`-only refresh token, never the shared
-//! Gmail-modify-carrying one #486 minted — Google's `refresh_token` grant
-//! does not honour down-scoping, so reusing the shared credential would
-//! hand a stolen `device` token a bearer that can modify the operator's
-//! Gmail). Set with `wrangler secret put`, never `wrangler.toml`, never the
+//! Gmail-modify-carrying one #486 minted, so that this lane's secret store
+//! never holds a Gmail-capable token at all and can be revoked without
+//! taking down the sweeper and both pollers). #581 measured the
+//! down-scoping claim that decision was originally argued from and found it
+//! false — Google *does* honour `scope` on a `refresh_token` grant — so
+//! `google_calendar.rs` now sends it too, as the guard against the wrong
+//! refresh token being pasted into `_REFRESH_TOKEN`; read its
+//! `calendar_refresh_grant_body` before touching either. Set with
+//! `wrangler secret put`, never `wrangler.toml`, never the
 //! repo, and never GitHub Actions — beside `ADMIN_SECRET` and
 //! `FCM_SERVICE_ACCOUNT`. Any one missing means [`CalendarMinter::from_env`]
 //! returns `None` and the route fails closed with a 503, never a 401.
