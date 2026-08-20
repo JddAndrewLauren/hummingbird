@@ -1,6 +1,5 @@
 package net.twinion.hummingbird
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -42,6 +41,7 @@ import net.twinion.hummingbird.core.NetworkStatus
 import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.theme.ThemePreference
 import net.twinion.hummingbird.ui.theme.Amber600
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import net.twinion.hummingbird.ui.theme.Moss600
 import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
 import net.twinion.hummingbird.ui.theme.StatusWarnFgDark
@@ -488,7 +488,7 @@ private fun themePreferenceLabel(preference: ThemePreference): String = when (pr
 // wrong for SUCCESS, which needs `--status-done-fg` (#535 review).
 @Composable
 private fun syncStatusToneColor(tone: MobileSyncStatusTone): Color {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     return when (tone) {
         MobileSyncStatusTone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
         MobileSyncStatusTone.WARN -> if (dark) StatusWarnFgDark else Amber600

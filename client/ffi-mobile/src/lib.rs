@@ -2181,6 +2181,34 @@ pub struct MobileWasteFacts {
     pub freshness: MobilePaneFreshness,
 }
 
+/// [`waste::WasteSetup`]'s **kind**, mirrored — the payload (`page`) is
+/// deliberately dropped: nothing a client renders needs the address, and a
+/// bound page already reaches the host inside the facts.
+///
+/// This crosses because [`waste::waste_facts`] folds `Unread` and `Unusable`
+/// onto the same [`MobilePaneAnswerState::BoundButUnacquired`], so the answer
+/// state alone cannot tell "this device has not read its bindings yet" from
+/// "the binding holds something unusable" — the first is a wait, the second
+/// is a repair the reader can make in Settings. The web recovers the same
+/// distinction through its own `waste_setup_json` door (`seam.ts`), and
+/// renders "Checking setup" against "Setup needs a look".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileWasteSetup {
+    Bound,
+    Unread,
+    Unusable,
+    Unset,
+}
+
+fn map_waste_setup(setup: waste::WasteSetup) -> MobileWasteSetup {
+    match setup {
+        waste::WasteSetup::Bound { .. } => MobileWasteSetup::Bound,
+        waste::WasteSetup::Unread => MobileWasteSetup::Unread,
+        waste::WasteSetup::Unusable => MobileWasteSetup::Unusable,
+        waste::WasteSetup::Unset => MobileWasteSetup::Unset,
+    }
+}
+
 /// [`waste::WasteResolved`], mirrored.
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobileWasteResolved {
@@ -2447,6 +2475,25 @@ pub struct MobileRaceFacts {
     pub has_live_alert: bool,
     pub stale: bool,
     pub freshness: MobilePaneFreshness,
+}
+
+/// [`race::RaceSetup`]'s **kind**, mirrored — [`MobileWasteSetup`]'s twin,
+/// for its reasons, with the payload (`series`) dropped for its reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileRaceSetup {
+    Bound,
+    Unread,
+    Unusable,
+    Unset,
+}
+
+fn map_race_setup(setup: race::RaceSetup) -> MobileRaceSetup {
+    match setup {
+        race::RaceSetup::Bound { .. } => MobileRaceSetup::Bound,
+        race::RaceSetup::Unread => MobileRaceSetup::Unread,
+        race::RaceSetup::Unusable => MobileRaceSetup::Unusable,
+        race::RaceSetup::Unset => MobileRaceSetup::Unset,
+    }
 }
 
 /// [`race::RaceResolved`], mirrored.
@@ -2718,12 +2765,18 @@ fn map_reachability_facts(facts: reachability::ReachabilityFacts) -> MobileReach
 /// and `Reachability`'s only once this device has ever synced. Every other
 /// question always resolves — to facts or to a gap KIND (a sentinel
 /// subject resolves to its own honest `NotFetched`).
+///
+/// `Waste` and `Race` each carry their `setup` kind beside the resolved
+/// facts: their two unacquired flavours ("bindings not read yet" and
+/// "binding unusable") share one answer state, so the kind is the only
+/// thing that can tell a host which of the two it is looking at — see
+/// [`MobileWasteSetup`].
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobilePaneFacts {
-    Waste { resolved: MobileWasteResolved },
+    Waste { setup: MobileWasteSetup, resolved: MobileWasteResolved },
     Weekend { resolved: MobileWeekendResolved },
     Vacation { resolved: Option<MobileVacationResolved> },
-    Race { resolved: MobileRaceResolved },
+    Race { setup: MobileRaceSetup, resolved: MobileRaceResolved },
     Kimi { resolved: MobileKimiResolved },
     Github { resolved: MobileWorkflowResolved },
     Uptime { resolved: MobileProbeResolved },
@@ -2998,9 +3051,10 @@ fn mobile_pane_facts_of(
     zone: &ZoneFacts,
 ) -> MobilePaneFacts {
     match question {
-        StandingQuestion::Waste => {
-            MobilePaneFacts::Waste { resolved: map_waste_resolved(waste::waste_facts(inputs, zone)) }
-        }
+        StandingQuestion::Waste => MobilePaneFacts::Waste {
+            setup: map_waste_setup(waste::waste_setup(inputs)),
+            resolved: map_waste_resolved(waste::waste_facts(inputs, zone)),
+        },
         StandingQuestion::Weekend => MobilePaneFacts::Weekend {
             resolved: map_weekend_resolved(weekend::weekend_facts(inputs, zone)),
         },
@@ -3008,9 +3062,11 @@ fn mobile_pane_facts_of(
             resolved: vacation::vacation_view(inputs, zone).map(map_vacation_resolved),
         },
         StandingQuestion::Race => MobilePaneFacts::Race {
+            setup: map_race_setup(race::race_setup(inputs)),
             // The setup sentinel has no snapshot row, so this resolves to
             // its own honest `NotFetched` — the answer state (unbound/
-            // unacquired) is what routes the rendering.
+            // unacquired) plus the setup kind above are what route the
+            // rendering.
             resolved: map_race_resolved(race::race_facts(subject_key, inputs)),
         },
         StandingQuestion::Kimi => {
@@ -8124,9 +8180,11 @@ mod settings_tests {
         let zone = resolve_zone(&waste::waste_zone_queries(&inputs));
 
         let arm = mobile_pane_facts_of(StandingQuestion::Waste, waste::SNAPSHOT_KEY, &inputs, &zone);
-        let MobilePaneFacts::Waste { resolved: MobileWasteResolved::Facts { facts } } = arm else {
+        let MobilePaneFacts::Waste { setup, resolved: MobileWasteResolved::Facts { facts } } = arm
+        else {
             panic!("expected the waste facts arm, got {arm:?}");
         };
+        assert_eq!(setup, MobileWasteSetup::Bound);
         assert_eq!(facts.collected_on, "2026-08-17");
         assert!(!facts.holiday);
         assert!(facts.days_away >= 0);
@@ -8138,10 +8196,47 @@ mod settings_tests {
             &empty_pane_inputs(),
             &ZoneFacts::default(),
         );
+        // The setup kind is what separates this device's two unacquired
+        // flavours; the gap alone cannot.
         assert!(matches!(
             gap,
-            MobilePaneFacts::Waste { resolved: MobileWasteResolved::Gap { gap: MobileWasteGap::NotFetched } }
+            MobilePaneFacts::Waste {
+                setup: MobileWasteSetup::Unset,
+                resolved: MobileWasteResolved::Gap { gap: MobileWasteGap::NotFetched },
+            }
         ));
+    }
+
+    /// The reason the setup kind crosses at all: `Unread` and `Unusable`
+    /// both answer `BoundButUnacquired`, so the answer state cannot separate
+    /// "this device has not read its bindings yet" from "the binding holds
+    /// something unusable" — one is a wait, the other a repair.
+    #[test]
+    fn the_setup_kind_separates_the_two_unacquired_flavours() {
+        let facts_for = |bindings: serde_json::Value| {
+            mobile_pane_facts_of(
+                StandingQuestion::Waste,
+                waste::SNAPSHOT_KEY,
+                &pane_inputs(serde_json::json!({ "nowMs": PANE_NOW_MS, "bindings": bindings })),
+                &ZoneFacts::default(),
+            )
+        };
+        let setup_of = |facts: MobilePaneFacts| match facts {
+            MobilePaneFacts::Waste { setup, .. } => setup,
+            other => panic!("expected the waste arm, got {other:?}"),
+        };
+
+        // Bindings never read on this device.
+        assert_eq!(setup_of(facts_for(serde_json::Value::Null)), MobileWasteSetup::Unread);
+        // A row holding something that is not text.
+        assert_eq!(
+            setup_of(facts_for(serde_json::json!([
+                {"key": waste::BINDING_KEY, "value": {"state":"other"}}
+            ]))),
+            MobileWasteSetup::Unusable,
+        );
+        // No row at all — the one genuinely unbound arm.
+        assert_eq!(setup_of(facts_for(serde_json::json!([]))), MobileWasteSetup::Unset);
     }
 
     #[test]
@@ -8248,9 +8343,11 @@ mod settings_tests {
         }));
 
         let arm = mobile_pane_facts_of(StandingQuestion::Race, "f1", &inputs, &ZoneFacts::default());
-        let MobilePaneFacts::Race { resolved: MobileRaceResolved::Facts { facts } } = arm else {
+        let MobilePaneFacts::Race { setup, resolved: MobileRaceResolved::Facts { facts } } = arm
+        else {
             panic!("expected the race facts arm, got {arm:?}");
         };
+        assert_eq!(setup, MobileRaceSetup::Bound);
         assert_eq!(facts.series, "f1");
         assert_eq!(facts.event.as_ref().map(|event| event.name.as_str()), Some("Belgian Grand Prix"));
         // Friday practice is the next thing on track, not Sunday's race.
@@ -8265,7 +8362,10 @@ mod settings_tests {
         );
         assert!(matches!(
             sentinel,
-            MobilePaneFacts::Race { resolved: MobileRaceResolved::Gap { gap: MobileRaceGap::NotFetched } }
+            MobilePaneFacts::Race {
+                setup: MobileRaceSetup::Unset,
+                resolved: MobileRaceResolved::Gap { gap: MobileRaceGap::NotFetched },
+            }
         ));
     }
 
@@ -8450,7 +8550,10 @@ mod settings_tests {
         };
         assert!(matches!(
             facts_of(MobileStandingQuestion::Waste),
-            MobilePaneFacts::Waste { resolved: MobileWasteResolved::Gap { gap: MobileWasteGap::NotFetched } }
+            MobilePaneFacts::Waste {
+                setup: MobileWasteSetup::Unset,
+                resolved: MobileWasteResolved::Gap { gap: MobileWasteGap::NotFetched },
+            }
         ));
         assert!(matches!(
             facts_of(MobileStandingQuestion::Weekend),

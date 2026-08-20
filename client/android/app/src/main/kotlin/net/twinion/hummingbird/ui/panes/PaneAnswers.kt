@@ -13,12 +13,14 @@ import uniffi.hummingbird_ffi_mobile.MobileProbeBody
 import uniffi.hummingbird_ffi_mobile.MobileProbeExpected
 import uniffi.hummingbird_ffi_mobile.MobileProbeResolved
 import uniffi.hummingbird_ffi_mobile.MobileRaceResolved
+import uniffi.hummingbird_ffi_mobile.MobileRaceSetup
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
 import uniffi.hummingbird_ffi_mobile.MobileTrip
 import uniffi.hummingbird_ffi_mobile.MobileTripPhase
 import uniffi.hummingbird_ffi_mobile.MobileVacationResolved
 import uniffi.hummingbird_ffi_mobile.MobileWasteResolved
+import uniffi.hummingbird_ffi_mobile.MobileWasteSetup
 import uniffi.hummingbird_ffi_mobile.MobileWasteStream
 import uniffi.hummingbird_ffi_mobile.MobileWeekendCounts
 import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
@@ -51,10 +53,10 @@ import uniffi.hummingbird_ffi_mobile.MobileWorkflowResolved
 
 /** The collapsed row's whole sentence for one ranked pane. */
 internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (val facts = pane.facts) {
-    is MobilePaneFacts.Waste -> wasteHeadline(pane, facts.resolved)
+    is MobilePaneFacts.Waste -> wasteHeadline(pane, facts.setup, facts.resolved)
     is MobilePaneFacts.Weekend -> weekendHeadline(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> vacationHeadline(pane, facts.resolved)
-    is MobilePaneFacts.Race -> raceHeadline(pane, facts.resolved, nowMs)
+    is MobilePaneFacts.Race -> raceHeadline(pane, facts.setup, facts.resolved, nowMs)
     is MobilePaneFacts.Kimi -> kimiHeadline(pane, facts.resolved)
     is MobilePaneFacts.Github -> githubHeadline(pane, facts.resolved, nowMs)
     is MobilePaneFacts.Uptime -> uptimeHeadline(pane, facts.resolved)
@@ -66,10 +68,10 @@ internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (v
 /** The collapsed row's marks for one ranked pane — unbounded here; the
  * shell applies [MAX_GLYPHS]. */
 internal fun paneGlyphs(pane: MobileRankedPane, nowMs: Long): List<PaneGlyph> = when (val facts = pane.facts) {
-    is MobilePaneFacts.Waste -> wasteGlyphs(pane, facts.resolved)
+    is MobilePaneFacts.Waste -> wasteGlyphs(pane, facts.setup, facts.resolved)
     is MobilePaneFacts.Weekend -> weekendGlyphs(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> emptyList()
-    is MobilePaneFacts.Race -> raceGlyphs(pane, facts.resolved)
+    is MobilePaneFacts.Race -> raceGlyphs(pane, facts.setup, facts.resolved)
     is MobilePaneFacts.Kimi -> kimiGlyphs(pane)
     is MobilePaneFacts.Github -> githubGlyphs(pane, facts.resolved, nowMs)
     is MobilePaneFacts.Uptime -> uptimeGlyphs(pane, facts.resolved)
@@ -83,6 +85,11 @@ private fun answered(pane: MobileRankedPane): Boolean =
 
 private val NOT_SET_UP = PaneGlyph.Icon(R.drawable.ic_help_circle, "not set up")
 private val NO_ANSWER = PaneGlyph.Icon(R.drawable.ic_cloud_fog, "no answer yet")
+
+/** The two setup-kind marks the waste and race panes share — `waste.ts` and
+ * `race.ts` draw the same pair for the same two arms. */
+private val CHECKING_SETUP = PaneGlyph.Icon(R.drawable.ic_cloud_fog, "checking setup")
+private val SETUP_NEEDS_A_LOOK = PaneGlyph.Icon(R.drawable.ic_help_circle, "setup needs a look")
 
 /** `ageWords` in `github.ts`/`uptime.ts`, ported — internal since the
  * pane-content slice: the expanded cards speak the same ages. */
@@ -127,10 +134,25 @@ internal val WEEKDAYS = listOf(
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 )
 
-private fun wasteHeadline(pane: MobileRankedPane, resolved: MobileWasteResolved): String {
+private fun wasteHeadline(
+    pane: MobileRankedPane,
+    setup: MobileWasteSetup,
+    resolved: MobileWasteResolved,
+): String {
     when (pane.answer.answerState) {
         MobilePaneAnswerState.UNBOUND -> return "Not set up"
-        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return "No answer yet"
+        // Which gap it is decides the words — `waste.ts`'s own branch,
+        // ported: the bindings table has not been read on this device yet,
+        // it holds something this pane cannot use, or it is set and there is
+        // simply no answer. The three share one answer state, so the setup
+        // kind (`MobileWasteSetup`, carried on the facts for exactly this)
+        // is what separates them; saying "No answer yet" for all three
+        // hides a repair the reader could make in Settings.
+        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return when (setup) {
+            MobileWasteSetup.UNREAD -> "Checking setup"
+            MobileWasteSetup.UNUSABLE -> "Setup needs a look"
+            MobileWasteSetup.BOUND, MobileWasteSetup.UNSET -> "No answer yet"
+        }
         MobilePaneAnswerState.ANSWERED -> Unit
     }
     return when (resolved) {
@@ -153,10 +175,20 @@ internal fun wasteCollapsedHeadline(daysAway: Long, weekday: String, holiday: Bo
     return "$weekday · ${daysAway}d"
 }
 
-private fun wasteGlyphs(pane: MobileRankedPane, resolved: MobileWasteResolved): List<PaneGlyph> {
+private fun wasteGlyphs(
+    pane: MobileRankedPane,
+    setup: MobileWasteSetup,
+    resolved: MobileWasteResolved,
+): List<PaneGlyph> {
     when (pane.answer.answerState) {
         MobilePaneAnswerState.UNBOUND -> return listOf(NOT_SET_UP)
-        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return listOf(NO_ANSWER)
+        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return listOf(
+            when (setup) {
+                MobileWasteSetup.UNREAD -> CHECKING_SETUP
+                MobileWasteSetup.UNUSABLE -> SETUP_NEEDS_A_LOOK
+                MobileWasteSetup.BOUND, MobileWasteSetup.UNSET -> NO_ANSWER
+            },
+        )
         MobilePaneAnswerState.ANSWERED -> Unit
     }
     return when (resolved) {
@@ -296,11 +328,24 @@ internal fun countdown(deltaMs: Long): Pair<String, String> {
     return Pair(days.toString(), if (days == 1L) "day" else "days")
 }
 
-private fun raceHeadline(pane: MobileRankedPane, resolved: MobileRaceResolved, nowMs: Long): String {
+private fun raceHeadline(
+    pane: MobileRankedPane,
+    setup: MobileRaceSetup,
+    resolved: MobileRaceResolved,
+    nowMs: Long,
+): String {
     val label = seriesLabel(pane.subjectKey)
     when (pane.answer.answerState) {
         MobilePaneAnswerState.UNBOUND -> return "Not set up"
-        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return "$label · Never polled"
+        // `race.ts`'s two unacquired arms, ported: an unread or unusable
+        // binding is about the SETUP, not this series — no series label on
+        // those, because none has been established. A bound binding whose
+        // view is null is the "never polled" one.
+        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return when (setup) {
+            MobileRaceSetup.UNREAD -> "Checking setup"
+            MobileRaceSetup.UNUSABLE -> "Setup needs a look"
+            MobileRaceSetup.BOUND, MobileRaceSetup.UNSET -> "$label · Never polled"
+        }
         MobilePaneAnswerState.ANSWERED -> Unit
     }
     return when (resolved) {
@@ -317,11 +362,21 @@ private fun raceHeadline(pane: MobileRankedPane, resolved: MobileRaceResolved, n
     }
 }
 
-private fun raceGlyphs(pane: MobileRankedPane, resolved: MobileRaceResolved): List<PaneGlyph> {
+private fun raceGlyphs(
+    pane: MobileRankedPane,
+    setup: MobileRaceSetup,
+    resolved: MobileRaceResolved,
+): List<PaneGlyph> {
     when (pane.answer.answerState) {
         MobilePaneAnswerState.UNBOUND -> return listOf(NOT_SET_UP)
-        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED ->
-            return listOf(PaneGlyph.Icon(R.drawable.ic_cloud_fog, "never polled"))
+        MobilePaneAnswerState.BOUND_BUT_UNACQUIRED -> return listOf(
+            when (setup) {
+                MobileRaceSetup.UNREAD -> CHECKING_SETUP
+                MobileRaceSetup.UNUSABLE -> SETUP_NEEDS_A_LOOK
+                MobileRaceSetup.BOUND, MobileRaceSetup.UNSET ->
+                    PaneGlyph.Icon(R.drawable.ic_cloud_fog, "never polled")
+            },
+        )
         MobilePaneAnswerState.ANSWERED -> Unit
     }
     return when (resolved) {

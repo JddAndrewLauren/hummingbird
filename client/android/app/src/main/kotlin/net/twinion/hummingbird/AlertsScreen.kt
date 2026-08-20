@@ -5,7 +5,6 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -48,6 +47,7 @@ import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.theme.Crimson100
 import net.twinion.hummingbird.ui.theme.Crimson600
 import net.twinion.hummingbird.ui.theme.CrimsonDark
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import net.twinion.hummingbird.ui.theme.Sky100
 import net.twinion.hummingbird.ui.theme.Sky600
 import net.twinion.hummingbird.ui.theme.StatusDangerBgDark
@@ -120,7 +120,7 @@ fun AlertsScreen(
     val alerts by viewModel.alerts.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
 
     suspend fun reload() {
         viewModel.refresh(System.currentTimeMillis())

@@ -3,7 +3,6 @@ package net.twinion.hummingbird
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.AlertRecord
 
 // One alert, in full (M2/#141) — where a notification tap lands, and where
@@ -58,7 +58,7 @@ fun AlertDetailScreen(
         viewModel(factory = AlertDetailViewModel.factory(context))
     val state by viewModel.state.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
 
     suspend fun reload() {
         viewModel.load(alertId, System.currentTimeMillis())

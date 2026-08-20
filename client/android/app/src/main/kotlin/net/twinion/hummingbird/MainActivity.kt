@@ -83,6 +83,7 @@ import net.twinion.hummingbird.theme.ThemePreference
 import net.twinion.hummingbird.theme.ThemeStore
 import net.twinion.hummingbird.theme.resolveDarkTheme
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
@@ -591,7 +592,7 @@ private fun AppRoot(
                         exit = shrinkVertically() + fadeOut(),
                     ) {
                         AppTopBar(
-                            dark = resolveDarkTheme(themePreference, isSystemInDarkTheme()),
+                            dark = LocalHbDark.current,
                             onSearch = { openRecall() },
                         )
                     }

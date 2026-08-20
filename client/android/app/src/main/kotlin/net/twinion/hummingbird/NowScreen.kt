@@ -38,7 +38,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -52,6 +51,7 @@ import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.panes.NowPaneExpanded
 import net.twinion.hummingbird.ui.panes.PaneCollapse
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
@@ -214,7 +214,7 @@ fun NowScreen(
     val paneOverrides by viewModel.paneOverrides.collectAsState()
     val selectedId by viewModel.selectedItemId.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     val listState = rememberLazyListState()
 
     // The panel's own ViewModel, by the panel's own key — the SAME

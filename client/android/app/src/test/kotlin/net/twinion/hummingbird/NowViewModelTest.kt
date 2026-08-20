@@ -17,8 +17,10 @@ import uniffi.hummingbird_ffi_mobile.MobileProbeGap
 import uniffi.hummingbird_ffi_mobile.MobileProbeResolved
 import uniffi.hummingbird_ffi_mobile.MobileRaceGap
 import uniffi.hummingbird_ffi_mobile.MobileRaceResolved
+import uniffi.hummingbird_ffi_mobile.MobileRaceSetup
 import uniffi.hummingbird_ffi_mobile.MobileWasteGap
 import uniffi.hummingbird_ffi_mobile.MobileWasteResolved
+import uniffi.hummingbird_ffi_mobile.MobileWasteSetup
 import uniffi.hummingbird_ffi_mobile.MobileWeekendGap
 import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
 import uniffi.hummingbird_ffi_mobile.MobileWorkflowGap
@@ -91,12 +93,18 @@ class NowViewModelTest {
      * question breaks this fixture loudly. */
     private fun paneFacts(question: MobileStandingQuestion): MobilePaneFacts = when (question) {
         MobileStandingQuestion.WASTE ->
-            MobilePaneFacts.Waste(resolved = MobileWasteResolved.Gap(gap = MobileWasteGap.NotFetched))
+            MobilePaneFacts.Waste(
+                setup = MobileWasteSetup.UNSET,
+                resolved = MobileWasteResolved.Gap(gap = MobileWasteGap.NotFetched),
+            )
         MobileStandingQuestion.WEEKEND ->
             MobilePaneFacts.Weekend(resolved = MobileWeekendResolved.Gap(gap = MobileWeekendGap.NOT_CONNECTED))
         MobileStandingQuestion.VACATION -> MobilePaneFacts.Vacation(resolved = null)
         MobileStandingQuestion.RACE ->
-            MobilePaneFacts.Race(resolved = MobileRaceResolved.Gap(gap = MobileRaceGap.NotFetched))
+            MobilePaneFacts.Race(
+                setup = MobileRaceSetup.UNSET,
+                resolved = MobileRaceResolved.Gap(gap = MobileRaceGap.NotFetched),
+            )
         MobileStandingQuestion.KIMI ->
             MobilePaneFacts.Kimi(resolved = MobileKimiResolved.Gap(gap = MobileKimiGap.NotFetched))
         MobileStandingQuestion.GITHUB ->

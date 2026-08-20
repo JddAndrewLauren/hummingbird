@@ -3,7 +3,6 @@ package net.twinion.hummingbird
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,6 +24,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,6 +39,7 @@ import net.twinion.hummingbird.ui.theme.Ember400
 import net.twinion.hummingbird.ui.theme.Ember500
 import net.twinion.hummingbird.ui.theme.Ink300
 import net.twinion.hummingbird.ui.theme.Ink400
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import net.twinion.hummingbird.ui.theme.Moss600
 import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
 import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
@@ -82,7 +84,7 @@ internal fun bandColor(band: MobilePaneBand, dark: Boolean): Color = when (band)
 
 @Composable
 internal fun BandDot(band: MobilePaneBand) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     Column(modifier = Modifier.size(10.dp).background(bandColor(band, dark), CircleShape)) {}
 }
 
@@ -98,7 +100,12 @@ internal fun PaneGlyphMark(glyph: PaneGlyph) {
             modifier = Modifier
                 .size(8.dp)
                 .background(glyph.fill, CircleShape)
-                .border(1.dp, glyph.edge, CircleShape),
+                .border(1.dp, glyph.edge, CircleShape)
+                // A `Column` announces nothing on its own, so the name the
+                // icon arm gets from `contentDescription` is applied by hand
+                // here — a kerb colour is not readable, and this mark's whole
+                // job is bin identity.
+                .semantics { contentDescription = glyph.label },
         ) {}
         is PaneGlyph.Icon -> Icon(
             painterResource(glyph.iconRes),
@@ -152,7 +159,10 @@ internal fun PaneRow(
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f),
                     textAlign = TextAlign.End,
-                    maxLines = 2,
+                    // One row, one line — this file's own contract above and
+                    // ADR-0015's Collapse section. A long headline ellipses
+                    // rather than growing the compact stack.
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

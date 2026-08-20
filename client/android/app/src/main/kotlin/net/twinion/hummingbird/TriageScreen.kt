@@ -1,7 +1,6 @@
 package net.twinion.hummingbird
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -43,14 +42,15 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
-import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.ChoiceRow
 import net.twinion.hummingbird.ui.LevelGlyphFamily
 import net.twinion.hummingbird.ui.StageBadge
+import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.forms.PriorityRow
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.TriageItemRecord
@@ -94,7 +94,7 @@ fun TriageScreen(
     // capture form already reads (`captureFormMeta`'s own doc: one source,
     // shared).
     val formMeta: CaptureFormMeta = viewModel.formMeta
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     val listState = rememberLazyListState()
 
     suspend fun reload() {
@@ -233,7 +233,18 @@ fun TriageScreen(
                                         draft = openDraft,
                                         formMeta = formMeta,
                                         onDraftChange = viewModel::updateDraft,
-                                        onClose = { viewModel.select(id) },
+                                        // The × is the same leaving gesture
+                                        // Back is, so it asks the same
+                                        // question: closing on a dirty draft
+                                        // routes through the confirmation
+                                        // rather than dropping typed words.
+                                        onClose = {
+                                            if (viewModel.isDirty) {
+                                                confirmingDiscard = true
+                                            } else {
+                                                viewModel.select(id)
+                                            }
+                                        },
                                         onPromote = {
                                             scope.launch {
                                                 viewModel.promote(

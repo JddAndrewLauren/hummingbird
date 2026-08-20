@@ -1,6 +1,5 @@
 package net.twinion.hummingbird.ui.panes
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -11,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import net.twinion.hummingbird.ui.theme.Amber600
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import net.twinion.hummingbird.ui.theme.StatusWarnFgDark
 import uniffi.hummingbird_ffi_mobile.MobileKimiGap
 import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
@@ -45,7 +45,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWorkflowResolved
 
 /** `--status-warn-fg`, the pair `SettingsScreen.kt:494` reads. */
 @Composable
-internal fun warnColor(): Color = if (isSystemInDarkTheme()) StatusWarnFgDark else Amber600
+internal fun warnColor(): Color = if (LocalHbDark.current) StatusWarnFgDark else Amber600
 
 /** The web's shared stale caveat line — "stale — as of Nh ago", or the
  * honest no-number arm (`WastePaneExpanded.tsx`'s own note: an unknown age
