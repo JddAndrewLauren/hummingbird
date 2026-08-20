@@ -334,13 +334,14 @@ Five slices bringing the surfaces in line with the design kit
   `NowViewModel.selectedItemId`, Triage's one-open-at-a-time shape.
   `NowItemDoorTest` pins the door end to end.
 - **The capture FAB and sheet.** The design kit's extended FAB (the one
-  sanctioned large ember fill) opens `CaptureSheet` — the light form over
-  the same `CaptureViewModel` and `ui/forms/` components, no details
-  disclosure (`CaptureActivity`, still the launcher icon's and
-  shortcut's door, keeps the full form; `CaptureSheetStructuralTest` pins
-  both the FAB and the no-second-Intent-door rule). The sheet shipped
-  mic-less first — a mic without recognizer plumbing is ADR-0022's dead
-  control — and gained one in the refinement round via #611's extraction.
+  sanctioned large ember fill) opens `CaptureSheet`, over the same
+  `CaptureViewModel` and `ui/forms/` components as `CaptureActivity` (still
+  the launcher icon's and shortcut's door); `CaptureSheetStructuralTest`
+  pins the FAB and the no-second-Intent-door rule. The sheet was the *light*
+  form here — no details disclosure — until round 4 gave it full field
+  parity. It shipped mic-less first, too — a mic without recognizer
+  plumbing is ADR-0022's dead control — and gained one in the refinement
+  round via #611's extraction.
 
 ## The refinement round: top bar, mark-done, panel chrome, width parity (continues the iteration above)
 
@@ -361,7 +362,8 @@ Operator feedback on the iteration, applied as six slices on top of it:
   shape — and re-reads the board in the same gesture.
 - **One-line axis strip.** `AxisRow` scrolls horizontally instead of
   wrapping; the facet groups inside the disclosure keep their
-  one-labelled-row-per-facet layout.
+  one-labelled-row-per-facet layout. (Round 4 kept the one line and dropped
+  the scroll — the chips shrink to fit instead. See below.)
 - **Panel chrome.** `ItemDetailPanel`'s header is the web `ItemPanel`'s:
   `HB-<seq>` mono meta line over a `titleMedium` title, the × close
   IconButton top-right (Cancel while editing, dirty path still confirms),
@@ -403,6 +405,91 @@ reproduce at all; and a control case that renders the old plain `Row` and
 asserts the trailing button *is* squeezed (0dp × 136dp), so a widened
 qualifier or a text-measurement regression cannot leave the file green while
 measuring nothing.
+
+## Round 4: the capture submit pair, the shrunk axis strip, the Triage header
+
+Operator batch 2026-08-20, three areas on one branch.
+
+- **Two submit buttons, not a destination switch.** Both capture surfaces
+  drop the Triage/Ready `FilterChip` pair for a **Triage** (outlined) and
+  **Add** (filled) submit pair, `Add` carrying `CaptureDestination.READY`.
+  The destination left `CaptureFormState` with it: once two buttons carry
+  it, a field holding it is state no control writes. The title field's IME
+  Done still submits to Triage, the funnel's own default.
+- **The submit row is pinned, and one capture at a time.** The buttons were
+  the last child of a scrolling column, so a raised keyboard could push the
+  only way out of the screen off the bottom of it; the fields scroll and the
+  row does not. On the Activity, `consumeWindowInsets(padding)` sits between
+  the `Scaffold`'s padding and `imePadding()` — `padding()` applies insets
+  without consuming them, so the IME inset would otherwise land on top of an
+  already-paid navigation bar (the #614 dead band, in the other direction).
+  `CaptureViewModel.submitting` is the second `enabled` term on both
+  buttons: three doors reach one `captureFn` (two buttons and the IME
+  action), so a tap inside the first's suspension minted the same words
+  twice, and the duplicate was indistinguishable from a deliberate one. It
+  is released in a `finally`, so a failed enqueue does not leave both
+  buttons dead for the screen's life.
+- **The sheet is no longer the light form.** It gains the "More details"
+  disclosure — description, project, priority, deadline, scheduled date —
+  so the two capture surfaces differ only in which door they are, never in
+  what a person can record through them. `CaptureSheetStructuralTest`'s ban
+  on `detailsOpen` is inverted into the parity assertion it became, checked
+  field by field rather than by the disclosure's flag alone. The Project
+  picker moved to `ui/forms/ProjectField.kt` so its refusal of free text
+  (`items.project_id` is an FK — a typo mints locally and dead-letters at
+  the authority) holds on both. The sheet also stops gating on
+  `canSubmit(draft.title)`: its dates are editable now, and the title rule
+  alone would pass a malformed deadline through.
+- **The axis strip shrinks to fit instead of scrolling** (superseding the
+  2026-08-19 scroll, which superseded the original `FlowRow`). The "N of M
+  shown" meta line leaves with the scroll — no room on one line, and the
+  facet panel's footer already carries it. A fixed single-line `Row` clips
+  what runs out of width, and the chip at the trailing edge is the Filter
+  disclosure, the only door to an active filter, so this came with a
+  **measuring** test. Measuring is what corrected the plan: five
+  `FilterChip`s want **320dp** and cannot fit the 272dp budget at any text
+  size, because a `FilterChip` spends 32dp per chip on horizontal chrome.
+  Hence `AxisChip` — the same `secondaryContainer`-or-outline treatment
+  built from a `Surface`, as `StageBadge` already is, on 12dp of chrome —
+  which wants **268dp**. The Filter chip lost `ic_search` for the same
+  reason: measured, the icon is what pushed the row past the budget, and
+  the chip says "Filter" in words either way. `AxisRow` is also the one
+  place in the app that waives `LocalMinimumInteractiveComponentSize`, and
+  only its *layout* inflation: the chips stay 28dp tall, their full width is
+  hittable, and the platform expands the touch target at the input layer
+  regardless.
+- **The Triage header title is the display and the edit both.** A "Title"
+  text box below the header used to say the same words the header said, so
+  the panel claimed the title twice and editing one changed the other. The
+  header now reads the *draft's* title — an edit has to show where it was
+  made — and `ic_pencil` swaps an inline field in for it; the title sits
+  above the stage badge. The header row is the wide door out, through the
+  same confirmation the × routes through, and clickable only while not
+  editing so a tap into the field is not a tap on the way out. Editing ends
+  on IME Done or when the pane closes, deliberately **not** on focus loss:
+  that fires once with `isFocused = false` before the field is ever focused
+  and would need a flag to tell the two cases apart.
+- **The pane can mark done, and can no longer drop a draft silently.** The
+  green check is `NowRow`'s own, on the seam's decided `canMarkDone`, wired
+  to the same `complete` lambda the collapsed rows call — one act path
+  whether the pane is open or shut. It sits on a line of its own below the
+  `ChoiceRow` rather than beside it, because that row wraps at narrow widths
+  (#576) and anything sharing its line moves when the buttons do. And
+  `select(sameId)` nulls the draft (`TriageViewModel.select`), so re-tapping
+  the already-open row dropped typed words without asking — the one leaving
+  gesture that skipped the confirmation the ×, Back and the header tap all
+  route through.
+
+`AxisRowWrappingTest` is the module's **second** layout-measuring test,
+`ChoiceRowWrappingTest`'s rig with the same two halves — the measurement and
+a control proving it has teeth. One thing in it is worth copying rather than
+re-deriving: it measures **unconstrained**, in a 2000dp box, not at the
+272dp budget. Rendered at exactly the budget the `Row` squeezes whatever
+runs out of width, so the trailing chip reports bounds *inside* the budget
+no matter how badly it overflows. The first draft of that test passed with
+the Filter chip measuring 272dp..272dp — crushed to nothing, which is the
+defect itself. Measuring what the strip *wants* is the only form of the
+assertion that can fail.
 
 ## Proving the lane on hardware
 
