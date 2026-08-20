@@ -88,8 +88,8 @@ describe("SettingsScreen — the board world's calendar card", () => {
   // The round-2 hazard (#452's own words): the fixture card's toggle must
   // never reach `onSelectionChange`, whose live handler persists the ids to
   // the shared localStorage key and polls Google for calendars that do not
-  // exist. `demo` is null in this world, so the toggle must branch on
-  // `calendarIsDemo`, not `demo`.
+  // exist. `SettingsScreen` has no `demo` prop (#456), so the toggle must
+  // branch on `calendarIsDemo`.
   it("toggles locally and never calls onSelectionChange", () => {
     const { onSelectionChange } = renderBoardSettings("loading", "unset");
     const family = screen.getByRole("checkbox", { name: /Fictional \(family\)/ });
