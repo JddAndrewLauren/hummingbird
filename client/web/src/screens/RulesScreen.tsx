@@ -490,16 +490,6 @@ function RuleCard({
           <Badge tone="neutral" mono>
             {rule.eventKind === null ? "any kind" : kindLabel(rule.eventKind)}
           </Badge>
-          {!valid ? (
-            <Badge tone="danger" icon="info">
-              Invalid — names a field its kind no longer declares
-            </Badge>
-          ) : null}
-          {isUnrankedSeverity(registry.severities, rule.severity) ? (
-            <Badge tone="warn" icon="info">
-              {UNRANKED_SEVERITY_COPY}
-            </Badge>
-          ) : null}
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "var(--space-2)" }}>
           <Switch
@@ -517,6 +507,24 @@ function RuleCard({
           ) : null}
         </div>
       </div>
+      {/* Sentence-length badges get their own wrapping row, below the
+          non-wrapping identity row above — the pattern `ConditionRow`'s
+          alarm-interval badge already uses. The identity row keeps only the
+          fixed-width mono status chips (#374). */}
+      {!valid || isUnrankedSeverity(registry.severities, rule.severity) ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
+          {!valid ? (
+            <Badge tone="danger" icon="info" wrap>
+              Invalid — names a field its kind no longer declares
+            </Badge>
+          ) : null}
+          {isUnrankedSeverity(registry.severities, rule.severity) ? (
+            <Badge tone="warn" icon="info" wrap>
+              {UNRANKED_SEVERITY_COPY}
+            </Badge>
+          ) : null}
+        </div>
+      ) : null}
       <Button variant="ghost" size="sm" onClick={() => setEditing((v) => !v)}>
         {editing ? "Close" : "Edit"}
       </Button>
