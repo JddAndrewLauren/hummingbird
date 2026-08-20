@@ -84,8 +84,9 @@ private fun answered(pane: MobileRankedPane): Boolean =
 private val NOT_SET_UP = PaneGlyph.Icon(R.drawable.ic_help_circle, "not set up")
 private val NO_ANSWER = PaneGlyph.Icon(R.drawable.ic_cloud_fog, "no answer yet")
 
-/** `ageWords` in `github.ts`/`uptime.ts`, ported. */
-private fun ageWords(ageMs: Long): String {
+/** `ageWords` in `github.ts`/`uptime.ts`, ported — internal since the
+ * pane-content slice: the expanded cards speak the same ages. */
+internal fun ageWords(ageMs: Long): String {
     val hours = ageMs / 3_600_000
     if (hours < 1) return "under an hour ago"
     if (hours < 48) return "${hours}h ago"

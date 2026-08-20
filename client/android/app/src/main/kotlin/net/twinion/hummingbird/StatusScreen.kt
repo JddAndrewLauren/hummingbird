@@ -27,6 +27,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.panes.PaneCollapse
+import net.twinion.hummingbird.ui.panes.StatusPaneExpanded
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 
@@ -162,6 +163,12 @@ fun StatusScreen(
                                 scope.launch { viewModel.togglePaneCollapsed(pane) }
                             },
                             onGoToSettings = onGoToSettings,
+                            // The Status four's expanded renderings (the
+                            // pane-content slice) — dispatched here and
+                            // nowhere else.
+                            expandedContent = { pane ->
+                                StatusPaneExpanded(pane, current.rankedAtMs)
+                            },
                         )
                     }
                 }

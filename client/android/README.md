@@ -261,9 +261,17 @@ App-owned query.
 Collapsed, a pane is one row: the band dot, the question's per-surface
 label, up to `MAX_GLYPHS` of the pane's own marks, and its one-line
 headline. Expanded (tap toggles), the same header collapses it again over
-the headline, an unbound pane's "Open Settings" door, and whatever
-expanded content the caller supplies per question (the pane-content slices
-fill that slot). The words and marks live in `ui/panes/PaneAnswers.kt` —
+the headline, an unbound pane's "Open Settings" door, and the question's own
+expanded content. The Status four's cards live in
+`ui/panes/StatusPanesExpanded.kt` (the pane-content slice) — each web
+`*PaneExpanded.tsx` ported: kimi's balance headline with the voucher/cash
+split and the "cash owed" caveat, github's last-run/last-scheduled-success
+lines with the "cron stalled"/"cadence unreadable" words, uptime's
+expected-vs-observed observation line, reachability's synced-age headline —
+dispatched from `StatusScreen`'s `expandedContent` and nowhere else
+(`PaneContentStructuralTest`). The web's Badge chips render as coloured
+meta words (no Badge composable exists in the Android port), and the
+freshness caveat is the shared `staleWords` line. The words and marks live in `ui/panes/PaneAnswers.kt` —
 each question's `collapsedHeadline`/glyph decisions ported from its web
 renderer (`client/web/src/screens/<q>-pane/`), composed from the decided
 facts every `MobileRankedPane` carries since the pane-facts seam slice.
