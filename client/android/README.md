@@ -416,13 +416,25 @@ Operator batch 2026-08-20, three areas on one branch.
   The destination left `CaptureFormState` with it: once two buttons carry
   it, a field holding it is state no control writes. The title field's IME
   Done still submits to Triage, the funnel's own default.
-- **The submit row is pinned, and one capture at a time.** The buttons were
-  the last child of a scrolling column, so a raised keyboard could push the
-  only way out of the screen off the bottom of it; the fields scroll and the
-  row does not. On the Activity, `consumeWindowInsets(padding)` sits between
-  the `Scaffold`'s padding and `imePadding()` — `padding()` applies insets
+- **The submit row is pinned on the Activity, scrolled to on the sheet.**
+  The buttons were the last child of a scrolling column, so a raised
+  keyboard could push the only way out of the screen off the bottom of it.
+  On `CaptureActivity` the answer is a pinned footer: the fields scroll, the
+  row does not, and `consumeWindowInsets(padding)` sits between the
+  `Scaffold`'s padding and `imePadding()` — `padding()` applies insets
   without consuming them, so the IME inset would otherwise land on top of an
   already-paid navigation bar (the #614 dead band, in the other direction).
+  **The sheet could not be pinned at all**, which took two failed attempts
+  on hardware to establish: the IME inset does not reach a
+  `ModalBottomSheet`'s window here, so `imePadding()` is a no-op and so is
+  the sheet's own `contentWindowInsets` (`safeDrawing`, which nominally
+  includes the IME). A `weight(1f, fill = false)` field column broke it a
+  second, independent way — a `verticalScroll` child's desired height is its
+  whole content, so with `fill = false` it claimed every pixel and left the
+  row none. The sheet therefore scrolls to its submit row, the last thing in
+  that scroll. The structural pin now says this per surface —`imePadding()`
+  required on the Activity, banned on the sheet — because asserting it on
+  both is what let the bug through.
   `CaptureViewModel.submitting` is the second `enabled` term on both
   buttons: three doors reach one `captureFn` (two buttons and the IME
   action), so a tap inside the first's suspension minted the same words
@@ -446,18 +458,28 @@ Operator batch 2026-08-20, three areas on one branch.
   facet panel's footer already carries it. A fixed single-line `Row` clips
   what runs out of width, and the chip at the trailing edge is the Filter
   disclosure, the only door to an active filter, so this came with a
-  **measuring** test. Measuring is what corrected the plan: five
-  `FilterChip`s want **320dp** and cannot fit the 272dp budget at any text
-  size, because a `FilterChip` spends 32dp per chip on horizontal chrome.
-  Hence `AxisChip` — the same `secondaryContainer`-or-outline treatment
-  built from a `Surface`, as `StageBadge` already is, on 12dp of chrome —
-  which wants **268dp**. The Filter chip lost `ic_search` for the same
-  reason: measured, the icon is what pushed the row past the budget, and
-  the chip says "Filter" in words either way. `AxisRow` is also the one
-  place in the app that waives `LocalMinimumInteractiveComponentSize`, and
-  only its *layout* inflation: the chips stay 28dp tall, their full width is
-  hittable, and the platform expands the touch target at the input layer
-  regardless.
+  **measuring** test. Measuring corrected the plan twice. First: five
+  `FilterChip`s cannot fit at any text size, because a `FilterChip` spends
+  32dp per chip on horizontal chrome — hence `AxisChip`, the same
+  `secondaryContainer`-or-outline treatment built from a `Surface` as
+  `StageBadge` already is, on 12dp of chrome. It also lost `ic_search`:
+  measured, the icon was what pushed the row over, and the chip says
+  "Filter" in words either way. Second, and caught only on hardware: the
+  label must be `bodyMedium`, the sans body style, **not** `labelSmall` —
+  that is the mono meta style (11sp Space Mono at +0.08em), which the design
+  system reserves for computed values, and it is the widest small style in
+  the scale. Using it cost 44dp the strip did not have, and the Filter chip
+  clipped to "Fi" on the device while the unit test read green (see below).
+  **The width the strip fits is the device's, not a stress width** (operator
+  decision 2026-08-20): the Fold cover display is 443dp, leaving 419dp of
+  content, and the strip wants 276dp. It does *not* fit the 272dp that
+  `ChoiceRowWrappingTest`'s 320dp qualifier leaves — measured there, the
+  Filter chip's count digit clips. The accepted limit is ~336dp of content;
+  below that the trailing chip clips, which is the stated cost of a strip
+  that neither wraps nor scrolls. `AxisRow` is also the one place in the app
+  that waives `LocalMinimumInteractiveComponentSize`, and only its *layout*
+  inflation: the chips stay 28dp tall, their full width is hittable, and the
+  platform expands the touch target at the input layer regardless.
 - **The Triage header title is the display and the edit both.** A "Title"
   text box below the header used to say the same words the header said, so
   the panel claimed the title twice and editing one changed the other. The
@@ -490,6 +512,14 @@ no matter how badly it overflows. The first draft of that test passed with
 the Filter chip measuring 272dp..272dp — crushed to nothing, which is the
 defect itself. Measuring what the strip *wants* is the only form of the
 assertion that can fail.
+
+And a second thing, which cost a shipped clip to learn: **a Compose
+measurement test measures the theme it is given.** That first draft rendered
+`AxisRow` bare, so `MaterialTheme.typography.labelSmall` resolved to
+Material's default — Roboto 11sp, no tracking — instead of the app's Space
+Mono at +0.08em. It measured 268dp and passed while the device clipped the
+Filter chip to "Fi". Wrapping the content in `HummingbirdTheme` is what made
+the numbers real, and it is not optional in any test that measures text.
 
 ## Proving the lane on hardware
 

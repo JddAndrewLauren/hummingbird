@@ -589,12 +589,22 @@ fun NowScreen(
  *   building this: five `FilterChip`s want 320dp and cannot fit at any
  *   text size — a `FilterChip` spends 32dp per chip on horizontal chrome,
  *   160dp of the budget for five. Hence [AxisChip], the same treatment on
- *   12dp of chrome, which wants 268dp. **Four dp of margin**, and the
- *   operator's own decision is what buys it: a strip that neither scrolls
- *   nor wraps must clip at *some* font scale, and this is that trade taken
- *   deliberately. 320dp is also the harshest width in the repo rather than
- *   a device this app ships to — the Fold's cover display is wider — so
- *   the margin on real hardware is not four dp.
+ *   12dp of chrome, which wants 276dp.
+ * - **The width this fits is the device's, not a stress width** (operator
+ *   decision 2026-08-20). The Fold's cover display is 443dp — measured on
+ *   hardware, 1080px at density 390 — leaving 419dp of content, so the
+ *   strip has 143dp of headroom there. It does **not** fit 272dp, the
+ *   320dp figure `ChoiceRowWrappingTest` stresses: measured on the device
+ *   at that width, the Filter chip's count digit clips to "Filter ·", and
+ *   no type size fixes it. **The accepted limit is roughly 336dp of
+ *   content**; below that the trailing chip clips, which is the cost of a
+ *   strip that neither wraps nor scrolls, taken deliberately rather than
+ *   discovered. The same is true of a large enough font scale.
+ * - The label is `bodyMedium`, the sans body style — **not** `labelSmall`.
+ *   `labelSmall` is the mono meta style, 11sp Space Mono at +0.08em, and
+ *   the design system reserves it for values the system computed; an axis
+ *   name is a UI label. It is also the widest small style in the scale, and
+ *   using it here cost 44dp the strip did not have.
  * - The 48dp minimum touch target is waived here, deliberately, via
  *   [LocalMinimumInteractiveComponentSize]. This is the one place in the
  *   app that waives it, and what makes it defensible is that it waives

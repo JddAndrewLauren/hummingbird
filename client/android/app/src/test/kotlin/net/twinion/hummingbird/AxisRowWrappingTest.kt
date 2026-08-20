@@ -54,7 +54,10 @@ import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(
     sdk = [35],
-    qualifiers = "w320dp-h800dp",
+    // The Fold's cover display, which is the narrowest surface this app
+    // ships to — not `ChoiceRowWrappingTest`'s 320dp stress width. Measured
+    // on the device 2026-08-20: 1080px at density 390 is 443dp.
+    qualifiers = "w443dp-h800dp",
     application = android.app.Application::class,
 )
 class AxisRowWrappingTest {
@@ -62,14 +65,28 @@ class AxisRowWrappingTest {
     @get:Rule
     val composeTestRule = createComposeRule()
 
-    // 320dp — the narrowest width this repo tests at
-    // (`ChoiceRowWrappingTest`'s own qualifier) — less `NowScreen`'s 24dp
-    // gutters. The width the strip gets, not the screen's.
-    private val contentWidth = 272.dp
+    // The Fold cover display's 443dp less `NowScreen`'s 24dp gutters — the
+    // width the strip gets, not the screen's.
+    //
+    // **This is the device's width, deliberately, not a synthetic stress
+    // width** (operator decision 2026-08-20). Five full-word chips plus a
+    // facet count cannot fit 272dp — the 320dp figure the plan carried over
+    // from `ChoiceRowWrappingTest` — at any type size: measured, the sans
+    // treatment wants 276dp there and the Filter chip's count digit clips
+    // to "Filter ·" on hardware. A strip that neither wraps nor scrolls
+    // must clip at *some* width, and the accepted limit is stated in
+    // `AxisRow`'s own header. Narrowing this qualifier to 320dp is
+    // therefore a real assertion about a surface the app does not have, and
+    // it fails.
+    private val contentWidth = 419.dp
 
     // Wide enough that nothing is squeezed, so the chips report the width
     // they actually want. See the first test for why that matters.
     private val unconstrained = 2000.dp
+
+    // 320dp less the gutters — the width `ChoiceRowWrappingTest` stresses,
+    // kept here only as the control's yardstick (see that test).
+    private val narrowStressWidth = 272.dp
 
     // Every label the strip renders: `AXIS_LABEL`'s four, plus the Filter
     // chip with a count in it (the wider of its two states, so the test
@@ -103,7 +120,6 @@ class AxisRowWrappingTest {
             composeTestRule.onNodeWithText(it).getUnclippedBoundsInRoot()
         }
         val trailing = bounds.values.maxOf { it.right }
-        println("MEASURED compact trailing=$trailing widths=" + bounds.entries.joinToString { "${it.key}=${it.value.width}" })
         assertTrue(
             "the strip wants ${trailing} and only has $contentWidth — a fixed Row clips " +
                 "whatever does not fit, and the chip at the trailing edge is the Filter " +
@@ -120,12 +136,18 @@ class AxisRowWrappingTest {
 
     @Test
     fun `the default chip size is what does not fit`() {
-        // The control, measured the same unconstrained way. `FilterChip`'s
-        // own size — 32dp of horizontal chrome per chip, inflated to a 48dp
-        // interactive box — is what `AxisChip` and the waived minimum
-        // target exist to escape. If this ever starts fitting, the test
-        // above has stopped proving anything and the compact treatment can
-        // go back to being a plain `FilterChip`.
+        // The control, measured the same unconstrained way, and what it
+        // proves is worth being exact about. `FilterChip`'s own size — 32dp
+        // of horizontal chrome per chip, inflated to a 48dp interactive box
+        // — wants ~411dp, which *does* fit this file's 419dp budget. So
+        // this is not a claim that `AxisChip` is required at the Fold's
+        // cover width; it is two narrower claims. It proves the rig is
+        // measuring live text at all: a stubbed measurement returns
+        // near-identical widths for every string and could not produce a
+        // 139dp spread between the two treatments. And it records the
+        // reason the compact treatment exists — a default strip cannot fit
+        // 272dp by 139dp, so it has no headroom below the cover width
+        // whatsoever, while the compact one has 143dp of it.
         composeTestRule.setContent {
             HummingbirdTheme {
                 Box(modifier = Modifier.width(unconstrained)) {
@@ -137,12 +159,16 @@ class AxisRowWrappingTest {
         val trailing = labels.maxOf {
             composeTestRule.onNodeWithText(it).getUnclippedBoundsInRoot().right
         }
-        println("MEASURED default trailing=$trailing")
+        // The control is measured against the width that actually
+        // constrains the strip in practice, not this file's own budget:
+        // at 443dp the default chips *do* fit, which is exactly why the
+        // 272dp number stays in this file as the number they overflow. It
+        // is what `AxisChip` was built to beat.
         assertTrue(
-            "five default-sized FilterChips must overflow $contentWidth — otherwise " +
+            "five default-sized FilterChips must overflow $narrowStressWidth — otherwise " +
                 "`the whole axis strip fits` would pass with or without the compact " +
                 "treatment (measured $trailing)",
-            trailing > contentWidth,
+            trailing > narrowStressWidth,
         )
     }
 
