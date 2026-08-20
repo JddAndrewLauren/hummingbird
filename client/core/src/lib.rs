@@ -1519,6 +1519,7 @@ where
             is_archived,
             is_editable: !is_archived,
             available_actions,
+            can_mark_done: decisions::can_mark_done(item.stage, is_archived),
             microtask_affordance,
             item,
         })
@@ -6695,6 +6696,45 @@ mod tests {
             detail.live_alert.is_some(),
             "silencing something still ringing is not editing history"
         );
+        assert!(!detail.can_mark_done, "archived is not one-click completable");
+    }
+
+    /// `can_mark_done` is on the record *because* `available_actions`
+    /// cannot answer for it: the Triage and Grilling stages offer no act
+    /// vocabulary, yet their detail pane draws the checkmark. Pinned as
+    /// agreement with the decision, stage by stage, so no surface
+    /// re-derives it.
+    #[tokio::test]
+    async fn item_detail_carries_can_mark_done_where_available_actions_cannot() {
+        let core = core_with_item_detail_fixtures(
+            Stage::ALL
+                .into_iter()
+                .map(|stage| fixture_item(&format!("a-{}", stage.as_str()), stage))
+                .collect(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .await;
+
+        let triage = core.item_detail("a-triage", 1_000).unwrap();
+        assert!(triage.can_mark_done, "a captured item is completable in one click");
+        assert!(
+            triage.available_actions.is_empty(),
+            "and its act vocabulary is empty — the reason the field rides separately"
+        );
+
+        for stage in Stage::ALL {
+            let detail = core
+                .item_detail(&format!("a-{}", stage.as_str()), 1_000)
+                .expect("seeded one item per stage");
+            assert_eq!(
+                detail.can_mark_done,
+                decisions::can_mark_done(stage, false),
+                "{stage:?}"
+            );
+        }
     }
 
     /// The one invariant that ties [`Core::frontier`] and

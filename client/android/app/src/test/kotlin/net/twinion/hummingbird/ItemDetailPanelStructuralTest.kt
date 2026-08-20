@@ -1,0 +1,305 @@
+package net.twinion.hummingbird
+
+import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+// The unified item-detail pane's own gates — the pins that used to live in
+// `TriageScreenStructuralTest` against a second editor implementation, now
+// held once against the panel every host renders.
+//
+// Robolectric cannot capture a pixel here (that ceiling is recorded in
+// `docs/SURFACES.md`), so these are source pins: each one names a shape
+// whose deletion is a defect no other test in this module can see. Every
+// assertion below is bounded to the block it claims about — an unbounded
+// `contains` over a 900-line file is green for two indistinguishable
+// reasons, and the one that matters is "the shape is somewhere else
+// entirely".
+class ItemDetailPanelStructuralTest {
+
+    private fun repoFile(relative: String): String {
+        val root = System.getProperty("hummingbird.repoRoot")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+        val file = File(root, relative)
+        check(file.isFile) { "$relative not found under $root" }
+        return file.readText()
+    }
+
+    private fun source(name: String) =
+        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/$name")
+            .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+            .replace(Regex("""(?m)^\s*//.*$"""), "")
+
+    private val panelSrc by lazy { source("ItemDetailPanel.kt") }
+    private val viewModelSrc by lazy { source("ItemDetailViewModel.kt") }
+
+    /** The body of a top-level or nested `fun <name>(`, from its signature
+     * to the next declaration at the same indent — enough to bound an
+     * assertion to the composable that must carry it. */
+    private fun functionBody(src: String, name: String): String {
+        val start = src.indexOf("fun $name(")
+        check(start >= 0) { "could not locate fun $name( in the source" }
+        val rest = src.substring(start)
+        val end = Regex("""(?m)^\}""").find(rest)?.range?.first ?: rest.length
+        return rest.substring(0, end)
+    }
+
+    /** One panel, four hosts — the whole point of the unification. A host
+     * that quietly grows its own pane again is what this catches. */
+    @Test
+    fun `every item-detail host renders this one panel`() {
+        for (host in listOf(
+            "NowScreen.kt",
+            "ItemDetailScreen.kt",
+            "RecallOverlay.kt",
+            "TriageScreen.kt",
+        )) {
+            assertTrue(
+                "$host must render the shared ItemDetailPanel",
+                source(host).contains("ItemDetailPanel("),
+            )
+        }
+    }
+
+    /** The mode decides exactly three things (its own doc says so), and
+     * `SAVE` is the default so the three reading hosts need not name it. */
+    @Test
+    fun `the panel defaults to the saving mode and Triage is the one host that overrides it`() {
+        assertTrue(
+            "the default must be SAVE",
+            panelSrc.contains("mode: ItemDetailPanelMode = ItemDetailPanelMode.SAVE"),
+        )
+        assertTrue(
+            "Triage must be the host that asks for PROMOTE",
+            source("TriageScreen.kt").contains("mode = ItemDetailPanelMode.PROMOTE"),
+        )
+        for (host in listOf("NowScreen.kt", "ItemDetailScreen.kt", "RecallOverlay.kt")) {
+            assertFalse(
+                "$host must take the default rather than naming a mode",
+                source(host).contains("ItemDetailPanelMode"),
+            )
+        }
+    }
+
+    /** #360, through a ViewModel Triage shares: the promoting write is a
+     * distinct seam call whose `promoteToReady` is the literal `true`, so
+     * no path through this ViewModel can triage without promoting. The
+     * other half of the guarantee — that Triage never reaches `save` — is
+     * `TriageScreenStructuralTest`'s. */
+    @Test
+    fun `the promoting write is triageItem with a literal true`() {
+        assertTrue(
+            "the factory must wire promoteFn to triageItem(itemId, true, ...)",
+            viewModelSrc.contains("triageItem(itemId, true,"),
+        )
+        // Whitespace-collapsed: the claim is which method each mode fires,
+        // and a reformat is not a defect.
+        val submitCall = functionBody(panelSrc, "ItemDetailPanel").replace(Regex("""\s+"""), " ")
+        assertTrue(
+            "the PROMOTE mode's submit must fire promote, not save",
+            submitCall.contains("ItemDetailPanelMode.PROMOTE -> viewModel.promote("),
+        )
+        assertTrue(
+            "the SAVE mode's submit must fire save",
+            submitCall.contains("ItemDetailPanelMode.SAVE -> viewModel.save("),
+        )
+    }
+
+    /** The two per-item state leaks this unification fixed. Under a
+     * constant LazyColumn key the panel is NOT disposed between
+     * selections, so an unkeyed `rememberSaveable` carries item A's state
+     * onto item B: title-edit mode opened by itself, and the microtask
+     * grain came along with it. */
+    @Test
+    fun `every piece of per-item composition state is keyed on the item id`() {
+        assertTrue(
+            "title-edit mode must be keyed on the item",
+            panelSrc.contains("var editingTitle by rememberSaveable(itemId) { mutableStateOf(false) }"),
+        )
+        assertTrue(
+            "the microtask grain must be keyed on the item",
+            functionBody(panelSrc, "MicrotaskSection")
+                .contains("var grain by rememberSaveable(itemId) { mutableStateOf(2L) }"),
+        )
+        assertTrue(
+            "a section's open/shut state must be keyed on the item",
+            functionBody(panelSrc, "DetailSection")
+                .contains("rememberSaveable(itemId, label)"),
+        )
+        // The dialog flag is deliberately NOT keyed: a question on screen
+        // belongs to the gesture that asked it, not to an item.
+        assertTrue(
+            "the discard question must survive an Activity recreation",
+            panelSrc.contains("var confirmingDiscard by rememberSaveable { mutableStateOf(false) }"),
+        )
+    }
+
+    /** The header is the title's display and its edit both — there is no
+     * second "Title" box saying the same words, which was the defect the
+     * Triage header fixed and this panel inherits. The row itself is the
+     * wide door out, clickable only while not editing, so a tap into the
+     * field is not a tap on the way out. */
+    @Test
+    fun `the title is edited in the header, which is also the way out`() {
+        val panelBody = functionBody(panelSrc, "ItemDetailPanel")
+        assertFalse(
+            "no standalone Title box — the header title is the edit",
+            panelSrc.contains("label = { Text(\"Title\") }"),
+        )
+        assertTrue(
+            "the header must read the DRAFT's title, so an edit shows where it was made",
+            panelBody.contains("openDraft?.title ?: loadedRecord?.title.orEmpty()"),
+        )
+        assertTrue(
+            "the inline field must bind the same draft title",
+            panelBody.contains("value = openDraft.title"),
+        )
+        assertTrue(
+            "the header must carry the pencil that opens the inline edit",
+            panelBody.contains("R.drawable.ic_pencil"),
+        )
+        assertTrue(
+            "the header row must close the pane on a tap, unless the title is being edited",
+            panelBody.contains(
+                "if (editingTitle) Modifier else Modifier.clickable { requestClose() }",
+            ),
+        )
+        assertTrue(
+            "every leaving gesture must route through the one guarded close",
+            panelBody.contains("if (viewModel.isDirty) confirmingDiscard = true else onClose()"),
+        )
+    }
+
+    /** The mark-done check, on every surface: `NowRow`'s green glyph on the
+     * core's own `canMarkDone` — the wider rule that answers for Triage and
+     * Grilling, where `availableActions` is empty. And drawn once: the act
+     * row filters `complete` out, or the same gesture is offered twice. */
+    @Test
+    fun `the mark-done check is gated on canMarkDone and never drawn twice`() {
+        val body = functionBody(panelSrc, "DetailBody")
+        assertTrue(
+            "the check must be gated on the seam's own decided fact",
+            body.contains("if (record.canMarkDone)"),
+        )
+        assertTrue(
+            "the check must be NowRow's own glyph",
+            body.contains("R.drawable.ic_check"),
+        )
+        assertTrue(
+            "the check must carry NowRow's own mark-done green token pair",
+            body.contains("if (dark) StatusDoneFgDark else Moss600"),
+        )
+        assertFalse(
+            "the mark-done is an IconButton, not a Material Checkbox",
+            panelSrc.contains("Checkbox("),
+        )
+        assertTrue(
+            "the act row must filter complete out — the check is that gesture",
+            body.contains("record.availableActions.filter { it != \"complete\" }"),
+        )
+    }
+
+    /** The unification's other half: the pane's field set is the shared
+     * `ui/forms` one, over the seam's own vocabulary. The panel's two
+     * hardcoded level lists and its `VocabularyRow` are gone — and with
+     * them the reason this file was exempt from
+     * `CaptureFieldSetStructuralTest`'s literal ban, which now covers it. */
+    @Test
+    fun `the field set is the shared one, over the seam's own vocabulary`() {
+        val body = functionBody(panelSrc, "DetailBody")
+        for (component in listOf("LevelSlider(", "PriorityRow(", "ContextField(", "CaptureDateField(")) {
+            assertTrue("the pane must render the shared $component", body.contains(component))
+        }
+        assertTrue(
+            "the level sliders must read the seam's own vocabulary",
+            body.contains("options = formMeta.energies") && body.contains("options = formMeta.sizes"),
+        )
+        assertTrue(
+            "the context field must read the seam's own suggestions",
+            body.contains("suggestions = formMeta.suggestedContexts"),
+        )
+        // Read mode's glyph ramp position is the option's index in the
+        // core-supplied list, so the seam's order decides it (#558) and no
+        // Kotlin list can drift out from under it.
+        assertTrue(
+            "the size glyph's position must come from the seam's own order",
+            body.contains("levelPosition(formMeta.sizes.map { it.value }, record.size)"),
+        )
+        assertTrue(
+            "the energy glyph's position must come from the seam's own order",
+            body.contains("levelPosition(formMeta.energies.map { it.value }, record.energy)"),
+        )
+        for (retired in listOf("SIZE_VOCABULARY", "ENERGY_VOCABULARY", "VocabularyRow", "EditBody")) {
+            assertFalse(
+                "$retired was replaced by the shared form components and must not come back",
+                panelSrc.contains(retired),
+            )
+        }
+    }
+
+    /** One submit for the whole draft, whatever section it was typed in —
+     * not a Save per section, which is what a per-section pencil invites.
+     * The word is the mode's; there is exactly one `Button` firing
+     * `onSubmit`. */
+    @Test
+    fun `there is exactly one submit, and its word is the mode's`() {
+        val body = functionBody(panelSrc, "DetailBody")
+        assertEquals(
+            "exactly one submit button in the pane",
+            1,
+            Regex("""Button\(onClick = onSubmit""").findAll(body).count(),
+        )
+        assertTrue(
+            "the submit must refuse an unsendable draft rather than sending it",
+            body.contains("Button(onClick = onSubmit, enabled = canSave)"),
+        )
+        assertTrue(body.contains("ItemDetailPanelMode.SAVE -> \"Save\""))
+        assertTrue(body.contains("ItemDetailPanelMode.PROMOTE -> \"Promote to ready\""))
+    }
+
+    /** An unset field opens editable where filling it in is the work
+     * (Triage), and rests as a ghost where the surface is mostly for
+     * reading. `isSet` is read off the RECORD, never the draft: reading the
+     * draft would flip the default on the first character typed and
+     * collapse the field mid-word. */
+    @Test
+    fun `an unset section opens editable only on the promoting host`() {
+        val body = functionBody(panelSrc, "DetailSection")
+        assertTrue(
+            "the default must follow the data until the human taps a pencil",
+            body.contains("openOverride ?: (mode == ItemDetailPanelMode.PROMOTE && !isSet)"),
+        )
+        assertTrue(
+            "an archived item's sections must never open",
+            body.contains("val open = editable &&"),
+        )
+        for (call in Regex("""isSet = ([^,]+),""").findAll(functionBody(panelSrc, "DetailBody"))) {
+            assertTrue(
+                "isSet must be read off the record, not the draft: ${call.groupValues[1]}",
+                call.groupValues[1].contains("record."),
+            )
+        }
+    }
+
+    /** Recall's rule (#478) at both locks: no pencil and no submit for an
+     * archived item, and the ViewModel refuses the write even so. */
+    @Test
+    fun `an archived item is readable and offers no way to edit it`() {
+        val section = functionBody(panelSrc, "DetailSection")
+        assertTrue(
+            "a section's pencil must be gated on editability",
+            section.contains("if (editable) {"),
+        )
+        val body = functionBody(panelSrc, "DetailBody")
+        assertTrue(
+            "the submit row must be gated on editability",
+            body.contains("if (record.isEditable) {"),
+        )
+        assertTrue(
+            "and the write itself must refuse, not merely be un-rendered",
+            viewModelSrc.contains("if (!record.isEditable) {"),
+        )
+    }
+}

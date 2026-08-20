@@ -243,7 +243,7 @@ fun NowScreen(
     // its own handler and dialog take over) rather than silently closing
     // an edit mid-flight.
     BackHandler(enabled = selectedId != null) {
-        if (panelViewModel?.draft?.value != null && panelViewModel.isDirty) {
+        if (panelViewModel?.isDirty == true) {
             scope.launch { listState.animateScrollToItem(0) }
         } else {
             viewModel.closeItem()

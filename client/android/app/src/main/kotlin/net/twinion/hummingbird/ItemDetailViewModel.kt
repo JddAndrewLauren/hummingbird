@@ -11,11 +11,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.sync.SyncWorker
+import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.FieldPatch
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.ItemEdit
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.canSubmitCapture
+import uniffi.hummingbird_ffi_mobile.captureFormMeta
 import uniffi.hummingbird_ffi_mobile.captureMetaProblems
 
 /** What the item screen is showing — the three states
@@ -122,8 +124,16 @@ data class ItemDraft(
     }
 }
 
-// The item screen's whole read and its edit mode (#141's last slice,
-// ADR-0027), injected-fn shaped like every other ViewModel here.
+// The item pane's whole read and its one draft (#141's last slice,
+// ADR-0027), injected-fn shaped like every other ViewModel here. Shared by
+// all four of `ItemDetailPanel`'s hosts — Now's inline expansion, the
+// notification/Recall route, the Recall overlay and Triage — one instance
+// per item id, resolved under `key = "item-$itemId"`.
+//
+// **There is no edit mode.** Every section of the panel edits in place and
+// one submit sends the accumulated draft: `save` from three hosts,
+// `promote` from Triage. So the draft exists from the first successful
+// `load` onwards rather than being begun and discarded.
 //
 // **The draft lives here, never in a `remember {}`.** That is
 // `CaptureViewModel.factory`'s recorded defect (the fold/unfold one): a
@@ -143,6 +153,10 @@ class ItemDetailViewModel(
     private val actFn: suspend (itemId: String, action: String, nowMs: Long) -> Unit,
     private val ackFn: suspend (alertId: String, nowMs: Long) -> Unit,
     private val editFn: suspend (itemId: String, edit: ItemEdit, nowMs: Long) -> Unit,
+    /** The promoting write, `Core::triage` with `promoteToReady = true`.
+     * Separate from [editFn] because it is a different seam call, not a
+     * flag on this one — see [promote]. */
+    private val promoteFn: suspend (itemId: String, edit: ItemEdit, nowMs: Long) -> Unit,
     private val syncFn: suspend () -> Unit,
     /** #539's "Grill me"/"Resume grill" label source — whether this item
      * already carries a saved Grill draft. */
@@ -155,7 +169,15 @@ class ItemDetailViewModel(
     private val hasContentFn: (String) -> Boolean,
     /** The core's date-field rule, injected for the same reason. */
     private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
+    /** The shared form components' vocabulary door, injected the same way
+     * `CaptureViewModel.formMetaFn` is: every size/energy/context word the
+     * panel's editors offer comes from here, never a Kotlin literal. */
+    private val formMetaFn: () -> CaptureFormMeta,
 ) : ViewModel() {
+
+    /** Read once, on first use — the vocabulary does not change
+     * mid-session, the same laziness `CaptureViewModel.formMeta` uses. */
+    val formMeta: CaptureFormMeta by lazy { formMetaFn() }
 
     private val _state = MutableStateFlow<ItemDetailState>(ItemDetailState.Loading)
     val state: StateFlow<ItemDetailState> = _state.asStateFlow()
@@ -163,9 +185,24 @@ class ItemDetailViewModel(
     private val _statusLine = MutableStateFlow<String?>(null)
     val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
 
-    /** The edit in progress, or null in read mode. */
+    /** The edit in progress — non-null from the first successful [load]
+     * onwards, because the panel has no read mode to be in: every section
+     * edits in place and one submit sends whatever the draft holds. Null
+     * only while the item has never loaded. */
     private val _draft = MutableStateFlow<ItemDraft?>(null)
     val draft: StateFlow<ItemDraft?> = _draft.asStateFlow()
+
+    /** What [_draft] was seeded from, kept beside it rather than re-derived
+     * from the current record.
+     *
+     * **This is load-bearing, not a convenience.** Dirtiness must mean "the
+     * human changed something", and a background sync landing an edit made
+     * on another device changes the record under an untouched draft — if
+     * dirtiness were `draft != ItemDraft.of(record)`, that sync would
+     * invent a dirty draft out of nothing and start fighting Back over an
+     * edit nobody made. The seed only moves when [load] finds the draft
+     * clean, or when a submit succeeds. */
+    private val _seed = MutableStateFlow<ItemDraft?>(null)
 
     private val _hasGrillDraft = MutableStateFlow(false)
     val hasGrillDraft: StateFlow<Boolean> = _hasGrillDraft.asStateFlow()
@@ -190,28 +227,31 @@ class ItemDetailViewModel(
             return problems.deadline == null && problems.scheduledDate == null
         }
 
-    /** Whether the draft differs from the record it started from — what
+    /** Whether the draft differs from the seed it started from — what
      * decides whether Back must ask before discarding. An untouched draft
-     * is never fought over. */
+     * is never fought over, and a *sync* is not a human edit: see [_seed]
+     * for why this reads the stored seed and never the current record. */
     val isDirty: Boolean
         get() {
             val current = _draft.value ?: return false
-            val record = (_state.value as? ItemDetailState.Loaded)?.record ?: return false
-            return current != ItemDraft.of(record)
+            return current != _seed.value
         }
 
     /** Loads the item: read, and on a miss sync once and read again.
      *
-     * **A reload never disturbs an open draft.** The sync cadence above
+     * **A reload never disturbs a dirty draft.** The sync cadence above
      * the NavHost ticks every 60 seconds; rebuilding the draft from the
      * freshly-read record would erase whatever the human had typed in
      * between, which is the same silent loss the ViewModel exists to
-     * prevent. */
+     * prevent. A *clean* draft is reseeded, so a change landing from
+     * another device does show through instead of being masked by a stale
+     * copy of itself. */
     suspend fun load(itemId: String, nowMs: Long) {
         if (_draft.value == null) _state.value = ItemDetailState.Loading
         try {
             fetchFn(itemId, nowMs)?.let {
                 _state.value = ItemDetailState.Loaded(it)
+                reseedIfClean(it)
                 _statusLine.value = null
                 _hasGrillDraft.value = hasGrillDraftFn(itemId)
                 return
@@ -221,6 +261,7 @@ class ItemDetailViewModel(
             _state.value = afterSync
                 ?.let { ItemDetailState.Loaded(it) }
                 ?: ItemDetailState.NotSynced
+            afterSync?.let { reseedIfClean(it) }
             _statusLine.value = null
             _hasGrillDraft.value = afterSync?.let { hasGrillDraftFn(itemId) } ?: false
         } catch (error: Exception) {
@@ -229,44 +270,87 @@ class ItemDetailViewModel(
         }
     }
 
-    /** Enters edit mode with the loaded record's own values.
-     *
-     * Refused on an archived item: `isEditable` is the core's verdict
-     * (Recall's rule, #478), and the screen offers no affordance either —
-     * this second check is here because a verdict worth rendering is worth
-     * enforcing at the one place that acts on it. */
-    fun beginEdit() {
-        val record = (_state.value as? ItemDetailState.Loaded)?.record ?: return
-        if (!record.isEditable) return
-        _draft.value = ItemDraft.of(record)
+    /** Seeds the draft on first load, and re-seeds it on any later load
+     * that finds nothing to lose. */
+    private fun reseedIfClean(record: ItemDetailRecord) {
+        if (_draft.value != null && isDirty) return
+        val fresh = ItemDraft.of(record)
+        _seed.value = fresh
+        _draft.value = fresh
     }
 
     fun updateDraft(draft: ItemDraft) {
         _draft.value = draft
     }
 
-    /** Leaves edit mode, discarding the draft. Only ever called once the
-     * human has said so — see the screen's discard confirmation. */
-    fun discardEdit() {
-        _draft.value = null
+    /** Throws the typed changes away, back to the values the draft was
+     * seeded from. Only ever called once the human has said so — see the
+     * panel's discard confirmation. The draft does not become null: there
+     * is no read mode to fall back to. */
+    fun discardDraft() {
+        _draft.value = _seed.value
     }
 
-    /** Saves the draft as one CAS patch, then re-reads. The draft is
-     * cleared only on success: a failed save leaves the human's words
-     * where they can still be seen and retried. */
+    /** Saves the draft as one CAS patch, then re-reads. The seed advances
+     * only on success — a failed save leaves the human's words where they
+     * can still be seen and retried, still dirty, still guarded by Back.
+     *
+     * **Not reachable from Triage.** The panel there submits through
+     * [promote] instead (#360 bans a non-promoting write from that
+     * surface); this ViewModel is shared, so the enforcement is the
+     * panel's mode plus the structural pins named in
+     * [ItemDetailPanelMode]'s own doc. */
     suspend fun save(itemId: String, nowMs: Long) {
+        submit(itemId, nowMs, refusal = "This edit can't be saved yet", verb = "save", send = editFn)
+    }
+
+    /** Promotes the item to Ready, carrying whatever else the draft
+     * touched — one CAS `PATCH` through `Core::triage`, per its own doc.
+     * The Triage host's only submit: promotion is the sole destination
+     * that surface offers (#360). */
+    suspend fun promote(itemId: String, nowMs: Long) {
+        submit(
+            itemId,
+            nowMs,
+            refusal = "This can't be promoted yet",
+            verb = "promote",
+            send = promoteFn,
+        )
+    }
+
+    /** What the two submits share: refuse an unsendable draft in the
+     * caller's own words, send one patch, and on success re-read and let
+     * the reseed advance the seed. */
+    private suspend fun submit(
+        itemId: String,
+        nowMs: Long,
+        refusal: String,
+        verb: String,
+        send: suspend (String, ItemEdit, Long) -> Unit,
+    ) {
         val record = (_state.value as? ItemDetailState.Loaded)?.record ?: return
         val draft = _draft.value ?: return
+        // Recall's rule (#478) enforced where it is acted on, not only
+        // where it is rendered: the panel draws no pencil and no submit for
+        // a non-editable item, and this is the second lock on the same door
+        // — history stays readable.
+        if (!record.isEditable) {
+            _statusLine.value = "This item is history — readable, not editable."
+            return
+        }
         if (!canSave) {
-            _statusLine.value = "This edit can't be saved yet — an item needs a title, " +
+            _statusLine.value = "$refusal — an item needs a title, " +
                 "and a date must be the shape shown."
             return
         }
         try {
-            editFn(itemId, draft.toEdit(record, hasContentFn), nowMs)
-            _draft.value = null
+            send(itemId, draft.toEdit(record, hasContentFn), nowMs)
+            // The sent draft becomes the seed: what was typed is now what
+            // the item says, so Back has nothing left to fight over even
+            // before the re-read lands.
+            _seed.value = draft
         } catch (error: Exception) {
-            _statusLine.value = "Couldn't save — ${error.message}"
+            _statusLine.value = "Couldn't $verb — ${error.message}"
             return
         }
         load(itemId, nowMs)
@@ -313,6 +397,14 @@ class ItemDetailViewModel(
                 editFn = { itemId, edit, nowMs ->
                     CoreHolder.get(context.applicationContext).editItem(itemId, edit, nowMs)
                 },
+                // The literal `true` IS #360: a Triage submit promotes, and
+                // there is no path through this ViewModel that triages
+                // without promoting. Pinned by
+                // `ItemDetailPanelStructuralTest`.
+                promoteFn = { itemId, edit, nowMs ->
+                    CoreHolder.get(context.applicationContext)
+                        .triageItem(itemId, true, edit, nowMs)
+                },
                 hasGrillDraftFn = { itemId ->
                     CoreHolder.get(context.applicationContext).hasGrillDraft(itemId)
                 },
@@ -329,6 +421,7 @@ class ItemDetailViewModel(
                 },
                 hasContentFn = ::canSubmitCapture,
                 metaProblemsFn = ::captureMetaProblems,
+                formMetaFn = ::captureFormMeta,
             )
 
         fun factory(context: Context): ViewModelProvider.Factory = viewModelFactory {

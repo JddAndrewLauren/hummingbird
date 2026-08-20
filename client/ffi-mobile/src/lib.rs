@@ -1294,6 +1294,18 @@ pub struct ItemDetailRecord {
     pub is_archived: bool,
     pub is_editable: bool,
     pub available_actions: Vec<String>,
+    /// Whether the pane draws its one-click done checkmark —
+    /// [`hummingbird_core::item_detail::ItemDetail::can_mark_done`]
+    /// verbatim.
+    ///
+    /// It rides separately from `available_actions` for the same reason it
+    /// does on [`TriageItemRecord`]: [`available_actions`] answers `&[]`
+    /// for Triage and Grilling ("neither is action yet"), so a pane that
+    /// derived the checkmark from that vocabulary would lose it on exactly
+    /// the two stages the Triage host opens. The consequence for the
+    /// caller: render `available_actions` *minus* `complete`, or the
+    /// affordance is drawn twice.
+    pub can_mark_done: bool,
     /// [`MobileMicrotaskAffordance`], mirrored — #539's applied result.
     /// `None` for a non-editable (archived) item, exactly matching
     /// [`ItemDetailRecord::is_editable`]. Kotlin renders this; it decides
@@ -1354,6 +1366,7 @@ fn to_item_detail_record(
             .iter()
             .map(|action| action.as_str().to_string())
             .collect(),
+        can_mark_done: detail.can_mark_done,
         microtask_affordance: detail.microtask_affordance.map(to_mobile_microtask_affordance),
     }
 }
@@ -5422,6 +5435,7 @@ mod tests {
             is_archived: false,
             is_editable: true,
             available_actions: vec![],
+            can_mark_done: true,
             microtask_affordance: None,
         };
 
@@ -5490,7 +5504,7 @@ mod tests {
         assert_eq!(
             sizes,
             vec!["quick", "normal", "deep"],
-            "NowScreen.kt's SIZE_VALUES and ItemDetailScreen.kt's SIZE_VOCABULARY must match this — order included, since the level glyphs' ramp position is the list index (#558)",
+            "NowScreen.kt's facet SIZE_VALUES must match this — order included, since the level glyphs' ramp position is the list index (#558). The detail pane's own editor no longer holds a copy: it reads `captureFormMeta`.",
         );
 
         let energies: Vec<String> = hummingbird_core::decisions::vocabulary::energy_options()
@@ -5500,7 +5514,7 @@ mod tests {
         assert_eq!(
             energies,
             vec!["low", "medium", "high"],
-            "NowScreen.kt's ENERGY_VALUES and ItemDetailScreen.kt's ENERGY_VOCABULARY must match this — order included, since the level glyphs' ramp position is the list index (#558)",
+            "NowScreen.kt's facet ENERGY_VALUES must match this — order included, since the level glyphs' ramp position is the list index (#558). The detail pane's own editor no longer holds a copy: it reads `captureFormMeta`.",
         );
 
         let axes: Vec<&str> = frontier::FRONTIER_GROUP_AXES
@@ -6766,6 +6780,7 @@ mod tests {
             } else {
                 vec![ItemAction::Start, ItemAction::Complete]
             },
+            can_mark_done: !archived,
             microtask_affordance: if archived {
                 None
             } else {
@@ -6803,7 +6818,28 @@ mod tests {
         assert!(archived.is_archived);
         assert!(!archived.is_editable);
         assert!(archived.available_actions.is_empty());
+        assert!(!archived.can_mark_done);
         assert_eq!(archived.microtask_affordance, None, "an archived item has no live gesture");
+    }
+
+    /// The detail record's own version of
+    /// `triage_item_records_carry_can_mark_done_not_available_actions`: the
+    /// checkmark must survive the two stages whose act vocabulary is
+    /// empty, because the Triage host opens this pane on exactly those.
+    #[test]
+    fn item_detail_records_carry_can_mark_done_where_available_actions_is_empty() {
+        let mut detail = fixture_detail(false);
+        detail.item.stage = hummingbird_domain::Stage::Triage;
+        detail.available_actions = Vec::new();
+        detail.can_mark_done = true;
+
+        let record = to_item_detail_record(&detail, 1_000);
+        assert_eq!(record.stage, "triage");
+        assert!(
+            record.available_actions.is_empty(),
+            "the stage that offers no act vocabulary"
+        );
+        assert!(record.can_mark_done, "and still draws the checkmark");
     }
 
     /// The double-`Option` that cannot cross UniFFI, pinned at the one

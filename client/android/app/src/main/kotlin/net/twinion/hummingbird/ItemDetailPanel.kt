@@ -2,7 +2,9 @@ package net.twinion.hummingbird
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -10,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -27,13 +31,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -41,11 +49,19 @@ import kotlinx.coroutines.launch
 import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.ui.ChoiceRow
 import net.twinion.hummingbird.ui.EnergyGlyph
+import net.twinion.hummingbird.ui.LevelGlyphFamily
 import net.twinion.hummingbird.ui.SizeGlyph
 import net.twinion.hummingbird.ui.StageBadge
+import net.twinion.hummingbird.ui.forms.CaptureDateField
+import net.twinion.hummingbird.ui.forms.ContextField
+import net.twinion.hummingbird.ui.forms.LevelSlider
+import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.levelColor
 import net.twinion.hummingbird.ui.levelPosition
 import net.twinion.hummingbird.ui.theme.LocalHbDark
+import net.twinion.hummingbird.ui.theme.Moss600
+import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
+import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileMicrotaskAffordance
@@ -54,55 +70,85 @@ import uniffi.hummingbird_ffi_mobile.itemCanGrill
 import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 
-// One item, in full — the panel both of its hosts render: the
-// `ItemDetailScreen` route (#141's last slice, ADR-0027 — where a tapped
-// `item-threshold/v1` notification lands, because a state source's alert is
-// a reading of the item's condition and landing on the alert would show a
-// reading of a thing while withholding the thing), and `NowScreen`'s
-// inline expansion (a tapped card opens above the still-standing board,
-// `NowScreen.tsx`'s own `SelectedItemSection` / ADR-0021 decision 7).
+// One item, in full — the panel every one of its four hosts renders:
+//
+//  - the `ItemDetailScreen` route (#141's last slice, ADR-0027 — where a
+//    tapped `item-threshold/v1` notification lands, because a state
+//    source's alert is a reading of the item's condition and landing on the
+//    alert would show a reading of a thing while withholding the thing),
+//  - `NowScreen`'s inline expansion (a tapped card opens above the
+//    still-standing board, `NowScreen.tsx`'s own `SelectedItemSection` /
+//    ADR-0021 decision 7),
+//  - the `RecallOverlay`'s expansion under its result row,
+//  - and `TriageScreen`'s expansion at index 0 of its queue, in
+//    [ItemDetailPanelMode.PROMOTE].
+//
+// Triage rendered a separate seeded editor until the unification: two
+// panels that disagreed about the header, the field widgets and the
+// mark-done check, with a duplicated draft type behind them. One panel and
+// one draft is the whole point — the mode below is the only thing that
+// differs between hosts.
 //
 // This file decides nothing. `availableActions` gates the act buttons,
-// `isEditable` gates the edit affordance, `canAck` gates the Ack, and the
-// open-blocker list is rendered exactly as the core assembled it — a
-// titleless row means an id this device has not synced, and it is shown as
-// the bare id rather than dropped, because a count that understates what
-// holds an item back is worse than an ugly row.
+// `canMarkDone` gates the check, `isEditable` gates every pencil and the
+// submit, `canAck` gates the Ack, and the open-blocker list is rendered
+// exactly as the core assembled it — a titleless row means an id this
+// device has not synced, and it is shown as the bare id rather than
+// dropped, because a count that understates what holds an item back is
+// worse than an ugly row.
 //
 // **Scroll belongs to the host.** The route host wraps this panel's
-// `modifier` in its own `verticalScroll`; the inline host sits inside
-// Now's one `LazyColumn` and must NOT — two same-direction scrollables
-// nest into a measurement crash, so the panel itself never scrolls.
+// `modifier` in its own `verticalScroll`; the three inline hosts sit inside
+// their screen's one `LazyColumn` and must NOT — two same-direction
+// scrollables nest into a measurement crash, so the panel itself never
+// scrolls.
 //
 // **State is keyed per item.** Both `viewModel(...)` calls carry
 // `key = "…-$itemId"` so a different item is a different ViewModel pair —
-// the inline host swaps items without navigating, and an unkeyed lookup
-// would hand item B item A's draft. The cost is one retired pair per item
-// expanded this session, held by the host's back-stack entry and
-// reclaimed when it pops; accepted (the web remounts `ItemPanel` per
-// selection for the same reason, `NowScreen.tsx`'s own comment).
+// the inline hosts swap items without navigating, and an unkeyed lookup
+// would hand item B item A's draft. Every piece of *composition* state here
+// is keyed the same way (`rememberSaveable(itemId)`): under a constant
+// LazyColumn key the composable is not disposed between selections, so an
+// unkeyed flag leaks — title-edit mode used to open by itself on the next
+// item selected, and the microtask grain carried over with it.
+//
+// The cost of the keyed ViewModels is one retired pair per item expanded
+// this session, held by the host's back-stack entry and reclaimed when it
+// pops; accepted (the web remounts `ItemPanel` per selection for the same
+// reason, `NowScreen.tsx`'s own comment).
 //
 // **The one dialog in the app, and why.** The house is dialog-wary
 // (`AlertsScreen`'s own note). This one guards a draft: content a person
 // wrote by hand. The repo's standing rule — the dead-letter journal keeps
 // the words a person wrote, "parse is additive" never discards input — is
 // that human-authored content is never silently thrown away, and Back out
-// of a changed edit form would do exactly that. An *unchanged* draft is
-// never fought over: the `BackHandler` is conditional on the draft
-// actually differing from the record.
+// of a changed draft would do exactly that. An *unchanged* draft is never
+// fought over: the `BackHandler` is conditional on the draft actually
+// differing from what it was seeded with.
 
-/** The two level vocabularies, in the core's own order — one copy serving
- * read mode's glyph positions and edit mode's `VocabularyRow`s alike.
- * Order is what `levelPosition` indexes by (#558). The core's own values
- * and order are pinned by `the_now_screen_facet_vocabularies_match_the_core`
- * (`ffi-mobile`), whose failure messages name these constants — that test
- * reads no Kotlin, so keeping THESE lists right on a core change is the
- * fixer's job, steered there by the message. This file (formerly
- * `ItemDetailScreen.kt`, which is now only the route host) is deliberately
- * outside `CaptureFieldSetStructuralTest`'s literal ban, which guards the
- * capture form's own files. */
-private val SIZE_VOCABULARY = listOf("quick", "normal", "deep")
-private val ENERGY_VOCABULARY = listOf("low", "medium", "high")
+/** Which host is rendering, and it decides exactly three things: the
+ * submit's word, which ViewModel method that submit fires, and whether a
+ * field the item has no value for opens editable or rests as an em-dash
+ * ghost.
+ *
+ * **[PROMOTE] is #360's enforcement.** That issue bans a non-promoting
+ * write from the Triage surface, and [ItemDetailViewModel] — shared with
+ * the other three hosts — still carries `save`. So the ban is upheld here,
+ * by this mode choosing `promote`, and pinned structurally
+ * (`ItemDetailPanelStructuralTest`: the factory's literal
+ * `triageItem(itemId, true,` and the absence of any `.save(` in Triage's
+ * own sources). */
+enum class ItemDetailPanelMode {
+    /** Now, the notification route and the Recall overlay: the submit is
+     * "Save", and an unset field rests as a ghost rather than opening a
+     * form on a surface that is mostly for reading. */
+    SAVE,
+
+    /** Triage: the submit is "Promote to ready", and an unset field opens
+     * editable, because filling those in is the work this queue exists
+     * for. */
+    PROMOTE,
+}
 
 /** S11/#109's wire vocabulary, mapped to its button label and nothing more
  * — `ItemPanel.tsx`'s `ACTION_BUTTON` verbatim (`client/web/src/components/
@@ -110,10 +156,12 @@ private val ENERGY_VOCABULARY = listOf("low", "medium", "high")
  * the design README's voice rule; "Blocked" means an external wait and
  * nothing else). Which actions an item *offers* is decided entirely
  * core-side ([ItemDetailRecord.availableActions]) — this map only ever
- * renders whatever that list already contains. It lives here because the
- * opened item is where acting happens — the Now cards carry exactly one
- * inline act, the mark-done checkmark gated on the seam's `canMarkDone`
- * (`NowScreen.kt`'s `NowRow`), and everything else still acts here. */
+ * renders whatever that list already contains.
+ *
+ * `complete` is in the map and is deliberately never rendered from it: the
+ * panel filters it out of the button row because the green check at the
+ * panel's foot is that gesture, drawn once. The entry stays because the map
+ * is the vocabulary's labels, not the button row's contents. */
 internal val ACTION_LABEL: Map<String, String> = mapOf(
     "start" to "Start",
     "complete" to "Complete",
@@ -125,16 +173,20 @@ internal val ACTION_LABEL: Map<String, String> = mapOf(
 fun ItemDetailPanel(
     itemId: String,
     syncTick: Int,
-    /** The idle close button's word — "Back" from the route, "Close"
-     * inline; while a draft is open the button says "Cancel" instead and
-     * [onClose] is not what it fires. */
+    /** The close control's accessible word — "Back" from the route,
+     * "Close" inline. */
     closeLabel: String,
     onClose: () -> Unit,
     onGrill: (String) -> Unit,
-    /** Fired after an act, Ack or save lands — the inline host re-reads
-     * its board so the mutation shows behind the panel immediately; the
+    /** Fired after an act, Ack or submit lands — the inline hosts re-read
+     * their board so the mutation shows behind the panel immediately; the
      * route host has no board and passes nothing. */
     onMutated: () -> Unit = {},
+    /** Fired after a *submit* or a mark-done lands — the gestures that can
+     * take the item out of the host's own list. Triage closes its selection
+     * on it, or `selectedId` would dangle at a vanished row. */
+    onSubmitted: () -> Unit = {},
+    mode: ItemDetailPanelMode = ItemDetailPanelMode.SAVE,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -156,6 +208,17 @@ fun ItemDetailPanel(
     // Saveable: an Activity recreation mid-question must not silently
     // answer it.
     var confirmingDiscard by rememberSaveable { mutableStateOf(false) }
+    // Keyed on the item: under a constant LazyColumn key this composable
+    // survives a selection change, so an unkeyed flag would open the next
+    // item's title field by itself.
+    var editingTitle by rememberSaveable(itemId) { mutableStateOf(false) }
+    val titleFocus = remember { FocusRequester() }
+    // Keyed on the flag, so the field is focused the moment the pencil
+    // flips it and never again — not `LaunchedEffect(Unit)`, which #634
+    // found re-firing on Activity recreation and undoing state.
+    LaunchedEffect(editingTitle) {
+        if (editingTitle) titleFocus.requestFocus()
+    }
 
     suspend fun reload() {
         viewModel.load(itemId, System.currentTimeMillis())
@@ -182,8 +245,14 @@ fun ItemDetailPanel(
         if (microtaskSyncedTick > 0) reload()
     }
 
+    // Every leaving gesture — Back, the X, the header tap — asks the same
+    // question, and only when there is something to lose.
+    fun requestClose() {
+        if (viewModel.isDirty) confirmingDiscard = true else onClose()
+    }
+
     // Only while there is something to lose. An idle Back is never fought.
-    BackHandler(enabled = draft != null && viewModel.isDirty) {
+    BackHandler(enabled = viewModel.isDirty) {
         confirmingDiscard = true
     }
 
@@ -192,66 +261,94 @@ fun ItemDetailPanel(
             onKeep = { confirmingDiscard = false },
             onDiscard = {
                 confirmingDiscard = false
-                viewModel.discardEdit()
+                viewModel.discardDraft()
             },
         )
     }
 
     // The host owns any scrolling (this file's header) — the route wraps
-    // `modifier` in its own `verticalScroll`; the inline host must not.
+    // `modifier` in its own `verticalScroll`; the inline hosts must not.
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // The web ItemPanel's header row: the mono meta line over the
-        // title on the left, the close control top-right. One × IconButton
-        // whatever the state — a loading or unsynced panel must still be
-        // closable — and while a draft is open the × cancels the edit (the
-        // dirty path confirms first), exactly what the old top button did.
         val loadedRecord = (state as? ItemDetailState.Loaded)?.record
+        // The header: the title (the draft's, so an edit shows where it was
+        // made), a pencil that swaps an inline field in for it, and the X.
+        // The row itself is the wide door out — tapping it closes through
+        // the same guarded path the X does. Two things make that safe
+        // rather than a trap: the row is only clickable while *not* editing,
+        // so a tap into the title field is not a tap on the way out; and
+        // `IconButton` consumes its own gesture, so neither the pencil nor
+        // the X falls through to the row underneath. Editing ends on the
+        // field's IME Done — deliberately not on focus loss, which fires
+        // once with `isFocused = false` before the field is ever focused and
+        // would need a flag to tell the two apart.
         Row(
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (editingTitle) Modifier else Modifier.clickable { requestClose() }),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                // `HB-<seq>` with the project riding beside it —
-                // `ItemPanel.tsx`'s own `.hb-meta` line, "ITEM DETAIL"
-                // while the seq hasn't synced yet, never blank. The
-                // project id stands in for an unsynced name: the name is
-                // unsynced, not the project.
-                val meta = buildList {
-                    add(loadedRecord?.seq?.let { "HB-$it" } ?: "ITEM DETAIL")
-                    (loadedRecord?.projectName ?: loadedRecord?.projectId)?.let { add(it) }
-                }
-                Text(
-                    meta.joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            val openDraft = draft
+            if (editingTitle && openDraft != null) {
+                OutlinedTextField(
+                    value = openDraft.title,
+                    onValueChange = { viewModel.updateDraft(openDraft.copy(title = it)) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(titleFocus),
+                    singleLine = true,
+                    isError = !viewModel.canSave && openDraft.title.isEmpty(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { editingTitle = false }),
                 )
-                loadedRecord?.let {
-                    // The web panel's title token is h3 (17px semibold
-                    // display) — titleMedium here, not headlineLarge: the
-                    // panel is a card over a board, not a screen.
-                    Text(it.title, style = MaterialTheme.typography.titleMedium)
+            } else {
+                // The web panel's title token is h3 (17px semibold
+                // display) — titleMedium here, not headlineLarge: the
+                // panel is a card over a board, not a screen. Before the
+                // record lands there is nothing to name, and the meta line
+                // below says so rather than this line guessing.
+                Text(
+                    openDraft?.title ?: loadedRecord?.title.orEmpty(),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (loadedRecord?.isEditable == true && openDraft != null) {
+                    IconButton(onClick = { editingTitle = true }) {
+                        Icon(
+                            painterResource(R.drawable.ic_pencil),
+                            contentDescription = "Edit title",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
-            IconButton(
-                onClick = {
-                    if (draft != null && viewModel.isDirty) confirmingDiscard = true
-                    else if (draft != null) viewModel.discardEdit()
-                    else onClose()
-                },
-            ) {
+            // The visible door out; the header tap is the wide one. One ×
+            // whatever the state — a loading or unsynced panel must still
+            // be closable.
+            IconButton(onClick = { requestClose() }) {
                 Icon(
                     painterResource(R.drawable.ic_x),
-                    contentDescription = if (draft != null) "Cancel" else closeLabel,
+                    contentDescription = closeLabel,
                     modifier = Modifier.size(18.dp),
                 )
             }
         }
+
+        // `HB-<seq>` with the project riding beside it — `ItemPanel.tsx`'s
+        // own `.hb-meta` line, "ITEM DETAIL" while the seq hasn't synced
+        // yet, never blank. The project id stands in for an unsynced name:
+        // the name is unsynced, not the project.
+        val meta = buildList {
+            add(loadedRecord?.seq?.let { "HB-$it" } ?: "ITEM DETAIL")
+            (loadedRecord?.projectName ?: loadedRecord?.projectId)?.let { add(it) }
+        }
+        Text(
+            meta.joinToString(" · "),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         statusLine?.let {
             Text(
@@ -266,50 +363,61 @@ fun ItemDetailPanel(
             ItemDetailState.NotSynced -> ItemNotSyncedBody(
                 onRetry = { scope.launch { reload() } },
             )
-            is ItemDetailState.Loaded -> {
-                val editing = draft
-                if (editing == null) {
-                    ReadBody(
-                        record = current.record,
-                        dark = dark,
-                        onEdit = { viewModel.beginEdit() },
-                        onAct = { action ->
-                            scope.launch {
-                                viewModel.act(itemId, action, System.currentTimeMillis())
-                                onMutated()
+            is ItemDetailState.Loaded -> draft?.let { openDraft ->
+                DetailBody(
+                    itemId = itemId,
+                    record = current.record,
+                    draft = openDraft,
+                    mode = mode,
+                    dark = dark,
+                    formMeta = viewModel.formMeta,
+                    problems = viewModel.metaProblems,
+                    canSave = viewModel.canSave,
+                    onDraftChange = viewModel::updateDraft,
+                    onSubmit = {
+                        scope.launch {
+                            when (mode) {
+                                ItemDetailPanelMode.SAVE ->
+                                    viewModel.save(itemId, System.currentTimeMillis())
+                                ItemDetailPanelMode.PROMOTE ->
+                                    viewModel.promote(itemId, System.currentTimeMillis())
                             }
-                        },
-                        onAck = { alertId ->
-                            scope.launch {
-                                viewModel.ack(itemId, alertId, System.currentTimeMillis())
-                                onMutated()
-                            }
-                        },
-                        onGrill = { onGrill(itemId) },
-                        hasGrillDraft = hasGrillDraft,
-                        microtaskRun = microtaskRun,
-                        // The current backend selection resolves to a
-                        // `model` INSIDE `MicrotaskViewModel.run` (off
-                        // `BackendPreference`, #274's Settings picker)
-                        // — never a literal here.
-                        onMicrotaskRun = { replace, grain -> microtaskViewModel.run(itemId, replace, grain) },
-                        declinedFallbackLabel = microtaskDeclinedFallbackLabel,
-                        onSwitchAndRetry = { microtaskViewModel.switchAndRetry() },
-                    )
-                } else {
-                    EditBody(
-                        draft = editing,
-                        problems = viewModel.metaProblems,
-                        canSave = viewModel.canSave,
-                        onChange = viewModel::updateDraft,
-                        onSave = {
-                            scope.launch {
-                                viewModel.save(itemId, System.currentTimeMillis())
-                                onMutated()
-                            }
-                        },
-                    )
-                }
+                            onMutated()
+                            onSubmitted()
+                        }
+                    },
+                    onAct = { action ->
+                        scope.launch {
+                            viewModel.act(itemId, action, System.currentTimeMillis())
+                            onMutated()
+                        }
+                    },
+                    onComplete = {
+                        scope.launch {
+                            viewModel.act(itemId, "complete", System.currentTimeMillis())
+                            onMutated()
+                            onSubmitted()
+                        }
+                    },
+                    onAck = { alertId ->
+                        scope.launch {
+                            viewModel.ack(itemId, alertId, System.currentTimeMillis())
+                            onMutated()
+                        }
+                    },
+                    onGrill = { onGrill(itemId) },
+                    hasGrillDraft = hasGrillDraft,
+                    microtaskRun = microtaskRun,
+                    // The current backend selection resolves to a
+                    // `model` INSIDE `MicrotaskViewModel.run` (off
+                    // `BackendPreference`, #274's Settings picker)
+                    // — never a literal here.
+                    onMicrotaskRun = { replace, grain ->
+                        microtaskViewModel.run(itemId, replace, grain)
+                    },
+                    declinedFallbackLabel = microtaskDeclinedFallbackLabel,
+                    onSwitchAndRetry = { microtaskViewModel.switchAndRetry() },
+                )
             }
         }
     }
@@ -332,11 +440,19 @@ private fun ItemNotSyncedBody(onRetry: () -> Unit) {
 }
 
 @Composable
-private fun ReadBody(
+private fun DetailBody(
+    itemId: String,
     record: ItemDetailRecord,
+    draft: ItemDraft,
+    mode: ItemDetailPanelMode,
     dark: Boolean,
-    onEdit: () -> Unit,
+    formMeta: CaptureFormMeta,
+    problems: MetaProblems?,
+    canSave: Boolean,
+    onDraftChange: (ItemDraft) -> Unit,
+    onSubmit: () -> Unit,
     onAct: (String) -> Unit,
+    onComplete: () -> Unit,
     onAck: (String) -> Unit,
     onGrill: () -> Unit,
     hasGrillDraft: Boolean,
@@ -345,6 +461,10 @@ private fun ReadBody(
     declinedFallbackLabel: String?,
     onSwitchAndRetry: () -> Unit,
 ) {
+    // One treatment per stage word (#557) — `ui/StageBadge.kt`, never a raw
+    // `stage.uppercase()`. Under the header, where Triage's editor put it.
+    StageBadge(stage = record.stage, dark = dark)
+
     if (record.isArchived) {
         // Honesty over reassurance: history is readable here, and says so.
         Text(
@@ -360,64 +480,174 @@ private fun ReadBody(
         )
     }
 
-    record.description?.let {
-        Text(it, style = MaterialTheme.typography.bodyLarge)
+    // The three axes the system computes with, then the words a human
+    // wrote, then the context, then the two dates. Each section reads
+    // condensed with a pencil beside it and swaps its shared `ui/forms`
+    // editor in when the pencil is tapped — the values live in the draft
+    // either way, and one submit sends them.
+    DetailSection(
+        itemId = itemId,
+        label = "SIZE · ENERGY · PRIORITY",
+        isSet = record.size != null || record.energy != null,
+        mode = mode,
+        editable = record.isEditable,
+        condensed = {
+            // Size and energy are drawn as well as written (#558,
+            // ADR-0024) — glyph beside word, one ramp colour over both —
+            // and this surface has the room the ADR requires, so it is the
+            // ONE place the unset ghost renders (position 0 beside an em
+            // dash): `size-unset` and `size-deep` are the same three rings
+            // told apart by opacity alone, which is why nothing word-free
+            // ever draws a ghost.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                // The ramp position is the option's index in the
+                // core-supplied list, so the seam's own order decides it
+                // and no vocabulary literal lives in this file.
+                val sizePos = levelPosition(formMeta.sizes.map { it.value }, record.size)
+                val sizeColor = levelColor(sizePos, dark)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    SizeGlyph(position = sizePos, color = sizeColor, size = 13.dp)
+                    Text(
+                        "SIZE:${record.size?.uppercase() ?: "—"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = sizeColor,
+                    )
+                }
+                val energyPos = levelPosition(formMeta.energies.map { it.value }, record.energy)
+                val energyColor = levelColor(energyPos, dark)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    EnergyGlyph(position = energyPos, color = energyColor, size = 13.dp)
+                    Text(
+                        "ENERGY:${record.energy?.uppercase() ?: "—"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = energyColor,
+                    )
+                }
+                val rest = buildList {
+                    add("PRIORITY:${record.priority}")
+                    // Read-only on this surface: the delegation axis is set
+                    // and cleared deliberately elsewhere, and `ItemEdit`
+                    // carries no field for it.
+                    if (record.agent) add("AGENT")
+                }
+                Text(
+                    rest.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+    ) {
+        LevelSlider(
+            label = "Energy",
+            glyphFamily = LevelGlyphFamily.ENERGY,
+            options = formMeta.energies,
+            selected = draft.energy.ifEmpty { null },
+            onSelect = { onDraftChange(draft.copy(energy = it.orEmpty())) },
+        )
+        LevelSlider(
+            label = "Size",
+            glyphFamily = LevelGlyphFamily.SIZE,
+            options = formMeta.sizes,
+            selected = draft.size.ifEmpty { null },
+            onSelect = { onDraftChange(draft.copy(size = it.orEmpty())) },
+        )
+        PriorityRow(
+            selected = draft.priority,
+            onSelect = { onDraftChange(draft.copy(priority = it)) },
+        )
     }
 
-    // The four axes and the two dates, in the mono meta style: values the
-    // system holds, not words a human wrote. Size and energy are drawn as
-    // well as written (#558, ADR-0024) — glyph beside word, one ramp colour
-    // over both — and this surface has the room the ADR requires, so it is
-    // the ONE place the unset ghost renders (position 0 beside an em dash):
-    // `size-unset` and `size-deep` are the same three rings told apart by
-    // opacity alone, which is why nothing word-free ever draws a ghost.
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        itemVerticalAlignment = Alignment.CenterVertically,
+    DetailSection(
+        itemId = itemId,
+        label = "NOTES",
+        isSet = record.description != null,
+        mode = mode,
+        editable = record.isEditable,
+        condensed = {
+            record.description?.let {
+                Text(it, style = MaterialTheme.typography.bodyLarge)
+            } ?: GhostValue("NOTES")
+        },
     ) {
-        // The badge leads the row — the web panel's badge-row order, with
-        // the seq/title header above it since the header restructure. One
-        // treatment per stage word (#557) — `ui/StageBadge.kt`, never a
-        // raw `stage.uppercase()`.
-        StageBadge(stage = record.stage, dark = dark)
-        val sizePos = levelPosition(SIZE_VOCABULARY, record.size)
-        val sizeColor = levelColor(sizePos, dark)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SizeGlyph(position = sizePos, color = sizeColor, size = 13.dp)
+        OutlinedTextField(
+            value = draft.description,
+            onValueChange = { onDraftChange(draft.copy(description = it)) },
+            label = { Text("Notes") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
+    DetailSection(
+        itemId = itemId,
+        label = "CONTEXT",
+        isSet = record.context != null,
+        mode = mode,
+        editable = record.isEditable,
+        condensed = {
+            record.context?.let {
+                Text(
+                    "CONTEXT:${it.uppercase()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } ?: GhostValue("CONTEXT")
+        },
+    ) {
+        // Free text over a suggestion list, not a picker: the set of places
+        // a person works is theirs (CONTEXT.md's Context — an open
+        // vocabulary), and the suggestions come from the seam.
+        ContextField(
+            value = draft.context,
+            onValueChange = { onDraftChange(draft.copy(context = it)) },
+            suggestions = formMeta.suggestedContexts,
+        )
+    }
+
+    DetailSection(
+        itemId = itemId,
+        label = "DATES",
+        isSet = record.deadline != null || record.scheduledDate != null,
+        mode = mode,
+        editable = record.isEditable,
+        condensed = {
             Text(
-                "SIZE:${record.size?.uppercase() ?: "—"}",
+                listOf(
+                    "DUE:${record.deadline ?: "—"}",
+                    "SCHEDULED:${record.scheduledDate ?: "—"}",
+                ).joinToString(" · "),
                 style = MaterialTheme.typography.labelSmall,
-                color = sizeColor,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-        val energyPos = levelPosition(ENERGY_VOCABULARY, record.energy)
-        val energyColor = levelColor(energyPos, dark)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            EnergyGlyph(position = energyPos, color = energyColor, size = 13.dp)
-            Text(
-                "ENERGY:${record.energy?.uppercase() ?: "—"}",
-                style = MaterialTheme.typography.labelSmall,
-                color = energyColor,
-            )
-        }
-        val axes = buildList {
-            record.context?.let { add(it.uppercase()) }
-            if (record.agent) add("AGENT")
-            add("PRIORITY:${record.priority}")
-            record.deadline?.let { add("DUE:$it") }
-            record.scheduledDate?.let { add("SCHEDULED:$it") }
-        }
-        Text(
-            axes.joinToString(" · "),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        },
+    ) {
+        // The two free-text dates are the only fields that can be
+        // malformed — everything else is a closed vocabulary offered as
+        // choices, or the title. The problem strings are the core's,
+        // shared with the web's capture box and triage form, so a bad date
+        // is refused with the same words everywhere instead of being sent
+        // for the authority to 400.
+        CaptureDateField(
+            label = "Deadline",
+            value = draft.deadline,
+            error = problems?.deadline,
+            onValueChange = { onDraftChange(draft.copy(deadline = it)) },
+        )
+        CaptureDateField(
+            label = "Scheduled date",
+            value = draft.scheduledDate,
+            error = problems?.scheduledDate,
+            onValueChange = { onDraftChange(draft.copy(scheduledDate = it)) },
         )
     }
 
@@ -524,33 +754,45 @@ private fun ReadBody(
         }
     }
 
-    // #576: "Start / Complete / Mark blocked / Cancel" is wider than a
-    // phone, and a plain `Row` left `Cancel` a column of letters rather
-    // than a button — hence `ChoiceRow`. Since the compaction slice this
-    // panel is the only surface offering these actions at all (the Now
-    // cards carry none; `ACTION_LABEL`'s doc above).
+    // #576: "Start / Mark blocked / Cancel" is wider than a phone, and a
+    // plain `Row` left `Cancel` a column of letters rather than a button —
+    // hence `ChoiceRow`. `complete` is filtered out: the green check below
+    // is that gesture, and drawing both would offer it twice.
     ChoiceRow {
-        for (action in record.availableActions) {
+        for (action in record.availableActions.filter { it != "complete" }) {
             OutlinedButton(onClick = { onAct(action) }) {
                 Text(ACTION_LABEL[action] ?: action)
             }
         }
     }
 
-    // Live (#539): `itemCanGrill` is the seam's own rule, the same one
-    // `TriageItemRecord.canGrill` reads per row. `isEditable` is gated
-    // alongside it, and cannot be folded into `itemCanGrill(record.stage)`
-    // — `stage` alone cannot tell a cancelled item from a live one: `Core
-    // ::act`'s cancel sets `archivedAt`, never `stage`, so a cancelled
-    // Ready/In Progress item still carries a `canGrill`-eligible stage.
-    // Without this second check, that archived row would offer a live
-    // "Grill me" whose Confirm could still enqueue a `CompleteGrill` on
-    // history (the same recall rule `record.isEditable` already gates Edit
-    // and the microtask affordance on).
-    if (record.isEditable && itemCanGrill(record.stage)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onGrill) {
-                Text(itemGrillButtonLabel(hasGrillDraft))
+    if (record.isEditable) {
+        ChoiceRow {
+            // Live (#539): `itemCanGrill` is the seam's own rule, the same
+            // one `TriageItemRecord.canGrill` reads per row. `isEditable`
+            // is gated alongside it, and cannot be folded into
+            // `itemCanGrill(record.stage)` — `stage` alone cannot tell a
+            // cancelled item from a live one: `Core::act`'s cancel sets
+            // `archivedAt`, never `stage`, so a cancelled Ready/In Progress
+            // item still carries a `canGrill`-eligible stage. Without the
+            // enclosing check, that archived row would offer a live "Grill
+            // me" whose Confirm could still enqueue a `CompleteGrill` on
+            // history (the same recall rule gates every pencil here).
+            if (itemCanGrill(record.stage)) {
+                OutlinedButton(onClick = onGrill) {
+                    Text(itemGrillButtonLabel(hasGrillDraft))
+                }
+            }
+            // One submit for the whole draft, whatever section it was typed
+            // in. Its word and its destination are the mode's only job —
+            // see [ItemDetailPanelMode].
+            Button(onClick = onSubmit, enabled = canSave) {
+                Text(
+                    when (mode) {
+                        ItemDetailPanelMode.SAVE -> "Save"
+                        ItemDetailPanelMode.PROMOTE -> "Promote to ready"
+                    },
+                )
             }
         }
     }
@@ -562,6 +804,7 @@ private fun ReadBody(
     // block offers nothing of its own eligibility logic.
     record.microtaskAffordance?.let { affordance ->
         MicrotaskSection(
+            itemId = itemId,
             affordance = affordance,
             run = microtaskRun,
             onRun = onMicrotaskRun,
@@ -570,11 +813,102 @@ private fun ReadBody(
         )
     }
 
-    if (record.isEditable) {
-        OutlinedButton(onClick = onEdit) {
-            Text("Edit")
+    // Bottom-right, on a line of its own rather than sharing the
+    // ChoiceRow's: that row wraps at narrow widths (#576), so anything
+    // beside it moves when the buttons do. Gated on the core's
+    // `canMarkDone` — the wider rule that answers for Triage and Grilling,
+    // where `availableActions` is empty.
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        if (record.canMarkDone) {
+            IconButton(onClick = onComplete) {
+                Icon(
+                    painterResource(R.drawable.ic_check),
+                    contentDescription = "Mark \"${record.title}\" done",
+                    modifier = Modifier.size(18.dp),
+                    // `NowRow`'s own mark-done green, the same token pair
+                    // and the same documented exception to "icons never
+                    // carry colour independently of their label"
+                    // (`NowRow.kt`'s note on it).
+                    tint = if (dark) StatusDoneFgDark else Moss600,
+                )
+            }
         }
     }
+}
+
+/** One field group: its condensed line with a pencil beside it, or its
+ * shared `ui/forms` editor in place of that line.
+ *
+ * The open/shut flag starts as `null` and only becomes a real value when
+ * the human taps the pencil, so until then the section follows the data:
+ * a field the item has no value for opens editable on the
+ * [ItemDetailPanelMode.PROMOTE] host — filling those in is what that queue
+ * is for — and rests as a ghost everywhere else. [isSet] is read off the
+ * *record*, never the draft, or typing the first character into a
+ * pre-opened section would flip the default and collapse the field
+ * mid-word.
+ *
+ * Keyed on the item id for the reason this file's header gives: under a
+ * constant LazyColumn key the composable survives a selection change, so
+ * an unkeyed flag would carry one item's opened sections onto the next. */
+@Composable
+private fun DetailSection(
+    itemId: String,
+    label: String,
+    isSet: Boolean,
+    mode: ItemDetailPanelMode,
+    editable: Boolean,
+    condensed: @Composable () -> Unit,
+    editor: @Composable () -> Unit,
+) {
+    var openOverride by rememberSaveable(itemId, label) { mutableStateOf<Boolean?>(null) }
+    val open = editable &&
+        (openOverride ?: (mode == ItemDetailPanelMode.PROMOTE && !isSet))
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                if (open) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    condensed()
+                }
+            }
+            if (editable) {
+                IconButton(onClick = { openOverride = !open }) {
+                    Icon(
+                        painterResource(R.drawable.ic_pencil),
+                        contentDescription = if (open) "Done editing $label" else "Edit $label",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+        if (open) editor()
+    }
+}
+
+/** A field the item has no value for, on a surface that is mostly for
+ * reading: the field's name and an em dash, in the mono meta style. Says
+ * "the system holds nothing here" rather than pretending the field does not
+ * exist. */
+@Composable
+private fun GhostValue(label: String) {
+    Text(
+        "$label:—",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /** The microtask affordance's own render — narrates as it streams, and a
@@ -583,13 +917,16 @@ private fun ReadBody(
  * string-matches it, here as on the web. */
 @Composable
 private fun MicrotaskSection(
+    itemId: String,
     affordance: MobileMicrotaskAffordance,
     run: MobileSkillRunState,
     onRun: (replace: Boolean, grain: Long?) -> Unit,
     declinedFallbackLabel: String?,
     onSwitchAndRetry: () -> Unit,
 ) {
-    var grain by rememberSaveable { mutableStateOf(2L) }
+    // Keyed on the item, for this file's header's reason: an unkeyed grain
+    // carried one item's chosen step count onto the next item selected.
+    var grain by rememberSaveable(itemId) { mutableStateOf(2L) }
     val running = run is MobileSkillRunState.Running
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -667,129 +1004,10 @@ private fun Narration(messages: List<String>) {
     }
 }
 
-@Composable
-private fun EditBody(
-    draft: ItemDraft,
-    problems: MetaProblems?,
-    canSave: Boolean,
-    onChange: (ItemDraft) -> Unit,
-    onSave: () -> Unit,
-) {
-    OutlinedTextField(
-        value = draft.title,
-        onValueChange = { onChange(draft.copy(title = it)) },
-        label = { Text("Title") },
-        // An item must have a title (`NOT NULL`), so an empty one is
-        // refused here rather than saved as a silent no-op. Whether it
-        // *is* empty is the core's answer, never this file's.
-        isError = !canSave && draft.title.isEmpty(),
-        modifier = Modifier.fillMaxWidth(),
-    )
-    OutlinedTextField(
-        value = draft.description,
-        onValueChange = { onChange(draft.copy(description = it)) },
-        label = { Text("Notes") },
-        modifier = Modifier.fillMaxWidth(),
-    )
-    OutlinedTextField(
-        value = draft.context,
-        onValueChange = { onChange(draft.copy(context = it)) },
-        // Free text, not a picker: the set of places a person works is
-        // theirs (CONTEXT.md's Context — an open vocabulary).
-        label = { Text("Context") },
-        modifier = Modifier.fillMaxWidth(),
-    )
-    // The two free-text dates are the only fields that can be malformed —
-    // everything else is a closed vocabulary offered as choices, or the
-    // title. The problem strings are the core's, shared with the web's
-    // capture box and triage form, so a bad date is refused with the same
-    // words everywhere instead of being sent for the authority to 400.
-    OutlinedTextField(
-        value = draft.deadline,
-        onValueChange = { onChange(draft.copy(deadline = it)) },
-        label = { Text("Deadline") },
-        isError = problems?.deadline != null,
-        supportingText = problems?.deadline?.let { { Text(it) } },
-        modifier = Modifier.fillMaxWidth(),
-    )
-    OutlinedTextField(
-        value = draft.scheduledDate,
-        onValueChange = { onChange(draft.copy(scheduledDate = it)) },
-        label = { Text("Scheduled date") },
-        isError = problems?.scheduledDate != null,
-        supportingText = problems?.scheduledDate?.let { { Text(it) } },
-        modifier = Modifier.fillMaxWidth(),
-    )
-
-    // Closed vocabularies, so a choice row rather than a text field: an
-    // unrecognised word is refused at the seam, and offering one to type
-    // would invite exactly that refusal.
-    VocabularyRow(
-        label = "SIZE",
-        options = SIZE_VOCABULARY,
-        selected = draft.size,
-        onSelect = { onChange(draft.copy(size = it)) },
-    )
-    VocabularyRow(
-        label = "ENERGY",
-        options = ENERGY_VOCABULARY,
-        selected = draft.energy,
-        onSelect = { onChange(draft.copy(energy = it)) },
-    )
-    VocabularyRow(
-        label = "PRIORITY",
-        options = listOf("0", "1", "2", "3", "4"),
-        selected = draft.priority,
-        // Priority is `NOT NULL`: re-tapping the current value cannot
-        // clear it, so this row never sends an empty string.
-        onSelect = { onChange(draft.copy(priority = it)) },
-        clearable = false,
-    )
-
-    Button(onClick = onSave, enabled = canSave) {
-        Text("Save")
-    }
-}
-
-/** One closed-vocabulary field as a row of words. Tapping the selected
- * word again clears the field — which is a real edit (an explicit null),
- * distinct from leaving it alone, and the only way to say "this item has
- * no size after all". */
-@Composable
-private fun VocabularyRow(
-    label: String,
-    options: List<String>,
-    selected: String,
-    onSelect: (String) -> Unit,
-    clearable: Boolean = true,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (option in options) {
-                val isSelected = option == selected
-                if (isSelected) {
-                    Button(onClick = { if (clearable) onSelect("") }) {
-                        Text(option)
-                    }
-                } else {
-                    OutlinedButton(onClick = { onSelect(option) }) {
-                        Text(option)
-                    }
-                }
-            }
-        }
-    }
-}
-
 /** The discard confirmation — the app's first dialog, and deliberately its
- * only one: `TriageScreen`'s editor guards its own draft with THIS
- * composable rather than a second dialog of its own. See this file's header
- * for why a draft earns it. */
+ * only one: every host of this panel guards its draft with THIS composable
+ * rather than a dialog of its own. See this file's header for why a draft
+ * earns it. */
 @Composable
 internal fun DiscardConfirmation(onKeep: () -> Unit, onDiscard: () -> Unit) {
     AlertDialog(

@@ -44,6 +44,14 @@ class ScreenStateRetentionTest {
         // The item screen's own microtask affordance (#539) shares the
         // file but not the ViewModel — a second entry, not a substitute.
         "ItemDetailPanel.kt" to "MicrotaskViewModel",
+        // Triage holds the board and the selection...
+        "TriageScreen.kt" to "TriageViewModel",
+        // ...and, since the pane unified onto `ItemDetailPanel`, resolves
+        // the panel's OWN ViewModel a second time for its Back guard. Same
+        // key, same store, so the guard reads the dirtiness of the very
+        // draft the pane is holding — a `remember` here would answer for a
+        // different instance and let a fold drop typed words.
+        "TriageScreen.kt" to "ItemDetailViewModel",
         // The rules screen has a draft too (#540/M4) — a rule someone is
         // writing, conditions and all.
         "RulesScreen.kt" to "RulesViewModel",

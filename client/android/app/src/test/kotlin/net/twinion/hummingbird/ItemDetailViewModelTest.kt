@@ -7,15 +7,17 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.FieldPatch
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.ItemEdit
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 
-// `ItemDetailViewModel`'s load/edit/save control flow, with fakes only.
-// Two things here are worth more than the rest: the draft must survive
+// `ItemDetailViewModel`'s load/draft/submit control flow, with fakes only.
+// Three things here are worth more than the rest: the draft must survive
 // everything that is not an explicit discard (it is human-authored
-// content), and a save must carry only the fields actually touched.
+// content), a submit must carry only the fields actually touched, and
+// dirtiness must mean "a human changed something" — never "a sync landed".
 class ItemDetailViewModelTest {
 
     private fun vm(
@@ -23,6 +25,7 @@ class ItemDetailViewModelTest {
         act: suspend (String, String, Long) -> Unit = { _, _, _ -> },
         ack: suspend (String, Long) -> Unit = { _, _ -> },
         edit: suspend (String, ItemEdit, Long) -> Unit = { _, _, _ -> },
+        promote: suspend (String, ItemEdit, Long) -> Unit = { _, _, _ -> },
         sync: suspend () -> Unit = { },
         hasGrillDraft: suspend (String) -> Boolean = { false },
     ) = ItemDetailViewModel(
@@ -30,6 +33,7 @@ class ItemDetailViewModelTest {
         actFn = act,
         ackFn = ack,
         editFn = edit,
+        promoteFn = promote,
         syncFn = sync,
         hasGrillDraftFn = hasGrillDraft,
         // Stand-ins for the two core rules: no native library exists in a
@@ -44,6 +48,13 @@ class ItemDetailViewModelTest {
                     .takeIf { deadline.isNotEmpty() && !deadline.startsWith("2026-") },
                 scheduledDate = "Use YYYY-MM-DD"
                     .takeIf { scheduledDate.isNotEmpty() && !scheduledDate.startsWith("2026-") },
+            )
+        },
+        formMetaFn = {
+            CaptureFormMeta(
+                sizes = emptyList(),
+                energies = emptyList(),
+                suggestedContexts = listOf("@computer", "@errands"),
             )
         },
     )
@@ -92,26 +103,36 @@ class ItemDetailViewModelTest {
     }
 
     /** Recall's rule (#478) reached through this door: the core says an
-     * archived item is not editable, and nothing here may open a draft on
-     * one anyway. */
+     * archived item is not editable, and no write leaves here for one —
+     * enforced, not merely un-rendered. */
     @Test
-    fun `an archived item exposes no edit path`() = runBlocking {
-        val model = vm(fetch = { id, _ -> itemDetail(id, isEditable = false, isArchived = true) })
+    fun `an archived item takes no write, whichever submit is called`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(
+            fetch = { id, _ -> itemDetail(id, isEditable = false, isArchived = true) },
+            edit = { _, edit, _ -> sent = edit },
+            promote = { _, edit, _ -> sent = edit },
+        )
         model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(title = "renamed"))
 
-        model.beginEdit()
+        model.save("i-1", 2_000)
+        model.promote("i-1", 2_000)
 
-        assertNull(model.draft.value)
+        assertNull("history is readable, not editable", sent)
+        assertTrue(model.statusLine.value?.contains("readable, not editable") == true)
     }
 
+    /** There is no edit mode to enter: the panel edits every section in
+     * place, so the draft exists from the first successful load. */
     @Test
-    fun `an untouched draft is not dirty, so Back is never fought`() = runBlocking {
+    fun `the draft is seeded by the load itself`() = runBlocking {
         val model = vm()
+
         model.load("i-1", 1_000)
 
-        model.beginEdit()
-
-        assertFalse(model.isDirty)
+        assertEquals("item i-1", model.draft.value?.title)
+        assertFalse("merely opening an item is not an edit", model.isDirty)
         model.updateDraft(model.draft.value!!.copy(title = "changed"))
         assertTrue(model.isDirty)
     }
@@ -121,14 +142,47 @@ class ItemDetailViewModelTest {
      * prevent. */
     @Test
     fun `a reload while editing leaves the draft alone`() = runBlocking {
-        val model = vm()
+        var reads = 0
+        val model = vm(fetch = { id, _ -> itemDetail(id, title = "read ${reads++}") })
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(title = "half-typed"))
 
         model.load("i-1", 2_000)
 
         assertEquals("half-typed", model.draft.value?.title)
+        assertTrue("and it is still worth asking about", model.isDirty)
+    }
+
+    /** The other half of that rule, and the reason the seed is stored
+     * rather than re-derived: a sync landing an edit made on another device
+     * changes the record under an untouched draft. That must show through
+     * *and* must not invent dirtiness — a Back guard that fires over an
+     * edit nobody made is the failure this pins. */
+    @Test
+    fun `a change landing under a clean draft shows through without faking dirtiness`() = runBlocking {
+        var reads = 0
+        val model = vm(fetch = { id, _ -> itemDetail(id, title = if (reads++ == 0) "first" else "elsewhere") })
+        model.load("i-1", 1_000)
+        assertEquals("first", model.draft.value?.title)
+
+        model.load("i-1", 2_000)
+
+        assertEquals("elsewhere", model.draft.value?.title)
+        assertFalse("nobody typed anything — do not ask", model.isDirty)
+    }
+
+    /** Discarding is a reset to the seed, not a return to a read mode
+     * there no longer is. */
+    @Test
+    fun `discarding puts the seeded values back`() = runBlocking {
+        val model = vm()
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(title = "half-typed"))
+
+        model.discardDraft()
+
+        assertEquals("item i-1", model.draft.value?.title)
+        assertFalse(model.isDirty)
     }
 
     /** Only what was touched rides on the patch: an untouched field is
@@ -139,7 +193,6 @@ class ItemDetailViewModelTest {
         var sent: ItemEdit? = null
         val model = vm(edit = { _, edit, _ -> sent = edit })
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(title = "renamed"))
 
         model.save("i-1", 2_000)
@@ -148,7 +201,7 @@ class ItemDetailViewModelTest {
         assertNull("priority was not touched", sent?.priority)
         assertEquals(FieldPatch.Untouched, sent?.description)
         assertEquals(FieldPatch.Untouched, sent?.deadline)
-        assertNull("a saved draft leaves edit mode", model.draft.value)
+        assertFalse("the sent draft is the new seed", model.isDirty)
     }
 
     /** Emptying a field is an edit, not silence: it must reach the wire as
@@ -158,7 +211,6 @@ class ItemDetailViewModelTest {
         var sent: ItemEdit? = null
         val model = vm(edit = { _, edit, _ -> sent = edit })
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(deadline = "", size = ""))
 
         model.save("i-1", 2_000)
@@ -172,7 +224,6 @@ class ItemDetailViewModelTest {
     fun `a failed save keeps the draft where it can be retried`() = runBlocking {
         val model = vm(edit = { _, _, _ -> throw RuntimeException("offline") })
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(title = "renamed"))
 
         model.save("i-1", 2_000)
@@ -219,7 +270,6 @@ class ItemDetailViewModelTest {
         var sent: ItemEdit? = null
         val model = vm(edit = { _, edit, _ -> sent = edit })
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(title = ""))
 
         assertFalse(model.canSave)
@@ -240,7 +290,6 @@ class ItemDetailViewModelTest {
         var sent: ItemEdit? = null
         val model = vm(edit = { _, edit, _ -> sent = edit })
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(deadline = "next tuesday"))
 
         assertFalse(model.canSave)
@@ -256,11 +305,76 @@ class ItemDetailViewModelTest {
     fun `an emptied date is saveable, not a problem`() = runBlocking {
         val model = vm()
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(deadline = ""))
 
         assertTrue(model.canSave)
         assertNull(model.metaProblems?.deadline)
+    }
+
+    /** The Triage host's submit, moved here with the draft it sends: the
+     * promoting write is a different seam call, not a flag on `edit`, and
+     * `promoteToReady = true` is #360's guarantee — pinned structurally at
+     * the factory as well, since a fake cannot see the literal. */
+    @Test
+    fun `promoting sends the touched edits through the promote call`() = runBlocking {
+        var sentEdit: ItemEdit? = null
+        var sentToEdit: ItemEdit? = null
+        val model = vm(
+            edit = { _, edit, _ -> sentToEdit = edit },
+            promote = { _, edit, _ -> sentEdit = edit },
+        )
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(title = "buy oat milk"))
+
+        model.promote("i-1", 2_000)
+
+        assertEquals("buy oat milk", sentEdit?.title)
+        assertNull("a promote is never an edit_item", sentToEdit)
+        assertFalse(model.isDirty)
+    }
+
+    /** The same field-by-field discipline the save gets: promoting an
+     * untouched draft touches nothing. */
+    @Test
+    fun `promoting patches only the fields that changed`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(promote = { _, edit, _ -> sent = edit })
+        model.load("i-1", 1_000)
+
+        model.promote("i-1", 2_000)
+
+        assertEquals(FieldPatch.Untouched, sent?.description)
+        assertEquals(FieldPatch.Untouched, sent?.deadline)
+        assertNull(sent?.title)
+    }
+
+    @Test
+    fun `a blank title refuses the promote instead of silently dropping it`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(promote = { _, edit, _ -> sent = edit })
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(title = ""))
+
+        model.promote("i-1", 2_000)
+
+        assertNull("nothing may reach the queue", sent)
+        assertTrue(
+            "the refusal must say so, in the promoting surface's own words",
+            model.statusLine.value?.contains("can't be promoted") == true,
+        )
+    }
+
+    @Test
+    fun `a failed promote keeps the draft where it can be retried`() = runBlocking {
+        val model = vm(promote = { _, _, _ -> throw RuntimeException("offline") })
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(title = "renamed"))
+
+        model.promote("i-1", 2_000)
+
+        assertEquals("renamed", model.draft.value?.title)
+        assertTrue("still worth asking about on Back", model.isDirty)
+        assertTrue(model.statusLine.value?.contains("Couldn't promote") == true)
     }
 
     /** Nothing is trimmed on the caller's behalf (#110's "raw string
@@ -271,7 +385,6 @@ class ItemDetailViewModelTest {
         var sent: ItemEdit? = null
         val model = vm(edit = { _, edit, _ -> sent = edit })
         model.load("i-1", 1_000)
-        model.beginEdit()
         model.updateDraft(model.draft.value!!.copy(context = "@errands "))
 
         model.save("i-1", 2_000)
@@ -287,10 +400,12 @@ internal fun itemDetail(
     id: String,
     isEditable: Boolean = true,
     isArchived: Boolean = false,
+    canMarkDone: Boolean = true,
+    title: String = "item $id",
 ) = ItemDetailRecord(
     id = id,
     seq = 42,
-    title = "item $id",
+    title = title,
     description = null,
     stage = "ready",
     size = "quick",
@@ -311,5 +426,6 @@ internal fun itemDetail(
     isArchived = isArchived,
     isEditable = isEditable,
     availableActions = listOf("start", "complete"),
+    canMarkDone = canMarkDone,
     microtaskAffordance = null,
 )

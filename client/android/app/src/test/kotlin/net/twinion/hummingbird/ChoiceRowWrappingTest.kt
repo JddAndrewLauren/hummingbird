@@ -152,14 +152,18 @@ class ChoiceRowWrappingTest {
         // between the component measured above and the screens that need
         // it.
         val sites = mapOf(
-            // Site 1: the item's own action row (`Cancel` was vertical).
-            "ItemDetailPanel.kt" to 1,
-            // Sites 2 and 3: the interview's answer chips, and the `Keep`
+            // Sites 1 and 2: the item's own action row (`Cancel` was
+            // vertical), and the `Grill me` + submit pair beneath it — the
+            // latter arrived from the Triage editor when the pane unified.
+            "ItemDetailPanel.kt" to 2,
+            // Sites 3 and 4: the interview's answer chips, and the `Keep`
             // that escapes the discard prompt.
             "GrillTakeoverScreen.kt" to 2,
-            // Site 4: `Grill me` + `Promote to ready` — same shape, never
-            // sighted failing, fixed with the rest so it cannot start.
-            "TriageScreen.kt" to 1,
+            // Zero, deliberately: Triage's opened pane IS `ItemDetailPanel`
+            // since the unification, so its `Grill me` + `Promote to ready`
+            // row is site 2 above. A `ChoiceRow {` here again means a
+            // second editor has grown back.
+            "TriageScreen.kt" to 0,
         )
         for ((file, expected) in sites) {
             val src = repoFile(
