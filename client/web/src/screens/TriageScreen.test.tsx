@@ -24,7 +24,6 @@ function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
   const onTriage = vi.fn();
   const view = render(
     <TriageScreen
-      demo={null}
       task={task}
       onTriage={options.withTriage === false ? undefined : onTriage}
       nowMs={NOW}
@@ -33,7 +32,6 @@ function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
   const rerender = (nextTask: TaskState) =>
     view.rerender(
       <TriageScreen
-        demo={null}
         task={nextTask}
         onTriage={options.withTriage === false ? undefined : onTriage}
         nowMs={NOW}
@@ -415,7 +413,7 @@ describe("TriageScreen — the mark-done checkmark", () => {
   function renderWithComplete(task: TaskState) {
     const onComplete = vi.fn();
     render(
-      <TriageScreen demo={null} task={task} onTriage={vi.fn()} onComplete={onComplete} nowMs={NOW} />,
+      <TriageScreen task={task} onTriage={vi.fn()} onComplete={onComplete} nowMs={NOW} />,
     );
     return { onComplete };
   }
@@ -480,7 +478,6 @@ describe("TriageScreen — the Grill takeover", () => {
     const grill = fakeGrill();
     render(
       <TriageScreen
-        demo={null}
         task={taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] })}
         onTriage={vi.fn()}
         nowMs={NOW}
@@ -506,7 +503,6 @@ describe("TriageScreen — the Grill takeover", () => {
     });
     render(
       <TriageScreen
-        demo={null}
         task={taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] })}
         onTriage={vi.fn()}
         nowMs={NOW}
@@ -523,7 +519,7 @@ describe("TriageScreen — the Grill takeover", () => {
     const grill = fakeGrill();
     const task = taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] });
     const { rerender } = render(
-      <TriageScreen demo={null} task={task} onTriage={vi.fn()} nowMs={NOW} grill={grill} />,
+      <TriageScreen task={task} onTriage={vi.fn()} nowMs={NOW} grill={grill} />,
     );
     fireEvent.click(row("a foggy capture"));
     fireEvent.click(screen.getByRole("button", { name: /grill me/i }));
@@ -532,7 +528,6 @@ describe("TriageScreen — the Grill takeover", () => {
     // object, so `back` below is the mock the click is asserted against.
     rerender(
       <TriageScreen
-        demo={null}
         task={task}
         onTriage={vi.fn()}
         nowMs={NOW}
@@ -545,7 +540,7 @@ describe("TriageScreen — the Grill takeover", () => {
 
     // The real hook would now report `openItemId: null` — simulated here
     // since `grill` is a plain fake, not the reactive hook itself.
-    rerender(<TriageScreen demo={null} task={task} onTriage={vi.fn()} nowMs={NOW} grill={grill} />);
+    rerender(<TriageScreen task={task} onTriage={vi.fn()} nowMs={NOW} grill={grill} />);
 
     expect(document.activeElement?.textContent).toContain("Grill me");
   });
@@ -574,7 +569,6 @@ describe("TriageScreen — the Grill takeover", () => {
 
     const { rerender } = render(
       <TriageScreen
-        demo={null}
         task={task}
         onTriage={vi.fn()}
         nowMs={NOW}
@@ -587,7 +581,6 @@ describe("TriageScreen — the Grill takeover", () => {
     // previous confirm's, and must not be worn by this proposal.
     rerender(
       <TriageScreen
-        demo={null}
         task={task}
         onTriage={vi.fn()}
         nowMs={NOW}

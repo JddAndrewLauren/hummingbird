@@ -272,29 +272,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     setCaptureDictating(false);
   };
 
-  // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the
-  // capture box is in the shell now: a fixture capture typed in the popover
-  // has to land in the list the Triage screen renders. Dev-only either way —
-  // `demoData()` is null in production.
-  const [demoCaptures, setDemoCaptures] = useState(() => demo?.triage ?? []);
-
   function handleCapture(title: string, destination: CaptureDestination, fields: CaptureFields) {
     if (demo) {
-      // Fixtures, so `destination` is not honoured — and neither is `fields`:
-      // the demo frontier is a hand-authored world, and a minted fixture
-      // appearing on it would be a second, divergent source of truth for what
-      // the demo shows.
-      setDemoCaptures((current) => [
-        { id: `CAP-${current.length + 8}`, title, source: "Typed here", age: "just now" },
-        ...current,
-      ]);
+      // Kit mode's popover is inert — Now/Triage/Settings render only their
+      // real path since #456, so there is nowhere left for a fixture capture
+      // to land.
       return;
     }
     submitCapture(title, destination, Date.now(), fields);
-  }
-
-  function dropDemoCapture(id: string) {
-    setDemoCaptures((current) => current.filter((capture) => capture.id !== id));
   }
 
   // The global focus hotkey (#107's decision: shell level, not a leaf
@@ -402,8 +387,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const { triage: handleTriage } = useTriageWiring(worker);
   // #355/ADR-0023's Grill takeover — the Triage screen's own composition of
   // the turn lane and the Confirm mutation (`useGrillTakeoverWiring.ts`'s
-  // own doc). Absent in demo mode, same reason `onTriage` is: demo has no
-  // real `TaskItemDTO` to grill.
+  // own doc).
   useGrillDraftListWiring(worker, status);
   const grillTakeover = useGrillTakeoverWiring(
     worker,
@@ -548,7 +532,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         <div className="hb-scroll">
           {screen === "now" && (
             <NowScreen
-              demo={demo}
               onScreen={setScreen}
               task={task}
               nowMs={syncNowMs}
@@ -558,28 +541,25 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onAct={handleAct}
               calendarReads={calendar.eventReads}
               calendarConnected={calendar.connected}
-              onSetScheduledDate={demo ? undefined : handleSetScheduledDate}
-              microtask={demo ? undefined : microtaskWiring}
+              onSetScheduledDate={handleSetScheduledDate}
+              microtask={microtaskWiring}
               // The same two callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
-              onTriage={demo ? undefined : handleTriage}
+              onTriage={handleTriage}
               asideCollapsed={asideCollapsed}
               // #359: the SAME `grillTakeover` instance the Triage screen gets
               // below — one interview session for the whole app, not a second
               // one per screen.
-              grill={demo ? undefined : grillTakeover}
+              grill={grillTakeover}
             />
           )}
           {screen === "triage" && (
             <TriageScreen
-              demo={demo}
               task={task}
-              demoCaptures={demo ? demoCaptures : undefined}
-              onDropDemoCapture={demo ? dropDemoCapture : undefined}
-              onTriage={demo ? undefined : handleTriage}
-              onComplete={demo ? undefined : (itemId) => handleAct(itemId, "complete")}
+              onTriage={handleTriage}
+              onComplete={(itemId) => handleAct(itemId, "complete")}
               nowMs={syncNowMs}
-              grill={demo ? undefined : grillTakeover}
+              grill={grillTakeover}
             />
           )}
           {screen === "routes" && <RoutesScreen demo={demo} />}
@@ -614,7 +594,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {screen === "settings" && (
             <SettingsScreen
-              demo={demo}
               status={status}
               apiVersion={apiVersion}
               coreId={coreId}

@@ -107,11 +107,11 @@ way the race question does: one `kimi-balance/v1` gauge, five
 (#313-#315) make **nine poller-backed panes**, plus one quiet, device-local
 `reachability` answer (#316)), the **capture popover** open
 over Now, and **Now's honest empty state** without the flag. What no capture reaches: Triage's **expanded row
-editor**. Under `?demo=kit` the rows are `DemoCapture` fixtures with no real
-editor at all; under the default `?demo` (board, since #455) the rows ARE real
-`TaskItemDTO`s with a real editor wired (`onTriage` is not gated off in board
-mode), but nothing in `visual/surfaces.spec.ts`'s board Triage capture opens
-one — it asserts only the header count. Either way it is covered by
+editor**. `TriageScreen` has one render path now (#456 deleted its `demo`
+prop along with the kit-only fixture card list): the rows are always real
+`TaskItemDTO`s with a real editor wired, but nothing in
+`visual/surfaces.spec.ts`'s board Triage capture opens one — it asserts only
+the header count. It is covered by
 `screens/TriageScreen.test.tsx` instead, and reviewed by hand on a device with
 real captures; and, since #273, **item detail's microtask states** — the two
 affordances, the streaming narration, the stamp badge and the decline — for a
@@ -158,11 +158,10 @@ captures, which is where a full inbox exists at all. **The Grill takeover**
 (#355, ADR-0023) joins that same exclusion for a related reason:
 `TriageRow`'s real "Grill me" button, the question card, the review card and
 every turn state (asking, the question, the proposal, a decline) only exist
-over a real `TaskItemDTO`. Under `?demo=kit` the rows are `DemoCapture`
-fixtures with an unrelated stub "Grill" button, so the takeover cannot open
-there at all; under the default `?demo` (board) the rows are real and the
-button is real, but nothing in this file clicks it, so the takeover still
-never opens under either spelling of the flag. `screens/GrillTakeover.test.tsx`,
+over a real `TaskItemDTO`. Since #456 `TriageScreen` has no kit-fixture branch
+left to fall back to, so the rows are always real and the button is always
+real — but nothing in this file clicks it, so the takeover still never opens
+under `pnpm visual`. `screens/GrillTakeover.test.tsx`,
 `screens/TriageScreen.test.tsx` and the `shell/useGrillWiring.ts` /
 `shell/useGrillTakeoverWiring.ts` hook tests are the cover for every
 reachable turn state, and round 2's own tests cover the refused-Confirm
@@ -361,6 +360,16 @@ route checklist, is now reachable solely at `?demo=kit`, which nothing in
 either. Until one of the two exists again — a kit capture pass restored, or a
 `RoutesScreen.test.tsx`/`AlertsScreen.test.tsx` — these two screens' populated
 states are reviewed by hand only, at `?demo=kit`.
+
+**Now, Triage and Settings carry no kit rendering at all any more** (#456):
+each screen's fixture-only block (Now's hero card and "Also startable" list,
+Triage's fixture card list and "swept every 15m" meta, Settings' acked-alerts
+switch and its inert "Mirror" section) is deleted along with the screen's own
+`demo` prop and the `App.tsx` guards that only existed to keep writes inert
+under it — these three take their real render path unconditionally now,
+`?demo=kit` included. Unlike Routes, Alerts and Rules (still kit-fed above),
+there is no populated kit-only render left on any of the three to review by
+hand.
 
 **Recall (#478–#481) is photographed under the BOARD world, not the kit
 one** — every trigger #480 wired (the header's Search button, the `/`

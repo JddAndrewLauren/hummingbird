@@ -87,7 +87,6 @@ function renderNow(
   const storage = memoryStorage();
   const view = render(
     <NowScreen
-      demo={null}
       onScreen={() => {}}
       task={task}
       nowMs={NOW_MS}
@@ -108,7 +107,6 @@ function renderNow(
   ) =>
     view.rerender(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={next}
         nowMs={NOW_MS}
@@ -296,10 +294,7 @@ describe("NowScreen — the frontier list", () => {
   // #446: the card's size and energy chips are glyph-only, like the row's.
   // Nothing asserted this when the words came off — the whole suite passed on
   // the change — so a card could regress to words, or lose its accessible
-  // name, silently. (The top-pick card takes the same treatment but renders
-  // only under `?demo=kit` — `demo &&` above — which #455 retired from
-  // `pnpm visual` entirely, so this component test is now that card's ONLY
-  // gate, not merely its cheaper one.)
+  // name, silently.
   it("draws a card's size and energy as named glyphs, with no word", () => {
     renderNow(
       taskState({
@@ -665,7 +660,6 @@ describe("NowScreen — the calendar-reads arm (#267/#122)", () => {
 
     render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={testNowMs}
@@ -772,7 +766,6 @@ describe("NowScreen — the captures in the columns", () => {
     const storage = options.storage ?? fakeStorage();
     render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={NOW_MS}
@@ -795,7 +788,6 @@ describe("NowScreen — the captures in the columns", () => {
     const storage = fakeStorage();
     const screenFor = (selected: string | null) => (
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={NOW_MS}
@@ -1232,7 +1224,6 @@ describe("NowScreen — the frontier's controls (#403)", () => {
   function renderWithStorage(task: TaskState, storage = fakeStorage()) {
     const view = render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={task}
         nowMs={NOW_MS}
@@ -1397,7 +1388,6 @@ describe("NowScreen — the frontier's controls (#403)", () => {
   it("drops the landmark entirely when the aside is shut, rather than leaving an empty one", () => {
     render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={spread()}
         nowMs={NOW_MS}
@@ -1607,7 +1597,6 @@ describe("NowScreen — selection above the columns (#404)", () => {
     const storage = fakeStorage();
     const view = render(
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={spread()}
         nowMs={NOW_MS}
@@ -1637,7 +1626,6 @@ describe("NowScreen — selection above the columns (#404)", () => {
 
     const withSelection = (selected: string | null) => (
       <NowScreen
-        demo={null}
         onScreen={() => {}}
         task={spread()}
         nowMs={NOW_MS}
