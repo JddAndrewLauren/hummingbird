@@ -505,7 +505,7 @@ Operator batch 2026-08-20, three areas on one branch.
   gesture that skipped the confirmation the ×, Back and the header tap all
   route through.
 
-`AxisRowWrappingTest` is the module's **second** layout-measuring test,
+`AxisRowWrappingTest` is the module's **third** layout-measuring test,
 `ChoiceRowWrappingTest`'s rig with the same two halves — the measurement and
 a control proving it has teeth. One thing in it is worth copying rather than
 re-deriving: it measures **unconstrained**, in a 2000dp box, not at the
@@ -567,7 +567,9 @@ field set must not disclose it with two different controls.
   `modifier` parameter for it, defaulting to the full-width field the Triage
   editor still stacks inside its narrower card.
 
-`PriorityRowWrappingTest` is the module's **third** layout-measuring test,
+`PriorityRowWrappingTest` is the module's **fourth** layout-measuring test —
+`ChoiceRowWrappingTest`, `FacetLabelAlignmentTest` and `AxisRowWrappingTest`
+are the others, and `docs/SURFACES.md`'s Android row names all four —
 `AxisRowWrappingTest`'s rig unchanged — including the two things that rig
 exists to carry: measure unconstrained (a `Row` rendered at its budget
 squeezes the overflow into bounds that look like a pass), and wrap the
@@ -892,9 +894,36 @@ costs the device token every run.
     line for the warm case. The `healthchecks/v1` fallback was fired too and
     landed on alert detail.
 
+### Round 5's capture-panel pass (2026-08-20, `be39ede`)
+
+Pixel 10 Pro Fold, folded, 443dp cover display. Read off the **accessibility
+tree** (`adb shell uiautomator dump`), not off the screenshots, and that is
+the transferable part: driving this by screenshot alone drifted twice — a
+`monkey -c LAUNCHER` launch picked the *second* launcher icon
+(`CaptureActivity`, not `MainActivity`; use `am start -n` and name the
+Activity), and a swipe meant to scroll the sheet dismissed it instead, after
+which taps at remembered coordinates landed on whatever screen was
+underneath. The dump gives node bounds, which answers the layout question
+directly and cannot land on the wrong screen without saying so.
+
+Measured: the four priority chips share `y=1064–1105` and trail at `x=768`
+of 1080 — one line, with room; Deadline `[98,1241]` and Scheduled date
+`[589,1241]` share a line; no `Capture` text node exists on the sheet; the
+drag handle sits at `y=213`, clear of the status bar.
+
+That last one is a fix, not a measurement. The first full-height build put
+the title field's outline against the status-bar clock: a half-height sheet
+had never met the status bar, so this sheet had never paid the inset and had
+never needed to. `contentWindowInsets = { WindowInsets.statusBars }`, and
+`CaptureSheetStructuralTest` pins it now — nothing else in the module can
+see it, since the sheet composes and every field pin passes with the line
+deleted.
+
 Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
-adb writes a warning banner into the PNG, and the ids differ inner vs cover
-(`adb shell dumpsys SurfaceFlinger --display-id`). On a folded Fold the
+adb writes a warning banner into the PNG **and the file is plain text, not a
+PNG at all**, and the ids differ inner vs cover — they are the long
+`SurfaceFlinger` ids (`adb shell dumpsys SurfaceFlinger --display-id`), not
+`0`/`1`, which `screencap` rejects as invalid. On a folded Fold the
 outer panel is the live one — `adb shell dumpsys display | grep -c
 mScreenState=ON` will not tell you which; read `state ON` off the
 `DisplayDeviceInfo` block for "Outer Display" / "Inner Display".

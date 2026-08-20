@@ -3,6 +3,7 @@ package net.twinion.hummingbird
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
@@ -12,8 +13,10 @@ import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import java.io.File
+import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import org.junit.Assert.assertEquals
@@ -139,6 +142,98 @@ class PriorityRowWrappingTest {
         assertFalse(
             "there is no chip for the absence of a priority — the resting state says it",
             src.contains("No priority"),
+        )
+    }
+
+    /** The other one-line change of the same batch: deadline and scheduled
+     * date share a row, `weight(1f)` each.
+     *
+     * **What this measures, and what it deliberately does not.** A weight
+     * *bounds* each field at half the row, so unlike the chips these cannot
+     * overflow — the claim worth pinning is that they are side by side and
+     * evenly split, which is exactly what a stray `fillMaxWidth()` or a
+     * dropped weight would break. It does **not** pin that
+     * "Scheduled date" renders whole inside its half: `onNodeWithText` on an
+     * `OutlinedTextField` returns the *field's* bounds, not the label's
+     * (measured here as 197x64dp — the field, at its own height), so a
+     * truncated label is invisible to this substrate. The first draft of
+     * this test asserted it anyway and failed against its own field
+     * heights. On the Fold's cover display the labels do render whole
+     * (accessibility tree, 2026-08-20: Deadline `[98,1241]`, Scheduled date
+     * `[589,1241]`) — that is hardware evidence, and it is the only kind
+     * this particular claim has.
+     *
+     * Note also that this measures **at** the budget, the reverse of the
+     * rule the chip tests follow, and the reason the two differ is worth
+     * keeping straight: measure unconstrained when the container squeezes
+     * (the overflow would be hidden inside the bounds), measure at the
+     * budget when the container bounds (the split *is* the question).
+     */
+    @Test
+    fun `the two dates split the narrowest row evenly, side by side`() {
+        composeTestRule.setContent {
+            HummingbirdTheme {
+                Row(modifier = Modifier.width(contentWidth)) {
+                    CaptureDateField(
+                        label = "Deadline",
+                        value = "",
+                        error = null,
+                        onValueChange = {},
+                        modifier = Modifier.weight(1f),
+                    )
+                    CaptureDateField(
+                        label = "Scheduled date",
+                        value = "",
+                        error = null,
+                        onValueChange = {},
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+
+        val bounds = listOf("Deadline", "Scheduled date").associateWith {
+            composeTestRule.onNodeWithText(it).getUnclippedBoundsInRoot()
+        }
+        val tops = bounds.values.map { it.top }.distinct()
+        assertEquals("both dates must share one line (tops: $tops)", 1, tops.size)
+        // Evenly, and neither crushed: a field that lost its weight takes
+        // the whole row and leaves its sibling nothing.
+        for ((label, box) in bounds) {
+            assertTrue(
+                "$label must get about half of $contentWidth, not ${box.width} " +
+                    "(${bounds.entries.joinToString { "${it.key}=${it.value.width}" }})",
+                box.width > contentWidth / 3 && box.width < contentWidth * 2 / 3,
+            )
+        }
+    }
+
+    /** The control for the pair above: the same two fields at full width
+     * each, which is what stacking them meant. Their combined height is
+     * what one line saves, and measuring it is what keeps the assertion
+     * above from being a claim about nothing. */
+    @Test
+    fun `stacking the dates is what costs the second row`() {
+        composeTestRule.setContent {
+            HummingbirdTheme {
+                Box(modifier = Modifier.width(contentWidth)) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        CaptureDateField(
+                            label = "Deadline",
+                            value = "",
+                            error = null,
+                            onValueChange = {},
+                        )
+                    }
+                }
+            }
+        }
+        val single = composeTestRule.onNodeWithText("Deadline")
+            .getUnclippedBoundsInRoot()
+        assertTrue(
+            "a full-width date field must span more than half the row — otherwise " +
+                "seating two of them side by side saved nothing (measured ${single.width})",
+            single.width > contentWidth / 2,
         )
     }
 

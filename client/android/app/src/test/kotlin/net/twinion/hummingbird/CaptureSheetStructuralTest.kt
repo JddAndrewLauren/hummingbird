@@ -141,6 +141,17 @@ class CaptureSheetStructuralTest {
             src.contains("R.drawable.ic_chevron_down") &&
                 src.contains("Modifier.rotate(if (detailsOpen) 180f else 0f)"),
         )
+        // The status-bar inset, and it is here because the device found it
+        // rather than a test: a half-height sheet never met the status bar,
+        // so this one had never paid the inset and never needed to. Full
+        // height, the first build put the title field's outline against the
+        // clock — #614's dead band in the other direction. Nothing else in
+        // the module can see that; the sheet composes and every field pin
+        // passes with the line deleted.
+        assertTrue(
+            "a full-height sheet must pay the status-bar inset",
+            src.contains("contentWindowInsets = { WindowInsets.statusBars }"),
+        )
         assertFalse(
             "the words it replaced must not also render as a label",
             src.contains("Text(if (detailsOpen)"),
@@ -150,6 +161,26 @@ class CaptureSheetStructuralTest {
         assertTrue(
             "the chevron must name itself",
             src.contains("contentDescription = if (detailsOpen) \"Fewer details\" else \"More details\""),
+        )
+    }
+
+    /** The chevron disclosure is the same control on both capture surfaces
+     * (operator decision 2026-08-20, taken on the sheet and carried to the
+     * Activity): one field set behind two doors must not be disclosed by two
+     * different controls. The sheet's half is pinned above; this is the
+     * Activity's, which took the change with no assertion of its own and
+     * could otherwise drift back to a `TextButton` silently. */
+    @Test
+    fun `the Activity discloses with the same chevron as the sheet`() {
+        val src = source("CaptureActivity.kt")
+        assertTrue(
+            "CaptureActivity's disclosure is the chevron",
+            src.contains("R.drawable.ic_chevron_down") &&
+                src.contains("Modifier.rotate(if (detailsOpen) 180f else 0f)"),
+        )
+        assertFalse(
+            "the words it replaced must not also render as a label",
+            src.contains("Text(if (detailsOpen)"),
         )
     }
 

@@ -549,15 +549,26 @@ is named so nobody mistakes it for a visual gate:
 - **`ColorTokenDriftTest`** (#483, ADR-0026), which pins `ui/theme/Color.kt`
   against the design system's token CSS. It is about appearance, but it
   covers the palette only — never a screen.
-- **`ChoiceRowWrappingTest`** (#576) and **`FacetLabelAlignmentTest`**
-  (#588), the two things here that measure **layout**: real Compose renders
-  under Robolectric at a 320dp qualifier, asserting a row of choices stays
-  hittable and a facet label seats beside its first chip line. Each covers
-  one component shape plus a negative control rendering its defect — never
-  a screen's whole composition, and they photograph nothing. Their
+- **`ChoiceRowWrappingTest`** (#576), **`FacetLabelAlignmentTest`** (#588),
+  **`AxisRowWrappingTest`** and **`PriorityRowWrappingTest`** (both the
+  round-4/round-5 operator batches, 2026-08-20) — the four things here that
+  measure **layout**: real Compose renders under Robolectric, asserting a
+  row of choices stays hittable, a facet label seats beside its first chip
+  line, and the axis strip and the priority row each fit one line. Each
+  covers one component shape plus a negative control rendering its defect —
+  never a screen's whole composition, and they photograph nothing.
+  The later two moved the qualifier off 320dp deliberately: the operator
+  ruled the budget is **the device's** width, the Fold's 443dp cover
+  display, not a synthetic stress width (`AxisRow`'s own header carries the
+  measurements and the accepted clipping limit). Their
   `@GraphicsMode(NATIVE)` is load-bearing: without it Robolectric measures
   text with a stub and any assertion here passes vacuously, which is the
-  trap to know before writing the next test of this kind. A further edge
+  trap to know before writing the next test of this kind. A second thing is
+  load-bearing beside it, and is known only because it shipped a clipped
+  chip: **the content must be wrapped in `HummingbirdTheme`.** A bare render
+  resolves `MaterialTheme.typography` to Material's defaults rather than the
+  app's bundled faces, which measured an axis strip green at 268dp while the
+  device clipped its trailing chip. A further edge
   found at #558: `captureToImage()` **times out** under this Robolectric
   setup even in NATIVE mode, so pixel-level assertions are off the table —
   bounds measurement is the ceiling of what this substrate gives, which
