@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { comboboxOpenSignal } from "./components/forms/combobox-open";
 import { demoCalendar, demoTaskState } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
@@ -171,6 +172,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
 
   const online = useOnlineStatus();
+  // The one Escape claimant that is not this component's own state: a
+  // `Combobox`'s open popup, published from the leaf that owns it
+  // (`components/forms/combobox-open.ts` argues for the signal). Read the
+  // same way `useAppUpdate` reads its own.
+  const contextListOpen = useSyncExternalStore(
+    comboboxOpenSignal.subscribe,
+    comboboxOpenSignal.getSnapshot,
+  );
   const { ready: updateReady, onReload: handleReload } = useAppUpdate();
   const { nowMs: syncNowMs, handleDownloadMirror, handleManualSync } = useSyncWiring(worker, status);
   useFrontierWiring(worker, status, task.syncOutcomeSeq);
@@ -373,6 +382,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         key: event.key,
         isComposing: event.isComposing,
         open: {
+          contextList: contextListOpen,
           capture: captureOpen,
           search: searchOpen,
           navSheet: isPhone && navSheetOpen,
@@ -381,6 +391,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       });
       if (claimant) {
         const close: Record<EscapeClaimant, () => void> = {
+          // Shuts the list and nothing else: the popover or panel holding
+          // the field stays open, with the draft in it, and the next Escape
+          // closes that.
+          contextList: () => comboboxOpenSignal.closeAll(),
           // #380: while the box is dictating, this Escape is not a close —
           // it undoes the dictation and leaves the popover open. The next
           // Escape sees `captureDictating` false (`CaptureBox` reports it the
@@ -399,6 +413,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
+    contextListOpen,
     captureOpen,
     captureDictating,
     searchOpen,

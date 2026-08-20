@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { CSSProperties, InputHTMLAttributes, ReactNode } from "react";
+import type { CSSProperties, InputHTMLAttributes, ReactNode, Ref } from "react";
 import { Icon, type IconName } from "../core/Icon";
 
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size" | "style"> {
@@ -12,10 +12,16 @@ export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 
   size?: "sm" | "md" | "lg";
   /** Node pinned to the right inside the field (a key hint, a clear button). */
   trailing?: ReactNode;
+  /** The `<input>` itself, for a wrapper that has to command focus rather
+   * than merely read it — `Combobox` returning focus to the field after the
+   * chevron opens its popup. Not a `forwardRef` on the component: the ref a
+   * caller wants is the inner element, never this wrapper's `<div>`, and
+   * saying so in a prop keeps that unambiguous. */
+  inputRef?: Ref<HTMLInputElement>;
   style?: CSSProperties;
 }
 
-export function Input({ label, hint, error, icon, size = "md", trailing, id, style = {}, ...rest }: InputProps) {
+export function Input({ label, hint, error, icon, size = "md", trailing, inputRef, id, style = {}, ...rest }: InputProps) {
   const [focus, setFocus] = useState(false);
   const autoId = useId();
   const inputId = id || autoId;
@@ -37,7 +43,7 @@ export function Input({ label, hint, error, icon, size = "md", trailing, id, sty
         transition: "border-color var(--dur-fast) var(--ease-flit), box-shadow var(--dur-fast) var(--ease-flit)",
       }}>
         {icon ? <Icon name={icon} size={16} color="var(--text-muted)" /> : null}
-        <input id={inputId} aria-describedby={describedBy} aria-invalid={error ? true : undefined} {...rest}
+        <input id={inputId} ref={inputRef} aria-describedby={describedBy} aria-invalid={error ? true : undefined} {...rest}
           onFocus={(event) => { setFocus(true); rest.onFocus?.(event); }}
           onBlur={(event) => { setFocus(false); rest.onBlur?.(event); }}
           // `boxShadow: none` suppresses the global `:focus-visible` ring

@@ -385,14 +385,18 @@ describe("CapturePopover — the capture meta (#208)", () => {
   });
 
   // The suggestions are the caller's, not a list this component holds: a
-  // context minted since the app loaded reaches the datalist by being passed
-  // in, which is the whole of what `App.tsx` wires `contextSuggestions` for.
+  // context minted since the app loaded reaches the popup by being passed in,
+  // which is the whole of what `App.tsx` wires `contextSuggestions` for.
+  //
+  // Opened from the chevron, and with a context ALREADY IN THE BOX, because
+  // that is the state #641's sticky field leaves behind and the state the
+  // native `<datalist>` this replaced could not show a full list in
+  // (`components/forms/Combobox.tsx`'s header).
   it("offers exactly the contexts it was handed", () => {
     renderPopover({ contextSuggestions: [...CONTEXTS, "@calls"] });
-    const list = document.getElementById(
-      (screen.getByLabelText("Context") as HTMLInputElement).getAttribute("list") ?? "",
-    );
-    expect(Array.from(list?.querySelectorAll("option") ?? []).map((o) => o.getAttribute("value"))).toEqual([
+    fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@errands" } });
+    fireEvent.click(screen.getByRole("button", { name: "Show context suggestions" }));
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
       ...CONTEXTS,
       "@calls",
     ]);
