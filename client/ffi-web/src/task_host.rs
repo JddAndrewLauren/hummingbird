@@ -21,8 +21,9 @@ use hummingbird_core::{
     CoreInitError, GrillCompletion, ItemAction, TriagePatch,
 };
 use hummingbird_domain::{
-    core_field_type, is_valid_deadline, Alert, Condition, Energy, EventKindEntry, FieldType, Item,
-    Project, Rule, Size, Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
+    core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
+    EventKindEntry, FieldType, Item, Project, Rule, Size, Stage, Step, Tier, CORE_FIELDS,
+    EVENT_KINDS, GrillVerdict,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -380,6 +381,18 @@ pub struct ProjectListResponse {
 pub struct CreateProjectResponse {
     pub kind: &'static str,
     pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_project`] resolves to (#625) — the dossier's
+/// properties card, and every other project edit, share this one entry
+/// point. Same shape as [`PatchRuleResponse`]: `"failed"` covers both a
+/// `github_repo` this seam refused outright and a durability failure
+/// enqueueing the write; a 409 is handled, not swallowed, through the
+/// ordinary CAS path.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchProjectResponse {
+    pub kind: &'static str,
     pub error: Option<String>,
 }
 
@@ -1108,6 +1121,62 @@ impl TaskHostCore {
             Err(error) => CreateProjectResponse {
                 kind: "failed",
                 id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Patches a project, per [`Core::patch_project`] (#625) — the dossier's
+    /// properties card sets and clears `github_repo`/`default_context`
+    /// through this one entry point, alongside renaming and archiving.
+    /// `github_repo`, when present and non-null, is checked with
+    /// [`is_valid_github_repo`] **before `Core` is reached** — the wasm-seam
+    /// half of "validate at the handler and the wasm seam," the authority's
+    /// own `handlers/projects.rs` carrying the other half. Without it a
+    /// malformed slug typed into the card would queue a mutation that
+    /// dead-letters later, with nothing on screen to say why.
+    ///
+    /// `current` is the caller's own last-known copy of the row (from
+    /// [`TaskHostCore::projects`]), the same "caller supplies `base`"
+    /// contract every other CAS write here follows.
+    /// `name`/`github_repo_touched`+`github_repo`/`default_context_touched`+
+    /// `default_context`/`archived_at_touched`+`archived_at` mirror
+    /// [`TaskHostCore::patch_rule`]'s `event_kind_touched` shape: `wasm_bindgen`
+    /// has no `Option<Option<T>>` argument shape, so each nullable field
+    /// arrives as a touched flag plus a value.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_project(
+        &mut self,
+        seed: &str,
+        current: &Project,
+        name: Option<String>,
+        github_repo_touched: bool,
+        github_repo: Option<String>,
+        default_context_touched: bool,
+        default_context: Option<String>,
+        archived_at_touched: bool,
+        archived_at: Option<i64>,
+        now_ms: i64,
+    ) -> PatchProjectResponse {
+        if let Some(repo) = &github_repo {
+            if !is_valid_github_repo(repo) {
+                return PatchProjectResponse {
+                    kind: "failed",
+                    error: Some(format!("github_repo must be owner/repo, got {repo:?}")),
+                };
+            }
+        }
+        let github_repo = github_repo_touched.then_some(github_repo);
+        let default_context = default_context_touched.then_some(default_context);
+        let archived_at = archived_at_touched.then_some(archived_at);
+        match self
+            .core
+            .patch_project(seed, current, name, github_repo, default_context, archived_at, now_ms)
+            .await
+        {
+            Ok(()) => PatchProjectResponse { kind: "ok", error: None },
+            Err(error) => PatchProjectResponse {
+                kind: "failed",
                 error: Some(error.to_string()),
             },
         }
@@ -3437,6 +3506,8 @@ mod tests {
             projects: vec![Project {
                 id: "p-1".to_string(),
                 name: "Ship it".to_string(),
+                github_repo: Some("JddAndrewLauren/hummingbird".to_string()),
+                default_context: Some("@computer".to_string()),
                 archived_at: None,
                 created_at: 1,
                 updated_at: 1,
@@ -3445,6 +3516,8 @@ mod tests {
             archived: vec![Project {
                 id: "p-9".to_string(),
                 name: "Old bike".to_string(),
+                github_repo: None,
+                default_context: None,
                 archived_at: Some(9_000),
                 created_at: 1,
                 updated_at: 1,
@@ -3453,7 +3526,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&response).unwrap(),
-            r#"{"kind":"ok","projects":[{"id":"p-1","name":"Ship it","archived_at":null,"created_at":1,"updated_at":1,"version":1}],"archived":[{"id":"p-9","name":"Old bike","archived_at":9000,"created_at":1,"updated_at":1,"version":1}]}"#
+            r#"{"kind":"ok","projects":[{"id":"p-1","name":"Ship it","github_repo":"JddAndrewLauren/hummingbird","default_context":"@computer","archived_at":null,"created_at":1,"updated_at":1,"version":1}],"archived":[{"id":"p-9","name":"Old bike","github_repo":null,"default_context":null,"archived_at":9000,"created_at":1,"updated_at":1,"version":1}]}"#
         );
     }
 
@@ -3944,5 +4017,93 @@ mod project_tests {
             ProjectListResponse { kind: "ok", projects: Vec::new(), archived: Vec::new() },
             "no overlay: the card appears only once a cycle pulls it back"
         );
+    }
+
+    fn fixture_project() -> hummingbird_domain::Project {
+        hummingbird_domain::Project {
+            id: "p-1".to_string(),
+            name: "Rebuild the deck".to_string(),
+            github_repo: None,
+            default_context: None,
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 3,
+        }
+    }
+
+    /// #625: the properties card's set gesture enqueues one CAS patch.
+    #[tokio::test]
+    async fn patching_a_projects_repo_and_context_enqueues_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-project");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let project = fixture_project();
+
+        let response = host
+            .patch_project(
+                "seed-1",
+                &project,
+                None,
+                true,
+                Some("JddAndrewLauren/hummingbird".to_string()),
+                true,
+                Some("@computer".to_string()),
+                false,
+                None,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// #625: `github_repo` is checked with `is_valid_github_repo` before
+    /// `Core::patch_project` is reached — the wasm-seam half of "validate at
+    /// the handler and the wasm seam." A malformed slug mints no queue
+    /// entry, same discipline as an unrecognised rule tier.
+    #[tokio::test]
+    async fn patching_a_malformed_github_repo_never_reaches_core_patch_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-project-bad-repo");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let project = fixture_project();
+
+        let response = host
+            .patch_project(
+                "seed-1",
+                &project,
+                None,
+                true,
+                Some("not-a-slug".to_string()),
+                false,
+                None,
+                false,
+                None,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
+    }
+
+    /// The clearing half: touched-but-`None` sends an explicit clear, and a
+    /// well-formed value never trips the validation an absent/cleared value
+    /// must not.
+    #[tokio::test]
+    async fn patching_clears_repo_and_context_without_validation_tripping() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-project-clear");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let project = fixture_project();
+
+        let response = host
+            .patch_project("seed-1", &project, None, true, None, true, None, false, None, 2_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
     }
 }

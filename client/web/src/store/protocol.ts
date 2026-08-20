@@ -536,6 +536,14 @@ export interface PaneReadDTO {
 export interface ProjectDTO {
   id: string;
   name: string;
+  /** `owner/repo` only, never a URL — the derived link is a display-time
+   * computation, never stored (#625, ADR-0030 decision 2). `null` when the
+   * project names no repo. */
+  githubRepo: string | null;
+  /** Copied onto a context-less item at the three entry points ADR-0030
+   * decision 3 names — never read live, never joined. `null` when the
+   * project names no default. */
+  defaultContext: string | null;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -826,6 +834,31 @@ export type TaskWorkerRequest =
    * `Core` — the authority 400s on an empty name. Same caller-mints-`seed`
    * contract as `"capture"`: this seed's hash becomes the project's id. */
   | { type: "createProject"; seed: string; name: string; nowMs: number }
+  /** #625's project patch — the dossier's properties card, and every other
+   * project edit, share this one message: renaming, archiving, and setting
+   * or clearing `githubRepo`/`defaultContext` (ADR-0030 decisions 2–3).
+   * `current` is the caller's own last-known copy of the row (from the
+   * `projects` push) — the CAS `base` a 409 is diffed against.
+   * `githubRepoTouched`/`defaultContextTouched`/`archivedAtTouched` each
+   * distinguish "leave this field alone" from "set it, possibly to `null`"
+   * — the same double-`Option` `ProjectPatch` itself carries, flattened for
+   * the wire exactly like `patchRule`'s `eventKindTouched`. `githubRepo`,
+   * when touched and non-null, is checked with `is_valid_github_repo` in
+   * `client/ffi-web/src/task_host.rs`'s `patch_project` before it can reach
+   * `Core`. */
+  | {
+      type: "patchProject";
+      seed: string;
+      current: ProjectDTO;
+      name: string | null;
+      githubRepoTouched: boolean;
+      githubRepo: string | null;
+      defaultContextTouched: boolean;
+      defaultContext: string | null;
+      archivedAtTouched: boolean;
+      archivedAt: number | null;
+      nowMs: number;
+    }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1051,6 +1084,18 @@ export type TaskWorkerResponse =
       seed: string;
       kind: "ok" | "failed" | "busy";
       id: string | null;
+      error: string | null;
+    }
+  /** #625's project patch result (the properties card's set/clear gesture,
+   * and every other project edit), matched back by `seed`. Same
+   * handled-not-swallowed 409 contract as `patchRuleResult`: this result
+   * only reports whether the enqueue itself succeeded — `"failed"` covers
+   * both a `githubRepo` this seam refused and a durability failure. */
+  | {
+      type: "patchProjectResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
       error: string | null;
     }
   | { type: "isPendingResult"; itemId: string; pending: boolean }

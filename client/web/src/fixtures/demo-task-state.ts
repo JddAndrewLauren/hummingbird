@@ -245,6 +245,8 @@ function project(seed: (typeof PROJECT_SEEDS)[number], loadedAt: number): Projec
   return {
     id: seed.id,
     name: seed.name,
+    githubRepo: null,
+    defaultContext: null,
     archivedAt: seed.archived === true ? createdAt + DAY : null,
     createdAt,
     updatedAt: createdAt,

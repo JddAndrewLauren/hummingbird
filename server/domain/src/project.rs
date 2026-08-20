@@ -4,12 +4,22 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One project, exactly the `projects` columns of ADR-0009.
+/// One project, exactly the `projects` columns of ADR-0009, as amended by
+/// ADR-0030 decision 2 (`github_repo`, `default_context`, #625).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     /// uuid, client-supplied.
     pub id: String,
     pub name: String,
+    /// `owner/repo` only, never a URL — validated by
+    /// [`crate::is_valid_github_repo`] at every write door. `None` when the
+    /// project names no repo.
+    pub github_repo: Option<String>,
+    /// Copied onto a context-less item at the three entry points ADR-0030
+    /// decision 3 names (triage promotion, `/to-actions` minting, project
+    /// assignment) — never read live, never joined. `None` when the
+    /// project names no default.
+    pub default_context: Option<String>,
     /// ms epoch; `None` = live. Rows are never deleted, only flagged.
     pub archived_at: Option<i64>,
     pub created_at: i64,

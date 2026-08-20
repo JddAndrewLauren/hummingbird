@@ -1,5 +1,6 @@
+import type { ProjectDTO } from "../store/protocol";
 import type { WorkerLike } from "../store/worker-client";
-import { createProject } from "../store/worker-client";
+import { createProject, patchProject } from "../store/worker-client";
 
 // #624's projects wiring: the Projects screen's one write.
 //
@@ -23,12 +24,23 @@ import { createProject } from "../store/worker-client";
 
 export interface ProjectsWiring {
   createProject: (name: string) => void;
+  /** #625's properties-card write: `patch` carries only the fields the card
+   * actually changed, `undefined` for the rest — [`patchProject`]'s own
+   * "leave this alone" contract, unchanged across this hook. */
+  patchProject: (
+    current: ProjectDTO,
+    patch: { githubRepo?: string | null; defaultContext?: string | null },
+  ) => void;
 }
 
 export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
   return {
     createProject: (name) => {
       createProject(worker, mintProjectCreateSeed(), name, Date.now());
+    },
+    patchProject: (current, patch) => {
+      const nowMs = Date.now();
+      patchProject(worker, mintProjectPatchSeed(current.id, nowMs), current, patch, nowMs);
     },
   };
 }
@@ -42,4 +54,13 @@ export function mintProjectCreateSeed(): string {
     return crypto.randomUUID();
   }
   return `project-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Mints one project patch's seed (#625). Deterministic —
+ * `mintRulePatchSeed`'s own contract, ported: a patch touches the project
+ * `projectId` itself names, not a newly minted entity, so retrying the
+ * identical intent (same project, same `nowMs`) must reproduce the identical
+ * queue entry rather than enqueue a second one. */
+export function mintProjectPatchSeed(projectId: string, nowMs: number): string {
+  return `${projectId}:patch:${nowMs}`;
 }

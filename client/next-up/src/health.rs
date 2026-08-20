@@ -189,6 +189,8 @@ mod tests {
         Project {
             id: id.to_string(),
             name: name.to_string(),
+            github_repo: None,
+            default_context: None,
             archived_at: None,
             created_at: 1,
             updated_at: 1,

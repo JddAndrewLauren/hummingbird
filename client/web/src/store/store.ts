@@ -151,13 +151,15 @@ export interface TaskRuleResult {
   error: string | null;
 }
 
-/** The result of the most recent project create request this view issued
- * (#624), matched back by `seed` — same broadcast-recognition contract as
+/** The result of the most recent project create or patch request this view
+ * issued (#624, widened by #625 for the properties card's patch), matched
+ * back by `seed` — same broadcast-recognition contract as
  * [`TaskRuleResult`]. `projectId` is `null` for a `"failed"` create that
- * never reached `Core::create_project` (no id was ever minted). `"ok"` means
- * *enqueued*, not *saved*: there is no optimistic overlay, so the project
- * reaches [`TaskState.projects`] only on the next completed cycle, and a
- * caller holding this id must say it is waiting until it appears there. */
+ * never reached `Core::create_project` (no id was ever minted); a patch
+ * always carries the id it targeted. `"ok"` means *enqueued*, not *saved*:
+ * there is no optimistic overlay, so the change reaches
+ * [`TaskState.projects`] only on the next completed cycle, and a caller
+ * holding this id must say it is waiting until it appears there. */
 export interface TaskProjectResult {
   seed: string;
   projectId: string | null;

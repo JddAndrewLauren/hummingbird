@@ -56,7 +56,17 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// so the indexes are laid down after it. Re-freezing was not available
 /// (live since #237) and neither was a display-only rename: the word is the
 /// wire value, so it had to reach the DDL.
-pub const SCHEMA_VERSION: i64 = 7;
+///
+/// 8 adds `projects.github_repo` and `projects.default_context` (#625,
+/// ADR-0030 decisions 2–3). Back to the 3→4 / 4→5 shape — two columns on an
+/// existing table — so [`add_missing_columns`] gains a third arm rather than
+/// another rebuild; both are nullable, so the growth is additive on both the
+/// constraint and the data. `projects` carries no table constraint, so both
+/// `ALTER TABLE … ADD COLUMN`s splice immediately before the closing paren,
+/// same as `items.agent` (4→5) and unlike `alerts.subject_key` (which had a
+/// trailing `UNIQUE` to splice ahead of) — verified against a real migrated
+/// store's `sqlite_master`, not reasoned out.
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -76,7 +86,7 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
   version     INTEGER NOT NULL
-)";
+, github_repo TEXT, default_context TEXT)";
 
 /// Route: 1:1 with project, a separate table because it carries the plan
 /// rather than the project's identity (glossary: Destination, Fog, Notes,
@@ -473,6 +483,12 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     }
     if !column_exists(sql, "items", "agent")? {
         sql.exec("ALTER TABLE items ADD COLUMN agent INTEGER NOT NULL DEFAULT 0", &[])?;
+    }
+    if !column_exists(sql, "projects", "github_repo")? {
+        sql.exec("ALTER TABLE projects ADD COLUMN github_repo TEXT", &[])?;
+    }
+    if !column_exists(sql, "projects", "default_context")? {
+        sql.exec("ALTER TABLE projects ADD COLUMN default_context TEXT", &[])?;
     }
     Ok(())
 }

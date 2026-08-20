@@ -14,6 +14,7 @@ mod api;
 mod context;
 mod deadline;
 mod event;
+mod github_repo;
 mod grill;
 mod id;
 mod item;
@@ -40,6 +41,7 @@ pub use event::{
     core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
 };
+pub use github_repo::is_valid_github_repo;
 pub use grill::{resulting_stage, Grill, GrillOnDoneItem, GrillVerdict, GrillWithoutTranscript};
 pub use id::is_url_safe_id;
 pub use item::{Energy, Item, Size, Stage};

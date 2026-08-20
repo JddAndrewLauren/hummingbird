@@ -12,14 +12,14 @@ const noop = () => {};
 
 describe("ProjectsScreen", () => {
   it("holds rather than claiming 'no projects' while the read has not answered", () => {
-    render(<ProjectsScreen task={taskState()} onCreateProject={noop} />);
+    render(<ProjectsScreen task={taskState()} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.getByText("Reading projects…")).toBeTruthy();
     expect(screen.queryByText("No projects yet")).toBeNull();
   });
 
   it("renders the empty state only for a real, empty answer", () => {
-    render(<ProjectsScreen task={taskState({ projects: [] })} onCreateProject={noop} />);
+    render(<ProjectsScreen task={taskState({ projects: [] })} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.getByText("No projects yet")).toBeTruthy();
   });
@@ -32,7 +32,7 @@ describe("ProjectsScreen", () => {
         ledgerRowDTO({ id: "i-2", projectId: "p-1", stage: "done" }),
       ],
     });
-    render(<ProjectsScreen task={task} onCreateProject={noop} />);
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.getByRole("heading", { level: 3, name: "House repairs" })).toBeTruthy();
     expect(screen.getByText("1 action · 1 done")).toBeTruthy();
@@ -49,7 +49,7 @@ describe("ProjectsScreen", () => {
       archivedProjects: [projectDTO({ id: "p-9", name: "Old bike", archivedAt: 5_000 })],
       ledger: [],
     });
-    render(<ProjectsScreen task={task} onCreateProject={noop} />);
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.getByText("1 live · 1 archived")).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 3, name: "Old bike" })).toBeNull();
@@ -63,7 +63,7 @@ describe("ProjectsScreen", () => {
   it("sends the trimmed name to onCreateProject and refuses a blank one", () => {
     const onCreateProject = vi.fn();
     render(
-      <ProjectsScreen task={taskState({ projects: [], ledger: [] })} onCreateProject={onCreateProject} />,
+      <ProjectsScreen task={taskState({ projects: [], ledger: [] })} onCreateProject={onCreateProject} onPatchProject={noop} />,
     );
 
     const create = screen.getByRole("button", { name: "Create" });
@@ -85,7 +85,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-new", kind: "ok", error: null },
     });
-    render(<ProjectsScreen task={task} onCreateProject={noop} />);
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.getByText("creating — appears when the round trip lands")).toBeTruthy();
   });
@@ -96,7 +96,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-new", kind: "ok", error: null },
     });
-    render(<ProjectsScreen task={task} onCreateProject={noop} />);
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.queryByText("creating — appears when the round trip lands")).toBeNull();
     expect(screen.getByRole("heading", { level: 3, name: "Rebuild the deck" })).toBeTruthy();
@@ -113,7 +113,7 @@ describe("ProjectsScreen", () => {
         error: "name must be non-empty",
       },
     });
-    render(<ProjectsScreen task={task} onCreateProject={noop} />);
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.getByText("name must be non-empty")).toBeTruthy();
   });
@@ -128,7 +128,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: null, kind: "busy", error: null },
     });
-    render(<ProjectsScreen task={task} onCreateProject={noop} />);
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
 
     expect(screen.getByText("That project write did not go through.")).toBeTruthy();
     expect(screen.queryByText("creating — appears when the round trip lands")).toBeNull();
@@ -139,7 +139,7 @@ describe("ProjectsScreen", () => {
       projects: [projectDTO({ id: "p-1", name: "House repairs" })],
       ledger: [],
     });
-    render(<ProjectsScreen task={task} onCreateProject={noop} />);
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
@@ -152,5 +152,66 @@ describe("ProjectsScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "All projects" }));
 
     expect(screen.getByRole("heading", { level: 3, name: "House repairs" })).toBeTruthy();
+  });
+
+  // #625: the properties card.
+  it("renders the stored github repo as a derived link, not the stored value itself", () => {
+    const task = taskState({
+      projects: [
+        projectDTO({ id: "p-1", name: "House repairs", githubRepo: "JddAndrewLauren/hummingbird" }),
+      ],
+      ledger: [],
+    });
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
+
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    expect(screen.getByText("https://github.com/JddAndrewLauren/hummingbird")).toBeTruthy();
+    expect((screen.getByLabelText("GitHub repo") as HTMLInputElement).value).toBe(
+      "JddAndrewLauren/hummingbird",
+    );
+  });
+
+  it("sends only the changed properties fields to onPatchProject", () => {
+    const onPatchProject = vi.fn();
+    const project = projectDTO({ id: "p-1", name: "House repairs" });
+    const task = taskState({ projects: [project], ledger: [] });
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={onPatchProject} />);
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    fireEvent.change(screen.getByLabelText("GitHub repo"), {
+      target: { value: "JddAndrewLauren/hummingbird" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onPatchProject).toHaveBeenCalledWith(project, { githubRepo: "JddAndrewLauren/hummingbird" });
+  });
+
+  it("clears a field by saving it empty", () => {
+    const onPatchProject = vi.fn();
+    const project = projectDTO({ id: "p-1", name: "House repairs", defaultContext: "@computer" });
+    const task = taskState({ projects: [project], ledger: [] });
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={onPatchProject} />);
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    fireEvent.change(screen.getByLabelText("Default context"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onPatchProject).toHaveBeenCalledWith(project, { defaultContext: null });
+  });
+
+  it("disables Save until a field actually changes", () => {
+    const task = taskState({
+      projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+      ledger: [],
+    });
+    render(<ProjectsScreen task={task} onCreateProject={noop} onPatchProject={noop} />);
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("GitHub repo"), { target: { value: "a/b" } });
+
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
   });
 });

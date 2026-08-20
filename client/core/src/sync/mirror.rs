@@ -542,6 +542,8 @@ mod tests {
         Project {
             id: id.to_string(),
             name: format!("project {id}"),
+            github_repo: None,
+            default_context: None,
             archived_at: None,
             created_at: 1,
             updated_at: 1,
